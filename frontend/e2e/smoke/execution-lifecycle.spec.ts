@@ -21,6 +21,33 @@ test.afterEach(async ({ page }) => {
   await cleanupSmokeFlowsForPage(page)
 })
 
+const diagnosticFlowYaml = (id: string, prompt: string) => `schema_version: "1"
+id: ${id}
+title: ${id}
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  extract_declarations:
+    kind: agent_task
+    label: Extract Testable Declarations
+    config:
+      kind: agent_task
+      prompt: ${JSON.stringify(prompt)}
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: extract_declarations
+  - from: extract_declarations
+    to: done
+`
+
 test("warning-only diagnostics still allow execute with explicit banner for item 7.2-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-warning-only-${Date.now()}`
   const promptToken = `warning-only-${Date.now()}`
@@ -60,13 +87,7 @@ test("warning-only diagnostics still allow execute with explicit banner for item
         contentType: 'application/json',
         body: JSON.stringify({
           name: flowName,
-          content: `digraph warning_only {
-  start [label="Start", shape=Mdiamond]
-  extract_declarations [label="Extract Testable Declarations", prompt="${promptToken}", shape=box]
-  done [label="Done", shape=Msquare]
-  start -> extract_declarations
-  extract_declarations -> done
-}`,
+          content: diagnosticFlowYaml('warning_only', promptToken),
         }),
       })
     })
@@ -159,27 +180,9 @@ test("diagnostics transitions toggle execute blocking and warning state for item
     })
 
     const flowContentByName: Record<string, string> = {
-      [errorFlowName]: `digraph diagnostic_error {
-  start [label="Start", shape=Mdiamond]
-  extract_declarations [label="Extract Testable Declarations", prompt="${errorToken}", shape=box]
-  done [label="Done", shape=Msquare]
-  start -> extract_declarations
-  extract_declarations -> done
-}`,
-      [warningFlowName]: `digraph diagnostic_warning {
-  start [label="Start", shape=Mdiamond]
-  extract_declarations [label="Extract Testable Declarations", prompt="${warningToken}", shape=box]
-  done [label="Done", shape=Msquare]
-  start -> extract_declarations
-  extract_declarations -> done
-}`,
-      [cleanFlowName]: `digraph diagnostic_clean {
-  start [label="Start", shape=Mdiamond]
-  extract_declarations [label="Extract Testable Declarations", prompt="${cleanToken}", shape=box]
-  done [label="Done", shape=Msquare]
-  start -> extract_declarations
-  extract_declarations -> done
-}`,
+      [errorFlowName]: diagnosticFlowYaml('diagnostic_error', errorToken),
+      [warningFlowName]: diagnosticFlowYaml('diagnostic_warning', warningToken),
+      [cleanFlowName]: diagnosticFlowYaml('diagnostic_clean', cleanToken),
     }
 
     await page.route('**/attractor/api/flows/*', async (route) => {

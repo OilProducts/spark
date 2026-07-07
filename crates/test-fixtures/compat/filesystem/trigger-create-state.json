@@ -34,7 +34,7 @@
       "trigger_definition": {
         "data": {
           "action": {
-            "flow_name": "software-development/implement-change-request.dot",
+            "flow_name": "software-development/implement-change-request.yaml",
             "project_path": "__PROJECT_DIR__",
             "static_context_json": "{\"origin\": \"compat\"}"
           },
@@ -71,7 +71,7 @@
       "trigger_definition": {
         "data": {
           "action": {
-            "flow_name": "software-development/implement-change-request.dot",
+            "flow_name": "software-development/implement-change-request.yaml",
             "project_path": "__PROJECT_DIR__",
             "static_context_json": "{\"origin\": \"compat\"}"
           },
@@ -426,7 +426,7 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.dot\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"2026-06-22T16:16:08Z\",\n  \"enabled\": true,\n  \"id\": \"trigger-c2a19e8c7bb3\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"kDtrosJnrp3Y7Y_9\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"2026-06-22T16:16:08Z\"\n}\n"
+    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.yaml\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"2026-06-22T16:16:08Z\",\n  \"enabled\": true,\n  \"id\": \"trigger-c2a19e8c7bb3\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"kDtrosJnrp3Y7Y_9\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"2026-06-22T16:16:08Z\"\n}\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",

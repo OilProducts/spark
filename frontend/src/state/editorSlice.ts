@@ -1,11 +1,5 @@
 import { type StateCreator } from 'zustand'
 import {
-    cloneCanonicalDefaultsScope,
-    cloneCanonicalSubgraphs,
-    type CanonicalDefaultsScope,
-    type CanonicalSubgraph,
-} from '@/lib/canonicalFlowModel'
-import {
     buildDiagnosticMaps,
     DEFAULT_WORKING_DIRECTORY,
     deriveGraphAttrErrors,
@@ -30,7 +24,7 @@ const DEFAULT_EDITOR_NODE_INSPECTOR_SESSION = {
     writesContextError: null,
 }
 
-const graphAttrsEqual = (left: Record<string, unknown>, right: Record<string, unknown>) => {
+const flowMetadataEqual = (left: Record<string, unknown>, right: Record<string, unknown>) => {
     const leftKeys = Object.keys(left)
     const rightKeys = Object.keys(right)
     if (leftKeys.length !== rightKeys.length) {
@@ -39,62 +33,35 @@ const graphAttrsEqual = (left: Record<string, unknown>, right: Record<string, un
     return leftKeys.every((key) => left[key] === right[key])
 }
 
-const EMPTY_CANONICAL_DEFAULTS = cloneCanonicalDefaultsScope()
-
-const canonicalStructureEqual = (
-    leftDefaults: CanonicalDefaultsScope,
-    leftSubgraphs: CanonicalSubgraph[],
-    rightDefaults: CanonicalDefaultsScope,
-    rightSubgraphs: CanonicalSubgraph[],
-) => JSON.stringify({
-    defaults: leftDefaults,
-    subgraphs: leftSubgraphs,
-}) === JSON.stringify({
-    defaults: rightDefaults,
-    subgraphs: rightSubgraphs,
-})
-
-const deriveNextGraphAttrState = (
-    state: Pick<EditorSlice, 'graphAttrs' | 'graphAttrErrors' | 'graphAttrsUserEditVersion'>,
-    attrs: EditorSlice['graphAttrs'],
+const deriveNextFlowMetadataState = (
+    state: Pick<EditorSlice, 'flowMetadata' | 'flowMetadataErrors' | 'flowMetadataUserEditVersion'>,
+    metadata: EditorSlice['flowMetadata'],
     markDirty: boolean,
 ) => {
-    const normalizedAttrs = normalizeGraphAttrs(attrs)
-    const nextGraphAttrErrors = deriveGraphAttrErrors(normalizedAttrs)
-    const attrsUnchanged = graphAttrsEqual(state.graphAttrs as Record<string, unknown>, normalizedAttrs as Record<string, unknown>)
-    const errorsUnchanged = graphAttrsEqual(
-        state.graphAttrErrors as Record<string, unknown>,
-        nextGraphAttrErrors as Record<string, unknown>,
+    const normalizedMetadata = normalizeGraphAttrs(metadata)
+    const nextFlowMetadataErrors = deriveGraphAttrErrors(normalizedMetadata)
+    const metadataUnchanged = flowMetadataEqual(
+        state.flowMetadata as Record<string, unknown>,
+        normalizedMetadata as Record<string, unknown>,
     )
-    if (attrsUnchanged && errorsUnchanged) {
+    const errorsUnchanged = flowMetadataEqual(
+        state.flowMetadataErrors as Record<string, unknown>,
+        nextFlowMetadataErrors as Record<string, unknown>,
+    )
+    if (metadataUnchanged && errorsUnchanged) {
         return state
     }
     return {
-        graphAttrs: normalizedAttrs,
-        graphAttrErrors: nextGraphAttrErrors,
+        flowMetadata: normalizedMetadata,
+        flowMetadataErrors: nextFlowMetadataErrors,
+        flowMetadataUserEditVersion: markDirty
+            ? state.flowMetadataUserEditVersion + 1
+            : state.flowMetadataUserEditVersion,
+        graphAttrs: normalizedMetadata,
+        graphAttrErrors: nextFlowMetadataErrors,
         graphAttrsUserEditVersion: markDirty
-            ? state.graphAttrsUserEditVersion + 1
-            : state.graphAttrsUserEditVersion,
-    }
-}
-
-const deriveNextCanonicalStructureState = (
-    state: Pick<EditorSlice, 'canonicalDefaults' | 'canonicalSubgraphs' | 'canonicalStructureUserEditVersion'>,
-    defaults: CanonicalDefaultsScope,
-    subgraphs: CanonicalSubgraph[],
-    markDirty: boolean,
-) => {
-    const nextDefaults = cloneCanonicalDefaultsScope(defaults)
-    const nextSubgraphs = cloneCanonicalSubgraphs(subgraphs)
-    if (canonicalStructureEqual(state.canonicalDefaults, state.canonicalSubgraphs, nextDefaults, nextSubgraphs)) {
-        return state
-    }
-    return {
-        canonicalDefaults: nextDefaults,
-        canonicalSubgraphs: nextSubgraphs,
-        canonicalStructureUserEditVersion: markDirty
-            ? state.canonicalStructureUserEditVersion + 1
-            : state.canonicalStructureUserEditVersion,
+            ? state.flowMetadataUserEditVersion + 1
+            : state.flowMetadataUserEditVersion,
     }
 }
 
@@ -115,8 +82,8 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         }),
     editorMode: 'structured',
     setEditorMode: (mode) => set({ editorMode: mode }),
-    rawDotDraft: '',
-    setRawDotDraft: (value) => set({ rawDotDraft: value }),
+    rawYamlDraft: '',
+    setRawYamlDraft: (value) => set({ rawYamlDraft: value }),
     rawHandoffError: null,
     setRawHandoffError: (value) => set({ rawHandoffError: value }),
     selectedNodeId: null,
@@ -160,11 +127,23 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 [flowName]: expandChildren,
             },
         })),
+    editorShowAdvancedFlowMetadataByFlow: {},
+    setEditorShowAdvancedFlowMetadata: (flowName, showAdvanced) =>
+        set((state) => ({
+            editorShowAdvancedFlowMetadataByFlow: {
+                ...state.editorShowAdvancedFlowMetadataByFlow,
+                [flowName]: showAdvanced,
+            },
+        })),
     editorShowAdvancedGraphAttrsByFlow: {},
     setEditorShowAdvancedGraphAttrs: (flowName, showAdvanced) =>
         set((state) => ({
             editorShowAdvancedGraphAttrsByFlow: {
                 ...state.editorShowAdvancedGraphAttrsByFlow,
+                [flowName]: showAdvanced,
+            },
+            editorShowAdvancedFlowMetadataByFlow: {
+                ...state.editorShowAdvancedFlowMetadataByFlow,
                 [flowName]: showAdvanced,
             },
         })),
@@ -193,58 +172,62 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 },
             },
         })),
+    flowMetadata: {},
+    flowMetadataErrors: {},
+    flowMetadataUserEditVersion: 0,
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
-    setGraphAttrs: (attrs) =>
-        set((state) => deriveNextGraphAttrState(state, attrs, true)),
-    replaceGraphAttrs: (attrs) =>
-        set((state) => deriveNextGraphAttrState(state, attrs, false)),
-    updateGraphAttr: (key, value) =>
+    setFlowMetadata: (metadata) =>
+        set((state) => deriveNextFlowMetadataState(state, metadata, true)),
+    replaceFlowMetadata: (metadata) =>
+        set((state) => deriveNextFlowMetadataState(state, metadata, false)),
+    updateFlowMetadata: (key, value) =>
         set((state) => {
             const normalizedValue = normalizeGraphAttrValue(key, value)
-            const currentValue = state.graphAttrs[key]
+            const currentValue = state.flowMetadata[key]
             const currentNormalizedValue = currentValue === undefined || currentValue === null
                 ? ''
                 : normalizeGraphAttrValue(key, String(currentValue))
-            const currentError = state.graphAttrErrors[key] ?? null
+            const currentError = state.flowMetadataErrors[key] ?? null
             const nextError = validateGraphAttrValue(key, normalizedValue)
             if (currentNormalizedValue === normalizedValue && currentError === nextError) {
                 return state
             }
-            return deriveNextGraphAttrState(
+            return deriveNextFlowMetadataState(
                 state,
                 {
-                    ...state.graphAttrs,
+                    ...state.flowMetadata,
                     [key]: normalizedValue,
                 },
                 true,
             )
         }),
-    canonicalDefaults: EMPTY_CANONICAL_DEFAULTS,
-    canonicalSubgraphs: [],
-    canonicalStructureUserEditVersion: 0,
-    setCanonicalDefaults: (defaults) =>
-        set((state) => deriveNextCanonicalStructureState(
-            state,
-            defaults,
-            state.canonicalSubgraphs,
-            true,
-        )),
-    setCanonicalSubgraphs: (subgraphs) =>
-        set((state) => deriveNextCanonicalStructureState(
-            state,
-            state.canonicalDefaults,
-            subgraphs,
-            true,
-        )),
-    replaceCanonicalFlowScopes: (defaults, subgraphs) =>
-        set((state) => deriveNextCanonicalStructureState(
-            state,
-            defaults,
-            subgraphs,
-            false,
-        )),
+    setGraphAttrs: (attrs) =>
+        set((state) => deriveNextFlowMetadataState(state, attrs, true)),
+    replaceGraphAttrs: (attrs) =>
+        set((state) => deriveNextFlowMetadataState(state, attrs, false)),
+    updateGraphAttr: (key, value) =>
+        set((state) => {
+            const normalizedValue = normalizeGraphAttrValue(key, value)
+            const currentValue = state.flowMetadata[key]
+            const currentNormalizedValue = currentValue === undefined || currentValue === null
+                ? ''
+                : normalizeGraphAttrValue(key, String(currentValue))
+            const currentError = state.flowMetadataErrors[key] ?? null
+            const nextError = validateGraphAttrValue(key, normalizedValue)
+            if (currentNormalizedValue === normalizedValue && currentError === nextError) {
+                return state
+            }
+            return deriveNextFlowMetadataState(
+                state,
+                {
+                    ...state.flowMetadata,
+                    [key]: normalizedValue,
+                },
+                true,
+            )
+        }),
     diagnostics: [],
     setDiagnostics: (diagnostics) =>
         set(() => {

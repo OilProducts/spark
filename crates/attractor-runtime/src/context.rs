@@ -4,7 +4,7 @@ use attractor_core::{
     apply_launch_context, attr_i64, attr_text, dot_value_to_json, normalize_context_updates,
     resolve_context_write_contract, validate_context_updates_against_contract_with_exemptions,
     AttractorContext, CheckpointState, ContextMap, DotAttribute, DotGraph, FailureKind,
-    LaunchContext, Outcome, OutcomeStatus, RoutingEdge,
+    FlowDefinition, FlowNode, LaunchContext, NodeKind, Outcome, OutcomeStatus, RoutingEdge,
 };
 use serde_json::{json, Value};
 
@@ -49,11 +49,11 @@ pub fn graph_attr_context_seed(graph: &DotGraph) -> ContextMap {
 }
 
 pub fn initialize_runtime_context(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     start_node: &str,
     launch_context: &LaunchContext,
 ) -> Result<AttractorContext> {
-    let mut context = AttractorContext::from_map(graph_attr_context_seed(graph))?;
+    let mut context = AttractorContext::from_map(crate::flow_runtime::flow_context_seed(flow))?;
     seed_builtin_context(&mut context, start_node)?;
     apply_launch_context(&mut context, launch_context)?;
     Ok(context)
@@ -87,6 +87,45 @@ pub fn apply_outcome_context_updates(
     let mut normalized_updates = normalize_context_updates(&outcome.context_updates);
     let contract = resolve_context_write_contract(node_attrs);
     let exemptions = context_update_contract_exemptions(node_attrs);
+    if let Some(violation) = validate_context_updates_against_contract_with_exemptions(
+        &normalized_updates,
+        &contract,
+        exemptions.exact_keys,
+        exemptions.prefixes,
+    ) {
+        let failure = Outcome {
+            status: OutcomeStatus::Fail,
+            failure_reason: violation.format_reason(Some(node_id)),
+            retryable: Some(false),
+            failure_kind: Some(FailureKind::Contract),
+            raw_response_text: outcome.raw_response_text.clone(),
+            notes: outcome.notes.clone(),
+            ..Outcome::new(OutcomeStatus::Fail)
+        };
+        apply_runtime_outcome_fields(node_id, context, &failure)?;
+        return Ok(failure);
+    }
+
+    normalized_updates.remove(NODE_OUTCOMES_KEY);
+    let normalized_outcome = Outcome {
+        context_updates: normalized_updates,
+        ..outcome.clone()
+    };
+    context.apply_updates(&normalized_outcome.context_updates)?;
+    apply_runtime_outcome_fields(node_id, context, &normalized_outcome)?;
+    Ok(normalized_outcome)
+}
+
+pub fn apply_outcome_context_updates_for_node(
+    node_id: &str,
+    node: &FlowNode,
+    context: &mut AttractorContext,
+    outcome: &Outcome,
+) -> Result<Outcome> {
+    let node_attrs = crate::flow_runtime::node_attrs_for_handler(node_id, node);
+    let mut normalized_updates = normalize_context_updates(&outcome.context_updates);
+    let contract = resolve_context_write_contract(&node_attrs);
+    let exemptions = context_update_contract_exemptions_for_node(node);
     if let Some(violation) = validate_context_updates_against_contract_with_exemptions(
         &normalized_updates,
         &contract,
@@ -154,6 +193,41 @@ fn context_update_contract_exemptions(
             exact_keys: &[],
             prefixes: &[],
         },
+    }
+}
+
+fn context_update_contract_exemptions_for_node(node: &FlowNode) -> ContextUpdateContractExemptions {
+    match node.kind {
+        NodeKind::AgentTask => ContextUpdateContractExemptions {
+            exact_keys: CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS,
+            prefixes: &[],
+        },
+        NodeKind::Parallel => ContextUpdateContractExemptions {
+            exact_keys: PARALLEL_CONTEXT_UPDATE_EXEMPT_KEYS,
+            prefixes: &[],
+        },
+        NodeKind::FanIn => ContextUpdateContractExemptions {
+            exact_keys: &[],
+            prefixes: FAN_IN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
+        },
+        NodeKind::Tool => ContextUpdateContractExemptions {
+            exact_keys: &[],
+            prefixes: TOOL_CONTEXT_UPDATE_EXEMPT_PREFIXES,
+        },
+        NodeKind::HumanGate => ContextUpdateContractExemptions {
+            exact_keys: &[],
+            prefixes: HUMAN_CONTEXT_UPDATE_EXEMPT_PREFIXES,
+        },
+        NodeKind::Subflow => ContextUpdateContractExemptions {
+            exact_keys: &[],
+            prefixes: MANAGER_LOOP_CONTEXT_UPDATE_EXEMPT_PREFIXES,
+        },
+        NodeKind::Start | NodeKind::Exit | NodeKind::Conditional => {
+            ContextUpdateContractExemptions {
+                exact_keys: &[],
+                prefixes: &[],
+            }
+        }
     }
 }
 
@@ -265,7 +339,7 @@ pub fn clear_runtime_retry_context(context: &mut AttractorContext) -> Result<()>
 }
 
 pub fn set_runtime_fidelity_context(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     incoming_edge: Option<&RoutingEdge>,
     context: &mut AttractorContext,
@@ -274,34 +348,34 @@ pub fn set_runtime_fidelity_context(
     let fidelity = force_fidelity
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| resolve_runtime_fidelity(graph, node_id, incoming_edge));
-    let thread_id = resolve_runtime_thread_id(graph, node_id, incoming_edge, &fidelity);
+        .unwrap_or_else(|| resolve_runtime_fidelity(flow, node_id, incoming_edge));
+    let thread_id = resolve_runtime_thread_id(flow, node_id, incoming_edge, &fidelity);
     context.set(RUNTIME_FIDELITY_KEY, json!(fidelity.clone()))?;
     context.set(RUNTIME_THREAD_ID_KEY, json!(thread_id))?;
     Ok(fidelity)
 }
 
 pub fn resolve_runtime_fidelity(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     incoming_edge: Option<&RoutingEdge>,
 ) -> String {
     if let Some(edge_fidelity) = incoming_edge.and_then(|edge| edge_attr_text(edge, "fidelity")) {
         return edge_fidelity;
     }
-    if let Some(node) = graph.nodes.get(node_id) {
-        if let Some(node_fidelity) = attr_text(&node.attrs, "fidelity") {
+    if let Some(node) = flow.nodes.get(node_id) {
+        if let Some(node_fidelity) = crate::flow_runtime::node_attr_text(node, "fidelity") {
             return node_fidelity;
         }
     }
-    if let Some(graph_fidelity) = attr_text(&graph.graph_attrs, "default_fidelity") {
-        return graph_fidelity;
+    if let Some(graph_fidelity) = flow.defaults.fidelity.as_deref() {
+        return graph_fidelity.to_string();
     }
     "compact".to_string()
 }
 
 pub fn resolve_runtime_thread_id(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     incoming_edge: Option<&RoutingEdge>,
     fidelity: &str,
@@ -309,19 +383,19 @@ pub fn resolve_runtime_thread_id(
     if fidelity != "full" {
         return String::new();
     }
-    if let Some(node) = graph.nodes.get(node_id) {
-        if let Some(thread_id) = attr_text(&node.attrs, "thread_id") {
+    if let Some(node) = flow.nodes.get(node_id) {
+        if let Some(thread_id) = crate::flow_runtime::node_attr_text(node, "thread_id") {
             return thread_id;
         }
     }
     if let Some(edge_thread_id) = incoming_edge.and_then(|edge| edge_attr_text(edge, "thread_id")) {
         return edge_thread_id;
     }
-    if let Some(graph_thread_id) = attr_text(&graph.graph_attrs, "thread_id") {
+    if let Some(graph_thread_id) = crate::flow_runtime::flow_attr_text(flow, "thread_id") {
         return graph_thread_id;
     }
-    if let Some(node) = graph.nodes.get(node_id) {
-        if let Some(class_name) = attr_text(&node.attrs, "class")
+    if let Some(node) = flow.nodes.get(node_id) {
+        if let Some(class_name) = crate::flow_runtime::node_attr_text(node, "class")
             .and_then(|value| value.split(',').next().map(str::trim).map(str::to_string))
             .filter(|value| !value.is_empty())
         {

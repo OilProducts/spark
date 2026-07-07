@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use attractor_core::{
-    CheckpointState, DotGraph, RawRuntimeEvent, RunManifest, RunRecord, RunResult,
+    CheckpointState, FlowDefinition, RawRuntimeEvent, RunManifest, RunRecord, RunResult,
 };
 use spark_common::settings::SparkSettings;
 use spark_storage::{write_json_atomic, write_text_atomic, JsonWriteOptions};
@@ -31,8 +31,8 @@ pub struct CreateRunRequest {
     pub record: RunRecord,
     pub checkpoint: Option<CheckpointState>,
     pub manifest: Option<RunManifest>,
-    pub graph_source: Option<String>,
-    pub graph_dot: Option<String>,
+    pub flow_source: Option<String>,
+    pub flow_definition_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,19 +103,19 @@ impl RunStore {
             JsonWriteOptions::default(),
         )?;
 
-        if let Some(source) = request.graph_source.as_deref() {
-            let graph_dir = paths.artifacts_dir().join("graphviz");
-            fs::create_dir_all(&graph_dir).map_err(|source| {
-                RuntimeStorageError::io("create graph artifacts", &graph_dir, source)
+        if let Some(source) = request.flow_source.as_deref() {
+            let flow_dir = paths.artifacts_dir().join("flow");
+            fs::create_dir_all(&flow_dir).map_err(|source| {
+                RuntimeStorageError::io("create flow artifacts", &flow_dir, source)
             })?;
-            write_text_atomic(graph_dir.join("pipeline-source.dot"), source)?;
+            write_text_atomic(flow_dir.join("flow-source.yaml"), source)?;
         }
-        if let Some(dot) = request.graph_dot.as_deref() {
-            let graph_dir = paths.artifacts_dir().join("graphviz");
-            fs::create_dir_all(&graph_dir).map_err(|source| {
-                RuntimeStorageError::io("create graph artifacts", &graph_dir, source)
+        if let Some(definition_json) = request.flow_definition_json.as_deref() {
+            let flow_dir = paths.artifacts_dir().join("flow");
+            fs::create_dir_all(&flow_dir).map_err(|source| {
+                RuntimeStorageError::io("create flow artifacts", &flow_dir, source)
             })?;
-            write_text_atomic(graph_dir.join("pipeline.dot"), dot)?;
+            write_text_atomic(flow_dir.join("flow-definition.json"), definition_json)?;
         }
 
         append_event(&paths, lifecycle_event(&record.run_id, "INITIALIZE"))?;
@@ -381,15 +381,12 @@ impl RunStore {
     }
 
     pub fn read_graph_source(&self, paths: &RunRootPaths) -> Result<Option<String>> {
-        for relative in [
-            "artifacts/graphviz/pipeline-source.dot",
-            "artifacts/graphviz/pipeline.dot",
-        ] {
+        for relative in ["artifacts/flow/flow-source.yaml"] {
             let path = paths.root.join(relative);
             if path.is_file() {
                 return fs::read_to_string(&path)
                     .map(Some)
-                    .map_err(|source| RuntimeStorageError::io("read graph source", path, source));
+                    .map_err(|source| RuntimeStorageError::io("read flow source", path, source));
             }
         }
         Ok(None)
@@ -400,11 +397,11 @@ impl RunStore {
         paths: &RunRootPaths,
         run_id: &str,
         status: &str,
-        graph: &DotGraph,
+        flow: &FlowDefinition,
         checkpoint: &CheckpointState,
         summarize: Option<&ResultSummaryFn>,
     ) -> Result<RunResult> {
-        materialize_run_result(paths, run_id, status, graph, checkpoint, summarize)
+        materialize_run_result(paths, run_id, status, flow, checkpoint, summarize)
     }
 
     pub fn write_result(&self, paths: &RunRootPaths, result: &RunResult) -> Result<()> {

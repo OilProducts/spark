@@ -14,13 +14,29 @@ test.beforeEach(async ({ page }) => {
   await stubProjectMetadata(page)
 })
 
-test("semantic-equivalence save blocks mismatch and confirms no-op round-trip for item 5.3-03", async ({ page }) => {
-  const projectPath = `/tmp/ui-smoke-project-semantic-equivalence-${Date.now()}`
-  const semanticSaveBodies: string[] = []
-  const semanticMismatchBodies: string[] = []
-  const semanticEquivalentSavedBodies: string[] = []
-  let mismatchInjected = false
-  let mismatchTargetContent: string | null = null
+test("raw YAML save blocks parse errors and hydrates valid handoff", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-raw-yaml-${Date.now()}`
+  const parseErrorBodies: string[] = []
+  const savedBodies: string[] = []
+  const flowName = "semantic.yaml"
+  const flowYaml = `schema_version: "1"
+id: semantic
+title: Semantic YAML
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: done
+`
 
   await page.route("**/attractor/api/flows", async (route) => {
     const request = route.request()
@@ -28,43 +44,33 @@ test("semantic-equivalence save blocks mismatch and confirms no-op round-trip fo
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(["semantic.dot"]),
+        body: JSON.stringify([flowName]),
       })
       return
     }
 
     if (request.method() === "POST") {
       const body = request.postData() || ""
-      const hasSemanticEquivalenceGuard = body.includes('"expect_semantic_equivalence":true')
-      let payload: { expect_semantic_equivalence?: boolean; content?: string } = {}
+      let payload: { content?: string } = {}
       try {
-        payload = JSON.parse(body) as { expect_semantic_equivalence?: boolean; content?: string }
+        payload = JSON.parse(body) as { content?: string }
       } catch {
         payload = {}
       }
-
-      if (payload.expect_semantic_equivalence === true || hasSemanticEquivalenceGuard) {
-        semanticSaveBodies.push(body)
-        if (
-          mismatchTargetContent !== null
-          && mismatchInjected === false
-          && payload.content === mismatchTargetContent
-        ) {
-          mismatchInjected = true
-          semanticMismatchBodies.push(body)
-          await route.fulfill({
-            status: 409,
-            contentType: "application/json",
-            body: '{"detail":{"status":"semantic_mismatch","error":"semantic equivalence check failed: output DOT would change flow behavior"}}',
-          })
-          return
-        }
-        semanticEquivalentSavedBodies.push(body)
+      if (payload.content?.includes("nodes: [")) {
+        parseErrorBodies.push(body)
+        await route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: '{"detail":{"status":"parse_error","error":"invalid YAML sequence"}}',
+        })
+        return
       }
+      savedBodies.push(body)
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ status: "saved", name: "semantic.dot" }),
+        body: JSON.stringify({ status: "saved", name: flowName }),
       })
       return
     }
@@ -72,7 +78,7 @@ test("semantic-equivalence save blocks mismatch and confirms no-op round-trip fo
     await route.continue()
   })
 
-  await page.route("**/attractor/api/flows/semantic.dot", async (route) => {
+  await page.route(`**/attractor/api/flows/${flowName}`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue()
       return
@@ -82,14 +88,8 @@ test("semantic-equivalence save blocks mismatch and confirms no-op round-trip fo
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        name: "semantic.dot",
-        content: [
-          "digraph semantic {",
-          '  start [shape=Mdiamond, label=label="Start"];',
-          '  done [shape=Msquare, label="Done"];',
-          "  start -> done;",
-          "}",
-        ].join("\n"),
+        name: flowName,
+        content: flowYaml,
       }),
     })
   })
@@ -100,6 +100,16 @@ test("semantic-equivalence save blocks mismatch and confirms no-op round-trip fo
       contentType: "application/json",
       body: JSON.stringify({
         status: "ok",
+        flow: {
+          schema_version: "1",
+          id: "semantic",
+          title: "Semantic YAML",
+          nodes: {
+            start: { kind: "start", label: "Start", config: { kind: "start" } },
+            done: { kind: "exit", label: "Done", config: { kind: "exit" } },
+          },
+          edges: [{ from: "start", to: "done" }],
+        },
         graph: {
           nodes: [
             { id: "start", shape: "Mdiamond", label: "Start" },
@@ -115,33 +125,32 @@ test("semantic-equivalence save blocks mismatch and confirms no-op round-trip fo
   await gotoWithRegisteredProject(page, projectPath)
   await page.getByTestId("nav-mode-editor").click()
 
-  const flowButton = page.getByRole("button", { name: "semantic.dot" })
+  const flowButton = page.getByRole("button", { name: flowName })
   await expect(flowButton).toBeVisible()
   await flowButton.click()
   await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
 
-  await page.getByRole("button", { name: "Raw DOT" }).click()
-  const rawDotEditor = page.getByTestId("raw-dot-editor")
-  await expect(rawDotEditor).toBeVisible()
-  const rawDotEntry = await rawDotEditor.inputValue()
-  const mismatchRoundTripDot = `${rawDotEntry}\n// mismatch round trip`
-  const equivalentRoundTripDot = `${rawDotEntry}\n// equivalent round trip`
-  mismatchTargetContent = mismatchRoundTripDot
-  await rawDotEditor.fill(mismatchRoundTripDot)
+  await page.getByRole("button", { name: "Raw YAML" }).click()
+  const rawYamlEditor = page.getByTestId("raw-yaml-editor")
+  await expect(rawYamlEditor).toBeVisible()
+  const rawYamlEntry = await rawYamlEditor.inputValue()
+  const invalidYaml = `${rawYamlEntry}\nnodes: [`
+  const equivalentYaml = `${rawYamlEntry}\nmetadata:\n  smoke_round_trip: true\n`
+  await rawYamlEditor.fill(invalidYaml)
   await page.getByRole("button", { name: "Structured" }).click()
-  await expect(rawDotEditor).toBeVisible()
-  const rawHandoffError = page.getByTestId("raw-dot-handoff-error")
+  await expect(rawYamlEditor).toBeVisible()
+  const rawHandoffError = page.getByTestId("raw-yaml-handoff-error")
   if ((await rawHandoffError.count()) > 0) {
-    await expect(rawHandoffError).toContainText("Safe handoff requires valid DOT.")
+    await expect(rawHandoffError).toContainText("Safe handoff requires valid YAML.")
   }
   await expect(page.getByRole("button", { name: "Add Node" })).toHaveCount(0)
-  await expect.poll(() => semanticMismatchBodies.length).toBeGreaterThanOrEqual(1)
-  await page.screenshot({ path: screenshotPath("19a-semantic-equivalence-mismatch-blocked.png"), fullPage: true })
+  await expect.poll(() => parseErrorBodies.length).toBeGreaterThanOrEqual(1)
+  await page.screenshot({ path: screenshotPath("19a-raw-yaml-parse-error-blocked.png"), fullPage: true })
 
-  const equivalentSavesBeforeRoundTrip = semanticEquivalentSavedBodies.length
-  await rawDotEditor.fill(equivalentRoundTripDot)
+  const savedBeforeRoundTrip = savedBodies.length
+  await rawYamlEditor.fill(equivalentYaml)
   await page.getByRole("button", { name: "Structured" }).click()
   await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
-  await expect.poll(() => semanticEquivalentSavedBodies.length).toBeGreaterThan(equivalentSavesBeforeRoundTrip)
-  await page.screenshot({ path: screenshotPath("19b-semantic-equivalence-round-trip-saved.png"), fullPage: true })
+  await expect.poll(() => savedBodies.length).toBeGreaterThan(savedBeforeRoundTrip)
+  await page.screenshot({ path: screenshotPath("19b-raw-yaml-round-trip-saved.png"), fullPage: true })
 })

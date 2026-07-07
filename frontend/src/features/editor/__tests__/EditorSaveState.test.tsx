@@ -3,7 +3,6 @@ import {
   resetFlowSaveBaselines,
   retryLastSaveContent,
   saveFlowContent,
-  saveFlowContentExpectingSemanticEquivalence,
 } from '@/lib/flowPersistence'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
@@ -50,18 +49,18 @@ describe('Editor save state behavior', () => {
         ),
     )
 
-    const parseSave = await saveFlowContent('demo.dot', 'digraph Demo {')
+    const parseSave = await saveFlowContent('demo.yaml', 'nodes: [')
     expect(parseSave).toBe(false)
     let saveState = useStore.getState()
     expect(saveState.saveState).toBe('error')
     expect(saveState.saveErrorKind).toBe('parse_error')
-    expect(saveState.saveErrorMessage).toContain('Save blocked by DOT parse error')
+    expect(saveState.saveErrorMessage).toContain('Save blocked by YAML parse error')
     expect(resolveSaveRemediation(saveState.saveState, saveState.saveErrorKind)).toEqual({
-      message: 'Fix DOT syntax issues in Raw DOT mode, then save again.',
+      message: 'Fix YAML syntax issues in Raw YAML mode, then save again.',
       allowRetry: false,
     })
 
-    const validationSave = await saveFlowContent('demo.dot', 'digraph Demo { start -> end }')
+    const validationSave = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
     expect(validationSave).toBe(false)
     saveState = useStore.getState()
     expect(saveState.saveState).toBe('error')
@@ -87,7 +86,7 @@ describe('Editor save state behavior', () => {
         ),
     )
 
-    const firstAttempt = await saveFlowContent('demo.dot', 'digraph Demo { start -> end }')
+    const firstAttempt = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
     expect(firstAttempt).toBe(false)
     let saveState = useStore.getState()
     expect(saveState.saveState).toBe('error')
@@ -105,7 +104,7 @@ describe('Editor save state behavior', () => {
     expect(saveState.saveErrorKind).toBeNull()
   })
 
-  it('sets semantic-equivalence expectation when requested', async () => {
+  it('sends YAML content without semantic-equivalence options', async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ status: 'saved' }), {
         status: 200,
@@ -114,14 +113,14 @@ describe('Editor save state behavior', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    const saved = await saveFlowContentExpectingSemanticEquivalence('demo.dot', 'digraph Demo { start -> end }')
+    const saved = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
     expect(saved).toBe(true)
 
     const [, requestInit] = fetchMock.mock.calls[0]
     const body = JSON.parse(String((requestInit as RequestInit).body))
-    expect(body).toMatchObject({
-      name: 'demo.dot',
-      expect_semantic_equivalence: true,
+    expect(body).toEqual({
+      name: 'demo.yaml',
+      content: 'schema_version: "1"\nid: demo\n',
     })
   })
 
@@ -129,9 +128,9 @@ describe('Editor save state behavior', () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    primeFlowSaveBaseline('demo.dot', 'digraph Demo { start -> end }')
+    primeFlowSaveBaseline('demo.yaml', 'schema_version: "1"\nid: demo\n')
 
-    const saved = await saveFlowContent('demo.dot', 'digraph Demo { start -> end }')
+    const saved = await saveFlowContent('demo.yaml', 'schema_version: "1"\nid: demo\n')
     expect(saved).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
 

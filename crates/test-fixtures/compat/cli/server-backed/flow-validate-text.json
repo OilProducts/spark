@@ -7,7 +7,7 @@
       "flow",
       "validate",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--text",
       "--base-url",
       "__API_BASE_URL__"
@@ -20,7 +20,7 @@
       "flow",
       "validate",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--text",
       "--base-url",
       "__API_BASE_URL__"
@@ -90,7 +90,7 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "Name: software-development/implement-change-request.dot\nPath: __FLOWS_DIR__/software-development/implement-change-request.dot\nStatus: ok\nDiagnostics: 0\nErrors: 0\n"
+    "stdout": "Name: software-development/implement-change-request.yaml\nPath: __FLOWS_DIR__/software-development/implement-change-request.yaml\nStatus: ok\nDiagnostics: 0\nErrors: 0\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",

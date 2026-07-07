@@ -103,7 +103,7 @@ describe('Sidebar node shape authoring', () => {
         cleanup()
     })
 
-    it('updates the rendered node silhouette immediately when shape changes in the inspector', async () => {
+    it('updates the rendered node silhouette immediately when node kind changes in the inspector', async () => {
         renderWithFlowProvider(
             <SidebarShapeHarness
                 nodes={[
@@ -115,6 +115,7 @@ describe('Sidebar node shape authoring', () => {
                         style: { width: 220, height: 110 },
                         data: {
                             label: 'Task',
+                            kind: 'agent_task',
                             shape: 'box',
                             type: 'codergen',
                         },
@@ -130,16 +131,16 @@ describe('Sidebar node shape authoring', () => {
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
 
         const inspectorPanel = screen.getByTestId('inspector-panel')
-        const shapeSelect = inspectorPanel.querySelector('select')
-        expect(shapeSelect).toBeTruthy()
-        fireEvent.change(shapeSelect as HTMLSelectElement, { target: { value: 'hexagon' } })
+        const kindSelect = inspectorPanel.querySelector('select')
+        expect(kindSelect).toBeTruthy()
+        fireEvent.change(kindSelect as HTMLSelectElement, { target: { value: 'human_gate' } })
 
         await waitFor(() => {
             expect(screen.getByTestId('workflow-node-frame-hexagon')).toBeInTheDocument()
         })
     })
 
-    it('shows a shape/type drift warning in the inspector while preserving the declared silhouette', async () => {
+    it('does not expose shape/type drift warnings in the kind-based inspector', async () => {
         renderWithFlowProvider(
             <SidebarShapeHarness
                 nodes={[
@@ -151,6 +152,7 @@ describe('Sidebar node shape authoring', () => {
                         style: { width: 220, height: 110 },
                         data: {
                             label: 'Task',
+                            kind: 'agent_task',
                             shape: 'box',
                             type: 'wait.human',
                         },
@@ -163,9 +165,8 @@ describe('Sidebar node shape authoring', () => {
             expect(fetchFlowListMock).toHaveBeenCalled()
         })
 
-        expect(screen.getByTestId('node-shape-type-warning')).toHaveTextContent(
-            'Shape box normally maps to codergen',
-        )
+        expect(screen.queryByTestId('node-shape-type-warning')).not.toBeInTheDocument()
+        expect(screen.getByText('Node Kind')).toBeInTheDocument()
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
     })
 
@@ -179,6 +180,7 @@ describe('Sidebar node shape authoring', () => {
                 style: { width: 220, height: 110 },
                 data: {
                     label: 'Task',
+                    kind: 'agent_task',
                     shape: 'box',
                     type: 'codergen',
                 },

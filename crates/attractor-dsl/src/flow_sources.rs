@@ -1,17 +1,22 @@
 use std::path::{Component, Path, PathBuf};
 
-use attractor_core::{DotAttribute, DotValue, DotValueType};
+use attractor_core::{FlowDefinition, FlowDefinitionError};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::{
-    build_transform_pipeline, format_dot, normalize_graph, parse_dot, DotGraph, DotParseError,
-};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{detail}")]
 pub struct FlowSourceError {
     status_code: u16,
     detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamedFlowSource {
+    pub name: String,
+    pub path: PathBuf,
+    pub content: String,
+    pub flow: FlowDefinition,
 }
 
 impl FlowSourceError {
@@ -86,8 +91,19 @@ pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
             "Flow name must reference a file.",
         ));
     }
-    if !leaf_name.ends_with(".dot") {
-        leaf_name.push_str(".dot");
+    if Path::new(leaf_name).extension().is_some() {
+        let extension = Path::new(leaf_name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if !matches!(extension, "yaml" | "yml") {
+            return Err(FlowSourceError::new(
+                400,
+                "Flow name must end with .yaml or .yml.",
+            ));
+        }
+    } else {
+        leaf_name.push_str(".yaml");
     }
 
     Ok(parts.join("/"))
@@ -149,41 +165,62 @@ pub fn load_flow_content(
     })
 }
 
-pub fn inject_pipeline_goal(flow_content: &str, goal: &str) -> Result<String, DotParseError> {
-    let mut graph = parse_dot(flow_content)?;
-    let line = graph
-        .graph_attrs
-        .get("goal")
-        .map(|attr| attr.line)
-        .unwrap_or_default();
-    graph.graph_attrs.insert(
-        "goal".to_string(),
-        DotAttribute {
-            key: "goal".to_string(),
-            value: DotValue::String(goal.to_string()),
-            value_type: DotValueType::String,
-            line,
-        },
-    );
-    Ok(format_dot(&graph))
+pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
+    let flow = FlowDefinition::from_yaml_str(source).map_err(flow_definition_error)?;
+    flow.validate().map_err(flow_definition_error)?;
+    Ok(flow.normalize())
 }
 
-pub fn semantic_signature_for_source(dot_content: &str) -> Result<String, DotParseError> {
-    let graph = parse_dot(dot_content)?;
-    Ok(semantic_signature_for_graph(&graph))
+pub fn read_named_flow_source(
+    flows_dir: impl AsRef<Path>,
+    flow_name: &str,
+) -> Result<NamedFlowSource, FlowSourceError> {
+    let flows_dir = flows_dir.as_ref();
+    let path = resolve_flow_path(flows_dir, flow_name)?;
+    if !path.exists() {
+        return Err(FlowSourceError::new(404, "Flow not found."));
+    }
+    let content = std::fs::read_to_string(&path).map_err(|source| {
+        FlowSourceError::new(
+            500,
+            format!("Unable to read flow file {}: {source}", path.display()),
+        )
+    })?;
+    let flow = parse_flow_definition(&content)?;
+    let name = flow_name_from_path(flows_dir, &path)?;
+    Ok(NamedFlowSource {
+        name,
+        path,
+        content,
+        flow,
+    })
 }
 
-pub fn semantic_equivalent_sources(left: &str, right: &str) -> Result<bool, DotParseError> {
-    Ok(semantic_signature_for_source(left)? == semantic_signature_for_source(right)?)
+pub fn canonicalize_flow_yaml(source: &str) -> Result<String, FlowSourceError> {
+    let flow = parse_flow_definition(source)?;
+    serde_yaml::to_string(&flow).map_err(|source| {
+        FlowSourceError::new(
+            500,
+            format!("Unable to serialize canonical flow YAML: {source}"),
+        )
+    })
 }
 
-pub fn semantic_signature_for_graph(graph: &DotGraph) -> String {
-    let transformed = build_transform_pipeline().apply(graph);
-    let mut normalized = normalize_graph(&transformed);
-    normalized.graph_id = "__semantic__".to_string();
-    format_dot(&normalized)
+pub fn inject_flow_goal(flow_content: &str, goal: &str) -> Result<String, FlowSourceError> {
+    let mut flow = parse_flow_definition(flow_content)?;
+    flow.goal = goal.trim().to_string();
+    serde_yaml::to_string(&flow.normalize()).map_err(|source| {
+        FlowSourceError::new(
+            500,
+            format!("Unable to serialize flow with launch goal: {source}"),
+        )
+    })
 }
 
 fn path_safety_error() -> FlowSourceError {
     FlowSourceError::new(400, "Flow name must be a relative path inside flows_dir.")
+}
+
+fn flow_definition_error(error: FlowDefinitionError) -> FlowSourceError {
+    FlowSourceError::new(422, error.to_string())
 }

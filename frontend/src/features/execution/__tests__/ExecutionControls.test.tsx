@@ -8,9 +8,10 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
-const TEST_LINEAR_FLOW = 'test-linear.dot'
-const TEST_REVIEW_FLOW = 'test-review-loop.dot'
-const TEST_SPEC_FLOW = 'test-spec-implementation.dot'
+const TEST_LINEAR_FLOW = 'test-linear.yaml'
+const TEST_REVIEW_FLOW = 'test-review-loop.yaml'
+const TEST_SPEC_FLOW = 'test-spec-implementation.yaml'
+const TEST_FLOW_SOURCE = 'schema_version: "1"\nid: test_flow\n'
 
 const jsonResponse = (payload: unknown, init?: ResponseInit) =>
   new Response(JSON.stringify(payload), {
@@ -44,12 +45,16 @@ const setViewportWidth = (width: number) => {
 
 const buildPreviewPayload = (options?: {
   graphAttrs?: Record<string, unknown>
+  inputs?: Array<Record<string, unknown>>
   nodes?: Array<{ id: string; label: string; shape: string; prompt?: string }>
   edges?: Array<Record<string, unknown>>
 }) => ({
   status: 'ok',
+  flow: {
+    inputs: options?.inputs ?? [],
+  },
   graph: {
-    graph_attrs: options?.graphAttrs ?? {},
+    metadata: options?.graphAttrs ?? {},
     nodes: options?.nodes ?? [
       { id: 'start', label: 'Start', shape: 'Mdiamond' },
       { id: 'task', label: 'Task', shape: 'box', prompt: 'Review request.' },
@@ -68,6 +73,7 @@ const installExecutionFetchMock = (options?: {
   flowName?: string
   flowContent?: string
   graphAttrs?: Record<string, unknown>
+  inputs?: Array<Record<string, unknown>>
   flowList?: string[]
   flowPayloads?: Record<string, string>
   previewPayloadsByContent?: Record<string, ReturnType<typeof buildPreviewPayload>>
@@ -81,7 +87,7 @@ const installExecutionFetchMock = (options?: {
   startStatus?: 'started' | 'queued'
 }) => {
   const flowName = options?.flowName ?? TEST_LINEAR_FLOW
-  const flowContent = options?.flowContent ?? 'digraph simple_linear { start -> done }'
+  const flowContent = options?.flowContent ?? 'schema_version: "1"\nid: simple_linear\n'
   const graphAttrs = options?.graphAttrs ?? {}
   const pipelineId = options?.pipelineId ?? 'run-123'
   const continueSourceRunId = options?.continueSourceRunId ?? 'run-source'
@@ -93,7 +99,7 @@ const installExecutionFetchMock = (options?: {
   }
   const flowList = options?.flowList ?? Object.keys(flowPayloads)
   const previewPayloadsByContent = {
-    [flowContent]: buildPreviewPayload({ graphAttrs }),
+    [flowContent]: buildPreviewPayload({ graphAttrs, inputs: options?.inputs }),
     ...(options?.previewPayloadsByContent ?? {}),
   }
   const continuationGraphNodes = options?.continuationGraphNodes ?? [
@@ -170,8 +176,11 @@ const installExecutionFetchMock = (options?: {
     if (url.includes(`/attractor/pipelines/${continueSourceRunId}/graph-preview`) && (!init?.method || init.method === 'GET')) {
       return jsonResponse({
         status: 'ok',
+        flow: {
+          inputs: options?.inputs ?? [],
+        },
         graph: {
-          graph_attrs: {},
+          metadata: graphAttrs,
           nodes: continuationGraphNodes,
           edges: continuationGraphEdges,
         },
@@ -249,11 +258,11 @@ describe('Execution controls behavior', () => {
         llmProvider: 'openai',
         reasoningEffort: 'high',
       },
-      'digraph G { start -> done }',
+      TEST_FLOW_SOURCE,
     )
 
     expect(payload).toEqual({
-      flow_content: 'digraph G { start -> done }',
+      flow_content: TEST_FLOW_SOURCE,
       working_directory: '/tmp/project',
       model: 'gpt-5',
       llm_provider: 'openai',
@@ -271,7 +280,7 @@ describe('Execution controls behavior', () => {
         model: null,
         projectDefaultExecutionProfileId: 'local-build',
       },
-      'digraph G { start -> done }',
+      TEST_FLOW_SOURCE,
     )
     expect(defaultPayload.project_default_execution_profile_id).toBe('local-build')
     expect(defaultPayload).not.toHaveProperty('execution_profile_id')
@@ -285,7 +294,7 @@ describe('Execution controls behavior', () => {
         executionProfileId: 'local-dev',
         projectDefaultExecutionProfileId: 'local-build',
       },
-      'digraph G { start -> done }',
+      TEST_FLOW_SOURCE,
     )
     expect(overridePayload.execution_profile_id).toBe('local-dev')
     expect(overridePayload).not.toHaveProperty('project_default_execution_profile_id')
@@ -327,7 +336,7 @@ describe('Execution controls behavior', () => {
         llmProvider: '',
         reasoningEffort: '',
       },
-      'digraph G { start -> done }',
+      TEST_FLOW_SOURCE,
     )
 
     expect(payload).not.toHaveProperty('llm_provider')
@@ -344,7 +353,7 @@ describe('Execution controls behavior', () => {
         llmProvider: 'lan-lmstudio',
         llmProfile: 'lan-lmstudio',
       },
-      'digraph G { start -> done }',
+      TEST_FLOW_SOURCE,
     )
 
     expect(payload.llm_profile).toBe('lan-lmstudio')
@@ -363,11 +372,11 @@ describe('Execution controls behavior', () => {
           'context.request.acceptance_criteria': ['GET /healthz returns 200'],
         },
       },
-      'digraph G { start -> done }',
+      TEST_FLOW_SOURCE,
     )
 
     expect(payload).toEqual({
-      flow_content: 'digraph G { start -> done }',
+      flow_content: TEST_FLOW_SOURCE,
       working_directory: '/tmp/project',
       model: 'gpt-5',
       launch_context: {
@@ -472,32 +481,30 @@ describe('Execution controls behavior', () => {
     const user = userEvent.setup()
     const fetchMock = installExecutionFetchMock({
       flowName: TEST_REVIEW_FLOW,
-      flowContent: 'digraph implement_review_loop { start -> done }',
-      graphAttrs: {
-        'spark.launch_inputs': JSON.stringify([
-          {
-            key: 'context.request.summary',
-            label: 'Request Summary',
-            type: 'string',
-            description: 'Brief description of the requested change.',
-            required: true,
-          },
-          {
-            key: 'context.request.target_paths',
-            label: 'Target Paths',
-            type: 'string[]',
-            description: 'Optional files or directories to focus on.',
-            required: false,
-          },
-          {
-            key: 'context.request.acceptance_criteria',
-            label: 'Acceptance Criteria',
-            type: 'string[]',
-            description: 'One acceptance criterion per line.',
-            required: false,
-          },
-        ]),
-      },
+      flowContent: 'schema_version: "1"\nid: implement_review_loop\n',
+      inputs: [
+        {
+          key: 'context.request.summary',
+          label: 'Request Summary',
+          type: 'string',
+          description: 'Brief description of the requested change.',
+          required: true,
+        },
+        {
+          key: 'context.request.target_paths',
+          label: 'Target Paths',
+          type: 'string[]',
+          description: 'Optional files or directories to focus on.',
+          required: false,
+        },
+        {
+          key: 'context.request.acceptance_criteria',
+          label: 'Acceptance Criteria',
+          type: 'string[]',
+          description: 'One acceptance criterion per line.',
+          required: false,
+        },
+      ],
       pipelineId: 'run-555',
     })
 
@@ -579,8 +586,8 @@ describe('Execution controls behavior', () => {
     const fetchMock = installExecutionFetchMock({
       flowName: TEST_LINEAR_FLOW,
       graphAttrs: {
-        ui_default_llm_provider: 'openai',
-        ui_default_reasoning_effort: 'high',
+        llm_provider: 'openai',
+        reasoning_effort: 'high',
       },
     })
 
@@ -597,7 +604,7 @@ describe('Execution controls behavior', () => {
 
     await screen.findByTestId('execute-button')
     await waitFor(() => {
-      expect(useStore.getState().executionGraphAttrs.ui_default_llm_provider).toBe('openai')
+      expect(useStore.getState().executionGraphAttrs.llm_provider).toBe('openai')
     })
     await user.click(screen.getByTestId('execute-button'))
 
@@ -867,14 +874,14 @@ describe('Execution controls behavior', () => {
 
   it('switches continuation into installed-flow override mode from the execution sidebar', async () => {
     const user = userEvent.setup()
-    const primaryFlowContent = 'digraph snapshot_linear { start -> done }'
-    const overrideFlowContent = 'digraph override_linear { start -> override_only -> done }'
+    const primaryFlowContent = 'schema_version: "1"\nid: snapshot_linear\n'
+    const overrideFlowContent = 'schema_version: "1"\nid: override_linear\n'
     const fetchMock = installExecutionFetchMock({
       flowName: TEST_LINEAR_FLOW,
       flowContent: primaryFlowContent,
-      flowList: [TEST_LINEAR_FLOW, 'override.dot'],
+      flowList: [TEST_LINEAR_FLOW, 'override.yaml'],
       flowPayloads: {
-        'override.dot': overrideFlowContent,
+        'override.yaml': overrideFlowContent,
       },
       previewPayloadsByContent: {
         [primaryFlowContent]: buildPreviewPayload(),
@@ -930,14 +937,14 @@ describe('Execution controls behavior', () => {
       expect(screen.getByTestId('execution-continuation-selected-node-copy')).toHaveTextContent('checkpoint')
     })
 
-    await user.click(screen.getByRole('button', { name: 'override.dot' }))
+    await user.click(screen.getByRole('button', { name: 'override.yaml' }))
 
     await waitFor(() => {
       expect(useStore.getState().executionContinuation?.flowSourceMode).toBe('flow_name')
     })
     await waitFor(() => {
       expect(screen.getByTestId('execution-continuation-flow-source-copy')).toHaveTextContent(
-        'installed flow override override.dot',
+        'installed flow override override.yaml',
       )
     })
     await waitFor(() => {
@@ -975,7 +982,7 @@ describe('Execution controls behavior', () => {
     expect(JSON.parse(String(continueCall?.[1]?.body))).toEqual({
       start_node: 'override_only',
       flow_source_mode: 'flow_name',
-      flow_name: 'override.dot',
+      flow_name: 'override.yaml',
       working_directory: '/tmp/project',
       model: 'gpt-5.4-mini',
     })
@@ -986,8 +993,8 @@ describe('Execution controls behavior', () => {
     const fetchMock = installExecutionFetchMock({
       flowName: TEST_LINEAR_FLOW,
       graphAttrs: {
-        ui_default_llm_provider: 'anthropic',
-        ui_default_reasoning_effort: 'medium',
+        llm_provider: 'anthropic',
+        reasoning_effort: 'medium',
       },
       continueSourceRunId: 'run-source-provider',
       continuePipelineId: 'run-derived-provider',
@@ -1014,7 +1021,7 @@ describe('Execution controls behavior', () => {
 
     await screen.findByTestId('execute-button')
     await waitFor(() => {
-      expect(useStore.getState().executionGraphAttrs.ui_default_llm_provider).toBe('anthropic')
+      expect(useStore.getState().executionGraphAttrs.llm_provider).toBe('anthropic')
     })
     await user.click(screen.getByTestId('execute-button'))
 

@@ -20,7 +20,7 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/review.dot", simple_flow());
+    write_flow(&settings, "ops/review.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -33,7 +33,7 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
         Some(json!({
-            "flow_name": "ops/review.dot",
+            "flow_name": "ops/review.yaml",
             "summary": "Run implementation.",
             "goal": "Run the tiny flow.",
             "launch_context": {"context.review": "approved"}
@@ -60,7 +60,7 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
         Some(json!({
-            "flow_name": "ops/review.dot",
+            "flow_name": "ops/review.yaml",
             "summary": "Run implementation.",
             "goal": "Run the tiny flow.",
             "launch_context": {"context.review": "approved"}
@@ -96,7 +96,7 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
         app.clone(),
         "POST",
         "/workspace/api/conversations/by-handle/missing-handle/flow-run-requests",
-        Some(json!({"flow_name": "ops/review.dot", "summary": "Run"})),
+        Some(json!({"flow_name": "ops/review.yaml", "summary": "Run"})),
     )
     .await;
     assert_eq!(unknown.0, StatusCode::NOT_FOUND);
@@ -109,7 +109,7 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
         app.clone(),
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
-        Some(json!({"flow_name": "missing.dot", "summary": "Run"})),
+        Some(json!({"flow_name": "missing.yaml", "summary": "Run"})),
     )
     .await;
     assert_eq!(missing_flow.0, StatusCode::NOT_FOUND);
@@ -136,7 +136,7 @@ async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_cli
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/review-rust-boundary.dot", codergen_flow());
+    write_flow(&settings, "ops/review-rust-boundary.yaml", codergen_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -161,7 +161,7 @@ async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_cli
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
         Some(json!({
-            "flow_name": "ops/review-rust-boundary.dot",
+            "flow_name": "ops/review-rust-boundary.yaml",
             "summary": "Run with Rust adapter.",
             "model": "gpt-review-boundary",
             "llm_provider": "OpenAI",
@@ -416,24 +416,11 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
 }
 
 fn simple_flow() -> &'static str {
-    r#"
-    digraph Review {
-      start [shape=Mdiamond]
-      done [shape=Msquare]
-      start -> done
-    }
-    "#
+    "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n"
 }
 
 fn codergen_flow() -> &'static str {
-    r#"
-    digraph ReviewRustBoundary {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write review route note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
-    "#
+    "schema_version: '1'\nid: review-rust-boundary\ntitle: Review Rust Boundary\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Write review route note\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
 }
 
 fn settings(root: &Path) -> SparkSettings {

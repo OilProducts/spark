@@ -1,17 +1,10 @@
-import { useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
-import type {
-    CanonicalAttrMap,
-    CanonicalAttrValue,
-    CanonicalDefaultsScope,
-    CanonicalSubgraph,
-} from '@/lib/canonicalFlowModel'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
 import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
-import type { ModelStylesheetPreview, ModelValueSource } from '@/lib/modelStylesheetPreview'
-import type { DiagnosticEntry, GraphAttrErrors, GraphAttrs, UiDefaults } from '@/store'
+import type { FlowDefinitionMetadata, FlowMetadataErrors, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -28,58 +21,36 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AdvancedKeyValueEditor } from '../AdvancedKeyValueEditor'
 import { LaunchInputsEditor } from '../LaunchInputsEditor'
-import { StylesheetEditor } from '../StylesheetEditor'
 import type { FlowExecutionLockResponse, FlowLaunchPolicy } from '../../services/graphLaunchPolicy'
 
-export const GRAPH_ATTR_HELP: Record<string, string> = {
-    'spark.title': 'Human-friendly flow title stored in the DOT metadata.',
-    'spark.description': 'Short flow description stored in the DOT metadata.',
-    'spark.launch_inputs': 'Structured launch-time context fields Spark should collect before starting a run.',
-    'spark.result_node': 'Optional node whose response becomes the run result.',
-    'spark.result_summary_enabled': 'When true, summarize the selected run result before display.',
-    'spark.result_summary_prompt': 'Optional prompt used when result summarization is enabled.',
+export const FLOW_METADATA_HELP: Record<string, string> = {
+    title: 'Human-friendly flow title stored in the FlowDefinition.',
+    description: 'Short flow description stored in the FlowDefinition.',
+    inputs: 'Structured launch-time context fields Spark should collect before starting a run.',
+    result_node: 'Optional node whose response becomes the run result.',
+    result_summary_enabled: 'When true, summarize the selected run result before display.',
+    result_summary_prompt: 'Optional prompt used when result summarization is enabled.',
     goal: 'Primary stated goal for the flow. Handlers can read it as shared run context.',
-    label: 'Display label for graph metadata; does not override node labels.',
-    default_max_retries: 'Used only when a node omits max_retries. Node max_retries takes precedence.',
-    default_fidelity: 'Default fidelity when node/edge fidelity is not set explicitly.',
-    model_stylesheet: 'Selector-based model defaults. Explicit node attrs override stylesheet matches.',
-    retry_target: 'Global retry target fallback when nodes do not define retry_target.',
-    fallback_retry_target: 'Second fallback when retry_target is unset at node and graph scope.',
-    'stack.child_dotfile': 'Child flow DOT path used by manager-loop/stack handlers when relevant.',
-    'stack.child_workdir': 'Working directory for child flow execution when stack handlers invoke child runs.',
-    'tool.hooks.pre': 'Command run before tool execution unless runtime/node-level override replaces it.',
-    'tool.hooks.post': 'Command run after tool execution unless runtime/node-level override replaces it.',
+    max_retries: 'Used only when a node omits retry.max_retries. Node retry settings take precedence.',
+    fidelity: 'Default runtime fidelity when node runtime settings do not set it explicitly.',
 }
 
-export const MODEL_VALUE_SOURCE_LABEL: Record<ModelValueSource, string> = {
-    node: 'node',
-    stylesheet: 'stylesheet',
-    graph_default: 'graph default',
-    system_default: 'system default',
-}
-
-export const CORE_GRAPH_ATTR_KEYS = new Set<string>([
-    'spark.title',
-    'spark.description',
-    'spark.launch_inputs',
-    'spark.result_node',
-    'spark.result_summary_enabled',
-    'spark.result_summary_prompt',
+export const CORE_FLOW_METADATA_KEYS = new Set<string>([
+    'schema_version',
+    'id',
+    'title',
+    'description',
+    'inputs',
+    'result_node',
+    'result_summary_enabled',
+    'result_summary_prompt',
     'goal',
-    'label',
-    'model_stylesheet',
-    'default_max_retries',
-    'retry_target',
-    'fallback_retry_target',
-    'default_fidelity',
-    'stack.child_dotfile',
-    'stack.child_workdir',
-    'tool.hooks.pre',
-    'tool.hooks.post',
-    'ui_default_llm_model',
-    'ui_default_llm_provider',
-    'ui_default_llm_profile',
-    'ui_default_reasoning_effort',
+    'max_retries',
+    'fidelity',
+    'llm_model',
+    'llm_provider',
+    'llm_profile',
+    'reasoning_effort',
 ])
 
 export const FLOW_LAUNCH_POLICY_LABELS: Record<FlowLaunchPolicy, string> = {
@@ -163,103 +134,6 @@ function GraphSettingsNotice({
     )
 }
 
-function canonicalAttrEntries(attrs: CanonicalAttrMap, excludedKeys?: Set<string>): ExtensionAttrEntry[] {
-    return Object.entries(attrs)
-        .filter(([key]) => !excludedKeys?.has(key))
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, value]) => ({
-            key,
-            value: value === null ? '' : String(value),
-        }))
-}
-
-function parseCanonicalEditorValue(value: string): CanonicalAttrValue {
-    const trimmed = value.trim()
-    if (trimmed === 'true') {
-        return true
-    }
-    if (trimmed === 'false') {
-        return false
-    }
-    if (/^-?(?:\d+|\d*\.\d+)$/.test(trimmed)) {
-        const parsed = Number(trimmed)
-        if (Number.isFinite(parsed)) {
-            return parsed
-        }
-    }
-    return value
-}
-
-function updateCanonicalAttr(
-    attrs: CanonicalAttrMap,
-    key: string,
-    value: string,
-    options?: { deleteWhenBlank?: boolean },
-): CanonicalAttrMap {
-    const trimmedKey = key.trim()
-    if (!trimmedKey) {
-        return attrs
-    }
-    const nextAttrs = { ...attrs }
-    if (options?.deleteWhenBlank && value.trim() === '') {
-        delete nextAttrs[trimmedKey]
-        return nextAttrs
-    }
-    nextAttrs[trimmedKey] = parseCanonicalEditorValue(value)
-    return nextAttrs
-}
-
-function removeCanonicalAttr(attrs: CanonicalAttrMap, key: string): CanonicalAttrMap {
-    const nextAttrs = { ...attrs }
-    delete nextAttrs[key]
-    return nextAttrs
-}
-
-function emptyDefaultsScope(): CanonicalDefaultsScope {
-    return { node: {}, edge: {} }
-}
-
-function updateDefaultsAttr(
-    defaults: CanonicalDefaultsScope,
-    scope: keyof CanonicalDefaultsScope,
-    key: string,
-    value: string,
-): CanonicalDefaultsScope {
-    return {
-        ...defaults,
-        [scope]: updateCanonicalAttr(defaults[scope], key, value),
-    }
-}
-
-function removeDefaultsAttr(
-    defaults: CanonicalDefaultsScope,
-    scope: keyof CanonicalDefaultsScope,
-    key: string,
-): CanonicalDefaultsScope {
-    return {
-        ...defaults,
-        [scope]: removeCanonicalAttr(defaults[scope], key),
-    }
-}
-
-function parseNodeIdList(value: string): string[] {
-    return value
-        .split(/[\n,]/)
-        .map((nodeId) => nodeId.trim())
-        .filter((nodeId, index, nodeIds) => nodeId.length > 0 && nodeIds.indexOf(nodeId) === index)
-}
-
-function buildUniqueSubgraphId(subgraphs: CanonicalSubgraph[]): string {
-    const existingIds = new Set(subgraphs.map((subgraph) => subgraph.id).filter(Boolean))
-    let index = subgraphs.length + 1
-    let candidate = `cluster_scope_${index}`
-    while (existingIds.has(candidate)) {
-        index += 1
-        candidate = `cluster_scope_${index}`
-    }
-    return candidate
-}
-
 interface GraphRunConfigurationSectionProps {
     model: string
     workingDir: string
@@ -304,30 +178,30 @@ export function GraphRunConfigurationSection({
 }
 
 interface GraphMetadataSectionProps {
-    graphAttrs: GraphAttrs
-    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
+    flowMetadata: FlowDefinitionMetadata
+    updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
 }
 
 export function GraphMetadataSection({
-    graphAttrs,
-    updateGraphAttr,
+    flowMetadata,
+    updateFlowMetadata,
 }: GraphMetadataSectionProps) {
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Graph Metadata"
-                description="Human-facing title and description stored in DOT metadata for the flow."
+                title="Flow Metadata"
+                description="Human-facing title and description stored in the FlowDefinition."
             />
             <div className="space-y-3">
                 <GraphSettingsField
                     label="Title"
                     htmlFor="graph-attr-spark-title"
-                    helper={GRAPH_ATTR_HELP['spark.title']}
+                    helper={FLOW_METADATA_HELP.title}
                 >
                     <Input
                         id="graph-attr-spark-title"
-                        value={graphAttrs['spark.title'] || ''}
-                        onChange={(event) => updateGraphAttr('spark.title', event.target.value)}
+                        value={flowMetadata.title || ''}
+                        onChange={(event) => updateFlowMetadata('title', event.target.value)}
                         className="h-8 text-xs"
                         placeholder="Implement From Plan File"
                     />
@@ -335,12 +209,12 @@ export function GraphMetadataSection({
                 <GraphSettingsField
                     label="Description"
                     htmlFor="graph-attr-spark-description"
-                    helper={GRAPH_ATTR_HELP['spark.description']}
+                    helper={FLOW_METADATA_HELP.description}
                 >
                     <Textarea
                         id="graph-attr-spark-description"
-                        value={graphAttrs['spark.description'] || ''}
-                        onChange={(event) => updateGraphAttr('spark.description', event.target.value)}
+                        value={flowMetadata.description || ''}
+                        onChange={(event) => updateFlowMetadata('description', event.target.value)}
                         rows={3}
                         className="min-h-20 px-2 py-1 text-xs"
                         placeholder="Snapshot a plan file, implement it, and iterate until complete."
@@ -378,20 +252,20 @@ export function GraphLaunchInputsSection({
 }
 
 interface GraphResultSectionProps {
-    graphAttrs: GraphAttrs
-    nodes: Array<{ id: string; data?: { label?: unknown; shape?: unknown } }>
-    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
+    flowMetadata: FlowDefinitionMetadata
+    nodes: Array<{ id: string; data?: { label?: unknown; kind?: unknown } }>
+    updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
 }
 
 export function GraphResultSection({
-    graphAttrs,
+    flowMetadata,
     nodes,
-    updateGraphAttr,
+    updateFlowMetadata,
 }: GraphResultSectionProps) {
-    const summaryEnabled = String(graphAttrs['spark.result_summary_enabled'] || '').toLowerCase() === 'true'
+    const summaryEnabled = String(flowMetadata.result_summary_enabled || '').toLowerCase() === 'true'
     const selectableNodes = nodes.filter((node) => {
-        const shape = typeof node.data?.shape === 'string' ? node.data.shape : ''
-        return shape !== 'Mdiamond' && shape !== 'Msquare'
+        const kind = typeof node.data?.kind === 'string' ? node.data.kind : ''
+        return kind !== 'start' && kind !== 'exit'
     })
     return (
         <section className="space-y-3">
@@ -403,12 +277,12 @@ export function GraphResultSection({
                 <GraphSettingsField
                     label="Result Node"
                     htmlFor="graph-attr-spark-result-node"
-                    helper={GRAPH_ATTR_HELP['spark.result_node']}
+                    helper={FLOW_METADATA_HELP.result_node}
                 >
                     <NativeSelect
                         id="graph-attr-spark-result-node"
-                        value={graphAttrs['spark.result_node'] || ''}
-                        onChange={(event) => updateGraphAttr('spark.result_node', event.target.value)}
+                        value={flowMetadata.result_node || ''}
+                        onChange={(event) => updateFlowMetadata('result_node', event.target.value)}
                         className="h-8 text-xs"
                     >
                         <option value="">Infer from final node</option>
@@ -429,7 +303,7 @@ export function GraphResultSection({
                         id="graph-attr-spark-result-summary-enabled"
                         checked={summaryEnabled}
                         onCheckedChange={(checked) => {
-                            updateGraphAttr('spark.result_summary_enabled', checked ? 'true' : '')
+                            updateFlowMetadata('result_summary_enabled', checked ? 'true' : '')
                         }}
                     />
                     <Label htmlFor="graph-attr-spark-result-summary-enabled" className="text-xs">
@@ -440,12 +314,12 @@ export function GraphResultSection({
                     <GraphSettingsField
                         label="Summary Prompt"
                         htmlFor="graph-attr-spark-result-summary-prompt"
-                        helper={GRAPH_ATTR_HELP['spark.result_summary_prompt']}
+                        helper={FLOW_METADATA_HELP.result_summary_prompt}
                     >
                         <Textarea
                             id="graph-attr-spark-result-summary-prompt"
-                            value={graphAttrs['spark.result_summary_prompt'] || ''}
-                            onChange={(event) => updateGraphAttr('spark.result_summary_prompt', event.target.value)}
+                            value={flowMetadata.result_summary_prompt || ''}
+                            onChange={(event) => updateFlowMetadata('result_summary_prompt', event.target.value)}
                             rows={4}
                             className="min-h-24 px-2 py-1 text-xs"
                             placeholder="Use Spark's default prompt"
@@ -458,65 +332,53 @@ export function GraphResultSection({
 }
 
 interface GraphExecutionDefaultsSectionProps {
-    graphAttrs: GraphAttrs
-    graphAttrErrors: GraphAttrErrors
+    flowMetadata: FlowDefinitionMetadata
+    flowMetadataErrors: FlowMetadataErrors
     renderFieldDiagnostics: (field: string, testId: string) => ReactNode
-    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
+    updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
 }
 
 export function GraphExecutionDefaultsSection({
-    graphAttrs,
-    graphAttrErrors,
+    flowMetadata,
+    flowMetadataErrors,
     renderFieldDiagnostics,
-    updateGraphAttr,
+    updateFlowMetadata,
 }: GraphExecutionDefaultsSectionProps) {
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
                 title="Execution Defaults"
-                description="Graph-level defaults that shape retry behavior and baseline run context."
+                description="FlowDefinition defaults that shape retry behavior and baseline run context."
             />
             <GraphSettingsNotice
-                data-testid="graph-attrs-help"
+                data-testid="flow-metadata-help"
                 className="text-[11px]"
             >
-                <p>Graph attributes are baseline defaults. Explicit node and edge attrs win when both are set.</p>
-                <p>Leave blank to omit this attr from DOT output.</p>
+                <p>FlowDefinition defaults are used when node runtime settings omit a value.</p>
+                <p>Leave blank to omit the field from YAML output.</p>
             </GraphSettingsNotice>
             <div className="space-y-3">
                 <div className="space-y-1">
                     <GraphSettingsField
                         label="Goal"
                         htmlFor="graph-attr-goal"
-                        helper={GRAPH_ATTR_HELP.goal}
+                        helper={FLOW_METADATA_HELP.goal}
                     >
                         <Input
                             id="graph-attr-goal"
-                            value={graphAttrs.goal || ''}
-                            onChange={(event) => updateGraphAttr('goal', event.target.value)}
+                            value={flowMetadata.goal || ''}
+                            onChange={(event) => updateFlowMetadata('goal', event.target.value)}
                             className="h-8 text-xs"
                         />
                     </GraphSettingsField>
                 </div>
-                <GraphSettingsField
-                    label="Label"
-                    htmlFor="graph-attr-label"
-                    helper={GRAPH_ATTR_HELP.label}
-                >
-                    <Input
-                        id="graph-attr-label"
-                        value={graphAttrs.label || ''}
-                        onChange={(event) => updateGraphAttr('label', event.target.value)}
-                        className="h-8 text-xs"
-                    />
-                </GraphSettingsField>
                 <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                         <GraphSettingsField
                             label="Default Max Retries"
                             htmlFor="graph-attr-default-max-retries"
-                            helper={GRAPH_ATTR_HELP.default_max_retries}
-                            error={graphAttrErrors.default_max_retries}
+                            helper={FLOW_METADATA_HELP.max_retries}
+                            error={flowMetadataErrors.max_retries}
                         >
                             <Input
                                 id="graph-attr-default-max-retries"
@@ -524,24 +386,24 @@ export function GraphExecutionDefaultsSection({
                                 min={0}
                                 step={1}
                                 inputMode="numeric"
-                                value={graphAttrs.default_max_retries ?? ''}
-                                onChange={(event) => updateGraphAttr('default_max_retries', event.target.value)}
+                                value={flowMetadata.max_retries ?? ''}
+                                onChange={(event) => updateFlowMetadata('max_retries', event.target.value)}
                                 className="h-8 text-xs"
                             />
                         </GraphSettingsField>
-                        {renderFieldDiagnostics('default_max_retries', 'graph-field-diagnostics-default_max_retries')}
+                        {renderFieldDiagnostics('max_retries', 'graph-field-diagnostics-max_retries')}
                     </div>
                     <div className="space-y-1">
                         <GraphSettingsField
                             label="Default Fidelity"
                             htmlFor="graph-attr-default-fidelity"
-                            helper={GRAPH_ATTR_HELP.default_fidelity}
-                            error={graphAttrErrors.default_fidelity}
+                            helper={FLOW_METADATA_HELP.fidelity}
+                            error={flowMetadataErrors.fidelity}
                         >
                             <Input
                                 id="graph-attr-default-fidelity"
-                                value={graphAttrs.default_fidelity || ''}
-                                onChange={(event) => updateGraphAttr('default_fidelity', event.target.value)}
+                                value={flowMetadata.fidelity || ''}
+                                onChange={(event) => updateFlowMetadata('fidelity', event.target.value)}
                                 list="graph-fidelity-options"
                                 className="h-8 text-xs"
                                 placeholder="full"
@@ -552,264 +414,10 @@ export function GraphExecutionDefaultsSection({
                                 ))}
                             </datalist>
                         </GraphSettingsField>
-                        {renderFieldDiagnostics('default_fidelity', 'graph-field-diagnostics-default_fidelity')}
+                        {renderFieldDiagnostics('fidelity', 'graph-field-diagnostics-fidelity')}
                     </div>
                 </div>
             </div>
-        </section>
-    )
-}
-
-interface GraphScopedDefaultsSectionProps {
-    defaults: CanonicalDefaultsScope
-    onDefaultsChange: (defaults: CanonicalDefaultsScope) => void
-}
-
-export function GraphScopedDefaultsSection({
-    defaults,
-    onDefaultsChange,
-}: GraphScopedDefaultsSectionProps) {
-    return (
-        <section className="space-y-3" data-testid="graph-scoped-defaults-section">
-            <GraphSettingsSectionIntro
-                title="Scoped Defaults"
-                description="Graph-level node and edge defaults emitted as DOT default statements."
-            />
-            <div className="space-y-3">
-                <AdvancedKeyValueEditor
-                    testIdPrefix="graph-node-defaults"
-                    title="Node Defaults"
-                    description="Attributes emitted as a graph-level node default statement."
-                    entries={canonicalAttrEntries(defaults.node)}
-                    onValueChange={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'node', key, value))}
-                    onRemove={(key) => onDefaultsChange(removeDefaultsAttr(defaults, 'node', key))}
-                    onAdd={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'node', key, value))}
-                />
-                <AdvancedKeyValueEditor
-                    testIdPrefix="graph-edge-defaults"
-                    title="Edge Defaults"
-                    description="Attributes emitted as a graph-level edge default statement."
-                    entries={canonicalAttrEntries(defaults.edge)}
-                    onValueChange={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'edge', key, value))}
-                    onRemove={(key) => onDefaultsChange(removeDefaultsAttr(defaults, 'edge', key))}
-                    onAdd={(key, value) => onDefaultsChange(updateDefaultsAttr(defaults, 'edge', key, value))}
-                />
-            </div>
-        </section>
-    )
-}
-
-interface GraphSubgraphsSectionProps {
-    subgraphs: CanonicalSubgraph[]
-    onSubgraphsChange: (subgraphs: CanonicalSubgraph[]) => void
-}
-
-const SUBGRAPH_CORE_ATTR_KEYS = new Set<string>(['label'])
-
-export function GraphSubgraphsSection({
-    subgraphs,
-    onSubgraphsChange,
-}: GraphSubgraphsSectionProps) {
-    const [nodeIdDrafts, setNodeIdDrafts] = useState<Record<string, string>>({})
-
-    const updateSubgraph = (index: number, updater: (subgraph: CanonicalSubgraph) => CanonicalSubgraph) => {
-        onSubgraphsChange(subgraphs.map((subgraph, currentIndex) => (
-            currentIndex === index ? updater(subgraph) : subgraph
-        )))
-    }
-
-    const addSubgraph = () => {
-        onSubgraphsChange([
-            ...subgraphs,
-            {
-                id: buildUniqueSubgraphId(subgraphs),
-                attrs: {},
-                nodeIds: [],
-                defaults: emptyDefaultsScope(),
-                subgraphs: [],
-            },
-        ])
-    }
-
-    return (
-        <section className="space-y-3" data-testid="graph-subgraphs-section">
-            <GraphSettingsSectionIntro
-                title="Subgraphs"
-                description="Top-level subgraph scopes, membership, graph attrs, and scoped defaults."
-                action={(
-                    <Button
-                        type="button"
-                        data-testid="graph-subgraph-add"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
-                        onClick={addSubgraph}
-                    >
-                        Add Subgraph
-                    </Button>
-                )}
-            />
-            {subgraphs.length === 0 ? (
-                <GraphSettingsNotice className="text-[11px]">
-                    No subgraphs set.
-                </GraphSettingsNotice>
-            ) : (
-                <div className="space-y-3">
-                    {subgraphs.map((subgraph, index) => {
-                        const labelValue = typeof subgraph.attrs.label === 'string' ? subgraph.attrs.label : ''
-                        const subgraphId = subgraph.id ?? ''
-                        const nodeIdDraftKey = `${subgraphId || 'anonymous'}-${index}`
-                        const nodeIdValue = nodeIdDrafts[nodeIdDraftKey] ?? subgraph.nodeIds.join(', ')
-                        return (
-                            <div
-                                key={`subgraph-${index}`}
-                                data-testid={`graph-subgraph-${index}`}
-                                className="space-y-3 rounded-md border border-border/80 bg-muted/10 p-3"
-                            >
-                                <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                        <p className="text-xs font-semibold text-foreground">
-                                            {subgraphId || 'Anonymous subgraph'}
-                                        </p>
-                                        <p className="text-[11px] text-muted-foreground">
-                                            {subgraph.nodeIds.length} node ids
-                                        </p>
-                                    </div>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="xs"
-                                        className="h-8 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
-                                        onClick={() => onSubgraphsChange(subgraphs.filter((_, currentIndex) => currentIndex !== index))}
-                                    >
-                                        Remove
-                                    </Button>
-                                </div>
-                                <div className="grid gap-3 sm:grid-cols-2">
-                                    <GraphSettingsField label="Subgraph ID" htmlFor={`graph-subgraph-id-${index}`}>
-                                        <Input
-                                            id={`graph-subgraph-id-${index}`}
-                                            data-testid={`graph-subgraph-id-${index}`}
-                                            value={subgraphId}
-                                            onChange={(event) => updateSubgraph(index, (current) => ({
-                                                ...current,
-                                                id: event.target.value.trim() || null,
-                                            }))}
-                                            className="h-8 font-mono text-xs"
-                                            placeholder="cluster_review"
-                                        />
-                                    </GraphSettingsField>
-                                    <GraphSettingsField label="Label" htmlFor={`graph-subgraph-label-${index}`}>
-                                        <Input
-                                            id={`graph-subgraph-label-${index}`}
-                                            data-testid={`graph-subgraph-label-${index}`}
-                                            value={labelValue}
-                                            onChange={(event) => updateSubgraph(index, (current) => ({
-                                                ...current,
-                                                attrs: updateCanonicalAttr(current.attrs, 'label', event.target.value, {
-                                                    deleteWhenBlank: true,
-                                                }),
-                                            }))}
-                                            className="h-8 text-xs"
-                                            placeholder="Review Loop"
-                                        />
-                                    </GraphSettingsField>
-                                </div>
-                                <GraphSettingsField label="Node IDs" htmlFor={`graph-subgraph-node-ids-${index}`}>
-                                    <Input
-                                        id={`graph-subgraph-node-ids-${index}`}
-                                        data-testid={`graph-subgraph-node-ids-${index}`}
-                                        value={nodeIdValue}
-                                        onChange={(event) => {
-                                            const nextValue = event.target.value
-                                            setNodeIdDrafts((current) => ({
-                                                ...current,
-                                                [nodeIdDraftKey]: nextValue,
-                                            }))
-                                            updateSubgraph(index, (current) => ({
-                                                ...current,
-                                                nodeIds: parseNodeIdList(nextValue),
-                                            }))
-                                        }}
-                                        onBlur={() => {
-                                            setNodeIdDrafts((current) => {
-                                                const next = { ...current }
-                                                delete next[nodeIdDraftKey]
-                                                return next
-                                            })
-                                        }}
-                                        className="h-8 font-mono text-xs"
-                                        placeholder="author, review"
-                                    />
-                                </GraphSettingsField>
-                                <AdvancedKeyValueEditor
-                                    testIdPrefix={`graph-subgraph-${index}-attrs`}
-                                    title="Subgraph Attrs"
-                                    description="Additional graph attrs emitted inside this subgraph."
-                                    entries={canonicalAttrEntries(subgraph.attrs, SUBGRAPH_CORE_ATTR_KEYS)}
-                                    reservedKeys={SUBGRAPH_CORE_ATTR_KEYS}
-                                    onValueChange={(key, value) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        attrs: updateCanonicalAttr(current.attrs, key, value),
-                                    }))}
-                                    onRemove={(key) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        attrs: removeCanonicalAttr(current.attrs, key),
-                                    }))}
-                                    onAdd={(key, value) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        attrs: updateCanonicalAttr(current.attrs, key, value),
-                                    }))}
-                                />
-                                <AdvancedKeyValueEditor
-                                    testIdPrefix={`graph-subgraph-${index}-node-defaults`}
-                                    title="Scoped Node Defaults"
-                                    description="Node defaults emitted inside this subgraph."
-                                    entries={canonicalAttrEntries(subgraph.defaults.node)}
-                                    onValueChange={(key, value) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        defaults: updateDefaultsAttr(current.defaults, 'node', key, value),
-                                    }))}
-                                    onRemove={(key) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        defaults: removeDefaultsAttr(current.defaults, 'node', key),
-                                    }))}
-                                    onAdd={(key, value) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        defaults: updateDefaultsAttr(current.defaults, 'node', key, value),
-                                    }))}
-                                />
-                                <AdvancedKeyValueEditor
-                                    testIdPrefix={`graph-subgraph-${index}-edge-defaults`}
-                                    title="Scoped Edge Defaults"
-                                    description="Edge defaults emitted inside this subgraph."
-                                    entries={canonicalAttrEntries(subgraph.defaults.edge)}
-                                    onValueChange={(key, value) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        defaults: updateDefaultsAttr(current.defaults, 'edge', key, value),
-                                    }))}
-                                    onRemove={(key) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        defaults: removeDefaultsAttr(current.defaults, 'edge', key),
-                                    }))}
-                                    onAdd={(key, value) => updateSubgraph(index, (current) => ({
-                                        ...current,
-                                        defaults: updateDefaultsAttr(current.defaults, 'edge', key, value),
-                                    }))}
-                                />
-                                {subgraph.subgraphs.length > 0 ? (
-                                    <GraphSettingsNotice
-                                        data-testid={`graph-subgraph-${index}-nested-summary`}
-                                        className="text-[11px]"
-                                    >
-                                        Nested subgraphs: {subgraph.subgraphs.map((nested) => nested.id || 'anonymous').join(', ')}
-                                    </GraphSettingsNotice>
-                                ) : null}
-                            </div>
-                        )
-                    })}
-                </div>
-            )}
         </section>
     )
 }
@@ -876,7 +484,7 @@ export function GraphLaunchPolicySection({
                 <GraphSettingsField
                     label="Lock Scope"
                     htmlFor="graph-execution-lock-scope"
-                    helper="Workspace launch admission policy, not DOT flow semantics."
+                    helper="Workspace launch admission policy, not YAML flow semantics."
                 >
                     <NativeSelect
                         id="graph-execution-lock-scope"
@@ -919,49 +527,27 @@ export function GraphLaunchPolicySection({
 }
 
 interface GraphAdvancedAttrsSectionProps {
-    graphAttrs: GraphAttrs
-    showAdvancedGraphAttrs: boolean
-    graphExtensionEntries: ExtensionAttrEntry[]
-    showStylesheetFeedback: boolean
-    stylesheetDiagnostics: DiagnosticEntry[]
-    stylesheetPreview: ModelStylesheetPreview
-    toolHookPreWarning: string | null
-    toolHookPostWarning: string | null
-    renderFieldDiagnostics: (field: string, testId: string) => ReactNode
-    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
-    setShowAdvancedGraphAttrs: (value: boolean | ((current: boolean) => boolean)) => void
-    onGraphExtensionValueChange: (key: string, value: string) => void
-    onGraphExtensionRemove: (key: string) => void
-    onGraphExtensionAdd: (key: string, value: string) => void
+    showAdvancedFlowMetadata: boolean
+    flowMetadataExtensionEntries: ExtensionAttrEntry[]
+    setShowAdvancedFlowMetadata: (value: boolean | ((current: boolean) => boolean)) => void
+    onFlowMetadataExtensionValueChange: (key: string, value: string) => void
+    onFlowMetadataExtensionRemove: (key: string) => void
+    onFlowMetadataExtensionAdd: (key: string, value: string) => void
 }
 
 export function GraphAdvancedAttrsSection({
-    graphAttrs,
-    showAdvancedGraphAttrs,
-    graphExtensionEntries,
-    showStylesheetFeedback,
-    stylesheetDiagnostics,
-    stylesheetPreview,
-    toolHookPreWarning,
-    toolHookPostWarning,
-    renderFieldDiagnostics,
-    updateGraphAttr,
-    setShowAdvancedGraphAttrs,
-    onGraphExtensionValueChange,
-    onGraphExtensionRemove,
-    onGraphExtensionAdd,
+    showAdvancedFlowMetadata,
+    flowMetadataExtensionEntries,
+    setShowAdvancedFlowMetadata,
+    onFlowMetadataExtensionValueChange,
+    onFlowMetadataExtensionRemove,
+    onFlowMetadataExtensionAdd,
 }: GraphAdvancedAttrsSectionProps) {
-    const stylesheetNoticeTone = stylesheetDiagnostics.some((diag) => diag.severity === 'error')
-        ? 'error'
-        : stylesheetDiagnostics.some((diag) => diag.severity === 'warning')
-            ? 'warning'
-            : 'success'
-
     return (
         <section className="space-y-3">
             <GraphSettingsSectionIntro
-                title="Advanced Attrs"
-                description="Low-frequency graph attrs, stylesheet defaults, and extension metadata."
+                title="Extension Metadata"
+                description="Non-core FlowDefinition metadata stored under the flow metadata map."
                 action={(
                     <Button
                         type="button"
@@ -969,223 +555,26 @@ export function GraphAdvancedAttrsSection({
                         variant="outline"
                         size="sm"
                         className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
-                        onClick={() => setShowAdvancedGraphAttrs((current) => !current)}
+                        onClick={() => setShowAdvancedFlowMetadata((current) => !current)}
                     >
-                        {showAdvancedGraphAttrs ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
+                        {showAdvancedFlowMetadata ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
                     </Button>
                 )}
             />
-            {showAdvancedGraphAttrs ? (
+            {showAdvancedFlowMetadata ? (
                 <div className="space-y-3 rounded-md border border-border/80 bg-background/40 p-3">
-                    <div className="space-y-1">
-                        <GraphSettingsField
-                            label="Model Stylesheet"
-                            htmlFor="graph-model-stylesheet"
-                            helper={GRAPH_ATTR_HELP.model_stylesheet}
-                        >
-                            <div data-testid="graph-model-stylesheet-editor">
-                                <StylesheetEditor
-                                    id="graph-model-stylesheet"
-                                    value={graphAttrs.model_stylesheet || ''}
-                                    onChange={(value) => updateGraphAttr('model_stylesheet', value)}
-                                    ariaLabel="Model Stylesheet"
-                                />
-                            </div>
-                        </GraphSettingsField>
-                        <p
-                            data-testid="graph-model-stylesheet-selector-guidance"
-                            className="text-[11px] text-muted-foreground"
-                        >
-                            Supported selectors: `*`, `shape`, `.class`, `#id`. End each declaration with `;`.
-                        </p>
-                        {showStylesheetFeedback ? (
-                            <GraphSettingsNotice
-                                data-testid="graph-model-stylesheet-diagnostics"
-                                tone={stylesheetNoticeTone}
-                                className="text-[11px]"
-                            >
-                                {stylesheetDiagnostics.length > 0 ? (
-                                    <div className="space-y-1">
-                                        {stylesheetDiagnostics.map((diag, index) => (
-                                            <p key={`${diag.rule_id}-${diag.line ?? 'line'}-${index}`}>
-                                                {diag.message}
-                                                {diag.line ? ` (line ${diag.line})` : ''}
-                                            </p>
-                                        ))}
-                                    </div>
-                                ) : (
-                                    <p>Stylesheet parse and selector lint checks passed in preview.</p>
-                                )}
-                            </GraphSettingsNotice>
-                        ) : null}
-                        <div
-                            data-testid="graph-model-stylesheet-selector-preview"
-                            className="rounded-md border border-border/70 bg-background px-2 py-2"
-                        >
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                Matching selectors
-                            </p>
-                            {stylesheetPreview.selectorPreview.length > 0 ? (
-                                <div className="mt-2 space-y-1">
-                                    {stylesheetPreview.selectorPreview.map((entry, index) => (
-                                        <p key={`${entry.selector}-${index}`} className="text-[11px] text-foreground">
-                                            <span className="font-mono">{entry.selector}</span>
-                                            {' -> '}
-                                            {entry.matchedNodeIds.length > 0 ? entry.matchedNodeIds.join(', ') : 'No nodes matched'}
-                                        </p>
-                                    ))}
-                                </div>
-                            ) : (
-                                <p className="mt-2 text-[11px] text-muted-foreground">No valid selectors parsed yet.</p>
-                            )}
-                        </div>
-                        <div
-                            data-testid="graph-model-stylesheet-effective-preview"
-                            className="rounded-md border border-border/70 bg-background px-2 py-2"
-                        >
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                Effective per-node values
-                            </p>
-                            <p
-                                data-testid="graph-model-stylesheet-precedence-guidance"
-                                className="mt-1 text-[11px] text-muted-foreground"
-                            >
-                                Precedence: node attr &gt; stylesheet &gt; graph default &gt; system default.
-                            </p>
-                            {stylesheetPreview.nodePreview.length > 0 ? (
-                                <div className="mt-2 space-y-2">
-                                    {stylesheetPreview.nodePreview.map((node) => (
-                                        <div key={node.nodeId} className="rounded border border-border/60 bg-muted/10 px-2 py-1">
-                                            <p className="text-[11px] text-foreground">
-                                                <span className="font-mono">{node.nodeId}</span>
-                                                {node.matchedSelectors.length > 0
-                                                    ? ` • selectors: ${node.matchedSelectors.join(', ')}`
-                                                    : ' • selectors: none'}
-                                            </p>
-                                            <p className="text-[11px] text-muted-foreground">
-                                                llm_model: {node.effective.llm_model.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.llm_model.source]})
-                                            </p>
-                                            <p className="text-[11px] text-muted-foreground">
-                                                llm_provider: {node.effective.llm_provider.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.llm_provider.source]})
-                                            </p>
-                                            <p className="text-[11px] text-muted-foreground">
-                                                llm_profile: {node.effective.llm_profile.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.llm_profile.source]})
-                                            </p>
-                                            <p className="text-[11px] text-muted-foreground">
-                                                reasoning_effort: {node.effective.reasoning_effort.value || '(empty)'} ({MODEL_VALUE_SOURCE_LABEL[node.effective.reasoning_effort.source]})
-                                            </p>
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <p className="mt-2 text-[11px] text-muted-foreground">No nodes available yet.</p>
-                            )}
-                        </div>
-                    </div>
-                    <div className="space-y-1">
-                        <GraphSettingsField
-                            label="Retry Target"
-                            htmlFor="graph-attr-retry-target"
-                            helper={GRAPH_ATTR_HELP.retry_target}
-                        >
-                            <Input
-                                id="graph-attr-retry-target"
-                                value={graphAttrs.retry_target || ''}
-                                onChange={(event) => updateGraphAttr('retry_target', event.target.value)}
-                                className="h-8 text-xs"
-                            />
-                        </GraphSettingsField>
-                        {renderFieldDiagnostics('retry_target', 'graph-field-diagnostics-retry_target')}
-                    </div>
-                    <div className="space-y-1">
-                        <GraphSettingsField
-                            label="Fallback Retry Target"
-                            htmlFor="graph-attr-fallback-retry-target"
-                            helper={GRAPH_ATTR_HELP.fallback_retry_target}
-                        >
-                            <Input
-                                id="graph-attr-fallback-retry-target"
-                                value={graphAttrs.fallback_retry_target || ''}
-                                onChange={(event) => updateGraphAttr('fallback_retry_target', event.target.value)}
-                                className="h-8 text-xs"
-                            />
-                        </GraphSettingsField>
-                        {renderFieldDiagnostics('fallback_retry_target', 'graph-field-diagnostics-fallback_retry_target')}
-                    </div>
-                    <GraphSettingsField
-                        label="Stack Child Dotfile"
-                        htmlFor="graph-attr-stack-child-dotfile"
-                        helper={GRAPH_ATTR_HELP['stack.child_dotfile']}
-                    >
-                        <Input
-                            id="graph-attr-stack-child-dotfile"
-                            value={graphAttrs['stack.child_dotfile'] || ''}
-                            onChange={(event) => updateGraphAttr('stack.child_dotfile', event.target.value)}
-                            className="h-8 font-mono text-xs"
-                            placeholder="child/flow.dot"
-                        />
-                    </GraphSettingsField>
-                    <GraphSettingsField
-                        label="Stack Child Workdir"
-                        htmlFor="graph-attr-stack-child-workdir"
-                        helper={GRAPH_ATTR_HELP['stack.child_workdir']}
-                    >
-                        <Input
-                            id="graph-attr-stack-child-workdir"
-                            value={graphAttrs['stack.child_workdir'] || ''}
-                            onChange={(event) => updateGraphAttr('stack.child_workdir', event.target.value)}
-                            className="h-8 font-mono text-xs"
-                            placeholder="/abs/path/to/child"
-                        />
-                    </GraphSettingsField>
-                    <GraphSettingsField
-                        label="Tool Hooks Pre"
-                        htmlFor="graph-attr-tool-hooks-pre"
-                        helper={GRAPH_ATTR_HELP['tool.hooks.pre']}
-                    >
-                        <Input
-                            id="graph-attr-tool-hooks-pre"
-                            data-testid="graph-attr-input-tool.hooks.pre"
-                            value={graphAttrs['tool.hooks.pre'] || ''}
-                            onChange={(event) => updateGraphAttr('tool.hooks.pre', event.target.value)}
-                            className="h-8 font-mono text-xs"
-                        />
-                    </GraphSettingsField>
-                    {toolHookPreWarning ? (
-                        <p data-testid="graph-attr-warning-tool.hooks.pre" className="text-[11px] text-amber-800">
-                            {toolHookPreWarning}
-                        </p>
-                    ) : null}
-                    <GraphSettingsField
-                        label="Tool Hooks Post"
-                        htmlFor="graph-attr-tool-hooks-post"
-                        helper={GRAPH_ATTR_HELP['tool.hooks.post']}
-                    >
-                        <Input
-                            id="graph-attr-tool-hooks-post"
-                            data-testid="graph-attr-input-tool.hooks.post"
-                            value={graphAttrs['tool.hooks.post'] || ''}
-                            onChange={(event) => updateGraphAttr('tool.hooks.post', event.target.value)}
-                            className="h-8 font-mono text-xs"
-                        />
-                    </GraphSettingsField>
-                    {toolHookPostWarning ? (
-                        <p data-testid="graph-attr-warning-tool.hooks.post" className="text-[11px] text-amber-800">
-                            {toolHookPostWarning}
-                        </p>
-                    ) : null}
                     <AdvancedKeyValueEditor
                         testIdPrefix="graph"
-                        entries={graphExtensionEntries}
-                        onValueChange={onGraphExtensionValueChange}
-                        onRemove={onGraphExtensionRemove}
-                        onAdd={onGraphExtensionAdd}
-                        reservedKeys={CORE_GRAPH_ATTR_KEYS}
+                        entries={flowMetadataExtensionEntries}
+                        onValueChange={onFlowMetadataExtensionValueChange}
+                        onRemove={onFlowMetadataExtensionRemove}
+                        onAdd={onFlowMetadataExtensionAdd}
+                        reservedKeys={CORE_FLOW_METADATA_KEYS}
                     />
                 </div>
             ) : (
                 <GraphSettingsNotice className="text-[11px]">
-                    Advanced attrs stay available for stylesheet defaults, retry fallbacks, stack child linkage, and extension metadata.
+                    Extension metadata stays available for non-core FlowDefinition annotations.
                 </GraphSettingsNotice>
             )}
         </section>
@@ -1195,21 +584,21 @@ export function GraphAdvancedAttrsSection({
 interface GraphLlmDefaultsSectionProps {
     canApplyDefaults: boolean
     flowProviderFallback: string
-    graphAttrs: GraphAttrs
+    flowMetadata: FlowDefinitionMetadata
     uiDefaults: UiDefaults
     llmProfiles: LlmProfileMetadata[]
     applyDefaultsToNodes: () => void
-    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
+    updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
 }
 
 export function GraphLlmDefaultsSection({
     canApplyDefaults,
     flowProviderFallback,
-    graphAttrs,
+    flowMetadata,
     uiDefaults,
     llmProfiles,
     applyDefaultsToNodes,
-    updateGraphAttr,
+    updateFlowMetadata,
 }: GraphLlmDefaultsSectionProps) {
     return (
         <section className="space-y-3">
@@ -1221,11 +610,11 @@ export function GraphLlmDefaultsSection({
                 <GraphSettingsField label="Default LLM Provider" htmlFor="graph-default-llm-provider">
                     <Input
                         id="graph-default-llm-provider"
-                        value={graphAttrs.ui_default_llm_profile || graphAttrs.ui_default_llm_provider || ''}
+                        value={flowMetadata.llm_profile || flowMetadata.llm_provider || ''}
                         onChange={(event) => {
                             const selection = splitLlmSelection(event.target.value, llmProfiles)
-                            updateGraphAttr('ui_default_llm_provider', selection.llm_provider)
-                            updateGraphAttr('ui_default_llm_profile', selection.llm_profile)
+                            updateFlowMetadata('llm_provider', selection.llm_provider)
+                            updateFlowMetadata('llm_profile', selection.llm_profile)
                         }}
                         list="flow-llm-provider-options"
                         className="h-8 text-xs"
@@ -1240,14 +629,14 @@ export function GraphLlmDefaultsSection({
                 <GraphSettingsField label="Default LLM Model" htmlFor="graph-default-llm-model">
                     <Input
                         id="graph-default-llm-model"
-                        value={graphAttrs.ui_default_llm_model || ''}
-                        onChange={(event) => updateGraphAttr('ui_default_llm_model', event.target.value)}
+                        value={flowMetadata.llm_model || ''}
+                        onChange={(event) => updateFlowMetadata('llm_model', event.target.value)}
                         list="flow-llm-model-options"
                         className="h-8 text-xs"
                         placeholder={uiDefaults.llm_model ? `Snapshot: ${uiDefaults.llm_model}` : 'Snapshot of global default'}
                     />
                     <datalist id="flow-llm-model-options">
-                        {getModelSuggestions(graphAttrs.ui_default_llm_profile || flowProviderFallback, llmProfiles).map((modelOption) => (
+                        {getModelSuggestions(flowMetadata.llm_profile || flowProviderFallback, llmProfiles).map((modelOption) => (
                             <option key={modelOption} value={modelOption} />
                         ))}
                     </datalist>
@@ -1255,8 +644,8 @@ export function GraphLlmDefaultsSection({
                 <GraphSettingsField label="Default Reasoning Effort" htmlFor="graph-default-reasoning-effort">
                     <NativeSelect
                         id="graph-default-reasoning-effort"
-                        value={graphAttrs.ui_default_reasoning_effort || ''}
-                        onChange={(event) => updateGraphAttr('ui_default_reasoning_effort', event.target.value)}
+                        value={flowMetadata.reasoning_effort || ''}
+                        onChange={(event) => updateFlowMetadata('reasoning_effort', event.target.value)}
                         className="h-8 text-xs"
                     >
                         <option value="">Use global default</option>
@@ -1284,10 +673,10 @@ export function GraphLlmDefaultsSection({
                         size="sm"
                         className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
                         onClick={() => {
-                            updateGraphAttr('ui_default_llm_provider', uiDefaults.llm_provider)
-                            updateGraphAttr('ui_default_llm_profile', uiDefaults.llm_profile)
-                            updateGraphAttr('ui_default_llm_model', uiDefaults.llm_model)
-                            updateGraphAttr('ui_default_reasoning_effort', uiDefaults.reasoning_effort)
+                            updateFlowMetadata('llm_provider', uiDefaults.llm_provider)
+                            updateFlowMetadata('llm_profile', uiDefaults.llm_profile)
+                            updateFlowMetadata('llm_model', uiDefaults.llm_model)
+                            updateFlowMetadata('reasoning_effort', uiDefaults.reasoning_effort)
                         }}
                     >
                         Reset From Global

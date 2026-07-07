@@ -9,7 +9,7 @@
       "--conversation",
       "__CONVERSATION_HANDLE__",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--summary",
       "Compatibility fixture request",
       "--goal",
@@ -27,7 +27,7 @@
       "--conversation",
       "__CONVERSATION_HANDLE__",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--summary",
       "Compatibility fixture request",
       "--goal",
@@ -93,7 +93,7 @@
           "conversation_id": "conversation-compat",
           "event_log": [
             {
-              "message": "Created flow run request flow-run-request-__ID__ for software-development/implement-change-request.dot.",
+              "message": "Created flow run request flow-run-request-__ID__ for software-development/implement-change-request.yaml.",
               "timestamp": "__TIMESTAMP__"
             }
           ],
@@ -101,7 +101,7 @@
             {
               "conversation_id": "conversation-compat",
               "created_at": "__TIMESTAMP__",
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "goal": "Keep this request pending.",
               "id": "flow-run-request-__ID__",
               "project_path": "__PROJECT_DIR__",

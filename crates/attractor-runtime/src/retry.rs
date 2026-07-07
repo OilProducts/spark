@@ -1,7 +1,4 @@
-use attractor_core::{
-    attr_bool, attr_i64, attr_text, node_has_explicit_attr, DotGraph, DotNode, FailureKind,
-    Outcome, OutcomeStatus,
-};
+use attractor_core::{FailureKind, FlowDefinition, FlowNode, Outcome, OutcomeStatus};
 use rand::Rng;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,34 +126,32 @@ impl RetryPreset {
     }
 }
 
-pub fn retry_policy_for_node(graph: &DotGraph, node_id: &str) -> RetryPolicy {
-    let Some(node) = graph.nodes.get(node_id) else {
+pub fn retry_policy_for_node(flow: &FlowDefinition, node_id: &str) -> RetryPolicy {
+    let Some(node) = flow.nodes.get(node_id) else {
         return RetryPolicy::none();
     };
-    if let Some(preset) = attr_text(&node.attrs, "retry_policy")
-        .and_then(|value| RetryPreset::parse(&value).map(RetryPreset::policy))
+    if let Some(preset) = node
+        .retry
+        .as_ref()
+        .and_then(|retry| retry.policy.as_deref())
+        .and_then(|value| RetryPreset::parse(value).map(RetryPreset::policy))
     {
         return preset;
     }
 
-    let max_retries = max_retries_for_node(graph, node);
+    let max_retries = max_retries_for_node(flow, node);
     RetryPolicy {
         max_attempts: max_retries.saturating_add(1).max(1),
         backoff: BackoffConfig::default(),
     }
 }
 
-pub fn max_retries_for_node(graph: &DotGraph, node: &DotNode) -> u64 {
-    if node_has_explicit_attr(node, "max_retries") {
-        return attr_i64(&node.attrs, "max_retries", 0).max(0) as u64;
-    }
-
-    let graph_default = attr_i64(&graph.graph_attrs, "default_max_retries", 0);
-    if graph_default >= 0 {
-        return graph_default as u64;
-    }
-
-    attr_i64(&node.attrs, "max_retries", 0).max(0) as u64
+pub fn max_retries_for_node(flow: &FlowDefinition, node: &FlowNode) -> u64 {
+    node.retry
+        .as_ref()
+        .and_then(|retry| retry.max_retries)
+        .or(flow.defaults.max_retries)
+        .unwrap_or(0)
 }
 
 pub fn should_retry_outcome(outcome: &Outcome) -> bool {
@@ -180,7 +175,7 @@ pub fn should_retry_attempt(outcome: &Outcome, retries_so_far: u64, policy: &Ret
 }
 
 pub fn coerce_retry_exhausted_outcome(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     outcome: &Outcome,
     retries_so_far: u64,
@@ -193,10 +188,10 @@ pub fn coerce_retry_exhausted_outcome(
         return outcome.clone();
     }
 
-    let allow_partial = graph
+    let allow_partial = flow
         .nodes
         .get(node_id)
-        .is_some_and(|node| attr_bool(&node.attrs, "allow_partial", false));
+        .is_some_and(|node| crate::flow_runtime::node_attr_bool(node, "allow_partial", false));
     if !allow_partial {
         if outcome.status == OutcomeStatus::Fail {
             return outcome.clone();

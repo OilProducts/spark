@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use attractor_core::{CheckpointState, RunRecord};
+use attractor_core::{CheckpointState, FlowDefinition, RunRecord};
 use attractor_runtime::{CreateRunRequest, RunStore};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
@@ -17,7 +17,7 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/run.dot", simple_flow());
+    write_flow(&settings, "ops/run.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -27,7 +27,7 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
 
     let response = service
         .launch_workspace_run(RunLaunchRequest {
-            flow_name: "ops/run.dot".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             summary: "Launch the implementation flow.".to_string(),
             conversation_handle: Some("amber-anchor".to_string()),
             project_path: Some(project_path.to_string_lossy().into_owned()),
@@ -78,7 +78,7 @@ fn direct_launch_by_conversation_handle_creates_flow_launch_and_starts_run() {
         .expect("run")
         .record
         .expect("record");
-    assert_eq!(run.flow_name, "ops/run.dot");
+    assert_eq!(run.flow_name, "ops/run.yaml");
     assert_eq!(run.project_path, project_path.to_string_lossy());
     assert_eq!(run.llm_provider, "anthropic");
     assert_eq!(run.reasoning_effort.as_deref(), Some("low"));
@@ -92,7 +92,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
     let other_path = temp.path().join("other");
     fs::create_dir_all(&project_path).expect("project dir");
     fs::create_dir_all(&other_path).expect("other dir");
-    write_flow(&settings, "ops/run.dot", simple_flow());
+    write_flow(&settings, "ops/run.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -102,7 +102,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
 
     let response = service
         .launch_workspace_run(RunLaunchRequest {
-            flow_name: "ops/run.dot".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             summary: "Launch without a conversation.".to_string(),
             project_path: Some(project_path.to_string_lossy().into_owned()),
             ..RunLaunchRequest::default()
@@ -113,7 +113,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
 
     let missing_project = service
         .launch_workspace_run(RunLaunchRequest {
-            flow_name: "ops/run.dot".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             summary: "Missing selection.".to_string(),
             ..RunLaunchRequest::default()
         })
@@ -122,7 +122,7 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
 
     let mismatch = service
         .launch_workspace_run(RunLaunchRequest {
-            flow_name: "ops/run.dot".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             summary: "Wrong project.".to_string(),
             conversation_handle: Some("amber-anchor".to_string()),
             project_path: Some(other_path.to_string_lossy().into_owned()),
@@ -133,17 +133,18 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
         matches!(mismatch, WorkspaceError::Validation(message) if message.contains("does not match"))
     );
 
-    write_flow(&settings, "ops/invalid.dot", "digraph Broken { start -> }");
+    write_flow(&settings, "ops/invalid.yaml", simple_flow());
     let invalid_launch = service
         .launch_workspace_run(RunLaunchRequest {
-            flow_name: "ops/invalid.dot".to_string(),
-            summary: "Invalid DOT should fail the launch.".to_string(),
+            flow_name: "ops/invalid.yaml".to_string(),
+            summary: "Invalid execution profile should fail the launch.".to_string(),
             conversation_handle: Some("amber-anchor".to_string()),
+            execution_profile_id: Some("missing-profile".to_string()),
             ..RunLaunchRequest::default()
         })
         .expect_err("invalid launch");
     assert!(matches!(invalid_launch, WorkspaceError::Internal(message)
-            if message.contains("Expected") || message.contains("parse") || message.contains("line")));
+            if message.contains("execution profile") || message.contains("missing-profile")));
     let snapshot = service
         .get_snapshot(
             "conversation-launch",
@@ -154,17 +155,13 @@ fn direct_launch_project_only_and_selection_errors_are_explicit() {
         .as_array()
         .expect("launches")
         .iter()
-        .find(|entry| entry["flow_name"] == "ops/invalid.dot")
+        .find(|entry| entry["flow_name"] == "ops/invalid.yaml")
         .expect("failed launch");
     assert_eq!(failed_launch["status"], "launch_failed");
     let launch_error = failed_launch["launch_error"]
         .as_str()
         .expect("launch error");
-    assert!(
-        launch_error.contains("Expected")
-            || launch_error.contains("parse")
-            || launch_error.contains("line")
-    );
+    assert!(launch_error.contains("execution profile") || launch_error.contains("missing-profile"));
 }
 
 #[test]
@@ -226,7 +223,7 @@ fn retry_and_continue_record_recovery_artifacts_and_delegate_to_attractor() {
                 llm_provider: Some("openai".to_string()),
                 llm_profile: Some("implementation".to_string()),
                 reasoning_effort: Some("high".to_string()),
-                flow_name: Some("ignored.dot".to_string()),
+                flow_name: Some("ignored.yaml".to_string()),
             },
         )
         .expect("continue");
@@ -296,15 +293,15 @@ fn recovery_by_id<'a>(snapshot: &'a Value, recovery_id: &str) -> &'a Value {
 
 fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "ops/retry.dot".to_string();
+    record.flow_name = "ops/retry.yaml".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
     RunStore::for_settings(settings)
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            graph_source: Some(simple_flow().to_string()),
-            graph_dot: Some(simple_flow().to_string()),
+            flow_source: Some(simple_flow().to_string()),
+            flow_definition_json: Some(simple_flow_definition_json()),
             ..CreateRunRequest::default()
         })
         .expect("failed run");
@@ -312,14 +309,14 @@ fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) 
 
 fn seed_completed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "ops/source.dot".to_string();
+    record.flow_name = "ops/source.yaml".to_string();
     record.status = "completed".to_string();
     RunStore::for_settings(settings)
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            graph_source: Some(simple_flow().to_string()),
-            graph_dot: Some(simple_flow().to_string()),
+            flow_source: Some(simple_flow().to_string()),
+            flow_definition_json: Some(simple_flow_definition_json()),
             ..CreateRunRequest::default()
         })
         .expect("completed run");
@@ -395,13 +392,30 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
 
 fn simple_flow() -> &'static str {
     r#"
-    digraph WorkspaceRun {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write a workspace note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
+schema_version: "1"
+id: workspace-run
+nodes:
+  start:
+    kind: start
+  task:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: Write a workspace note
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
     "#
+}
+
+fn simple_flow_definition_json() -> String {
+    FlowDefinition::from_yaml_str(simple_flow())
+        .expect("flow yaml")
+        .to_canonical_json_string()
 }
 
 fn settings(root: &Path) -> SparkSettings {

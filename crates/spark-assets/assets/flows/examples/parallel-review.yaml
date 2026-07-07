@@ -1,0 +1,194 @@
+schema_version: '1'
+id: parallel_review
+title: Parallel Review
+description: ''
+goal: Plan, implement, and review a change with a parallel review stage.
+defaults:
+  llm_provider: codex
+  llm_model: gpt-5.5
+nodes:
+  approval:
+    kind: human_gate
+    label: approval
+    config:
+      kind: human_gate
+      prompt: Approve moving to parallel review
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  branch_docs:
+    kind: agent_task
+    label: branch_docs
+    config:
+      kind: agent_task
+      prompt: Review documentation updates
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  branch_tests:
+    kind: agent_task
+    label: branch_tests
+    config:
+      kind: agent_task
+      prompt: Review test updates
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  exit:
+    kind: exit
+    label: exit
+    config:
+      kind: exit
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  fan_in:
+    kind: fan_in
+    label: fan_in
+    config:
+      kind: fan_in
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  final_review:
+    kind: agent_task
+    label: final_review
+    config:
+      kind: agent_task
+      prompt: Finalize and summarize outputs
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      reads_context:
+      - parallel.results
+  implement:
+    kind: agent_task
+    label: implement
+    config:
+      kind: agent_task
+      prompt: Implement the planned changes
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  parallel_work:
+    kind: parallel
+    label: parallel_work
+    config:
+      kind: parallel
+      join_policy: wait_all
+      max_parallel: 2
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  plan:
+    kind: agent_task
+    label: plan
+    config:
+      kind: agent_task
+      prompt: Plan the implementation
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  start:
+    kind: start
+    label: start
+    config:
+      kind: start
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+edges:
+- from: approval
+  to: exit
+  label: Cancel
+  condition: preferred_label=Cancel
+  extensions:
+    loop_restart: false
+- from: approval
+  to: parallel_work
+  label: Proceed
+  condition: preferred_label=Proceed
+  extensions:
+    loop_restart: false
+- from: branch_docs
+  to: fan_in
+  extensions:
+    loop_restart: false
+- from: branch_tests
+  to: fan_in
+  extensions:
+    loop_restart: false
+- from: fan_in
+  to: final_review
+  extensions:
+    loop_restart: false
+- from: final_review
+  to: exit
+  extensions:
+    loop_restart: false
+- from: implement
+  to: approval
+  extensions:
+    loop_restart: false
+- from: parallel_work
+  to: branch_docs
+  extensions:
+    loop_restart: false
+- from: parallel_work
+  to: branch_tests
+  extensions:
+    loop_restart: false
+- from: plan
+  to: implement
+  extensions:
+    loop_restart: false
+- from: start
+  to: plan
+  extensions:
+    loop_restart: false

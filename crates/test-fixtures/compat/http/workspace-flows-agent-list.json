@@ -52,7 +52,7 @@
           "graph_goal": "Inspect the repository, make one targeted improvement, and summarize the result.",
           "graph_label": "Simple Linear Workflow",
           "launch_policy": "agent_requestable",
-          "name": "examples/simple-linear.dot",
+          "name": "examples/simple-linear.yaml",
           "title": "Simple Linear Workflow"
         },
         {
@@ -62,7 +62,7 @@
           "graph_goal": "Implement an approved durable change request in the repository, evaluate whether the requested change is completed in full, record the shipped result, and iterate until the result is ready.",
           "graph_label": "Implement Change Request",
           "launch_policy": "agent_requestable",
-          "name": "software-development/implement-change-request.dot",
+          "name": "software-development/implement-change-request.yaml",
           "title": "Implement Change Request"
         },
         {
@@ -72,7 +72,7 @@
           "graph_goal": "Implement a written specification in the repository by turning the spec into requirements, architecture, milestones, and validated milestone deliveries until all in-scope requirements are covered or the effort is blocked.",
           "graph_label": "Implement Spec Program",
           "launch_policy": "agent_requestable",
-          "name": "software-development/spec-implementation/implement-spec.dot",
+          "name": "software-development/spec-implementation/implement-spec.yaml",
           "title": "Implement Spec Program"
         }
       ],

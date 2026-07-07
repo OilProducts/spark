@@ -27,7 +27,7 @@
         {
           "conversation_id": "conversation-frontend-compat",
           "created_at": "2026-01-01T00:00:03Z",
-          "flow_name": "compat/frontend-flow.dot",
+          "flow_name": "compat/frontend-flow.yaml",
           "id": "flow-run-request-live",
           "launch_context": null,
           "project_path": "/workspace/project",

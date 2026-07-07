@@ -1,16 +1,16 @@
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
-import { generateDot } from '@/lib/dotUtils'
+import { generateFlowYaml } from '@/lib/flowYamlUtils'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
-const TEST_GRAPH_FLOW = 'test-graph.dot'
+const TEST_GRAPH_FLOW = 'test-graph.yaml'
 
 const resetGraphSettingsState = () => {
   useStore.setState((state) => ({
@@ -45,16 +45,14 @@ const resetGraphSettingsState = () => {
     },
     projectRegistrationError: null,
     recentProjectPaths: ['/tmp/project-graph-settings'],
+    flowMetadata: {},
+    flowMetadataErrors: {},
+    flowMetadataUserEditVersion: 0,
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
-    canonicalDefaults: {
-      node: {},
-      edge: {},
-    },
-    canonicalSubgraphs: [],
-    canonicalStructureUserEditVersion: 0,
     editorGraphSettingsPanelOpenByFlow: {},
+    editorShowAdvancedFlowMetadataByFlow: {},
     editorShowAdvancedGraphAttrsByFlow: {},
     editorLaunchInputDraftsByFlow: {},
     editorLaunchInputDraftErrorByFlow: {},
@@ -76,18 +74,6 @@ const resetGraphSettingsState = () => {
 }
 
 const wrapWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)
-
-const addKeyValueEntry = async (
-  user: ReturnType<typeof userEvent.setup>,
-  testIdPrefix: string,
-  key: string,
-  value: string,
-) => {
-  const editor = within(screen.getByTestId(`${testIdPrefix}-extension-attrs-editor`))
-  await user.type(editor.getByTestId(`${testIdPrefix}-extension-attr-new-key`), key)
-  await user.type(editor.getByTestId(`${testIdPrefix}-extension-attr-new-value`), value)
-  await user.click(editor.getByRole('button', { name: 'Add Attribute' }))
-}
 
 describe('Graph and settings behavior', () => {
   beforeEach(() => {
@@ -188,12 +174,12 @@ describe('Graph and settings behavior', () => {
     expect(onChange).toHaveBeenCalledWith('* llm_provider_openai')
   })
 
-  it('validates graph attrs and surfaces stylesheet diagnostics in advanced settings', async () => {
+  it('validates typed FlowDefinition defaults and exposes only extension metadata in advanced settings', async () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
-    expect(screen.getByTestId('graph-attrs-help')).toHaveTextContent('Graph attributes are baseline defaults')
+    expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('FlowDefinition defaults')
     expect(screen.getByRole('button', { name: 'Apply To Nodes' })).toBeEnabled()
     const graphReasoningSelect = screen.getByLabelText('Default Reasoning Effort') as HTMLSelectElement
     expect(graphReasoningSelect.querySelector('option[value="xhigh"]')).toBeTruthy()
@@ -202,40 +188,22 @@ describe('Graph and settings behavior', () => {
     await user.clear(fidelityInput)
     await user.type(fidelityInput, 'invalid')
 
-    expect(screen.getByText(/Default fidelity must be one of/i)).toBeVisible()
-    expect(useStore.getState().graphAttrErrors.default_fidelity).toContain('Default fidelity must be one of')
+    expect(screen.getByText(/Fidelity default must be one of/i)).toBeVisible()
+    expect(useStore.getState().flowMetadataErrors.fidelity).toContain('Fidelity default must be one of')
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    expect(screen.getByTestId('graph-model-stylesheet-selector-guidance')).toBeVisible()
-    expect(screen.getByTestId('graph-model-stylesheet-selector-preview')).toBeVisible()
-    expect(screen.getByTestId('graph-model-stylesheet-effective-preview')).toBeVisible()
-
-    const stylesheetInput = within(screen.getByTestId('graph-model-stylesheet-editor')).getByRole('textbox')
-    await user.type(stylesheetInput, '#n1-model-stylesheet')
-    expect(useStore.getState().graphAttrs.model_stylesheet).toContain('#n1')
-
-    act(() => {
-      useStore.getState().setDiagnostics([
-        {
-          rule_id: 'stylesheet_syntax',
-          severity: 'error',
-          message: 'Invalid stylesheet selector syntax.',
-          line: 1,
-        },
-      ])
-    })
-
-    expect(screen.getByTestId('graph-model-stylesheet-diagnostics')).toHaveTextContent(
-      'Invalid stylesheet selector syntax.',
-    )
+    expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
+    expect(screen.queryByTestId('graph-model-stylesheet-editor')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-scoped-defaults-section')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-subgraphs-section')).not.toBeInTheDocument()
   })
 
-  it('surfaces DOT-backed title and description fields without leaking them into extension attrs', async () => {
+  it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {
     const user = userEvent.setup()
     act(() => {
-      useStore.getState().setGraphAttrs({
-        'spark.title': '  Implement From Plan File  ',
-        'spark.description': '  Snapshot a plan file, implement it, and iterate until complete.  ',
+      useStore.getState().setFlowMetadata({
+        title: '  Implement From Plan File  ',
+        description: '  Snapshot a plan file, implement it, and iterate until complete.  ',
         custom_attr: 'keep me',
       } as Record<string, string>)
     })
@@ -251,15 +219,15 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
     expect(screen.getByTestId('graph-extension-attrs-list')).toBeVisible()
     expect(screen.getByTestId('graph-extension-attr-key-0')).toHaveValue('custom_attr')
-    expect(screen.queryByText('spark.title')).not.toBeInTheDocument()
-    expect(screen.queryByText('spark.description')).not.toBeInTheDocument()
+    expect(screen.queryByText('title')).not.toBeInTheDocument()
+    expect(screen.queryByText('description')).not.toBeInTheDocument()
 
-    const dot = generateDot(TEST_GRAPH_FLOW, [], [], useStore.getState().graphAttrs)
-    expect(dot).toContain('spark.title="Implement From Plan File"')
-    expect(dot).toContain('spark.description="Snapshot a plan file, implement it, and iterate until complete."')
+    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata)
+    expect(yaml).toContain('title: "Implement From Plan File"')
+    expect(yaml).toContain('description: "Snapshot a plan file, implement it, and iterate until complete."')
   })
 
-  it('persists launch input declarations as DOT-backed Spark metadata', async () => {
+  it('persists launch input declarations as FlowDefinition inputs', async () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
 
@@ -277,7 +245,7 @@ describe('Graph and settings behavior', () => {
     await user.click(screen.getByTestId('graph-launch-input-required-0'))
 
     expect(screen.queryByTestId('graph-launch-inputs-error')).not.toBeInTheDocument()
-    expect(useStore.getState().graphAttrs['spark.launch_inputs']).toBe(
+    expect(useStore.getState().flowMetadata.inputs).toBe(
       JSON.stringify([
         {
           key: 'context.request.acceptance_criteria',
@@ -289,124 +257,56 @@ describe('Graph and settings behavior', () => {
       ]),
     )
 
-    const dot = generateDot(TEST_GRAPH_FLOW, [], [], useStore.getState().graphAttrs)
-    expect(dot).toContain('spark.launch_inputs=')
-    expect(dot).toContain('context.request.acceptance_criteria')
+    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], useStore.getState().flowMetadata)
+    expect(yaml).toContain('inputs:')
+    expect(yaml).toContain('key: context.request.acceptance_criteria')
   })
 
-  it('authors graph-level node and edge defaults through structured controls', async () => {
+  it('authors FlowDefinition defaults without DOT defaults or subgraph payloads', async () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
 
-    expect(screen.getByTestId('graph-scoped-defaults-section')).toBeVisible()
-    await addKeyValueEntry(user, 'graph-node-defaults', 'prompt', 'Default prompt')
-    await addKeyValueEntry(user, 'graph-edge-defaults', 'weight', '3')
+    expect(screen.queryByTestId('graph-scoped-defaults-section')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-subgraph-add')).not.toBeInTheDocument()
+
+    await user.clear(screen.getByLabelText('Default Max Retries'))
+    await user.type(screen.getByLabelText('Default Max Retries'), '3')
+    await user.clear(screen.getByPlaceholderText('full'))
+    await user.type(screen.getByPlaceholderText('full'), 'summary:high')
 
     const state = useStore.getState()
-    expect(state.canonicalDefaults.node.prompt).toBe('Default prompt')
-    expect(state.canonicalDefaults.edge.weight).toBe(3)
-
-    const dot = generateDot(TEST_GRAPH_FLOW, [], [], state.graphAttrs, {
-      defaults: state.canonicalDefaults,
-      subgraphs: state.canonicalSubgraphs,
-    })
-    expect(dot).toContain('node [prompt="Default prompt"];')
-    expect(dot).toContain('edge [weight=3];')
+    const yaml = generateFlowYaml(TEST_GRAPH_FLOW, [], [], state.flowMetadata)
+    expect(yaml).toContain('schema_version: "1.0"')
+    expect(yaml).toContain('defaults:')
+    expect(yaml).toContain('max_retries: 3')
+    expect(yaml).toContain('fidelity: summary:high')
+    expect(yaml).not.toContain('legacy default prompt')
+    expect(yaml).not.toContain('cluster_legacy')
   })
 
-  it('creates and serializes a subgraph with attrs, membership, and scoped defaults', async () => {
-    const user = userEvent.setup()
-    wrapWithFlowProvider(<GraphSettings inline />)
-
-    await user.click(screen.getByTestId('graph-subgraph-add'))
-    expect(screen.getByTestId('graph-subgraph-0')).toBeVisible()
-
-    await user.clear(screen.getByTestId('graph-subgraph-id-0'))
-    await user.type(screen.getByTestId('graph-subgraph-id-0'), 'cluster_review')
-    await user.type(screen.getByTestId('graph-subgraph-label-0'), 'Review Loop')
-    await user.type(screen.getByTestId('graph-subgraph-node-ids-0'), 'author, review')
-    await addKeyValueEntry(user, 'graph-subgraph-0-attrs', 'ext.scope_flag', 'review')
-    await addKeyValueEntry(user, 'graph-subgraph-0-node-defaults', 'thread_id', 'review-thread')
-    await addKeyValueEntry(user, 'graph-subgraph-0-edge-defaults', 'weight', '8')
-
-    const state = useStore.getState()
-    expect(state.canonicalSubgraphs[0]).toMatchObject({
-      id: 'cluster_review',
-      nodeIds: ['author', 'review'],
-    })
-    expect(state.canonicalSubgraphs[0].attrs.label).toBe('Review Loop')
-    expect(state.canonicalSubgraphs[0].defaults.node.thread_id).toBe('review-thread')
-    expect(state.canonicalSubgraphs[0].defaults.edge.weight).toBe(8)
-
-    const dot = generateDot(TEST_GRAPH_FLOW, [], [], state.graphAttrs, {
-      defaults: state.canonicalDefaults,
-      subgraphs: state.canonicalSubgraphs,
-    })
-    expect(dot).toContain('subgraph cluster_review {')
-    expect(dot).toContain('graph [ext.scope_flag=review, label="Review Loop"];')
-    expect(dot).toContain('node [thread_id="review-thread"];')
-    expect(dot).toContain('edge [weight=8];')
-    expect(dot).toContain('author;')
-    expect(dot).toContain('review;')
-  })
-
-  it('shows loaded subgraphs and preserves nested subgraphs while editing top-level fields', async () => {
-    const user = userEvent.setup()
-    act(() => {
-      useStore.getState().replaceCanonicalFlowScopes(
+  it('does not derive FlowDefinition node kind or YAML metadata from DOT shape/type attrs', () => {
+    const yaml = generateFlowYaml(
+      TEST_GRAPH_FLOW,
+      [
         {
-          node: { timeout: '5m' },
-          edge: { condition: 'ready=true' },
-        },
-        [
-          {
-            id: 'cluster_review',
-            attrs: {
-              label: 'Review',
-              'ext.scope_flag': 'keep',
-            },
-            nodeIds: ['author'],
-            defaults: {
-              node: { thread_id: 'review-thread' },
-              edge: { weight: 7 },
-            },
-            subgraphs: [
-              {
-                id: 'cluster_inner',
-                attrs: { label: 'Inner' },
-                nodeIds: ['author'],
-                defaults: {
-                  node: { timeout: '45s' },
-                  edge: {},
-                },
-                subgraphs: [],
-              },
-            ],
+          id: 'review',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Review',
+            shape: 'hexagon',
+            type: 'wait.human',
           },
-        ],
-      )
-    })
+        },
+      ],
+      [],
+      {},
+    )
 
-    wrapWithFlowProvider(<GraphSettings inline />)
-
-    expect(screen.getByTestId('graph-node-defaults-extension-attr-key-0')).toHaveValue('timeout')
-    expect(screen.getByTestId('graph-edge-defaults-extension-attr-key-0')).toHaveValue('condition')
-    expect(screen.getByTestId('graph-subgraph-id-0')).toHaveValue('cluster_review')
-    expect(screen.getByTestId('graph-subgraph-node-ids-0')).toHaveValue('author')
-    expect(screen.getByTestId('graph-subgraph-0-nested-summary')).toHaveTextContent('cluster_inner')
-
-    await user.clear(screen.getByTestId('graph-subgraph-label-0'))
-    await user.type(screen.getByTestId('graph-subgraph-label-0'), 'Updated Review')
-
-    const state = useStore.getState()
-    const dot = generateDot(TEST_GRAPH_FLOW, [], [], state.graphAttrs, {
-      defaults: state.canonicalDefaults,
-      subgraphs: state.canonicalSubgraphs,
-    })
-    expect(dot).toContain('label="Updated Review"')
-    expect(dot).toContain('subgraph cluster_inner {')
-    expect(dot).toContain('node [timeout="45s"];')
-    expect(dot).toContain('ext.scope_flag=keep')
+    expect(yaml).toContain('kind: agent_task')
+    expect(yaml).not.toContain('human_gate')
+    expect(yaml).not.toContain('wait.human')
+    expect(yaml).not.toContain('shape:')
+    expect(yaml).not.toContain('type:')
   })
 
   it('preserves panel state, advanced toggle, and invalid launch-input drafts across remounts', async () => {
@@ -510,7 +410,7 @@ describe('Graph and settings behavior', () => {
     const saveRequestsBefore = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET') === 'POST').length
 
     act(() => {
-      useStore.getState().replaceGraphAttrs({
+      useStore.getState().replaceFlowMetadata({
         goal: 'Hydrated goal',
       })
     })
@@ -519,7 +419,7 @@ describe('Graph and settings behavior', () => {
 
     const saveRequestsAfter = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? 'GET') === 'POST').length
     expect(saveRequestsAfter).toBe(saveRequestsBefore)
-    expect(useStore.getState().graphAttrsUserEditVersion).toBe(0)
+    expect(useStore.getState().flowMetadataUserEditVersion).toBe(0)
     expect(useStore.getState().saveState).toBe('idle')
   })
 })

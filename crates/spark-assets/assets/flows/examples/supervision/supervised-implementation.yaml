@@ -1,0 +1,142 @@
+schema_version: '1'
+id: supervised_implementation
+title: Supervised Implementation
+description: Demonstrate a parent-child flow by running a bundled implementation worker and summarizing success or failure
+  at the parent level.
+goal: Run a bundled child implementation worker and summarize whether the change attempt succeeded.
+defaults:
+  llm_provider: codex
+  llm_model: gpt-5.5
+nodes:
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  manager:
+    kind: subflow
+    label: Run Child Worker
+    config:
+      kind: subflow
+      flow_ref: implementation-worker.yaml
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    manager:
+      actions:
+      - observe
+      - wait
+      max_cycles: 6
+      poll_interval: 5s
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  summarize_failure:
+    kind: agent_task
+    label: Summarize Failure
+    config:
+      kind: agent_task
+      prompt: Summarize why the child workflow failed, what it attempted, and what a human should inspect next.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      reads_context:
+      - context.stack.child.status
+      - context.stack.child.outcome
+      - context.stack.child.outcome_reason_code
+      - context.stack.child.outcome_reason_message
+      - context.stack.child.active_stage
+      - context.stack.child.completed_nodes
+      - context.stack.child.route_trace
+      - context.stack.child.failure_reason
+      - context.stack.child.retry_count
+      - context.stack.child.retry_counts
+      - context.stack.child.artifact_count
+      - context.stack.child.event_count
+      - context.stack.child.checkpoint_timestamp
+      - context.stack.child.latest_event_at
+      - context.stack.child.started_at
+      - context.stack.child.ended_at
+  summarize_success:
+    kind: agent_task
+    label: Summarize Success
+    config:
+      kind: agent_task
+      prompt: Summarize what the child workflow accomplished, what changed, and what evidence supports the result.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      reads_context:
+      - context.stack.child.status
+      - context.stack.child.outcome
+      - context.stack.child.outcome_reason_code
+      - context.stack.child.outcome_reason_message
+      - context.stack.child.active_stage
+      - context.stack.child.completed_nodes
+      - context.stack.child.route_trace
+      - context.stack.child.failure_reason
+      - context.stack.child.retry_count
+      - context.stack.child.retry_counts
+      - context.stack.child.artifact_count
+      - context.stack.child.event_count
+      - context.stack.child.checkpoint_timestamp
+      - context.stack.child.latest_event_at
+      - context.stack.child.started_at
+      - context.stack.child.ended_at
+edges:
+- from: manager
+  to: summarize_failure
+  label: Report Failure
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: manager
+  to: summarize_success
+  label: Summarize
+  condition: outcome=success
+  extensions:
+    loop_restart: false
+- from: start
+  to: manager
+  extensions:
+    loop_restart: false
+- from: summarize_failure
+  to: done
+  extensions:
+    loop_restart: false
+- from: summarize_success
+  to: done
+  extensions:
+    loop_restart: false

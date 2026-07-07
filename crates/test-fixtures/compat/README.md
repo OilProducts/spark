@@ -44,21 +44,13 @@ frames. The comparison harness normalizes temporary homes and project paths,
 ephemeral localhost ports, generated trigger/run ids, webhook credentials,
 timestamps, file hashes, and file sizes into stable reviewed oracle values.
 
-## M0-I04 DSL And Runtime Fixtures
+## M0-I04 FlowDefinition And Runtime Fixtures
 
-- `dsl/*.json` records accepted and rejected DOT parsing, Spark extension
-  attributes, canonical readable formatting, validation diagnostics, preview
-  status/error payloads, flow-name path safety, attribute defaults, goal
-  expansion, runtime preamble, stylesheet precedence, and graph-attribute
-  context mirroring.
-- `runtime/*.json` records deterministic `PipelineExecutor` route, condition,
-  retry, goal-gate, context write-contract, checkpoint, artifact, handler,
-  Attractor API journal, durable run-state, and execution-profile behavior.
+- `dsl/*.json` keeps current flow-name path-safety compatibility coverage for
+  typed YAML flow names.
+- `runtime/*.json` contains only reviewed runtime snapshots that are still
+  aligned with typed `FlowDefinition` execution.
 
-These fixtures are captured through public parser/formatter/validator/preview,
-transform, runtime, handler, execution-profile, HTTP, filesystem, and durable
-state interfaces. Runtime tests use deterministic fake LLM, interviewer,
-custom handler, and child-run launchers rather than external credentials,
-Docker, or human input. Generated run roots, temporary Spark homes, logs,
-caches, and raw capture output remain outside this reviewed fixture root unless
-they are compacted into an intentional golden manifest.
+Retired parser, formatter, preview, and graph-shape snapshots are intentionally
+absent from this fixture root. Current runtime tests construct or parse typed
+YAML `FlowDefinition` documents directly.

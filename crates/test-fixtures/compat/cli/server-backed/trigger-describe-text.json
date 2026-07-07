@@ -90,7 +90,7 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "ID: trigger-__ID__\nName: Compat webhook\nSource Type: webhook\nEnabled: True\nProtected: False\nFlow Target: software-development/implement-change-request.dot\nProject Target: __PROJECT_DIR__\nLast Fired: (never)\nLast Result: (none)\nNext Run: (n/a)\n"
+    "stdout": "ID: trigger-__ID__\nName: Compat webhook\nSource Type: webhook\nEnabled: True\nProtected: False\nFlow Target: software-development/implement-change-request.yaml\nProject Target: __PROJECT_DIR__\nLast Fired: (never)\nLast Result: (none)\nNext Run: (n/a)\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",

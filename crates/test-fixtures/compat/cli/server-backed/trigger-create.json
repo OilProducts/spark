@@ -328,7 +328,7 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.dot\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"__TIMESTAMP__\",\n  \"enabled\": true,\n  \"id\": \"trigger-__ID__\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"__WEBHOOK_KEY__\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"__TIMESTAMP__\",\n  \"webhook_secret\": \"__WEBHOOK_SECRET__\"\n}\n"
+    "stdout": "{\n  \"action\": {\n    \"flow_name\": \"software-development/implement-change-request.yaml\",\n    \"project_path\": \"__PROJECT_DIR__\",\n    \"static_context\": {\n      \"origin\": \"compat\"\n    }\n  },\n  \"created_at\": \"__TIMESTAMP__\",\n  \"enabled\": true,\n  \"id\": \"trigger-__ID__\",\n  \"name\": \"Compat webhook\",\n  \"protected\": false,\n  \"source\": {\n    \"webhook_key\": \"__WEBHOOK_KEY__\"\n  },\n  \"source_type\": \"webhook\",\n  \"state\": {\n    \"last_error\": null,\n    \"last_fired_at\": null,\n    \"last_result\": null,\n    \"next_run_at\": null,\n    \"recent_history\": []\n  },\n  \"updated_at\": \"__TIMESTAMP__\",\n  \"webhook_secret\": \"__WEBHOOK_SECRET__\"\n}\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",

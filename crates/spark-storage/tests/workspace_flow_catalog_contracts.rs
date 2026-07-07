@@ -10,13 +10,13 @@ fn uncataloged_flows_default_to_disabled_and_launch_policy_round_trips() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("config");
 
-    let uncataloged = read_flow_launch_policy(&config_dir, "uncataloged.dot").expect("policy");
+    let uncataloged = read_flow_launch_policy(&config_dir, "uncataloged.yaml").expect("policy");
     assert_eq!(uncataloged.launch_policy, None);
     assert_eq!(uncataloged.effective_launch_policy, LAUNCH_POLICY_DISABLED);
 
     let saved = set_flow_launch_policy(
         &config_dir,
-        "agent-visible.dot",
+        "agent-visible.yaml",
         LAUNCH_POLICY_AGENT_REQUESTABLE,
     )
     .expect("save");
@@ -29,7 +29,7 @@ fn uncataloged_flows_default_to_disabled_and_launch_policy_round_trips() {
         LAUNCH_POLICY_AGENT_REQUESTABLE
     );
 
-    let reloaded = read_flow_launch_policy(&config_dir, "agent-visible.dot").expect("reload");
+    let reloaded = read_flow_launch_policy(&config_dir, "agent-visible.yaml").expect("reload");
     assert_eq!(
         reloaded.launch_policy.as_deref(),
         Some(LAUNCH_POLICY_AGENT_REQUESTABLE)
@@ -37,7 +37,7 @@ fn uncataloged_flows_default_to_disabled_and_launch_policy_round_trips() {
     assert_eq!(reloaded.execution_lock, None);
     assert_eq!(
         fs::read_to_string(config_dir.join("flow-catalog.toml")).expect("catalog"),
-        "[flows.\"agent-visible.dot\"]\nlaunch_policy = \"agent_requestable\"\n"
+        "[flows.\"agent-visible.yaml\"]\nlaunch_policy = \"agent_requestable\"\n"
     );
 }
 
@@ -48,7 +48,7 @@ fn execution_lock_config_round_trips_through_catalog_toml() {
 
     let saved = set_flow_catalog_entry(
         &config_dir,
-        "locked.dot",
+        "locked.yaml",
         LAUNCH_POLICY_DISABLED,
         Some(FlowExecutionLockConfig {
             scope: "project".to_string(),
@@ -59,7 +59,7 @@ fn execution_lock_config_round_trips_through_catalog_toml() {
     .expect("save lock");
     assert_eq!(saved.launch_policy.as_deref(), Some(LAUNCH_POLICY_DISABLED));
 
-    let reloaded = read_flow_launch_policy(&config_dir, "locked.dot").expect("reload lock");
+    let reloaded = read_flow_launch_policy(&config_dir, "locked.yaml").expect("reload lock");
     assert_eq!(
         reloaded.execution_lock,
         Some(FlowExecutionLockConfig {
@@ -69,7 +69,7 @@ fn execution_lock_config_round_trips_through_catalog_toml() {
         })
     );
     let catalog = fs::read_to_string(config_dir.join("flow-catalog.toml")).expect("catalog");
-    assert!(catalog.contains("[flows.\"locked.dot\".execution_lock]"));
+    assert!(catalog.contains("[flows.\"locked.yaml\".execution_lock]"));
     assert!(catalog.contains("scope = \"project\""));
     assert!(catalog.contains("key = \"main-worktree-integration\""));
     assert!(catalog.contains("conflict_policy = \"queue\""));
@@ -84,7 +84,7 @@ fn invalid_catalog_values_return_current_validation_messages() {
 
     fs::write(
         &catalog_path,
-        "[flows.\"bad.dot\"]\nlaunch_policy = \"requestable\"\n",
+        "[flows.\"bad.yaml\"]\nlaunch_policy = \"requestable\"\n",
     )
     .expect("catalog");
     assert_eq!(
@@ -94,7 +94,7 @@ fn invalid_catalog_values_return_current_validation_messages() {
 
     fs::write(
         &catalog_path,
-        "[flows.\"bad.dot\"]\nlaunch_policy = \"disabled\"\n\n[flows.\"bad.dot\".execution_lock]\nscope = \"workspace\"\nkey = \"repo\"\nconflict_policy = \"queue\"\n",
+        "[flows.\"bad.yaml\"]\nlaunch_policy = \"disabled\"\n\n[flows.\"bad.yaml\".execution_lock]\nscope = \"workspace\"\nkey = \"repo\"\nconflict_policy = \"queue\"\n",
     )
     .expect("catalog");
     assert!(
@@ -104,7 +104,7 @@ fn invalid_catalog_values_return_current_validation_messages() {
 
     fs::write(
         &catalog_path,
-        "[flows.\"bad.dot\"]\nlaunch_policy = \"disabled\"\n\n[flows.\"bad.dot\".execution_lock]\nscope = \"project\"\nconflict_policy = \"queue\"\n",
+        "[flows.\"bad.yaml\"]\nlaunch_policy = \"disabled\"\n\n[flows.\"bad.yaml\".execution_lock]\nscope = \"project\"\nconflict_policy = \"queue\"\n",
     )
     .expect("catalog");
     assert!(
@@ -114,7 +114,7 @@ fn invalid_catalog_values_return_current_validation_messages() {
 
     fs::write(
         &catalog_path,
-        "[flows.\"bad.dot\"]\nlaunch_policy = \"disabled\"\n\n[flows.\"bad.dot\".execution_lock]\nscope = \"project\"\nkey = \"repo\"\nconflict_policy = \"reject\"\n",
+        "[flows.\"bad.yaml\"]\nlaunch_policy = \"disabled\"\n\n[flows.\"bad.yaml\".execution_lock]\nscope = \"project\"\nkey = \"repo\"\nconflict_policy = \"reject\"\n",
     )
     .expect("catalog");
     assert!(
@@ -134,19 +134,19 @@ fn nested_flow_names_are_normalized_and_path_safety_is_enforced() {
         LAUNCH_POLICY_AGENT_REQUESTABLE,
     )
     .expect("save nested");
-    assert_eq!(saved.name, "ops/review/nested.dot");
+    assert_eq!(saved.name, "ops/review/nested.yaml");
     assert!(fs::read_to_string(config_dir.join("flow-catalog.toml"))
         .expect("catalog")
-        .contains("[flows.\"ops/review/nested.dot\"]"));
+        .contains("[flows.\"ops/review/nested.yaml\"]"));
 
     assert_eq!(
         error_reason(
-            read_flow_launch_policy(&config_dir, "/tmp/escape.dot").expect_err("absolute")
+            read_flow_launch_policy(&config_dir, "/tmp/escape.yaml").expect_err("absolute")
         ),
         "Flow name must be a relative path inside flows_dir."
     );
     assert_eq!(
-        error_reason(read_flow_launch_policy(&config_dir, "../escape.dot").expect_err("parent")),
+        error_reason(read_flow_launch_policy(&config_dir, "../escape.yaml").expect_err("parent")),
         "Flow name must be a relative path inside flows_dir."
     );
     assert_eq!(

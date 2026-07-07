@@ -3,8 +3,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 
 use attractor_core::{
-    AttractorContext, CheckpointState, ContextMap, DotGraph, DotNode, FailureKind, LaunchContext,
-    Outcome, OutcomeStatus, RoutingEdge, RunManifest, RunRecord, RunResult,
+    AttractorContext, CheckpointState, ContextMap, DotAttribute, FailureKind, FlowDefinition,
+    FlowNode, LaunchContext, Outcome, OutcomeStatus, RoutingEdge, RunManifest, RunRecord,
+    RunResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,11 +13,11 @@ use serde_json::json;
 use crate::artifacts::NodeArtifacts;
 use crate::checkpoints::CheckpointWriteOptions;
 use crate::context::{
-    apply_outcome_context_updates, checkpoint_from_context,
+    apply_outcome_context_updates_for_node, checkpoint_from_context,
     checkpoint_requests_full_fidelity_degrade, clear_runtime_retry_context,
-    graph_attr_context_seed, initialize_runtime_context, reset_workflow_outcome_context,
-    seed_builtin_context, set_runtime_fidelity_context, set_runtime_retry_context,
-    CURRENT_NODE_KEY, OUTCOME_KEY, PREFERRED_LABEL_KEY,
+    initialize_runtime_context, reset_workflow_outcome_context, seed_builtin_context,
+    set_runtime_fidelity_context, set_runtime_retry_context, CURRENT_NODE_KEY, OUTCOME_KEY,
+    PREFERRED_LABEL_KEY,
 };
 use crate::error::{Result, RuntimeStorageError};
 use crate::events::{
@@ -47,9 +48,9 @@ use unified_llm_adapter::{
 pub struct ExecuteRunRequest {
     pub store: RunStore,
     pub record: RunRecord,
-    pub graph: DotGraph,
-    pub graph_source: Option<String>,
-    pub graph_dot: Option<String>,
+    pub flow: FlowDefinition,
+    pub flow_source: Option<String>,
+    pub flow_definition_json: Option<String>,
     pub launch_context: LaunchContext,
     pub runtime_context: ContextMap,
     pub max_steps: Option<usize>,
@@ -76,8 +77,9 @@ pub struct NodeExecutionRequest {
     pub stage_index: u64,
     pub context: ContextMap,
     pub prompt: String,
-    pub node: DotNode,
-    pub graph: DotGraph,
+    pub node: FlowNode,
+    pub node_attrs: BTreeMap<String, DotAttribute>,
+    pub flow: FlowDefinition,
     pub outgoing_edges: Vec<RoutingEdge>,
     pub run_paths: Option<crate::paths::RunRootPaths>,
     pub run_workdir: PathBuf,
@@ -196,15 +198,15 @@ where
         let ExecuteRunRequest {
             store,
             mut record,
-            graph,
-            graph_source,
-            graph_dot,
+            flow,
+            flow_source,
+            flow_definition_json,
             launch_context,
             runtime_context,
             max_steps,
             start,
         } = request;
-        let start_node = resolve_start_node(&graph)?;
+        let start_node = resolve_start_node(&flow)?;
         let run_id = ensure_run_record_defaults(&mut record);
         let mut context;
         let mut completed_nodes;
@@ -219,7 +221,7 @@ where
 
         let (paths, resumed) = match start {
             ExecutionStart::Fresh => {
-                context = initialize_runtime_context(&graph, &start_node, &launch_context)?;
+                context = initialize_runtime_context(&flow, &start_node, &launch_context)?;
                 context.apply_updates(&runtime_context)?;
                 seed_execution_record_context(&mut context, &record)?;
                 reset_workflow_outcome_context(&mut context)?;
@@ -238,33 +240,33 @@ where
                     record: record.clone(),
                     checkpoint: Some(initial_checkpoint),
                     manifest: Some(RunManifest {
-                        goal: graph.goal(),
-                        graph_id: graph.graph_id.clone(),
+                        goal: flow.goal.clone(),
+                        graph_id: flow.id.clone(),
                         start_node: start_node.clone(),
                         started_at: record.started_at.clone(),
                         extra: BTreeMap::new(),
                     }),
-                    graph_source,
-                    graph_dot,
+                    flow_source,
+                    flow_definition_json,
                 })?;
                 (paths, false)
             }
             ExecutionStart::Resume { paths, checkpoint } => {
                 paths.ensure_exists()?;
-                context = context_from_checkpoint(&graph, &checkpoint, &checkpoint.current_node)?;
+                context = context_from_checkpoint(&flow, &checkpoint, &checkpoint.current_node)?;
                 completed_nodes = checkpoint
                     .completed_nodes
                     .iter()
-                    .filter(|node_id| graph.nodes.contains_key(node_id.as_str()))
+                    .filter(|node_id| flow.nodes.contains_key(node_id.as_str()))
                     .cloned()
                     .collect();
                 retry_counts = checkpoint
                     .retry_counts
                     .iter()
-                    .filter(|(node_id, _)| graph.nodes.contains_key(node_id.as_str()))
+                    .filter(|(node_id, _)| flow.nodes.contains_key(node_id.as_str()))
                     .map(|(node_id, count)| (node_id.clone(), *count))
                     .collect();
-                current_node = if graph.nodes.contains_key(&checkpoint.current_node) {
+                current_node = if flow.nodes.contains_key(&checkpoint.current_node) {
                     checkpoint.current_node.clone()
                 } else {
                     start_node.clone()
@@ -276,7 +278,7 @@ where
                 {
                     let resume_outcome = resume_outcome_for_node(&current_node, &context);
                     let selection = select_next_node_with_prior(
-                        &graph,
+                        &flow,
                         &current_node,
                         &resume_outcome,
                         &context,
@@ -284,7 +286,7 @@ where
                         "",
                     )?;
                     let Some(next_node) = selection.selected_node.clone() else {
-                        return terminal_checkpoint_result(&checkpoint, &graph);
+                        return terminal_checkpoint_result(&checkpoint, &flow);
                     };
                     current_node = next_node;
                     incoming_edge = selection.selected_edge.clone();
@@ -299,12 +301,12 @@ where
                 start_node,
                 checkpoint,
             } => {
-                if !graph.nodes.contains_key(&start_node) {
+                if !flow.nodes.contains_key(&start_node) {
                     return Err(RuntimeStorageError::InvalidRuntimeGraph {
                         reason: format!("Unknown runtime node: {start_node}"),
                     });
                 }
-                context = context_from_checkpoint(&graph, &checkpoint, &start_node)?;
+                context = context_from_checkpoint(&flow, &checkpoint, &start_node)?;
                 context.apply_updates(&runtime_context)?;
                 seed_execution_record_context(&mut context, &record)?;
                 completed_nodes = Vec::new();
@@ -321,21 +323,21 @@ where
                     record: record.clone(),
                     checkpoint: Some(initial_checkpoint),
                     manifest: Some(RunManifest {
-                        goal: graph.goal(),
-                        graph_id: graph.graph_id.clone(),
+                        goal: flow.goal.clone(),
+                        graph_id: flow.id.clone(),
                         start_node: current_node.clone(),
                         started_at: record.started_at.clone(),
                         extra: BTreeMap::new(),
                     }),
-                    graph_source,
-                    graph_dot,
+                    flow_source,
+                    flow_definition_json,
                 })?;
                 (paths, false)
             }
         };
         store.append_transcript_event(
             &paths,
-            pipeline_started_event(&run_id, &graph.graph_id, &current_node, resumed),
+            pipeline_started_event(&run_id, &flow.id, &current_node, resumed),
         )?;
         if !resumed {
             save_checkpoint_event(
@@ -381,12 +383,12 @@ where
                     ),
                 };
             }
-            if is_exit_node(&graph, &current_node) {
-                let gate_check = check_goal_gates(&graph, &context, &completed_nodes);
+            if is_exit_node(&flow, &current_node) {
+                let gate_check = check_goal_gates(&flow, &context, &completed_nodes);
                 if !gate_check.satisfied {
                     if let Some(failed_gate_node) = gate_check.failed_node_id.as_deref() {
                         if let Some(retry_target) =
-                            resolve_goal_gate_retry_target(&graph, failed_gate_node)
+                            resolve_goal_gate_retry_target(&flow, failed_gate_node)
                         {
                             current_node = retry_target;
                             incoming_edge = None;
@@ -416,7 +418,7 @@ where
                             &paths,
                             &run_id,
                             &mut record,
-                            &graph,
+                            &flow,
                             &current_node,
                             &completed_nodes,
                             &context,
@@ -432,7 +434,7 @@ where
                         &paths,
                         &run_id,
                         &mut record,
-                        &graph,
+                        &flow,
                         &current_node,
                         &completed_nodes,
                         &context,
@@ -446,7 +448,7 @@ where
                     );
                 }
 
-                let exit_node = graph.nodes.get(&current_node).ok_or_else(|| {
+                let exit_node = flow.nodes.get(&current_node).ok_or_else(|| {
                     RuntimeStorageError::InvalidRuntimeGraph {
                         reason: format!("Unknown runtime node: {current_node}"),
                     }
@@ -455,7 +457,7 @@ where
                     &store,
                     &paths,
                     &current_node,
-                    &prompt_for_node(exit_node),
+                    &crate::flow_runtime::node_prompt(exit_node),
                     &Outcome::new(OutcomeStatus::Success),
                     &mut status_transitions,
                     &mut artifact_node_ids,
@@ -470,7 +472,7 @@ where
                         &paths,
                         &run_id,
                         &mut record,
-                        &graph,
+                        &flow,
                         &current_node,
                         &completed_nodes,
                         &context,
@@ -486,7 +488,7 @@ where
                     &paths,
                     &run_id,
                     &mut record,
-                    &graph,
+                    &flow,
                     &current_node,
                     &completed_nodes,
                     &context,
@@ -500,7 +502,7 @@ where
                 );
             }
 
-            let node = graph.nodes.get(&current_node).ok_or_else(|| {
+            let node = flow.nodes.get(&current_node).ok_or_else(|| {
                 RuntimeStorageError::InvalidRuntimeGraph {
                     reason: format!("Unknown runtime node: {current_node}"),
                 }
@@ -521,14 +523,14 @@ where
                 None
             };
             set_runtime_fidelity_context(
-                &graph,
+                &flow,
                 &current_node,
                 incoming_edge.as_ref(),
                 &mut context,
                 forced_fidelity,
             )?;
             let stage_index = completed_nodes.len() as u64;
-            let prompt = prompt_for_node(node);
+            let prompt = crate::flow_runtime::node_prompt(node);
             let prior_status = context
                 .get(OUTCOME_KEY)
                 .and_then(|value| value.as_str())
@@ -542,7 +544,7 @@ where
                 &paths,
                 stage_started_event(&run_id, stage_index, &current_node),
             )?;
-            let outgoing_edges = outgoing_routing_edges(&graph, &current_node)?;
+            let outgoing_edges = outgoing_routing_edges(&flow, &current_node)?;
             let run_workdir = context
                 .get("internal.run_workdir")
                 .and_then(|value| value.as_str())
@@ -550,13 +552,15 @@ where
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(&record.working_directory));
             let llm_fallbacks = llm_fallbacks_for_record(&record);
+            let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current_node, node);
             let execution_request = NodeExecutionRequest {
                 node_id: current_node.clone(),
                 stage_index,
                 context: context.snapshot(),
                 prompt: prompt.clone(),
                 node: node.clone(),
-                graph: graph.clone(),
+                node_attrs: node_attrs.clone(),
+                flow: flow.clone(),
                 outgoing_edges,
                 run_paths: Some(paths.clone()),
                 run_workdir,
@@ -580,9 +584,9 @@ where
                 write_run_record(&paths, &record)?;
                 store.append_event(&paths, cleanup_error_event(&run_id, cleanup_error))?;
             }
-            let mut outcome = apply_outcome_context_updates(
+            let mut outcome = apply_outcome_context_updates_for_node(
                 &current_node,
-                &node.attrs,
+                node,
                 &mut context,
                 &raw_outcome,
             )?;
@@ -597,7 +601,7 @@ where
                 &mut artifact_node_ids,
             )?;
 
-            let policy = retry_policy_for_node(&graph, &current_node);
+            let policy = retry_policy_for_node(&flow, &current_node);
             let max_retries = policy.max_attempts.saturating_sub(1);
             let retries_so_far = retry_counts.get(&current_node).copied().unwrap_or(0);
             if should_retry_attempt(&outcome, retries_so_far, &policy) {
@@ -646,16 +650,16 @@ where
             }
 
             let coerced = coerce_retry_exhausted_outcome(
-                &graph,
+                &flow,
                 &current_node,
                 &outcome,
                 retries_so_far,
                 max_retries,
             );
             if coerced != outcome {
-                outcome = apply_outcome_context_updates(
+                outcome = apply_outcome_context_updates_for_node(
                     &current_node,
-                    &node.attrs,
+                    node,
                     &mut context,
                     &coerced,
                 )?;
@@ -735,7 +739,7 @@ where
             }
 
             let next_selection = select_route_after_outcome(
-                &graph,
+                &flow,
                 &current_node,
                 &outcome,
                 &context,
@@ -759,7 +763,7 @@ where
                         &paths,
                         &run_id,
                         &mut record,
-                        &graph,
+                        &flow,
                         &current_node,
                         &completed_nodes,
                         &context,
@@ -775,7 +779,7 @@ where
                     &paths,
                     &run_id,
                     &mut record,
-                    &graph,
+                    &flow,
                     &current_node,
                     &completed_nodes,
                     &context,
@@ -827,12 +831,12 @@ where
 }
 
 fn context_from_checkpoint(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     checkpoint: &CheckpointState,
     current_node: &str,
 ) -> Result<AttractorContext> {
     let mut values = checkpoint.context.clone();
-    for (key, value) in graph_attr_context_seed(graph) {
+    for (key, value) in crate::flow_runtime::flow_context_seed(flow) {
         values.insert(key, value);
     }
     let mut context = AttractorContext::from_map(values)?;
@@ -1007,12 +1011,12 @@ fn resume_outcome_for_node(node_id: &str, context: &AttractorContext) -> Outcome
 
 fn terminal_checkpoint_result(
     checkpoint: &CheckpointState,
-    graph: &DotGraph,
+    flow: &FlowDefinition,
 ) -> Result<PipelineExecutionResult> {
     let completed_nodes = checkpoint
         .completed_nodes
         .iter()
-        .filter(|node_id| graph.nodes.contains_key(node_id.as_str()))
+        .filter(|node_id| flow.nodes.contains_key(node_id.as_str()))
         .cloned()
         .collect::<Vec<_>>();
     let outcome = checkpoint
@@ -1067,10 +1071,6 @@ fn ensure_run_record_defaults(record: &mut RunRecord) -> String {
         record.root_run_id = Some(record.run_id.clone());
     }
     record.run_id.clone()
-}
-
-fn prompt_for_node(node: &attractor_core::DotNode) -> String {
-    spark_agent_adapter::codergen::authored_prompt_for_node(node)
 }
 
 fn outcome_from_node_error(error: RuntimeNodeError) -> Outcome {
@@ -1140,7 +1140,7 @@ fn response_text_for_outcome(outcome: &Outcome) -> String {
 }
 
 fn select_route_after_outcome(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     outcome: &Outcome,
     context: &AttractorContext,
@@ -1148,7 +1148,7 @@ fn select_route_after_outcome(
     prior_preferred_label: &str,
 ) -> Result<Option<NextNodeSelection>> {
     let selection = select_next_node_with_prior(
-        graph,
+        flow,
         node_id,
         outcome,
         context,
@@ -1165,7 +1165,7 @@ fn select_route_after_outcome(
     {
         return Ok(selection.selected_node.is_some().then_some(selection));
     }
-    if let Some(target) = resolve_failure_retry_target(graph, node_id) {
+    if let Some(target) = resolve_failure_retry_target(flow, node_id) {
         return Ok(Some(NextNodeSelection {
             current_node: node_id.to_string(),
             selected_node: Some(target),
@@ -1174,10 +1174,10 @@ fn select_route_after_outcome(
         }));
     }
     if let Some(target) = selection.selected_node.as_deref() {
-        if is_conditional_node(graph, target) {
+        if is_conditional_node(flow, target) {
             return Ok(Some(selection));
         }
-        if is_goal_gate_node(graph, node_id) && is_exit_node(graph, target) {
+        if is_goal_gate_node(flow, node_id) && is_exit_node(flow, target) {
             return Ok(Some(selection));
         }
     }
@@ -1215,7 +1215,7 @@ fn finalize_completed(
     paths: &crate::paths::RunRootPaths,
     run_id: &str,
     record: &mut RunRecord,
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     current_node: &str,
     completed_nodes: &[String],
     context: &AttractorContext,
@@ -1266,7 +1266,7 @@ fn finalize_completed(
             artifact_count,
         ),
     )?;
-    store.materialize_result(paths, run_id, &record.status, graph, &checkpoint, None)?;
+    store.materialize_result(paths, run_id, &record.status, flow, &checkpoint, None)?;
     Ok(PipelineExecutionResult {
         status: "completed".to_string(),
         current_node: current_node.to_string(),
@@ -1287,7 +1287,7 @@ fn finalize_failed(
     paths: &crate::paths::RunRootPaths,
     run_id: &str,
     record: &mut RunRecord,
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     current_node: &str,
     completed_nodes: &[String],
     context: &AttractorContext,
@@ -1338,7 +1338,7 @@ fn finalize_failed(
             ..RunResult::default()
         },
     )?;
-    let _ = graph;
+    let _ = flow;
     let _ = checkpoint;
     Ok(PipelineExecutionResult {
         status: "failed".to_string(),

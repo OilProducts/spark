@@ -1,7 +1,7 @@
 import { useStore, type DiagnosticEntry } from "@/store"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
-import { generateDot, sanitizeGraphId } from "@/lib/dotUtils"
+import { generateFlowYaml, sanitizeFlowId } from "@/lib/flowYamlUtils"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
@@ -9,7 +9,6 @@ import { toExtensionAttrEntries } from "@/lib/extensionAttrs"
 import {
     getReactFlowNodeTypeForShape,
     getShapeNodeStyle,
-    getShapeTypeMismatchWarning,
     normalizeWorkflowNodeShape,
 } from '@/lib/workflowNodeShape'
 import { saveFlowContent } from "@/lib/flowPersistence"
@@ -44,7 +43,20 @@ type FlowGraphSnapshot = {
 }
 const CORE_NODE_ATTR_KEYS = new Set<string>([
     'label',
+    'kind',
+    'config',
+    'context',
+    'contracts',
+    'runtime',
+    'manager',
+    'retry',
+    'execution',
+    'ui',
+    'extensions',
     'shape',
+    'flow_ref',
+    'input_map',
+    'decisions',
     'prompt',
     'tool.command',
     'tool.hooks.pre',
@@ -91,6 +103,18 @@ const CORE_EDGE_ATTR_KEYS = new Set<string>([
 ])
 const EXCLUDED_NODE_EXTENSION_ATTR_KEYS = new Set<string>(['status', 'human.default_choice'])
 
+const NODE_KIND_TO_SHAPE: Record<string, string> = {
+    start: 'Mdiamond',
+    exit: 'Msquare',
+    agent_task: 'box',
+    human_gate: 'hexagon',
+    conditional: 'diamond',
+    parallel: 'component',
+    fan_in: 'tripleoctagon',
+    tool: 'parallelogram',
+    subflow: 'house',
+}
+
 function resolveInspectorScope({
     activeFlow,
     selectedNodeId,
@@ -112,6 +136,16 @@ export function applyNodePropertyChangeToData(
     value: string | boolean,
 ): Record<string, unknown> {
     const nextData = { ...data, [key]: value }
+    if (key === 'kind' && typeof value === 'string') {
+        nextData.shape = NODE_KIND_TO_SHAPE[value] ?? 'box'
+        const existingConfig = nextData.config && typeof nextData.config === 'object'
+            ? nextData.config as Record<string, unknown>
+            : {}
+        nextData.config = { ...existingConfig, kind: value }
+        if (value === 'subflow' && typeof nextData.flow_ref !== 'string') {
+            nextData.flow_ref = typeof existingConfig.flow_ref === 'string' ? existingConfig.flow_ref : 'child.yaml'
+        }
+    }
     if (key === 'join_policy') {
         if (value !== 'k_of_n') {
             delete nextData.join_k
@@ -119,6 +153,12 @@ export function applyNodePropertyChangeToData(
         if (value !== 'quorum') {
             delete nextData.join_quorum
         }
+    }
+    if (key === 'flow_ref') {
+        const existingConfig = nextData.config && typeof nextData.config === 'object'
+            ? nextData.config as Record<string, unknown>
+            : {}
+        nextData.config = { ...existingConfig, kind: 'subflow', flow_ref: value }
     }
     return nextData
 }
@@ -136,7 +176,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const isNarrowViewport = useNarrowViewport()
     const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
-    const graphAttrs = useStore((state) => state.graphAttrs)
+    const flowMetadata = useStore((state) => state.flowMetadata)
     const uiDefaults = useStore((state) => state.uiDefaults)
     const editorNodeInspectorSessionsByNodeId = useStore((state) => state.editorNodeInspectorSessionsByNodeId)
     const updateEditorNodeInspectorSession = useStore((state) => state.updateEditorNodeInspectorSession)
@@ -159,11 +199,11 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const { scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName: activeFlow,
         debounceMs: INSPECTOR_SAVE_DEBOUNCE_MS,
-        buildContent: (snapshot, currentFlowName) => generateDot(
+        buildContent: (snapshot, currentFlowName) => generateFlowYaml(
             currentFlowName,
             snapshot?.nodes || [],
             snapshot?.edges || [],
-            graphAttrs,
+            flowMetadata,
         ),
     })
 
@@ -206,28 +246,46 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const createNewFlow = async () => {
         const name = await prompt({
             title: 'Create flow',
-            description: 'Enter a flow path such as demos/demo.dot.',
+            description: 'Enter a flow path such as demos/demo.yaml.',
             label: 'Flow path',
-            placeholder: 'demos/demo.dot',
+            placeholder: 'demos/demo.yaml',
             confirmLabel: 'Create',
             requireInput: true,
         })
         if (!name) return;
 
-        // Auto-append .dot if missing
-        const fileName = name.endsWith('.dot') ? name : `${name}.dot`;
-        const graphName = sanitizeGraphId(fileName);
-
-        const escapeDot = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-        const uiAttrLines = [
-            uiDefaults.llm_model ? `ui_default_llm_model="${escapeDot(uiDefaults.llm_model)}"` : '',
-            uiDefaults.llm_provider ? `ui_default_llm_provider="${escapeDot(uiDefaults.llm_provider)}"` : '',
-            uiDefaults.llm_profile ? `ui_default_llm_profile="${escapeDot(uiDefaults.llm_profile)}"` : '',
-            uiDefaults.reasoning_effort ? `ui_default_reasoning_effort="${escapeDot(uiDefaults.reasoning_effort)}"` : '',
+        const hasYamlExtension = /\.(ya?ml)$/i.test(name)
+        const fileName = hasYamlExtension ? name : `${name}.yaml`;
+        const flowId = sanitizeFlowId(fileName);
+        const quoteYaml = (value: string) => JSON.stringify(value)
+        const defaults = [
+            uiDefaults.llm_model ? `  llm_model: ${quoteYaml(uiDefaults.llm_model)}` : '',
+            uiDefaults.llm_provider ? `  llm_provider: ${quoteYaml(uiDefaults.llm_provider)}` : '',
+            uiDefaults.llm_profile ? `  llm_profile: ${quoteYaml(uiDefaults.llm_profile)}` : '',
+            uiDefaults.reasoning_effort ? `  reasoning_effort: ${quoteYaml(uiDefaults.reasoning_effort)}` : '',
         ].filter(Boolean)
-        const graphAttrBlock = uiAttrLines.length ? `  graph [${uiAttrLines.join(', ')}];\n` : ''
+        const defaultsBlock = defaults.length ? `defaults:\n${defaults.join('\n')}\n` : ''
 
-        const initialContent = `digraph ${graphName} {\n${graphAttrBlock}  start [shape=Mdiamond, label="Start"];\n  end [shape=Msquare, label="End"];\n  start -> end;\n}`;
+        const initialContent = `schema_version: "1.0"
+id: ${flowId}
+title: ${quoteYaml(fileName)}
+description: ""
+goal: ""
+${defaultsBlock}nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  end:
+    kind: exit
+    label: End
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: end
+`
 
         const saved = await saveFlowContent(fileName, initialContent)
         if (!saved) return
@@ -325,10 +383,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
         : []
     const conditionPreviewHasError = selectedEdgeConditionDiagnostics.some((diag) => diag.severity === 'error')
     const conditionPreviewHasWarning = selectedEdgeConditionDiagnostics.some((diag) => diag.severity === 'warning')
-    const handlerType = getHandlerType(
-        (selectedNode?.data?.shape as string) || '',
-        (selectedNode?.data?.type as string) || ''
-    )
+    const handlerType = getHandlerType((selectedNode?.data?.kind as string) || '')
     const selectedNodeReadsContextRaw = typeof selectedNode?.data?.['spark.reads_context'] === 'string'
         ? selectedNode.data['spark.reads_context']
         : ''
@@ -369,10 +424,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const visibility = getNodeFieldVisibility(handlerType)
     const selectedNodeToolHookPreWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.pre"] as string) || "")
     const selectedNodeToolHookPostWarning = getToolHookCommandWarning((selectedNode?.data?.["tool.hooks.post"] as string) || "")
-    const selectedNodeShapeTypeMismatchWarning = getShapeTypeMismatchWarning(
-        (selectedNode?.data?.shape as string) || '',
-        (selectedNode?.data?.type as string) || '',
-    )
     const nodeFieldDiagnostics = useMemo(() => {
         if (!selectedNodeId) {
             return {}
@@ -604,7 +655,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                     <NodeInspectorPanel
                         selectedNodeId={selectedNodeId}
                         selectedNode={selectedNode}
-                        graphAttrs={graphAttrs}
                         visibility={visibility}
                         readsContextDraft={readsContextDraft}
                         readsContextError={readsContextError}
@@ -615,7 +665,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
                         selectedNodeExtensionEntries={selectedNodeExtensionEntries}
                         selectedNodeToolHookPreWarning={selectedNodeToolHookPreWarning}
                         selectedNodeToolHookPostWarning={selectedNodeToolHookPostWarning}
-                        selectedNodeShapeTypeMismatchWarning={selectedNodeShapeTypeMismatchWarning}
                         onPropertyChange={handlePropertyChange}
                         onOpenGraphChildSettings={openGraphChildSettings}
                         onReadsContextChange={handleReadsContextChange}

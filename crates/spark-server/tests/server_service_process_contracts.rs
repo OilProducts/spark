@@ -39,7 +39,7 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
         )
     );
 
-    assert_eq!(count_dot_files(&harness.flows_dir), 9);
+    assert_eq!(count_yaml_files(&harness.flows_dir), 9);
     assert!(harness
         .data_dir
         .join("config")
@@ -282,14 +282,17 @@ fn invocation(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_string()).collect()
 }
 
-fn count_dot_files(root: &Path) -> usize {
+fn count_yaml_files(root: &Path) -> usize {
     fs::read_dir(root)
         .expect("read flow dir")
         .map(|entry| entry.expect("entry").path())
         .map(|path| {
             if path.is_dir() {
-                count_dot_files(&path)
-            } else if path.extension().and_then(|value| value.to_str()) == Some("dot") {
+                count_yaml_files(&path)
+            } else if matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("yaml" | "yml")
+            ) {
                 1
             } else {
                 0

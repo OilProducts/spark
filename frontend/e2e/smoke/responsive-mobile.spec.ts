@@ -2,13 +2,34 @@ import { expect, test, type Page } from '@playwright/test'
 import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
 
 const MOBILE_PROJECT_PATH = '/tmp/ui-smoke-mobile-project'
-const MOBILE_FLOW_NAME = 'mobile-smoke.dot'
+const MOBILE_FLOW_NAME = 'mobile-smoke.yaml'
 const MOBILE_RUN_ID = 'run-mobile-ops'
-const MOBILE_FLOW_DOT = `digraph G {
-  start [label="Start"]
-  task [label="Task"]
-  start -> task
-}`
+const MOBILE_FLOW_YAML = `schema_version: "1"
+id: mobile_smoke
+title: Mobile Smoke
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  task:
+    kind: agent_task
+    label: Task
+    config:
+      kind: agent_task
+      prompt: Check the mobile smoke surface.
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
+`
 
 const seedRouteState = async (page: Page) => {
   await page.addInitScript(
@@ -103,7 +124,7 @@ const stubResponsiveSmokeApis = async (page: Page) => {
         contentType: 'application/json',
         body: JSON.stringify({
           name: MOBILE_FLOW_NAME,
-          content: MOBILE_FLOW_DOT,
+          content: MOBILE_FLOW_YAML,
         }),
       })
       return

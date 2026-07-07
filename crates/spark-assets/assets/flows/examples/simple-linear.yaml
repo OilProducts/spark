@@ -1,0 +1,92 @@
+schema_version: '1'
+id: simple_linear
+title: Simple Linear Workflow
+description: A minimal starter flow that plans a small change, executes it, and summarizes the outcome.
+goal: Inspect the repository, make one targeted improvement, and summarize the result.
+defaults:
+  llm_provider: codex
+  llm_model: gpt-5.5
+nodes:
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  implement:
+    kind: agent_task
+    label: Implement
+    config:
+      kind: agent_task
+      prompt: Carry out the planned improvement in the repository and validate the result before moving on.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  plan:
+    kind: agent_task
+    label: Plan
+    config:
+      kind: agent_task
+      prompt: Inspect the repository and plan the targeted improvement needed to satisfy the stated goal.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  summarize:
+    kind: agent_task
+    label: Summarize
+    config:
+      kind: agent_task
+      prompt: Summarize what changed, what was validated, and any remaining follow-up for the stated goal.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+edges:
+- from: implement
+  to: summarize
+  extensions:
+    loop_restart: false
+- from: plan
+  to: implement
+  extensions:
+    loop_restart: false
+- from: start
+  to: plan
+  extensions:
+    loop_restart: false
+- from: summarize
+  to: done
+  extensions:
+    loop_restart: false

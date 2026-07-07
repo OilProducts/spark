@@ -18,8 +18,8 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
         .create_run(CreateRunRequest {
             record: failed_record("run-control", &project_path),
             checkpoint: Some(checkpoint("task")),
-            graph_source: Some(simple_flow()),
-            graph_dot: Some(simple_flow()),
+            flow_source: Some(simple_flow()),
+            flow_definition_json: Some(simple_flow()),
             ..CreateRunRequest::default()
         })
         .expect("failed run");
@@ -136,7 +136,7 @@ fn reset_clears_only_runs_directory() {
     let settings = settings(temp.path());
     let flow_dir = settings.flows_dir.clone();
     fs::create_dir_all(&flow_dir).expect("flows");
-    fs::write(flow_dir.join("kept.dot"), simple_flow()).expect("flow");
+    fs::write(flow_dir.join("kept.yaml"), simple_flow()).expect("flow");
     let project_path = temp.path().join("Project Reset");
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
@@ -157,12 +157,12 @@ fn reset_clears_only_runs_directory() {
         .read_run_bundle("run-reset")
         .expect("read")
         .is_none());
-    assert!(flow_dir.join("kept.dot").is_file());
+    assert!(flow_dir.join("kept.yaml").is_file());
 }
 
 fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "control.dot".to_string();
+    record.flow_name = "control.yaml".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
     record.started_at = "2026-06-23T10:00:00Z".to_string();
@@ -189,14 +189,26 @@ fn checkpoint(current_node: &str) -> CheckpointState {
 }
 
 fn simple_flow() -> String {
-    r#"
-    digraph ApiControls {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write a control note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
-    "#
+    r#"schema_version: "1"
+id: api_controls
+title: API Controls
+nodes:
+  start:
+    kind: start
+  task:
+    kind: agent_task
+    label: Task
+    config:
+      kind: agent_task
+      prompt: Write a control note
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
+"#
     .to_string()
 }
 

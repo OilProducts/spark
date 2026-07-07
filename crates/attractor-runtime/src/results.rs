@@ -1,13 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use attractor_core::{CheckpointState, DotGraph, RunResult};
+use attractor_core::{CheckpointState, FlowDefinition, NodeKind, RunResult};
 use spark_storage::{read_json_optional, write_json_atomic, write_text_atomic, JsonWriteOptions};
 
 use crate::error::{Result, RuntimeStorageError};
 use crate::paths::RunRootPaths;
 
 pub const DEFAULT_RESULT_SUMMARY_PROMPT: &str = "Summarize the following flow result for a user who needs the final outcome, important details, and any follow-up actions. Keep the answer concise and faithful to the source text.";
-const TERMINAL_NODE_SHAPES: &[&str] = &["Mdiamond", "Msquare"];
 const SUCCESSFUL_SOURCE_OUTCOMES: &[&str] = &["success", "partial_success"];
 
 pub type ResultSummaryFn = dyn Fn(&str, &str) -> std::result::Result<String, String>;
@@ -35,11 +34,11 @@ pub fn materialize_run_result(
     paths: &RunRootPaths,
     run_id: &str,
     status: &str,
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     checkpoint: &CheckpointState,
     summarize: Option<&ResultSummaryFn>,
 ) -> Result<RunResult> {
-    let result = match resolve_run_result(paths, run_id, status, graph, checkpoint, summarize) {
+    let result = match resolve_run_result(paths, run_id, status, flow, checkpoint, summarize) {
         Ok(result) => result,
         Err(error) => RunResult {
             run_id: run_id.to_string(),
@@ -57,11 +56,11 @@ fn resolve_run_result(
     paths: &RunRootPaths,
     run_id: &str,
     status: &str,
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     checkpoint: &CheckpointState,
     summarize: Option<&ResultSummaryFn>,
 ) -> Result<RunResult> {
-    let Some(source_node_id) = select_source_node_id(graph, checkpoint) else {
+    let Some(source_node_id) = select_source_node_id(flow, checkpoint) else {
         return Ok(RunResult::unavailable(run_id, status));
     };
     let Some(source_artifact_path) = source_artifact_path(paths, &source_node_id) else {
@@ -76,8 +75,8 @@ fn resolve_run_result(
                 source,
             )
         })?;
-    let summary_enabled = graph_attr_bool(graph, "spark.result_summary_enabled", false);
-    let mut summary_prompt = graph_attr_text(graph, "spark.result_summary_prompt");
+    let summary_enabled = flow_attr_bool(flow, "spark.result_summary_enabled", false);
+    let mut summary_prompt = flow_attr_text(flow, "spark.result_summary_prompt");
     if summary_enabled && summary_prompt.is_none() {
         summary_prompt = Some(DEFAULT_RESULT_SUMMARY_PROMPT.to_string());
     }
@@ -125,28 +124,30 @@ fn resolve_run_result(
     })
 }
 
-fn select_source_node_id(graph: &DotGraph, checkpoint: &CheckpointState) -> Option<String> {
-    if let Some(explicit) = graph_attr_text(graph, "spark.result_node") {
-        return source_node_is_valid(graph, checkpoint, &explicit).then_some(explicit);
+fn select_source_node_id(flow: &FlowDefinition, checkpoint: &CheckpointState) -> Option<String> {
+    if let Some(explicit) = flow_attr_text(flow, "spark.result_node") {
+        return source_node_is_valid(flow, checkpoint, &explicit).then_some(explicit);
     }
 
-    let exit_predecessors = graph
+    let exit_predecessors = flow
         .edges
         .iter()
         .filter(|edge| {
-            node_shape(graph, &edge.target) == "Msquare"
+            flow.nodes
+                .get(&edge.to)
+                .is_some_and(|node| node.kind == NodeKind::Exit)
                 && (checkpoint.current_node.is_empty()
-                    || edge.target == checkpoint.current_node
-                    || !graph.nodes.contains_key(&checkpoint.current_node))
+                    || edge.to == checkpoint.current_node
+                    || !flow.nodes.contains_key(&checkpoint.current_node))
         })
-        .map(|edge| edge.source.clone())
+        .map(|edge| edge.from.clone())
         .collect::<Vec<_>>();
 
     for node_id in checkpoint.completed_nodes.iter().rev() {
         if !exit_predecessors.contains(node_id) {
             continue;
         }
-        if source_node_is_valid(graph, checkpoint, node_id) {
+        if source_node_is_valid(flow, checkpoint, node_id) {
             return Some(node_id.clone());
         }
     }
@@ -154,15 +155,19 @@ fn select_source_node_id(graph: &DotGraph, checkpoint: &CheckpointState) -> Opti
         .completed_nodes
         .iter()
         .rev()
-        .find(|node_id| source_node_is_valid(graph, checkpoint, node_id))
+        .find(|node_id| source_node_is_valid(flow, checkpoint, node_id))
         .cloned()
 }
 
-fn source_node_is_valid(graph: &DotGraph, checkpoint: &CheckpointState, node_id: &str) -> bool {
-    if !graph.nodes.contains_key(node_id) {
+fn source_node_is_valid(
+    flow: &FlowDefinition,
+    checkpoint: &CheckpointState,
+    node_id: &str,
+) -> bool {
+    let Some(node) = flow.nodes.get(node_id) else {
         return false;
-    }
-    if TERMINAL_NODE_SHAPES.contains(&node_shape(graph, node_id).as_str()) {
+    };
+    if matches!(node.kind, NodeKind::Start | NodeKind::Exit) {
         return false;
     }
     let outcomes = checkpoint.context.get("_attractor.node_outcomes");
@@ -190,25 +195,12 @@ fn source_artifact_path(paths: &RunRootPaths, node_id: &str) -> Option<PathBuf> 
     })
 }
 
-fn node_shape(graph: &DotGraph, node_id: &str) -> String {
-    graph
-        .nodes
-        .get(node_id)
-        .and_then(|node| node.attrs.get("shape"))
-        .map(|attr| attr.value.to_string())
-        .unwrap_or_default()
+fn flow_attr_text(flow: &FlowDefinition, key: &str) -> Option<String> {
+    crate::flow_runtime::flow_attr_text(flow, key)
 }
 
-fn graph_attr_text(graph: &DotGraph, key: &str) -> Option<String> {
-    graph
-        .graph_attrs
-        .get(key)
-        .map(|attr| attr.value.to_string().trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn graph_attr_bool(graph: &DotGraph, key: &str, default: bool) -> bool {
-    graph_attr_text(graph, key)
+fn flow_attr_bool(flow: &FlowDefinition, key: &str, default: bool) -> bool {
+    flow_attr_text(flow, key)
         .map(|value| matches!(value.to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(default)
 }

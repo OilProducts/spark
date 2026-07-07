@@ -1,0 +1,690 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ExecutionConfig": {
+      "properties": {
+        "llm_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "llm_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "llm_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FlowDefaults": {
+      "properties": {
+        "extensions": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "fidelity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "llm_model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "llm_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "llm_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_retries": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoning_effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "FlowEdge": {
+      "properties": {
+        "condition": {
+          "default": "",
+          "type": "string"
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "from": {
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "transition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "weight": {
+          "default": 0,
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "FlowInput": {
+      "properties": {
+        "default": true,
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "default": "",
+          "type": "string"
+        },
+        "required": {
+          "default": false,
+          "type": "boolean"
+        },
+        "type": {
+          "default": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "FlowNode": {
+      "properties": {
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NodeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "contracts": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NodeContracts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "default": "",
+          "type": "string"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExecutionConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "kind": {
+          "$ref": "#/definitions/NodeKind"
+        },
+        "label": {
+          "default": "",
+          "type": "string"
+        },
+        "manager": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ManagerLoopConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RetryConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NodeRuntimeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ui": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UiConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "HumanDecision": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "ManagerLoopConfig": {
+      "properties": {
+        "actions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "child_autostart": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "child_workdir": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_cycles": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "poll_interval": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steer_cooldown": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stop_condition": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NodeConfig": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "start"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "exit"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "agent_task"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "decisions": {
+              "items": {
+                "$ref": "#/definitions/HumanDecision"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "human_gate"
+              ],
+              "type": "string"
+            },
+            "prompt": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "conditional"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "join_k": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "join_policy": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "join_quorum": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "parallel"
+              ],
+              "type": "string"
+            },
+            "max_parallel": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "fan_in"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "default": "",
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "tool"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "flow_ref": {
+              "type": "string"
+            },
+            "input_map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "kind": {
+              "enum": [
+                "subflow"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "flow_ref",
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NodeContracts": {
+      "properties": {
+        "reads_context": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "repair_attempts": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "response": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "writes_context": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "NodeKind": {
+      "enum": [
+        "start",
+        "exit",
+        "agent_task",
+        "human_gate",
+        "conditional",
+        "parallel",
+        "fan_in",
+        "tool",
+        "subflow"
+      ],
+      "type": "string"
+    },
+    "NodeRuntimeConfig": {
+      "properties": {
+        "allow_partial": {
+          "type": "boolean"
+        },
+        "auto_status": {
+          "type": "boolean"
+        },
+        "class": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error_policy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fallback_retry_target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fidelity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_gate": {
+          "type": "boolean"
+        },
+        "retry_target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RetryConfig": {
+      "properties": {
+        "max_retries": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "policy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "UiConfig": {
+      "properties": {
+        "x": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "y": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "properties": {
+    "defaults": {
+      "$ref": "#/definitions/FlowDefaults"
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/definitions/FlowEdge"
+      },
+      "type": "array"
+    },
+    "extensions": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "goal": {
+      "default": "",
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/definitions/FlowInput"
+      },
+      "type": "array"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "nodes": {
+      "additionalProperties": {
+        "$ref": "#/definitions/FlowNode"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "schema_version": {
+      "default": "1",
+      "type": "string"
+    },
+    "title": {
+      "default": "",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "FlowDefinition",
+  "type": "object"
+}

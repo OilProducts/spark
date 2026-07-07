@@ -1,125 +1,147 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use attractor_api::{
     handle_attractor_request, handle_preview_request, preview, preview_with_flows_dir,
     PreviewRequest, PreviewServiceConfig,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use spark_common::settings::SparkSettings;
 
 #[test]
-fn preview_service_body_matches_success_fixture() {
-    let fixture = fixture_json("http/attractor-preview-success.json");
+fn preview_service_body_reports_flow_definition_graph() {
     let response = preview(PreviewRequest {
-        flow_content: fixture["request"]["body"]["json"]["flow_content"]
-            .as_str()
-            .unwrap()
-            .to_string(),
+        flow_content: simple_flow(),
         flow_name: None,
         expand_children: false,
     });
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body, fixture["response"]["body"]["json"]);
+    assert_eq!(response.body["status"], json!("ok"));
+    assert!(response.body["graph"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .any(|node| node["id"] == json!("start")));
 }
 
 #[test]
-fn preview_service_body_matches_parse_error_fixture() {
-    let fixture = fixture_json("http/attractor-preview-parse-error.json");
+fn preview_service_body_reports_yaml_parse_errors() {
     let response = preview(PreviewRequest {
-        flow_content: fixture["request"]["body"]["json"]["flow_content"]
-            .as_str()
-            .unwrap()
-            .to_string(),
+        flow_content: "nodes: [".to_string(),
         flow_name: None,
         expand_children: false,
     });
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body, fixture["response"]["body"]["json"]);
+    assert_eq!(response.body["status"], json!("validation_error"));
+    assert_eq!(
+        response.body["errors"][0]["rule_id"],
+        json!("flow_definition")
+    );
 }
 
 #[test]
 fn preview_service_reports_validation_errors_with_http_success_status() {
-    let flow = r#"
-    digraph Broken {
-      start [shape=Mdiamond];
-      done [shape=Msquare];
-      start -> missing;
-    }
-    "#;
-
     let response = preview(PreviewRequest {
-        flow_content: flow.to_string(),
+        flow_content: r#"schema_version: "1"
+id: broken
+nodes:
+  start:
+    kind: start
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: missing
+"#
+        .to_string(),
         flow_name: None,
         expand_children: false,
     });
 
     assert_eq!(response.status_code, 200);
-    assert_eq!(response.body["status"], "validation_error");
-    assert!(response.body["graph"].is_object());
-    let error_rules = response.body["errors"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|diagnostic| diagnostic["rule"].as_str().unwrap().to_string())
-        .collect::<Vec<_>>();
-    assert!(error_rules.contains(&"edge_target_exists".to_string()));
+    assert_eq!(response.body["status"], json!("validation_error"));
+    assert_eq!(
+        response.body["errors"][0]["rule_id"],
+        json!("flow_definition")
+    );
 }
 
 #[test]
-fn preview_service_uses_flow_name_parent_as_child_preview_base_dir() {
+fn preview_service_accepts_flow_name_and_expand_children_flags() {
     let temp = tempfile::tempdir().expect("tempdir");
     let flows_dir = temp.path().join("flows");
-    let nested_dir = flows_dir.join("nested");
-    fs::create_dir_all(&nested_dir).expect("nested dir");
-    let child_path = nested_dir.join("child.dot");
-    fs::write(
-        &child_path,
-        r#"
-        digraph Child {
-          start [shape=Mdiamond];
-          done [shape=Msquare];
-          start -> done;
-        }
-        "#,
-    )
-    .expect("write child");
-
-    let parent = r#"
-    digraph Parent {
-      graph [stack.child_dotfile="child.dot"];
-      start [shape=Mdiamond];
-      manager [shape=house, prompt="Manage"];
-      done [shape=Msquare];
-      start -> manager -> done;
-    }
-    "#;
-
     let response = preview_with_flows_dir(
         PreviewRequest {
-            flow_content: parent.to_string(),
-            flow_name: Some("nested/parent.dot".to_string()),
+            flow_content: simple_flow(),
+            flow_name: Some("nested/parent.yaml".to_string()),
             expand_children: true,
         },
         &flows_dir,
     );
 
     assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["status"], json!("ok"));
+}
+
+#[test]
+fn preview_service_expands_subflow_children_from_flows_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let flows_dir = temp.path().join("flows");
+    let nested_dir = flows_dir.join("nested");
+    std::fs::create_dir_all(&nested_dir).expect("flows dir");
+    std::fs::write(nested_dir.join("child.yaml"), child_flow()).expect("child flow");
+
+    let response = preview_with_flows_dir(
+        PreviewRequest {
+            flow_content: r#"schema_version: "1"
+id: parent
+title: Parent
+nodes:
+  start:
+    kind: start
+  child:
+    kind: subflow
+    label: Child
+    config:
+      kind: subflow
+      flow_ref: child.yaml
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: child
+  - from: child
+    to: done
+"#
+            .to_string(),
+            flow_name: Some("nested/parent.yaml".to_string()),
+            expand_children: true,
+        },
+        &flows_dir,
+    );
+
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["status"], json!("ok"));
     assert_eq!(
-        response.body["graph"]["child_previews"]["manager"]["flow_path"],
-        child_path.to_string_lossy().to_string()
+        response.body["graph"]["child_previews"]["child"]["flow_name"],
+        json!("nested/child.yaml")
+    );
+    assert!(
+        response.body["graph"]["child_previews"]["child"]["graph"]["nodes"]
+            .as_array()
+            .expect("child nodes")
+            .iter()
+            .any(|node| node["kind"] == json!("human_gate"))
     );
 }
 
 #[test]
 fn preview_route_wrapper_accepts_post_preview_json() {
-    let fixture = fixture_json("http/attractor-preview-success.json");
     let body = json!({
-        "flow_content": fixture["request"]["body"]["json"]["flow_content"],
+        "flow_content": simple_flow(),
     })
     .to_string();
 
@@ -128,14 +150,13 @@ fn preview_route_wrapper_accepts_post_preview_json() {
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body, fixture["response"]["body"]["json"]);
+    assert_eq!(response.body["status"], json!("ok"));
 }
 
 #[test]
 fn preview_route_wrapper_accepts_mounted_attractor_preview_path() {
-    let fixture = fixture_json("http/attractor-preview-success.json");
     let body = json!({
-        "flow_content": fixture["request"]["body"]["json"]["flow_content"],
+        "flow_content": simple_flow(),
     })
     .to_string();
 
@@ -148,7 +169,7 @@ fn preview_route_wrapper_accepts_mounted_attractor_preview_path() {
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.content_type, "application/json");
-    assert_eq!(response.body, fixture["response"]["body"]["json"]);
+    assert_eq!(response.body["status"], json!("ok"));
 }
 
 #[test]
@@ -170,6 +191,54 @@ fn preview_route_wrapper_rejects_non_preview_routes_without_server_scope() {
     assert_eq!(response.body, json!({"detail": "Not Found"}));
 }
 
+fn simple_flow() -> String {
+    r#"schema_version: "1"
+id: preview
+title: Preview
+nodes:
+  start:
+    kind: start
+  task:
+    kind: agent_task
+    label: Task
+    config:
+      kind: agent_task
+      prompt: Preview task
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
+"#
+    .to_string()
+}
+
+fn child_flow() -> String {
+    r#"schema_version: "1"
+id: child
+title: Child
+nodes:
+  start:
+    kind: start
+  human:
+    kind: human_gate
+    label: Human
+    config:
+      kind: human_gate
+      prompt: Review
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: human
+  - from: human
+    to: done
+"#
+    .to_string()
+}
+
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
         project_root: root.join("project"),
@@ -185,25 +254,4 @@ fn settings(root: &Path) -> SparkSettings {
         ui_dir: None,
         project_roots: Vec::new(),
     }
-}
-
-fn fixture_json(relative: &str) -> Value {
-    let path = workspace_root()
-        .join("crates")
-        .join("test-fixtures")
-        .join("compat")
-        .join(relative);
-    serde_json::from_str(
-        &fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("unable to read fixture {}: {error}", path.display())),
-    )
-    .expect("fixture json")
-}
-
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_path_buf()
 }

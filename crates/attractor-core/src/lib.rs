@@ -18,6 +18,9 @@ pub mod context_contracts;
 /// Core error types.
 pub mod error;
 
+/// FlowDefinition YAML workflow model.
+pub mod flow_definition;
+
 /// Graph model and identifier boundary.
 pub mod graph;
 
@@ -43,6 +46,12 @@ pub use context_contracts::{
     ContextWriteContract, ContextWriteContractViolation,
 };
 pub use error::{AttractorCoreError, Result};
+pub use flow_definition::{
+    flow_definition_schema_value, ExecutionConfig, FlowDefaults, FlowDefinition,
+    FlowDefinitionError, FlowDiagnostic, FlowEdge, FlowInput, FlowMetadata, FlowNode,
+    HumanDecision, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig,
+    RetryConfig, UiConfig,
+};
 pub use graph::{
     attr_bool, attr_i64, attr_string, attr_text, dot_value_text, dot_value_to_json,
     node_has_explicit_attr, node_shape, routing_edge_from_dot_edge, AttributeMap, AttributeValue,

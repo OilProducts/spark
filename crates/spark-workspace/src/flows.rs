@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use attractor_dsl::{parse_dot, DotGraph, DotNode, DotValue, FlowSourceError};
+use attractor_core::{FlowDefinition, NodeKind};
+use attractor_dsl::FlowSourceError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use spark_common::settings::SparkSettings;
@@ -110,18 +111,24 @@ impl WorkspaceFlowService {
     ) -> WorkspaceResult<WorkspaceFlowDescription> {
         let surface = validate_surface(surface)?;
         let source = self.read_existing_flow(flow_name)?;
-        let graph = parse_dot(&source.content)
-            .map_err(|_| WorkspaceError::Internal(format!("Invalid flow file: {}", source.name)))?;
         let catalog = load_flow_catalog(&self.settings.config_dir)?;
         let entry = catalog.get(&source.name).cloned().unwrap_or_default();
-        let summary = build_flow_summary_from_graph(&source.name, &graph, entry);
+        let summary = build_flow_summary_from_definition(&source.name, &source.flow, entry);
         filter_flow_surface_or_404(&summary, surface)?;
         Ok(WorkspaceFlowDescription {
-            node_count: graph.nodes.len(),
-            edge_count: graph.edges.len(),
+            node_count: source.flow.nodes.len(),
+            edge_count: source.flow.edges.len(),
             features: WorkspaceFlowFeatures {
-                has_human_gate: graph.nodes.values().any(is_human_gate),
-                has_manager_loop: graph.nodes.values().any(is_manager_loop),
+                has_human_gate: source
+                    .flow
+                    .nodes
+                    .values()
+                    .any(|node| node.kind == NodeKind::HumanGate),
+                has_manager_loop: source
+                    .flow
+                    .nodes
+                    .values()
+                    .any(|node| node.kind == NodeKind::Subflow),
             },
             summary,
         })
@@ -150,15 +157,26 @@ impl WorkspaceFlowService {
     }
 
     pub fn validate_flow(&self, flow_name: &str) -> WorkspaceResult<Value> {
-        let source = self.read_existing_flow(flow_name)?;
-        let preview = attractor_api::preview_named_flow_source(
-            &self.settings.flows_dir,
-            &source.name,
-            &source.content,
-        );
-        let path = source.path.canonicalize().unwrap_or(source.path);
+        let path = attractor_api::resolve_logical_flow_path(&self.settings.flows_dir, flow_name)
+            .map_err(|error| flow_source_error(error, Some(flow_name)))?;
+        if !path.exists() {
+            return Err(WorkspaceError::NotFound(format!(
+                "Unknown flow: {flow_name}"
+            )));
+        }
+        let content = fs::read_to_string(&path).map_err(|error| {
+            WorkspaceError::Internal(format!(
+                "Unable to read flow file {}: {error}",
+                path.display()
+            ))
+        })?;
+        let name = attractor_dsl::flow_name_from_path(&self.settings.flows_dir, &path)
+            .map_err(|error| flow_source_error(error, Some(flow_name)))?;
+        let preview =
+            attractor_api::preview_named_flow_source(&self.settings.flows_dir, &name, &content);
+        let path = path.canonicalize().unwrap_or(path);
         let mut payload = Map::new();
-        payload.insert("name".to_string(), Value::String(source.name));
+        payload.insert("name".to_string(), Value::String(name));
         payload.insert(
             "path".to_string(),
             Value::String(path.to_string_lossy().into_owned()),
@@ -268,25 +286,20 @@ fn build_flow_summary(
     let Ok(content) = fs::read_to_string(flow_path) else {
         return fallback_summary(flow_name, fallback_title, entry);
     };
-    match parse_dot(&content) {
-        Ok(graph) => build_flow_summary_from_graph(flow_name, &graph, entry),
+    match attractor_dsl::parse_flow_definition(&content) {
+        Ok(flow) => build_flow_summary_from_definition(flow_name, &flow, entry),
         Err(_) => fallback_summary(flow_name, fallback_title, entry),
     }
 }
 
-fn build_flow_summary_from_graph(
+fn build_flow_summary_from_definition(
     flow_name: &str,
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     entry: FlowCatalogEntry,
 ) -> WorkspaceFlowSummary {
-    let graph_label = graph_attr_string(graph, "label");
-    let graph_goal = graph_attr_string(graph, "goal");
-    let spark_title = graph_attr_string(graph, "spark.title");
-    let spark_description = graph_attr_string(graph, "spark.description");
-    let title = first_non_empty(&[spark_title.as_str(), graph_label.as_str()])
-        .unwrap_or_else(|| flow_stem(flow_name));
+    let title = first_non_empty(&[flow.title.as_str()]).unwrap_or_else(|| flow_stem(flow_name));
     let description =
-        first_non_empty(&[spark_description.as_str(), graph_goal.as_str()]).unwrap_or_default();
+        first_non_empty(&[flow.description.as_str(), flow.goal.as_str()]).unwrap_or_default();
     WorkspaceFlowSummary {
         name: flow_name.to_string(),
         title,
@@ -296,8 +309,8 @@ fn build_flow_summary_from_graph(
             .launch_policy
             .unwrap_or_else(|| LAUNCH_POLICY_DISABLED.to_string()),
         execution_lock: entry.execution_lock,
-        graph_label,
-        graph_goal,
+        graph_label: flow.title.clone(),
+        graph_goal: flow.goal.clone(),
     }
 }
 
@@ -318,44 +331,6 @@ fn fallback_summary(
         graph_label: String::new(),
         graph_goal: String::new(),
     }
-}
-
-fn graph_attr_string(graph: &DotGraph, key: &str) -> String {
-    graph
-        .graph_attrs
-        .get(key)
-        .map(|attr| dot_value_to_string(&attr.value))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-fn node_attr_string(node: &DotNode, key: &str) -> String {
-    node.attrs
-        .get(key)
-        .map(|attr| dot_value_to_string(&attr.value))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-fn dot_value_to_string(value: &DotValue) -> String {
-    match value {
-        DotValue::Null => String::new(),
-        other => other.to_string(),
-    }
-}
-
-fn is_human_gate(node: &DotNode) -> bool {
-    let node_type = node_attr_string(node, "type");
-    let node_shape = node_attr_string(node, "shape");
-    node_type == "wait.human" || node_shape == "hexagon"
-}
-
-fn is_manager_loop(node: &DotNode) -> bool {
-    let node_type = node_attr_string(node, "type");
-    let node_shape = node_attr_string(node, "shape");
-    node_type == "stack.manager_loop" || node_shape == "house"
 }
 
 fn first_non_empty(values: &[&str]) -> Option<String> {

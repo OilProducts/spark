@@ -92,8 +92,10 @@ export function ExecutionControls() {
         expandChildFlows,
     )
     const parsedLaunchInputs = useMemo(
-        () => parseLaunchInputDefinitions(graphAttrs['spark.launch_inputs']),
-        [graphAttrs],
+        () => parseLaunchInputDefinitions(
+            hydratedGraph?.flowInputs.length ? hydratedGraph.flowInputs : graphAttrs.inputs,
+        ),
+        [graphAttrs, hydratedGraph?.flowInputs],
     )
     const launchInputCount = parsedLaunchInputs.entries.length
     const launchInputsCollapsed = executionFlowName ? (collapsedLaunchInputsByFlow[executionFlowName] ?? false) : false
@@ -152,14 +154,14 @@ export function ExecutionControls() {
         ? Boolean(executionContinuation?.startNodeId) && !hasValidationErrors
         : Boolean(activeProjectPath) && Boolean(executionFlowName) && !hasValidationErrors
     const visibleDiagnostics = diagnostics.slice(0, 8)
-    const selectedLlmProvider = typeof graphAttrs.ui_default_llm_provider === 'string'
-        ? graphAttrs.ui_default_llm_provider
+    const selectedLlmProvider = typeof graphAttrs.llm_provider === 'string'
+        ? graphAttrs.llm_provider
         : ''
-    const selectedLlmProfile = typeof graphAttrs.ui_default_llm_profile === 'string'
-        ? graphAttrs.ui_default_llm_profile
+    const selectedLlmProfile = typeof graphAttrs.llm_profile === 'string'
+        ? graphAttrs.llm_profile
         : ''
-    const selectedReasoningEffort = typeof graphAttrs.ui_default_reasoning_effort === 'string'
-        ? graphAttrs.ui_default_reasoning_effort
+    const selectedReasoningEffort = typeof graphAttrs.reasoning_effort === 'string'
+        ? graphAttrs.reasoning_effort
         : ''
     const runInitiationForm = {
         projectPath: activeProjectPath || '',
@@ -569,7 +571,7 @@ export function ExecutionControls() {
                                     className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
                                 >
                                     <AlertDescription className="text-inherit">
-                                        Execution lock: {workspaceFlowMetadata.execution_lock.scope} / {workspaceFlowMetadata.execution_lock.key} / {workspaceFlowMetadata.execution_lock.conflict_policy}. This launch policy is stored in the workspace flow catalog, not in DOT.
+                                        Execution lock: {workspaceFlowMetadata.execution_lock.scope} / {workspaceFlowMetadata.execution_lock.key} / {workspaceFlowMetadata.execution_lock.conflict_policy}. This launch policy is stored in the workspace flow catalog, not in YAML.
                                     </AlertDescription>
                                 </Alert>
                             ) : null}

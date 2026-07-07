@@ -819,7 +819,7 @@ async fn live_route_replays_manager_loop_child_journals_with_combined_cursor() {
         json!({"kind": "run", "id": "run-live-parent"})
     );
     assert_eq!(child["payload"]["source_parent_node_id"], "manager");
-    assert_eq!(child["payload"]["source_flow_name"], "child-live.dot");
+    assert_eq!(child["payload"]["source_flow_name"], "child-live.yaml");
     assert_eq!(child["payload"]["payload"]["source_scope"], "child");
     assert_eq!(
         child["payload"]["payload"]["source_parent_node_id"],
@@ -827,7 +827,7 @@ async fn live_route_replays_manager_loop_child_journals_with_combined_cursor() {
     );
     assert_eq!(
         child["payload"]["payload"]["source_flow_name"],
-        "child-live.dot"
+        "child-live.yaml"
     );
     assert_eq!(
         child["payload"]["payload"]["source_run_id"],
@@ -862,7 +862,7 @@ async fn live_route_replays_manager_loop_child_journals_with_combined_cursor() {
 async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/live.dot");
+    write_flow(&settings, "ops/live.yaml");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let app = build_app(settings.clone());
@@ -889,7 +889,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/live.dot",
+            "flow_name": "ops/live.yaml",
             "summary": "Launch from open SSE overview",
             "project_path": project_path,
             "model": "compat-model"
@@ -953,7 +953,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
 async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let app = build_app(settings);
@@ -981,7 +981,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run.dot",
+                "flow_name": "ops/run.yaml",
                 "project_path": project_path,
                 "static_context": {"origin": "compat"}
             },
@@ -1026,7 +1026,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
 async fn live_route_streams_source_activation_trigger_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
@@ -1055,7 +1055,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
             "name": "Due schedule",
             "source_type": "schedule",
             "action": {
-                "flow_name": "ops/run.dot",
+                "flow_name": "ops/run.yaml",
                 "project_path": project_path_text,
                 "static_context": {"origin": "sse"}
             },
@@ -1094,7 +1094,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
 async fn live_route_streams_webhook_trigger_and_run_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/webhook-live.dot");
+    write_flow(&settings, "ops/webhook-live.yaml");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
@@ -1135,7 +1135,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
             "name": "Webhook live",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/webhook-live.dot",
+                "flow_name": "ops/webhook-live.yaml",
                 "project_path": project_path_text,
                 "static_context": {"origin": "live-webhook"}
             },
@@ -1196,7 +1196,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
     assert_eq!(run_upsert["payload"]["run"]["run_id"], run_id);
     assert_eq!(
         run_upsert["payload"]["run"]["flow_name"],
-        "ops/webhook-live.dot"
+        "ops/webhook-live.yaml"
     );
 }
 
@@ -1204,7 +1204,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
 async fn dropping_app_cancels_trigger_source_loop() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let app = build_app(settings.clone());
     drop(app);
 
@@ -1217,7 +1217,7 @@ async fn dropping_app_cancels_trigger_source_loop() {
             enabled: true,
             source_type: "schedule".to_string(),
             action: json!({
-                "flow_name": "ops/run.dot",
+                "flow_name": "ops/run.yaml",
                 "project_path": project_path,
                 "static_context": {"origin": "drop-test"}
             })
@@ -1608,14 +1608,14 @@ fn write_flow(settings: &SparkSettings, name: &str) {
 }
 
 fn simple_flow() -> String {
-    "digraph LiveRoute { graph [goal=\"Run live route\"] start [shape=Mdiamond] done [shape=Msquare] start -> done }\n".to_string()
+    "schema_version: '1'\nid: live-route\ntitle: Live Route\ngoal: Run live route\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n".to_string()
 }
 
 fn seed_parent_child_run_journals(settings: &SparkSettings, project_path: &Path) {
     let project_path = project_path.to_string_lossy().to_string();
     let store = RunStore::for_settings(settings);
     let mut parent = RunRecord::new("run-live-parent", project_path.clone());
-    parent.flow_name = "parent-live.dot".to_string();
+    parent.flow_name = "parent-live.yaml".to_string();
     parent.model = "compat-model".to_string();
     parent.started_at = "2026-01-01T00:00:00Z".to_string();
     let parent_paths = store
@@ -1641,13 +1641,13 @@ fn seed_parent_child_run_journals(settings: &SparkSettings, project_path: &Path)
         .insert("root_run_id".to_string(), json!("run-live-parent"));
     child_started
         .payload
-        .insert("child_flow_name".to_string(), json!("child-live.dot"));
+        .insert("child_flow_name".to_string(), json!("child-live.yaml"));
     store
         .append_event(&parent_paths, child_started)
         .expect("parent child-started event");
 
     let mut child = RunRecord::new("run-live-child", project_path);
-    child.flow_name = "child-live.dot".to_string();
+    child.flow_name = "child-live.yaml".to_string();
     child.model = "compat-model".to_string();
     child.started_at = "2026-01-01T00:00:05Z".to_string();
     child.parent_run_id = Some("run-live-parent".to_string());

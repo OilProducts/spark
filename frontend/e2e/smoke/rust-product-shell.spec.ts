@@ -4,11 +4,23 @@ import path from 'node:path'
 import { expect, test } from '@playwright/test'
 import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
 
-const smokeFlowContent = `digraph rust_product_shell {
-  start [shape=Mdiamond, label="Start"]
-  done [shape=Msquare, label="Done"]
-  start -> done
-}
+const smokeFlowContent = `schema_version: "1"
+id: rust_product_shell
+title: Rust Product Shell
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: done
 `
 
 test.beforeAll(() => {
@@ -37,7 +49,7 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
   expect(missingApi.headers()['content-type']).toContain('application/json')
   await expect(missingApi.json()).resolves.toEqual({ detail: 'Not Found' })
 
-  const flowName = `rust-shell-${Date.now()}.dot`
+  const flowName = `rust-shell-${Date.now()}.yaml`
   const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'spark-rust-shell-project-'))
   mkdirSync(projectRoot, { recursive: true })
   try {

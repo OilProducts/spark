@@ -294,19 +294,19 @@ It operates on shared workspace flows, not project-local flow copies.
 
 The UI may provide:
 - structured editing
-- raw DOT editing
+- raw YAML editing
 - validation visibility
 - preview and save workflows
 - degraded-state feedback when API or validation calls fail
 
-This section is about the authoring experience, not the DOT DSL itself.
+This section is about the authoring experience, not the YAML DSL itself.
 
 Authoring session state is editor-local.
-The frontend must not infer editor selection, inspector scope, draft DOT, validation state, or save state from whichever flow is currently open in Execution.
+The frontend must not infer editor selection, inspector scope, draft YAML, validation state, or save state from whichever flow is currently open in Execution.
 
 ### 12.1 Flow Contract Authoring
 
-Spark authoring surfaces should make the flow's launch and context contract visible without forcing raw DOT edits for common cases.
+Spark authoring surfaces should make the flow's launch and context contract visible without forcing raw YAML edits for common cases.
 
 The structured graph inspector should support:
 - graph title and description

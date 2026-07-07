@@ -24,7 +24,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
     let other_path = temp.path().join("other");
     fs::create_dir_all(&project_path).expect("project dir");
     fs::create_dir_all(&other_path).expect("other dir");
-    write_flow(&settings, "ops/run.dot", simple_flow());
+    write_flow(&settings, "ops/run.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -39,7 +39,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/run.dot",
+            "flow_name": "ops/run.yaml",
             "summary": "Launch from route.",
             "conversation_handle": "amber-anchor",
             "project_path": project_path.to_string_lossy(),
@@ -73,14 +73,18 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         json!(["body", "flow_name"])
     );
 
-    write_flow(&settings, "ops/invalid.dot", "digraph Broken { start -> }");
+    write_flow(
+        &settings,
+        "ops/invalid.yaml",
+        "schema_version: '1'\nid: broken\nnodes: [",
+    );
     let invalid_launch = request_json(
         app.clone(),
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/invalid.dot",
-            "summary": "Launch invalid DOT.",
+            "flow_name": "ops/invalid.yaml",
+            "summary": "Launch invalid YAML.",
             "conversation_handle": "amber-anchor"
         })),
     )
@@ -185,7 +189,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
             "flow_source_mode": "snapshot",
             "conversation_handle": "amber-anchor",
             "project_path": project_path.to_string_lossy(),
-            "flow_name": "ignored.dot"
+            "flow_name": "ignored.yaml"
         })),
     )
     .await;
@@ -212,14 +216,16 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         .expect("recoveries")
         .iter()
         .any(|entry| entry["operation"] == "continue"));
-    assert!(
-        snapshot["flow_launches"]
-            .as_array()
-            .expect("launches")
-            .iter()
-            .any(|entry| entry["flow_name"] == "ops/invalid.dot"
-                && entry["status"] == "launch_failed")
-    );
+    assert!(snapshot["flow_launches"]
+        .as_array()
+        .expect("launches")
+        .iter()
+        .any(|entry| entry["flow_name"] == "ops/run.yaml" && entry["status"] == "launched"));
+    assert!(!snapshot["flow_launches"]
+        .as_array()
+        .expect("launches")
+        .iter()
+        .any(|entry| entry["flow_name"] == "ops/invalid.yaml"));
 }
 
 #[tokio::test]
@@ -228,7 +234,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/rust-boundary.dot", simple_flow());
+    write_flow(&settings, "ops/rust-boundary.yaml", simple_flow());
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
         "openai_compatible",
@@ -248,7 +254,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/rust-boundary.dot",
+            "flow_name": "ops/rust-boundary.yaml",
             "summary": "Launch through the Rust adapter boundary.",
             "project_path": project_path.to_string_lossy(),
             "model": "gpt-route-boundary",
@@ -335,15 +341,15 @@ async fn request_raw(
 
 fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "ops/retry.dot".to_string();
+    record.flow_name = "ops/retry.yaml".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
     RunStore::for_settings(settings)
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            graph_source: Some(simple_flow().to_string()),
-            graph_dot: Some(simple_flow().to_string()),
+            flow_source: Some(simple_flow().to_string()),
+            flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
         .expect("failed run");
@@ -351,14 +357,14 @@ fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) 
 
 fn seed_completed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "ops/source.dot".to_string();
+    record.flow_name = "ops/source.yaml".to_string();
     record.status = "completed".to_string();
     RunStore::for_settings(settings)
         .create_run(CreateRunRequest {
             record,
             checkpoint: Some(checkpoint("task")),
-            graph_source: Some(simple_flow().to_string()),
-            graph_dot: Some(simple_flow().to_string()),
+            flow_source: Some(simple_flow().to_string()),
+            flow_definition_json: Some(simple_flow().to_string()),
             ..CreateRunRequest::default()
         })
         .expect("completed run");
@@ -432,14 +438,7 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
 }
 
 fn simple_flow() -> &'static str {
-    r#"
-    digraph WorkspaceRunRoute {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write a route note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
-    "#
+    "schema_version: '1'\nid: workspace-run-route\ntitle: Workspace Run Route\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Write a route note\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
 }
 
 fn settings(root: &Path) -> SparkSettings {

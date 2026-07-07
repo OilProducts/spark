@@ -15,24 +15,32 @@ use tower::ServiceExt;
 async fn workspace_flow_list_detail_raw_validate_and_policy_routes_match_contracts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let flow_content = r#"digraph inspectable {
-  graph [label="Inspectable Graph", goal="Inspect graph behavior"];
-  start [shape=Mdiamond];
-  human_review [shape=hexagon];
-  done [shape=Msquare];
-  start -> human_review;
-  human_review -> done;
-}
+    let flow_content = r#"schema_version: '1'
+id: inspectable
+title: Inspectable Graph
+goal: Inspect graph behavior
+nodes:
+  start:
+    kind: start
+  human_review:
+    kind: human_gate
+    label: Human Review
+    config:
+      kind: human_gate
+      prompt: Review the result
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: human_review
+  - from: human_review
+    to: done
 "#;
-    write_flow(&settings, "ops/review/inspectable.dot", flow_content);
-    write_flow(
-        &settings,
-        "disabled.dot",
-        "digraph disabled { start -> done; }\n",
-    );
+    write_flow(&settings, "ops/review/inspectable.yaml", flow_content);
+    write_flow(&settings, "disabled.yaml", &simple_flow("disabled"));
     set_flow_launch_policy(
         &settings.config_dir,
-        "ops/review/inspectable.dot",
+        "ops/review/inspectable.yaml",
         LAUNCH_POLICY_AGENT_REQUESTABLE,
     )
     .expect("policy");
@@ -57,12 +65,12 @@ async fn workspace_flow_list_detail_raw_validate_and_policy_routes_match_contrac
     .await;
     assert_eq!(agent.0, StatusCode::OK);
     assert_eq!(agent.1.as_array().expect("flows").len(), 1);
-    assert_eq!(agent.1[0]["name"], "ops/review/inspectable.dot");
+    assert_eq!(agent.1[0]["name"], "ops/review/inspectable.yaml");
 
     let detail = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable.dot?surface=agent",
+        "/workspace/api/flows/ops/review/inspectable.yaml?surface=agent",
         None,
     )
     .await;
@@ -73,38 +81,38 @@ async fn workspace_flow_list_detail_raw_validate_and_policy_routes_match_contrac
     let raw = request_text(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable.dot/raw?surface=agent",
+        "/workspace/api/flows/ops/review/inspectable.yaml/raw?surface=agent",
         None,
     )
     .await;
     assert_eq!(raw.0, StatusCode::OK);
-    assert!(raw.2.starts_with("text/vnd.graphviz"));
-    assert_eq!(raw.3, Some("ops/review/inspectable.dot".to_string()));
+    assert!(raw.2.starts_with("text/yaml"));
+    assert_eq!(raw.3, Some("ops/review/inspectable.yaml".to_string()));
     assert_eq!(raw.1, flow_content);
 
     let validation = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable.dot/validate",
+        "/workspace/api/flows/ops/review/inspectable.yaml/validate",
         None,
     )
     .await;
     assert_eq!(validation.0, StatusCode::OK);
-    assert_eq!(validation.1["name"], "ops/review/inspectable.dot");
+    assert_eq!(validation.1["name"], "ops/review/inspectable.yaml");
     assert_eq!(validation.1["status"], "ok");
 
     let policy = request_json(
         app,
         "PUT",
-        "/workspace/api/flows/ops/review/inspectable.dot/launch-policy",
+        "/workspace/api/flows/ops/review/inspectable.yaml/launch-policy",
         Some(json!({"launch_policy": "trigger_only"})),
     )
     .await;
     assert_eq!(policy.0, StatusCode::OK);
-    assert_eq!(policy.1["name"], "ops/review/inspectable.dot");
+    assert_eq!(policy.1["name"], "ops/review/inspectable.yaml");
     assert_eq!(policy.1["launch_policy"], "trigger_only");
     assert_eq!(
-        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable.dot")
+        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable.yaml")
             .expect("stored")
             .launch_policy
             .as_deref(),
@@ -116,12 +124,8 @@ async fn workspace_flow_list_detail_raw_validate_and_policy_routes_match_contrac
 async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and_json() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(
-        &settings,
-        "hidden.dot",
-        "digraph hidden { start -> done; }\n",
-    );
-    set_flow_launch_policy(&settings.config_dir, "hidden.dot", "trigger_only").expect("policy");
+    write_flow(&settings, "hidden.yaml", &simple_flow("hidden"));
+    set_flow_launch_policy(&settings.config_dir, "hidden.yaml", "trigger_only").expect("policy");
     let app = build_app(settings);
 
     let invalid_surface = request_json(
@@ -137,14 +141,20 @@ async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and
         json!({"detail": "Flow surface must be 'human' or 'agent'."})
     );
 
-    let missing = request_json(app.clone(), "GET", "/workspace/api/flows/missing.dot", None).await;
+    let missing = request_json(
+        app.clone(),
+        "GET",
+        "/workspace/api/flows/missing.yaml",
+        None,
+    )
+    .await;
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
-    assert_eq!(missing.1, json!({"detail": "Unknown flow: missing.dot"}));
+    assert_eq!(missing.1, json!({"detail": "Unknown flow: missing.yaml"}));
 
     let escaped = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/../escape.dot/raw",
+        "/workspace/api/flows/../escape.yaml/raw",
         None,
     )
     .await;
@@ -157,17 +167,17 @@ async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and
     let hidden = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/hidden.dot/raw?surface=agent",
+        "/workspace/api/flows/hidden.yaml/raw?surface=agent",
         None,
     )
     .await;
     assert_eq!(hidden.0, StatusCode::NOT_FOUND);
-    assert_eq!(hidden.1, json!({"detail": "Unknown flow: hidden.dot"}));
+    assert_eq!(hidden.1, json!({"detail": "Unknown flow: hidden.yaml"}));
 
     let malformed = request_text(
         app,
         "PUT",
-        "/workspace/api/flows/hidden.dot/launch-policy",
+        "/workspace/api/flows/hidden.yaml/launch-policy",
         Some("{not-json"),
     )
     .await;
@@ -234,6 +244,12 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     let path = settings.flows_dir.join(name);
     fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
     fs::write(path, content).expect("flow");
+}
+
+fn simple_flow(id: &str) -> String {
+    format!(
+        "schema_version: '1'\nid: {id}\ntitle: {id}\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n"
+    )
 }
 
 fn settings(root: &Path) -> SparkSettings {

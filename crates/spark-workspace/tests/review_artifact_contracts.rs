@@ -20,7 +20,7 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.dot", simple_flow());
+    write_flow(&settings, "ops/review.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -32,7 +32,7 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.dot".to_string(),
+                flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
                 launch_context: Some(json!({"context.request.id": "REQ-1"})),
@@ -70,7 +70,7 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.dot".to_string(),
+                flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
                 launch_context: Some(json!({"context.request.id": "REQ-1"})),
@@ -92,7 +92,7 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.dot", simple_flow());
+    write_flow(&settings, "ops/review.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -104,7 +104,7 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.dot".to_string(),
+                flow_name: "ops/review.yaml".to_string(),
                 summary: "Reject me.".to_string(),
                 ..FlowRunRequestCreateByHandleRequest::default()
             },
@@ -131,7 +131,7 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.dot".to_string(),
+                flow_name: "ops/review.yaml".to_string(),
                 summary: "Launch me.".to_string(),
                 goal: Some("Run the tiny flow.".to_string()),
                 launch_context: Some(json!({"context.review": "approved"})),
@@ -159,7 +159,7 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
     assert_eq!(approved_request["status"], "launched");
     assert_eq!(approved_request["review_message"], "Approved for launch.");
     assert_eq!(approved_request["source_turn_id"], "turn-assistant");
-    assert_eq!(approved_request["flow_name"], "ops/review.dot");
+    assert_eq!(approved_request["flow_name"], "ops/review.yaml");
     assert!(approved_request["run_id"]
         .as_str()
         .expect("run id")
@@ -172,7 +172,7 @@ fn launch_failure_is_persisted_on_approved_flow_run_request() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/broken.dot", "digraph Broken { start -> }");
+    write_flow(&settings, "ops/broken.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -184,8 +184,9 @@ fn launch_failure_is_persisted_on_approved_flow_run_request() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/broken.dot".to_string(),
+                flow_name: "ops/broken.yaml".to_string(),
                 summary: "This launch should fail validation.".to_string(),
+                execution_profile_id: Some("missing-profile".to_string()),
                 ..FlowRunRequestCreateByHandleRequest::default()
             },
         )
@@ -260,7 +261,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     fs::create_dir_all(&project_path).expect("project dir");
     write_flow(
         &settings,
-        "software-development/implement-change-request.dot",
+        "software-development/implement-change-request.yaml",
         simple_flow(),
     );
     seed_proposed_plan(
@@ -320,7 +321,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     let launch = &approved["flow_launches"][0];
     assert_eq!(
         launch["flow_name"],
-        "software-development/implement-change-request.dot"
+        "software-development/implement-change-request.yaml"
     );
     assert_eq!(launch["status"], "launched");
     assert_eq!(launch["run_id"], plan["run_id"]);
@@ -516,11 +517,16 @@ fn plan_completed(content: &str) -> TurnStreamEvent {
 
 fn simple_flow() -> &'static str {
     r#"
-    digraph Review {
-      start [shape=Mdiamond]
-      done [shape=Msquare]
-      start -> done
-    }
+schema_version: "1"
+id: review
+nodes:
+  start:
+    kind: start
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: done
     "#
 }
 

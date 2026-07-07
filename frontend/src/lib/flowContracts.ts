@@ -91,12 +91,13 @@ export function serializeLaunchInputDefinitions(entries: LaunchInputDefinition[]
 }
 
 export function parseLaunchInputDefinitions(raw: unknown): ParsedLaunchInputDefinitions {
+    const parsedRaw = Array.isArray(raw) ? raw : null
     const rawText = typeof raw === 'string' ? raw.trim() : ''
-    if (!rawText) {
+    if (!parsedRaw && !rawText) {
         return { entries: [], error: null }
     }
     try {
-        const parsed = JSON.parse(rawText)
+        const parsed = parsedRaw ?? JSON.parse(rawText)
         if (!Array.isArray(parsed)) {
             return { entries: [], error: 'Launch inputs must be a JSON array.' }
         }

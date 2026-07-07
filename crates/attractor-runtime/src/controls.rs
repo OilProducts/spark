@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use attractor_core::{CheckpointState, ContextMap, DotGraph, RunManifest};
+use attractor_core::{CheckpointState, ContextMap, FlowDefinition, RunManifest};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -67,11 +67,11 @@ pub struct ContinueRunRequest {
     pub flow_name: Option<String>,
     #[serde(default)]
     pub new_run_id: Option<String>,
-    pub graph: DotGraph,
+    pub flow: FlowDefinition,
     #[serde(default)]
-    pub graph_source: Option<String>,
+    pub flow_source: Option<String>,
     #[serde(default)]
-    pub graph_dot: Option<String>,
+    pub flow_definition_json: Option<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
@@ -140,7 +140,7 @@ impl RuntimeControls {
                 "start_node is required.".to_string(),
             ));
         }
-        if !request.graph.nodes.contains_key(start_node) {
+        if !request.flow.nodes.contains_key(start_node) {
             return Err(RuntimeControlError::Validation(format!(
                 "Unknown start node: {start_node}"
             )));
@@ -293,23 +293,18 @@ impl RuntimeControls {
             record,
             checkpoint: Some(checkpoint),
             manifest: Some(RunManifest {
-                goal: request.graph.goal(),
-                graph_id: request.graph.graph_id.clone(),
+                goal: request.flow.goal.clone(),
+                graph_id: request.flow.id.clone(),
                 start_node: start_node.to_string(),
                 started_at: crate::events::utc_timestamp(),
                 extra: BTreeMap::new(),
             }),
-            graph_source: request.graph_source,
-            graph_dot: request.graph_dot,
+            flow_source: request.flow_source,
+            flow_definition_json: request.flow_definition_json,
         })?;
         self.store.append_transcript_event(
             &paths,
-            crate::events::pipeline_started_event(
-                &new_run_id,
-                &request.graph.graph_id,
-                start_node,
-                false,
-            ),
+            crate::events::pipeline_started_event(&new_run_id, &request.flow.id, start_node, false),
         )?;
 
         Ok(ContinueRunStarted {

@@ -218,7 +218,7 @@ Spark persists two different conversation authorities:
 - event log
 
 It does not need to persist frontend-only view sessions such as:
-- editor canvas selection, viewport, or draft DOT mode
+- editor canvas selection, viewport, or draft YAML mode
 - execution canvas selection, inspected run focus, or launch-form draft values
 - Home thread-view state such as thread-list cache, draft text, expansion state, or layout state
 - Runs inspection filters, artifact/context selection, or pending freeform gate-answer drafts

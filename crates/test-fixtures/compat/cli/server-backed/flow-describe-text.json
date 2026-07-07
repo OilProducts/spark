@@ -7,7 +7,7 @@
       "flow",
       "describe",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--text",
       "--base-url",
       "__API_BASE_URL__"
@@ -20,7 +20,7 @@
       "flow",
       "describe",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--text",
       "--base-url",
       "__API_BASE_URL__"
@@ -90,7 +90,7 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "Name: software-development/implement-change-request.dot\nTitle: Implement Change Request\nDescription: Read an approved change request from changes/<CR-id>/request.md, keep runtime state under .spark/change-requests/<CR-id>/, implement the required work, evaluate completion against the durable request, and write changes/<CR-id>/result.md when the repository is ready.\nLaunch Policy: agent_requestable\nGraph Label: Implement Change Request\nStated Goal: Implement an approved durable change request in the repository, evaluate whether the requested change is completed in full, record the shipped result, and iterate until the result is ready.\nNode Count: 6\nEdge Count: 6\nHas Human Gate: False\nHas Manager Loop: False\n"
+    "stdout": "Name: software-development/implement-change-request.yaml\nTitle: Implement Change Request\nDescription: Read an approved change request from changes/<CR-id>/request.md, keep runtime state under .spark/change-requests/<CR-id>/, implement the required work, evaluate completion against the durable request, and write changes/<CR-id>/result.md when the repository is ready.\nLaunch Policy: agent_requestable\nGraph Label: Implement Change Request\nStated Goal: Implement an approved durable change request in the repository, evaluate whether the requested change is completed in full, record the shipped result, and iterate until the result is ready.\nNode Count: 6\nEdge Count: 6\nHas Human Gate: False\nHas Manager Loop: False\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",

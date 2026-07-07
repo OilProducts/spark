@@ -8,15 +8,17 @@
   "input": {
     "accepted": [
       "examples/simple-linear",
-      "nested/flow.dot",
+      "nested/flow.txt",
+      "nested/flow.yml",
       "windows\\path\\flow"
     ],
     "rejected": [
       "",
-      "/absolute/path.dot",
-      "../escape.dot",
-      "nested/../escape.dot",
-      "./same.dot",
+      "/absolute/path.yaml",
+      "../escape.yaml",
+      "nested/../escape.yaml",
+      "./same.yaml",
+      "nested/flow.yaml",
       "folder/"
     ]
   },
@@ -25,15 +27,19 @@
     "accepted": [
       {
         "input": "examples/simple-linear",
-        "normalized": "examples/simple-linear.dot"
+        "normalized": "examples/simple-linear.yaml"
       },
       {
-        "input": "nested/flow.dot",
-        "normalized": "nested/flow.dot"
+        "input": "nested/flow.txt",
+        "normalized": "nested/flow.yaml"
+      },
+      {
+        "input": "nested/flow.yml",
+        "normalized": "nested/flow.yml"
       },
       {
         "input": "windows\\path\\flow",
-        "normalized": "windows/path/flow.dot"
+        "normalized": "windows/path/flow.yaml"
       }
     ],
     "rejected": [
@@ -44,22 +50,27 @@
       },
       {
         "detail": "Flow name must be a relative path inside flows_dir.",
-        "input": "/absolute/path.dot",
+        "input": "/absolute/path.yaml",
         "status_code": 400
       },
       {
         "detail": "Flow name must be a relative path inside flows_dir.",
-        "input": "../escape.dot",
+        "input": "../escape.yaml",
         "status_code": 400
       },
       {
         "detail": "Flow name must be a relative path inside flows_dir.",
-        "input": "nested/../escape.dot",
+        "input": "nested/../escape.yaml",
         "status_code": 400
       },
       {
         "accepted": true,
-        "input": "./same.dot"
+        "input": "./same.yaml"
+      },
+      {
+        "detail": "Flow name must end with .yaml or .yml.",
+        "input": "nested/flow.yaml",
+        "status_code": 400
       },
       {
         "detail": "Flow name must reference a file.",
@@ -71,13 +82,11 @@
   "operation": "flow_name_normalization",
   "provenance": {
     "interfaces": [
-      "attractor.dsl.parse_dot",
-      "attractor.dsl.formatter.format_readable_dot",
-      "attractor.dsl.validate_graph",
-      "attractor.validation_preview.preview_dot_source",
+      "attractor.dsl.parse_flow_definition",
+      "attractor.dsl.canonicalize_flow_yaml",
       "attractor.api.flow_sources.normalize_flow_name"
     ],
-    "oracle": "python-dsl-public-interfaces"
+    "oracle": "rust-flowdefinition-public-interfaces"
   },
   "requirements": [
     "RR-VAL-001",

@@ -29,7 +29,7 @@
         "payload": {
           "trigger": {
             "action": {
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "project_path": "__PROJECT_DIR__",
               "static_context": {
                 "origin": "compat"
@@ -63,7 +63,7 @@
         },
         "type": "trigger.upsert"
       },
-      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-861e82eb1e85\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-25T01:22:46Z\",\"enabled\":true,\"id\":\"trigger-861e82eb1e85\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"vcjC9rl-A-IZR4R8\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-25T01:22:46Z\",\"webhook_secret\":\"weGKMZTMIAJ8C1fKgt-q_IQ_wZ1hHz8u\"},\"type\":\"trigger_upsert\"}}",
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-861e82eb1e85\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.yaml\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-25T01:22:46Z\",\"enabled\":true,\"id\":\"trigger-861e82eb1e85\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"vcjC9rl-A-IZR4R8\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-25T01:22:46Z\",\"webhook_secret\":\"weGKMZTMIAJ8C1fKgt-q_IQ_wZ1hHz8u\"},\"type\":\"trigger_upsert\"}}",
       "event": "message",
       "kind": "event"
     },
@@ -73,7 +73,7 @@
         "payload": {
           "trigger": {
             "action": {
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "project_path": "__PROJECT_DIR__",
               "static_context": {
                 "origin": "compat"
@@ -113,7 +113,7 @@
         },
         "type": "trigger.upsert"
       },
-      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-861e82eb1e85\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-25T01:22:46Z\",\"enabled\":true,\"id\":\"trigger-861e82eb1e85\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"vcjC9rl-A-IZR4R8\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":\"2026-06-25T01:22:46Z\",\"last_result\":\"success\",\"next_run_at\":null,\"recent_history\":[{\"message\":\"Trigger fired successfully.\",\"run_id\":\"run-18bc2e65af9f0616\",\"status\":\"success\",\"timestamp\":\"2026-06-25T01:22:46Z\"}]},\"updated_at\":\"2026-06-25T01:22:46Z\"},\"type\":\"trigger_upsert\"}}",
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-861e82eb1e85\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.yaml\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-25T01:22:46Z\",\"enabled\":true,\"id\":\"trigger-861e82eb1e85\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"vcjC9rl-A-IZR4R8\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":\"2026-06-25T01:22:46Z\",\"last_result\":\"success\",\"next_run_at\":null,\"recent_history\":[{\"message\":\"Trigger fired successfully.\",\"run_id\":\"run-18bc2e65af9f0616\",\"status\":\"success\",\"timestamp\":\"2026-06-25T01:22:46Z\"}]},\"updated_at\":\"2026-06-25T01:22:46Z\"},\"type\":\"trigger_upsert\"}}",
       "event": "message",
       "kind": "event"
     }

@@ -1,8 +1,7 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    CheckpointState, DotAttribute, DotEdge, DotGraph, DotNode, DotValue, DotValueType, RunManifest,
-    RunRecord,
+    CheckpointState, FlowDefinition, FlowEdge, FlowNode, NodeKind, RunManifest, RunRecord,
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
@@ -63,8 +62,10 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
             record: record.clone(),
             checkpoint: Some(checkpoint.clone()),
             manifest: Some(manifest),
-            graph_source: Some("digraph G { start -> done }\n".to_string()),
-            graph_dot: Some("digraph G { start -> done }\n".to_string()),
+            flow_source: Some("schema_version: '1'\nid: create\n".to_string()),
+            flow_definition_json: Some(
+                "{\"schema_version\":\"1\",\"id\":\"create\"}\n".to_string(),
+            ),
         })
         .expect("create run");
 
@@ -83,8 +84,8 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
         paths.run_log(),
         paths.result_json(),
         paths.result_markdown(),
-        paths.artifacts_dir().join("graphviz/pipeline-source.dot"),
-        paths.artifacts_dir().join("graphviz/pipeline.dot"),
+        paths.artifacts_dir().join("flow/flow-source.yaml"),
+        paths.artifacts_dir().join("flow/flow-definition.json"),
     ] {
         assert!(path.exists(), "{} should exist", path.display());
     }
@@ -362,10 +363,10 @@ fn result_materialization_selects_successful_response_artifact_and_overlays_mark
         )
         .expect("write node artifacts");
     let checkpoint = checkpoint("done", &["start", "work"]);
-    let graph = result_graph(None, false);
+    let flow = result_flow(None, false);
 
     let result = store
-        .materialize_result(&paths, "run-result", "completed", &graph, &checkpoint, None)
+        .materialize_result(&paths, "run-result", "completed", &flow, &checkpoint, None)
         .expect("materialize result");
 
     assert_eq!(result.state, "ready");
@@ -405,7 +406,7 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
                 started_at: "2026-06-22T17:40:17Z".to_string(),
                 extra: BTreeMap::new(),
             }),
-            graph_source: Some("digraph G {}\n".to_string()),
+            flow_source: Some("schema_version: '1'\nid: artifacts\n".to_string()),
             ..CreateRunRequest::default()
         })
         .expect("create run");
@@ -427,7 +428,7 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
         .iter()
         .map(|artifact| artifact.path.as_str())
         .collect::<Vec<_>>();
-    assert!(paths_only.contains(&"artifacts/graphviz/pipeline-source.dot"));
+    assert!(paths_only.contains(&"artifacts/flow/flow-source.yaml"));
     assert!(paths_only.contains(&"logs/work/response.md"));
     assert!(paths_only.contains(&"logs/manifest.json"));
     assert!(paths_only.contains(&"result/result.json"));
@@ -438,8 +439,8 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
     assert!(!paths_only.contains(&"events.jsonl"));
     assert!(artifacts
         .iter()
-        .find(|artifact| artifact.path == "artifacts/graphviz/pipeline-source.dot")
-        .is_some_and(|artifact| artifact.media_type == "text/vnd.graphviz" && artifact.viewable));
+        .find(|artifact| artifact.path == "artifacts/flow/flow-source.yaml")
+        .is_some_and(|artifact| artifact.media_type == "text/yaml" && artifact.viewable));
     assert!(paths.safe_join("../run.json").is_err());
     assert!(paths.safe_join("/tmp/file").is_err());
 }
@@ -585,64 +586,36 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
         .any(|artifact| artifact.path == "logs/checkpoint.json"));
 }
 
-fn result_graph(explicit_result_node: Option<&str>, summary_enabled: bool) -> DotGraph {
-    let mut graph_attrs = BTreeMap::new();
+fn result_flow(explicit_result_node: Option<&str>, summary_enabled: bool) -> FlowDefinition {
+    let mut extensions = BTreeMap::new();
     if let Some(node_id) = explicit_result_node {
-        graph_attrs.insert(
-            "spark.result_node".to_string(),
-            dot_attr("spark.result_node", DotValue::String(node_id.to_string())),
-        );
+        extensions.insert("spark.result_node".to_string(), json!(node_id));
     }
     if summary_enabled {
-        graph_attrs.insert(
-            "spark.result_summary_enabled".to_string(),
-            dot_attr("spark.result_summary_enabled", DotValue::Boolean(true)),
-        );
+        extensions.insert("spark.result_summary_enabled".to_string(), json!(true));
     }
-    DotGraph {
-        graph_id: "ResultGraph".to_string(),
-        graph_attrs,
+    FlowDefinition {
+        schema_version: "1.0".to_string(),
+        id: "ResultGraph".to_string(),
+        title: "ResultGraph".to_string(),
         nodes: BTreeMap::from([
-            ("start".to_string(), node("start", "Mdiamond")),
-            ("work".to_string(), node("work", "box")),
-            ("done".to_string(), node("done", "Msquare")),
+            ("start".to_string(), flow_node(NodeKind::Start)),
+            ("work".to_string(), flow_node(NodeKind::AgentTask)),
+            ("done".to_string(), flow_node(NodeKind::Exit)),
         ]),
-        edges: vec![DotEdge {
-            source: "work".to_string(),
-            target: "done".to_string(),
-            attrs: BTreeMap::new(),
-            line: 0,
+        edges: vec![FlowEdge {
+            from: "work".to_string(),
+            to: "done".to_string(),
+            ..FlowEdge::default()
         }],
-        defaults: Default::default(),
-        subgraphs: Vec::new(),
+        extensions,
+        ..FlowDefinition::default()
     }
 }
 
-fn node(node_id: &str, shape: &str) -> DotNode {
-    DotNode {
-        node_id: node_id.to_string(),
-        attrs: BTreeMap::from([(
-            "shape".to_string(),
-            dot_attr("shape", DotValue::String(shape.to_string())),
-        )]),
-        line: 0,
-        declaration_order: 0,
-        explicit_attr_keys: Default::default(),
-    }
-}
-
-fn dot_attr(key: &str, value: DotValue) -> DotAttribute {
-    let value_type = match value {
-        DotValue::Null | DotValue::String(_) => DotValueType::String,
-        DotValue::Integer(_) => DotValueType::Integer,
-        DotValue::Float(_) => DotValueType::Float,
-        DotValue::Boolean(_) => DotValueType::Boolean,
-        DotValue::Duration(_) => DotValueType::Duration,
-    };
-    DotAttribute {
-        key: key.to_string(),
-        value,
-        value_type,
-        line: 0,
+fn flow_node(kind: NodeKind) -> FlowNode {
+    FlowNode {
+        kind,
+        ..FlowNode::default()
     }
 }

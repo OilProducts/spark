@@ -1,0 +1,115 @@
+schema_version: '1'
+id: human_review_loop
+title: Human Review Loop
+description: Draft a change, route it through explicit human approval, and loop back on requested fixes.
+goal: Prepare a proposed change, pause for human review, and either ship it or iterate on fixes.
+defaults:
+  llm_provider: codex
+  llm_model: gpt-5.5
+nodes:
+  exit:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  implement:
+    kind: agent_task
+    label: Prepare Change
+    config:
+      kind: agent_task
+      prompt: Inspect the repository, prepare the proposed change for the stated goal, and summarize what is ready for review.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  review_gate:
+    kind: human_gate
+    label: Human Review
+    config:
+      kind: human_gate
+      prompt: Review the proposed change. Approve it to move forward, or request fixes before shipping.
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  revise:
+    kind: agent_task
+    label: Apply Fixes
+    config:
+      kind: agent_task
+      prompt: Address the human feedback, update the proposed change, and return it for review.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  ship:
+    kind: agent_task
+    label: Finalize
+    config:
+      kind: agent_task
+      prompt: Finalize the approved change and summarize what is ready to land.
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+edges:
+- from: implement
+  to: review_gate
+  extensions:
+    loop_restart: false
+- from: review_gate
+  to: revise
+  label: Request Fixes
+  extensions:
+    loop_restart: false
+- from: review_gate
+  to: ship
+  label: Approve
+  extensions:
+    loop_restart: false
+- from: revise
+  to: review_gate
+  extensions:
+    loop_restart: false
+- from: ship
+  to: exit
+  extensions:
+    loop_restart: false
+- from: start
+  to: implement
+  extensions:
+    loop_restart: false

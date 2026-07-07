@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
-import { generateDot } from '@/lib/dotUtils'
+import { generateFlowYaml } from '@/lib/flowYamlUtils'
 import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
 import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
 import { extractDebugErrorSummary, recordFlowLoadDebug } from '@/lib/flowLoadDebug'
-import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
-import { resolveModelStylesheetPreview } from '@/lib/modelStylesheetPreview'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
 import { Button } from '@/components/ui/button'
@@ -19,7 +17,7 @@ import {
     type LaunchInputDefinition,
 } from '@/lib/flowContracts'
 import {
-    CORE_GRAPH_ATTR_KEYS,
+    CORE_FLOW_METADATA_KEYS,
     FLOW_LAUNCH_POLICY_LABELS,
     GraphAdvancedAttrsSection,
     GraphExecutionDefaultsSection,
@@ -29,8 +27,6 @@ import {
     GraphMetadataSection,
     GraphResultSection,
     GraphRunConfigurationSection,
-    GraphScopedDefaultsSection,
-    GraphSubgraphsSection,
 } from './components/graph-settings/GraphSettingsSections'
 import {
     loadGraphLaunchPolicy,
@@ -47,16 +43,11 @@ interface GraphSettingsProps {
 export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const activeFlow = useStore((state) => state.activeFlow)
     const diagnostics = useStore((state) => state.diagnostics)
-    const graphAttrs = useStore((state) => state.graphAttrs)
-    const graphAttrErrors = useStore((state) => state.graphAttrErrors)
-    const graphAttrsUserEditVersion = useStore((state) => state.graphAttrsUserEditVersion)
-    const canonicalDefaults = useStore((state) => state.canonicalDefaults)
-    const canonicalSubgraphs = useStore((state) => state.canonicalSubgraphs)
-    const canonicalStructureUserEditVersion = useStore((state) => state.canonicalStructureUserEditVersion)
-    const setGraphAttrs = useStore((state) => state.setGraphAttrs)
-    const updateGraphAttr = useStore((state) => state.updateGraphAttr)
-    const setCanonicalDefaults = useStore((state) => state.setCanonicalDefaults)
-    const setCanonicalSubgraphs = useStore((state) => state.setCanonicalSubgraphs)
+    const flowMetadata = useStore((state) => state.flowMetadata)
+    const flowMetadataErrors = useStore((state) => state.flowMetadataErrors)
+    const flowMetadataUserEditVersion = useStore((state) => state.flowMetadataUserEditVersion)
+    const setFlowMetadata = useStore((state) => state.setFlowMetadata)
+    const updateFlowMetadata = useStore((state) => state.updateFlowMetadata)
     const model = useStore((state) => state.model)
     const setModel = useStore((state) => state.setModel)
     const workingDir = useStore((state) => state.workingDir)
@@ -65,8 +56,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const uiDefaults = useStore((state) => state.uiDefaults)
     const editorGraphSettingsPanelOpenByFlow = useStore((state) => state.editorGraphSettingsPanelOpenByFlow)
     const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen)
-    const editorShowAdvancedGraphAttrsByFlow = useStore((state) => state.editorShowAdvancedGraphAttrsByFlow)
-    const setEditorShowAdvancedGraphAttrs = useStore((state) => state.setEditorShowAdvancedGraphAttrs)
+    const editorShowAdvancedFlowMetadataByFlow = useStore((state) => state.editorShowAdvancedFlowMetadataByFlow)
+    const setEditorShowAdvancedFlowMetadata = useStore((state) => state.setEditorShowAdvancedFlowMetadata)
     const editorLaunchInputDraftsByFlow = useStore((state) => state.editorLaunchInputDraftsByFlow)
     const editorLaunchInputDraftErrorByFlow = useStore((state) => state.editorLaunchInputDraftErrorByFlow)
     const setEditorLaunchInputDraftState = useStore((state) => state.setEditorLaunchInputDraftState)
@@ -78,8 +69,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         (editorGraphBridgeRef?.current?.setNodes ?? setNodes)(nextNodes)
     const flowNodes = useNodes()
     const autosaveScopeRef = useRef<string | null>(null)
-    const lastHandledGraphAttrsVersionRef = useRef(graphAttrsUserEditVersion)
-    const lastHandledCanonicalStructureVersionRef = useRef(canonicalStructureUserEditVersion)
+    const lastHandledFlowMetadataVersionRef = useRef(flowMetadataUserEditVersion)
     const activeFlowRef = useRef<string | null>(activeFlow)
     const [launchPolicy, setLaunchPolicy] = useState<FlowLaunchPolicy>('disabled')
     const [launchPolicySource, setLaunchPolicySource] = useState<FlowLaunchPolicy | null>(null)
@@ -90,20 +80,15 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
     const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
-    const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
+    const flowProviderFallback = flowMetadata.llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
-    const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.pre'] || '')
-    const toolHookPostWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.post'] || '')
-    const stylesheetDiagnostics = diagnostics.filter((diag) => diag.rule_id === 'stylesheet_syntax')
-    const hasStylesheetValue = Boolean(graphAttrs.model_stylesheet?.trim())
-    const showStylesheetFeedback = hasStylesheetValue || stylesheetDiagnostics.length > 0
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
-    const graphExtensionEntries = useMemo(
-        () => toExtensionAttrEntries(graphAttrs as Record<string, unknown>, CORE_GRAPH_ATTR_KEYS),
-        [graphAttrs],
+    const flowMetadataExtensionEntries = useMemo(
+        () => toExtensionAttrEntries(flowMetadata as Record<string, unknown>, CORE_FLOW_METADATA_KEYS),
+        [flowMetadata],
     )
-    const rawLaunchInputsValue = typeof graphAttrs['spark.launch_inputs'] === 'string'
-        ? graphAttrs['spark.launch_inputs']
+    const rawLaunchInputsValue = typeof flowMetadata.inputs === 'string'
+        ? flowMetadata.inputs
         : ''
     const parsedLaunchInputs = useMemo(
         () => parseLaunchInputDefinitions(rawLaunchInputsValue),
@@ -114,8 +99,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         void fetchLlmProfiles().then(setLlmProfiles)
     }, [])
     const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? false) : false
-    const showAdvancedGraphAttrs = activeFlow
-        ? (editorShowAdvancedGraphAttrsByFlow[activeFlow] ?? false)
+    const showAdvancedFlowMetadata = activeFlow
+        ? (editorShowAdvancedFlowMetadataByFlow[activeFlow] ?? false)
         : false
     const launchInputDrafts = activeFlow
         ? (editorLaunchInputDraftsByFlow[activeFlow] ?? parsedLaunchInputs.entries)
@@ -161,59 +146,23 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         launchPolicySaveState,
         launchPolicySource,
     ])
-    const stylesheetPreview = useMemo(() => {
-        return resolveModelStylesheetPreview(
-            graphAttrs.model_stylesheet || '',
-            flowNodes.map((node) => ({
-                id: node.id,
-                shape: typeof node.data?.shape === 'string' ? node.data.shape : '',
-                class: typeof node.data?.class === 'string' ? node.data.class : '',
-                llm_model: typeof node.data?.llm_model === 'string' ? node.data.llm_model : '',
-                llm_provider: typeof node.data?.llm_provider === 'string' ? node.data.llm_provider : '',
-                llm_profile: typeof node.data?.llm_profile === 'string' ? node.data.llm_profile : '',
-                reasoning_effort: typeof node.data?.reasoning_effort === 'string' ? node.data.reasoning_effort : '',
-            })),
-            {
-                llm_model: graphAttrs.ui_default_llm_model || uiDefaults.llm_model || '',
-                llm_provider: graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '',
-                llm_profile: graphAttrs.ui_default_llm_profile || uiDefaults.llm_profile || '',
-                reasoning_effort: graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || 'high',
-            },
-        )
-    }, [
-        graphAttrs.model_stylesheet,
-        graphAttrs.ui_default_llm_model,
-        graphAttrs.ui_default_llm_provider,
-        graphAttrs.ui_default_llm_profile,
-        graphAttrs.ui_default_reasoning_effort,
-        flowNodes,
-        uiDefaults.llm_model,
-        uiDefaults.llm_provider,
-        uiDefaults.llm_profile,
-        uiDefaults.reasoning_effort,
-    ])
-
     const { clearPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<typeof flowNodes>({
         flowName: activeFlow,
         debounceMs: 200,
-        buildContent: (nextNodes, currentFlowName) => generateDot(
+        buildContent: (nextNodes, currentFlowName) => generateFlowYaml(
             currentFlowName,
             nextNodes ?? readNodes(),
             readEdges(),
-            graphAttrs,
-            {
-                defaults: canonicalDefaults,
-                subgraphs: canonicalSubgraphs,
-            },
+            flowMetadata,
         ),
     })
 
     const applyDefaultsToNodes = () => {
         if (!activeFlow) return
-        const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || ''
-        const defaultProfile = graphAttrs.ui_default_llm_profile || uiDefaults.llm_profile || ''
-        const defaultProvider = defaultProfile ? '' : (graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '')
-        const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || ''
+        const defaultModel = flowMetadata.llm_model || uiDefaults.llm_model || ''
+        const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || ''
+        const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '')
+        const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || ''
 
         const currentNodes = readNodes()
         if (currentNodes.length === 0) return
@@ -239,7 +188,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         }
         if (entries.length === 0) {
             setEditorLaunchInputDraftState(activeFlow, entries, null)
-            updateGraphAttr('spark.launch_inputs', '')
+            updateFlowMetadata('inputs', '')
             return
         }
         const validationError = validateLaunchInputDefinitions(entries)
@@ -247,7 +196,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         if (validationError) {
             return
         }
-        updateGraphAttr('spark.launch_inputs', serializeLaunchInputDefinitions(entries))
+        updateFlowMetadata('inputs', serializeLaunchInputDefinitions(entries))
     }
 
     useEffect(() => {
@@ -421,33 +370,26 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     useEffect(() => {
         if (!activeFlow) {
             autosaveScopeRef.current = null
-            lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
-            lastHandledCanonicalStructureVersionRef.current = canonicalStructureUserEditVersion
+            lastHandledFlowMetadataVersionRef.current = flowMetadataUserEditVersion
             clearPendingSave()
             return
         }
         const autosaveScope = activeFlow
         if (autosaveScopeRef.current !== autosaveScope) {
             autosaveScopeRef.current = autosaveScope
-            lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
-            lastHandledCanonicalStructureVersionRef.current = canonicalStructureUserEditVersion
+            lastHandledFlowMetadataVersionRef.current = flowMetadataUserEditVersion
             clearPendingSave()
             return
         }
-        if (
-            graphAttrsUserEditVersion === lastHandledGraphAttrsVersionRef.current
-            && canonicalStructureUserEditVersion === lastHandledCanonicalStructureVersionRef.current
-        ) {
+        if (flowMetadataUserEditVersion === lastHandledFlowMetadataVersionRef.current) {
             return
         }
-        lastHandledGraphAttrsVersionRef.current = graphAttrsUserEditVersion
-        lastHandledCanonicalStructureVersionRef.current = canonicalStructureUserEditVersion
+        lastHandledFlowMetadataVersionRef.current = flowMetadataUserEditVersion
         scheduleSave()
     }, [
         activeFlow,
-        canonicalStructureUserEditVersion,
         clearPendingSave,
-        graphAttrsUserEditVersion,
+        flowMetadataUserEditVersion,
         scheduleSave,
     ])
 
@@ -479,22 +421,22 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         )
     }
 
-    const handleGraphExtensionValueChange = (key: string, value: string) => {
-        setGraphAttrs({
-            ...graphAttrs,
+    const handleFlowMetadataExtensionValueChange = (key: string, value: string) => {
+        setFlowMetadata({
+            ...flowMetadata,
             [key]: value,
         })
     }
 
-    const handleGraphExtensionRemove = (key: string) => {
-        const nextGraphAttrs = { ...graphAttrs } as Record<string, unknown>
-        delete nextGraphAttrs[key]
-        setGraphAttrs(nextGraphAttrs)
+    const handleFlowMetadataExtensionRemove = (key: string) => {
+        const nextFlowMetadata = { ...flowMetadata } as Record<string, unknown>
+        delete nextFlowMetadata[key]
+        setFlowMetadata(nextFlowMetadata)
     }
 
-    const handleGraphExtensionAdd = (key: string, value: string) => {
-        setGraphAttrs({
-            ...graphAttrs,
+    const handleFlowMetadataExtensionAdd = (key: string, value: string) => {
+        setFlowMetadata({
+            ...flowMetadata,
             [key]: value,
         })
     }
@@ -515,8 +457,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     setWorkingDir={setWorkingDir}
                 />
                 <GraphMetadataSection
-                    graphAttrs={graphAttrs}
-                    updateGraphAttr={updateGraphAttr}
+                    flowMetadata={flowMetadata}
+                    updateFlowMetadata={updateFlowMetadata}
                 />
                 <GraphLaunchPolicySection
                     activeFlow={activeFlow}
@@ -537,55 +479,39 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     onLaunchInputDefinitionsChange={handleLaunchInputDefinitionsChange}
                 />
                 <GraphResultSection
-                    graphAttrs={graphAttrs}
+                    flowMetadata={flowMetadata}
                     nodes={flowNodes}
-                    updateGraphAttr={updateGraphAttr}
+                    updateFlowMetadata={updateFlowMetadata}
                 />
                 <GraphExecutionDefaultsSection
-                    graphAttrs={graphAttrs}
-                    graphAttrErrors={graphAttrErrors}
+                    flowMetadata={flowMetadata}
+                    flowMetadataErrors={flowMetadataErrors}
                     renderFieldDiagnostics={renderFieldDiagnostics}
-                    updateGraphAttr={updateGraphAttr}
-                />
-                <GraphScopedDefaultsSection
-                    defaults={canonicalDefaults}
-                    onDefaultsChange={setCanonicalDefaults}
-                />
-                <GraphSubgraphsSection
-                    subgraphs={canonicalSubgraphs}
-                    onSubgraphsChange={setCanonicalSubgraphs}
+                    updateFlowMetadata={updateFlowMetadata}
                 />
                 <GraphAdvancedAttrsSection
-                    graphAttrs={graphAttrs}
-                    showAdvancedGraphAttrs={showAdvancedGraphAttrs}
-                    graphExtensionEntries={graphExtensionEntries}
-                    showStylesheetFeedback={showStylesheetFeedback}
-                    stylesheetDiagnostics={stylesheetDiagnostics}
-                    stylesheetPreview={stylesheetPreview}
-                    toolHookPreWarning={toolHookPreWarning}
-                    toolHookPostWarning={toolHookPostWarning}
-                    renderFieldDiagnostics={renderFieldDiagnostics}
-                    updateGraphAttr={updateGraphAttr}
-                    setShowAdvancedGraphAttrs={(value) => {
+                    showAdvancedFlowMetadata={showAdvancedFlowMetadata}
+                    flowMetadataExtensionEntries={flowMetadataExtensionEntries}
+                    setShowAdvancedFlowMetadata={(value) => {
                         if (!activeFlow) {
                             return
                         }
-                        setEditorShowAdvancedGraphAttrs(activeFlow, typeof value === 'function'
-                            ? value(showAdvancedGraphAttrs)
+                        setEditorShowAdvancedFlowMetadata(activeFlow, typeof value === 'function'
+                            ? value(showAdvancedFlowMetadata)
                             : value)
                     }}
-                    onGraphExtensionValueChange={handleGraphExtensionValueChange}
-                    onGraphExtensionRemove={handleGraphExtensionRemove}
-                    onGraphExtensionAdd={handleGraphExtensionAdd}
+                    onFlowMetadataExtensionValueChange={handleFlowMetadataExtensionValueChange}
+                    onFlowMetadataExtensionRemove={handleFlowMetadataExtensionRemove}
+                    onFlowMetadataExtensionAdd={handleFlowMetadataExtensionAdd}
                 />
                 <GraphLlmDefaultsSection
                     canApplyDefaults={canApplyDefaults}
                     flowProviderFallback={flowProviderFallback}
-                    graphAttrs={graphAttrs}
+                    flowMetadata={flowMetadata}
                     uiDefaults={uiDefaults}
                     llmProfiles={llmProfiles}
                     applyDefaultsToNodes={applyDefaultsToNodes}
-                    updateGraphAttr={updateGraphAttr}
+                    updateFlowMetadata={updateFlowMetadata}
                 />
             </div>
         </InspectorScaffold>

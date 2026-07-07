@@ -38,28 +38,23 @@ const GRAPH_FIDELITY_OPTION_SET = new Set<string>([
 ])
 
 const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
-    'spark.title',
-    'spark.description',
-    'spark.launch_inputs',
-    'spark.result_node',
-    'spark.result_summary_enabled',
-    'spark.result_summary_prompt',
+    'schema_version',
+    'id',
+    'title',
+    'description',
+    'inputs',
+    'result_node',
+    'result_summary_enabled',
+    'result_summary_prompt',
     'goal',
-    'label',
-    'retry_target',
-    'fallback_retry_target',
-    'default_fidelity',
-    'stack.child_dotfile',
-    'stack.child_workdir',
-    'tool.hooks.pre',
-    'tool.hooks.post',
-    'ui_default_llm_model',
-    'ui_default_llm_provider',
-    'ui_default_llm_profile',
-    'ui_default_reasoning_effort',
+    'fidelity',
+    'llm_model',
+    'llm_provider',
+    'llm_profile',
+    'reasoning_effort',
 ]
 
-const DEFAULT_MAX_RETRIES_KEY: keyof GraphAttrs = 'default_max_retries'
+const MAX_RETRIES_KEY: keyof GraphAttrs = 'max_retries'
 
 export const normalizeViewMode = (mode: ViewMode): ViewMode => (mode === 'projects' ? 'home' : mode)
 
@@ -97,24 +92,21 @@ export const buildDiagnosticMaps = (diagnostics: DiagnosticEntry[]) => {
     return { nodeDiagnostics, edgeDiagnostics }
 }
 
-const isKnownGraphAttrKey = (key: string): key is keyof GraphAttrs => {
-    if (key === 'model_stylesheet' || key === DEFAULT_MAX_RETRIES_KEY) {
+const isKnownGraphAttrKey = (key: string): boolean => {
+    if (key === MAX_RETRIES_KEY) {
         return true
     }
     return STRING_GRAPH_ATTR_KEYS.includes(key as keyof GraphAttrs)
 }
 
 export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): string => {
-    if (key === 'model_stylesheet') {
-        return value
-    }
-    if (key === DEFAULT_MAX_RETRIES_KEY) {
+    if (key === MAX_RETRIES_KEY) {
         const trimmed = value.trim()
         if (!trimmed) return ''
         if (!/^\d+$/.test(trimmed)) return trimmed
         return `${Math.max(0, parseInt(trimmed, 10))}`
     }
-    if (key === 'default_fidelity') {
+    if (key === 'fidelity') {
         return value.trim().toLowerCase()
     }
     if (STRING_GRAPH_ATTR_KEYS.includes(key)) {
@@ -124,17 +116,17 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
 }
 
 export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): string | null => {
-    if (key === DEFAULT_MAX_RETRIES_KEY) {
+    if (key === MAX_RETRIES_KEY) {
         if (!value) return null
         if (!/^\d+$/.test(value)) {
-            return 'Default max retries must be a non-negative integer.'
+            return 'Max retries default must be a non-negative integer.'
         }
         return null
     }
-    if (key === 'default_fidelity') {
+    if (key === 'fidelity') {
         if (!value) return null
         if (!GRAPH_FIDELITY_OPTION_SET.has(value)) {
-            return 'Default fidelity must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
+            return 'Fidelity default must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
         }
         return null
     }

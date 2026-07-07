@@ -175,7 +175,6 @@ test("medium graph performance profile renders optimizations for item 13.3-02", 
           graph: {
             nodes,
             edges,
-            graph_attrs: {},
           },
           diagnostics: [],
         }),

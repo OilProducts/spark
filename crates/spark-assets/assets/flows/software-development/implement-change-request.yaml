@@ -1,0 +1,264 @@
+schema_version: '1'
+id: implement_change_request
+title: Implement Change Request
+description: Read an approved change request from changes/<CR-id>/request.md, keep runtime state under .spark/change-requests/<CR-id>/,
+  implement the required work, evaluate completion against the durable request, and write changes/<CR-id>/result.md when the
+  repository is ready.
+goal: Implement an approved durable change request in the repository, evaluate whether the requested change is completed in
+  full, record the shipped result, and iterate until the result is ready.
+inputs:
+- key: context.request.change_request_path
+  label: Change Request Path
+  type: string
+  description: Path to the durable change request document inside the project repository, usually changes/<CR-id>/request.md.
+  required: true
+- key: context.request.change_request_id
+  label: Change Request ID
+  type: string
+  description: Optional durable change request id. If omitted, derive it from the parent directory of the request path.
+  required: false
+- key: context.request.target_paths
+  label: Target Paths
+  type: string[]
+  description: Optional files or directories the change request or implementation should focus on.
+  required: false
+- key: context.request.acceptance_criteria
+  label: Acceptance Criteria
+  type: string[]
+  description: Optional completion criteria to enforce alongside the change request.
+  required: false
+- key: context.request.validation_command
+  label: Validation Command
+  type: string
+  description: Optional preferred repo-wide validation command. Use it as the primary deterministic gate when it is truthful
+    and available.
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.5
+nodes:
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+  evaluate:
+    kind: agent_task
+    label: Evaluate
+    config:
+      kind: agent_task
+      prompt: 'You are the read-only completion evaluator for this Spark change-request run. Read context.change_request.id,
+        context.change_request.runtime_dir, context.change_request.request_path, context.change_request.result_path, context.change_request.state_path,
+        <runtime_dir>/change/request.md, and <runtime_dir>/state.json as the authoritative workspace. Reconstruct the contract
+        from the durable request and runtime state: objective, explicit acceptance criteria, implicit correctness requirements,
+        non-goals, target paths, validation_command, compatibility boundaries, and any security, data-loss, privacy, accessibility,
+        performance, migration, docs, exports, manifests, bootstrap, or ignore-rule constraints. Judge the current repository
+        state, not the implementer''s claims. Inspect the diff, touched files, tests, command output, and relevant code paths.
+        Treat summaries and handoffs as untrusted until verified. Prefer deterministic evidence: targeted tests, repo validation,
+        typecheck/build/lint, schema validation, CLI/API smoke checks, static inspection, and direct behavior checks. Use
+        request.validation_command from <runtime_dir>/state.json when present unless an equally or more comprehensive deterministic
+        gate is clearly stronger and truthful. Validate that the requested behavior is present on the real execution path,
+        not only in dead helpers, narrow happy paths, test-only bootstrap, hardcoded fixtures, or mocks that bypass the actual
+        boundary. For adapters, parsers, protocol boundaries, SDK/client wrappers, CLI integrations, and external service
+        responses, mocks alone are not contract proof; require recorded or realistic payload shapes, existing contract fixtures,
+        or a practical live/dry-run probe. Apply the Ponytail minimality review: be lazy like a senior developer, not negligent.
+        Ask whether each added code path needs to exist, whether existing code, stdlib, platform behavior, or an already-installed
+        dependency was reused, and whether speculative abstractions, generic frameworks, caches, wrappers, retries, background
+        workers, config systems, or future-proofing were added beyond the request. Do not fail merely because you prefer a
+        different design. Treat minimality problems as blocking only when they create correctness risk, maintenance burden,
+        behavior changes, unsafe shortcuts, or significant unnecessary complexity; otherwise include them as nonblocking cleanup
+        in context.review.required_changes. Never cut necessary validation, error handling, security, data-loss protection,
+        accessibility, or compatibility in the name of minimality. Check adjacent regression risk in touched areas and use
+        the smallest relevant regression checks; do not demand exhaustive unrelated validation. Return outcome success only
+        when all critical request criteria are satisfied with adequate strong or sufficient medium evidence and no material
+        correctness, validation, repository-integrity, safety, or blocking minimality issue remains. This node may read files
+        and run commands needed to evaluate readiness, but must not edit files, apply patches, create or delete repository
+        files, stage changes, commit changes, or perform implementation work. If any material issue remains, return outcome
+        fail with failure_reason plus context_updates for context.review.summary, context.review.required_changes, and context.review.blockers.
+        Make context.review.summary a concise verdict with the evidence basis. Make context.review.required_changes a minimal
+        actionable prompt for the implementer, including concrete missing work, missing validation, regression checks, and
+        any delete-or-simplify list. Use context.review.blockers only for genuine blockers such as ambiguous requirements,
+        unavailable required evidence, or external input a model should not decide. Respond with ONLY a JSON status envelope.'
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.change_request.id
+      - context.change_request.runtime_dir
+      - context.change_request.request_path
+      - context.change_request.result_path
+      - context.change_request.state_path
+      writes_context:
+      - context.review.summary
+      - context.review.required_changes
+      - context.review.blockers
+  implement:
+    kind: agent_task
+    label: Implement
+    config:
+      kind: agent_task
+      prompt: 'Goal: complete the remaining repository work required by the approved change request. Authoritative inputs:
+        read context.change_request.id, context.change_request.runtime_dir, context.change_request.request_path, context.change_request.state_path,
+        <runtime_dir>/change/request.md, and <runtime_dir>/state.json. Treat <runtime_dir>/change/request.md and <runtime_dir>/state.json
+        as the source of truth for this run; do not use context.inputs.change_request_path or another duplicate request copy
+        as the authority after runtime preparation. Repository scope: read and edit only files inside the current cwd, the
+        repository root. Implementation criteria: make the smallest coherent repository change that satisfies the durable
+        request and any acceptance criteria in state.json; keep touched docs, exports, manifests, bootstrap paths, and ignore
+        rules coherent when applicable; do not stage or commit. Review feedback: if context.review.summary, context.review.required_changes,
+        or context.review.blockers are present from a prior evaluation pass, address them directly before considering the
+        work complete. Validation: validate touched surfaces truthfully, and use request.validation_command from <runtime_dir>/state.json
+        as the preferred deterministic gate when present unless a stronger deterministic repo-wide gate is available. Output:
+        respond with ONLY a JSON status envelope after implementation and validation are complete.'
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.change_request.id
+      - context.change_request.runtime_dir
+      - context.change_request.request_path
+      - context.change_request.state_path
+      - context.review.summary
+      - context.review.required_changes
+      - context.review.blockers
+  prepare_change_runtime:
+    kind: agent_task
+    label: Prepare Change Runtime
+    config:
+      kind: agent_task
+      prompt: 'Goal: create the durable runtime workspace for one approved change request. Inputs: use context.inputs.change_request_path,
+        optional context.inputs.change_request_id, context.inputs.target_paths, context.inputs.acceptance_criteria, and context.inputs.validation_command.
+        Path rules: treat context.inputs.change_request_path as repository-relative; reject absolute paths and paths that
+        resolve outside the current cwd; require the file to exist as changes/<CR-id>/request.md; when context.inputs.change_request_id
+        is present, require it to match <CR-id>, otherwise derive the id from that directory. Workspace steps: create .spark/change-requests/
+        if needed; create or refresh .spark/change-requests/<CR-id>/; inside it create or refresh a change symlink to changes/<CR-id>/;
+        write .spark/change-requests/<CR-id>/state.json as valid JSON with keys change_request, request, runtime, and updated_at.
+        The state must include change_request.id, change_request.change_dir, change_request.request_path, change_request.result_path,
+        request.target_paths, request.acceptance_criteria, request.validation_command, runtime.path, and runtime.change_alias.
+        Ignore rule: if .gitignore exists, ensure it contains exactly one .spark/ line by appending it only when missing and
+        removing duplicate .spark/ lines without disturbing unrelated rules. Success criteria: return outcome success only
+        after the workspace, symlink, state file, and context_updates for context.change_request.id, context.change_request.runtime_dir,
+        context.change_request.request_path, context.change_request.result_path, and context.change_request.state_path are
+        all correct. Failure criteria: if the request path is missing, unreadable, absolute, outside cwd, not named request.md,
+        or not under changes/<CR-id>/, return outcome fail with a clear failure_reason and do not create misleading partial
+        state.'
+    retry:
+      max_retries: 1
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.change_request_path
+      - context.request.change_request_id
+      - context.request.target_paths
+      - context.request.acceptance_criteria
+      - context.request.validation_command
+      writes_context:
+      - context.change_request.id
+      - context.change_request.runtime_dir
+      - context.change_request.request_path
+      - context.change_request.result_path
+      - context.change_request.state_path
+      - failure_reason
+  record_result:
+    kind: agent_task
+    label: Record Result
+    config:
+      kind: agent_task
+      prompt: 'Goal: record the completed shipped result for the approved change request. Inputs: read context.change_request.id,
+        context.change_request.runtime_dir, context.change_request.request_path, context.change_request.result_path, context.change_request.state_path,
+        <runtime_dir>/change/request.md, <runtime_dir>/state.json, and the current repository state as needed. Write: create
+        or replace <runtime_dir>/change/result.md. Required format: markdown with YAML frontmatter containing at least id,
+        title, status=completed, type, and changelog. Choose the smallest truthful type from feature, bugfix, refactor, docs,
+        or internal. Use changelog=public only when the shipped change is suitable for external release notes; otherwise use
+        changelog=internal. Body: include concise sections named Summary, Validation, and Shipped Changes. Summarize what
+        was actually delivered, what validation was used, and which repository surfaces changed. Success criteria: result.md
+        is written, grounded in the approved request and repository state, and avoids optimistic claims. Output: respond with
+        ONLY a JSON status envelope and return outcome success only after result.md is written.'
+    execution:
+      llm_model: gpt-5.5
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.change_request.id
+      - context.change_request.runtime_dir
+      - context.change_request.request_path
+      - context.change_request.result_path
+      - context.change_request.state_path
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+    execution:
+      reasoning_effort: high
+    runtime:
+      allow_partial: false
+      auto_status: false
+      error_policy: continue
+      goal_gate: false
+edges:
+- from: evaluate
+  to: implement
+  label: Fix
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: evaluate
+  to: record_result
+  label: Ready
+  condition: outcome=success
+  extensions:
+    loop_restart: false
+- from: implement
+  to: evaluate
+  extensions:
+    loop_restart: false
+- from: prepare_change_runtime
+  to: implement
+  extensions:
+    loop_restart: false
+- from: record_result
+  to: done
+  label: Recorded
+  condition: outcome=success
+  extensions:
+    loop_restart: false
+- from: start
+  to: prepare_change_runtime
+  extensions:
+    loop_restart: false

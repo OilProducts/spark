@@ -13,19 +13,18 @@ import {
 import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeParams } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { useStore, type GraphAttrs } from '@/store';
+import { useStore, type FlowDefinitionMetadata } from '@/store';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
-    clearDotSerializationContext,
-    generateDot,
-    setDotSerializationContext,
-    type DotSerializationContext,
-} from '@/lib/dotUtils';
+    clearFlowYamlSerializationContext,
+    generateFlowYaml,
+    setFlowYamlSerializationContext,
+    type FlowYamlSerializationContext,
+} from '@/lib/flowYamlUtils';
 import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib/flowLoadDebug';
 import {
-    EXPECT_SEMANTIC_EQUIVALENCE_OPTIONS,
     primeFlowSaveBaseline,
-    saveFlowContentExpectingSemanticEquivalence,
+    saveFlowContent,
 } from '@/lib/flowPersistence';
 import { CANVAS_INTERACTION_BUDGET_MS } from '@/lib/performanceBudgets';
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler';
@@ -89,18 +88,17 @@ type FlowGraphSnapshot = {
 }
 
 type PreviewDebugContext = {
-    source: 'flow-load-source-dot' | 'structured-sync-preview' | 'raw-dot-handoff'
+    source: 'flow-load-source-yaml' | 'structured-sync-preview' | 'raw-yaml-handoff'
     loadId: number | null
     nodeCount?: number
     edgeCount?: number
-    graphAttrCount?: number
+    flowMetadataCount?: number
     debounceMs?: number
 }
 
 type PreparedHydratedPreview = {
-    defaults: NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['defaults']
-    subgraphs: NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['subgraphs']
-    graphAttrs: NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['graphAttrs']
+    flow: NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['flow']
+    flowMetadata: NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['flowMetadata']
     nodes: Node[]
     edges: Edge[]
     serializedNodes: Node[]
@@ -165,18 +163,18 @@ function buildDirtyRect(previousRect: NodeRect | null, nextRect: NodeRect | null
     }
 }
 
-function buildAuthoredDot(
+function buildAuthoredYaml(
     flowName: string,
     nodes: Node[],
     edges: Edge[],
-    graphAttrs: GraphAttrs,
-    serializationContext?: DotSerializationContext,
+    flowMetadata: FlowDefinitionMetadata,
+    serializationContext?: FlowYamlSerializationContext,
 ) {
-    return generateDot(
+    return generateFlowYaml(
         flowName,
         filterAuthoredNodes(nodes),
         filterAuthoredEdges(edges),
-        graphAttrs,
+        flowMetadata,
         serializationContext,
     )
 }
@@ -188,15 +186,13 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId);
     const editorMode = useStore((state) => state.editorMode);
     const setEditorMode = useStore((state) => state.setEditorMode);
-    const rawDotDraft = useStore((state) => state.rawDotDraft);
-    const setRawDotDraft = useStore((state) => state.setRawDotDraft);
+    const rawYamlDraft = useStore((state) => state.rawYamlDraft);
+    const setRawYamlDraft = useStore((state) => state.setRawYamlDraft);
     const rawHandoffError = useStore((state) => state.rawHandoffError);
     const setRawHandoffError = useStore((state) => state.setRawHandoffError);
     const activeProjectPath = useStore((state) => state.activeProjectPath);
     const activeFlow = useStore((state) => state.activeFlow);
-    const graphAttrs = useStore((state) => state.graphAttrs);
-    const canonicalDefaults = useStore((state) => state.canonicalDefaults);
-    const canonicalSubgraphs = useStore((state) => state.canonicalSubgraphs);
+    const flowMetadata = useStore((state) => state.flowMetadata);
     const uiDefaults = useStore((state) => state.uiDefaults);
     const uiDefaultModel = uiDefaults.llm_model;
     const uiDefaultProvider = uiDefaults.llm_provider;
@@ -208,8 +204,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         llm_profile: uiDefaultProfile,
         reasoning_effort: uiDefaultReasoningEffort,
     }), [uiDefaultModel, uiDefaultProvider, uiDefaultProfile, uiDefaultReasoningEffort]);
-    const replaceGraphAttrs = useStore((state) => state.replaceGraphAttrs);
-    const replaceCanonicalFlowScopes = useStore((state) => state.replaceCanonicalFlowScopes);
+    const replaceFlowMetadata = useStore((state) => state.replaceFlowMetadata);
     const setDiagnostics = useStore((state) => state.setDiagnostics);
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
     const suppressPreview = useStore((state) => state.suppressPreview);
@@ -236,15 +231,14 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const edgeIdToLayoutKeyRef = useRef<Map<string, string>>(new Map());
     const edgeSideIntentRef = useRef<Record<string, { sourceSide?: RouteSide; targetSide?: RouteSide }>>({});
     const routeRevisionRef = useRef(0);
-    const rawDotEntryDraftRef = useRef<string>('');
+    const rawYamlEntryDraftRef = useRef<string>('');
     const rawHandoffInFlightRef = useRef(false);
     const expandChildFlowsRef = useRef(expandChildFlows);
+    const canonicalFlowRef = useRef<NonNullable<ReturnType<typeof buildHydratedFlowGraph>>['flow']>(null);
     const canvasGraphRef = useRef({
         nodes: [] as Node[],
         edges: [] as Edge[],
-        graphAttrs: {} as GraphAttrs,
-        canonicalDefaults,
-        canonicalSubgraphs,
+        flowMetadata: {} as FlowDefinitionMetadata,
     });
     const [isDragging, setIsDragging] = useState(false);
     const [isRawHandoffInFlight, setIsRawHandoffInFlight] = useState(false);
@@ -282,11 +276,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         canvasGraphRef.current = {
             nodes,
             edges,
-            graphAttrs,
-            canonicalDefaults,
-            canonicalSubgraphs,
+            flowMetadata,
         }
-    }, [canonicalDefaults, canonicalSubgraphs, edges, graphAttrs, nodes]);
+    }, [edges, flowMetadata, nodes]);
 
     const enforceSingleSelectedNode = useCallback((nextNodes: Node[], selectedNodeId: string) => {
         setEdges((currentEdges) =>
@@ -315,15 +307,12 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const { flushPendingSave, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName,
         debounceMs: 250,
-        buildContent: (snapshot, currentFlowName) => generateDot(
+        buildContent: (snapshot, currentFlowName) => generateFlowYaml(
             currentFlowName,
             filterAuthoredNodes(snapshot?.nodes || []),
             filterAuthoredEdges(snapshot?.edges || []),
-            graphAttrs,
-            {
-                defaults: canonicalDefaults,
-                subgraphs: canonicalSubgraphs,
-            },
+            flowMetadata,
+            { flow: canonicalFlowRef.current },
         ),
     })
 
@@ -513,7 +502,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
 
     const hydrateFromPreview = useCallback(async (
         preview: PreviewResponse,
-        sourceDot?: string,
+        sourceYaml?: string,
         debugContext?: { loadId: number | null; source: PreviewDebugContext['source'] },
         options?: {
             expandChildren?: boolean
@@ -523,7 +512,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         if (!preview.graph) {
             recordFlowLoadDebug('hydrate:skipped', flowName, {
                 loadId: debugContext?.loadId ?? null,
-                source: debugContext?.source ?? 'flow-load-source-dot',
+                source: debugContext?.source ?? 'flow-load-source-yaml',
                 reason: 'preview graph missing',
             });
             return null;
@@ -532,7 +521,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             flowName ?? 'flow',
             preview,
             resolvedUiDefaults,
-            sourceDot,
+            sourceYaml,
             options,
         )
         if (!hydratedGraph) {
@@ -540,11 +529,11 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         }
         recordFlowLoadDebug('hydrate:start', flowName, {
             loadId: debugContext?.loadId ?? null,
-            source: debugContext?.source ?? 'flow-load-source-dot',
-            sourceDotLength: sourceDot?.length ?? null,
+            source: debugContext?.source ?? 'flow-load-source-yaml',
+            sourceYamlLength: sourceYaml?.length ?? null,
             nodeCount: hydratedGraph.nodes.length,
             edgeCount: hydratedGraph.edges.length,
-            graphAttrCount: Object.keys(hydratedGraph.graphAttrs).length,
+            flowMetadataCount: Object.keys(hydratedGraph.flowMetadata).length,
         })
 
         const layoutStart = nowMs();
@@ -574,9 +563,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             layoutDurationMs = Math.max(0, nowMs() - layoutStart);
         }
         return {
-            defaults: hydratedGraph.defaults,
-            subgraphs: hydratedGraph.subgraphs,
-            graphAttrs: hydratedGraph.graphAttrs,
+            flow: hydratedGraph.flow,
+            flowMetadata: hydratedGraph.flowMetadata,
             nodes: laidOutNodes,
             edges: laidOutEdges,
             serializedNodes,
@@ -598,7 +586,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     ]);
 
     const requestPreview = useCallback(async (
-        dot: string,
+        yaml: string,
         debugContext?: PreviewDebugContext,
         signal?: AbortSignal,
         options?: { expandChildren?: boolean },
@@ -606,15 +594,15 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         recordFlowLoadDebug('preview:request', flowName, {
             loadId: debugContext?.loadId ?? null,
             source: debugContext?.source ?? 'structured-sync-preview',
-            dotLength: dot.length,
+            yamlLength: yaml.length,
             nodeCount: debugContext?.nodeCount ?? null,
             edgeCount: debugContext?.edgeCount ?? null,
-            graphAttrCount: debugContext?.graphAttrCount ?? null,
+            flowMetadataCount: debugContext?.flowMetadataCount ?? null,
             debounceMs: debugContext?.debounceMs ?? null,
         });
         const previewStart = nowMs();
         const preview = await loadEditorPreview(
-            dot,
+            yaml,
             signal ? { signal } : undefined,
             {
                 flowName,
@@ -656,20 +644,20 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 loadId: activeFlowLoadIdRef.current,
                 reason: 'no active flow',
             });
-            clearDotSerializationContext();
+            clearFlowYamlSerializationContext();
             setNodes([]);
             setEdges([]);
             setSelectedNodeId(null);
             setSelectedEdgeId(null);
-            replaceGraphAttrs({});
-            replaceCanonicalFlowScopes({ node: {}, edge: {} }, []);
+            replaceFlowMetadata({});
+            canonicalFlowRef.current = null;
             clearDiagnostics();
-            setRawDotDraft('');
+            setRawYamlDraft('');
             setRawHandoffError(null);
             rawHandoffInFlightRef.current = false;
             setIsRawHandoffInFlight(false);
             setEditorMode('structured');
-            rawDotEntryDraftRef.current = '';
+            rawYamlEntryDraftRef.current = '';
             hydratedFlowNameRef.current = null;
             setLastLayoutMs(0);
             setLastPreviewMs(0);
@@ -701,13 +689,13 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             loadId,
             session: 'editor',
         });
-        clearDotSerializationContext();
+        clearFlowYamlSerializationContext();
         setNodes([]);
         setEdges([]);
         setSelectedNodeId(null);
         setSelectedEdgeId(null);
-        replaceGraphAttrs({});
-        replaceCanonicalFlowScopes({ node: {}, edge: {} }, []);
+        replaceFlowMetadata({});
+        canonicalFlowRef.current = null;
         clearDiagnostics();
         recordFlowLoadDebug('diagnostics:clear', flowName, {
             loadId,
@@ -717,8 +705,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         rawHandoffInFlightRef.current = false;
         setIsRawHandoffInFlight(false);
         setEditorMode('structured');
-        rawDotEntryDraftRef.current = '';
-        setRawDotDraft('');
+        rawYamlEntryDraftRef.current = '';
+        setRawYamlDraft('');
         setLastLayoutMs(0);
         setLastPreviewMs(0);
 
@@ -741,7 +729,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     normalizedContent,
                     {
                         loadId,
-                        source: 'flow-load-source-dot',
+                        source: 'flow-load-source-yaml',
                     },
                     loadAbort.signal,
                     {
@@ -760,14 +748,14 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 recordFlowLoadDebug('diagnostics:apply', flowName, {
                     loadId,
-                    source: 'flow-load-source-dot',
+                    source: 'flow-load-source-yaml',
                     ...summarizeDiagnosticsForFlowLoadDebug(preview.diagnostics),
                 });
-                setRawDotDraft(normalizedContent);
+                setRawYamlDraft(normalizedContent);
 
                 const hydrated = await hydrateFromPreview(preview, normalizedContent, {
                     loadId,
-                    source: 'flow-load-source-dot',
+                    source: 'flow-load-source-yaml',
                 }, {
                     expandChildren: expandChildFlowsRef.current,
                 });
@@ -775,12 +763,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                     return;
                 }
 
-                setDotSerializationContext({
-                    defaults: hydrated.defaults,
-                    subgraphs: hydrated.subgraphs,
-                });
-                replaceCanonicalFlowScopes(hydrated.defaults, hydrated.subgraphs);
-                replaceGraphAttrs(hydrated.graphAttrs);
+                setFlowYamlSerializationContext({ flow: hydrated.flow });
+                canonicalFlowRef.current = hydrated.flow;
+                replaceFlowMetadata(hydrated.flowMetadata);
                 setLastLayoutMs(hydrated.layoutDurationMs);
                 layoutStateRef.current = hydrated.layout;
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
@@ -791,9 +776,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 primeFlowSaveBaseline(
                     flowName,
-                    buildAuthoredDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs, {
-                        defaults: hydrated.defaults,
-                        subgraphs: hydrated.subgraphs,
+                    buildAuthoredYaml(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, {
+                        flow: hydrated.flow,
                     }),
                 );
                 hydratedRef.current = true;
@@ -801,7 +785,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 hydratedFlowNameRef.current = flowName;
                 recordFlowLoadDebug('hydrate:complete', flowName, {
                     loadId,
-                    source: 'flow-load-source-dot',
+                    source: 'flow-load-source-yaml',
                     nodeCount: hydrated.nodes.length,
                     edgeCount: hydrated.edges.length,
                     layoutMs: hydrated.layoutDurationMs,
@@ -826,8 +810,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         clearDiagnostics,
         hydrateFromPreview,
         requestPreview,
-        replaceCanonicalFlowScopes,
-        replaceGraphAttrs,
+        replaceFlowMetadata,
         persistLayoutState,
         setEdges,
         setNodes,
@@ -844,15 +827,12 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             || isDragging
             || editorMode === 'raw'
         ) return;
-        const dot = buildAuthoredDot(
+        const yaml = buildAuthoredYaml(
             flowName,
             nodes,
             edges,
-            graphAttrs,
-            {
-                defaults: canonicalDefaults,
-                subgraphs: canonicalSubgraphs,
-            },
+            flowMetadata,
+            { flow: canonicalFlowRef.current },
         );
         if (previewTimer.current) {
             window.clearTimeout(previewTimer.current);
@@ -863,16 +843,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             debounceMs: previewDebounceMs,
             nodeCount: nodes.length,
             edgeCount: edges.length,
-            graphAttrCount: Object.keys(graphAttrs).length,
-            dotLength: dot.length,
+            flowMetadataCount: Object.keys(flowMetadata).length,
+            yamlLength: yaml.length,
         });
         previewTimer.current = window.setTimeout(() => {
-            void requestPreview(dot, {
+            void requestPreview(yaml, {
                 loadId: activeFlowLoadIdRef.current,
                 source: 'structured-sync-preview',
                 nodeCount: nodes.length,
                 edgeCount: edges.length,
-                graphAttrCount: Object.keys(graphAttrs).length,
+                flowMetadataCount: Object.keys(flowMetadata).length,
                 debounceMs: previewDebounceMs,
             })
                 .then(({ preview, elapsedMs }) => {
@@ -897,11 +877,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             }
         };
     }, [
-        canonicalDefaults,
-        canonicalSubgraphs,
         clearDiagnostics,
         flowName,
-        graphAttrs,
+        flowMetadata,
         requestPreview,
         setDiagnostics,
         suppressPreview,
@@ -962,16 +940,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             )
 
             if (shouldSave) {
-                const nonSelectChanges = changes.filter((change) => change.type !== 'select');
-                const shouldExpectSemanticEquivalence = nonSelectChanges.length > 0
-                    && nonSelectChanges.every(
-                        (change) => change.type === 'position' || change.type === 'dimensions'
-                    );
-                if (shouldExpectSemanticEquivalence) {
-                    scheduleSave({ nodes: nextNodes, edges }, EXPECT_SEMANTIC_EQUIVALENCE_OPTIONS);
-                } else {
-                    scheduleSave({ nodes: nextNodes, edges });
-                }
+                scheduleSave({ nodes: nextNodes, edges });
             }
 
             if (hasGeometryChange) {
@@ -1049,10 +1018,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
 
     const onAddNode = useCallback(() => {
         if (!flowName || expandChildFlows) return;
-        const defaultModel = graphAttrs.ui_default_llm_model || uiDefaults.llm_model || '';
-        const defaultProfile = graphAttrs.ui_default_llm_profile || uiDefaults.llm_profile || '';
-        const defaultProvider = defaultProfile ? '' : (graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || '');
-        const defaultReasoning = graphAttrs.ui_default_reasoning_effort || uiDefaults.reasoning_effort || '';
+        const defaultModel = flowMetadata.llm_model || uiDefaults.llm_model || '';
+        const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || '';
+        const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '');
+        const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || '';
         const newNodeId = `node_${Math.floor(Math.random() * 10000)}`;
         const shape = 'box'
         const newNode: Node = {
@@ -1079,7 +1048,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             })
             return newNodes;
         });
-    }, [edges, expandChildFlows, flowName, graphAttrs, scheduleEdgeRouting, scheduleSave, setNodes, uiDefaults]);
+    }, [edges, expandChildFlows, flowMetadata, flowName, scheduleEdgeRouting, scheduleSave, setNodes, uiDefaults]);
 
     const applyLaidOutGraph = useCallback((layoutGraph: LaidOutFlowGraph) => {
         layoutStateRef.current = layoutGraph.layout
@@ -1130,19 +1099,18 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         applyLaidOutGraph(layoutGraph)
     }, [activeProjectPath, applyLaidOutGraph, edges, expandChildFlows, flowName, nodes])
 
-    const enterRawDotMode = useCallback(() => {
+    const enterRawYamlMode = useCallback(() => {
         if (!flowName) return;
         if (editorMode === 'raw') return;
         flushPendingSave();
-        const dot = buildAuthoredDot(flowName, nodes, edges, graphAttrs, {
-            defaults: canonicalDefaults,
-            subgraphs: canonicalSubgraphs,
+        const yaml = buildAuthoredYaml(flowName, nodes, edges, flowMetadata, {
+            flow: canonicalFlowRef.current,
         });
-        rawDotEntryDraftRef.current = dot;
-        setRawDotDraft(dot);
+        rawYamlEntryDraftRef.current = yaml;
+        setRawYamlDraft(yaml);
         setRawHandoffError(null);
         setEditorMode('raw');
-    }, [canonicalDefaults, canonicalSubgraphs, flowName, editorMode, edges, flushPendingSave, graphAttrs, nodes]);
+    }, [flowMetadata, flowName, editorMode, edges, flushPendingSave, nodes]);
 
     const returnToStructuredMode = useCallback(async () => {
         if (!flowName) return;
@@ -1152,22 +1120,22 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         rawHandoffInFlightRef.current = true;
         setIsRawHandoffInFlight(true);
         try {
-            const rawDotChanged = rawDotEntryDraftRef.current !== rawDotDraft;
-            if (rawDotChanged) {
-                const saved = await saveFlowContentExpectingSemanticEquivalence(flowName, rawDotDraft);
+            const rawYamlChanged = rawYamlEntryDraftRef.current !== rawYamlDraft;
+            if (rawYamlChanged) {
+                const saved = await saveFlowContent(flowName, rawYamlDraft);
                 if (!saved) {
                     const latestSaveErrorMessage = useStore.getState().saveErrorMessage;
                     setRawHandoffError(
-                        `Safe handoff requires valid DOT. ${latestSaveErrorMessage || 'Fix parse or validation errors before switching modes.'}`,
+                        `Safe handoff requires valid YAML. ${latestSaveErrorMessage || 'Fix YAML parse or validation errors before switching modes.'}`,
                     );
                     return;
                 }
             }
 
             try {
-                const { preview, elapsedMs } = await requestPreview(rawDotDraft, {
+                const { preview, elapsedMs } = await requestPreview(rawYamlDraft, {
                     loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-dot-handoff',
+                    source: 'raw-yaml-handoff',
                 }, undefined, {
                     expandChildren: expandChildFlowsRef.current,
                 });
@@ -1179,31 +1147,28 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 recordFlowLoadDebug('diagnostics:apply', flowName, {
                     loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-dot-handoff',
+                    source: 'raw-yaml-handoff',
                     ...summarizeDiagnosticsForFlowLoadDebug(preview.diagnostics),
                 });
                 if (preview.status === 'validation_error' || (preview.errors?.length ?? 0) > 0) {
                     setRawHandoffError(
-                        'Raw DOT edit conflicts with structured mode assumptions. Resolve validation errors before switching modes.',
+                        'Raw YAML edit conflicts with structured mode assumptions. Resolve validation errors before switching modes.',
                     );
                     return;
                 }
-                const hydrated = await hydrateFromPreview(preview, rawDotDraft, {
+                const hydrated = await hydrateFromPreview(preview, rawYamlDraft, {
                     loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-dot-handoff',
+                    source: 'raw-yaml-handoff',
                 }, {
                     expandChildren: expandChildFlowsRef.current,
                 });
                 if (!hydrated) {
-                    setRawHandoffError('Safe handoff requires valid DOT. Preview response did not include a graph.');
+                    setRawHandoffError('Safe handoff requires valid YAML. Preview response did not include a graph.');
                     return;
                 }
-                setDotSerializationContext({
-                    defaults: hydrated.defaults,
-                    subgraphs: hydrated.subgraphs,
-                });
-                replaceCanonicalFlowScopes(hydrated.defaults, hydrated.subgraphs);
-                replaceGraphAttrs(hydrated.graphAttrs);
+                setFlowYamlSerializationContext({ flow: hydrated.flow });
+                canonicalFlowRef.current = hydrated.flow;
+                replaceFlowMetadata(hydrated.flowMetadata);
                 setLastLayoutMs(hydrated.layoutDurationMs);
                 layoutStateRef.current = hydrated.layout;
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey;
@@ -1214,25 +1179,24 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 }
                 primeFlowSaveBaseline(
                     flowName,
-                    buildAuthoredDot(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.graphAttrs, {
-                        defaults: hydrated.defaults,
-                        subgraphs: hydrated.subgraphs,
+                    buildAuthoredYaml(flowName, hydrated.serializedNodes, hydrated.edges, hydrated.flowMetadata, {
+                        flow: hydrated.flow,
                     }),
                 );
                 hydratedRef.current = true;
                 setIsHydrated(true);
                 recordFlowLoadDebug('hydrate:complete', flowName, {
                     loadId: activeFlowLoadIdRef.current,
-                    source: 'raw-dot-handoff',
+                    source: 'raw-yaml-handoff',
                     nodeCount: hydrated.nodes.length,
                     edgeCount: hydrated.edges.length,
                     layoutMs: hydrated.layoutDurationMs,
                 });
                 setRawHandoffError(null);
-                rawDotEntryDraftRef.current = '';
+                rawYamlEntryDraftRef.current = '';
                 setEditorMode('structured');
             } catch {
-                setRawHandoffError('Safe handoff requires valid DOT. Failed to parse DOT preview for structured mode.');
+                setRawHandoffError('Safe handoff requires valid YAML. Failed to parse YAML preview for structured mode.');
             }
         } finally {
             rawHandoffInFlightRef.current = false;
@@ -1243,9 +1207,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         flowName,
         hydrateFromPreview,
         persistLayoutState,
-        rawDotDraft,
-        replaceCanonicalFlowScopes,
-        replaceGraphAttrs,
+        rawYamlDraft,
+        replaceFlowMetadata,
         requestPreview,
         setDiagnostics,
         setEdges,
@@ -1317,19 +1280,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
 
         const controller = new AbortController()
         const authoredGraph = canvasGraphRef.current
-        const dot = buildAuthoredDot(
+        const yaml = buildAuthoredYaml(
             flowName,
             authoredGraph.nodes,
             authoredGraph.edges,
-            authoredGraph.graphAttrs,
-            {
-                defaults: authoredGraph.canonicalDefaults,
-                subgraphs: authoredGraph.canonicalSubgraphs,
-            },
+            authoredGraph.flowMetadata,
+            { flow: canonicalFlowRef.current },
         )
 
         void requestPreview(
-            dot,
+            yaml,
             {
                 loadId: activeFlowLoadIdRef.current,
                 source: 'structured-sync-preview',
@@ -1346,7 +1306,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 setLastPreviewMs(elapsedMs)
                 const hydrated = await hydrateFromPreview(
                     preview,
-                    dot,
+                    yaml,
                     {
                         loadId: activeFlowLoadIdRef.current,
                         source: 'structured-sync-preview',
@@ -1358,12 +1318,9 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 if (controller.signal.aborted || !hydrated) {
                     return
                 }
-                setDotSerializationContext({
-                    defaults: hydrated.defaults,
-                    subgraphs: hydrated.subgraphs,
-                })
-                replaceCanonicalFlowScopes(hydrated.defaults, hydrated.subgraphs)
-                replaceGraphAttrs(hydrated.graphAttrs)
+                setFlowYamlSerializationContext({ flow: hydrated.flow })
+                canonicalFlowRef.current = hydrated.flow
+                replaceFlowMetadata(hydrated.flowMetadata)
                 setLastLayoutMs(hydrated.layoutDurationMs)
                 layoutStateRef.current = hydrated.layout
                 edgeIdToLayoutKeyRef.current = hydrated.edgeIdToLayoutKey
@@ -1384,16 +1341,13 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             controller.abort()
         }
     }, [
-        canonicalDefaults,
-        canonicalSubgraphs,
         expandChildFlows,
         flowName,
         hydrateFromPreview,
         isHydrated,
         isActive,
         persistLayoutState,
-        replaceCanonicalFlowScopes,
-        replaceGraphAttrs,
+        replaceFlowMetadata,
         requestPreview,
         suppressPreview,
         setEdges,
@@ -1406,10 +1360,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 <div className="h-full w-full p-4">
                     <div className="h-full rounded-lg border border-border bg-background/80 p-3">
                         <Textarea
-                            data-testid="raw-dot-editor"
-                            value={rawDotDraft}
+                            data-testid="raw-yaml-editor"
+                            value={rawYamlDraft}
                             onChange={(event) => {
-                                setRawDotDraft(event.target.value);
+                                setRawYamlDraft(event.target.value);
                                 setRawHandoffError(null);
                             }}
                             className="h-full w-full resize-none font-mono text-xs leading-5"
@@ -1417,7 +1371,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         />
                     </div>
                     {rawHandoffError ? (
-                        <p data-testid="raw-dot-handoff-error" className="mt-2 text-xs font-medium text-destructive">
+                        <p data-testid="raw-yaml-handoff-error" className="mt-2 text-xs font-medium text-destructive">
                             {rawHandoffError}
                         </p>
                     ) : null}
@@ -1501,7 +1455,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             Structured
                         </Button>
                         <Button
-                            onClick={enterRawDotMode}
+                            onClick={enterRawYamlMode}
                             disabled={editorMode === 'raw'}
                             variant={editorMode === 'raw' ? 'default' : 'ghost'}
                             size="sm"
@@ -1511,7 +1465,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                     : 'text-muted-foreground hover:text-foreground'
                             }`}
                         >
-                            Raw DOT
+                            Raw YAML
                         </Button>
                     </div>
                     {editorMode === 'structured' && (

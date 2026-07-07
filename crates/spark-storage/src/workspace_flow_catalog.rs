@@ -26,8 +26,8 @@ pub const ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES: &[&str] =
     &[EXECUTION_LOCK_CONFLICT_POLICY_QUEUE];
 
 pub const DEFAULT_AGENT_REQUESTABLE_FLOWS: &[&str] = &[
-    "software-development/implement-change-request.dot",
-    "software-development/spec-implementation/implement-spec.dot",
+    "software-development/implement-change-request.yaml",
+    "software-development/spec-implementation/implement-spec.yaml",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

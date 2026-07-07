@@ -1,7 +1,7 @@
 import type { Edge, Node } from '@xyflow/react'
 import ELK from 'elkjs/lib/elk.bundled.js'
 
-import type { GraphAttrs, UiDefaults } from '@/store'
+import type { FlowDefinitionMetadata, GraphAttrs, UiDefaults } from '@/store'
 import {
     buildCanonicalFlowModelFromPreviewGraph,
     type CanonicalFlowEdge,
@@ -73,9 +73,10 @@ export type PreviewResponse = WorkflowCanvasPreviewResponse
 export type HydratedFlowGraph = {
     nodes: Node[]
     edges: Edge[]
+    flowMetadata: FlowDefinitionMetadata
     graphAttrs: GraphAttrs
-    defaults: ReturnType<typeof buildCanonicalFlowModelFromPreviewGraph>['defaults']
-    subgraphs: ReturnType<typeof buildCanonicalFlowModelFromPreviewGraph>['subgraphs']
+    flowInputs: unknown[]
+    flow: ReturnType<typeof buildCanonicalFlowModelFromPreviewGraph>['flow']
 }
 
 export type LaidOutFlowGraph = {
@@ -114,6 +115,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return value as Record<string, unknown>
 }
 
+const NODE_KIND_TO_SHAPE: Record<string, string> = {
+    start: 'Mdiamond',
+    exit: 'Msquare',
+    agent_task: 'box',
+    human_gate: 'hexagon',
+    conditional: 'diamond',
+    parallel: 'component',
+    fan_in: 'tripleoctagon',
+    tool: 'parallelogram',
+    subflow: 'house',
+}
+
+function shapeFromNodeAttrs(attrs: Record<string, unknown>): string {
+    const kind = typeof attrs.kind === 'string' ? attrs.kind : ''
+    return NODE_KIND_TO_SHAPE[kind] ?? 'box'
+}
+
 export function normalizeLegacyDot(content: string): string {
     return content.replace(/\blabel=label=/g, 'label=')
 }
@@ -123,12 +141,18 @@ function buildHydratedNode(
     index: number,
     derivedPreviewMeta?: DerivedPreviewMeta,
 ): Node {
-    const shape = typeof node.attrs.shape === 'string' ? node.attrs.shape : 'box'
+    const shape = shapeFromNodeAttrs(node.attrs)
+    const config = asRecord(node.attrs.config)
     const nodeData: Record<string, unknown> = {
         ...node.attrs,
         label: typeof node.attrs.label === 'string' ? node.attrs.label : node.id,
         shape,
-        prompt: typeof node.attrs.prompt === 'string' ? node.attrs.prompt : '',
+        kind: typeof node.attrs.kind === 'string' ? node.attrs.kind : 'agent_task',
+        prompt: typeof node.attrs.prompt === 'string'
+            ? node.attrs.prompt
+            : typeof config?.prompt === 'string'
+                ? config.prompt
+                : '',
         'tool.command': typeof node.attrs['tool.command'] === 'string' ? node.attrs['tool.command'] : '',
         'tool.hooks.pre': typeof node.attrs['tool.hooks.pre'] === 'string' ? node.attrs['tool.hooks.pre'] : '',
         'tool.hooks.post': typeof node.attrs['tool.hooks.post'] === 'string' ? node.attrs['tool.hooks.post'] : '',
@@ -141,7 +165,6 @@ function buildHydratedNode(
         'tool.artifacts.stderr': typeof node.attrs['tool.artifacts.stderr'] === 'string'
             ? node.attrs['tool.artifacts.stderr']
             : '',
-        type: typeof node.attrs.type === 'string' ? node.attrs.type : '',
         max_retries: typeof node.attrs.max_retries === 'number' || typeof node.attrs.max_retries === 'string'
             ? node.attrs.max_retries
             : '',
@@ -261,13 +284,11 @@ function parseChildPreviewMap(value: unknown): Record<string, ParsedChildPreview
                 edges: edges
                     .map((edge) => asRecord(edge))
                     .filter((edge): edge is Record<string, unknown> => edge !== null),
-                graph_attrs: asRecord(graphRecord.graph_attrs),
-                defaults: asRecord(graphRecord.defaults),
-                subgraphs: Array.isArray(graphRecord.subgraphs) ? graphRecord.subgraphs : undefined,
+                metadata: asRecord(graphRecord.metadata),
             }
 
             return [[managerNodeId, {
-                flowName: typeof entryRecord?.flow_name === 'string' ? entryRecord.flow_name : 'child.dot',
+                flowName: typeof entryRecord?.flow_name === 'string' ? entryRecord.flow_name : 'child.yaml',
                 flowPath: typeof entryRecord?.flow_path === 'string' ? entryRecord.flow_path : '',
                 flowLabel: typeof entryRecord?.flow_label === 'string'
                     ? entryRecord.flow_label
@@ -297,7 +318,7 @@ function selectChildEntryNodeId(
         return childNodes[0]?.id ?? null
     }
 
-    const explicitStartNode = rootNodes.find((node) => node.attrs.shape === 'Mdiamond')
+    const explicitStartNode = rootNodes.find((node) => node.attrs.kind === 'start')
     if (explicitStartNode) {
         return explicitStartNode.id
     }
@@ -521,7 +542,7 @@ export function buildHydratedFlowGraph(
     flowName: string,
     preview: PreviewResponse,
     _uiDefaults: UiDefaults,
-    sourceDot?: string,
+    sourceYaml?: string,
     options?: BuildHydratedFlowGraphOptions,
 ): HydratedFlowGraph | null {
     if (!preview.graph) {
@@ -531,9 +552,12 @@ export function buildHydratedFlowGraph(
     const canonicalModel = buildCanonicalFlowModelFromPreviewGraph(
         flowName,
         preview.graph,
-        sourceDot !== undefined ? { rawDot: sourceDot } : undefined,
+        {
+            ...(sourceYaml !== undefined ? { rawYaml: sourceYaml } : {}),
+            flow: preview.flow ?? null,
+        },
     )
-    const nextGraphAttrs: GraphAttrs = preview.graph.graph_attrs ? { ...canonicalModel.graphAttrs } : {}
+    const nextFlowMetadata: FlowDefinitionMetadata = preview.graph.metadata ? { ...canonicalModel.flowMetadata } : {}
 
     const parentNodes = canonicalModel.nodes.map((node, index) => buildHydratedNode(node, index))
     const parentEdges = canonicalModel.edges.map((edge, index) => buildHydratedEdge(edge, index))
@@ -548,8 +572,9 @@ export function buildHydratedFlowGraph(
     return {
         nodes: [...parentNodes, ...childPreviewElements.nodes],
         edges: [...parentEdges, ...childPreviewElements.edges],
-        graphAttrs: nextGraphAttrs,
-        defaults: canonicalModel.defaults,
-        subgraphs: canonicalModel.subgraphs,
+        flowMetadata: nextFlowMetadata,
+        graphAttrs: nextFlowMetadata,
+        flowInputs: Array.isArray(preview.flow?.inputs) ? preview.flow.inputs : [],
+        flow: canonicalModel.flow,
     }
 }

@@ -3,8 +3,7 @@ import type { Node } from '@xyflow/react'
 
 import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
 import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
-import { WORKFLOW_NODE_SHAPE_OPTIONS } from '@/lib/workflowNodeShape'
-import type { DiagnosticEntry, GraphAttrs } from '@/store'
+import type { DiagnosticEntry } from '@/store'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -20,7 +19,6 @@ type VisibilityConfig = {
     showToolCommand: boolean
     showParallelOptions: boolean
     showManagerOptions: boolean
-    showTypeOverride: boolean
     showAdvanced: boolean
     showGeneralAdvanced: boolean
     showLlmSettings: boolean
@@ -34,7 +32,6 @@ type ExtensionEntry = {
 interface NodeInspectorPanelProps {
     selectedNodeId: string | null
     selectedNode?: Node
-    graphAttrs: GraphAttrs
     visibility: VisibilityConfig
     readsContextDraft: string
     readsContextError: string | null
@@ -45,7 +42,6 @@ interface NodeInspectorPanelProps {
     selectedNodeExtensionEntries: ExtensionEntry[]
     selectedNodeToolHookPreWarning: string | null
     selectedNodeToolHookPostWarning: string | null
-    selectedNodeShapeTypeMismatchWarning: string | null
     onPropertyChange: (key: string, value: string | boolean) => void
     onOpenGraphChildSettings: () => void
     onReadsContextChange: (value: string) => void
@@ -64,11 +60,21 @@ interface NodeInspectorPanelProps {
 
 const isTrue = (value: unknown) => value === true || value === 'true'
 const isDefaultEnabledBoolean = (value: unknown) => value !== false && value !== 'false'
+const NODE_KIND_OPTIONS = [
+    { value: 'start', label: 'Start' },
+    { value: 'exit', label: 'Exit' },
+    { value: 'agent_task', label: 'Agent Task' },
+    { value: 'human_gate', label: 'Human Gate' },
+    { value: 'conditional', label: 'Conditional' },
+    { value: 'parallel', label: 'Parallel' },
+    { value: 'fan_in', label: 'Fan In' },
+    { value: 'tool', label: 'Tool' },
+    { value: 'subflow', label: 'Subflow' },
+]
 
 export function NodeInspectorPanel({
     selectedNodeId,
     selectedNode,
-    graphAttrs,
     visibility,
     readsContextDraft,
     readsContextError,
@@ -79,7 +85,6 @@ export function NodeInspectorPanel({
     selectedNodeExtensionEntries,
     selectedNodeToolHookPreWarning,
     selectedNodeToolHookPostWarning,
-    selectedNodeShapeTypeMismatchWarning,
     onPropertyChange,
     onOpenGraphChildSettings,
     onReadsContextChange,
@@ -119,12 +124,12 @@ export function NodeInspectorPanel({
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label>Shape / Type</Label>
+                            <Label>Node Kind</Label>
                             <NativeSelect
-                                value={(selectedNode?.data?.shape as string) || 'box'}
-                                onChange={(event) => onPropertyChange('shape', event.target.value)}
+                                value={(selectedNode?.data?.kind as string) || 'agent_task'}
+                                onChange={(event) => onPropertyChange('kind', event.target.value)}
                             >
-                                {WORKFLOW_NODE_SHAPE_OPTIONS.map((option) => (
+                                {NODE_KIND_OPTIONS.map((option) => (
                                     <option key={option.value} value={option.value}>
                                         {option.label}
                                     </option>
@@ -238,6 +243,14 @@ export function NodeInspectorPanel({
                         {visibility.showManagerOptions ? (
                             <>
                                 <div className="space-y-1.5">
+                                    <Label>Child Flow Reference</Label>
+                                    <Input
+                                        value={((selectedNode?.data?.flow_ref as string) || (selectedNode?.data?.['stack.child_flow_ref'] as string)) || ''}
+                                        onChange={(event) => onPropertyChange('flow_ref', event.target.value)}
+                                        placeholder="child.yaml"
+                                    />
+                                </div>
+                                <div className="space-y-1.5">
                                     <Label>Manager Poll Interval</Label>
                                     <Input
                                         value={(selectedNode?.data?.['manager.poll_interval'] as string) || ''}
@@ -295,15 +308,14 @@ export function NodeInspectorPanel({
                                 >
                                     <div>
                                         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                                            Child Pipeline Linkage
+                                            Child Flow Linkage
                                         </p>
                                         <p className="mt-1 text-[11px] text-muted-foreground">
-                                            Manager loops use <code>stack.child_dotfile</code> and <code>stack.child_workdir</code> from graph attributes.
+                                            Subflow nodes use this node's <code>flow_ref</code> config and optional input map.
                                         </p>
                                     </div>
                                     <div className="space-y-1 text-[11px] text-foreground">
-                                        <p><span className="font-mono">stack.child_dotfile</span>: {graphAttrs['stack.child_dotfile'] || '(unset)'}</p>
-                                        <p><span className="font-mono">stack.child_workdir</span>: {graphAttrs['stack.child_workdir'] || '(unset)'}</p>
+                                        <p><span className="font-mono">flow_ref</span>: {((selectedNode?.data?.flow_ref as string) || '(unset)')}</p>
                                     </div>
                                     <Button
                                         type="button"
@@ -312,39 +324,10 @@ export function NodeInspectorPanel({
                                         size="xs"
                                         onClick={onOpenGraphChildSettings}
                                     >
-                                        Open Graph Child Settings
+                                        Open Flow Settings
                                     </Button>
                                 </div>
                             </>
-                        ) : null}
-
-                        {visibility.showTypeOverride ? (
-                            <div className="space-y-1.5">
-                                <Label>Handler Type</Label>
-                                <Input
-                                    value={(selectedNode?.data?.type as string) || ''}
-                                    onChange={(event) => onPropertyChange('type', event.target.value)}
-                                    list="node-handler-type-options"
-                                    placeholder="optional override"
-                                />
-                                <datalist id="node-handler-type-options">
-                                    <option value="start">start</option>
-                                    <option value="exit">exit</option>
-                                    <option value="codergen">codergen</option>
-                                    <option value="wait.human">wait.human</option>
-                                    <option value="conditional">conditional</option>
-                                    <option value="parallel">parallel</option>
-                                    <option value="parallel.fan_in">parallel.fan_in</option>
-                                    <option value="tool">tool</option>
-                                    <option value="stack.manager_loop">stack.manager_loop</option>
-                                </datalist>
-                                {selectedNodeShapeTypeMismatchWarning ? (
-                                    <p data-testid="node-shape-type-warning" className="text-xs text-amber-800">
-                                        {selectedNodeShapeTypeMismatchWarning}
-                                    </p>
-                                ) : null}
-                                {renderFieldDiagnostics('node', 'type', nodeFieldDiagnostics, 'node-field-diagnostics-type')}
-                            </div>
                         ) : null}
 
                         {visibility.showAdvanced ? (
@@ -579,7 +562,20 @@ export function NodeInspectorPanel({
                             onAdd={onNodeExtensionAdd}
                             reservedKeys={new Set([
                                 'label',
+                                'kind',
+                                'config',
+                                'context',
+                                'contracts',
+                                'runtime',
+                                'manager',
+                                'retry',
+                                'execution',
+                                'ui',
+                                'extensions',
                                 'shape',
+                                'flow_ref',
+                                'input_map',
+                                'decisions',
                                 'prompt',
                                 'tool.command',
                                 'tool.hooks.pre',

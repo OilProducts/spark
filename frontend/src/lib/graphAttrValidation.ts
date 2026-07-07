@@ -1,24 +1,20 @@
 import type { GraphAttrs } from '../store'
 
 const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
-    'spark.title',
-    'spark.description',
-    'spark.result_node',
-    'spark.result_summary_enabled',
-    'spark.result_summary_prompt',
+    'schema_version',
+    'id',
+    'title',
+    'description',
+    'inputs',
+    'result_node',
+    'result_summary_enabled',
+    'result_summary_prompt',
     'goal',
-    'label',
-    'retry_target',
-    'fallback_retry_target',
-    'default_fidelity',
-    'stack.child_dotfile',
-    'stack.child_workdir',
-    'tool.hooks.pre',
-    'tool.hooks.post',
-    'ui_default_llm_model',
-    'ui_default_llm_provider',
-    'ui_default_llm_profile',
-    'ui_default_reasoning_effort',
+    'fidelity',
+    'llm_model',
+    'llm_provider',
+    'llm_profile',
+    'reasoning_effort',
 ]
 
 export const GRAPH_FIDELITY_OPTIONS = [
@@ -33,16 +29,13 @@ export const GRAPH_FIDELITY_OPTIONS = [
 const GRAPH_FIDELITY_OPTION_SET = new Set<string>(GRAPH_FIDELITY_OPTIONS)
 
 export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): string => {
-    if (key === 'model_stylesheet') {
-        return value
-    }
-    if (key === 'default_max_retries') {
+    if (key === 'max_retries') {
         const trimmed = value.trim()
         if (!trimmed) return ''
         if (!/^\d+$/.test(trimmed)) return trimmed
         return `${Math.max(0, parseInt(trimmed, 10))}`
     }
-    if (key === 'default_fidelity') {
+    if (key === 'fidelity') {
         return value.trim().toLowerCase()
     }
     if (GRAPH_ATTR_STRING_KEYS.includes(key)) {
@@ -52,17 +45,17 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
 }
 
 export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): string | null => {
-    if (key === 'default_max_retries') {
+    if (key === 'max_retries') {
         if (!value) return null
         if (!/^\d+$/.test(value)) {
-            return 'Default max retries must be a non-negative integer.'
+            return 'Max retries default must be a non-negative integer.'
         }
         return null
     }
-    if (key === 'default_fidelity') {
+    if (key === 'fidelity') {
         if (!value) return null
         if (!GRAPH_FIDELITY_OPTION_SET.has(value)) {
-            return 'Default fidelity must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
+            return 'Fidelity default must be one of: full, truncate, compact, summary:low, summary:medium, summary:high.'
         }
         return null
     }

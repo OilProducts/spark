@@ -1,0 +1,70 @@
+schema_version: "1"
+id: editor_smoke_base
+title: Editor Smoke Base
+description: Exercise editor and execution smoke-test surfaces without relying on shipped example flows.
+goal: Exercise editor and execution smoke-test surfaces without relying on shipped example flows.
+defaults:
+  llm_provider: openai
+  llm_model: gpt-5.3-codex-spark
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  ingest_spec:
+    kind: agent_task
+    label: Ingest Spec
+    config:
+      kind: agent_task
+      prompt: Load the test spec source and prepare working state.
+  extract_declarations:
+    kind: agent_task
+    label: Extract Testable Declarations
+    config:
+      kind: agent_task
+      prompt: Inspect the repository and write a bounded set of testable declarations.
+  audit_human_gate:
+    kind: human_gate
+    label: Human Audit Decision
+    config:
+      kind: human_gate
+      prompt: Choose whether to rework or accept risk.
+  audit_rework:
+    kind: agent_task
+    label: Rework Queue State
+    config:
+      kind: agent_task
+      prompt: Repair the queued work and continue.
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: ingest_spec
+    extensions:
+      loop_restart: false
+  - from: ingest_spec
+    to: extract_declarations
+    extensions:
+      loop_restart: false
+  - from: extract_declarations
+    to: audit_human_gate
+    extensions:
+      loop_restart: false
+  - from: audit_human_gate
+    to: audit_rework
+    label: Rework Queue State
+    extensions:
+      loop_restart: false
+  - from: audit_human_gate
+    to: done
+    label: Accept Risk
+    extensions:
+      loop_restart: false
+  - from: audit_rework
+    to: done
+    extensions:
+      loop_restart: false

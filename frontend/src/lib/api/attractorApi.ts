@@ -56,6 +56,7 @@ export interface SaveFlowApiResponse {
 
 export interface PreviewResponsePayload {
     status: string
+    flow?: Record<string, unknown>
     graph?: CanonicalPreviewGraphPayload
     diagnostics?: import('@/state/store-types').DiagnosticEntry[]
     errors?: import('@/state/store-types').DiagnosticEntry[]
@@ -390,14 +391,13 @@ export function parsePreviewResponse(payload: unknown, endpoint = '/attractor/pr
         graph = {
             nodes: normalizedNodes,
             edges: normalizedEdges,
-            graph_attrs: asUnknownRecord(graphRecord.graph_attrs),
-            defaults: asUnknownRecord(graphRecord.defaults),
-            subgraphs: Array.isArray(graphRecord.subgraphs) ? graphRecord.subgraphs : undefined,
+            metadata: asUnknownRecord(graphRecord.metadata),
             child_previews: asUnknownRecord(graphRecord.child_previews),
         }
     }
     return {
         status,
+        flow: asUnknownRecord(record.flow) ?? undefined,
         graph,
         diagnostics: parseDiagnosticList(record.diagnostics, endpoint, 'diagnostics'),
         errors: parseDiagnosticList(record.errors, endpoint, 'errors'),
@@ -835,7 +835,6 @@ export async function fetchFlowPayloadValidated(flowName: string, init?: Request
 export async function saveFlowValidated(
     name: string,
     content: string,
-    expectSemanticEquivalence: boolean,
 ): Promise<SaveFlowApiResponse> {
     const response = await fetch(attractorUrl('/api/flows'), {
         method: 'POST',
@@ -843,7 +842,6 @@ export async function saveFlowValidated(
         body: JSON.stringify({
             name,
             content,
-            expect_semantic_equivalence: expectSemanticEquivalence,
         }),
     })
     let payload: unknown = null

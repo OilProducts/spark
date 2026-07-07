@@ -9,7 +9,7 @@
       "--conversation",
       "crisp-leaf",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--summary",
       "Compatibility storage request",
       "--goal",
@@ -27,7 +27,7 @@
       "--conversation",
       "crisp-leaf",
       "--flow",
-      "software-development/implement-change-request.dot",
+      "software-development/implement-change-request.yaml",
       "--summary",
       "Compatibility storage request",
       "--goal",
@@ -105,11 +105,11 @@
           "conversation_id": "conversation-compat",
           "event_log": [
             {
-              "message": "Created flow run request flow-run-request-33c8d0a0487f for software-development/implement-change-request.dot.",
+              "message": "Created flow run request flow-run-request-33c8d0a0487f for software-development/implement-change-request.yaml.",
               "timestamp": "2026-06-22T16:16:07Z"
             },
             {
-              "message": "Created flow run request flow-run-request-4689a850b33b for software-development/implement-change-request.dot.",
+              "message": "Created flow run request flow-run-request-4689a850b33b for software-development/implement-change-request.yaml.",
               "timestamp": "2026-06-22T16:16:08Z"
             }
           ],
@@ -117,7 +117,7 @@
             {
               "conversation_id": "conversation-compat",
               "created_at": "2026-06-22T16:16:07Z",
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "goal": "Keep this request pending.",
               "id": "flow-run-request-33c8d0a0487f",
               "project_path": "__PROJECT_DIR__",
@@ -130,7 +130,7 @@
             {
               "conversation_id": "conversation-compat",
               "created_at": "2026-06-22T16:16:08Z",
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "goal": "Keep this storage request pending.",
               "id": "flow-run-request-4689a850b33b",
               "project_path": "__PROJECT_DIR__",
@@ -199,7 +199,7 @@
           "conversation_id": "conversation-compat",
           "event_log": [
             {
-              "message": "Created flow run request flow-run-request-33c8d0a0487f for software-development/implement-change-request.dot.",
+              "message": "Created flow run request flow-run-request-33c8d0a0487f for software-development/implement-change-request.yaml.",
               "timestamp": "2026-06-22T16:16:07Z"
             }
           ],
@@ -207,7 +207,7 @@
             {
               "conversation_id": "conversation-compat",
               "created_at": "2026-06-22T16:16:07Z",
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "goal": "Keep this request pending.",
               "id": "flow-run-request-33c8d0a0487f",
               "project_path": "__PROJECT_DIR__",

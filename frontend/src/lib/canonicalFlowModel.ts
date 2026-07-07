@@ -1,23 +1,17 @@
 import type { Edge, Node } from '@xyflow/react'
 
-import type { GraphAttrs } from '@/store'
+import type { FlowDefinitionMetadata } from '@/store'
 import { EDGE_RENDER_ROUTE_KEY } from './flowLayoutConstants.js'
 
-export type CanonicalAttrValue = string | number | boolean | null
+export type CanonicalAttrValue =
+    | string
+    | number
+    | boolean
+    | null
+    | CanonicalAttrValue[]
+    | { [key: string]: CanonicalAttrValue }
 export type CanonicalAttrMap = Record<string, CanonicalAttrValue>
-
-export interface CanonicalDefaultsScope {
-    node: CanonicalAttrMap
-    edge: CanonicalAttrMap
-}
-
-export interface CanonicalSubgraph {
-    id: string | null
-    attrs: CanonicalAttrMap
-    nodeIds: string[]
-    defaults: CanonicalDefaultsScope
-    subgraphs: CanonicalSubgraph[]
-}
+export type CanonicalFlowDefinition = Record<string, unknown>
 
 export interface CanonicalFlowNode {
     id: string
@@ -32,33 +26,29 @@ export interface CanonicalFlowEdge {
 
 export interface CanonicalFlowModel {
     graphId: string
-    graphAttrs: CanonicalAttrMap
+    flowMetadata: CanonicalAttrMap
     nodes: CanonicalFlowNode[]
     edges: CanonicalFlowEdge[]
-    defaults: CanonicalDefaultsScope
-    subgraphs: CanonicalSubgraph[]
-    rawDot: string | null
+    rawYaml: string | null
+    flow: CanonicalFlowDefinition | null
 }
 
 export interface CanonicalPreviewGraphPayload {
     nodes: Array<Record<string, unknown>>
     edges: Array<Record<string, unknown>>
-    graph_attrs?: Record<string, unknown> | null
-    defaults?: Record<string, unknown> | null
-    subgraphs?: unknown[] | null
+    metadata?: Record<string, unknown> | null
     child_previews?: Record<string, unknown> | null
 }
 
 export interface CanonicalModelBuildOptions {
-    rawDot?: string | null
-    defaults?: Partial<CanonicalDefaultsScope>
-    subgraphs?: CanonicalSubgraph[]
+    rawYaml?: string | null
+    flow?: CanonicalFlowDefinition | null
 }
 
 export interface CanonicalEditorStateInput extends CanonicalModelBuildOptions {
     nodes: Node[]
     edges: Edge[]
-    graphAttrs: GraphAttrs
+    flowMetadata: FlowDefinitionMetadata
 }
 
 const PREVIEW_NODE_META_KEYS = new Set<string>(['id'])
@@ -74,9 +64,91 @@ const EDITOR_NODE_EXCLUDED_ATTR_KEYS = new Set<string>([
     ...EPHEMERAL_NODE_ATTR_KEYS,
     ...UNSUPPORTED_NODE_ATTR_KEYS,
 ])
+const FLOW_METADATA_CORE_KEYS = new Set([
+    'schema_version',
+    'id',
+    'title',
+    'description',
+    'goal',
+    'inputs',
+    'max_retries',
+    'fidelity',
+    'llm_model',
+    'llm_provider',
+    'llm_profile',
+    'reasoning_effort',
+])
+const NODE_EXTENSION_CORE_KEYS = new Set([
+    'kind',
+    'config',
+    'context',
+    'contracts',
+    'runtime',
+    'manager',
+    'retry',
+    'execution',
+    'ui',
+    'extensions',
+    'label',
+    'description',
+    'prompt',
+    'options',
+    'tool.command',
+    'flow_ref',
+    'input_map',
+    'decisions',
+    'stack.child_flow_ref',
+    'retry_policy',
+    'max_retries',
+    'llm_model',
+    'llm_provider',
+    'llm_profile',
+    'reasoning_effort',
+])
+const EDGE_EXTENSION_CORE_KEYS = new Set(['label', 'condition', 'weight', 'transition', 'extensions'])
+const VALID_NODE_KINDS = new Set([
+    'start',
+    'exit',
+    'agent_task',
+    'human_gate',
+    'conditional',
+    'parallel',
+    'fan_in',
+    'tool',
+    'subflow',
+])
+const DEPRECATED_DOT_METADATA_KEYS = new Set([
+    'label',
+    'spark.title',
+    'spark.description',
+    'spark.launch_inputs',
+    'default_max_retries',
+    'default_fidelity',
+    'ui_default_llm_model',
+    'ui_default_llm_provider',
+    'ui_default_llm_profile',
+    'ui_default_reasoning_effort',
+    'model_stylesheet',
+    'stack.child_yamlfile',
+    'stack.child_workdir',
+])
+const DEPRECATED_DOT_NODE_KEYS = new Set([
+    'shape',
+    'type',
+    'stack.child_yamlfile',
+])
 
 function isCanonicalAttrValue(value: unknown): value is CanonicalAttrValue {
-    return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return true
+    }
+    if (Array.isArray(value)) {
+        return value.every(isCanonicalAttrValue)
+    }
+    if (value && typeof value === 'object') {
+        return Object.values(value as Record<string, unknown>).every(isCanonicalAttrValue)
+    }
+    return false
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -101,119 +173,189 @@ function cloneCanonicalAttrMap(
             return
         }
         if (isCanonicalAttrValue(value)) {
-            cloned[key] = value
+            cloned[key] = cloneCanonicalAttrValue(value)
         }
     })
     return cloned
 }
 
-function canonicalizeGraphAttrs(attrs: CanonicalAttrMap): CanonicalAttrMap {
+function cloneCanonicalAttrValue(value: CanonicalAttrValue): CanonicalAttrValue {
+    if (Array.isArray(value)) {
+        return value.map(cloneCanonicalAttrValue)
+    }
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value).map(([key, item]) => [key, cloneCanonicalAttrValue(item)]),
+        )
+    }
+    return value
+}
+
+function cloneFlowDefinition(flow?: CanonicalFlowDefinition | null): CanonicalFlowDefinition | null {
+    if (!flow) {
+        return null
+    }
+    return JSON.parse(JSON.stringify(flow)) as CanonicalFlowDefinition
+}
+
+function canonicalizeFlowMetadata(attrs: CanonicalAttrMap): CanonicalAttrMap {
     return { ...attrs }
 }
 
-function cloneDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): CanonicalDefaultsScope {
-    return {
-        node: cloneCanonicalAttrMap(defaults?.node, UNSUPPORTED_NODE_ATTR_KEYS),
-        edge: cloneCanonicalAttrMap(defaults?.edge),
-    }
+function typedFlowNode(flow: CanonicalFlowDefinition | null, nodeId: string): Record<string, unknown> | null {
+    return asRecord(asRecord(flow?.nodes)?.[nodeId])
 }
 
-export function cloneCanonicalDefaultsScope(defaults?: Partial<CanonicalDefaultsScope>): CanonicalDefaultsScope {
-    return cloneDefaultsScope(defaults)
+function typedNodeConfig(node: Record<string, unknown> | null): Record<string, unknown> | null {
+    return asRecord(node?.config)
 }
 
-function parseDefaultsScope(defaults: unknown): CanonicalDefaultsScope {
-    const defaultsRecord = asRecord(defaults)
-    return {
-        node: cloneCanonicalAttrMap(asRecord(defaultsRecord?.node), UNSUPPORTED_NODE_ATTR_KEYS),
-        edge: cloneCanonicalAttrMap(asRecord(defaultsRecord?.edge)),
-    }
+function typedFlowEdgeByIndex(flow: CanonicalFlowDefinition | null, index: number): Record<string, unknown> | null {
+    const edges = Array.isArray(flow?.edges) ? flow.edges : []
+    return asRecord(edges[index])
 }
 
-function parseNodeIds(nodeIdsValue: unknown): string[] {
-    if (!Array.isArray(nodeIdsValue)) {
-        return []
-    }
-    return nodeIdsValue.filter((nodeId): nodeId is string => typeof nodeId === 'string')
+function nodeKindFromPayload(payload: Record<string, unknown>, fallbackNode?: Record<string, unknown> | null): string {
+    const fallbackConfig = typedNodeConfig(fallbackNode ?? null)
+    const kind = typeof payload.kind === 'string'
+        ? payload.kind
+        : typeof fallbackNode?.kind === 'string'
+            ? fallbackNode.kind
+            : typeof fallbackConfig?.kind === 'string'
+                ? String(fallbackConfig.kind)
+                : ''
+    return VALID_NODE_KINDS.has(kind) ? kind : ''
 }
 
-function parseCanonicalSubgraph(subgraphValue: unknown): CanonicalSubgraph | null {
-    const record = asRecord(subgraphValue)
-    if (!record) {
-        return null
-    }
+function enrichNodeAttrsFromTypedPayload(
+    nodePayload: Record<string, unknown>,
+    fallbackNode: Record<string, unknown> | null,
+): CanonicalAttrMap {
+    const attrs = cloneCanonicalAttrMap(
+        {
+            ...(fallbackNode ?? {}),
+            ...nodePayload,
+        },
+        PREVIEW_NODE_EXCLUDED_ATTR_KEYS,
+    )
+    const kind = nodeKindFromPayload(nodePayload, fallbackNode) || 'agent_task'
+    const config = asRecord(attrs.config) ?? typedNodeConfig(fallbackNode)
 
-    const nestedValues = Array.isArray(record.subgraphs) ? record.subgraphs : []
-    const nestedSubgraphs = nestedValues
-        .map((nestedSubgraphValue) => parseCanonicalSubgraph(nestedSubgraphValue))
-        .filter((subgraph): subgraph is CanonicalSubgraph => subgraph !== null)
+    attrs.kind = kind
 
-    return {
-        id: typeof record.id === 'string' ? record.id : null,
-        attrs: cloneCanonicalAttrMap(asRecord(record.attrs)),
-        nodeIds: parseNodeIds(record.nodeIds ?? record.node_ids),
-        defaults: parseDefaultsScope(record.defaults),
-        subgraphs: nestedSubgraphs,
-    }
-}
-
-function parseCanonicalSubgraphs(subgraphsValue: unknown): CanonicalSubgraph[] {
-    if (!Array.isArray(subgraphsValue)) {
-        return []
-    }
-    return subgraphsValue
-        .map((subgraphValue) => parseCanonicalSubgraph(subgraphValue))
-        .filter((subgraph): subgraph is CanonicalSubgraph => subgraph !== null)
-}
-
-function cloneSubgraph(subgraph: CanonicalSubgraph): CanonicalSubgraph {
-    return {
-        id: subgraph.id,
-        attrs: cloneCanonicalAttrMap(subgraph.attrs),
-        nodeIds: [...subgraph.nodeIds],
-        defaults: cloneDefaultsScope(subgraph.defaults),
-        subgraphs: subgraph.subgraphs.map(cloneSubgraph),
-    }
-}
-
-export function cloneCanonicalSubgraphs(subgraphs?: CanonicalSubgraph[]): CanonicalSubgraph[] {
-    return (subgraphs ?? []).map(cloneSubgraph)
-}
-
-function normalizeDotId(rawId: string): string {
-    const trimmed = rawId.trim()
-    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-        const inner = trimmed.slice(1, -1)
-        return inner
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, '\\')
-    }
-    return trimmed
-}
-
-function extractNodeIdsWithExplicitLabels(rawDot?: string | null): Set<string> {
-    if (!rawDot) {
-        return new Set<string>()
-    }
-
-    const nodeIdsWithExplicitLabels = new Set<string>()
-    const nodeStatementPattern = /(^|[\r\n])\s*("(?:[^"\\]|\\.)+"|[A-Za-z_][A-Za-z0-9_]*)\s*\[([\s\S]*?)\][^\S\r\n]*;?/g
-    let match = nodeStatementPattern.exec(rawDot)
-    while (match !== null) {
-        const nodeId = normalizeDotId(match[2])
-        const attrsBody = match[3]
-        if (
-            nodeId !== 'graph'
-            && nodeId !== 'node'
-            && nodeId !== 'edge'
-            && /\blabel\s*=/.test(attrsBody)
-        ) {
-            nodeIdsWithExplicitLabels.add(nodeId)
+    if (config) {
+        attrs.config = cloneCanonicalAttrMap(config)
+        if ((kind === 'agent_task' || kind === 'human_gate') && typeof config.prompt === 'string') {
+            attrs.prompt = typeof attrs.prompt === 'string' && attrs.prompt ? attrs.prompt : config.prompt
         }
-        match = nodeStatementPattern.exec(rawDot)
+        if (kind === 'human_gate' && Array.isArray(config.decisions)) {
+            attrs.decisions = config.decisions as CanonicalAttrValue
+        }
+        if (kind === 'tool' && typeof config.command === 'string') {
+            attrs['tool.command'] = typeof attrs['tool.command'] === 'string' && attrs['tool.command']
+                ? attrs['tool.command']
+                : config.command
+        }
+        if (kind === 'subflow') {
+            if (typeof config.flow_ref === 'string') {
+                attrs.flow_ref = config.flow_ref
+            }
+            if (asRecord(config.input_map)) {
+                attrs.input_map = cloneCanonicalAttrMap(config.input_map)
+            }
+        }
+        if (kind === 'parallel') {
+            ;(['join_policy', 'max_parallel', 'join_k', 'join_quorum'] as const).forEach((key) => {
+                if (config[key] !== undefined && isCanonicalAttrValue(config[key])) {
+                    attrs[key] = cloneCanonicalAttrValue(config[key])
+                }
+            })
+        }
     }
 
-    return nodeIdsWithExplicitLabels
+    const execution = asRecord(attrs.execution)
+    if (execution) {
+        ;(['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort'] as const).forEach((key) => {
+            if (typeof execution[key] === 'string') {
+                attrs[key] = execution[key]
+            }
+        })
+    }
+    const retry = asRecord(attrs.retry)
+    if (retry) {
+        if (typeof retry.max_retries === 'number' || typeof retry.max_retries === 'string') {
+            attrs.max_retries = retry.max_retries
+        }
+        if (typeof retry.policy === 'string') {
+            attrs.retry_policy = retry.policy
+        }
+    }
+    const runtime = asRecord(attrs.runtime)
+    if (runtime) {
+        ;(['allow_partial', 'auto_status', 'goal_gate'] as const).forEach((key) => {
+            if (typeof runtime[key] === 'boolean') {
+                attrs[key] = runtime[key]
+            }
+        })
+        ;(['error_policy', 'fidelity', 'thread_id', 'class', 'timeout', 'retry_target', 'fallback_retry_target'] as const).forEach((key) => {
+            if (typeof runtime[key] === 'string') {
+                attrs[key] = runtime[key]
+            }
+        })
+    }
+    const contracts = asRecord(attrs.contracts)
+    if (contracts) {
+        if (Array.isArray(contracts.reads_context)) {
+            attrs['spark.reads_context'] = JSON.stringify(contracts.reads_context)
+        }
+        if (Array.isArray(contracts.writes_context)) {
+            attrs['spark.writes_context'] = JSON.stringify(contracts.writes_context)
+        }
+    }
+    const manager = asRecord(attrs.manager)
+    if (manager) {
+        const managerKeys = {
+            poll_interval: 'manager.poll_interval',
+            max_cycles: 'manager.max_cycles',
+            stop_condition: 'manager.stop_condition',
+            steer_cooldown: 'manager.steer_cooldown',
+            child_autostart: 'stack.child_autostart',
+        } as const
+        Object.entries(managerKeys).forEach(([sourceKey, attrKey]) => {
+            const value = manager[sourceKey]
+            if (isCanonicalAttrValue(value)) {
+                attrs[attrKey] = cloneCanonicalAttrValue(value)
+            }
+        })
+        if (Array.isArray(manager.actions)) {
+            attrs['manager.actions'] = manager.actions.join(',')
+        }
+    }
+
+    return attrs
+}
+
+function flowMetadataFromFlow(flow: CanonicalFlowDefinition | null, graphMetadata: unknown): CanonicalAttrMap {
+    const metadata = cloneCanonicalAttrMap(asRecord(flow?.metadata) ?? graphMetadata)
+    const defaults = asRecord(flow?.defaults)
+    if (typeof flow?.schema_version === 'string') metadata.schema_version = flow.schema_version
+    if (typeof flow?.id === 'string') metadata.id = flow.id
+    if (typeof flow?.title === 'string') metadata.title = flow.title
+    if (typeof flow?.description === 'string') metadata.description = flow.description
+    if (typeof flow?.goal === 'string') metadata.goal = flow.goal
+    if (Array.isArray(flow?.inputs)) metadata.inputs = JSON.stringify(flow.inputs)
+    if (defaults) {
+        if (typeof defaults.max_retries === 'number') metadata.max_retries = defaults.max_retries
+        if (typeof defaults.fidelity === 'string') metadata.fidelity = defaults.fidelity
+        if (typeof defaults.llm_model === 'string') metadata.llm_model = defaults.llm_model
+        if (typeof defaults.llm_provider === 'string') metadata.llm_provider = defaults.llm_provider
+        if (typeof defaults.llm_profile === 'string') metadata.llm_profile = defaults.llm_profile
+        if (typeof defaults.reasoning_effort === 'string') metadata.reasoning_effort = defaults.reasoning_effort
+    }
+    DEPRECATED_DOT_METADATA_KEYS.forEach((key) => {
+        delete metadata[key]
+    })
+    return metadata
 }
 
 export function buildCanonicalFlowModelFromPreviewGraph(
@@ -221,23 +363,20 @@ export function buildCanonicalFlowModelFromPreviewGraph(
     graph: CanonicalPreviewGraphPayload,
     options?: CanonicalModelBuildOptions,
 ): CanonicalFlowModel {
-    const nodeIdsWithExplicitLabels = extractNodeIdsWithExplicitLabels(options?.rawDot)
+    const baseFlow = cloneFlowDefinition(options?.flow)
     const nodes: CanonicalFlowNode[] = graph.nodes.flatMap((nodePayload) => {
         const nodeId = typeof nodePayload.id === 'string' ? nodePayload.id : null
         if (!nodeId) {
             return []
         }
-        const attrs = cloneCanonicalAttrMap(nodePayload, PREVIEW_NODE_EXCLUDED_ATTR_KEYS)
-        if (attrs.label === nodeId && !nodeIdsWithExplicitLabels.has(nodeId)) {
-            delete attrs.label
-        }
+        const attrs = enrichNodeAttrsFromTypedPayload(nodePayload, typedFlowNode(baseFlow, nodeId))
         return [{
             id: nodeId,
             attrs,
         }]
     })
 
-    const edges: CanonicalFlowEdge[] = graph.edges.flatMap((edgePayload) => {
+    const edges: CanonicalFlowEdge[] = graph.edges.flatMap((edgePayload, index) => {
         const source = typeof edgePayload.from === 'string'
             ? edgePayload.from
             : typeof edgePayload.source === 'string'
@@ -251,21 +390,24 @@ export function buildCanonicalFlowModelFromPreviewGraph(
         if (!source || !target) {
             return []
         }
+        const fallbackEdge = typedFlowEdgeByIndex(baseFlow, index)
         return [{
             source,
             target,
-            attrs: cloneCanonicalAttrMap(edgePayload, PREVIEW_EDGE_META_KEYS),
+            attrs: cloneCanonicalAttrMap({
+                ...(fallbackEdge ?? {}),
+                ...edgePayload,
+            }, PREVIEW_EDGE_META_KEYS),
         }]
     })
 
     return {
         graphId,
-        graphAttrs: canonicalizeGraphAttrs(cloneCanonicalAttrMap(graph.graph_attrs)),
+        flowMetadata: canonicalizeFlowMetadata(flowMetadataFromFlow(baseFlow, graph.metadata)),
         nodes,
         edges,
-        defaults: cloneDefaultsScope(options?.defaults ?? parseDefaultsScope(graph.defaults)),
-        subgraphs: (options?.subgraphs ?? parseCanonicalSubgraphs(graph.subgraphs)).map(cloneSubgraph),
-        rawDot: options?.rawDot ?? null,
+        rawYaml: options?.rawYaml ?? null,
+        flow: baseFlow,
     }
 }
 
@@ -290,27 +432,12 @@ export function buildCanonicalFlowModelFromEditorState(
 
     return {
         graphId,
-        graphAttrs: canonicalizeGraphAttrs(cloneCanonicalAttrMap(input.graphAttrs)),
+        flowMetadata: canonicalizeFlowMetadata(cloneCanonicalAttrMap(input.flowMetadata)),
         nodes,
         edges,
-        defaults: cloneDefaultsScope(input.defaults),
-        subgraphs: (input.subgraphs ?? []).map(cloneSubgraph),
-        rawDot: input.rawDot ?? null,
+        rawYaml: input.rawYaml ?? null,
+        flow: cloneFlowDefinition(input.flow),
     }
-}
-
-function escapeDotString(value: string): string {
-    return value
-        .replace(/\\/g, '\\\\')
-        .replace(/"/g, '\\"')
-        .replace(/\n/g, '\\n')
-}
-
-function formatAttrValue(value: string): string {
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-        return value
-    }
-    return `"${escapeDotString(value)}"`
 }
 
 function readStringAttr(attrs: CanonicalAttrMap, key: string): string {
@@ -318,63 +445,34 @@ function readStringAttr(attrs: CanonicalAttrMap, key: string): string {
     return typeof value === 'string' ? value : ''
 }
 
-function readStringOrNumberAttr(attrs: CanonicalAttrMap, key: string): string | number | '' {
+function readNumberAttr(attrs: CanonicalAttrMap, key: string): number | undefined {
     const value = attrs[key]
-    if (typeof value === 'string' || typeof value === 'number') {
+    if (typeof value === 'number' && Number.isFinite(value)) {
         return value
     }
-    return ''
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) ? parsed : undefined
+    }
+    return undefined
 }
 
-function readExplicitBooleanAttr(attrs: CanonicalAttrMap, key: string): boolean | null {
+function readBooleanAttr(attrs: CanonicalAttrMap, key: string): boolean | undefined {
     const value = attrs[key]
-    if (value === true || value === 'true') {
+    if (typeof value === 'boolean') {
+        return value
+    }
+    if (value === 'true') {
         return true
     }
-    if (value === false || value === 'false') {
+    if (value === 'false') {
         return false
     }
-    return null
+    return undefined
 }
 
-function formatExplicitBooleanAttr(key: string, value: boolean | null): string {
-    if (value === null) {
-        return ''
-    }
-    return `${key}=${value ? 'true' : 'false'}`
-}
-
-function formatIntAttr(key: string, value: string | number): string {
-    if (value === '' || value === null || value === undefined) return ''
-    const parsed = typeof value === 'number' ? Math.floor(value) : parseInt(value, 10)
-    if (Number.isNaN(parsed)) return ''
-    return `${key}=${parsed}`
-}
-
-function formatNumberAttr(key: string, value: string | number): string {
-    if (value === '' || value === null || value === undefined) return ''
-    if (typeof value === 'string' && value.trim() === '') return ''
-    const parsed = typeof value === 'number' ? value : Number(value.trim())
-    if (!Number.isFinite(parsed)) return ''
-    return `${key}=${parsed}`
-}
-
-function formatGraphAttr(key: string, value?: string): string {
-    if (!value) return ''
-    return `${key}="${escapeDotString(value)}"`
-}
-
-function formatDurationAttr(key: string, value: string): string {
-    const trimmed = value.trim()
-    if (trimmed === '') return ''
-    if (/^\d+(ms|s|m|h|d)$/.test(trimmed)) {
-        return `${key}=${trimmed}`
-    }
-    return `${key}="${escapeDotString(trimmed)}"`
-}
-
-export function sanitizeGraphId(flowName: string): string {
-    const raw = flowName.replace(/\.dot$/i, '')
+export function sanitizeFlowId(flowName: string): string {
+    const raw = flowName.replace(/\.(ya?ml|json)$/i, '')
     const replaced = raw.replace(/[^A-Za-z0-9_]/g, '_')
     const normalized = replaced.length > 0 ? replaced : 'flow'
     if (/^[A-Za-z_]/.test(normalized)) {
@@ -383,311 +481,278 @@ export function sanitizeGraphId(flowName: string): string {
     return `_${normalized}`
 }
 
-const KNOWN_GRAPH_ATTR_KEYS = new Set<string>([
-    'spark.title',
-    'spark.description',
-    'spark.launch_inputs',
-    'goal',
-    'label',
-    'model_stylesheet',
-    'default_max_retries',
-    'retry_target',
-    'fallback_retry_target',
-    'default_fidelity',
-    'stack.child_dotfile',
-    'stack.child_workdir',
-    'tool.hooks.pre',
-    'tool.hooks.post',
-    'ui_default_llm_model',
-    'ui_default_llm_provider',
-    'ui_default_llm_profile',
-    'ui_default_reasoning_effort',
-])
-
-const KNOWN_NODE_ATTR_KEYS = new Set<string>([
-    'label',
-    'shape',
-    'prompt',
-    'tool.command',
-    'tool.hooks.pre',
-    'tool.hooks.post',
-    'tool.artifacts.paths',
-    'tool.artifacts.stdout',
-    'tool.artifacts.stderr',
-    'join_policy',
-    'join_k',
-    'join_quorum',
-    'error_policy',
-    'max_parallel',
-    'type',
-    'max_retries',
-    'goal_gate',
-    'retry_target',
-    'fallback_retry_target',
-    'fidelity',
-    'thread_id',
-    'class',
-    'timeout',
-    'llm_model',
-    'llm_provider',
-    'llm_profile',
-    'reasoning_effort',
-    'auto_status',
-    'allow_partial',
-    'manager.poll_interval',
-    'manager.max_cycles',
-    'manager.stop_condition',
-    'manager.actions',
-    'manager.steer_cooldown',
-    'stack.child_autostart',
-    'spark.reads_context',
-    'spark.writes_context',
-])
-const SERIALIZED_NODE_EXCLUDED_ATTR_KEYS = new Set<string>([
-    ...KNOWN_NODE_ATTR_KEYS,
-    ...UNSUPPORTED_NODE_ATTR_KEYS,
-])
-
-const KNOWN_EDGE_ATTR_KEYS = new Set<string>([
-    'label',
-    'condition',
-    'weight',
-    'fidelity',
-    'thread_id',
-    'loop_restart',
-])
-
-function formatCanonicalAttrEntry(key: string, value: CanonicalAttrValue): string {
-    if (value === null) {
-        return ''
-    }
-    if (typeof value === 'number') {
-        if (!Number.isFinite(value)) {
-            return ''
-        }
-        return `${key}=${value}`
-    }
-    if (typeof value === 'boolean') {
-        return `${key}=${value ? 'true' : 'false'}`
-    }
-    return `${key}=${formatAttrValue(value)}`
+function yamlScalar(value: unknown): string {
+    if (value === null || value === undefined) return 'null'
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+    const text = String(value)
+    if (
+        /^[A-Za-z0-9_./:-]+$/.test(text)
+        && text !== ''
+        && !/^(?:true|false|null|~)$/i.test(text)
+        && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(text)
+    ) return text
+    return JSON.stringify(text)
 }
 
-function formatCanonicalAttrEntries(attrs: CanonicalAttrMap, excludedKeys?: Set<string>): string[] {
-    return Object.entries(attrs)
-        .filter(([key, value]) => value !== null && !excludedKeys?.has(key))
-        .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
-        .map(([key, value]) => formatCanonicalAttrEntry(key, value))
-        .filter((entry) => entry !== '')
+function yamlBlock(value: unknown, indent = 0): string {
+    const pad = ' '.repeat(indent)
+    if (Array.isArray(value)) {
+        if (value.length === 0) return '[]'
+        return value.map((item) => `${pad}- ${yamlBlock(item, indent + 2).trimStart()}`).join('\n')
+    }
+    if (value && typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined)
+        if (entries.length === 0) return '{}'
+        return entries.map(([key, item]) => {
+            if (item && typeof item === 'object') {
+                return `${pad}${key}:\n${yamlBlock(item, indent + 2)}`
+            }
+            return `${pad}${key}: ${yamlScalar(item)}`
+        }).join('\n')
+    }
+    return yamlScalar(value)
 }
 
-function appendDefaultsScopeDot(dot: string, defaults: CanonicalDefaultsScope, indent = '  '): string {
-    const nodeDefaults = formatCanonicalAttrEntries(defaults.node)
-    const edgeDefaults = formatCanonicalAttrEntries(defaults.edge)
-
-    if (nodeDefaults.length > 0) {
-        dot += `${indent}node [${nodeDefaults.join(', ')}];\n`
-    }
-    if (edgeDefaults.length > 0) {
-        dot += `${indent}edge [${edgeDefaults.join(', ')}];\n`
-    }
-    return dot
+function nodeKindFromAttrs(attrs: CanonicalAttrMap, baseNode?: Record<string, unknown> | null): string {
+    const explicitKind = readStringAttr(attrs, 'kind')
+    if (VALID_NODE_KINDS.has(explicitKind)) return explicitKind
+    const configKind = readStringAttr(cloneCanonicalAttrMap(attrs.config), 'kind')
+    if (VALID_NODE_KINDS.has(configKind)) return configKind
+    const baseKind = typeof baseNode?.kind === 'string' ? baseNode.kind : ''
+    if (VALID_NODE_KINDS.has(baseKind)) return baseKind
+    const baseConfigKind = readStringAttr(cloneCanonicalAttrMap(asRecord(baseNode?.config)), 'kind')
+    if (VALID_NODE_KINDS.has(baseConfigKind)) return baseConfigKind
+    return 'agent_task'
 }
 
-function appendSubgraphDot(dot: string, subgraph: CanonicalSubgraph, indent = '  '): string {
-    const innerIndent = `${indent}  `
-    const header = subgraph.id ? `subgraph ${subgraph.id}` : 'subgraph'
-    dot += `${indent}${header} {\n`
-
-    const subgraphAttrs = formatCanonicalAttrEntries(subgraph.attrs)
-    if (subgraphAttrs.length > 0) {
-        dot += `${innerIndent}graph [${subgraphAttrs.join(', ')}];\n`
-    }
-
-    dot = appendDefaultsScopeDot(dot, subgraph.defaults, innerIndent)
-
-    subgraph.nodeIds.forEach((nodeId) => {
-        if (nodeId.trim().length > 0) {
-            dot += `${innerIndent}${nodeId};\n`
+function compactObject<T extends Record<string, unknown>>(value: T): T {
+    Object.keys(value).forEach((key) => {
+        const item = value[key]
+        if (
+            item === undefined
+            || (Array.isArray(item) && item.length === 0)
+            || (item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length === 0)
+        ) {
+            delete value[key]
         }
     })
-
-    subgraph.subgraphs.forEach((nestedSubgraph) => {
-        dot = appendSubgraphDot(dot, nestedSubgraph, innerIndent)
-    })
-
-    dot += `${indent}}\n`
-    return dot
+    return value
 }
 
-export function generateDotFromCanonicalFlowModel(flowName: string, model: CanonicalFlowModel): string {
-    const graphAttrs = model.graphAttrs
-    let dot = `digraph ${sanitizeGraphId(flowName)} {\n`
-
-    const graphAttrLines = [
-        formatGraphAttr('spark.title', readStringAttr(graphAttrs, 'spark.title')),
-        formatGraphAttr('spark.description', readStringAttr(graphAttrs, 'spark.description')),
-        formatGraphAttr('spark.launch_inputs', readStringAttr(graphAttrs, 'spark.launch_inputs')),
-        formatGraphAttr('goal', readStringAttr(graphAttrs, 'goal')),
-        formatGraphAttr('label', readStringAttr(graphAttrs, 'label')),
-        formatGraphAttr('model_stylesheet', readStringAttr(graphAttrs, 'model_stylesheet')),
-        formatIntAttr('default_max_retries', readStringOrNumberAttr(graphAttrs, 'default_max_retries')),
-        formatGraphAttr('retry_target', readStringAttr(graphAttrs, 'retry_target')),
-        formatGraphAttr('fallback_retry_target', readStringAttr(graphAttrs, 'fallback_retry_target')),
-        formatGraphAttr('default_fidelity', readStringAttr(graphAttrs, 'default_fidelity')),
-        formatGraphAttr('stack.child_dotfile', readStringAttr(graphAttrs, 'stack.child_dotfile')),
-        formatGraphAttr('stack.child_workdir', readStringAttr(graphAttrs, 'stack.child_workdir')),
-        formatGraphAttr('tool.hooks.pre', readStringAttr(graphAttrs, 'tool.hooks.pre')),
-        formatGraphAttr('tool.hooks.post', readStringAttr(graphAttrs, 'tool.hooks.post')),
-        formatGraphAttr('ui_default_llm_model', readStringAttr(graphAttrs, 'ui_default_llm_model')),
-        formatGraphAttr('ui_default_llm_provider', readStringAttr(graphAttrs, 'ui_default_llm_provider')),
-        formatGraphAttr('ui_default_llm_profile', readStringAttr(graphAttrs, 'ui_default_llm_profile')),
-        formatGraphAttr('ui_default_reasoning_effort', readStringAttr(graphAttrs, 'ui_default_reasoning_effort')),
-        ...formatCanonicalAttrEntries(graphAttrs, KNOWN_GRAPH_ATTR_KEYS),
-    ].filter(Boolean)
-
-    if (graphAttrLines.length > 0) {
-        dot += `  graph [${graphAttrLines.join(', ')}];\n`
+function parseStringArrayJson(value: unknown): string[] {
+    if (!value) return []
+    if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string')
+    if (typeof value !== 'string' || !value.trim()) return []
+    try {
+        const parsed = JSON.parse(value)
+        return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+    } catch {
+        return []
     }
+}
 
-    dot = appendDefaultsScopeDot(dot, model.defaults)
+function nodeConfigFromAttrs(kind: string, attrs: CanonicalAttrMap, baseConfig?: Record<string, unknown> | null): Record<string, unknown> {
+    const base = { ...(baseConfig ?? {}) }
+    if (kind === 'agent_task') return compactObject({ ...base, kind, prompt: readStringAttr(attrs, 'prompt') })
+    if (kind === 'human_gate') {
+        return compactObject({
+            ...base,
+            kind,
+            prompt: readStringAttr(attrs, 'prompt'),
+            decisions: Array.isArray(attrs.decisions) ? attrs.decisions : base.decisions,
+        })
+    }
+    if (kind === 'tool') return compactObject({ ...base, kind, command: readStringAttr(attrs, 'tool.command') })
+    if (kind === 'subflow') {
+        return compactObject({
+            ...base,
+            kind,
+            flow_ref: readStringAttr(attrs, 'flow_ref')
+                || String(base.flow_ref ?? 'child.yaml'),
+            input_map: asRecord(attrs.input_map) ?? asRecord(base.input_map) ?? undefined,
+        })
+    }
+    if (kind === 'parallel') {
+        return compactObject({
+            ...base,
+            kind,
+            join_policy: readStringAttr(attrs, 'join_policy') || base.join_policy,
+            max_parallel: readNumberAttr(attrs, 'max_parallel') ?? base.max_parallel,
+            join_k: readNumberAttr(attrs, 'join_k') ?? base.join_k,
+            join_quorum: readNumberAttr(attrs, 'join_quorum') ?? base.join_quorum,
+        })
+    }
+    return compactObject({ ...base, kind })
+}
 
-    model.nodes.forEach((node) => {
-        const attrs = node.attrs
-        const hasLabelAttr = Object.prototype.hasOwnProperty.call(attrs, 'label')
-        const labelValue = readStringAttr(attrs, 'label')
-        const shapeValue = readStringAttr(attrs, 'shape')
-        const promptValue = readStringAttr(attrs, 'prompt')
-        const toolCommandValue = readStringAttr(attrs, 'tool.command')
-        const toolHooksPreValue = readStringAttr(attrs, 'tool.hooks.pre')
-        const toolHooksPostValue = readStringAttr(attrs, 'tool.hooks.post')
-        const toolArtifactsPathsValue = readStringAttr(attrs, 'tool.artifacts.paths')
-        const toolArtifactsStdoutValue = readStringAttr(attrs, 'tool.artifacts.stdout')
-        const toolArtifactsStderrValue = readStringAttr(attrs, 'tool.artifacts.stderr')
-        const joinPolicyValue = readStringAttr(attrs, 'join_policy')
-        const joinKValue = readStringOrNumberAttr(attrs, 'join_k')
-        const joinQuorumValue = readStringOrNumberAttr(attrs, 'join_quorum')
-        const errorPolicyValue = readStringAttr(attrs, 'error_policy')
-        const maxParallelValue = readStringOrNumberAttr(attrs, 'max_parallel')
-        const typeValue = readStringAttr(attrs, 'type')
-        const maxRetriesValue = readStringOrNumberAttr(attrs, 'max_retries')
-        const goalGateValue = readExplicitBooleanAttr(attrs, 'goal_gate')
-        const retryTargetValue = readStringAttr(attrs, 'retry_target')
-        const fallbackRetryTargetValue = readStringAttr(attrs, 'fallback_retry_target')
-        const fidelityValue = readStringAttr(attrs, 'fidelity')
-        const threadIdValue = readStringAttr(attrs, 'thread_id')
-        const classValue = readStringAttr(attrs, 'class')
-        const timeoutValue = readStringAttr(attrs, 'timeout')
-        const llmModelValue = readStringAttr(attrs, 'llm_model')
-        const llmProviderValue = readStringAttr(attrs, 'llm_provider')
-        const llmProfileValue = readStringAttr(attrs, 'llm_profile')
-        const reasoningEffortValue = readStringAttr(attrs, 'reasoning_effort')
-        const autoStatusValue = readExplicitBooleanAttr(attrs, 'auto_status')
-        const allowPartialValue = readExplicitBooleanAttr(attrs, 'allow_partial')
-        const managerPollIntervalValue = readStringAttr(attrs, 'manager.poll_interval')
-        const managerMaxCyclesValue = readStringOrNumberAttr(attrs, 'manager.max_cycles')
-        const managerStopConditionValue = readStringAttr(attrs, 'manager.stop_condition')
-        const managerActionsValue = readStringAttr(attrs, 'manager.actions')
-        const managerSteerCooldownValue = readStringAttr(attrs, 'manager.steer_cooldown')
-        const stackChildAutostartValue = readExplicitBooleanAttr(attrs, 'stack.child_autostart')
-        const readsContextValue = readStringAttr(attrs, 'spark.reads_context')
-        const writesContextValue = readStringAttr(attrs, 'spark.writes_context')
+function extensionAttrs(attrs: CanonicalAttrMap, coreKeys: Set<string>): CanonicalAttrMap {
+    return Object.fromEntries(
+        Object.entries(attrs).filter(([key, value]) => (
+            !coreKeys.has(key)
+            && !DEPRECATED_DOT_METADATA_KEYS.has(key)
+            && !DEPRECATED_DOT_NODE_KEYS.has(key)
+            && isCanonicalAttrValue(value)
+        )),
+    )
+}
 
-        const label = hasLabelAttr ? `label="${escapeDotString(labelValue)}"` : ''
-        const shape = shapeValue ? `shape=${formatAttrValue(shapeValue)}` : ''
-        const prompt = promptValue ? `prompt="${escapeDotString(promptValue)}"` : ''
-        const toolCommand = toolCommandValue ? `tool.command="${escapeDotString(toolCommandValue)}"` : ''
-        const toolHooksPre = toolHooksPreValue ? `tool.hooks.pre="${escapeDotString(toolHooksPreValue)}"` : ''
-        const toolHooksPost = toolHooksPostValue ? `tool.hooks.post="${escapeDotString(toolHooksPostValue)}"` : ''
-        const toolArtifactsPaths = toolArtifactsPathsValue
-            ? `tool.artifacts.paths="${escapeDotString(toolArtifactsPathsValue)}"`
-            : ''
-        const toolArtifactsStdout = toolArtifactsStdoutValue
-            ? `tool.artifacts.stdout="${escapeDotString(toolArtifactsStdoutValue)}"`
-            : ''
-        const toolArtifactsStderr = toolArtifactsStderrValue
-            ? `tool.artifacts.stderr="${escapeDotString(toolArtifactsStderrValue)}"`
-            : ''
-        const joinPolicy = joinPolicyValue ? `join_policy=${formatAttrValue(joinPolicyValue)}` : ''
-        const joinK = joinPolicyValue === 'k_of_n' ? formatIntAttr('join_k', joinKValue) : ''
-        const joinQuorum = joinPolicyValue === 'quorum' ? formatNumberAttr('join_quorum', joinQuorumValue) : ''
-        const errorPolicy = errorPolicyValue ? `error_policy=${formatAttrValue(errorPolicyValue)}` : ''
-        const maxParallel = formatIntAttr('max_parallel', maxParallelValue)
+function flowInputsFromAttrs(attrs: CanonicalAttrMap): unknown[] {
+    const rawInputs = readStringAttr(attrs, 'inputs') || readStringAttr(attrs, 'spark.launch_inputs')
+    if (!rawInputs) return []
+    try {
+        const parsed = JSON.parse(rawInputs)
+        return Array.isArray(parsed) ? parsed : []
+    } catch {
+        return []
+    }
+}
 
-        const nodeAttrs = [
-            label,
-            shape,
-            prompt,
-            toolCommand,
-            toolHooksPre,
-            toolHooksPost,
-            toolArtifactsPaths,
-            toolArtifactsStdout,
-            toolArtifactsStderr,
-            joinPolicy,
-            joinK,
-            joinQuorum,
-            errorPolicy,
-            maxParallel,
-            typeValue ? `type=${formatAttrValue(typeValue)}` : '',
-            formatIntAttr('max_retries', maxRetriesValue),
-            formatExplicitBooleanAttr('goal_gate', goalGateValue),
-            retryTargetValue ? `retry_target=${formatAttrValue(retryTargetValue)}` : '',
-            fallbackRetryTargetValue ? `fallback_retry_target=${formatAttrValue(fallbackRetryTargetValue)}` : '',
-            fidelityValue ? `fidelity=${formatAttrValue(fidelityValue)}` : '',
-            threadIdValue ? `thread_id="${escapeDotString(threadIdValue)}"` : '',
-            classValue ? `class="${escapeDotString(classValue)}"` : '',
-            timeoutValue ? formatDurationAttr('timeout', timeoutValue) : '',
-            llmModelValue ? `llm_model=${formatAttrValue(llmModelValue)}` : '',
-            llmProviderValue ? `llm_provider=${formatAttrValue(llmProviderValue)}` : '',
-            llmProfileValue ? `llm_profile=${formatAttrValue(llmProfileValue)}` : '',
-            reasoningEffortValue ? `reasoning_effort=${formatAttrValue(reasoningEffortValue)}` : '',
-            formatExplicitBooleanAttr('auto_status', autoStatusValue),
-            formatExplicitBooleanAttr('allow_partial', allowPartialValue),
-            managerPollIntervalValue ? formatDurationAttr('manager.poll_interval', managerPollIntervalValue) : '',
-            formatIntAttr('manager.max_cycles', managerMaxCyclesValue),
-            managerStopConditionValue ? `manager.stop_condition="${escapeDotString(managerStopConditionValue)}"` : '',
-            managerActionsValue ? `manager.actions="${escapeDotString(managerActionsValue)}"` : '',
-            managerSteerCooldownValue ? formatDurationAttr('manager.steer_cooldown', managerSteerCooldownValue) : '',
-            formatExplicitBooleanAttr('stack.child_autostart', stackChildAutostartValue),
-            readsContextValue ? `spark.reads_context="${escapeDotString(readsContextValue)}"` : '',
-            writesContextValue ? `spark.writes_context="${escapeDotString(writesContextValue)}"` : '',
-            ...formatCanonicalAttrEntries(attrs, SERIALIZED_NODE_EXCLUDED_ATTR_KEYS),
-        ].filter(Boolean).join(', ')
-
-        dot += `  ${node.id} [${nodeAttrs}];\n`
+function flowDefaultsFromAttrs(attrs: CanonicalAttrMap, baseDefaults?: Record<string, unknown> | null): Record<string, unknown> {
+    return compactObject({
+        ...(baseDefaults ?? {}),
+        max_retries: readNumberAttr(attrs, 'max_retries') ?? baseDefaults?.max_retries,
+        fidelity: readStringAttr(attrs, 'fidelity') || baseDefaults?.fidelity,
+        llm_model: readStringAttr(attrs, 'llm_model') || baseDefaults?.llm_model,
+        llm_provider: readStringAttr(attrs, 'llm_provider') || baseDefaults?.llm_provider,
+        llm_profile: readStringAttr(attrs, 'llm_profile') || baseDefaults?.llm_profile,
+        reasoning_effort: readStringAttr(attrs, 'reasoning_effort') || baseDefaults?.reasoning_effort,
     })
+}
 
-    model.edges.forEach((edge) => {
-        const attrs = edge.attrs
-        const labelValue = readStringAttr(attrs, 'label')
-        const conditionValue = readStringAttr(attrs, 'condition')
-        const weightValue = readStringOrNumberAttr(attrs, 'weight')
-        const fidelityValue = readStringAttr(attrs, 'fidelity')
-        const threadIdValue = readStringAttr(attrs, 'thread_id')
-        const loopRestartValue = readExplicitBooleanAttr(attrs, 'loop_restart')
-
-        const edgeAttrs = [
-            labelValue ? `label="${escapeDotString(labelValue)}"` : '',
-            conditionValue ? `condition="${escapeDotString(conditionValue)}"` : '',
-            formatIntAttr('weight', weightValue),
-            fidelityValue ? `fidelity=${formatAttrValue(fidelityValue)}` : '',
-            threadIdValue ? `thread_id="${escapeDotString(threadIdValue)}"` : '',
-            formatExplicitBooleanAttr('loop_restart', loopRestartValue),
-            ...formatCanonicalAttrEntries(attrs, KNOWN_EDGE_ATTR_KEYS),
-        ].filter(Boolean).join(', ')
-
-        if (edgeAttrs) {
-            dot += `  ${edge.source} -> ${edge.target} [${edgeAttrs}];\n`
-        } else {
-            dot += `  ${edge.source} -> ${edge.target};\n`
-        }
+function retryFromAttrs(attrs: CanonicalAttrMap, baseRetry?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+    return compactObject({
+        ...(baseRetry ?? {}),
+        policy: readStringAttr(attrs, 'retry_policy') || baseRetry?.policy,
+        max_retries: readNumberAttr(attrs, 'max_retries') ?? baseRetry?.max_retries,
     })
+}
 
-    model.subgraphs.forEach((subgraph) => {
-        dot = appendSubgraphDot(dot, subgraph)
+function executionFromAttrs(attrs: CanonicalAttrMap, baseExecution?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+    return compactObject({
+        ...(baseExecution ?? {}),
+        llm_model: readStringAttr(attrs, 'llm_model') || baseExecution?.llm_model,
+        llm_provider: readStringAttr(attrs, 'llm_provider') || baseExecution?.llm_provider,
+        llm_profile: readStringAttr(attrs, 'llm_profile') || baseExecution?.llm_profile,
+        reasoning_effort: readStringAttr(attrs, 'reasoning_effort') || baseExecution?.reasoning_effort,
     })
+}
 
-    dot += '}\n'
-    return dot
+function runtimeFromAttrs(attrs: CanonicalAttrMap, baseRuntime?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+    return compactObject({
+        ...(baseRuntime ?? {}),
+        allow_partial: readBooleanAttr(attrs, 'allow_partial') ?? baseRuntime?.allow_partial,
+        auto_status: readBooleanAttr(attrs, 'auto_status') ?? baseRuntime?.auto_status,
+        goal_gate: readBooleanAttr(attrs, 'goal_gate') ?? baseRuntime?.goal_gate,
+        error_policy: readStringAttr(attrs, 'error_policy') || baseRuntime?.error_policy,
+        fidelity: readStringAttr(attrs, 'fidelity') || baseRuntime?.fidelity,
+        thread_id: readStringAttr(attrs, 'thread_id') || baseRuntime?.thread_id,
+        class: readStringAttr(attrs, 'class') || baseRuntime?.class,
+        timeout: readStringAttr(attrs, 'timeout') || baseRuntime?.timeout,
+        retry_target: readStringAttr(attrs, 'retry_target') || baseRuntime?.retry_target,
+        fallback_retry_target: readStringAttr(attrs, 'fallback_retry_target') || baseRuntime?.fallback_retry_target,
+    })
+}
+
+function contractsFromAttrs(attrs: CanonicalAttrMap, baseContracts?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+    return compactObject({
+        ...(baseContracts ?? {}),
+        reads_context: parseStringArrayJson(attrs['spark.reads_context']).length > 0
+            ? parseStringArrayJson(attrs['spark.reads_context'])
+            : baseContracts?.reads_context,
+        writes_context: parseStringArrayJson(attrs['spark.writes_context']).length > 0
+            ? parseStringArrayJson(attrs['spark.writes_context'])
+            : baseContracts?.writes_context,
+    })
+}
+
+function managerFromAttrs(attrs: CanonicalAttrMap, baseManager?: Record<string, unknown> | null): Record<string, unknown> | undefined {
+    const actions = readStringAttr(attrs, 'manager.actions')
+    return compactObject({
+        ...(baseManager ?? {}),
+        poll_interval: readStringAttr(attrs, 'manager.poll_interval') || baseManager?.poll_interval,
+        max_cycles: readNumberAttr(attrs, 'manager.max_cycles') ?? baseManager?.max_cycles,
+        stop_condition: readStringAttr(attrs, 'manager.stop_condition') || baseManager?.stop_condition,
+        actions: actions
+            ? actions.split(',').map((entry) => entry.trim()).filter(Boolean)
+            : baseManager?.actions,
+        steer_cooldown: readStringAttr(attrs, 'manager.steer_cooldown') || baseManager?.steer_cooldown,
+        child_autostart: readBooleanAttr(attrs, 'stack.child_autostart') ?? baseManager?.child_autostart,
+    })
+}
+
+function mergeExtensions(
+    baseExtensions: Record<string, unknown> | null,
+    attrs: CanonicalAttrMap,
+    coreKeys: Set<string>,
+): Record<string, unknown> | undefined {
+    return compactObject({
+        ...(baseExtensions ?? {}),
+        ...extensionAttrs(attrs, coreKeys),
+    })
+}
+
+function nodeFromCanonicalAttrs(
+    nodeId: string,
+    attrs: CanonicalAttrMap,
+    baseNode?: Record<string, unknown> | null,
+): Record<string, unknown> {
+    const kind = nodeKindFromAttrs(attrs, baseNode)
+    const nextNode = compactObject({
+        ...(baseNode ?? {}),
+        kind,
+        label: readStringAttr(attrs, 'label') || String(baseNode?.label ?? nodeId),
+        description: readStringAttr(attrs, 'description') || baseNode?.description,
+        config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config)),
+        context: asRecord(attrs.context) ?? asRecord(baseNode?.context) ?? undefined,
+        contracts: contractsFromAttrs(attrs, asRecord(baseNode?.contracts)),
+        runtime: runtimeFromAttrs(attrs, asRecord(baseNode?.runtime)),
+        manager: managerFromAttrs(attrs, asRecord(baseNode?.manager)),
+        retry: retryFromAttrs(attrs, asRecord(baseNode?.retry)),
+        execution: executionFromAttrs(attrs, asRecord(baseNode?.execution)),
+        ui: asRecord(attrs.ui) ?? asRecord(baseNode?.ui) ?? undefined,
+        extensions: mergeExtensions(asRecord(baseNode?.extensions), attrs, NODE_EXTENSION_CORE_KEYS),
+    })
+    return nextNode
+}
+
+function edgeFromCanonicalAttrs(
+    edge: CanonicalFlowEdge,
+    baseEdge?: Record<string, unknown> | null,
+): Record<string, unknown> {
+    return compactObject({
+        ...(baseEdge ?? {}),
+        from: edge.source,
+        to: edge.target,
+        label: readStringAttr(edge.attrs, 'label') || baseEdge?.label,
+        condition: readStringAttr(edge.attrs, 'condition') || baseEdge?.condition,
+        weight: readNumberAttr(edge.attrs, 'weight') ?? baseEdge?.weight,
+        transition: readStringAttr(edge.attrs, 'transition') || baseEdge?.transition,
+        extensions: mergeExtensions(asRecord(baseEdge?.extensions), edge.attrs, EDGE_EXTENSION_CORE_KEYS),
+    })
+}
+
+export function generateFlowYamlFromCanonicalFlowModel(flowName: string, model: CanonicalFlowModel): string {
+    const flowMetadata = model.flowMetadata
+    const baseFlow = cloneFlowDefinition(model.flow) ?? {}
+    const baseNodes = asRecord(baseFlow.nodes)
+    const baseEdges = Array.isArray(baseFlow.edges) ? baseFlow.edges : []
+    const nodes = Object.fromEntries(model.nodes.map((node) => {
+        return [node.id, nodeFromCanonicalAttrs(node.id, node.attrs, asRecord(baseNodes?.[node.id]))]
+    }))
+    const edges = model.edges.map((edge, index) => edgeFromCanonicalAttrs(edge, asRecord(baseEdges[index])))
+    const inputs = flowInputsFromAttrs(flowMetadata)
+    const flow = {
+        ...baseFlow,
+        schema_version: readStringAttr(flowMetadata, 'schema_version') || String(baseFlow.schema_version ?? '1.0'),
+        id: readStringAttr(flowMetadata, 'id') || String(baseFlow.id ?? sanitizeFlowId(flowName)),
+        title: readStringAttr(flowMetadata, 'title') || flowName,
+        description: readStringAttr(flowMetadata, 'description') || String(baseFlow.description ?? ''),
+        goal: readStringAttr(flowMetadata, 'goal') || String(baseFlow.goal ?? ''),
+        inputs: inputs.length > 0 ? inputs : (Array.isArray(baseFlow.inputs) ? baseFlow.inputs : []),
+        defaults: flowDefaultsFromAttrs(flowMetadata, asRecord(baseFlow.defaults)),
+        nodes,
+        edges,
+        metadata: mergeExtensions(asRecord(baseFlow.metadata), flowMetadata, FLOW_METADATA_CORE_KEYS),
+    }
+    return `${yamlBlock(flow)}\n`
 }

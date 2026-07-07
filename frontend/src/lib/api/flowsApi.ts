@@ -147,7 +147,7 @@ export function parseWorkspaceFlowListResponse(payload: unknown, endpoint = '/wo
 
 export function parseWorkspaceFlowRawResponse(payload: unknown, endpoint = '/workspace/api/flows/{flow_name}/raw'): string {
     if (typeof payload !== 'string') {
-        throw new ApiSchemaError(endpoint, 'Expected raw DOT text response.')
+        throw new ApiSchemaError(endpoint, 'Expected raw YAML text response.')
     }
     return payload
 }

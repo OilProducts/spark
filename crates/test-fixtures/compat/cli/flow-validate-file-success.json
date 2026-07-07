@@ -7,7 +7,7 @@
       "flow",
       "validate",
       "--file",
-      "__PROJECT_DIR__/valid-flow.dot"
+      "__PROJECT_DIR__/valid-flow.yaml"
     ],
     "cwd": "__WORKTREE__",
     "normalized_argv": [
@@ -17,7 +17,7 @@
       "flow",
       "validate",
       "--file",
-      "__PROJECT_DIR__/valid-flow.dot"
+      "__PROJECT_DIR__/valid-flow.yaml"
     ]
   },
   "decisions": [
@@ -81,7 +81,7 @@
   "process": {
     "returncode": 0,
     "stderr": "",
-    "stdout": "{\n  \"diagnostics\": [],\n  \"errors\": [],\n  \"name\": \"valid-flow.dot\",\n  \"path\": \"__PROJECT_DIR__/valid-flow.dot\",\n  \"status\": \"ok\"\n}\n"
+    "stdout": "{\n  \"diagnostics\": [],\n  \"errors\": [],\n  \"name\": \"valid-flow.yaml\",\n  \"path\": \"__PROJECT_DIR__/valid-flow.yaml\",\n  \"status\": \"ok\"\n}\n"
   },
   "provenance": {
     "capture_tool": "scripts/compat_capture.py",

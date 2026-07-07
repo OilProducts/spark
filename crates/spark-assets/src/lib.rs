@@ -166,7 +166,8 @@ pub mod flows {
 
     pub fn starter_flow_names() -> Result<Vec<String>, FlowResourceError> {
         let mut names = Vec::new();
-        collect_files_with_extension(&STARTER_FLOWS, "dot", &mut names);
+        collect_files_with_extension(&STARTER_FLOWS, "yaml", &mut names);
+        collect_files_with_extension(&STARTER_FLOWS, "yml", &mut names);
         names.sort();
         if names.is_empty() {
             return Err(FlowResourceError::Missing);
@@ -201,7 +202,7 @@ pub mod flows {
         if std::path::Path::new(name)
             .extension()
             .and_then(|value| value.to_str())
-            != Some("dot")
+            .is_none_or(|extension| !matches!(extension, "yaml" | "yml"))
         {
             return Err(ResourcePathError::UnsafePath);
         }
@@ -326,7 +327,7 @@ pub mod frontend {
 pub mod guides {
     use super::{collect_file_names, packaged_file, ResourceFile, GUIDES};
 
-    pub const DOT_AUTHORING_GUIDE_NAME: &str = "dot-authoring.md";
+    pub const FLOW_DEFINITION_AUTHORING_GUIDE_NAME: &str = "flow-definition-authoring.md";
     pub const SPARK_OPERATIONS_GUIDE_NAME: &str = "spark-operations.md";
 
     pub fn guide_names() -> Vec<String> {
@@ -341,8 +342,12 @@ pub mod guides {
         packaged_file(&GUIDES, name)
     }
 
+    pub fn flow_definition_authoring_guide() -> Option<ResourceFile> {
+        load_guide(FLOW_DEFINITION_AUTHORING_GUIDE_NAME)
+    }
+
     pub fn dot_authoring_guide() -> Option<ResourceFile> {
-        load_guide(DOT_AUTHORING_GUIDE_NAME)
+        flow_definition_authoring_guide()
     }
 
     pub fn spark_operations_guide() -> Option<ResourceFile> {

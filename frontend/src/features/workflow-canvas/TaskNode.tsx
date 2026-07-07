@@ -10,13 +10,12 @@ import {
     WORKFLOW_NODE_SHAPE_OPTIONS,
     getReactFlowNodeTypeForShape,
     getShapeNodeStyle,
-    getShapeTypeMismatchWarning,
     normalizeWorkflowNodeShape,
     type WorkflowNodeShape,
 } from '@/lib/workflowNodeShape'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
-import { generateDot } from '@/lib/dotUtils'
+import { generateFlowYaml } from '@/lib/flowYamlUtils'
 import { useEditorGraphBridgeRef } from '@/features/editor/EditorGraphBridgeContext'
 
 import {
@@ -28,18 +27,6 @@ import {
 } from './workflowNodeFrames'
 import { useCanvasSessionMode } from './canvasSessionContext'
 import { getDerivedPreviewMeta } from './derivedPreview'
-
-const BUILTIN_HANDLER_OPTIONS = [
-    'start',
-    'exit',
-    'codergen',
-    'wait.human',
-    'conditional',
-    'parallel',
-    'parallel.fan_in',
-    'tool',
-    'stack.manager_loop',
-] as const
 
 const FLOW_PORT_HANDLES = [
     {
@@ -119,9 +106,9 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             : false
     ))
     const executionHumanGate = useStore((state) => state.humanGate)
-    const graphAttrs = useStore((state) => {
+    const flowMetadata = useStore((state) => {
         if (isEditorCanvas) {
-            return state.graphAttrs
+            return state.flowMetadata
         }
         return canvasMode === 'runs' ? state.runGraphAttrs : state.executionGraphAttrs
     })
@@ -168,7 +155,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         data.max_parallel !== undefined ? String(data.max_parallel) : '4',
     )
     const [showAdvanced, setShowAdvanced] = useState(false)
-    const [draftType, setDraftType] = useState<string>((data.type as string) || '')
     const [draftMaxRetries, setDraftMaxRetries] = useState<string>(
         data.max_retries !== undefined ? String(data.max_retries) : '',
     )
@@ -218,7 +204,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const isReadOnlyPreviewNode = derivedPreviewMeta?.kind === 'child-cluster' || derivedPreviewMeta?.kind === 'child-node'
     const isReadOnlyEditorCanvas = isEditorCanvas && isExpandedChildPreview
     const renderedShape = isEditingDetails ? normalizeWorkflowNodeShape(draftShape) : currentShape
-    const handlerType = getHandlerType(renderedShape, draftType)
+    const handlerType = getHandlerType((data.kind as string) || '')
     const visibility = getNodeFieldVisibility(handlerType)
     const draftToolHooksPreWarning = getToolHookCommandWarning(draftToolHooksPre)
     const draftToolHooksPostWarning = getToolHookCommandWarning(draftToolHooksPost)
@@ -226,7 +212,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const diagnosticsCount = diagnosticsForNode.length
     const hasDiagnosticError = diagnosticsForNode.some((diag) => diag.severity === 'error')
     const hasDiagnosticWarning = diagnosticsForNode.some((diag) => diag.severity === 'warning')
-    const shapeTypeMismatchWarning = getShapeTypeMismatchWarning(renderedShape, draftType)
     const isWaiting = isRunCanvas && (humanGate?.nodeId === id || status === 'waiting')
     const framePalette = getWorkflowNodeFramePalette({ status, selected, isWaiting })
     const overlayOffsetClassName = getWorkflowNodeOverlayOffsetClassName(renderedShape)
@@ -281,8 +266,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         })
 
         if (updatedNodes.length > 0) {
-            const dot = generateDot(flowName, updatedNodes, readEdges(), graphAttrs)
-            void saveFlowContent(flowName, dot)
+            const yaml = generateFlowYaml(flowName, updatedNodes, readEdges(), flowMetadata)
+            void saveFlowContent(flowName, yaml)
         }
     }
 
@@ -336,7 +321,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftJoinQuorum(data.join_quorum !== undefined ? String(data.join_quorum) : '')
         setDraftErrorPolicy((data.error_policy as string) || 'continue')
         setDraftMaxParallel(data.max_parallel !== undefined ? String(data.max_parallel) : '4')
-        setDraftType((data.type as string) || '')
         setDraftMaxRetries(data.max_retries !== undefined ? String(data.max_retries) : '')
         setDraftGoalGate(data.goal_gate === true || data.goal_gate === 'true')
         setDraftRetryTarget((data.retry_target as string) || '')
@@ -389,7 +373,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             join_quorum: draftJoinPolicy === 'quorum' ? draftJoinQuorum : undefined,
             error_policy: draftErrorPolicy,
             max_parallel: draftMaxParallel,
-            type: draftType,
             max_retries: draftMaxRetries,
             goal_gate: draftGoalGate,
             retry_target: draftRetryTarget,
@@ -541,7 +524,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     </div>
                     <div className="mt-2 space-y-2">
                         <div className="space-y-1">
-                            <label className="text-xs font-medium text-foreground">Shape / Type</label>
+                            <label className="text-xs font-medium text-foreground">Visual Shape</label>
                             <select
                                 value={draftShape}
                                 onChange={(event) => setDraftShape(event.target.value)}
@@ -696,30 +679,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     Start Child Automatically
                                 </label>
                             </>
-                        )}
-                        {visibility.showTypeOverride && (
-                            <div className="space-y-1">
-                                <label className="text-xs font-medium text-foreground">Handler Type</label>
-                                <input
-                                    value={draftType}
-                                    onChange={(event) => setDraftType(event.target.value)}
-                                    list={`node-handler-type-options-${id}`}
-                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                    placeholder="optional override"
-                                />
-                                <datalist id={`node-handler-type-options-${id}`}>
-                                    {BUILTIN_HANDLER_OPTIONS.map((option) => (
-                                        <option key={option} value={option}>
-                                            {option}
-                                        </option>
-                                    ))}
-                                </datalist>
-                                {shapeTypeMismatchWarning && (
-                                    <p data-testid="node-toolbar-shape-type-warning" className="text-[11px] text-amber-800">
-                                        {shapeTypeMismatchWarning}
-                                    </p>
-                                )}
-                            </div>
                         )}
                         {visibility.showAdvanced && (
                             <button

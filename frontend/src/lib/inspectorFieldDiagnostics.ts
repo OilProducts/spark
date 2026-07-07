@@ -57,14 +57,11 @@ const mapEdgeDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
 }
 
 const mapGraphDiagnosticFields = (diagnostic: DiagnosticEntry): string[] => {
-    if (diagnostic.rule_id === 'stylesheet_syntax') {
-        return ['model_stylesheet']
-    }
     if (diagnostic.rule_id === 'retry_target_exists') {
         return resolveRetryTargetFields(diagnostic)
     }
     if (diagnostic.rule_id === 'fidelity_valid' && diagnostic.message.toLowerCase().startsWith('graph fidelity')) {
-        return ['default_fidelity']
+        return ['fidelity']
     }
     return []
 }

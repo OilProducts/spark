@@ -533,9 +533,6 @@ test('run graph panel renders /pipelines/{id}/graph-preview output for item 9.5-
       body: JSON.stringify({
         status: 'ok',
         graph: {
-          graph_attrs: {
-            label: 'Run graph smoke',
-          },
           nodes: [
             { id: 'start', label: 'Start', shape: 'Mdiamond' },
             { id: 'review', label: 'Review', shape: 'box' },

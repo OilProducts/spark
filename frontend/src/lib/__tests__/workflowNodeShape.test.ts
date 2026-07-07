@@ -1,7 +1,6 @@
 import {
     getReactFlowNodeTypeForShape,
     getShapeNodeDimensions,
-    getShapeTypeMismatchWarning,
     normalizeWorkflowNodeShape,
 } from '@/lib/workflowNodeShape'
 import { describe, expect, it } from 'vitest'
@@ -40,12 +39,5 @@ describe('workflowNodeShape', () => {
         expect(normalizeWorkflowNodeShape('ellipse')).toBe('box')
         expect(getReactFlowNodeTypeForShape('ellipse')).toBe('taskNode')
         expect(getShapeNodeDimensions('ellipse')).toEqual({ width: 220, height: 110 })
-    })
-
-    it('warns when a built-in handler override conflicts with the declared shape', () => {
-        expect(getShapeTypeMismatchWarning('box', 'wait.human')).toContain('Shape box normally maps to codergen')
-        expect(getShapeTypeMismatchWarning('hexagon', 'wait.human')).toBeNull()
-        expect(getShapeTypeMismatchWarning('hexagon', 'custom.handler')).toBeNull()
-        expect(getShapeTypeMismatchWarning('hexagon', '')).toBeNull()
     })
 })

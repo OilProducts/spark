@@ -5,15 +5,15 @@ use spark_assets::{flows, frontend, guides, icons, models, resources, ResourceSo
 use spark_common::settings::SparkSettings;
 
 const STARTER_FLOW_NAMES: &[&str] = &[
-    "examples/human-review-loop.dot",
-    "examples/implement-review-loop.dot",
-    "examples/parallel-review.dot",
-    "examples/simple-linear.dot",
-    "examples/supervision/implementation-worker.dot",
-    "examples/supervision/supervised-implementation.dot",
-    "software-development/implement-change-request.dot",
-    "software-development/spec-implementation/implement-milestone.dot",
-    "software-development/spec-implementation/implement-spec.dot",
+    "examples/human-review-loop.yaml",
+    "examples/implement-review-loop.yaml",
+    "examples/parallel-review.yaml",
+    "examples/simple-linear.yaml",
+    "examples/supervision/implementation-worker.yaml",
+    "examples/supervision/supervised-implementation.yaml",
+    "software-development/implement-change-request.yaml",
+    "software-development/spec-implementation/implement-milestone.yaml",
+    "software-development/spec-implementation/implement-spec.yaml",
 ];
 
 #[test]
@@ -133,11 +133,16 @@ fn starter_flow_inventory_is_packaged_sorted_and_utf8() {
     let assets = flows::starter_flow_assets().expect("starter flow assets");
     assert_eq!(assets.len(), STARTER_FLOW_NAMES.len());
     for asset in assets {
-        assert!(asset.name.ends_with(".dot"));
-        assert!(asset.content.contains("digraph"), "{}", asset.name);
+        assert!(asset.name.ends_with(".yaml"));
+        assert!(asset.content.contains("schema_version:"), "{}", asset.name);
     }
 
-    for unsafe_name in ["../bad.dot", "/tmp/bad.dot", "examples", "examples/bad.txt"] {
+    for unsafe_name in [
+        "../bad.yaml",
+        "/tmp/bad.yaml",
+        "examples",
+        "examples/bad.txt",
+    ] {
         assert!(
             flows::load_starter_flow(unsafe_name).is_err(),
             "{unsafe_name}"
@@ -150,15 +155,15 @@ fn guide_model_icon_and_provider_template_resources_are_available() {
     assert_eq!(
         guides::guide_names(),
         vec![
-            "dot-authoring.md".to_string(),
+            "flow-definition-authoring.md".to_string(),
             "spark-operations.md".to_string()
         ]
     );
-    assert!(guides::dot_authoring_guide()
-        .expect("dot authoring")
+    assert!(guides::flow_definition_authoring_guide()
+        .expect("flow authoring")
         .text()
         .expect("guide utf-8")
-        .contains("DOT"));
+        .contains("FlowDefinition YAML"));
     assert!(guides::spark_operations_guide()
         .expect("operations")
         .text()

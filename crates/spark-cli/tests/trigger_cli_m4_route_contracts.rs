@@ -18,7 +18,7 @@ fn spark_bin() -> &'static str {
 async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let project_dir = temp.path().join("project");
     fs::create_dir_all(&project_dir).expect("project dir");
     let server = spawn_server(settings.clone()).await;
@@ -30,7 +30,7 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run.dot",
+                "flow_name": "ops/run.yaml",
                 "project_path": project_dir,
                 "static_context": {"origin": "compat"}
             },
@@ -156,7 +156,7 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
 async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     write_trigger_definition(
         &settings.config_dir,
         &protected_definition("trigger-protected"),
@@ -215,7 +215,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         json!({
             "name": "Unknown flow",
             "source_type": "webhook",
-            "action": {"flow_name": "missing.dot"},
+            "action": {"flow_name": "missing.yaml"},
             "source": {}
         })
         .to_string(),
@@ -235,7 +235,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_eq!(unknown_flow.status.code(), Some(3));
     assert_eq!(
         stderr(&unknown_flow),
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.dot\"}\n"
+        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n"
     );
     assert!(
         read_trigger_definition(&settings.config_dir, "trigger-protected")
@@ -293,7 +293,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         protected: true,
         source_type: "webhook".to_string(),
         action: TriggerAction {
-            flow_name: "ops/run.dot".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             project_path: Some("/tmp/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
         },
@@ -309,7 +309,11 @@ fn protected_definition(id: &str) -> TriggerDefinition {
 fn write_flow(settings: &SparkSettings, name: &str) {
     let path = settings.flows_dir.join(name);
     fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(path, "digraph flow { start -> done; }\n").expect("flow");
+    fs::write(
+        path,
+        "schema_version: '1'\nid: trigger-flow\ntitle: Trigger Flow\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
+    )
+    .expect("flow");
 }
 
 fn settings(root: &Path) -> SparkSettings {

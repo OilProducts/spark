@@ -39,7 +39,7 @@ fn first_launch_seeds_packaged_flows_into_desktop_runtime() {
     assert!(bootstrap
         .settings
         .flows_dir
-        .join("software-development/implement-change-request.dot")
+        .join("software-development/implement-change-request.yaml")
         .is_file());
     assert!(bootstrap
         .settings

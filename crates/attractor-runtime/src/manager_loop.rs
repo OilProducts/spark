@@ -5,13 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use attractor_core::{
-    attr_text, dot_value_text, evaluate_condition, AttractorContext, CheckpointState, ContextMap,
-    DotAttribute, DotValue, FailureKind, LaunchContext, Outcome, OutcomeStatus, RunRecord,
+    evaluate_condition, AttractorContext, CheckpointState, ContextMap, FailureKind, FlowDefinition,
+    LaunchContext, ManagerLoopConfig, NodeConfig, Outcome, OutcomeStatus, RunRecord,
 };
-use attractor_dsl::{apply_graph_transforms, parse_dot, validate_graph, DiagnosticSeverity};
 use serde_json::{json, Value};
 
-use crate::context::graph_attr_context_seed;
 use crate::events::{
     child_intervention_requested_event, child_run_completed_event, child_run_started_event,
 };
@@ -65,13 +63,22 @@ pub(crate) fn execute_manager_loop(
         ));
     }
 
-    let poll_interval = poll_interval_duration(runtime.node_attrs.get("manager.poll_interval"))
-        .unwrap_or_else(|| Duration::from_secs(45));
-    let max_cycles = max_cycles(runtime.node_attrs.get("manager.max_cycles"));
-    let stop_condition = stop_condition(runtime.node_attrs.get("manager.stop_condition"));
-    let actions = manager_actions(runtime.node_attrs.get("manager.actions"));
-    let steer_cooldown = poll_interval_duration(runtime.node_attrs.get("manager.steer_cooldown"))
-        .unwrap_or_else(|| Duration::from_secs(0));
+    let manager = manager_config(&runtime);
+    let poll_interval = manager_duration(
+        manager,
+        |config| config.poll_interval.as_deref(),
+        Duration::from_secs(45),
+    );
+    let max_cycles = manager.and_then(|config| config.max_cycles).unwrap_or(1000);
+    let stop_condition = manager
+        .and_then(|config| config.stop_condition.clone())
+        .unwrap_or_default();
+    let actions = manager_actions(manager);
+    let steer_cooldown = manager_duration(
+        manager,
+        |config| config.steer_cooldown.as_deref(),
+        Duration::ZERO,
+    );
     let mut last_steer_at: Option<Instant> = None;
     let mut automatic_steer_attempts = BTreeMap::<(String, Option<String>, String), u64>::new();
 
@@ -157,12 +164,11 @@ fn autostart_child_pipeline(
     runtime: &HandlerRuntime,
     context: &mut ContextMap,
 ) -> std::result::Result<Option<Outcome>, RuntimeNodeError> {
-    let child_dotfile =
-        attr_text(&runtime.graph.graph_attrs, "stack.child_dotfile").unwrap_or_default();
-    if child_dotfile.is_empty() {
+    let child_flow_ref = child_flow_ref(runtime);
+    if child_flow_ref.is_empty() {
         return Ok(None);
     }
-    if !child_autostart_enabled(runtime.node_attrs.get("stack.child_autostart")) {
+    if !child_autostart_enabled(manager_config(runtime)) {
         return Ok(None);
     }
 
@@ -180,56 +186,53 @@ fn autostart_child_pipeline(
     }
 
     clear_child_snapshot(context);
-    let authored_child_workdir =
-        authored_attr_text(runtime.graph.graph_attrs.get("stack.child_workdir"));
+    let authored_child_workdir = manager_config(runtime)
+        .and_then(|manager| manager.child_workdir.clone())
+        .unwrap_or_else(|| flow_metadata_text(&runtime.flow, "stack.child_workdir"));
     let child_workdir_path =
         resolve_child_workdir_path(context, &runtime.run_workdir, &authored_child_workdir);
-    let child_dot_path = resolve_child_dot_path(
-        &child_dotfile,
+    let child_flow_path = resolve_child_flow_path(
+        &child_flow_ref,
         &child_workdir_path,
         context,
         !authored_child_workdir.is_empty(),
     );
-    if !child_dot_path.exists() {
+    if !child_flow_path.exists() {
         return Ok(Some(fail_outcome(format!(
-            "Child DOT file not found: {}",
-            child_dot_path.display()
+            "Child flow file not found: {}",
+            child_flow_path.display()
         ))));
     }
 
-    let child_source = match fs::read_to_string(&child_dot_path) {
+    let child_source = match fs::read_to_string(&child_flow_path) {
         Ok(source) => source,
         Err(error) => {
             return Ok(Some(fail_outcome(format!(
-                "Unable to read child DOT file: {error}"
+                "Unable to read child flow file: {error}"
             ))));
         }
     };
-    let parsed = match parse_dot(&child_source) {
-        Ok(graph) => graph,
+    let child_flow = match FlowDefinition::from_yaml_str(&child_source) {
+        Ok(flow) => flow.normalize(),
         Err(error) => {
             return Ok(Some(fail_outcome(format!(
-                "Failed to parse child DOT graph: {error}"
+                "Failed to parse child flow YAML: {error}"
             ))));
         }
     };
-    let child_graph = apply_graph_transforms(&parsed);
-    if let Some(error) = validate_graph(&child_graph)
-        .into_iter()
-        .find(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-    {
+    if let Err(error) = child_flow.validate() {
         return Ok(Some(fail_outcome(format!(
-            "Child DOT graph failed validation: {}",
-            error.message
+            "Child flow failed validation: {}",
+            error.detail
         ))));
     }
 
-    let child_flow_name = child_dot_path
+    let child_flow_name = child_flow_path
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
-        .or_else(|| (!child_graph.graph_id.trim().is_empty()).then(|| child_graph.graph_id.clone()))
+        .or_else(|| (!child_flow.id.trim().is_empty()).then(|| child_flow.id.clone()))
         .unwrap_or_else(|| "child".to_string());
     let parent_run_id = context_string(context, "internal.run_id")
         .trim()
@@ -243,6 +246,8 @@ fn autostart_child_pipeline(
         .unwrap_or_else(|| parent_run_id.clone());
     let child_run_id = generated_child_run_id();
     let parent_context = context.clone();
+    let input_map = child_input_map(runtime);
+    let child_launch_context = mapped_child_context(&parent_context, &input_map);
 
     set_context(
         context,
@@ -265,11 +270,12 @@ fn autostart_child_pipeline(
 
     let request = ChildRunRequest {
         child_run_id: child_run_id.clone(),
-        child_graph: child_graph.clone(),
+        child_flow: child_flow.clone(),
         child_flow_name: child_flow_name.clone(),
-        child_flow_path: child_dot_path.clone(),
+        child_flow_path: child_flow_path.clone(),
         child_workdir: child_workdir_path.clone(),
-        parent_context,
+        input_map,
+        parent_context: child_launch_context,
         parent_run_id: parent_run_id.clone(),
         parent_node_id: runtime.node_id.clone(),
         root_run_id: root_run_id.clone(),
@@ -325,10 +331,15 @@ fn launch_default_child_run(
         return Err("parent run paths are unavailable".to_string());
     };
     let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
-    let start_node = resolve_start_node(&request.child_graph).map_err(|error| error.to_string())?;
+    let start_node = resolve_start_node(&request.child_flow).map_err(|error| error.to_string())?;
     let mut child_context = request.parent_context.clone();
+    apply_child_input_map(
+        &mut child_context,
+        &request.parent_context,
+        &request.input_map,
+    );
     clear_child_snapshot(&mut child_context);
-    for (key, value) in graph_attr_context_seed(&request.child_graph) {
+    for (key, value) in crate::flow_runtime::flow_context_seed(&request.child_flow) {
         child_context.insert(key, value);
     }
     set_context(
@@ -406,14 +417,15 @@ fn launch_default_child_run(
     };
     let store_for_result = store.clone();
     let child_run_id = request.child_run_id.clone();
+    let child_definition_json = request.child_flow.to_canonical_json_string();
     let mut executor = PipelineExecutor::new(runner);
     let result = executor
         .execute(ExecuteRunRequest {
             store,
             record,
-            graph: request.child_graph,
-            graph_source: Some(child_source.clone()),
-            graph_dot: Some(child_source),
+            flow: request.child_flow,
+            flow_source: Some(child_source.clone()),
+            flow_definition_json: Some(child_definition_json),
             launch_context: LaunchContext::empty(),
             runtime_context: Default::default(),
             max_steps: None,
@@ -862,88 +874,49 @@ fn resolve_child_status(context: &ContextMap) -> Option<Outcome> {
     None
 }
 
-fn poll_interval_duration(attr: Option<&DotAttribute>) -> Option<Duration> {
-    let attr = attr?;
-    match &attr.value {
-        DotValue::Duration(duration) => duration_from_parts(duration.value, &duration.unit),
-        DotValue::Boolean(value) => Some(Duration::from_secs(u64::from(*value))),
-        DotValue::Integer(value) => Some(Duration::from_secs_f64((*value).max(0) as f64)),
-        DotValue::Float(value) => Some(Duration::from_secs_f64(value.max(0.0))),
-        DotValue::String(value) => parse_duration_string(value, Duration::from_secs(45)),
-        DotValue::Null => Some(Duration::from_secs(45)),
-    }
+fn manager_config(runtime: &HandlerRuntime) -> Option<&ManagerLoopConfig> {
+    runtime
+        .flow
+        .nodes
+        .get(&runtime.node_id)
+        .and_then(|node| node.manager.as_ref())
 }
 
-fn max_cycles(attr: Option<&DotAttribute>) -> u64 {
-    let Some(attr) = attr else {
-        return 1000;
-    };
-    match &attr.value {
-        DotValue::Boolean(value) => u64::from(*value),
-        DotValue::Integer(value) => (*value).max(0) as u64,
-        DotValue::Float(value) => value.max(0.0) as u64,
-        DotValue::String(value) => {
-            let normalized = value.trim().to_lowercase();
-            if false_like(&normalized) {
-                0
-            } else {
-                normalized
-                    .parse::<i64>()
-                    .map(|value| value.max(0) as u64)
-                    .unwrap_or(1000)
-            }
-        }
-        DotValue::Duration(value) => value
-            .raw
-            .trim()
-            .parse::<i64>()
-            .map(|value| value.max(0) as u64)
-            .unwrap_or(1000),
-        DotValue::Null => 0,
-    }
+fn manager_duration(
+    manager: Option<&ManagerLoopConfig>,
+    value: impl FnOnce(&ManagerLoopConfig) -> Option<&str>,
+    default: Duration,
+) -> Duration {
+    manager
+        .and_then(value)
+        .and_then(|value| parse_duration_string(value, default))
+        .unwrap_or(default)
 }
 
-fn child_autostart_enabled(attr: Option<&DotAttribute>) -> bool {
-    let Some(attr) = attr else {
-        return true;
-    };
-    match &attr.value {
-        DotValue::Boolean(value) => *value,
-        DotValue::Null => false,
-        _ => {
-            let normalized = dot_value_text(&attr.value).trim().to_lowercase();
-            if false_like(&normalized) {
-                false
-            } else if matches!(normalized.as_str(), "true" | "1" | "yes" | "on") {
-                true
-            } else {
-                true
-            }
-        }
-    }
+fn child_autostart_enabled(manager: Option<&ManagerLoopConfig>) -> bool {
+    manager
+        .and_then(|manager| manager.child_autostart)
+        .unwrap_or(true)
 }
 
-fn manager_actions(attr: Option<&DotAttribute>) -> BTreeSet<String> {
-    let Some(attr) = attr else {
+fn manager_actions(manager: Option<&ManagerLoopConfig>) -> BTreeSet<String> {
+    let Some(manager) = manager else {
         return ["observe", "wait"]
             .into_iter()
             .map(str::to_string)
             .collect();
     };
-    let raw = dot_value_text(&attr.value).trim().to_lowercase();
-    if raw.is_empty() {
+    if manager.actions.is_empty() {
         return BTreeSet::new();
     }
-    raw.split(',')
+    manager
+        .actions
+        .iter()
+        .map(String::as_str)
         .map(str::trim)
-        .filter(|action| matches!(*action, "observe" | "steer" | "wait"))
-        .map(str::to_string)
+        .map(str::to_lowercase)
+        .filter(|action| matches!(action.as_str(), "observe" | "steer" | "wait"))
         .collect()
-}
-
-fn stop_condition(attr: Option<&DotAttribute>) -> String {
-    attr.map(|attr| dot_value_text(&attr.value).trim().to_string())
-        .unwrap_or_default()
 }
 
 fn stop_condition_met(condition: &str, context: &ContextMap) -> bool {
@@ -953,10 +926,72 @@ fn stop_condition_met(condition: &str, context: &ContextMap) -> bool {
     evaluate_condition(condition, &Outcome::new(OutcomeStatus::Success), &context)
 }
 
-fn authored_attr_text(attr: Option<&DotAttribute>) -> String {
-    attr.filter(|attr| attr.line > 0)
-        .map(|attr| dot_value_text(&attr.value).trim().to_string())
+fn child_flow_ref(runtime: &HandlerRuntime) -> String {
+    runtime
+        .flow
+        .nodes
+        .get(&runtime.node_id)
+        .and_then(|node| match node.config.as_ref() {
+            Some(NodeConfig::Subflow { flow_ref, .. }) => Some(flow_ref.trim().to_string()),
+            _ => None,
+        })
+        .filter(|value| !value.is_empty())
         .unwrap_or_default()
+}
+
+fn child_input_map(runtime: &HandlerRuntime) -> BTreeMap<String, String> {
+    runtime
+        .flow
+        .nodes
+        .get(&runtime.node_id)
+        .and_then(|node| match node.config.as_ref() {
+            Some(NodeConfig::Subflow { input_map, .. }) => Some(input_map.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn mapped_child_context(
+    parent_context: &ContextMap,
+    input_map: &BTreeMap<String, String>,
+) -> ContextMap {
+    let mut child_context = parent_context.clone();
+    apply_child_input_map(&mut child_context, parent_context, input_map);
+    child_context
+}
+
+fn apply_child_input_map(
+    child_context: &mut ContextMap,
+    parent_context: &ContextMap,
+    input_map: &BTreeMap<String, String>,
+) {
+    for (child_key, parent_path) in input_map {
+        let child_key = child_key.trim();
+        let parent_path = parent_path.trim();
+        if child_key.is_empty() || parent_path.is_empty() {
+            continue;
+        }
+        if let Some(value) = context_path_value(parent_context, parent_path) {
+            set_context(child_context, child_key, value);
+        }
+    }
+}
+
+fn flow_metadata_text(flow: &FlowDefinition, key: &str) -> String {
+    flow.metadata
+        .get(key)
+        .or_else(|| flow.extensions.get(key))
+        .and_then(value_text)
+        .unwrap_or_default()
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.trim().to_string()),
+        Value::Number(_) | Value::Bool(_) => Some(value.to_string()),
+        _ => None,
+    }
+    .filter(|value| !value.is_empty())
 }
 
 fn resolve_child_workdir_path(
@@ -972,15 +1007,15 @@ fn resolve_child_workdir_path(
     resolve_path_from_base(authored_child_workdir, &run_workdir)
 }
 
-fn resolve_child_dot_path(
-    child_dotfile: &str,
+fn resolve_child_flow_path(
+    child_flow_ref: &str,
     child_workdir_path: &Path,
     context: &ContextMap,
     child_workdir_is_authored: bool,
 ) -> PathBuf {
-    let child_dot_path = PathBuf::from(child_dotfile);
-    if child_dot_path.is_absolute() {
-        return child_dot_path;
+    let child_flow_path = PathBuf::from(child_flow_ref);
+    if child_flow_path.is_absolute() {
+        return child_flow_path;
     }
     let base_dir = if child_workdir_is_authored {
         child_workdir_path.to_path_buf()
@@ -988,7 +1023,7 @@ fn resolve_child_dot_path(
         context_path(context, "internal.flow_source_dir")
             .unwrap_or_else(|| child_workdir_path.to_path_buf())
     };
-    resolve_path_from_base(child_dot_path, &base_dir)
+    resolve_path_from_base(child_flow_path, &base_dir)
 }
 
 fn resolve_path_from_base(raw_path: impl AsRef<Path>, base_dir: &Path) -> PathBuf {
@@ -1002,6 +1037,68 @@ fn resolve_path_from_base(raw_path: impl AsRef<Path>, base_dir: &Path) -> PathBu
 
 fn context_path(context: &ContextMap, key: &str) -> Option<PathBuf> {
     non_empty(context_string(context, key)).map(PathBuf::from)
+}
+
+fn context_path_value(context: &ContextMap, path: &str) -> Option<Value> {
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    for candidate in flat_path_candidates(path) {
+        if let Some(value) = context.get(&candidate) {
+            return Some(value.clone());
+        }
+    }
+    for candidate in nested_path_candidates(path) {
+        if let Some(value) = lookup_nested_value(context, &candidate) {
+            return Some(value.clone());
+        }
+        if let Some(value) = lookup_flat_prefix_nested_value(context, &candidate) {
+            return Some(value.clone());
+        }
+    }
+    None
+}
+
+fn flat_path_candidates(path: &str) -> Vec<String> {
+    if let Some(stripped) = path.strip_prefix("context.") {
+        vec![path.to_string(), stripped.to_string()]
+    } else {
+        vec![path.to_string(), format!("context.{path}")]
+    }
+}
+
+fn nested_path_candidates(path: &str) -> Vec<String> {
+    if let Some(stripped) = path.strip_prefix("context.") {
+        vec![path.to_string(), stripped.to_string()]
+    } else {
+        vec![path.to_string(), format!("context.{path}")]
+    }
+}
+
+fn lookup_nested_value<'a>(context: &'a ContextMap, path: &str) -> Option<&'a Value> {
+    let mut parts = path.split('.');
+    let first = parts.next()?;
+    let mut current = context.get(first)?;
+    for part in parts {
+        current = current.as_object()?.get(part)?;
+    }
+    Some(current)
+}
+
+fn lookup_flat_prefix_nested_value<'a>(context: &'a ContextMap, path: &str) -> Option<&'a Value> {
+    let parts = path.split('.').collect::<Vec<_>>();
+    for split_at in (1..parts.len()).rev() {
+        let flat_key = parts[..split_at].join(".");
+        let Some(mut current) = context.get(&flat_key) else {
+            continue;
+        };
+        for part in &parts[split_at..] {
+            current = current.as_object()?.get(*part)?;
+        }
+        return Some(current);
+    }
+    None
 }
 
 fn steer_cooldown_elapsed(
@@ -1265,10 +1362,6 @@ fn duration_from_parts(amount: i64, unit: &str) -> Option<Duration> {
         _ => return None,
     };
     Some(Duration::from_secs_f64(seconds))
-}
-
-fn false_like(value: &str) -> bool {
-    matches!(value, "false" | "0" | "no" | "off")
 }
 
 fn context_string(context: &ContextMap, key: &str) -> String {

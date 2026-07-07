@@ -16,7 +16,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use attractor_dsl::{format_readable_dot, parse_dot, preview_dot_source};
+use attractor_dsl::{canonicalize_flow_yaml, FlowDefinition, FlowDefinitionError};
 use clap::{Arg, ArgAction, Command};
 pub use output::CommandOutput;
 use output::{http_error, json_error, success_json, usage_error};
@@ -1748,14 +1748,12 @@ fn run_flow_format_command(args: &[String], env: &impl Environment) -> CommandOu
         }
     };
 
-    let graph = match parse_dot(&raw_content) {
-        Ok(graph) => graph,
+    let formatted = match canonicalize_flow_yaml(&raw_content) {
+        Ok(content) => content,
         Err(error) => {
-            return json_error(format!("invalid DOT: {error}"), EXIT_GENERAL_FAILURE);
+            return json_error(error.detail().to_string(), EXIT_GENERAL_FAILURE);
         }
     };
-
-    let formatted = format_readable_dot(&graph);
     if options.write {
         if let Err(error) = std::fs::write(&flow_path, &formatted) {
             return json_error(
@@ -1792,8 +1790,16 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
         }
     };
 
-    let preview = preview_dot_source(&raw_content);
-    let mut response = object_from_value(preview.payload);
+    let mut response = match FlowDefinition::from_yaml_str(&raw_content) {
+        Ok(flow) => {
+            let flow = flow.normalize();
+            match flow.validate() {
+                Ok(()) => object_from_value(flow_definition_preview_payload(&flow)),
+                Err(error) => flow_definition_error_payload(&error, "validation_error"),
+            }
+        }
+        Err(error) => flow_definition_error_payload(&error, "parse_error"),
+    };
     response.insert(
         "name".to_string(),
         json!(flow_path
@@ -1808,6 +1814,119 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     } else {
         success_json(&payload)
     }
+}
+
+fn flow_definition_error_payload(error: &FlowDefinitionError, status: &str) -> Map<String, Value> {
+    let diagnostics = error
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let mut payload = Map::from_iter([
+                ("rule".to_string(), json!(diagnostic.rule_id)),
+                ("rule_id".to_string(), json!(diagnostic.rule_id)),
+                ("severity".to_string(), json!("error")),
+                ("message".to_string(), json!(diagnostic.message)),
+                ("line".to_string(), json!(0)),
+                ("node".to_string(), Value::Null),
+                ("node_id".to_string(), Value::Null),
+            ]);
+            if let Some(node_id) = &diagnostic.node_id {
+                payload.insert("node".to_string(), json!(node_id));
+                payload.insert("node_id".to_string(), json!(node_id));
+            }
+            if let Some((from, to)) = &diagnostic.edge {
+                payload.insert("edge".to_string(), json!([from, to]));
+            }
+            Value::Object(payload)
+        })
+        .collect::<Vec<_>>();
+    Map::from_iter([
+        ("status".to_string(), json!(status)),
+        ("diagnostics".to_string(), json!(diagnostics)),
+        ("errors".to_string(), json!(diagnostics)),
+    ])
+}
+
+fn flow_definition_preview_payload(flow: &FlowDefinition) -> Value {
+    let diagnostics = flow.diagnostics();
+    let diagnostic_payloads = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let mut payload = Map::from_iter([
+                ("rule".to_string(), json!(diagnostic.rule_id)),
+                ("rule_id".to_string(), json!(diagnostic.rule_id)),
+                ("severity".to_string(), json!("error")),
+                ("message".to_string(), json!(diagnostic.message)),
+                ("line".to_string(), json!(0)),
+                ("node".to_string(), Value::Null),
+                ("node_id".to_string(), Value::Null),
+            ]);
+            if let Some(node_id) = &diagnostic.node_id {
+                payload.insert("node".to_string(), json!(node_id));
+                payload.insert("node_id".to_string(), json!(node_id));
+            }
+            if let Some((from, to)) = &diagnostic.edge {
+                payload.insert("edge".to_string(), json!([from, to]));
+            }
+            Value::Object(payload)
+        })
+        .collect::<Vec<_>>();
+    let nodes = flow
+        .nodes
+        .iter()
+        .map(|(node_id, node)| {
+            json!({
+                "id": node_id,
+                "label": node.label,
+                "kind": node.kind,
+                "description": node.description,
+                "config": node.config,
+                "context": node.context,
+                "runtime": node.runtime,
+                "contracts": node.contracts,
+                "manager": node.manager,
+                "retry": node.retry,
+                "execution": node.execution,
+                "ui": node.ui,
+                "extensions": node.extensions,
+            })
+        })
+        .collect::<Vec<_>>();
+    let edges = flow
+        .edges
+        .iter()
+        .map(|edge| {
+            json!({
+                "source": edge.from,
+                "target": edge.to,
+                "from": edge.from,
+                "to": edge.to,
+                "label": edge.label,
+                "condition": edge.condition,
+                "weight": edge.weight,
+                "transition": edge.transition,
+                "extensions": edge.extensions,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "status": if diagnostics.is_empty() { "ok" } else { "validation_error" },
+        "flow": flow.to_canonical_json_value(),
+        "graph": {
+            "id": flow.id,
+            "title": flow.title,
+            "description": flow.description,
+            "goal": flow.goal,
+            "nodes": nodes,
+            "edges": edges,
+            "metadata": flow.metadata,
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "diagnostics": diagnostic_payloads,
+        "errors": diagnostic_payloads,
+        "child_previews": {},
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

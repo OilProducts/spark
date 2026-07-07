@@ -15,15 +15,15 @@ use spark_server::{
 };
 
 const STARTER_FLOW_NAMES: &[&str] = &[
-    "examples/human-review-loop.dot",
-    "examples/implement-review-loop.dot",
-    "examples/parallel-review.dot",
-    "examples/simple-linear.dot",
-    "examples/supervision/implementation-worker.dot",
-    "examples/supervision/supervised-implementation.dot",
-    "software-development/implement-change-request.dot",
-    "software-development/spec-implementation/implement-milestone.dot",
-    "software-development/spec-implementation/implement-spec.dot",
+    "examples/human-review-loop.yaml",
+    "examples/implement-review-loop.yaml",
+    "examples/parallel-review.yaml",
+    "examples/simple-linear.yaml",
+    "examples/supervision/implementation-worker.yaml",
+    "examples/supervision/supervised-implementation.yaml",
+    "software-development/implement-change-request.yaml",
+    "software-development/spec-implementation/implement-milestone.yaml",
+    "software-development/spec-implementation/implement-spec.yaml",
 ];
 
 const TOP_LEVEL_HELP: &str = concat!(
@@ -120,7 +120,7 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
         )
     );
     assert!(data_dir.join("config/flow-catalog.toml").is_file());
-    assert!(data_dir.join("flows/examples/simple-linear.dot").is_file());
+    assert!(data_dir.join("flows/examples/simple-linear.yaml").is_file());
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn init_creates_runtime_layout_flows_and_catalog() {
         assert!(data_dir.join(relative).is_dir(), "missing {relative}");
     }
     assert_eq!(
-        list_dot_files(&flows_dir),
+        list_flow_files(&flows_dir),
         STARTER_FLOW_NAMES
             .iter()
             .map(|name| (*name).to_string())
@@ -205,10 +205,10 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     let catalog = fs::read_to_string(data_dir.join("config/flow-catalog.toml")).expect("catalog");
     assert_eq!(
         catalog,
-        "[flows.\"software-development/implement-change-request.dot\"]\n\
+        "[flows.\"software-development/implement-change-request.yaml\"]\n\
 launch_policy = \"agent_requestable\"\n\
 \n\
-[flows.\"software-development/spec-implementation/implement-spec.dot\"]\n\
+[flows.\"software-development/spec-implementation/implement-spec.yaml\"]\n\
 launch_policy = \"agent_requestable\"\n"
     );
 }
@@ -234,8 +234,8 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(first.exit_code, 0);
-    let edited_flow = flows_dir.join("examples/simple-linear.dot");
-    fs::write(&edited_flow, "digraph UserEdited {}\n").expect("user edit");
+    let edited_flow = flows_dir.join("examples/simple-linear.yaml");
+    fs::write(&edited_flow, "edited: true\n").expect("user edit");
 
     let second = run_with_args_and_env(
         [
@@ -252,7 +252,7 @@ fn init_respects_skip_and_force_counts() {
     assert!(second.stdout.ends_with("created=0 updated=0 skipped=9\n"));
     assert_eq!(
         fs::read_to_string(&edited_flow).expect("edited flow"),
-        "digraph UserEdited {}\n"
+        "edited: true\n"
     );
 
     let forced = run_with_args_and_env(
@@ -271,7 +271,7 @@ fn init_respects_skip_and_force_counts() {
     assert!(forced.stdout.ends_with("created=0 updated=9 skipped=0\n"));
     assert_ne!(
         fs::read_to_string(&edited_flow).expect("forced flow"),
-        "digraph UserEdited {}\n"
+        "edited: true\n"
     );
 }
 
@@ -461,22 +461,16 @@ fn worker_run_node_process_accepts_json_line_request() {
     let binary = env!("CARGO_BIN_EXE_spark-server");
     let request = json!({
         "run_id": "run-worker-process",
-        "graph": {
-            "graph_id": "G",
-            "graph_attrs": {},
+        "flow": {
+            "schema_version": "1",
+            "id": "G",
             "nodes": {
                 "start": {
-                    "node_id": "start",
-                    "attrs": {
-                        "shape": {"key": "shape", "value": "Mdiamond", "value_type": "string", "line": 0}
-                    },
-                    "line": 0,
-                    "explicit_attr_keys": ["shape"]
+                    "kind": "start",
+                    "config": {"kind": "start"}
                 }
             },
-            "edges": [],
-            "defaults": {"node": {}, "edge": {}},
-            "subgraphs": []
+            "edges": []
         },
         "node_id": "start",
         "prompt": "",
@@ -516,25 +510,23 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
     let binary = env!("CARGO_BIN_EXE_spark-server");
     let request = json!({
         "run_id": "run-worker-llm-process",
-        "graph": {
-            "graph_id": "G",
-            "graph_attrs": {},
+        "flow": {
+            "schema_version": "1",
+            "id": "G",
             "nodes": {
                 "task": {
-                    "node_id": "task",
-                    "attrs": {
-                        "shape": {"key": "shape", "value": "box", "value_type": "string", "line": 1},
-                        "prompt": {"key": "prompt", "value": "Write a worker note", "value_type": "string", "line": 1},
-                        "llm_provider": {"key": "llm_provider", "value": "OpenAI", "value_type": "string", "line": 1},
-                        "llm_model": {"key": "llm_model", "value": "gpt-boundary", "value_type": "string", "line": 1}
+                    "kind": "agent_task",
+                    "config": {
+                        "kind": "agent_task",
+                        "prompt": "Write a worker note"
                     },
-                    "line": 1,
-                    "explicit_attr_keys": ["shape", "prompt", "llm_provider", "llm_model"]
+                    "execution": {
+                        "llm_provider": "OpenAI",
+                        "llm_model": "gpt-boundary"
+                    }
                 }
             },
-            "edges": [],
-            "defaults": {"node": {}, "edge": {}},
-            "subgraphs": []
+            "edges": []
         },
         "node_id": "task",
         "prompt": "Write a worker note",
@@ -580,20 +572,23 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
     assert!(!reason.contains("no HTTP transport is configured"));
 }
 
-fn list_dot_files(root: &Path) -> Vec<String> {
+fn list_flow_files(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
-    collect_dot_files(root, root, &mut files);
+    collect_flow_files(root, root, &mut files);
     files.sort();
     files
 }
 
-fn collect_dot_files(root: &Path, current: &Path, files: &mut Vec<String>) {
+fn collect_flow_files(root: &Path, current: &Path, files: &mut Vec<String>) {
     let entries = fs::read_dir(current).expect("read flow dir");
     for entry in entries {
         let path = entry.expect("entry").path();
         if path.is_dir() {
-            collect_dot_files(root, &path, files);
-        } else if path.extension().and_then(|value| value.to_str()) == Some("dot") {
+            collect_flow_files(root, &path, files);
+        } else if matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("yaml" | "yml")
+        ) {
             files.push(
                 path.strip_prefix(root)
                     .expect("relative flow")

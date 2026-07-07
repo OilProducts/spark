@@ -108,8 +108,8 @@ pub fn default_api_target_refusal_message(command: &str, project_root: &Path) ->
         ),
         String::new(),
         "  SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- flow list".to_string(),
-        "  SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- flow describe --flow examples/simple-linear.dot".to_string(),
-        "  cargo run -p spark-cli --bin spark -- flow validate --file crates/spark-assets/assets/flows/examples/simple-linear.dot --text".to_string(),
+        "  SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- flow describe --flow examples/simple-linear.yaml".to_string(),
+        "  cargo run -p spark-cli --bin spark -- flow validate --file crates/spark-assets/assets/flows/examples/simple-linear.yaml --text".to_string(),
     ])
 }
 

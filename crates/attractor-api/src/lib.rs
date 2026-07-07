@@ -7,12 +7,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use attractor_core::{ContextMap, DotGraph, LaunchContext, RawRuntimeEvent, RunRecord};
+use attractor_core::{
+    ContextMap, FlowDefinition, FlowDiagnostic, LaunchContext, NodeConfig, RawRuntimeEvent,
+    RunRecord,
+};
+pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    apply_graph_transforms, diagnostics_payload, ensure_flows_dir, flow_name_from_path,
-    format_readable_dot, inject_pipeline_goal, load_flow_content, parse_dot,
-    preview_response_payload_with_options, resolve_flow_path, semantic_signature_for_source,
-    validate_graph, Diagnostic, DiagnosticSeverity, DotParseError, FlowSourceError, PreviewOptions,
+    canonicalize_flow_yaml, ensure_flows_dir, flow_name_from_path, inject_flow_goal,
+    load_flow_content, parse_flow_definition,
+    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, FlowSourceError,
 };
 use attractor_runtime::{
     human_intervention_requested_event, ContinueRunRequest, ExecuteRunRequest, PipelineExecutor,
@@ -114,19 +117,10 @@ impl RuntimeRouteResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NamedFlowSource {
-    pub name: String,
-    pub path: PathBuf,
-    pub content: String,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveFlowRequest {
     pub name: String,
     pub content: String,
-    #[serde(default)]
-    pub expect_semantic_equivalence: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -224,11 +218,11 @@ pub struct HumanAnswerRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedContinueFlow {
-    pub graph: DotGraph,
+    pub flow: FlowDefinition,
     #[serde(default)]
-    pub graph_source: Option<String>,
+    pub flow_source: Option<String>,
     #[serde(default)]
-    pub graph_dot: Option<String>,
+    pub flow_definition_json: Option<String>,
     #[serde(default)]
     pub flow_name: Option<String>,
 }
@@ -281,9 +275,9 @@ impl RuntimeControlService {
             flow_source_mode: request.flow_source_mode,
             flow_name: request.flow_name.or(resolved_flow.flow_name),
             new_run_id: None,
-            graph: resolved_flow.graph,
-            graph_source: resolved_flow.graph_source,
-            graph_dot: resolved_flow.graph_dot,
+            flow: resolved_flow.flow,
+            flow_source: resolved_flow.flow_source,
+            flow_definition_json: resolved_flow.flow_definition_json,
             working_directory: request.working_directory,
             model: request.model,
             llm_provider: request.llm_provider,
@@ -616,32 +610,23 @@ impl AttractorApiService {
 
         let mut flow_content = flow_content.unwrap_or_default();
         if let Some(goal) = trimmed_option(request.goal.as_deref()) {
-            flow_content = match inject_pipeline_goal(&flow_content, &goal) {
+            flow_content = match inject_flow_goal(&flow_content, &goal) {
                 Ok(content) => content,
-                Err(error) => return pipeline_parse_validation_response(error),
+                Err(error) => return flow_definition_validation_response(error),
             };
         }
 
-        let graph = match parse_dot(&flow_content) {
-            Ok(graph) => graph,
-            Err(error) => return pipeline_parse_validation_response(error),
+        let flow = match parse_flow_definition(&flow_content) {
+            Ok(flow) => flow,
+            Err(error) => return flow_definition_validation_response(error),
         };
-        let graph = apply_graph_transforms(&graph);
-        let diagnostics = validate_graph(&graph);
-        let errors = diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-            .cloned()
-            .collect::<Vec<_>>();
-        let diagnostic_payloads = diagnostics_payload(&diagnostics);
-        let error_payloads = diagnostics_payload(&errors);
-        if !errors.is_empty() {
+        if let Err(error) = flow.validate() {
             return RuntimeRouteResponse::json(
                 200,
                 json!({
                     "status": "validation_error",
-                    "diagnostics": diagnostic_payloads,
-                    "errors": error_payloads,
+                    "diagnostics": flow_diagnostics_payload(&error.diagnostics),
+                    "errors": flow_diagnostics_payload(&error.diagnostics),
                 }),
             );
         }
@@ -651,7 +636,7 @@ impl AttractorApiService {
             Ok(launch_context) => launch_context,
             Err(error) => return validation_error_response(error.to_string()),
         };
-        let _start_node = match attractor_runtime::resolve_start_node(&graph) {
+        let _start_node = match attractor_runtime::resolve_start_node(&flow) {
             Ok(start_node) => start_node,
             Err(error) => return validation_error_response(error.to_string()),
         };
@@ -663,16 +648,18 @@ impl AttractorApiService {
         };
         let working_directory = absolutize_path(&request.working_directory);
         let (selected_model, display_model) =
-            resolve_launch_model(&graph, request.model.as_deref(), &requested_context);
+            resolve_launch_model(&flow, request.model.as_deref(), &requested_context);
         let selected_provider =
-            resolve_launch_provider(&graph, request.llm_provider.as_deref(), &requested_context)
+            resolve_launch_provider(&flow, request.llm_provider.as_deref(), &requested_context)
                 .unwrap_or_else(|| "codex".to_string());
         let selected_profile =
-            resolve_launch_profile(&graph, request.llm_profile.as_deref(), &requested_context);
+            resolve_launch_profile(&flow, request.llm_profile.as_deref(), &requested_context);
         let selected_reasoning_effort = resolve_launch_reasoning_effort(
             request.reasoning_effort.as_deref(),
             &requested_context,
         );
+        let diagnostic_payloads = flow_diagnostics_payload(&flow.diagnostics());
+        let error_payloads = diagnostic_payloads.clone();
         let execution_selection = match attractor_execution::resolve_execution_profile_by_id(
             &self.settings,
             request.execution_profile_id.as_deref(),
@@ -743,14 +730,14 @@ impl AttractorApiService {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
         }
 
-        let graph_dot = format_readable_dot(&graph);
+        let flow_definition_json = flow.to_canonical_json_string();
         let mut executor = PipelineExecutor::new((self.runtime_handler_runner_factory.as_ref())());
         let execution_result = match executor.execute(ExecuteRunRequest {
             store: store.clone(),
             record,
-            graph: graph.clone(),
-            graph_source: Some(flow_content.clone()),
-            graph_dot: Some(graph_dot),
+            flow: flow.clone(),
+            flow_source: Some(flow_content.clone()),
+            flow_definition_json: Some(flow_definition_json),
             launch_context,
             runtime_context,
             max_steps: None,
@@ -1020,9 +1007,8 @@ impl AttractorApiService {
     }
 
     pub fn get_pipeline_graph(&self, pipeline_id: &str) -> RuntimeRouteResponse {
-        self.get_pipeline_artifact_file(pipeline_id, "artifacts/graphviz/pipeline.svg")
-            .with_not_found_detail("Graph visualization unavailable")
-            .with_content_type("image/svg+xml")
+        let _ = pipeline_id;
+        RuntimeRouteResponse::json(404, json!({"detail": "Graph visualization unavailable"}))
     }
 
     pub fn get_pipeline_graph_preview(
@@ -1052,18 +1038,25 @@ impl AttractorApiService {
                 return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
             }
         };
-        let (flow_source_dir, run_workdir) = preview_source_context(&bundle);
-        RuntimeRouteResponse::json(
-            200,
-            preview_response_payload_with_options(
-                &source,
-                PreviewOptions {
-                    expand_children,
-                    flow_source_dir,
-                    run_workdir,
-                },
+        let flow_name = bundle
+            .record
+            .as_ref()
+            .map(|record| record.flow_name.as_str());
+        match parse_flow_definition(&source) {
+            Ok(flow) => RuntimeRouteResponse::json(
+                200,
+                flow_preview_payload(
+                    &flow,
+                    child_preview_map(
+                        &flow,
+                        flow_name,
+                        expand_children,
+                        Some(&self.settings.flows_dir),
+                    ),
+                ),
             ),
-        )
+            Err(error) => flow_definition_validation_response(error),
+        }
     }
 
     pub fn continue_pipeline_route(
@@ -1127,17 +1120,17 @@ impl AttractorApiService {
                 json!({"status": "validation_error", "error": "flow_source_mode must be either snapshot or flow_name."}),
             );
         };
-        let graph = match parse_dot(&flow_content) {
-            Ok(graph) => apply_graph_transforms(&graph),
-            Err(error) => return pipeline_parse_validation_response(error),
+        let flow = match parse_flow_definition(&flow_content) {
+            Ok(flow) => flow,
+            Err(error) => return flow_definition_validation_response(error),
         };
         RuntimeControlService::new(store).continue_pipeline(
             pipeline_id,
             request,
             ResolvedContinueFlow {
-                graph,
-                graph_source: Some(flow_content.clone()),
-                graph_dot: Some(flow_content),
+                flow: flow.clone(),
+                flow_source: Some(flow_content.clone()),
+                flow_definition_json: Some(flow.to_canonical_json_string()),
                 flow_name: Some(flow_name),
             },
         )
@@ -1392,16 +1385,44 @@ pub fn preview_with_config(
     req: PreviewRequest,
     config: &PreviewServiceConfig,
 ) -> PreviewRouteResponse {
-    let flow_source_dir = resolve_preview_flow_source_dir(req.flow_name.as_deref(), config);
-    let body = preview_response_payload_with_options(
-        &req.flow_content,
-        PreviewOptions {
-            expand_children: req.expand_children,
-            flow_source_dir,
-            run_workdir: None,
-        },
-    );
-    PreviewRouteResponse::json(200, body)
+    match parse_flow_definition(&req.flow_content) {
+        Ok(flow) => PreviewRouteResponse::json(
+            200,
+            flow_preview_payload(
+                &flow,
+                child_preview_map(
+                    &flow,
+                    req.flow_name.as_deref(),
+                    req.expand_children,
+                    config.flows_dir.as_deref(),
+                ),
+            ),
+        ),
+        Err(error) => PreviewRouteResponse::json(
+            200,
+            json!({
+                "status": "validation_error",
+                "diagnostics": [{
+                    "rule": "flow_definition",
+                    "rule_id": "flow_definition",
+                    "severity": "error",
+                    "message": error.detail(),
+                    "line": 0,
+                    "node": null,
+                    "node_id": null,
+                }],
+                "errors": [{
+                    "rule": "flow_definition",
+                    "rule_id": "flow_definition",
+                    "severity": "error",
+                    "message": error.detail(),
+                    "line": 0,
+                    "node": null,
+                    "node_id": null,
+                }],
+            }),
+        ),
+    }
 }
 
 pub fn list_logical_flow_names(
@@ -1421,23 +1442,7 @@ pub fn read_named_flow_source(
     flows_dir: impl AsRef<Path>,
     flow_name: &str,
 ) -> Result<NamedFlowSource, FlowSourceError> {
-    let flows_dir = flows_dir.as_ref();
-    let path = resolve_flow_path(flows_dir, flow_name)?;
-    if !path.exists() {
-        return Err(FlowSourceError::new(404, "Flow not found."));
-    }
-    let content = fs::read_to_string(&path).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!("Unable to read flow file {}: {source}", path.display()),
-        )
-    })?;
-    let name = flow_name_from_path(flows_dir, &path)?;
-    Ok(NamedFlowSource {
-        name,
-        path,
-        content,
-    })
+    read_typed_named_flow_source(flows_dir, flow_name)
 }
 
 pub fn preview_named_flow_source(
@@ -1637,7 +1642,7 @@ fn dispatch_pipeline_route(
 fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
     let flows_dir = ensure_flows_dir(flows_dir)?;
     let mut paths = Vec::new();
-    collect_dot_paths(&flows_dir, &mut paths).map_err(|source| {
+    collect_yaml_paths(&flows_dir, &mut paths).map_err(|source| {
         FlowSourceError::new(
             500,
             format!(
@@ -1654,7 +1659,7 @@ fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
     Ok(names)
 }
 
-fn collect_dot_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+fn collect_yaml_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -1662,8 +1667,11 @@ fn collect_dot_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            collect_dot_paths(&path, paths)?;
-        } else if path.extension().and_then(|value| value.to_str()) == Some("dot") {
+            collect_yaml_paths(&path, paths)?;
+        } else if matches!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("yaml" | "yml")
+        ) {
             paths.push(path);
         }
     }
@@ -1671,55 +1679,31 @@ fn collect_dot_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()
 }
 
 fn save_flow_request(flows_dir: &Path, req: SaveFlowRequest) -> RuntimeRouteResponse {
-    let graph = match parse_dot(&req.content) {
-        Ok(graph) => graph,
-        Err(error) => return flow_save_parse_error_response(error),
+    let flow = match parse_flow_definition(&req.content) {
+        Ok(flow) => flow,
+        Err(error) => return flow_save_definition_error_response(error),
     };
-    let canonical_content = format_readable_dot(&graph);
-    let transformed_graph = apply_graph_transforms(&graph);
-    let diagnostics = validate_graph(&transformed_graph);
-    let errors = diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Error)
-        .cloned()
-        .collect::<Vec<_>>();
-    if !errors.is_empty() {
-        return flow_save_validation_error_response(&diagnostics, &errors);
+    let canonical_content = match canonicalize_flow_yaml(&req.content) {
+        Ok(content) => content,
+        Err(error) => return flow_save_definition_error_response(error),
+    };
+    if let Err(error) = flow.validate() {
+        return RuntimeRouteResponse::json(
+            422,
+            json!({
+                "detail": {
+                    "status": "validation_error",
+                    "diagnostics": flow_diagnostics_payload(&error.diagnostics),
+                    "errors": flow_diagnostics_payload(&error.diagnostics),
+                }
+            }),
+        );
     }
 
     let flow_path = match resolve_flow_path(flows_dir, &req.name) {
         Ok(path) => path,
         Err(error) => return flow_source_error_response(error),
     };
-    let semantic_equivalent_to_existing = if flow_path.exists() {
-        match fs::read_to_string(&flow_path) {
-            Ok(existing_content) => match (
-                semantic_signature_for_source(&existing_content),
-                semantic_signature_for_source(&req.content),
-            ) {
-                (Ok(left), Ok(right)) => Some(left == right),
-                _ => None,
-            },
-            Err(error) => {
-                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
-            }
-        }
-    } else {
-        None
-    };
-
-    if req.expect_semantic_equivalence && semantic_equivalent_to_existing == Some(false) {
-        return RuntimeRouteResponse::json(
-            409,
-            json!({
-                "detail": {
-                    "status": "semantic_mismatch",
-                    "error": "semantic equivalence check failed: output DOT would change flow behavior",
-                }
-            }),
-        );
-    }
-
     if let Some(parent) = flow_path.parent() {
         if let Err(error) = fs::create_dir_all(parent) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
@@ -1732,61 +1716,43 @@ fn save_flow_request(flows_dir: &Path, req: SaveFlowRequest) -> RuntimeRouteResp
         Ok(name) => name,
         Err(error) => return flow_source_error_response(error),
     };
-    let mut response = serde_json::Map::from_iter([
-        ("status".to_string(), json!("saved")),
-        ("name".to_string(), json!(name)),
-    ]);
-    if let Some(semantic_equivalent_to_existing) = semantic_equivalent_to_existing {
-        response.insert(
-            "semantic_equivalent_to_existing".to_string(),
-            json!(semantic_equivalent_to_existing),
-        );
-    }
-    RuntimeRouteResponse::json(200, Value::Object(response))
-}
-
-fn flow_save_parse_error_response(error: DotParseError) -> RuntimeRouteResponse {
-    let parse_diag = parse_error_diagnostic(&error);
     RuntimeRouteResponse::json(
-        422,
+        200,
         json!({
-            "detail": {
-                "status": "parse_error",
-                "error": format!("invalid DOT: {error}"),
-                "diagnostics": [parse_diag.clone()],
-                "errors": [parse_diag],
-            }
+            "status": "saved",
+            "name": name,
         }),
     )
 }
 
-fn flow_save_validation_error_response(
-    diagnostics: &[Diagnostic],
-    errors: &[Diagnostic],
-) -> RuntimeRouteResponse {
+fn flow_save_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
     RuntimeRouteResponse::json(
         422,
         json!({
             "detail": {
                 "status": "validation_error",
-                "error": "validation errors prevent saving this flow",
-                "diagnostics": diagnostics_payload(diagnostics),
-                "errors": diagnostics_payload(errors),
+                "error": error.detail(),
+                "diagnostics": [{
+                    "rule": "flow_definition",
+                    "rule_id": "flow_definition",
+                    "severity": "error",
+                    "message": error.detail(),
+                    "line": 0,
+                    "node": null,
+                    "node_id": null,
+                }],
+                "errors": [{
+                    "rule": "flow_definition",
+                    "rule_id": "flow_definition",
+                    "severity": "error",
+                    "message": error.detail(),
+                    "line": 0,
+                    "node": null,
+                    "node_id": null,
+                }],
             }
         }),
     )
-}
-
-fn parse_error_diagnostic(error: &DotParseError) -> Value {
-    json!({
-        "rule": "parse_error",
-        "rule_id": "parse_error",
-        "severity": "error",
-        "message": error.to_string(),
-        "line": error.line(),
-        "node": null,
-        "node_id": null,
-    })
 }
 
 fn flow_source_error_response(error: FlowSourceError) -> RuntimeRouteResponse {
@@ -1804,15 +1770,30 @@ fn validation_error_response(error: impl Into<String>) -> RuntimeRouteResponse {
     )
 }
 
-fn pipeline_parse_validation_response(error: DotParseError) -> RuntimeRouteResponse {
-    let parse_diag = parse_error_diagnostic(&error);
+fn flow_definition_validation_response(error: FlowSourceError) -> RuntimeRouteResponse {
     RuntimeRouteResponse::json(
         200,
         json!({
             "status": "validation_error",
-            "error": error.to_string(),
-            "diagnostics": [parse_diag.clone()],
-            "errors": [parse_diag],
+            "error": error.detail(),
+            "diagnostics": [{
+                "rule": "flow_definition",
+                "rule_id": "flow_definition",
+                "severity": "error",
+                "message": error.detail(),
+                "line": 0,
+                "node": null,
+                "node_id": null,
+            }],
+            "errors": [{
+                "rule": "flow_definition",
+                "rule_id": "flow_definition",
+                "severity": "error",
+                "message": error.detail(),
+                "line": 0,
+                "node": null,
+                "node_id": null,
+            }],
         }),
     )
 }
@@ -1857,7 +1838,7 @@ fn normalize_path_string(path: PathBuf) -> String {
 }
 
 fn resolve_launch_model(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     requested_model: Option<&str>,
     launch_context: &ContextMap,
 ) -> (Option<String>, String) {
@@ -1873,9 +1854,7 @@ fn resolve_launch_model(
     ) {
         return (Some(model.clone()), model);
     }
-    if let Some(model) =
-        trimmed_real_model(graph_attr_string(graph, "ui_default_llm_model").as_deref())
-    {
+    if let Some(model) = trimmed_real_model(flow.defaults.llm_model.as_deref()) {
         return (Some(model.clone()), model);
     }
     (
@@ -1885,7 +1864,7 @@ fn resolve_launch_model(
 }
 
 fn resolve_launch_provider(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     requested_provider: Option<&str>,
     launch_context: &ContextMap,
 ) -> Option<String> {
@@ -1896,12 +1875,12 @@ fn resolve_launch_provider(
                 unified_llm_adapter::RUNTIME_LAUNCH_PROVIDER_KEY,
             )
         })
-        .or_else(|| graph_attr_string(graph, "ui_default_llm_provider"))
+        .or_else(|| trimmed_option(flow.defaults.llm_provider.as_deref()))
         .map(|provider| provider.to_lowercase())
 }
 
 fn resolve_launch_profile(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     requested_profile: Option<&str>,
     launch_context: &ContextMap,
 ) -> Option<String> {
@@ -1912,7 +1891,7 @@ fn resolve_launch_profile(
                 unified_llm_adapter::RUNTIME_LAUNCH_PROFILE_KEY,
             )
         })
-        .or_else(|| graph_attr_string(graph, "ui_default_llm_profile"))
+        .or_else(|| trimmed_option(flow.defaults.llm_profile.as_deref()))
 }
 
 fn resolve_launch_reasoning_effort(
@@ -1927,14 +1906,6 @@ fn resolve_launch_reasoning_effort(
             )
         })
         .map(|value| value.to_lowercase())
-}
-
-fn graph_attr_string(graph: &DotGraph, key: &str) -> Option<String> {
-    graph
-        .graph_attrs
-        .get(key)
-        .map(|attr| attr.value.to_string().trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn context_value_text(context: &ContextMap, key: &str) -> Option<String> {
@@ -1995,8 +1966,8 @@ fn start_response_payload(
     if let Some(paths) = graph_paths.and_then(|value| value.as_object().cloned()) {
         payload.extend(paths);
     } else {
-        payload.insert("graph_dot_path".to_string(), Value::Null);
-        payload.insert("graph_render_path".to_string(), Value::Null);
+        payload.insert("flow_source_path".to_string(), Value::Null);
+        payload.insert("flow_definition_path".to_string(), Value::Null);
     }
     payload.insert("terminal_status".to_string(), json!(terminal_status));
     Value::Object(payload)
@@ -2008,13 +1979,193 @@ fn option_str_json(value: Option<&str>) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn graph_artifact_paths(paths: &attractor_runtime::RunRootPaths) -> Value {
-    let graph_dir = paths.artifacts_dir().join("graphviz");
-    let dot_path = graph_dir.join("pipeline.dot");
-    let render_path = graph_dir.join("pipeline.svg");
+fn flow_preview_payload(flow: &FlowDefinition, child_previews: Value) -> Value {
+    let diagnostics = flow.diagnostics();
+    let diagnostic_payloads = flow_diagnostics_payload(&diagnostics);
+    let nodes = flow
+        .nodes
+        .iter()
+        .map(|(node_id, node)| {
+            json!({
+                "id": node_id,
+                "label": node.label,
+                "kind": node.kind,
+                "description": node.description,
+                "config": node.config,
+                "context": node.context,
+                "retry": node.retry,
+                "execution": node.execution,
+                "ui": node.ui,
+                "extensions": node.extensions,
+            })
+        })
+        .collect::<Vec<_>>();
+    let edges = flow
+        .edges
+        .iter()
+        .map(|edge| {
+            json!({
+                "source": edge.from,
+                "target": edge.to,
+                "from": edge.from,
+                "to": edge.to,
+                "label": edge.label,
+                "condition": edge.condition,
+                "weight": edge.weight,
+                "transition": edge.transition,
+                "extensions": edge.extensions,
+            })
+        })
+        .collect::<Vec<_>>();
     json!({
-        "graph_dot_path": dot_path.to_string_lossy().to_string(),
-        "graph_render_path": render_path.exists().then(|| render_path.to_string_lossy().to_string()),
+        "status": if diagnostics.is_empty() { "ok" } else { "validation_error" },
+        "flow": flow.to_canonical_json_value(),
+        "graph": {
+            "id": flow.id,
+            "title": flow.title,
+            "description": flow.description,
+            "goal": flow.goal,
+            "nodes": nodes,
+            "edges": edges,
+            "metadata": flow.metadata,
+            "child_previews": child_previews,
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "diagnostics": diagnostic_payloads,
+        "errors": diagnostic_payloads,
+        "child_previews": child_previews,
+    })
+}
+
+fn child_preview_map(
+    flow: &FlowDefinition,
+    parent_flow_name: Option<&str>,
+    expand_children: bool,
+    flows_dir: Option<&Path>,
+) -> Value {
+    if !expand_children {
+        return json!({});
+    }
+    let Some(flows_dir) = flows_dir else {
+        return json!({});
+    };
+
+    let mut previews = serde_json::Map::new();
+    for (node_id, node) in &flow.nodes {
+        let Some(NodeConfig::Subflow { flow_ref, .. }) = node.config.as_ref() else {
+            continue;
+        };
+        let child_name = resolve_child_flow_name(parent_flow_name, flow_ref);
+        let Ok(source) = read_typed_named_flow_source(flows_dir, &child_name) else {
+            continue;
+        };
+        previews.insert(
+            node_id.clone(),
+            json!({
+                "flow_name": source.name,
+                "flow_path": source.path,
+                "flow_label": if source.flow.title.is_empty() { source.name.clone() } else { source.flow.title.clone() },
+                "read_only": true,
+                "provenance": "derived_child_preview",
+                "graph": flow_preview_graph_payload(&source.flow),
+            }),
+        );
+    }
+    Value::Object(previews)
+}
+
+fn resolve_child_flow_name(parent_flow_name: Option<&str>, flow_ref: &str) -> String {
+    let flow_ref = flow_ref.trim().replace('\\', "/");
+    if flow_ref.contains('/') {
+        return flow_ref;
+    }
+    let Some(parent_flow_name) = parent_flow_name else {
+        return flow_ref;
+    };
+    let parent = Path::new(parent_flow_name);
+    match parent.parent() {
+        Some(parent_dir) if !parent_dir.as_os_str().is_empty() => parent_dir
+            .join(flow_ref)
+            .to_string_lossy()
+            .replace('\\', "/"),
+        _ => flow_ref,
+    }
+}
+
+fn flow_preview_graph_payload(flow: &FlowDefinition) -> Value {
+    let nodes = flow
+        .nodes
+        .iter()
+        .map(|(node_id, node)| {
+            json!({
+                "id": node_id,
+                "label": node.label,
+                "kind": node.kind,
+                "description": node.description,
+                "config": node.config,
+                "context": node.context,
+                "retry": node.retry,
+                "execution": node.execution,
+                "ui": node.ui,
+                "extensions": node.extensions,
+            })
+        })
+        .collect::<Vec<_>>();
+    let edges = flow
+        .edges
+        .iter()
+        .map(|edge| {
+            json!({
+                "source": edge.from,
+                "target": edge.to,
+                "from": edge.from,
+                "to": edge.to,
+                "label": edge.label,
+                "condition": edge.condition,
+                "weight": edge.weight,
+                "transition": edge.transition,
+                "extensions": edge.extensions,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "id": flow.id,
+        "title": flow.title,
+        "description": flow.description,
+        "goal": flow.goal,
+        "nodes": nodes,
+        "edges": edges,
+        "metadata": flow.metadata,
+        "child_previews": {},
+    })
+}
+
+fn flow_diagnostics_payload(diagnostics: &[FlowDiagnostic]) -> Vec<Value> {
+    diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "rule": diagnostic.rule_id,
+                "rule_id": diagnostic.rule_id,
+                "severity": "error",
+                "message": diagnostic.message,
+                "line": 0,
+                "node": diagnostic.node_id,
+                "node_id": diagnostic.node_id,
+                "edge": diagnostic.edge,
+            })
+        })
+        .collect()
+}
+
+fn graph_artifact_paths(paths: &attractor_runtime::RunRootPaths) -> Value {
+    let flow_dir = paths.artifacts_dir().join("flow");
+    let source_path = flow_dir.join("flow-source.yaml");
+    let definition_path = flow_dir.join("flow-definition.json");
+    json!({
+        "flow_source_path": source_path.exists().then(|| source_path.to_string_lossy().to_string()),
+        "flow_definition_path": definition_path.exists().then(|| definition_path.to_string_lossy().to_string()),
     })
 }
 
@@ -2176,6 +2327,7 @@ fn artifact_media_type(path: &Path) -> String {
         "json" => "application/json",
         "md" => "text/markdown; charset=utf-8",
         "txt" | "log" | "dot" => "text/plain; charset=utf-8",
+        "yaml" | "yml" => "text/yaml; charset=utf-8",
         "html" => "text/html; charset=utf-8",
         "csv" => "text/csv; charset=utf-8",
         _ => "application/octet-stream",
@@ -2205,27 +2357,6 @@ fn normalize_after_sequence(value: Option<i64>) -> Result<Option<u64>, String> {
         Some(value) if value < 0 => Err("after_sequence must be zero or greater".to_string()),
         Some(value) => Ok(Some(value as u64)),
     }
-}
-
-fn preview_source_context(bundle: &RunBundle) -> (Option<PathBuf>, Option<PathBuf>) {
-    let context = bundle
-        .checkpoint
-        .as_ref()
-        .map(|checkpoint| &checkpoint.context);
-    let flow_source_dir = context
-        .and_then(|context| context_path(context, "internal.flow_source_dir"))
-        .map(PathBuf::from);
-    let run_workdir = context
-        .and_then(|context| context_path(context, "internal.run_workdir"))
-        .map(PathBuf::from)
-        .or_else(|| {
-            bundle
-                .record
-                .as_ref()
-                .and_then(|record| trimmed_option(Some(&record.working_directory)))
-                .map(PathBuf::from)
-        });
-    (flow_source_dir, run_workdir)
 }
 
 fn context_path(context: &ContextMap, key: &str) -> Option<String> {
@@ -2431,20 +2562,6 @@ fn run_sort_key(value: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
-}
-
-fn resolve_preview_flow_source_dir(
-    flow_name: Option<&str>,
-    config: &PreviewServiceConfig,
-) -> Option<PathBuf> {
-    let flow_name = flow_name.unwrap_or_default().trim();
-    if flow_name.is_empty() {
-        return None;
-    }
-    let flows_dir = config.flows_dir.as_deref()?;
-    resolve_flow_path(flows_dir, flow_name)
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
 fn runtime_error_response(

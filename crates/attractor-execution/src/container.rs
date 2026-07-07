@@ -176,7 +176,7 @@ impl ContainerizedNodeExecutor {
         self.ensure_container_started(&request, &image)?;
         let worker_request = WorkerNodeRequest {
             run_id: request.run_id.clone(),
-            graph: request.graph.clone(),
+            flow: request.flow.clone(),
             node_id: request.node_id.clone(),
             prompt: request.prompt.clone(),
             context: request.context.clone(),

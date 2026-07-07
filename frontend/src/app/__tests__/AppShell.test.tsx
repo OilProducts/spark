@@ -422,18 +422,20 @@ const installCanvasWorkspaceFetchMock = () => {
         if (dot.includes('implement_review_loop')) {
           return new Response(JSON.stringify({
             status: 'ok',
+            flow: {
+              inputs: [
+                {
+                  key: 'context.request.summary',
+                  label: 'Request Summary',
+                  type: 'string',
+                  required: true,
+                },
+              ],
+            },
             graph: {
-              graph_attrs: {
+              metadata: {
                 label: 'Implementation Review Loop',
                 goal: null,
-                'spark.launch_inputs': JSON.stringify([
-                  {
-                    key: 'context.request.summary',
-                    label: 'Request Summary',
-                    type: 'string',
-                    required: true,
-                  },
-                ]),
               },
               nodes: [
                 { id: 'start', label: 'Start', shape: 'Mdiamond' },
@@ -455,7 +457,7 @@ const installCanvasWorkspaceFetchMock = () => {
         return new Response(JSON.stringify({
           status: 'ok',
           graph: {
-            graph_attrs: {
+            metadata: {
               label: 'Simple Linear Workflow',
               goal: 'Inspect the repo.',
               'spark.title': 'Simple Linear Workflow',
@@ -2888,16 +2890,16 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
     })
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    const rawDotEditor = await screen.findByTestId('raw-dot-editor')
-    await user.type(rawDotEditor, '\n// editor draft note')
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    const rawYamlEditor = await screen.findByTestId('raw-yaml-editor')
+    await user.type(rawYamlEditor, '\n# editor draft note')
 
     await user.click(screen.getByTestId('nav-mode-execution'))
     expect(await screen.findByTestId('execution-launch-flow-name')).toHaveTextContent(REVIEW_FLOW_NAME)
     expect(screen.getByTestId('execution-launch-input-context.request.summary')).toHaveValue('Review the auth flow')
 
     await user.click(screen.getByTestId('nav-mode-editor'))
-    expect((await screen.findByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toContain('// editor draft note')
+    expect((await screen.findByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toContain('# editor draft note')
   })
 
   it('keeps execution as a launch surface with the primary action inside the launch panel', async () => {

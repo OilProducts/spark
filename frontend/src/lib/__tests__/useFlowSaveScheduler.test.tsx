@@ -12,7 +12,7 @@ vi.mock('@/lib/flowPersistence', () => ({
 function SchedulerHarness() {
   const [count, setCount] = useState(0)
   const { scheduleSave } = useFlowSaveScheduler<{ value: number }>({
-    flowName: 'demo.dot',
+    flowName: 'demo.yaml',
     debounceMs: 25,
     buildContent: (payload, flowName) => JSON.stringify({
       flowName,
@@ -58,12 +58,11 @@ describe('useFlowSaveScheduler', () => {
 
     expect(saveFlowContent).toHaveBeenCalledTimes(1)
     expect(saveFlowContent).toHaveBeenCalledWith(
-      'demo.dot',
+      'demo.yaml',
       JSON.stringify({
-        flowName: 'demo.dot',
+        flowName: 'demo.yaml',
         value: 1,
       }),
-      undefined,
     )
   })
 })

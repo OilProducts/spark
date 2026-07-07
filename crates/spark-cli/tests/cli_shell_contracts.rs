@@ -59,7 +59,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
             "run",
             "launch",
             "--flow",
-            "test-dispatch.dot",
+            "test-dispatch.yaml",
             "--summary",
             "Launch directly",
             "--project",
@@ -96,8 +96,8 @@ fn flow_list_text_executes_http_request_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
         r#"[
-          {"name":"examples/simple.dot","title":"Simple Flow","description":"Small starter."},
-          {"name":"ops/review.dot","title":"ops/review.dot","description":""}
+          {"name":"examples/simple.yaml","title":"Simple Flow","description":"Small starter."},
+          {"name":"ops/review.yaml","title":"ops/review.yaml","description":""}
         ]"#,
     ));
     let output = run_with_args_and_env(
@@ -115,7 +115,7 @@ fn flow_list_text_executes_http_request_and_renders_rows() {
     assert_eq!(output.exit_code, 0);
     assert_eq!(
         output.stdout,
-        "examples/simple.dot: Simple Flow\n  Small starter.\nops/review.dot\n"
+        "examples/simple.yaml: Simple Flow\n  Small starter.\nops/review.yaml\n"
     );
     assert_eq!(output.stderr, "");
     let request = requests
@@ -142,7 +142,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "--conversation",
             "amber-otter",
             "--flow",
-            "software-development/implement-change-request.dot",
+            "software-development/implement-change-request.yaml",
             "--summary",
             "Run the approved scope",
             "--goal",
@@ -183,7 +183,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
         serde_json::from_str::<Value>(&request.body).expect("request json"),
         serde_json::json!({
             "execution_profile_id": "local-dev",
-            "flow_name": "software-development/implement-change-request.dot",
+            "flow_name": "software-development/implement-change-request.yaml",
             "goal": "Implement it.",
             "launch_context": {"context.request.summary": "Run the approved scope"},
             "llm_profile": "implementation",
@@ -205,7 +205,7 @@ fn run_launch_requires_project_when_conversation_is_omitted() {
             "run",
             "launch",
             "--flow",
-            "test.dot",
+            "test.yaml",
             "--summary",
             "Launch directly",
             "--base-url",
@@ -235,7 +235,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "run",
             "launch",
             "--flow",
-            "test.dot",
+            "test.yaml",
             "--summary",
             "Launch directly",
             "--project",
@@ -264,7 +264,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
         serde_json::from_str::<Value>(&launch_request.body).expect("launch body"),
         serde_json::json!({
             "execution_profile_id": "local-review",
-            "flow_name": "test.dot",
+            "flow_name": "test.yaml",
             "llm_profile": "launch-profile",
             "llm_provider": "anthropic",
             "model": "gpt-5.3",
@@ -318,7 +318,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "--flow-source-mode",
             "snapshot",
             "--flow",
-            "ignored.dot",
+            "ignored.yaml",
             "--project",
             "/repo",
             "--conversation",
@@ -362,7 +362,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
         200,
         r#"{
-          "name":"software-development/implement-change-request.dot",
+          "name":"software-development/implement-change-request.yaml",
           "title":"Implement Change Request",
           "description":"Execute approved work items.",
           "effective_launch_policy":"agent_requestable",
@@ -379,7 +379,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
             "flow",
             "describe",
             "--flow",
-            "software-development/implement-change-request.dot",
+            "software-development/implement-change-request.yaml",
             "--text",
             "--base-url",
             describe_base_url.as_str(),
@@ -397,14 +397,14 @@ fn flow_describe_and_validate_text_match_python_labels() {
             .recv_timeout(Duration::from_secs(2))
             .expect("describe request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.dot?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml?surface=agent"
     );
 
     let (validate_base_url, validate_requests) = serve_once(HttpResponse::json(
         200,
         r#"{
-          "name":"software-development/implement-change-request.dot",
-          "path":"/flows/software-development/implement-change-request.dot",
+          "name":"software-development/implement-change-request.yaml",
+          "path":"/flows/software-development/implement-change-request.yaml",
           "status":"invalid",
           "diagnostics":[{"severity":"error","rule_id":"missing-edge","message":"Missing edge.","line":7}],
           "errors":["Missing edge."]
@@ -416,7 +416,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
             "flow",
             "validate",
             "--flow",
-            "software-development/implement-change-request.dot",
+            "software-development/implement-change-request.yaml",
             "--text",
             "--base-url",
             validate_base_url.as_str(),
@@ -433,22 +433,22 @@ fn flow_describe_and_validate_text_match_python_labels() {
             .recv_timeout(Duration::from_secs(2))
             .expect("validate request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.dot/validate"
+        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml/validate"
     );
 }
 
 #[test]
 fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
     let env = BTreeMap::new();
-    let (json_base_url, json_requests) =
-        serve_once(HttpResponse::text(200, "digraph G {\n  a -> b;\n}\n"));
+    let flow_yaml = "schema_version: \"1\"\nid: implement_change_request\nnodes:\n  start:\n    kind: start\nedges: []\n";
+    let (json_base_url, json_requests) = serve_once(HttpResponse::text(200, flow_yaml));
     let json_output = run_with_args_and_env(
         [
             "spark",
             "flow",
             "get",
             "--flow",
-            "software-development/implement-change-request.dot",
+            "software-development/implement-change-request.yaml",
             "--base-url",
             json_base_url.as_str(),
         ],
@@ -458,28 +458,29 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
     let payload = serde_json::from_str::<Value>(&json_output.stdout).expect("stdout json");
     assert_eq!(
         payload["name"],
-        "software-development/implement-change-request.dot"
+        "software-development/implement-change-request.yaml"
     );
     assert!(payload["content"]
         .as_str()
         .expect("content")
-        .contains("a -> b"));
+        .contains("implement_change_request"));
     assert_eq!(
         json_requests
             .recv_timeout(Duration::from_secs(2))
             .expect("json request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.dot/raw?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml/raw?surface=agent"
     );
 
-    let (text_base_url, _text_requests) = serve_once(HttpResponse::text(200, "digraph G {}"));
+    let text_flow_yaml = "schema_version: \"1\"\nid: plain\n";
+    let (text_base_url, _text_requests) = serve_once(HttpResponse::text(200, text_flow_yaml));
     let text_output = run_with_args_and_env(
         [
             "spark",
             "flow",
             "get",
             "--flow",
-            "plain.dot",
+            "plain.yaml",
             "--text",
             "--base-url",
             text_base_url.as_str(),
@@ -487,7 +488,7 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
         &env,
     );
     assert_eq!(text_output.exit_code, 0);
-    assert_eq!(text_output.stdout, "digraph G {}\n");
+    assert_eq!(text_output.stdout, text_flow_yaml);
 }
 
 #[test]
@@ -495,7 +496,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
     let env = BTreeMap::new();
     let (missing_base_url, _missing_requests) = serve_once(HttpResponse::json(
         404,
-        r#"{"detail":"Unknown flow: missing.dot"}"#,
+        r#"{"detail":"Unknown flow: missing.yaml"}"#,
     ));
     let missing_output = run_with_args_and_env(
         [
@@ -503,7 +504,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "missing.dot",
+            "missing.yaml",
             "--base-url",
             missing_base_url.as_str(),
         ],
@@ -513,7 +514,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
     assert_eq!(missing_output.stdout, "");
     assert_eq!(
         missing_output.stderr,
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.dot\"}\n"
+        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n"
     );
 
     let (validation_base_url, _validation_requests) = serve_once(HttpResponse::json(
@@ -546,7 +547,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "conflict.dot",
+            "conflict.yaml",
             "--base-url",
             top_level_error_base_url.as_str(),
         ],
@@ -568,7 +569,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "invalid.dot",
+            "invalid.yaml",
             "--base-url",
             nested_error_base_url.as_str(),
         ],
@@ -588,7 +589,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "server-error.dot",
+            "server-error.yaml",
             "--base-url",
             text_error_base_url.as_str(),
         ],
@@ -679,11 +680,9 @@ data: \"type\":\"run.journal_entry\",\"payload\":{\"sequence\":8,\"type\":\"log\
 }
 
 #[test]
-fn flow_format_file_prints_readable_dot_without_source_checkout_guard() {
-    let fixture = fixture_json("cli/flow-format-stdout.json");
-    let expected_stdout = fixture["process"]["stdout"].as_str().expect("stdout");
+fn flow_format_file_prints_canonical_yaml_without_source_checkout_guard() {
     let temp_dir = temp_dir("flow-format-stdout");
-    let flow_path = temp_dir.join("messy-flow.dot");
+    let flow_path = temp_dir.join("messy-flow.yaml");
     fs::write(&flow_path, messy_flow_source()).expect("write flow");
     let env = BTreeMap::new();
 
@@ -699,7 +698,7 @@ fn flow_format_file_prints_readable_dot_without_source_checkout_guard() {
     );
 
     assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, expected_stdout);
+    assert_eq!(output.stdout, formatted_flow_source());
     assert_eq!(output.stderr, "");
     assert_eq!(
         fs::read_to_string(&flow_path).expect("read flow"),
@@ -710,10 +709,8 @@ fn flow_format_file_prints_readable_dot_without_source_checkout_guard() {
 
 #[test]
 fn flow_format_file_accepts_argparse_equals_value_syntax() {
-    let fixture = fixture_json("cli/flow-format-stdout.json");
-    let expected_stdout = fixture["process"]["stdout"].as_str().expect("stdout");
     let temp_dir = temp_dir("flow-format-equals");
-    let flow_path = temp_dir.join("messy-flow.dot");
+    let flow_path = temp_dir.join("messy-flow.yaml");
     fs::write(&flow_path, messy_flow_source()).expect("write flow");
     let env = BTreeMap::new();
     let file_arg = format!("--file={}", flow_path.to_str().expect("path"));
@@ -721,7 +718,7 @@ fn flow_format_file_accepts_argparse_equals_value_syntax() {
     let output = run_with_args_and_env(["spark", "flow", "format", file_arg.as_str()], &env);
 
     assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, expected_stdout);
+    assert_eq!(output.stdout, formatted_flow_source());
     assert_eq!(output.stderr, "");
     assert_eq!(
         fs::read_to_string(&flow_path).expect("read flow"),
@@ -732,10 +729,8 @@ fn flow_format_file_accepts_argparse_equals_value_syntax() {
 
 #[test]
 fn flow_format_file_write_replaces_only_target_file_contents() {
-    let fixture = fixture_json("cli/flow-format-stdout.json");
-    let expected_content = fixture["process"]["stdout"].as_str().expect("stdout");
     let temp_dir = temp_dir("flow-format-write");
-    let flow_path = temp_dir.join("messy-write.dot");
+    let flow_path = temp_dir.join("messy-write.yaml");
     let sibling_path = temp_dir.join("untouched.txt");
     fs::write(&flow_path, messy_flow_source()).expect("write flow");
     fs::write(&sibling_path, "leave me alone\n").expect("write sibling");
@@ -759,7 +754,7 @@ fn flow_format_file_write_replaces_only_target_file_contents() {
     assert_eq!(output.stderr, "");
     assert_eq!(
         fs::read_to_string(&flow_path).expect("read flow"),
-        expected_content
+        formatted_flow_source()
     );
     assert_eq!(
         fs::read_to_string(&sibling_path).expect("read sibling"),
@@ -769,14 +764,10 @@ fn flow_format_file_write_replaces_only_target_file_contents() {
 }
 
 #[test]
-fn flow_format_file_prints_python_repr_float_values() {
-    let temp_dir = temp_dir("flow-format-floats");
-    let flow_path = temp_dir.join("floats.dot");
-    fs::write(
-        &flow_path,
-        "digraph Workflow { start [shape=Mdiamond, score=0.000001]; done [shape=Msquare]; start -> done [weight=10000000000000000.0]; }\n",
-    )
-    .expect("write flow");
+fn flow_format_file_prints_canonical_numeric_values() {
+    let temp_dir = temp_dir("flow-format-numbers");
+    let flow_path = temp_dir.join("numbers.yaml");
+    fs::write(&flow_path, numeric_flow_source()).expect("write flow");
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -793,22 +784,17 @@ fn flow_format_file_prints_python_repr_float_values() {
     assert_eq!(output.exit_code, 0);
     assert_eq!(
         output.stdout,
-        "digraph Workflow {\n\n  start [score=1e-06, shape=\"Mdiamond\"];\n  start -> done [weight=1e+16];\n\n  done [shape=\"Msquare\"];\n}\n"
+        "schema_version: '1'\nid: numeric-flow\ntitle: Numeric Flow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n  start:\n    kind: start\n    label: ''\n    description: ''\n    ui:\n      x: 1e-6\n      y: 1e16\nedges:\n- from: start\n  to: done\n  label: ''\n  condition: ''\n  weight: 10000000000000000\n"
     );
     assert_eq!(output.stderr, "");
     let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
-fn flow_format_file_write_is_idempotent_for_python_repr_float_values() {
-    let expected_content = "digraph Workflow {\n\n  start [score=1e-06, shape=\"Mdiamond\"];\n  start -> done [weight=1e+16];\n\n  done [shape=\"Msquare\"];\n}\n";
-    let temp_dir = temp_dir("flow-format-float-write");
-    let flow_path = temp_dir.join("floats-write.dot");
-    fs::write(
-        &flow_path,
-        "digraph Workflow { start [shape=Mdiamond, score=0.000001]; done [shape=Msquare]; start -> done [weight=10000000000000000.0]; }\n",
-    )
-    .expect("write flow");
+fn flow_format_file_write_is_idempotent_for_yaml() {
+    let temp_dir = temp_dir("flow-format-idempotent-write");
+    let flow_path = temp_dir.join("idempotent-write.yaml");
+    fs::write(&flow_path, messy_flow_source()).expect("write flow");
     let env = BTreeMap::new();
 
     let write_output = run_with_args_and_env(
@@ -828,7 +814,7 @@ fn flow_format_file_write_is_idempotent_for_python_repr_float_values() {
     assert_eq!(write_output.stderr, "");
     assert_eq!(
         fs::read_to_string(&flow_path).expect("read flow"),
-        expected_content
+        formatted_flow_source()
     );
 
     let second_output = run_with_args_and_env(
@@ -843,24 +829,20 @@ fn flow_format_file_write_is_idempotent_for_python_repr_float_values() {
     );
 
     assert_eq!(second_output.exit_code, 0);
-    assert_eq!(second_output.stdout, expected_content);
+    assert_eq!(second_output.stdout, formatted_flow_source());
     assert_eq!(second_output.stderr, "");
     assert_eq!(
         fs::read_to_string(&flow_path).expect("read flow"),
-        expected_content
+        formatted_flow_source()
     );
     let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
-fn flow_format_file_preserves_same_line_node_declaration_order() {
-    let temp_dir = temp_dir("flow-format-same-line-order");
-    let flow_path = temp_dir.join("same-line.dot");
-    fs::write(
-        &flow_path,
-        "digraph Workflow { b [shape=box]; a [shape=box]; }\n",
-    )
-    .expect("write flow");
+fn flow_format_file_orders_nodes_deterministically() {
+    let temp_dir = temp_dir("flow-format-node-order");
+    let flow_path = temp_dir.join("node-order.yaml");
+    fs::write(&flow_path, reverse_order_flow_source()).expect("write flow");
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -875,10 +857,11 @@ fn flow_format_file_preserves_same_line_node_declaration_order() {
     );
 
     assert_eq!(output.exit_code, 0);
-    assert_eq!(
-        output.stdout,
-        "digraph Workflow {\n\n  b [shape=\"box\"];\n\n  a [shape=\"box\"];\n}\n"
-    );
+    let done_index = output.stdout.find("  done:").expect("done node");
+    let start_index = output.stdout.find("  start:").expect("start node");
+    let task_index = output.stdout.find("  task:").expect("task node");
+    assert!(done_index < start_index);
+    assert!(start_index < task_index);
     assert_eq!(output.stderr, "");
     let _ = fs::remove_dir_all(temp_dir);
 }
@@ -916,12 +899,10 @@ spark: error: argument --file: expected one argument\n"
 }
 
 #[test]
-fn flow_format_invalid_dot_returns_compat_json_error() {
-    let fixture = fixture_json("cli/flow-format-invalid.json");
-    let expected_stderr = fixture["process"]["stderr"].as_str().expect("stderr");
+fn flow_format_invalid_yaml_returns_json_error() {
     let temp_dir = temp_dir("flow-format-invalid");
-    let flow_path = temp_dir.join("invalid-flow.dot");
-    fs::write(&flow_path, "digraph Workflow { start -> }\n").expect("write flow");
+    let flow_path = temp_dir.join("invalid-flow.yaml");
+    fs::write(&flow_path, "schema_version: '1'\nid: broken\nnodes: [").expect("write flow");
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -937,14 +918,16 @@ fn flow_format_invalid_dot_returns_compat_json_error() {
 
     assert_eq!(output.exit_code, 1);
     assert_eq!(output.stdout, "");
-    assert_eq!(output.stderr, expected_stderr);
+    assert!(output
+        .stderr
+        .starts_with("{\"ok\": false, \"error\": \"flow definition validation failed with 1 error(s): invalid YAML flow definition:"));
     let _ = fs::remove_dir_all(temp_dir);
 }
 
 #[test]
 fn flow_format_missing_file_returns_json_error() {
     let temp_dir = temp_dir("flow-format-missing");
-    let flow_path = temp_dir.join("missing.dot");
+    let flow_path = temp_dir.join("missing.yaml");
     let env = BTreeMap::new();
 
     let output = run_with_args_and_env(
@@ -973,7 +956,7 @@ fn flow_format_missing_file_returns_json_error() {
 #[test]
 fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
     let temp_dir = temp_dir("flow-validate-success");
-    let flow_path = temp_dir.join("valid-flow.dot");
+    let flow_path = temp_dir.join("valid-flow.yaml");
     fs::write(&flow_path, valid_flow_source()).expect("write flow");
     let env = BTreeMap::new();
 
@@ -991,7 +974,7 @@ fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
     assert_eq!(output.exit_code, 0);
     assert_eq!(output.stderr, "");
     let payload: Value = serde_json::from_str(&output.stdout).expect("valid json");
-    assert_eq!(payload["name"], "valid-flow.dot");
+    assert_eq!(payload["name"], "valid-flow.yaml");
     assert_eq!(
         payload["path"],
         fs::canonicalize(&flow_path)
@@ -1008,7 +991,7 @@ fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
 #[test]
 fn flow_validate_file_text_renders_diagnostics() {
     let temp_dir = temp_dir("flow-validate-text");
-    let flow_path = temp_dir.join("validation-error-flow.dot");
+    let flow_path = temp_dir.join("validation-error-flow.yaml");
     fs::write(&flow_path, validation_error_flow_source()).expect("write flow");
     let env = BTreeMap::new();
 
@@ -1029,14 +1012,13 @@ fn flow_validate_file_text_renders_diagnostics() {
     assert_eq!(
         output.stdout,
         format!(
-            "Name: validation-error-flow.dot\n\
+            "Name: validation-error-flow.yaml\n\
 Path: {}\n\
 Status: validation_error\n\
-Diagnostics: 3\n\
-Errors: 3\n\
-- ERROR start_node: pipeline must have exactly one start node, found 0\n\
-- ERROR terminal_node: pipeline must have exactly one exit node, found 0\n\
-- ERROR node_has_outgoing_edge line 2: node 'task' must declare at least one outgoing edge\n",
+Diagnostics: 2\n\
+Errors: 2\n\
+- ERROR start_node: flow must have exactly one start node, found 0\n\
+- ERROR exit_node: flow must have exactly one exit node, found 0\n",
             fs::canonicalize(&flow_path)
                 .expect("canonical path")
                 .display()
@@ -1055,9 +1037,9 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
             "flow",
             "validate",
             "--flow",
-            "examples/simple-linear.dot",
+            "examples/simple-linear.yaml",
             "--file",
-            "local.dot",
+            "local.yaml",
         ],
         &env,
     );
@@ -1090,7 +1072,7 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
             "spark",
             "flow",
             "describe",
-            "--flow=software-development/implement-change-request.dot",
+            "--flow=software-development/implement-change-request.yaml",
             "--base-url=http://127.0.0.1:8020",
         ],
         &env,
@@ -1100,7 +1082,7 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
     assert_eq!(explicit_plan.base_url, "http://127.0.0.1:8020");
     assert_eq!(
         explicit_plan.path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.dot?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml?surface=agent"
     );
 }
 
@@ -1162,7 +1144,7 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     let env = BTreeMap::new();
     let (list_base_url, list_requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.dot"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"state":{}}]"#,
     ));
     let list_output = run_with_args_and_env(
         [
@@ -1187,7 +1169,7 @@ fn trigger_commands_execute_http_requests_and_render_text() {
 
     let (list_text_base_url, _list_text_requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.dot"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"state":{}}]"#,
     ));
     let list_text_output = run_with_args_and_env(
         [
@@ -1203,12 +1185,12 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     assert_eq!(list_text_output.exit_code, 0);
     assert_eq!(
         list_text_output.stdout,
-        "trigger-123: Nightly [webhook] -> ops/run.dot\n  enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run.yaml\n  enabled=True protected=False\n"
     );
 
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
         200,
-        r#"{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.dot","project_path":"/repo"},"state":{"last_fired_at":null,"last_result":null,"next_run_at":null},"webhook_secret":"secret-123"}"#,
+        r#"{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml","project_path":"/repo"},"state":{"last_fired_at":null,"last_result":null,"next_run_at":null},"webhook_secret":"secret-123"}"#,
     ));
     let describe_output = run_with_args_and_env(
         [
@@ -1231,7 +1213,7 @@ Name: Nightly\n\
 Source Type: webhook\n\
 Enabled: True\n\
 Protected: False\n\
-Flow Target: ops/run.dot\n\
+Flow Target: ops/run.yaml\n\
 Project Target: /repo\n\
 Last Fired: (never)\n\
 Last Result: (none)\n\
@@ -1254,7 +1236,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     let payload_path = temp_dir.join("trigger.json");
     fs::write(
         &payload_path,
-        r#"{"name":"Nightly","source_type":"webhook","action":{"flow_name":"ops/run.dot"},"source":{}}"#,
+        r#"{"name":"Nightly","source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"source":{}}"#,
     )
     .expect("write trigger payload");
 
@@ -1286,7 +1268,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
         serde_json::json!({
             "name": "Nightly",
             "source_type": "webhook",
-            "action": {"flow_name": "ops/run.dot"},
+            "action": {"flow_name": "ops/run.yaml"},
             "source": {}
         })
     );
@@ -1396,7 +1378,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
             "run",
             "launch",
             "--flow",
-            "test.dot",
+            "test.yaml",
             "--summary",
             "Summary",
             "--project",
@@ -1545,15 +1527,6 @@ fn content_length(headers: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn fixture_json(name: &str) -> Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("crates/test-fixtures/compat")
-        .join(name);
-    serde_json::from_str(&fs::read_to_string(&path).expect("fixture readable"))
-        .expect("fixture json")
-}
-
 fn temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1566,13 +1539,25 @@ fn temp_dir(label: &str) -> PathBuf {
 }
 
 fn messy_flow_source() -> &'static str {
-    "\ndigraph Workflow {\n  done [shape=Msquare];\n  task [shape=box, prompt=\"Do work\"];\n  start [shape=Mdiamond];\n  task -> done;\n  start -> task;\n}\n"
+    "title: Workflow\nid: workflow\nschema_version: '1'\nedges:\n  - to: task\n    from: start\n  - to: done\n    from: task\nnodes:\n  done:\n    kind: exit\n  task:\n    config:\n      prompt: Do work\n      kind: agent_task\n    kind: agent_task\n    label: Task\n  start:\n    kind: start\n"
+}
+
+fn formatted_flow_source() -> &'static str {
+    "schema_version: '1'\nid: workflow\ntitle: Workflow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n  start:\n    kind: start\n    label: ''\n    description: ''\n  task:\n    kind: agent_task\n    label: Task\n    description: ''\n    config:\n      kind: agent_task\n      prompt: Do work\nedges:\n- from: start\n  to: task\n  label: ''\n  condition: ''\n  weight: 0\n- from: task\n  to: done\n  label: ''\n  condition: ''\n  weight: 0\n"
+}
+
+fn numeric_flow_source() -> &'static str {
+    "schema_version: '1'\nid: numeric-flow\ntitle: Numeric Flow\nnodes:\n  start:\n    kind: start\n    ui:\n      x: 0.000001\n      y: 10000000000000000.0\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n    weight: 10000000000000000\n"
+}
+
+fn reverse_order_flow_source() -> &'static str {
+    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Do work\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
 }
 
 fn valid_flow_source() -> &'static str {
-    "digraph Workflow {\n  start [shape=Mdiamond];\n  task [shape=box, prompt=\"Do work\"];\n  done [shape=Msquare];\n  start -> task;\n  task -> done;\n}\n"
+    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Do work\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
 }
 
 fn validation_error_flow_source() -> &'static str {
-    "digraph Workflow {\n  task [shape=box, prompt=\"No start or done\"];\n}\n"
+    "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: No start or done\nedges: []\n"
 }

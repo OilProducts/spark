@@ -43,15 +43,15 @@
   "response": {
     "body": {
       "json": [
-        "examples/human-review-loop.dot",
-        "examples/implement-review-loop.dot",
-        "examples/parallel-review.dot",
-        "examples/simple-linear.dot",
-        "examples/supervision/implementation-worker.dot",
-        "examples/supervision/supervised-implementation.dot",
-        "software-development/implement-change-request.dot",
-        "software-development/spec-implementation/implement-milestone.dot",
-        "software-development/spec-implementation/implement-spec.dot"
+        "examples/human-review-loop.yaml",
+        "examples/implement-review-loop.yaml",
+        "examples/parallel-review.yaml",
+        "examples/simple-linear.yaml",
+        "examples/supervision/implementation-worker.yaml",
+        "examples/supervision/supervised-implementation.yaml",
+        "software-development/implement-change-request.yaml",
+        "software-development/spec-implementation/implement-milestone.yaml",
+        "software-development/spec-implementation/implement-spec.yaml"
       ],
       "kind": "json"
     },

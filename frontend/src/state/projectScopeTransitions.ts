@@ -40,12 +40,12 @@ type ProjectScopeTransitionState = Pick<
     | 'humanGate'
     | 'selectedNodeId'
     | 'selectedEdgeId'
+    | 'flowMetadata'
+    | 'flowMetadataErrors'
+    | 'flowMetadataUserEditVersion'
     | 'graphAttrs'
     | 'graphAttrErrors'
     | 'graphAttrsUserEditVersion'
-    | 'canonicalDefaults'
-    | 'canonicalSubgraphs'
-    | 'canonicalStructureUserEditVersion'
     | 'diagnostics'
     | 'nodeDiagnostics'
     | 'edgeDiagnostics'
@@ -128,12 +128,12 @@ const preserveEditorSession = (state: AppState) => ({
     activeFlow: state.activeFlow,
     selectedNodeId: state.selectedNodeId,
     selectedEdgeId: state.selectedEdgeId,
+    flowMetadata: state.flowMetadata,
+    flowMetadataErrors: state.flowMetadataErrors,
+    flowMetadataUserEditVersion: state.flowMetadataUserEditVersion,
     graphAttrs: state.graphAttrs,
     graphAttrErrors: state.graphAttrErrors,
     graphAttrsUserEditVersion: state.graphAttrsUserEditVersion,
-    canonicalDefaults: state.canonicalDefaults,
-    canonicalSubgraphs: state.canonicalSubgraphs,
-    canonicalStructureUserEditVersion: state.canonicalStructureUserEditVersion,
     diagnostics: state.diagnostics,
     nodeDiagnostics: state.nodeDiagnostics,
     edgeDiagnostics: state.edgeDiagnostics,

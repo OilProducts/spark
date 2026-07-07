@@ -15,7 +15,7 @@ export function resolveSaveRemediation(
 
     if (saveErrorKind === 'parse_error') {
         return {
-            message: 'Fix DOT syntax issues in Raw DOT mode, then save again.',
+            message: 'Fix YAML syntax issues in Raw YAML mode, then save again.',
             allowRetry: false,
         }
     }

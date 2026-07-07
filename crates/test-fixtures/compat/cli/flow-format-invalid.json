@@ -7,7 +7,7 @@
       "flow",
       "format",
       "--file",
-      "__PROJECT_DIR__/invalid-flow.dot"
+      "__PROJECT_DIR__/invalid-flow.yaml"
     ],
     "cwd": "__WORKTREE__",
     "normalized_argv": [
@@ -17,7 +17,7 @@
       "flow",
       "format",
       "--file",
-      "__PROJECT_DIR__/invalid-flow.dot"
+      "__PROJECT_DIR__/invalid-flow.yaml"
     ]
   },
   "decisions": [
@@ -80,7 +80,7 @@
   },
   "process": {
     "returncode": 1,
-    "stderr": "{\"ok\": false, \"error\": \"invalid DOT: line 1: expected IDENT, got RBRACE\"}\n",
+    "stderr": "{\"ok\": false, \"error\": \"invalid YAML: line 1: expected IDENT, got RBRACE\"}\n",
     "stdout": ""
   },
   "provenance": {

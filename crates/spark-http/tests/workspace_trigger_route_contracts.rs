@@ -17,7 +17,7 @@ use tower::ServiceExt;
 async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let project_dir = temp.path().join("project");
     fs::create_dir_all(&project_dir).expect("project");
     let app = build_app(settings.clone());
@@ -34,7 +34,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run.dot",
+                "flow_name": "ops/run.yaml",
                 "project_path": project_dir,
                 "static_context": {"origin": "compat"}
             },
@@ -127,7 +127,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
 async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let project_dir = temp.path().join("webhook-project");
     fs::create_dir_all(&project_dir).expect("project");
     let app = build_app(settings.clone());
@@ -140,7 +140,7 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run.dot",
+                "flow_name": "ops/run.yaml",
                 "project_path": project_dir,
                 "static_context": {"origin": "route"}
             },
@@ -260,7 +260,7 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
         .expect("read webhook run")
         .expect("webhook run");
     let record = run.record.expect("run record");
-    assert_eq!(record.flow_name, "ops/run.dot");
+    assert_eq!(record.flow_name, "ops/run.yaml");
     assert_eq!(record.project_path, project_dir.to_string_lossy());
     let context = run.checkpoint.expect("checkpoint").context;
     assert_eq!(
@@ -285,8 +285,8 @@ async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run()
 async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknown_flow() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
-    write_flow(&settings, "ops/other.dot");
+    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/other.yaml");
     spark_storage::write_trigger_definition(
         &settings.config_dir,
         &protected_definition("trigger-protected"),
@@ -348,7 +348,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
                 "name": "bad",
                 "enabled": true,
                 "source_type": "webhook",
-                "action": {"flow_name": "ops/run.dot"},
+                "action": {"flow_name": "ops/run.yaml"},
                 "source": {},
                 "extra": true
             })
@@ -372,7 +372,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
             "name": "Unknown flow",
             "enabled": true,
             "source_type": "webhook",
-            "action": {"flow_name": "missing.dot"},
+            "action": {"flow_name": "missing.yaml"},
             "source": {}
         })),
     )
@@ -380,7 +380,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
     assert_eq!(unknown_flow.0, StatusCode::NOT_FOUND);
     assert_eq!(
         unknown_flow.1,
-        json!({"detail": "Unknown flow: missing.dot"})
+        json!({"detail": "Unknown flow: missing.yaml"})
     );
 
     assert!(
@@ -394,7 +394,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
 async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     spark_storage::write_trigger_definition(
         &settings.config_dir,
         &protected_definition("trigger-protected"),
@@ -485,7 +485,7 @@ secret_hash = "hash""#,
         &settings,
         "trigger-unknown-source",
         "unknown",
-        "ops/run.dot",
+        "ops/run.yaml",
         r#"kind = "once"
 run_at = "2026-06-23T10:00:00Z""#,
     );
@@ -493,14 +493,14 @@ run_at = "2026-06-23T10:00:00Z""#,
         &settings,
         "trigger-missing-secret",
         "webhook",
-        "ops/run.dot",
+        "ops/run.yaml",
         r#"webhook_key = "key""#,
     );
     write_persisted_trigger_toml(
         &settings,
         "trigger-invalid-schedule",
         "schedule",
-        "ops/run.dot",
+        "ops/run.yaml",
         r#"kind = "weekly"
 weekdays = ["mon", "noday"]
 hour = 9
@@ -569,7 +569,7 @@ minute = 0"#,
 async fn poll_trigger_headers_use_python_stringification_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.dot");
+    write_flow(&settings, "ops/run.yaml");
     let app = build_app(settings.clone());
 
     let created = request_json(
@@ -579,7 +579,7 @@ async fn poll_trigger_headers_use_python_stringification_contract() {
         Some(json!({
             "name": "Compat poll",
             "source_type": "poll",
-            "action": {"flow_name": "ops/run.dot"},
+            "action": {"flow_name": "ops/run.yaml"},
             "source": {
                 "url": "https://example.test/items",
                 "interval_seconds": 60,
@@ -700,7 +700,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         protected: true,
         source_type: "webhook".to_string(),
         action: TriggerAction {
-            flow_name: "ops/run.dot".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             project_path: Some("/tmp/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
         },
@@ -718,7 +718,7 @@ fn write_flow(settings: &SparkSettings, name: &str) {
     fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
     fs::write(
         path,
-        "digraph flow { start [shape=Mdiamond] done [shape=Msquare] start -> done }\n",
+        "schema_version: '1'\nid: trigger-route\ntitle: Trigger Route\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     )
     .expect("flow");
 }

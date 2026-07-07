@@ -33,7 +33,7 @@
     "body": null,
     "headers": {},
     "method": "GET",
-    "path": "/attractor/api/flows/missing.dot",
+    "path": "/attractor/api/flows/missing.yaml",
     "query": {}
   },
   "requirements": [

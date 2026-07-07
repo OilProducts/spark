@@ -47,6 +47,7 @@ const resetTaskNodeState = () => {
     useStore.setState({
         activeFlow: 'shape-test.dot',
         executionFlow: 'shape-test.dot',
+        flowMetadata: {},
         graphAttrs: {},
         executionGraphAttrs: {},
         nodeDiagnostics: {},
@@ -157,8 +158,9 @@ describe('TaskNode', () => {
                     selected: true,
                     data: {
                         label: 'Task',
+                        kind: 'agent_task',
+                        config: { kind: 'agent_task', prompt: 'Implement the feature' },
                         shape: 'box',
-                        type: 'codergen',
                         prompt: 'Implement the feature',
                     },
                 }}
@@ -183,7 +185,7 @@ describe('TaskNode', () => {
         expect(screen.queryByText('Node Properties')).not.toBeInTheDocument()
     })
 
-    it('shows shape/type drift warnings in the node toolbar', async () => {
+    it('does not expose handler type drift warnings in the node toolbar', async () => {
         renderWithFlowProvider(
             <SingleNodeHarness
                 node={{
@@ -193,8 +195,9 @@ describe('TaskNode', () => {
                     selected: true,
                     data: {
                         label: 'Task',
+                        kind: 'agent_task',
+                        config: { kind: 'agent_task' },
                         shape: 'box',
-                        type: 'wait.human',
                     },
                 }}
             />,
@@ -202,9 +205,7 @@ describe('TaskNode', () => {
 
         fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
 
-        expect(screen.getByTestId('node-toolbar-shape-type-warning')).toHaveTextContent(
-            'Shape box normally maps to codergen',
-        )
+        expect(screen.queryByTestId('node-toolbar-shape-type-warning')).not.toBeInTheDocument()
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
     })
 
@@ -218,8 +219,9 @@ describe('TaskNode', () => {
                     selected: true,
                     data: {
                         label: 'Parallel',
+                        kind: 'parallel',
+                        config: { kind: 'parallel' },
                         shape: 'component',
-                        type: 'parallel',
                         join_policy: 'k_of_n',
                         join_k: '2',
                         join_quorum: '0.75',
@@ -278,8 +280,9 @@ describe('TaskNode', () => {
                     selected: true,
                     data: {
                         label: 'Task',
+                        kind: 'agent_task',
+                        config: { kind: 'agent_task', prompt: 'Implement the feature' },
                         shape: 'box',
-                        type: 'codergen',
                         prompt: 'Implement the feature',
                     },
                 }}

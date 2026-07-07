@@ -44,7 +44,7 @@
       "trigger_definition": {
         "data": {
           "action": {
-            "flow_name": "software-development/implement-change-request.dot",
+            "flow_name": "software-development/implement-change-request.yaml",
             "project_path": "__PROJECT_DIR__",
             "static_context_json": "{\"origin\": \"compat\"}"
           },

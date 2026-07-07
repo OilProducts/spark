@@ -7,7 +7,7 @@
       "flow",
       "format",
       "--file",
-      "__PROJECT_DIR__/messy-write.dot",
+      "__PROJECT_DIR__/messy-write.yaml",
       "--write"
     ],
     "cwd": "__WORKTREE__",
@@ -18,7 +18,7 @@
       "flow",
       "format",
       "--file",
-      "__PROJECT_DIR__/messy-write.dot",
+      "__PROJECT_DIR__/messy-write.yaml",
       "--write"
     ]
   },
@@ -32,7 +32,7 @@
       "formatted_flow": {
         "exists": true,
         "format": "bytes",
-        "path": "__PROJECT_DIR__/messy-write.dot",
+        "path": "__PROJECT_DIR__/messy-write.yaml",
         "size": 151
       }
     },
@@ -40,7 +40,7 @@
       "formatted_flow": {
         "exists": true,
         "format": "bytes",
-        "path": "__PROJECT_DIR__/messy-write.dot",
+        "path": "__PROJECT_DIR__/messy-write.yaml",
         "size": 143
       }
     }
@@ -75,19 +75,19 @@
         "entries": [
           {
             "kind": "file",
-            "path": "invalid-flow.dot",
+            "path": "invalid-flow.yaml",
             "sha256": "38ef56e80d7bceb4eda824163ed8e7d78dc01c811dfeb50b9d88e0e20936836a",
             "size": 30
           },
           {
             "kind": "file",
-            "path": "messy-flow.dot",
+            "path": "messy-flow.yaml",
             "sha256": "8ac837b2a71867000a649e061705c3c4d536bc37f545e4ba705471a6d65b9aa9",
             "size": 143
           },
           {
             "kind": "file",
-            "path": "messy-write.dot",
+            "path": "messy-write.yaml",
             "sha256": "fe8c8a1736ef0a3484ab8912e8c948a2e049408f14e0221bf4058219169ed4e4",
             "size": 151
           },
@@ -99,13 +99,13 @@
           },
           {
             "kind": "file",
-            "path": "valid-flow.dot",
+            "path": "valid-flow.yaml",
             "sha256": "3db7ea20fd3e84422164f2ab3a61316664e5ce15506bd9044ac4cbe16e6e2702",
             "size": 142
           },
           {
             "kind": "file",
-            "path": "validation-error-flow.dot",
+            "path": "validation-error-flow.yaml",
             "sha256": "28f0f739c181a78768527e122bf3d73293be8a70b1a29d8d62aefc29e214643f",
             "size": 68
           }
@@ -119,19 +119,19 @@
         "entries": [
           {
             "kind": "file",
-            "path": "invalid-flow.dot",
+            "path": "invalid-flow.yaml",
             "sha256": "38ef56e80d7bceb4eda824163ed8e7d78dc01c811dfeb50b9d88e0e20936836a",
             "size": 30
           },
           {
             "kind": "file",
-            "path": "messy-flow.dot",
+            "path": "messy-flow.yaml",
             "sha256": "8ac837b2a71867000a649e061705c3c4d536bc37f545e4ba705471a6d65b9aa9",
             "size": 143
           },
           {
             "kind": "file",
-            "path": "messy-write.dot",
+            "path": "messy-write.yaml",
             "sha256": "8ac837b2a71867000a649e061705c3c4d536bc37f545e4ba705471a6d65b9aa9",
             "size": 143
           },
@@ -143,13 +143,13 @@
           },
           {
             "kind": "file",
-            "path": "valid-flow.dot",
+            "path": "valid-flow.yaml",
             "sha256": "3db7ea20fd3e84422164f2ab3a61316664e5ce15506bd9044ac4cbe16e6e2702",
             "size": 142
           },
           {
             "kind": "file",
-            "path": "validation-error-flow.dot",
+            "path": "validation-error-flow.yaml",
             "sha256": "28f0f739c181a78768527e122bf3d73293be8a70b1a29d8d62aefc29e214643f",
             "size": 68
           }

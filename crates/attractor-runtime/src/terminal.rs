@@ -1,4 +1,4 @@
-use attractor_core::{attr_bool, attr_text, AttractorContext, DotGraph};
+use attractor_core::{AttractorContext, FlowDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,7 +51,7 @@ pub fn invalid_workflow_outcome_reason(context: &AttractorContext) -> String {
 }
 
 pub fn check_goal_gates(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     context: &AttractorContext,
     completed_nodes: &[String],
 ) -> GoalGateCheck {
@@ -60,10 +60,10 @@ pub fn check_goal_gates(
     };
 
     for node_id in completed_nodes {
-        let Some(node) = graph.nodes.get(node_id) else {
+        let Some(node) = flow.nodes.get(node_id) else {
             continue;
         };
-        if !attr_bool(&node.attrs, "goal_gate", false) {
+        if !crate::flow_runtime::node_attr_bool(node, "goal_gate", false) {
             continue;
         }
         let status = statuses
@@ -96,11 +96,11 @@ impl GoalGateCheck {
     }
 }
 
-pub fn resolve_failure_retry_target(graph: &DotGraph, node_id: &str) -> Option<String> {
-    let node = graph.nodes.get(node_id)?;
+pub fn resolve_failure_retry_target(flow: &FlowDefinition, node_id: &str) -> Option<String> {
+    let node = flow.nodes.get(node_id)?;
     for key in ["retry_target", "fallback_retry_target"] {
-        if let Some(target) = attr_text(&node.attrs, key) {
-            if graph.nodes.contains_key(&target) {
+        if let Some(target) = crate::flow_runtime::node_attr_text(node, key) {
+            if flow.nodes.contains_key(&target) {
                 return Some(target);
             }
         }
@@ -108,15 +108,18 @@ pub fn resolve_failure_retry_target(graph: &DotGraph, node_id: &str) -> Option<S
     None
 }
 
-pub fn resolve_goal_gate_retry_target(graph: &DotGraph, failed_gate_node: &str) -> Option<String> {
-    resolve_failure_retry_target(graph, failed_gate_node)
-        .or_else(|| resolve_graph_retry_target(graph))
+pub fn resolve_goal_gate_retry_target(
+    flow: &FlowDefinition,
+    failed_gate_node: &str,
+) -> Option<String> {
+    resolve_failure_retry_target(flow, failed_gate_node)
+        .or_else(|| resolve_graph_retry_target(flow))
 }
 
-fn resolve_graph_retry_target(graph: &DotGraph) -> Option<String> {
+fn resolve_graph_retry_target(flow: &FlowDefinition) -> Option<String> {
     for key in ["retry_target", "fallback_retry_target"] {
-        if let Some(target) = attr_text(&graph.graph_attrs, key) {
-            if graph.nodes.contains_key(&target) {
+        if let Some(target) = crate::flow_runtime::flow_attr_text(flow, key) {
+            if flow.nodes.contains_key(&target) {
                 return Some(target);
             }
         }
@@ -124,11 +127,10 @@ fn resolve_graph_retry_target(graph: &DotGraph) -> Option<String> {
     None
 }
 
-pub fn is_goal_gate_node(graph: &DotGraph, node_id: &str) -> bool {
-    graph
-        .nodes
+pub fn is_goal_gate_node(flow: &FlowDefinition, node_id: &str) -> bool {
+    flow.nodes
         .get(node_id)
-        .is_some_and(|node| attr_bool(&node.attrs, "goal_gate", false))
+        .is_some_and(|node| crate::flow_runtime::node_attr_bool(node, "goal_gate", false))
 }
 
 fn context_optional_text(context: &AttractorContext, key: &str) -> Option<String> {

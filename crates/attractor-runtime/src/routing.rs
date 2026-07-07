@@ -1,14 +1,13 @@
 use std::str::FromStr;
 
 use attractor_core::{
-    attr_string, is_exact_outcome_fail_condition, node_shape, normalize_label,
-    routing_edge_from_dot_edge, select_failure_route_edge_with_context, AttractorContext, DotGraph,
-    Outcome, OutcomeStatus, RoutingEdge,
+    is_exact_outcome_fail_condition, normalize_label, select_failure_route_edge_with_context,
+    AttractorContext, FlowDefinition, Outcome, OutcomeStatus, RoutingEdge,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::context::{OUTCOME_KEY, PREFERRED_LABEL_KEY};
-use crate::error::{Result, RuntimeStorageError};
+use crate::error::Result;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NextNodeSelection {
@@ -20,57 +19,20 @@ pub struct NextNodeSelection {
     pub reason: String,
 }
 
-pub fn resolve_start_node(graph: &DotGraph) -> Result<String> {
-    let starts = graph
-        .nodes
-        .values()
-        .filter(|node| node_shape(node) == "Mdiamond")
-        .map(|node| node.node_id.clone())
-        .collect::<Vec<_>>();
-    match starts.as_slice() {
-        [start] => Ok(start.clone()),
-        [] => {
-            for candidate in ["start", "Start"] {
-                if graph.nodes.contains_key(candidate) {
-                    return Ok(candidate.to_string());
-                }
-            }
-            Err(RuntimeStorageError::InvalidRuntimeGraph {
-                reason: "No start node found; expected shape=Mdiamond or node id start/Start"
-                    .to_string(),
-            })
-        }
-        _ => Err(RuntimeStorageError::InvalidRuntimeGraph {
-            reason: format!("Ambiguous start nodes: {}", sorted_join(starts)),
-        }),
-    }
+pub fn resolve_start_node(flow: &FlowDefinition) -> Result<String> {
+    crate::flow_runtime::resolve_start_node(flow)
 }
 
-pub fn is_exit_node(graph: &DotGraph, node_id: &str) -> bool {
-    let shape_exit_nodes = graph
-        .nodes
-        .values()
-        .filter(|node| node_shape(node) == "Msquare")
-        .map(|node| node.node_id.as_str())
-        .collect::<Vec<_>>();
-    if !shape_exit_nodes.is_empty() {
-        return shape_exit_nodes.contains(&node_id);
-    }
-    matches!(node_id, "exit" | "end" | "Exit" | "End")
+pub fn is_exit_node(flow: &FlowDefinition, node_id: &str) -> bool {
+    crate::flow_runtime::is_exit_node(flow, node_id)
 }
 
-pub fn outgoing_routing_edges(graph: &DotGraph, node_id: &str) -> Result<Vec<RoutingEdge>> {
-    graph
-        .edges
-        .iter()
-        .filter(|edge| edge.source == node_id)
-        .map(routing_edge_from_dot_edge)
-        .collect::<attractor_core::Result<Vec<_>>>()
-        .map_err(RuntimeStorageError::from)
+pub fn outgoing_routing_edges(flow: &FlowDefinition, node_id: &str) -> Result<Vec<RoutingEdge>> {
+    crate::flow_runtime::outgoing_routing_edges(flow, node_id)
 }
 
 pub fn routing_outcome_for_node(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     outcome: &Outcome,
     context: &AttractorContext,
@@ -83,23 +45,17 @@ pub fn routing_outcome_for_node(
         .get(PREFERRED_LABEL_KEY)
         .and_then(|value| value.as_str())
         .unwrap_or_default();
-    routing_outcome_for_node_with_prior(
-        graph,
-        node_id,
-        outcome,
-        prior_status,
-        prior_preferred_label,
-    )
+    routing_outcome_for_node_with_prior(flow, node_id, outcome, prior_status, prior_preferred_label)
 }
 
 pub fn routing_outcome_for_node_with_prior(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     outcome: &Outcome,
     prior_status: Option<OutcomeStatus>,
     prior_preferred_label: &str,
 ) -> Outcome {
-    if !is_conditional_node(graph, node_id) {
+    if !is_conditional_node(flow, node_id) {
         return outcome.clone();
     }
     let Some(prior_status) = prior_status else {
@@ -119,7 +75,7 @@ pub fn routing_outcome_for_node_with_prior(
 }
 
 pub fn select_next_node(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     outcome: &Outcome,
     context: &AttractorContext,
@@ -133,7 +89,7 @@ pub fn select_next_node(
         .and_then(|value| value.as_str())
         .unwrap_or_default();
     select_next_node_with_prior(
-        graph,
+        flow,
         node_id,
         outcome,
         context,
@@ -143,16 +99,16 @@ pub fn select_next_node(
 }
 
 pub fn select_next_node_with_prior(
-    graph: &DotGraph,
+    flow: &FlowDefinition,
     node_id: &str,
     outcome: &Outcome,
     context: &AttractorContext,
     prior_status: Option<OutcomeStatus>,
     prior_preferred_label: &str,
 ) -> Result<NextNodeSelection> {
-    let routing_edges = outgoing_routing_edges(graph, node_id)?;
+    let routing_edges = outgoing_routing_edges(flow, node_id)?;
     let routing_outcome = routing_outcome_for_node_with_prior(
-        graph,
+        flow,
         node_id,
         outcome,
         prior_status,
@@ -174,15 +130,8 @@ pub fn select_next_node_with_prior(
     })
 }
 
-pub fn is_conditional_node(graph: &DotGraph, node_id: &str) -> bool {
-    let Some(node) = graph.nodes.get(node_id) else {
-        return false;
-    };
-    let explicit_type = attr_string(&node.attrs, "type");
-    if !explicit_type.trim().is_empty() {
-        return explicit_type.trim() == "conditional";
-    }
-    node_shape(node) == "diamond"
+pub fn is_conditional_node(flow: &FlowDefinition, node_id: &str) -> bool {
+    crate::flow_runtime::is_conditional_node(flow, node_id)
 }
 
 fn selection_reason(edge: &RoutingEdge, outcome: &Outcome) -> String {
@@ -207,9 +156,4 @@ fn selection_reason(edge: &RoutingEdge, outcome: &Outcome) -> String {
         return "suggested_next_id".to_string();
     }
     "unconditional".to_string()
-}
-
-fn sorted_join(mut values: Vec<String>) -> String {
-    values.sort();
-    values.join(", ")
 }

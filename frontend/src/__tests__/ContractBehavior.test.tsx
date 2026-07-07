@@ -231,7 +231,7 @@ const resetContractState = () => {
     ...state,
     viewMode: 'editor',
     activeProjectPath: '/tmp/project-contract-behavior',
-    activeFlow: 'contract-behavior.dot',
+    activeFlow: 'contract-behavior.yaml',
     executionFlow: null,
     selectedRunId: null,
     selectedRunRecord: null,
@@ -405,8 +405,7 @@ describe('Frontend contract behavior', () => {
       useStore.getState().setSelectedNodeId('manager')
       useStore.getState().setSelectedEdgeId(null)
       useStore.getState().setGraphAttrs({
-        'stack.child_dotfile': 'child/flow.dot',
-        'stack.child_workdir': '/tmp/child',
+        title: 'Manager Flow',
       })
     })
 
@@ -416,8 +415,10 @@ describe('Frontend contract behavior', () => {
         position: { x: 0, y: 0 },
         data: {
           label: 'Manager',
+          kind: 'subflow',
+          config: { kind: 'subflow', flow_ref: 'child/flow.yaml' },
           shape: 'house',
-          type: 'stack.manager_loop',
+          flow_ref: 'child/flow.yaml',
           'manager.poll_interval': '25ms',
           'manager.max_cycles': 3,
           'manager.stop_condition': 'child.outcome == "success"',
@@ -437,14 +438,14 @@ describe('Frontend contract behavior', () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
         if (url.endsWith('/attractor/api/flows')) {
-          return new Response(JSON.stringify(['contract-behavior.dot']), {
+          return new Response(JSON.stringify(['contract-behavior.yaml']), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
         if (url.includes('/attractor/api/flows/')) {
           return jsonResponse({
-            name: 'contract-behavior.dot',
+            name: 'contract-behavior.yaml',
             content: 'digraph G { start [shape=Mdiamond]; done [shape=Msquare]; start -> done; }',
           })
         }
@@ -504,13 +505,13 @@ describe('Frontend contract behavior', () => {
   })
 
   it('[CID:12.1.02] provides typed endpoint adapters with runtime schema validation for required JSON responses', () => {
-    expect(parseFlowListResponse(['a.dot', 'nested/b.dot'])).toEqual(['a.dot', 'nested/b.dot'])
+    expect(parseFlowListResponse(['a.yaml', 'nested/b.yaml'])).toEqual(['a.yaml', 'nested/b.yaml'])
     expect(() => parseFlowListResponse({})).toThrow(ApiSchemaError)
     expect(parseFlowPayloadResponse({ content: 'digraph G {}' })).toEqual({ name: '', content: 'digraph G {}' })
     expect(() => parseFlowPayloadResponse({})).toThrow(ApiSchemaError)
     expect(parseWorkspaceFlowListResponse([
       {
-        name: 'test-planning.dot',
+        name: 'test-planning.yaml',
         title: 'Implement From Plan',
         description: 'Snapshot a plan file, implement it, and iterate until complete.',
         launch_policy: null,
@@ -518,7 +519,7 @@ describe('Frontend contract behavior', () => {
       },
     ])).toMatchObject([
       {
-        name: 'test-planning.dot',
+        name: 'test-planning.yaml',
         title: 'Implement From Plan',
         description: 'Snapshot a plan file, implement it, and iterate until complete.',
         launch_policy: null,
@@ -527,13 +528,13 @@ describe('Frontend contract behavior', () => {
     ])
     expect(() => parseWorkspaceFlowListResponse({})).toThrow(ApiSchemaError)
     expect(parseWorkspaceFlowResponse({
-      name: 'test-planning.dot',
+      name: 'test-planning.yaml',
       title: 'Implement From Plan',
       description: 'Snapshot a plan file, implement it, and iterate until complete.',
       launch_policy: 'trigger_only',
       effective_launch_policy: 'trigger_only',
     })).toMatchObject({
-      name: 'test-planning.dot',
+      name: 'test-planning.yaml',
       launch_policy: 'trigger_only',
       effective_launch_policy: 'trigger_only',
     })
@@ -546,7 +547,7 @@ describe('Frontend contract behavior', () => {
       run_id: 'run-1',
       status: 'completed',
       outcome: 'success',
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       working_directory: '/tmp/project-contract-behavior/workspace',
       project_path: '/tmp/project-contract-behavior',
       git_branch: 'main',
@@ -589,7 +590,7 @@ describe('Frontend contract behavior', () => {
       continued_from_run_id: 'run-parent',
       continued_from_node: 'Audit Milestone',
       continued_from_flow_mode: 'snapshot',
-      continued_from_flow_name: 'implement-spec.dot',
+      continued_from_flow_name: 'implement-spec.yaml',
     })).toMatchObject({
       pipeline_id: 'run-1',
       run_id: 'run-1',
@@ -662,15 +663,15 @@ describe('Frontend contract behavior', () => {
           })
         }
         if (url === '/attractor/api/flows') {
-          return jsonResponse(['alpha.dot'])
+          return jsonResponse(['alpha.yaml'])
         }
-        if (url === '/attractor/api/flows/alpha%20flow.dot') {
-          return jsonResponse({ name: 'alpha flow.dot', content: 'digraph G {}' })
+        if (url === '/attractor/api/flows/alpha%20flow.yaml') {
+          return jsonResponse({ name: 'alpha flow.yaml', content: 'digraph G {}' })
         }
         if (url === '/workspace/api/flows?surface=human') {
           return jsonResponse([
             {
-              name: 'software-development/implement-change-request.dot',
+              name: 'software-development/implement-change-request.yaml',
               title: 'Implement From Plan',
               description: 'Snapshot a plan file, implement it, and iterate until complete.',
               launch_policy: null,
@@ -678,21 +679,21 @@ describe('Frontend contract behavior', () => {
             },
           ])
         }
-        if (url === '/workspace/api/flows/alpha%20flow.dot?surface=human') {
+        if (url === '/workspace/api/flows/alpha%20flow.yaml?surface=human') {
           return jsonResponse({
-            name: 'alpha flow.dot',
+            name: 'alpha flow.yaml',
             title: 'Alpha Flow',
             description: 'Run the alpha workflow.',
             launch_policy: 'agent_requestable',
             effective_launch_policy: 'agent_requestable',
           })
         }
-        if (url === '/workspace/api/flows/alpha%20flow.dot/raw?surface=human') {
+        if (url === '/workspace/api/flows/alpha%20flow.yaml/raw?surface=human') {
           return new Response('digraph G {}', { status: 200 })
         }
-        if (url === '/workspace/api/flows/alpha%20flow.dot/launch-policy' && method === 'PUT') {
+        if (url === '/workspace/api/flows/alpha%20flow.yaml/launch-policy' && method === 'PUT') {
           return jsonResponse({
-            name: 'alpha flow.dot',
+            name: 'alpha flow.yaml',
             launch_policy: 'agent_requestable',
             effective_launch_policy: 'agent_requestable',
           })
@@ -718,24 +719,24 @@ describe('Frontend contract behavior', () => {
       roots: [],
       entries: [{ name: 'child', path: '/tmp/project one/child', is_dir: true }],
     })
-    await expect(fetchFlowListValidated()).resolves.toEqual(['alpha.dot'])
-    await expect(fetchFlowPayloadValidated('alpha flow.dot')).resolves.toEqual({
-      name: 'alpha flow.dot',
+    await expect(fetchFlowListValidated()).resolves.toEqual(['alpha.yaml'])
+    await expect(fetchFlowPayloadValidated('alpha flow.yaml')).resolves.toEqual({
+      name: 'alpha flow.yaml',
       content: 'digraph G {}',
     })
     await expect(fetchWorkspaceFlowListValidated()).resolves.toMatchObject([
-      expect.objectContaining({ name: 'software-development/implement-change-request.dot' }),
+      expect.objectContaining({ name: 'software-development/implement-change-request.yaml' }),
     ])
-    await expect(fetchWorkspaceFlowValidated('alpha flow.dot')).resolves.toMatchObject({
-      name: 'alpha flow.dot',
+    await expect(fetchWorkspaceFlowValidated('alpha flow.yaml')).resolves.toMatchObject({
+      name: 'alpha flow.yaml',
       effective_launch_policy: 'agent_requestable',
     })
-    await expect(fetchWorkspaceFlowRawValidated('alpha flow.dot')).resolves.toBe('digraph G {}')
-    await expect(updateWorkspaceFlowLaunchPolicyValidated('alpha flow.dot', {
+    await expect(fetchWorkspaceFlowRawValidated('alpha flow.yaml')).resolves.toBe('digraph G {}')
+    await expect(updateWorkspaceFlowLaunchPolicyValidated('alpha flow.yaml', {
       launch_policy: 'agent_requestable',
       execution_lock: null,
     })).resolves.toMatchObject({
-      name: 'alpha flow.dot',
+      name: 'alpha flow.yaml',
       launch_policy: 'agent_requestable',
     })
     await expect(fetchConversationSnapshotValidated('conversation 1', '/tmp/project one')).resolves.toMatchObject({
@@ -781,7 +782,7 @@ describe('Frontend contract behavior', () => {
     const runId = 'run-contract-degraded'
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -844,7 +845,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -981,8 +982,8 @@ describe('Frontend contract behavior', () => {
   })
 
   it('[CID:12.2.03] keeps save paths non-destructive when save response shape drifts', async () => {
-    const initialDot = 'digraph contract_behavior { start [label="Start"]; }'
-    const editedDot = 'digraph contract_behavior { start [label="Start"]; start -> end; end [label="End"]; }'
+    const initialYaml = 'digraph contract_behavior { start [label="Start"]; }'
+    const editedYaml = 'digraph contract_behavior { start [label="Start"]; start -> end; end [label="End"]; }'
     const previewPayload = {
       status: 'ok',
       graph: {
@@ -1007,8 +1008,8 @@ describe('Frontend contract behavior', () => {
     let previewRequestCount = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
-        return jsonResponse({ content: initialDot })
+      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
         previewRequestCount += 1
@@ -1032,17 +1033,17 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    const rawEditor = await screen.findByTestId('raw-dot-editor')
-    fireEvent.change(rawEditor, { target: { value: editedDot } })
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    const rawEditor = await screen.findByTestId('raw-yaml-editor')
+    fireEvent.change(rawEditor, { target: { value: editedYaml } })
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('raw-dot-editor')).toBeVisible()
+      expect(screen.getByTestId('raw-yaml-editor')).toBeVisible()
     })
-    expect((screen.getByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toBe(editedDot)
-    expect(screen.getByTestId('raw-dot-handoff-error')).toHaveTextContent(
+    expect((screen.getByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toBe(editedYaml)
+    expect(screen.getByTestId('raw-yaml-handoff-error')).toHaveTextContent(
       'Flow save failed before confirmation from backend.',
     )
     expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
@@ -1108,7 +1109,7 @@ describe('Frontend contract behavior', () => {
     const relativeWorkingDirectoryPayload = buildPipelineStartPayload(
       {
         projectPath: '/tmp/project-contract-behavior',
-        flowSource: 'contract-behavior.dot',
+        flowSource: 'contract-behavior.yaml',
         workingDirectory: ' ./workspace/../build ',
         model: null,
       },
@@ -1120,7 +1121,7 @@ describe('Frontend contract behavior', () => {
     const blankWorkingDirectoryPayload = buildPipelineStartPayload(
       {
         projectPath: '/tmp/project-contract-behavior',
-        flowSource: 'contract-behavior.dot',
+        flowSource: 'contract-behavior.yaml',
         workingDirectory: '   ',
         model: null,
       },
@@ -1151,7 +1152,7 @@ describe('Frontend contract behavior', () => {
     const startPayload = buildPipelineStartPayload(
       {
         projectPath: '/tmp/project-contract-behavior',
-        flowSource: 'contract-behavior.dot',
+        flowSource: 'contract-behavior.yaml',
         workingDirectory: '/tmp/project-contract-behavior',
         model: null,
       },
@@ -1164,7 +1165,7 @@ describe('Frontend contract behavior', () => {
     const localRunSnapshot = {
       run_id: 'run-local-snapshot',
       pipeline_id: 'run-local-snapshot',
-      flow_name: 'local.dot',
+      flow_name: 'local.yaml',
       status: 'completed',
       outcome: 'success',
       working_directory: '/control/project',
@@ -1297,7 +1298,7 @@ describe('Frontend contract behavior', () => {
           commit: 'abc123def456',
         })
       }
-      if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
+      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: 'digraph BuildContract { start -> end }' })
       }
       if (url.endsWith('/attractor/pipelines') && init?.method === 'POST') {
@@ -1312,7 +1313,7 @@ describe('Frontend contract behavior', () => {
         ...state,
         viewMode: 'execution',
         activeProjectPath: '/tmp/project-contract-behavior',
-        executionFlow: 'contract-behavior.dot',
+        executionFlow: 'contract-behavior.yaml',
         projectSessionsByPath: {
           ...state.projectSessionsByPath,
           '/tmp/project-contract-behavior': {
@@ -1380,8 +1381,9 @@ describe('Frontend contract behavior', () => {
 
     expect(screen.getByLabelText('Model')).toBeVisible()
     expect(screen.getByLabelText('Working Directory')).toBeVisible()
+    expect(screen.getByLabelText('Title')).toBeVisible()
+    expect(screen.getByLabelText('Description')).toBeVisible()
     expect(screen.getByLabelText('Goal')).toBeVisible()
-    expect(screen.getByLabelText('Label')).toBeVisible()
     expect(screen.getByLabelText('Default Max Retries')).toBeVisible()
     expect(screen.getByLabelText('Default Fidelity')).toBeVisible()
 
@@ -1389,13 +1391,10 @@ describe('Frontend contract behavior', () => {
     expect(advancedToggle.className).toContain('focus-visible')
     fireEvent.click(advancedToggle)
 
-    expect(screen.getByLabelText('Model Stylesheet')).toBeVisible()
-    expect(screen.getByLabelText('Retry Target')).toBeVisible()
-    expect(screen.getByLabelText('Fallback Retry Target')).toBeVisible()
-    expect(screen.getByLabelText('Stack Child Dotfile')).toBeVisible()
-    expect(screen.getByLabelText('Stack Child Workdir')).toBeVisible()
-    expect(screen.getByLabelText('Tool Hooks Pre')).toBeVisible()
-    expect(screen.getByLabelText('Tool Hooks Post')).toBeVisible()
+    expect(screen.getByTestId('graph-extension-attrs-editor')).toBeVisible()
+    expect(screen.queryByLabelText('Model Stylesheet')).not.toBeInTheDocument()
+    expect(screen.getByTestId('graph-extension-attr-new-key')).toBeVisible()
+    expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
     expect(screen.getByLabelText('Default LLM Provider')).toBeVisible()
     expect(screen.getByLabelText('Default LLM Model')).toBeVisible()
     expect(screen.getByLabelText('Default Reasoning Effort')).toBeVisible()
@@ -1415,7 +1414,7 @@ describe('Frontend contract behavior', () => {
         ...state,
         viewMode: 'execution',
         activeProjectPath: '/tmp/project-contract-behavior',
-        executionFlow: 'contract-behavior.dot',
+        executionFlow: 'contract-behavior.yaml',
         selectedRunId: 'run-focus-audit',
         runtimeStatus: 'running',
       }))
@@ -1514,7 +1513,7 @@ describe('Frontend contract behavior', () => {
       const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
       const runRecord = {
         run_id: runId,
-        flow_name: 'contract-behavior.dot',
+        flow_name: 'contract-behavior.yaml',
         status: 'running',
         outcome: null,
         working_directory: '/tmp/project-contract-behavior/workspace',
@@ -1745,7 +1744,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -1763,9 +1762,9 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
-        if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
+        if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
           return jsonResponse({
-            name: 'contract-behavior.dot',
+            name: 'contract-behavior.yaml',
             content: 'digraph G { start [label="Start"]; end [label="End"]; start -> end; }',
           })
         }
@@ -1837,7 +1836,7 @@ describe('Frontend contract behavior', () => {
       useStore.setState((state) => ({
         ...state,
         viewMode: 'editor',
-        activeFlow: 'contract-behavior.dot',
+        activeFlow: 'contract-behavior.yaml',
       }))
     })
 
@@ -1914,9 +1913,9 @@ describe('Frontend contract behavior', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
         const url = requestUrl(input)
-        if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
+        if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
           return jsonResponse({
-            name: 'contract-behavior.dot',
+            name: 'contract-behavior.yaml',
             content: 'digraph G { start -> end; }',
           })
         }
@@ -1940,7 +1939,7 @@ describe('Frontend contract behavior', () => {
       useStore.setState((state) => ({
         ...state,
         viewMode: 'editor',
-        activeFlow: 'contract-behavior.dot',
+        activeFlow: 'contract-behavior.yaml',
       }))
     })
 
@@ -1972,7 +1971,7 @@ describe('Frontend contract behavior', () => {
     const totalEvents = 235
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -2217,12 +2216,12 @@ describe('Frontend contract behavior', () => {
       }
       if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-alpha')) {
         return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'alpha.dot', projectPath: '/tmp/project-alpha', runId: 'run-alpha' })],
+          runs: [buildRunRecord({ flowName: 'alpha.yaml', projectPath: '/tmp/project-alpha', runId: 'run-alpha' })],
         })
       }
       if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-beta')) {
         return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'beta.dot', projectPath: '/tmp/project-beta', runId: 'run-beta' })],
+          runs: [buildRunRecord({ flowName: 'beta.yaml', projectPath: '/tmp/project-beta', runId: 'run-beta' })],
         })
       }
       if (url.includes('/attractor/runs')) {
@@ -2281,7 +2280,7 @@ describe('Frontend contract behavior', () => {
     })
     expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-beta')
     expect(screen.getByText('Run history for the active project.')).toBeVisible()
-    expect(screen.getByText('beta.dot')).toBeVisible()
+    expect(screen.getByText('beta.yaml')).toBeVisible()
   })
 
   it('[CID:14.0.02] enforces unique project directories while allowing missing Git metadata', async () => {
@@ -2460,12 +2459,24 @@ describe('Frontend contract behavior', () => {
       {
         id: 'task',
         position: { x: 0, y: 0 },
-        data: { label: 'Task', shape: 'box', type: 'codergen', prompt: 'Do work' },
+        data: {
+          label: 'Task',
+          kind: 'agent_task',
+          config: { kind: 'agent_task', prompt: 'Do work' },
+          shape: 'box',
+          prompt: 'Do work',
+        },
       },
       {
         id: 'gate',
         position: { x: 150, y: 0 },
-        data: { label: 'Gate', shape: 'hexagon', type: 'wait.human', prompt: 'Choose' },
+        data: {
+          label: 'Gate',
+          kind: 'human_gate',
+          config: { kind: 'human_gate', prompt: 'Choose' },
+          shape: 'hexagon',
+          prompt: 'Choose',
+        },
       },
     ]
 
@@ -2498,8 +2509,8 @@ describe('Frontend contract behavior', () => {
   it('[CID:6.2.01] renders manager-loop authoring controls in sidebar inspector', async () => {
     renderManagerSidebarInspector()
     expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
-    expect(screen.getByRole('option', { name: 'Manager Loop' })).toBeInTheDocument()
-    expect(document.querySelector('#node-handler-type-options option[value="stack.manager_loop"]')).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Subflow' })).toBeInTheDocument()
+    expect(document.querySelector('#node-handler-type-options option[value="stack.manager_loop"]')).toBeNull()
   })
 
   it('[CID:6.7.02] renders manager-loop control fields in sidebar inspector', async () => {
@@ -2519,23 +2530,21 @@ describe('Frontend contract behavior', () => {
 
     const childLinkage = screen.getByTestId('manager-child-linkage')
     expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
-    expect(childLinkage).toHaveTextContent('Child Pipeline Linkage')
-    expect(childLinkage).toHaveTextContent('stack.child_dotfile')
-    expect(childLinkage).toHaveTextContent('child/flow.dot')
-    expect(childLinkage).toHaveTextContent('stack.child_workdir')
-    expect(childLinkage).toHaveTextContent('/tmp/child')
+    expect(childLinkage).toHaveTextContent('Child Flow Linkage')
+    expect(childLinkage).toHaveTextContent('flow_ref')
+    expect(childLinkage).toHaveTextContent('child/flow.yaml')
 
     fireEvent.click(screen.getByTestId('manager-open-child-settings'))
     expect(useStore.getState().selectedNodeId).toBeNull()
     expect(useStore.getState().selectedEdgeId).toBeNull()
   })
 
-  it('[CID:6.5.02] renders stylesheet diagnostics feedback in graph settings', async () => {
+  it('[CID:6.5.02] omits graph stylesheet diagnostics from FlowDefinition settings', async () => {
     const user = userEvent.setup()
     renderWithFlowProvider(<GraphSettings inline />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    expect(screen.getByTestId('graph-model-stylesheet-selector-guidance')).toBeVisible()
+    expect(screen.queryByTestId('graph-model-stylesheet-selector-guidance')).not.toBeInTheDocument()
 
     act(() => {
       useStore.getState().setDiagnostics([
@@ -2548,20 +2557,16 @@ describe('Frontend contract behavior', () => {
       ])
     })
 
-    expect(screen.getByTestId('graph-model-stylesheet-diagnostics')).toHaveTextContent(
-      'Invalid stylesheet selector syntax.',
-    )
+    expect(screen.queryByTestId('graph-model-stylesheet-diagnostics')).not.toBeInTheDocument()
   })
 
-  it('[CID:6.6.01] renders graph-scope tool hook fields in graph settings', async () => {
+  it('[CID:6.6.01] omits graph-scope tool hook fields from FlowDefinition settings', async () => {
     const user = userEvent.setup()
     renderWithFlowProvider(<GraphSettings inline />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    const preHookInput = screen.getByTestId('graph-attr-input-tool.hooks.pre')
-    const postHookInput = screen.getByTestId('graph-attr-input-tool.hooks.post')
-    expect(preHookInput).toBeVisible()
-    expect(postHookInput).toBeVisible()
+    expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-attr-input-tool.hooks.post')).not.toBeInTheDocument()
   })
 
   it('[CID:6.6.02] renders node-level tool hook override controls in sidebar and node toolbar', async () => {
@@ -2573,8 +2578,9 @@ describe('Frontend contract behavior', () => {
 
     const toolNodeData = {
       label: 'Tool',
+      kind: 'tool',
+      config: { kind: 'tool', command: 'echo run' },
       shape: 'parallelogram',
-      type: 'tool',
       'tool.command': 'echo run',
       'tool.hooks.pre': 'echo node pre',
       'tool.hooks.post': 'echo node post',
@@ -2619,18 +2625,13 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('node-toolbar-attr-input-tool.artifacts.stderr')).toBeVisible()
   })
 
-  it('[CID:6.6.03] renders tool hook warning surfaces in graph settings and node editors', async () => {
+  it('[CID:6.6.03] renders tool hook warning surfaces in node editors only', async () => {
     const user = userEvent.setup()
     renderWithFlowProvider(<GraphSettings inline />)
 
     await user.click(screen.getByTestId('graph-advanced-toggle'))
-    fireEvent.change(screen.getByTestId('graph-attr-input-tool.hooks.pre'), { target: { value: "echo 'unterminated" } })
-    fireEvent.change(screen.getByTestId('graph-attr-input-tool.hooks.post'), { target: { value: 'echo "unterminated' } })
-
-    await waitFor(() => {
-      expect(screen.getByTestId('graph-attr-warning-tool.hooks.pre')).toHaveTextContent('single quote')
-      expect(screen.getByTestId('graph-attr-warning-tool.hooks.post')).toHaveTextContent('double quote')
-    })
+    expect(screen.queryByTestId('graph-attr-input-tool.hooks.pre')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('graph-attr-warning-tool.hooks.pre')).not.toBeInTheDocument()
     act(() => {
       cleanup()
       resetContractState()
@@ -2640,8 +2641,9 @@ describe('Frontend contract behavior', () => {
 
     const toolNodeData = {
       label: 'Tool',
+      kind: 'tool',
+      config: { kind: 'tool', command: 'echo run' },
       shape: 'parallelogram',
-      type: 'tool',
       'tool.command': 'echo run',
       'tool.hooks.pre': 'echo hi\necho there',
       'tool.hooks.post': "echo 'unterminated",
@@ -2679,7 +2681,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('node-toolbar-attr-warning-tool.hooks.post')).toHaveTextContent('single quote')
   })
 
-  it('[CID:6.7.01] renders manager-loop shape and type options in task node toolbar', () => {
+  it('[CID:6.7.01] renders manager-loop shape controls in task node toolbar without handler overrides', () => {
     resetContractState()
     renderTaskNode({
       id: 'manager',
@@ -2688,8 +2690,10 @@ describe('Frontend contract behavior', () => {
       selected: true,
       data: {
         label: 'Manager',
+        kind: 'subflow',
+        config: { kind: 'subflow', flow_ref: 'child/flow.yaml' },
         shape: 'house',
-        type: 'stack.manager_loop',
+        flow_ref: 'child/flow.yaml',
         'manager.poll_interval': '25ms',
         'manager.max_cycles': 3,
         'manager.stop_condition': 'child.outcome == "success"',
@@ -2701,7 +2705,7 @@ describe('Frontend contract behavior', () => {
 
     fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
     expect(screen.getByRole('option', { name: 'Manager Loop' })).toBeInTheDocument()
-    expect(document.querySelector('#node-handler-type-options-manager option[value="stack.manager_loop"]')).toBeTruthy()
+    expect(document.querySelector('#node-handler-type-options-manager option[value="stack.manager_loop"]')).toBeNull()
     expect(screen.getByText('Manager Poll Interval')).toBeVisible()
     expect(screen.getByText('Manager Max Cycles')).toBeVisible()
     expect(screen.getByText('Manager Stop Condition')).toBeVisible()
@@ -2719,7 +2723,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -2862,7 +2866,7 @@ describe('Frontend contract behavior', () => {
           nodeId: 'review_gate',
           prompt: pendingPrompt,
           options: [{ label: 'Approve', value: 'approve' }],
-          flowName: 'contract-behavior.dot',
+          flowName: 'contract-behavior.yaml',
         },
       }))
     })
@@ -2881,7 +2885,7 @@ describe('Frontend contract behavior', () => {
     const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3061,7 +3065,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3232,7 +3236,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3405,7 +3409,7 @@ describe('Frontend contract behavior', () => {
     const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3564,7 +3568,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3814,7 +3818,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4001,7 +4005,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4148,7 +4152,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4350,7 +4354,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4492,7 +4496,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.dot',
+      flow_name: 'contract-behavior.yaml',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4628,7 +4632,7 @@ describe('Frontend contract behavior', () => {
   })
 
   it('[CID:11.3.01] keeps raw-to-structured handoff single-flight during repeated transition clicks', async () => {
-    const initialDot = 'digraph contract_behavior { start [label="Start"]; }'
+    const initialYaml = 'digraph contract_behavior { start [label="Start"]; }'
     const previewPayload = {
       graph: {
         graph_attrs: {},
@@ -4651,8 +4655,8 @@ describe('Frontend contract behavior', () => {
     const saveResolvers: Array<() => void> = []
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
-        return Promise.resolve(jsonResponse({ content: initialDot }))
+      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        return Promise.resolve(jsonResponse({ content: initialYaml }))
       }
       if (url.endsWith('/attractor/preview')) {
         return Promise.resolve(jsonResponse(previewPayload))
@@ -4670,8 +4674,8 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    expect(await screen.findByTestId('raw-dot-editor')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    expect(await screen.findByTestId('raw-yaml-editor')).toBeVisible()
     const previewCallsBeforeHandoff = fetchMock.mock.calls.filter(([input]) => {
       const callUrl = requestUrl(input as RequestInfo | URL)
       return callUrl.endsWith('/attractor/preview')
@@ -4682,7 +4686,7 @@ describe('Frontend contract behavior', () => {
     fireEvent.click(structuredButton)
 
     await waitFor(() => {
-      expect(screen.queryByTestId('raw-dot-editor')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('raw-yaml-editor')).not.toBeInTheDocument()
     })
 
     const saveCalls = fetchMock.mock.calls.filter(([input, requestInit]) => {
@@ -4699,9 +4703,9 @@ describe('Frontend contract behavior', () => {
     expect(saveResolvers).toHaveLength(0)
   })
 
-  it('[CID:11.3.04] requests semantic-equivalence save when raw DOT changes before returning to structured mode', async () => {
-    const initialDot = 'digraph contract_behavior { start [label="Start"]; }'
-    const editedDot = `${initialDot}\n// preserve semantic equivalence`
+  it('[CID:11.3.04] saves raw YAML changes before returning to structured mode', async () => {
+    const initialYaml = 'schema_version: "1"\nid: contract_behavior\n'
+    const editedYaml = `${initialYaml}title: Contract Behavior\n`
     const previewPayload = {
       graph: {
         graph_attrs: {},
@@ -4723,8 +4727,8 @@ describe('Frontend contract behavior', () => {
     }
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
-        return jsonResponse({ content: initialDot })
+      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
         return jsonResponse(previewPayload)
@@ -4740,14 +4744,14 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    const rawEditor = await screen.findByTestId('raw-dot-editor')
-    fireEvent.change(rawEditor, { target: { value: editedDot } })
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    const rawEditor = await screen.findByTestId('raw-yaml-editor')
+    fireEvent.change(rawEditor, { target: { value: editedYaml } })
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
 
     await waitFor(() => {
-      expect(screen.queryByTestId('raw-dot-editor')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('raw-yaml-editor')).not.toBeInTheDocument()
     })
 
     const saveCall = fetchMock.mock.calls.find(([input, requestInit]) => {
@@ -4758,15 +4762,14 @@ describe('Frontend contract behavior', () => {
 
     const [, requestInit] = saveCall!
     const body = JSON.parse(String((requestInit as RequestInit).body))
-    expect(body).toMatchObject({
-      name: 'contract-behavior.dot',
-      content: editedDot,
-      expect_semantic_equivalence: true,
+    expect(body).toEqual({
+      name: 'contract-behavior.yaml',
+      content: editedYaml,
     })
   })
 
   it('[CID:11.3.02] preserves unsurfaced canonical data through structured and raw edit paths', async () => {
-    const initialDot = `
+    const initialYaml = `
 digraph contract_behavior {
   graph [goal="Ship release", x_unsurfaced_graph="keep-graph"];
   node [x_unsurfaced_node_default="keep-node-default"];
@@ -4782,7 +4785,7 @@ digraph contract_behavior {
 `.trim()
     const previewPayload = {
       graph: {
-        graph_attrs: {
+        metadata: {
           goal: 'Ship release',
           x_unsurfaced_graph: 'keep-graph',
         },
@@ -4836,8 +4839,8 @@ digraph contract_behavior {
     const savedPayloads: Array<{ name: string; content: string }> = []
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
-        return jsonResponse({ content: initialDot })
+      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
         return jsonResponse(previewPayload)
@@ -4863,42 +4866,34 @@ digraph contract_behavior {
     })
 
     const structuredSave = savedPayloads[0].content
-    expect(structuredSave).toContain('x_unsurfaced_graph="keep-graph"')
-    expect(structuredSave).toContain('x_unsurfaced_node_default="keep-node-default"')
-    expect(structuredSave).toContain('x_unsurfaced_edge_default="keep-edge-default"')
-    expect(structuredSave).toContain('subgraph cluster_review {')
-    expect(structuredSave).toContain('x_unsurfaced_scope="keep-scope"')
-    expect(structuredSave).toContain('x_unsurfaced_node="keep-node"')
-    expect(structuredSave).toContain('x_unsurfaced_edge="keep-edge"')
+    expect(structuredSave).toContain('x_unsurfaced_graph: keep-graph')
+    expect(structuredSave).toContain('x_unsurfaced_node: keep-node')
+    expect(structuredSave).toContain('x_unsurfaced_edge: keep-edge')
 
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    const rawEditor = await screen.findByTestId('raw-dot-editor')
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    const rawEditor = await screen.findByTestId('raw-yaml-editor')
     const rawDraftValue = (rawEditor as HTMLTextAreaElement).value
-    expect(rawDraftValue).toContain('x_unsurfaced_node_default="keep-node-default"')
-    expect(rawDraftValue).toContain('x_unsurfaced_edge_default="keep-edge-default"')
-    expect(rawDraftValue).toContain('subgraph cluster_review {')
-    expect(rawDraftValue).toContain('x_unsurfaced_node="keep-node"')
-    expect(rawDraftValue).toContain('x_unsurfaced_edge="keep-edge"')
+    expect(rawDraftValue).toContain('x_unsurfaced_graph: keep-graph')
+    expect(rawDraftValue).toContain('x_unsurfaced_node: keep-node')
+    expect(rawDraftValue).toContain('x_unsurfaced_edge: keep-edge')
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
     await waitFor(() => {
-      expect(screen.queryByTestId('raw-dot-editor')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('raw-yaml-editor')).not.toBeInTheDocument()
     })
 
     expect(savedPayloads).toHaveLength(1)
 
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    const roundTrippedRawEditor = await screen.findByTestId('raw-dot-editor')
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    const roundTrippedRawEditor = await screen.findByTestId('raw-yaml-editor')
     const roundTrippedRawValue = (roundTrippedRawEditor as HTMLTextAreaElement).value
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_node_default="keep-node-default"')
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_edge_default="keep-edge-default"')
-    expect(roundTrippedRawValue).toContain('subgraph cluster_review {')
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_node="keep-node"')
-    expect(roundTrippedRawValue).toContain('x_unsurfaced_edge="keep-edge"')
+    expect(roundTrippedRawValue).toContain('x_unsurfaced_graph: keep-graph')
+    expect(roundTrippedRawValue).toContain('x_unsurfaced_node: keep-node')
+    expect(roundTrippedRawValue).toContain('x_unsurfaced_edge: keep-edge')
   })
 
   it('[CID:11.3.03] blocks raw-to-structured handoff when raw edits conflict with structured assumptions', async () => {
-    const initialDot = 'digraph contract_behavior { start [label="Start"]; }'
+    const initialYaml = 'digraph contract_behavior { start [label="Start"]; }'
     const previewOkPayload = {
       status: 'ok',
       graph: {
@@ -4963,8 +4958,8 @@ digraph contract_behavior {
     let previewRequestCount = 0
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
-      if (url.endsWith('/attractor/api/flows/contract-behavior.dot')) {
-        return jsonResponse({ content: initialDot })
+      if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
+        return jsonResponse({ content: initialYaml })
       }
       if (url.endsWith('/attractor/preview')) {
         const payload = previewRequestCount === 0 ? previewOkPayload : previewConflictPayload
@@ -4982,17 +4977,17 @@ digraph contract_behavior {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
-    const rawEditor = await screen.findByTestId('raw-dot-editor')
+    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    const rawEditor = await screen.findByTestId('raw-yaml-editor')
     fireEvent.change(rawEditor, { target: { value: 'digraph contract_behavior { start; start -> missing; }' } })
 
     await user.click(screen.getByRole('button', { name: 'Structured' }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('raw-dot-editor')).toBeVisible()
+      expect(screen.getByTestId('raw-yaml-editor')).toBeVisible()
     })
-    expect(screen.getByTestId('raw-dot-handoff-error')).toHaveTextContent(
-      'Raw DOT edit conflicts with structured mode assumptions.',
+    expect(screen.getByTestId('raw-yaml-handoff-error')).toHaveTextContent(
+      'Raw YAML edit conflicts with structured mode assumptions.',
     )
     expect(screen.getByRole('button', { name: 'Structured' })).toBeEnabled()
   })
@@ -5128,10 +5123,10 @@ digraph contract_behavior {
       expect(savePayloads).toHaveLength(1)
     })
 
-    const savedDot = savePayloads[0].content
-    expect(savedDot).toContain('x_graph_extension="graph-extra"')
-    expect(savedDot).toContain('x_node_extension="node-extra"')
-    expect(savedDot).toContain('x_edge_extension="edge-extra"')
+    const savedYaml = savePayloads[0].content
+    expect(savedYaml).toContain('x_graph_extension: graph-extra')
+    expect(savedYaml).toContain('x_node_extension: node-extra')
+    expect(savedYaml).toContain('x_edge_extension: edge-extra')
   })
 
   it('[CID:11.4.03] keeps numeric extension attrs stable across repeated structured edits', async () => {
@@ -5150,7 +5145,7 @@ digraph contract_behavior {
     act(() => {
       useStore.getState().setGraphAttrs({
         goal: 'Release',
-        label: 'Milestone',
+        title: 'Milestone',
         x_graph_extension_number: 17,
       } as never)
     })
@@ -5200,9 +5195,9 @@ digraph contract_behavior {
     })
 
     savePayloads.forEach(({ content }) => {
-      expect(content).toContain('x_graph_extension_number=17')
-      expect(content).toContain('x_node_extension_number=23')
-      expect(content).toContain('x_edge_extension_number=29')
+      expect(content).toContain('x_graph_extension_number: 17')
+      expect(content).toContain('x_node_extension_number: 23')
+      expect(content).toContain('x_edge_extension_number: 29')
     })
   })
 
@@ -5216,15 +5211,22 @@ digraph contract_behavior {
       {
         id: 'task',
         position: { x: 0, y: 0 },
-        data: { label: 'Task', shape: 'box', type: 'codergen', prompt: 'Do work' },
+        data: {
+          label: 'Task',
+          kind: 'agent_task',
+          config: { kind: 'agent_task', prompt: 'Do work' },
+          shape: 'box',
+          prompt: 'Do work',
+        },
       },
       {
         id: 'gate',
         position: { x: 150, y: 0 },
         data: {
           label: 'Gate',
+          kind: 'human_gate',
+          config: { kind: 'human_gate', prompt: 'Choose path' },
           shape: 'hexagon',
-          type: 'wait.human',
           prompt: 'Choose path',
           'human.default_choice': 'fix',
         },

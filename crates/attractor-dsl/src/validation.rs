@@ -412,16 +412,6 @@ pub fn diagnostics_payload(diagnostics: &[Diagnostic]) -> Vec<Value> {
     diagnostics.iter().map(diagnostic_payload).collect()
 }
 
-pub fn preview_payload_for_graph(graph: &DotGraph) -> Value {
-    let diagnostics = validate_graph(graph);
-    let errors = error_diagnostics(&diagnostics);
-    json!({
-        "status": if errors.is_empty() { "ok" } else { "validation_error" },
-        "diagnostics": diagnostics_payload(&diagnostics),
-        "errors": diagnostics_payload(&errors),
-    })
-}
-
 pub fn validate_launch_contract_declarations(graph: &DotGraph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 

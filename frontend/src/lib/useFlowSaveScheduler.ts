@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef } from 'react'
-import { saveFlowContent, type SaveFlowOptions } from '@/lib/flowPersistence'
+import { saveFlowContent } from '@/lib/flowPersistence'
 
 interface PendingFlowSaveRequest {
     flowName: string
     content: string
-    options?: SaveFlowOptions
 }
 
 interface UseFlowSaveSchedulerArgs<T> {
@@ -29,20 +28,16 @@ export function useFlowSaveScheduler<T = void>({
     }, [])
 
     const executeSaveRequest = useCallback((request: PendingFlowSaveRequest) => {
-        void saveFlowContent(request.flowName, request.content, request.options)
+        void saveFlowContent(request.flowName, request.content)
     }, [])
 
-    const createSaveRequest = useCallback((
-        payload: T | undefined,
-        options?: SaveFlowOptions,
-    ): PendingFlowSaveRequest | null => {
+    const createSaveRequest = useCallback((payload: T | undefined): PendingFlowSaveRequest | null => {
         if (!flowName) {
             return null
         }
         return {
             flowName,
             content: buildContent(payload, flowName),
-            options,
         }
     }, [buildContent, flowName])
 
@@ -61,8 +56,8 @@ export function useFlowSaveScheduler<T = void>({
         clearScheduledSave()
     }, [clearScheduledSave])
 
-    const scheduleSave = useCallback((payload?: T, options?: SaveFlowOptions) => {
-        const request = createSaveRequest(payload, options)
+    const scheduleSave = useCallback((payload?: T) => {
+        const request = createSaveRequest(payload)
         if (!request) {
             return
         }
@@ -79,8 +74,8 @@ export function useFlowSaveScheduler<T = void>({
         }, debounceMs)
     }, [clearScheduledSave, createSaveRequest, debounceMs, executeSaveRequest])
 
-    const saveNow = useCallback((payload?: T, options?: SaveFlowOptions) => {
-        const request = createSaveRequest(payload, options)
+    const saveNow = useCallback((payload?: T) => {
+        const request = createSaveRequest(payload)
         if (!request) {
             return
         }

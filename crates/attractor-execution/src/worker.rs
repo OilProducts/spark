@@ -44,12 +44,12 @@ where
             )
         }
     };
-    let Some(node) = request.graph.nodes.get(&request.node_id).cloned() else {
+    let Some(node) = request.flow.nodes.get(&request.node_id).cloned() else {
         let outcome = runtime_failure(format!("Unknown runtime node: {}", request.node_id));
         let _ = write_result(&mut writer, &outcome, request.context);
         return 0;
     };
-    let outgoing_edges = match outgoing_routing_edges(&request.graph, &request.node_id) {
+    let outgoing_edges = match outgoing_routing_edges(&request.flow, &request.node_id) {
         Ok(edges) => edges,
         Err(error) => {
             let outcome = runtime_failure(error.to_string());
@@ -67,13 +67,16 @@ where
     } else {
         request.run_id.clone()
     };
+    let node_attrs =
+        attractor_runtime::flow_runtime::node_attrs_for_handler(&request.node_id, &node);
     let execution_request = NodeExecutionRequest {
         node_id: request.node_id.clone(),
         stage_index: 0,
         context: request.context.clone(),
         prompt: request.prompt.clone(),
         node,
-        graph: request.graph.clone(),
+        node_attrs,
+        flow: request.flow.clone(),
         outgoing_edges,
         run_paths: None,
         run_workdir: if request.working_dir.as_os_str().is_empty() {

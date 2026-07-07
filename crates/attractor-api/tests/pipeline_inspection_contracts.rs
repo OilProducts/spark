@@ -20,17 +20,6 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         ..PipelineStartRequest::default()
     });
     assert_eq!(start.body["status"], json!("started"));
-    let bundle = RunStore::for_settings(&settings)
-        .read_run_bundle("run-inspect")
-        .expect("read")
-        .expect("run");
-    let graph_svg = bundle.paths.artifacts_dir().join("graphviz/pipeline.svg");
-    fs::write(
-        &graph_svg,
-        "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
-    )
-    .expect("svg");
-
     let detail = service.get_pipeline("run-inspect");
     assert_eq!(detail.status_code, 200);
     assert_eq!(detail.body["pipeline_id"], json!("run-inspect"));
@@ -66,16 +55,16 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         .as_array()
         .expect("artifacts")
         .iter()
-        .any(|artifact| artifact["path"] == json!("artifacts/graphviz/pipeline-source.dot")));
+        .any(|artifact| artifact["path"] == json!("artifacts/flow/flow-source.yaml")));
 
     let source =
-        service.get_pipeline_artifact_file("run-inspect", "artifacts/graphviz/pipeline-source.dot");
+        service.get_pipeline_artifact_file("run-inspect", "artifacts/flow/flow-source.yaml");
     assert_eq!(source.status_code, 200);
     assert!(source
         .body
         .as_str()
         .expect("source")
-        .contains("digraph ApiInspect"));
+        .contains("id: api_inspect"));
 
     let traversal = service.get_pipeline_artifact_file("run-inspect", "../run.json");
     assert_eq!(traversal.status_code, 400);
@@ -102,9 +91,11 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     );
 
     let graph = service.get_pipeline_graph("run-inspect");
-    assert_eq!(graph.status_code, 200);
-    assert_eq!(graph.content_type, "image/svg+xml");
-    assert!(graph.body.as_str().expect("graph").contains("<svg"));
+    assert_eq!(graph.status_code, 404);
+    assert_eq!(
+        graph.body,
+        json!({"detail": "Graph visualization unavailable"})
+    );
 
     let preview = service.get_pipeline_graph_preview("run-inspect", false);
     assert_eq!(preview.status_code, 200);
@@ -462,14 +453,26 @@ fn run_listing_filters_by_project_path_query() {
 }
 
 fn simple_flow() -> String {
-    r#"
-    digraph ApiInspect {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write an inspection note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
-    "#
+    r#"schema_version: "1"
+id: api_inspect
+title: API Inspect
+nodes:
+  start:
+    kind: start
+  task:
+    kind: agent_task
+    label: Task
+    config:
+      kind: agent_task
+      prompt: Write an inspection note
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
+"#
     .to_string()
 }
 

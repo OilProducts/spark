@@ -8,7 +8,7 @@
   "input": {
     "create_payload": {
       "action": {
-        "flow_name": "compat/webhook-flow.dot",
+        "flow_name": "compat/webhook-flow.yaml",
         "project_path": null,
         "static_context": {
           "source": "frontend"
@@ -49,7 +49,7 @@
       {
         "body": {
           "action": {
-            "flow_name": "compat/webhook-flow.dot",
+            "flow_name": "compat/webhook-flow.yaml",
             "project_path": null,
             "static_context": {
               "source": "frontend"
@@ -97,7 +97,7 @@
     },
     "formPayloads": {
       "flowEventSource": {
-        "flow_name": "compat/observed-flow.dot",
+        "flow_name": "compat/observed-flow.yaml",
         "statuses": [
           "completed",
           "failed"
@@ -114,9 +114,9 @@
       },
       "protectedForm": {
         "enabled": false,
-        "flowEventFlowName": "compat/observed-flow.dot",
+        "flowEventFlowName": "compat/observed-flow.yaml",
         "flowEventStatuses": "completed,failed",
-        "flowName": "compat/protected-flow.dot",
+        "flowName": "compat/protected-flow.yaml",
         "name": "Protected flow-event trigger",
         "pollHeadersText": "{}",
         "pollIntervalSeconds": "300",
@@ -135,7 +135,7 @@
         "targetMode": "active"
       },
       "scheduleAction": {
-        "flow_name": "compat/frontend-flow.dot",
+        "flow_name": "compat/frontend-flow.yaml",
         "project_path": "/workspace/project",
         "static_context": {
           "ticket": "SPARK-123"
@@ -165,7 +165,7 @@
       "webhookKeyPreservedOnRegeneration": true
     },
     "summaries": {
-      "flow_event": "Flow event \u00b7 compat/observed-flow.dot",
+      "flow_event": "Flow event \u00b7 compat/observed-flow.yaml",
       "poll": "Poll \u00b7 https://example.com/items.json",
       "schedule": "Schedule \u00b7 weekly",
       "target": "Targets active project",

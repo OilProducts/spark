@@ -1,5 +1,4 @@
 import type { RunRecord } from '@/features/runs/model/shared'
-import type { CanonicalDefaultsScope, CanonicalSubgraph } from '@/lib/canonicalFlowModel'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import type {
     ExecutionSessionSlice,
@@ -49,31 +48,28 @@ export interface LogEntry {
     type: 'info' | 'success' | 'error'
 }
 
-export interface GraphAttrs {
-    'spark.title'?: string
-    'spark.description'?: string
-    'spark.launch_inputs'?: string
-    'spark.result_node'?: string
-    'spark.result_summary_enabled'?: string
-    'spark.result_summary_prompt'?: string
+export interface FlowDefinitionMetadata {
+    [key: string]: unknown
+    schema_version?: string
+    id?: string
+    title?: string
+    description?: string
+    inputs?: string
+    result_node?: string
+    result_summary_enabled?: string
+    result_summary_prompt?: string
     goal?: string
-    label?: string
-    model_stylesheet?: string
-    default_max_retries?: number | string
-    retry_target?: string
-    fallback_retry_target?: string
-    default_fidelity?: string
-    'stack.child_dotfile'?: string
-    'stack.child_workdir'?: string
-    'tool.hooks.pre'?: string
-    'tool.hooks.post'?: string
-    ui_default_llm_model?: string
-    ui_default_llm_provider?: string
-    ui_default_llm_profile?: string
-    ui_default_reasoning_effort?: string
+    max_retries?: number | string
+    fidelity?: string
+    llm_model?: string
+    llm_provider?: string
+    llm_profile?: string
+    reasoning_effort?: string
 }
 
-export type GraphAttrErrors = Partial<Record<keyof GraphAttrs, string>>
+export type GraphAttrs = FlowDefinitionMetadata
+export type FlowMetadataErrors = Partial<Record<keyof FlowDefinitionMetadata, string>>
+export type GraphAttrErrors = FlowMetadataErrors
 
 export interface RegisteredProject {
     directoryPath: string
@@ -138,10 +134,10 @@ export interface EditorViewSession {
     selectedEdgeId: string | null
     viewport: CanvasViewportState | null
     sidebarWidth: number
-    graphAttrs: GraphAttrs
+    graphAttrs: FlowDefinitionMetadata
     diagnostics: DiagnosticEntry[]
     hasValidationErrors: boolean
-    rawDotDraft: string
+    rawYamlDraft: string
     rawHandoffError: string | null
     rawMode: 'structured' | 'raw'
     saveState: SaveState
@@ -153,7 +149,7 @@ export interface ExecutionViewSession {
     selectedNodeId: string | null
     selectedEdgeId: string | null
     viewport: CanvasViewportState | null
-    graphAttrs: GraphAttrs
+    graphAttrs: FlowDefinitionMetadata
     diagnostics: DiagnosticEntry[]
     hasValidationErrors: boolean
     launchInputValues: Record<string, string>
@@ -214,8 +210,8 @@ export interface RunInspectorSlice {
         fetchedAtMs?: number | null
     }) => void
     setSelectedRunStatusSync: (status: SelectedRunStatusSync, error?: string | null) => void
-    runGraphAttrs: GraphAttrs
-    replaceRunGraphAttrs: (attrs: GraphAttrs) => void
+    runGraphAttrs: FlowDefinitionMetadata
+    replaceRunGraphAttrs: (attrs: FlowDefinitionMetadata) => void
     runDiagnostics: DiagnosticEntry[]
     setRunDiagnostics: (diagnostics: DiagnosticEntry[]) => void
     clearRunDiagnostics: () => void
@@ -248,8 +244,8 @@ export interface ExecutionLaunchSlice {
     clearExecutionContinuation: () => void
     setExecutionContinuationFlowSourceMode: (mode: ExecutionContinuationFlowSourceMode) => void
     setExecutionContinuationStartNode: (nodeId: string | null) => void
-    executionGraphAttrs: GraphAttrs
-    replaceExecutionGraphAttrs: (attrs: GraphAttrs) => void
+    executionGraphAttrs: FlowDefinitionMetadata
+    replaceExecutionGraphAttrs: (attrs: FlowDefinitionMetadata) => void
     executionDiagnostics: DiagnosticEntry[]
     setExecutionDiagnostics: (diagnostics: DiagnosticEntry[]) => void
     clearExecutionDiagnostics: () => void
@@ -271,8 +267,8 @@ export interface EditorSlice {
     setEditorSidebarWidth: (width: number) => void
     editorMode: EditorMode
     setEditorMode: (mode: EditorMode) => void
-    rawDotDraft: string
-    setRawDotDraft: (value: string) => void
+    rawYamlDraft: string
+    setRawYamlDraft: (value: string) => void
     rawHandoffError: string | null
     setRawHandoffError: (value: string | null) => void
     selectedNodeId: string | null
@@ -283,21 +279,18 @@ export interface EditorSlice {
     setWorkingDir: (value: string) => void
     model: string
     setModel: (value: string) => void
-    graphAttrs: GraphAttrs
-    graphAttrErrors: GraphAttrErrors
+    flowMetadata: FlowDefinitionMetadata
+    flowMetadataErrors: FlowMetadataErrors
+    flowMetadataUserEditVersion: number
+    setFlowMetadata: (metadata: FlowDefinitionMetadata) => void
+    replaceFlowMetadata: (metadata: FlowDefinitionMetadata) => void
+    updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
+    graphAttrs: FlowDefinitionMetadata
+    graphAttrErrors: FlowMetadataErrors
     graphAttrsUserEditVersion: number
-    setGraphAttrs: (attrs: GraphAttrs) => void
-    replaceGraphAttrs: (attrs: GraphAttrs) => void
-    updateGraphAttr: (key: keyof GraphAttrs, value: string) => void
-    canonicalDefaults: CanonicalDefaultsScope
-    canonicalSubgraphs: CanonicalSubgraph[]
-    canonicalStructureUserEditVersion: number
-    setCanonicalDefaults: (defaults: CanonicalDefaultsScope) => void
-    setCanonicalSubgraphs: (subgraphs: CanonicalSubgraph[]) => void
-    replaceCanonicalFlowScopes: (
-        defaults: CanonicalDefaultsScope,
-        subgraphs: CanonicalSubgraph[],
-    ) => void
+    setGraphAttrs: (attrs: FlowDefinitionMetadata) => void
+    replaceGraphAttrs: (attrs: FlowDefinitionMetadata) => void
+    updateGraphAttr: (key: keyof FlowDefinitionMetadata, value: string) => void
     diagnostics: DiagnosticEntry[]
     setDiagnostics: (diagnostics: DiagnosticEntry[]) => void
     clearDiagnostics: () => void
@@ -315,6 +308,8 @@ export interface EditorSlice {
     saveErrorKind: SaveErrorKind | null
     editorGraphSettingsPanelOpenByFlow: Record<string, boolean>
     setEditorGraphSettingsPanelOpen: (flowName: string, isOpen: boolean) => void
+    editorShowAdvancedFlowMetadataByFlow: Record<string, boolean>
+    setEditorShowAdvancedFlowMetadata: (flowName: string, showAdvanced: boolean) => void
     editorExpandChildFlowsByFlow: Record<string, boolean>
     setEditorExpandChildFlows: (flowName: string, expandChildren: boolean) => void
     editorShowAdvancedGraphAttrsByFlow: Record<string, boolean>

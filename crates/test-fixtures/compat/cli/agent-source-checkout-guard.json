@@ -68,7 +68,7 @@
   },
   "process": {
     "returncode": 1,
-    "stderr": "{\"ok\": false, \"error\": \"Refusing to use default API target __API_BASE_URL__ from a source checkout at __WORKTREE__.\\n\\nThe default API target is reserved for the installed or stable Spark instance.\\nRun the source checkout with an explicit dev server target before `spark flow list`, for example:\\n\\n  SPARK_API_BASE_URL=__API_BASE_URL__ cargo run -p spark-cli --bin spark -- flow list\\n  SPARK_API_BASE_URL=__API_BASE_URL__ cargo run -p spark-cli --bin spark -- flow describe --flow examples/simple-linear.dot\\n  cargo run -p spark-cli --bin spark -- flow validate --file crates/spark-assets/assets/flows/examples/simple-linear.dot --text\"}\n",
+    "stderr": "{\"ok\": false, \"error\": \"Refusing to use default API target __API_BASE_URL__ from a source checkout at __WORKTREE__.\\n\\nThe default API target is reserved for the installed or stable Spark instance.\\nRun the source checkout with an explicit dev server target before `spark flow list`, for example:\\n\\n  SPARK_API_BASE_URL=__API_BASE_URL__ cargo run -p spark-cli --bin spark -- flow list\\n  SPARK_API_BASE_URL=__API_BASE_URL__ cargo run -p spark-cli --bin spark -- flow describe --flow examples/simple-linear.yaml\\n  cargo run -p spark-cli --bin spark -- flow validate --file crates/spark-assets/assets/flows/examples/simple-linear.yaml --text\"}\n",
     "stdout": ""
   },
   "provenance": {

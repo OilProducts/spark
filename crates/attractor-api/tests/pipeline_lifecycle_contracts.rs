@@ -50,32 +50,31 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
         .find(|event| event.event_type == "run_meta")
         .expect("run metadata event");
     assert_eq!(
-        metadata_event.payload["graph_source_path"],
+        metadata_event.payload["flow_source_path"],
         json!(bundle
             .paths
             .artifacts_dir()
-            .join("graphviz/pipeline-source.dot")
+            .join("flow/flow-source.yaml")
             .to_string_lossy()
             .to_string())
     );
     assert_eq!(
-        metadata_event.payload["graph_dot_path"],
+        metadata_event.payload["flow_definition_path"],
         json!(bundle
             .paths
             .artifacts_dir()
-            .join("graphviz/pipeline.dot")
+            .join("flow/flow-definition.json")
             .to_string_lossy()
             .to_string())
     );
-    assert_eq!(metadata_event.payload["graph_render_path"], json!(null));
     let metadata_journal_entry = bundle
         .journal
         .iter()
         .find(|entry| entry.raw_type == "run_meta")
         .expect("run metadata journal entry");
     assert_eq!(
-        metadata_journal_entry.payload["graph_source_path"],
-        metadata_event.payload["graph_source_path"]
+        metadata_journal_entry.payload["flow_source_path"],
+        metadata_event.payload["flow_source_path"]
     );
     let record = bundle.record.expect("record");
     assert_eq!(record.status, "completed");
@@ -107,12 +106,12 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
     assert!(bundle
         .paths
         .artifacts_dir()
-        .join("graphviz/pipeline-source.dot")
+        .join("flow/flow-source.yaml")
         .is_file());
     assert!(bundle
         .paths
         .artifacts_dir()
-        .join("graphviz/pipeline.dot")
+        .join("flow/flow-definition.json")
         .is_file());
     assert!(bundle.paths.result_json().is_file());
 }
@@ -128,18 +127,22 @@ fn start_pipeline_uses_launch_context_llm_selection_before_graph_defaults() {
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-api-launch-context".to_string()),
         flow_content: Some(
-            r#"
-            digraph ApiLaunchContext {
-              graph [
-                ui_default_llm_model="graph-model",
-                ui_default_llm_provider="Anthropic",
-                ui_default_llm_profile="graph-profile"
-              ]
-              start [shape=Mdiamond]
-              done [shape=Msquare]
-              start -> done
-            }
-            "#
+            r#"schema_version: "1"
+id: api_launch_context
+title: API Launch Context
+defaults:
+  llm_model: graph-model
+  llm_provider: Anthropic
+  llm_profile: graph-profile
+nodes:
+  start:
+    kind: start
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: done
+"#
             .to_string(),
         ),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -235,7 +238,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
 
     let parse_error = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-parse-error".to_string()),
-        flow_content: Some("digraph {".to_string()),
+        flow_content: Some("nodes: [".to_string()),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -284,14 +287,26 @@ fn mounted_start_route_accepts_current_json_payload() {
 }
 
 fn simple_flow() -> String {
-    r#"
-    digraph ApiLifecycle {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write a lifecycle note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
-    "#
+    r#"schema_version: "1"
+id: api_lifecycle
+title: API Lifecycle
+nodes:
+  start:
+    kind: start
+  task:
+    kind: agent_task
+    label: Task
+    config:
+      kind: agent_task
+      prompt: Write a lifecycle note
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
+"#
     .to_string()
 }
 

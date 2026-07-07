@@ -29,7 +29,7 @@
         "payload": {
           "trigger": {
             "action": {
-              "flow_name": "software-development/implement-change-request.dot",
+              "flow_name": "software-development/implement-change-request.yaml",
               "project_path": "__PROJECT_DIR__",
               "static_context": {
                 "origin": "compat"
@@ -63,7 +63,7 @@
         },
         "type": "trigger.upsert"
       },
-      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-57518a1da083\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.dot\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-28T19:40:52Z\",\"enabled\":true,\"id\":\"trigger-57518a1da083\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"B5q2u9CZ7HI7aprN\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-28T19:40:52Z\",\"webhook_secret\":\"BY1XV8Gf7F0CjZqvMlkWuHxDD7sTlNbA\"},\"type\":\"trigger_upsert\"}}",
+      "data_text": "{\"type\":\"trigger.upsert\",\"project_path\":\"__PROJECT_DIR__\",\"resource\":{\"kind\":\"trigger\",\"id\":\"trigger-57518a1da083\"},\"cursor\":null,\"payload\":{\"trigger\":{\"action\":{\"flow_name\":\"software-development/implement-change-request.yaml\",\"project_path\":\"__PROJECT_DIR__\",\"static_context\":{\"origin\":\"compat\"}},\"created_at\":\"2026-06-28T19:40:52Z\",\"enabled\":true,\"id\":\"trigger-57518a1da083\",\"name\":\"Compat webhook\",\"protected\":false,\"source\":{\"webhook_key\":\"B5q2u9CZ7HI7aprN\"},\"source_type\":\"webhook\",\"state\":{\"last_error\":null,\"last_fired_at\":null,\"last_result\":null,\"next_run_at\":null,\"recent_history\":[]},\"updated_at\":\"2026-06-28T19:40:52Z\",\"webhook_secret\":\"BY1XV8Gf7F0CjZqvMlkWuHxDD7sTlNbA\"},\"type\":\"trigger_upsert\"}}",
       "event": "message",
       "kind": "event"
     },

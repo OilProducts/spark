@@ -36,7 +36,7 @@ const REQUEST_USER_INPUT_EXPIRED_ERROR: &str =
     "The requested input expired before the answer could be used.";
 const MISSING_FINAL_ANSWER_ERROR: &str =
     "codex app-server completed the turn without a final answer item.";
-const IMPLEMENT_CHANGE_REQUEST_FLOW: &str = "software-development/implement-change-request.dot";
+const IMPLEMENT_CHANGE_REQUEST_FLOW: &str = "software-development/implement-change-request.yaml";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationSummary {

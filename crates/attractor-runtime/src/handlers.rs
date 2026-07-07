@@ -9,8 +9,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use attractor_core::{
-    attr_i64, attr_text, node_shape, AttractorContext, ContextMap, DotAttribute, DotGraph, DotNode,
-    DotValue, FailureKind, Outcome, OutcomeStatus, RoutingEdge,
+    attr_text, AttractorContext, ContextMap, DotAttribute, DotGraph, DotValue, FailureKind,
+    FlowDefinition, FlowNode, NodeKind, Outcome, OutcomeStatus, RoutingEdge,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -28,8 +28,7 @@ use crate::artifacts::{
 };
 use crate::codergen::{codergen_events_for_journal, codergen_outcome, RuntimeCodergen};
 use crate::context::{
-    clear_runtime_retry_context, graph_attr_context_seed, handler_type_for_shape,
-    known_builtin_handler_type, seed_builtin_context, set_runtime_fidelity_context,
+    clear_runtime_retry_context, seed_builtin_context, set_runtime_fidelity_context,
 };
 use crate::error::Result;
 use crate::events::{
@@ -90,11 +89,13 @@ impl RegisteredRuntimeHandler {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HandlerRuntime {
     pub node_id: String,
+    pub node: FlowNode,
     pub node_attrs: BTreeMap<String, DotAttribute>,
     pub outgoing_edges: Vec<RoutingEdge>,
     pub prompt: String,
     pub context: ContextMap,
-    pub graph: DotGraph,
+    pub flow: FlowDefinition,
+    pub(crate) handler_graph: DotGraph,
     pub logs_root: Option<PathBuf>,
     pub artifacts_root: Option<PathBuf>,
     pub run_workdir: PathBuf,
@@ -118,11 +119,13 @@ impl HandlerRuntime {
             .map(crate::paths::RunRootPaths::artifacts_dir);
         Self {
             node_id: request.node_id,
-            node_attrs: request.node.attrs,
+            node: request.node,
+            node_attrs: request.node_attrs,
             outgoing_edges: request.outgoing_edges,
             prompt: request.prompt,
             context: request.context,
-            graph: request.graph,
+            handler_graph: crate::flow_runtime::flow_graph_for_handler_compat(&request.flow),
+            flow: request.flow,
             logs_root,
             artifacts_root,
             run_workdir: request.run_workdir,
@@ -244,10 +247,12 @@ pub struct FanInRankingRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChildRunRequest {
     pub child_run_id: String,
-    pub child_graph: DotGraph,
+    pub child_flow: FlowDefinition,
     pub child_flow_name: String,
     pub child_flow_path: PathBuf,
     pub child_workdir: PathBuf,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_map: BTreeMap<String, String>,
     #[serde(default)]
     pub parent_context: ContextMap,
     pub parent_run_id: String,
@@ -612,10 +617,8 @@ impl RuntimeHandlerRunner {
         self.register_thread_safe_handler_fn(handler_type, move |_runtime| Ok(outcome.clone()));
     }
 
-    pub fn resolve_handler_type(&self, node_attrs: &BTreeMap<String, DotAttribute>) -> String {
-        resolve_handler_type_for_attrs(node_attrs, |handler_type| {
-            self.custom_handlers.contains_key(handler_type)
-        })
+    pub fn resolve_handler_type(&self, node: &FlowNode) -> String {
+        crate::flow_runtime::handler_type_for_node(node).to_string()
     }
 
     fn execute_request(
@@ -630,7 +633,7 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: HandlerRuntime,
     ) -> std::result::Result<Outcome, RuntimeNodeError> {
-        let handler_type = self.resolve_handler_type(&runtime.node_attrs);
+        let handler_type = self.resolve_handler_type(&runtime.node);
         if let Some(handler) = self.custom_handlers.get(&handler_type) {
             return handler.execute(runtime);
         }
@@ -706,12 +709,12 @@ impl RuntimeHandlerRunner {
             .to_string();
         let mut codergen = if let Some(factory) = self.codergen_backend_factory.as_ref() {
             RuntimeCodergen::with_boxed_backend(
-                runtime.graph.clone(),
+                runtime.handler_graph.clone(),
                 runtime.logs_root.clone(),
                 factory(),
             )
         } else {
-            RuntimeCodergen::simulation(runtime.graph.clone(), runtime.logs_root.clone())
+            RuntimeCodergen::simulation(runtime.handler_graph.clone(), runtime.logs_root.clone())
         }
         .with_llm_fallbacks(
             runtime.fallback_model.clone(),
@@ -974,8 +977,16 @@ impl RuntimeHandlerRunner {
             return Ok(fail_outcome("parallel node has no outgoing edges"));
         }
 
-        let join_policy =
-            attr_text(&runtime.node_attrs, "join_policy").unwrap_or_else(|| "wait_all".to_string());
+        let parallel_config = match runtime.node.config.as_ref() {
+            Some(attractor_core::NodeConfig::Parallel {
+                join_policy,
+                max_parallel,
+                join_k,
+                join_quorum,
+            }) => (join_policy.clone(), *max_parallel, *join_k, *join_quorum),
+            _ => (None, None, None, None),
+        };
+        let join_policy = parallel_config.0.unwrap_or_else(|| "wait_all".to_string());
         if !matches!(
             join_policy.as_str(),
             "wait_all" | "k_of_n" | "first_success" | "quorum"
@@ -984,20 +995,25 @@ impl RuntimeHandlerRunner {
                 "unsupported join_policy: {join_policy}"
             )));
         }
-        let error_policy = attr_text(&runtime.node_attrs, "error_policy")
+        let error_policy = runtime
+            .node
+            .runtime
+            .as_ref()
+            .and_then(|config| config.error_policy.clone())
             .unwrap_or_else(|| "continue".to_string());
         if !matches!(error_policy.as_str(), "fail_fast" | "continue" | "ignore") {
             return Ok(fail_outcome(format!(
                 "unsupported error_policy: {error_policy}"
             )));
         }
-        let max_parallel = attr_i64(&runtime.node_attrs, "max_parallel", 4);
+        let max_parallel = parallel_config.1.unwrap_or(4) as i64;
         if max_parallel < 1 {
             return Ok(fail_outcome("max_parallel must be >= 1"));
         }
-        if let Some(error) = validate_join_thresholds(
-            &runtime.node_attrs,
+        if let Some(error) = validate_join_thresholds_for_config(
             &join_policy,
+            parallel_config.2,
+            parallel_config.3,
             runtime.outgoing_edges.len(),
         ) {
             return Ok(fail_outcome(error));
@@ -1079,7 +1095,9 @@ impl RuntimeHandlerRunner {
                 }
             }
             "k_of_n" => {
-                let required = attr_i64_strict(&runtime.node_attrs, "join_k")
+                let required = parallel_config
+                    .2
+                    .map(|value| value as i64)
                     .unwrap_or(results_for_policy.len() as i64);
                 if success_count as i64 >= required {
                     OutcomeStatus::Success
@@ -1088,7 +1106,7 @@ impl RuntimeHandlerRunner {
                 }
             }
             "quorum" => {
-                let quorum = attr_f64_strict(&runtime.node_attrs, "join_quorum").unwrap_or(0.5);
+                let quorum = parallel_config.3.unwrap_or(0.5);
                 let required = ((results_for_policy.len() as f64) * quorum).ceil().max(1.0);
                 if (success_count as f64) >= required {
                     OutcomeStatus::Success
@@ -1225,8 +1243,8 @@ impl RuntimeHandlerRunner {
         runtime: &HandlerRuntime,
         start_node: &str,
     ) -> std::result::Result<Value, RuntimeNodeError> {
-        let fan_in_nodes = fan_in_nodes(&runtime.graph);
-        let mut values = graph_attr_context_seed(&runtime.graph);
+        let fan_in_nodes = fan_in_nodes(&runtime.flow);
+        let mut values = crate::flow_runtime::flow_context_seed(&runtime.flow);
         for (key, value) in &runtime.context {
             values.insert(key.clone(), value.clone());
         }
@@ -1241,10 +1259,10 @@ impl RuntimeHandlerRunner {
         let mut completed_nodes = Vec::<String>::new();
         let mut node_outcomes = BTreeMap::<String, Outcome>::new();
         let max_steps = runtime
-            .graph
+            .flow
             .nodes
             .len()
-            .saturating_add(runtime.graph.edges.len())
+            .saturating_add(runtime.flow.edges.len())
             .max(1);
         for _ in 0..=max_steps {
             if fan_in_nodes.contains(&current_node) {
@@ -1259,7 +1277,7 @@ impl RuntimeHandlerRunner {
                     "",
                 ));
             }
-            let Some(node) = runtime.graph.nodes.get(&current_node).cloned() else {
+            let Some(node) = runtime.flow.nodes.get(&current_node).cloned() else {
                 return Ok(branch_payload(
                     start_node,
                     "failed",
@@ -1274,7 +1292,7 @@ impl RuntimeHandlerRunner {
             context
                 .set("current_node", json!(current_node.clone()))
                 .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            set_runtime_fidelity_context(&runtime.graph, &current_node, None, &mut context, None)
+            set_runtime_fidelity_context(&runtime.flow, &current_node, None, &mut context, None)
                 .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             let prior_status = context
                 .get("outcome")
@@ -1285,16 +1303,18 @@ impl RuntimeHandlerRunner {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let outgoing_edges = outgoing_routing_edges(&runtime.graph, &current_node)
+            let outgoing_edges = outgoing_routing_edges(&runtime.flow, &current_node)
                 .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-            let prompt = attr_text(&node.attrs, "prompt").unwrap_or_default();
+            let node_attrs = crate::flow_runtime::node_attrs_for_handler(&current_node, &node);
+            let prompt = crate::flow_runtime::node_prompt(&node);
             let request = NodeExecutionRequest {
                 node_id: current_node.clone(),
                 stage_index: completed_nodes.len() as u64,
                 context: context.snapshot(),
                 prompt,
                 node: node.clone(),
-                graph: runtime.graph.clone(),
+                node_attrs: node_attrs.clone(),
+                flow: runtime.flow.clone(),
                 outgoing_edges,
                 run_paths: runtime.run_paths.clone(),
                 run_workdir: runtime.run_workdir.clone(),
@@ -1310,7 +1330,7 @@ impl RuntimeHandlerRunner {
             };
             let outcome = crate::context::apply_outcome_context_updates(
                 &current_node,
-                &node.attrs,
+                &node_attrs,
                 &mut context,
                 &raw_outcome,
             )
@@ -1319,7 +1339,7 @@ impl RuntimeHandlerRunner {
             completed_nodes.push(current_node.clone());
 
             let selection = select_next_node_with_prior(
-                &runtime.graph,
+                &runtime.flow,
                 &current_node,
                 &outcome,
                 &context,
@@ -1468,33 +1488,6 @@ impl NodeExecutor for RuntimeHandlerRunner {
     }
 }
 
-pub fn resolve_handler_type_for_attrs(
-    node_attrs: &BTreeMap<String, DotAttribute>,
-    is_registered: impl Fn(&str) -> bool,
-) -> String {
-    if let Some(handler_type) = attr_text(node_attrs, "type") {
-        if known_builtin_handler_type(&handler_type) || is_registered(&handler_type) {
-            return handler_type;
-        }
-    }
-    if let Some(shape) = attr_text(node_attrs, "shape").or_else(|| {
-        let synthetic = DotNode {
-            node_id: String::new(),
-            attrs: node_attrs.clone(),
-            line: 0,
-            declaration_order: 0,
-            explicit_attr_keys: BTreeSet::new(),
-        };
-        let shape = node_shape(&synthetic);
-        (!shape.trim().is_empty()).then_some(shape)
-    }) {
-        if let Some(handler_type) = handler_type_for_shape(&shape) {
-            return handler_type.to_string();
-        }
-    }
-    HANDLER_CODERGEN.to_string()
-}
-
 fn fan_in_llm_resolution_inputs(runtime: &HandlerRuntime) -> LlmResolutionInputs {
     let node_attrs = &runtime.node_attrs;
     let reasoning_attr = node_attrs.get("reasoning_effort");
@@ -1564,8 +1557,24 @@ fn tool_cwd(runtime: &HandlerRuntime) -> PathBuf {
 
 fn resolve_hook_command(runtime: &HandlerRuntime, key: &str) -> Option<String> {
     attr_text(&runtime.node_attrs, key)
-        .or_else(|| attr_text(&runtime.graph.graph_attrs, key))
+        .or_else(|| flow_metadata_text(&runtime.flow, key))
         .filter(|value| !value.trim().is_empty())
+}
+
+fn flow_metadata_text(flow: &FlowDefinition, key: &str) -> Option<String> {
+    flow.metadata
+        .get(key)
+        .or_else(|| flow.extensions.get(key))
+        .and_then(value_text)
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.trim().to_string()),
+        Value::Number(_) | Value::Bool(_) => Some(value.to_string()),
+        _ => None,
+    }
+    .filter(|value| !value.is_empty())
 }
 
 fn run_hook(
@@ -1893,31 +1902,33 @@ fn parse_accelerator_key(label: &str) -> String {
         .unwrap_or_default()
 }
 
-fn validate_join_thresholds(
-    attrs: &BTreeMap<String, DotAttribute>,
+fn validate_join_thresholds_for_config(
     join_policy: &str,
+    join_k: Option<u64>,
+    join_quorum: Option<f64>,
     branch_count: usize,
 ) -> Option<String> {
-    if join_policy != "k_of_n" && attrs.contains_key("join_k") {
+    if join_policy != "k_of_n" && join_k.is_some() {
         return Some("join_k is only supported when join_policy is k_of_n".to_string());
     }
-    if join_policy != "quorum" && attrs.contains_key("join_quorum") {
+    if join_policy != "quorum" && join_quorum.is_some() {
         return Some("join_quorum is only supported when join_policy is quorum".to_string());
     }
     if join_policy == "k_of_n" {
-        let Some(join_k) = attr_i64_strict(attrs, "join_k") else {
+        let Some(join_k) = join_k else {
             return Some("join_k is required and must be an integer >= 1".to_string());
         };
-        if join_k > branch_count as i64 {
+        if join_k == 0 {
+            return Some("join_k is required and must be an integer >= 1".to_string());
+        }
+        if join_k > branch_count as u64 {
             return Some(format!(
                 "join_k must be <= outgoing branch count ({branch_count})"
             ));
         }
     }
-    if join_policy == "quorum" && attrs.contains_key("join_quorum") {
-        let Some(join_quorum) = attr_f64_strict(attrs, "join_quorum") else {
-            return Some("join_quorum must be finite and > 0 and <= 1".to_string());
-        };
+    if join_policy == "quorum" {
+        let join_quorum = join_quorum.unwrap_or(0.5);
         if !join_quorum.is_finite() || join_quorum <= 0.0 || join_quorum > 1.0 {
             return Some("join_quorum must be finite and > 0 and <= 1".to_string());
         }
@@ -1925,43 +1936,11 @@ fn validate_join_thresholds(
     None
 }
 
-fn attr_i64_strict(attrs: &BTreeMap<String, DotAttribute>, key: &str) -> Option<i64> {
-    attrs.get(key).and_then(|attribute| match &attribute.value {
-        DotValue::Integer(value) if *value >= 1 => Some(*value),
-        DotValue::String(value) => {
-            let stripped = value.trim();
-            if stripped.is_empty()
-                || !stripped
-                    .trim_start_matches(['+', '-'])
-                    .chars()
-                    .all(|ch| ch.is_ascii_digit())
-            {
-                return None;
-            }
-            stripped.parse::<i64>().ok().filter(|value| *value >= 1)
-        }
-        _ => None,
-    })
-}
-
-fn attr_f64_strict(attrs: &BTreeMap<String, DotAttribute>, key: &str) -> Option<f64> {
-    attrs.get(key).and_then(|attribute| match &attribute.value {
-        DotValue::Integer(value) => Some(*value as f64),
-        DotValue::Float(value) => Some(*value),
-        DotValue::String(value) => value.trim().parse::<f64>().ok(),
-        _ => None,
-    })
-}
-
-fn fan_in_nodes(graph: &DotGraph) -> BTreeSet<String> {
-    graph
-        .nodes
-        .values()
-        .filter(|node| {
-            attr_text(&node.attrs, "type").as_deref() == Some(HANDLER_FAN_IN)
-                || attr_text(&node.attrs, "shape").as_deref() == Some("tripleoctagon")
-        })
-        .map(|node| node.node_id.clone())
+fn fan_in_nodes(flow: &FlowDefinition) -> BTreeSet<String> {
+    flow.nodes
+        .iter()
+        .filter(|(_, node)| node.kind == NodeKind::FanIn)
+        .map(|(node_id, _)| node_id.clone())
         .collect()
 }
 

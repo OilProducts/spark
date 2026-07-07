@@ -1174,7 +1174,7 @@ fn raw_flow_response(
     let mut response = (StatusCode::OK, flow.content).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_static("text/vnd.graphviz; charset=utf-8"),
+        HeaderValue::from_static("text/yaml; charset=utf-8"),
     );
     response
         .headers_mut()

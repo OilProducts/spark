@@ -343,8 +343,8 @@ fn artifact_media_type(path: &Path) -> String {
         .to_ascii_lowercase()
         .as_str()
     {
-        "dot" => "text/vnd.graphviz",
         "md" => "text/markdown",
+        "yaml" | "yml" => "text/yaml",
         "json" => "application/json",
         "txt" => "text/plain",
         "html" => "text/html",

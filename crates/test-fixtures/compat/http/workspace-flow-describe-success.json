@@ -33,7 +33,7 @@
     "body": null,
     "headers": {},
     "method": "GET",
-    "path": "/workspace/api/flows/examples/simple-linear.dot",
+    "path": "/workspace/api/flows/examples/simple-linear.yaml",
     "query": {}
   },
   "requirements": [
@@ -54,7 +54,7 @@
         "graph_goal": "Inspect the repository, make one targeted improvement, and summarize the result.",
         "graph_label": "Simple Linear Workflow",
         "launch_policy": "agent_requestable",
-        "name": "examples/simple-linear.dot",
+        "name": "examples/simple-linear.yaml",
         "node_count": 5,
         "title": "Simple Linear Workflow"
       },

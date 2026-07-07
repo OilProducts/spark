@@ -93,20 +93,16 @@ pub fn run_metadata_event_with_graph_paths(
     paths: &RunRootPaths,
 ) -> RawRuntimeEvent {
     let mut event = run_metadata_event(record);
-    let graph_dir = paths.artifacts_dir().join("graphviz");
-    let source_path = graph_dir.join("pipeline-source.dot");
-    let dot_path = graph_dir.join("pipeline.dot");
-    let render_path = graph_dir.join("pipeline.svg");
+    let flow_dir = paths.artifacts_dir().join("flow");
+    let flow_source_path = flow_dir.join("flow-source.yaml");
+    let flow_definition_path = flow_dir.join("flow-definition.json");
     event.payload.insert(
-        "graph_source_path".to_string(),
-        path_value_if_exists(source_path),
+        "flow_source_path".to_string(),
+        path_value_if_exists(flow_source_path),
     );
-    event
-        .payload
-        .insert("graph_dot_path".to_string(), path_value_if_exists(dot_path));
     event.payload.insert(
-        "graph_render_path".to_string(),
-        path_value_if_exists(render_path),
+        "flow_definition_path".to_string(),
+        path_value_if_exists(flow_definition_path),
     );
     event
 }

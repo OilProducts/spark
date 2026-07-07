@@ -187,13 +187,26 @@ fn sse_data_entries(body: &str) -> Vec<Value> {
 
 fn simple_flow() -> String {
     r#"
-    digraph ApiInspect {
-      start [shape=Mdiamond]
-      task [shape=box, prompt="Write an inspection note"]
-      done [shape=Msquare]
-      start -> task -> done
-    }
-    "#
+schema_version: '1'
+id: api-inspect
+title: API Inspect
+nodes:
+  start:
+    kind: start
+  task:
+    kind: agent_task
+    label: Task
+    config:
+      kind: agent_task
+      prompt: Write an inspection note
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: task
+  - from: task
+    to: done
+"#
     .to_string()
 }
 

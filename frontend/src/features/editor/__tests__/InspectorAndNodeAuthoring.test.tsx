@@ -19,12 +19,11 @@ afterEach(() => {
 
 describe('Inspector and node authoring behavior', () => {
   it('resolves handler types and field visibility for manager-loop authoring', () => {
-    expect(getHandlerType('house', '')).toBe('stack.manager_loop')
-    expect(getHandlerType('box', 'wait.human')).toBe('wait.human')
+    expect(getHandlerType('subflow')).toBe('stack.manager_loop')
+    expect(getHandlerType('human_gate')).toBe('wait.human')
 
     const managerVisibility = getNodeFieldVisibility('stack.manager_loop')
     expect(managerVisibility.showManagerOptions).toBe(true)
-    expect(managerVisibility.showTypeOverride).toBe(true)
     expect(managerVisibility.showPrompt).toBe(false)
     expect(managerVisibility.showLlmSettings).toBe(false)
 
@@ -97,15 +96,13 @@ describe('Inspector and node authoring behavior', () => {
     expect(edgeDiagnostics.fidelity).toHaveLength(1)
 
     const graphDiagnostics = resolveGraphFieldDiagnostics(diagnostics)
-    expect(graphDiagnostics.model_stylesheet).toHaveLength(1)
-    expect(graphDiagnostics.default_fidelity).toHaveLength(1)
+    expect(graphDiagnostics.fidelity).toHaveLength(1)
   })
 
   it('renders conditional parallel threshold fields in the node inspector', () => {
     const onPropertyChange = vi.fn()
     const baseProps = {
       selectedNodeId: 'fan',
-      graphAttrs: {},
       visibility: getNodeFieldVisibility('parallel'),
       readsContextDraft: '',
       readsContextError: null,
@@ -116,7 +113,6 @@ describe('Inspector and node authoring behavior', () => {
       selectedNodeExtensionEntries: [],
       selectedNodeToolHookPreWarning: null,
       selectedNodeToolHookPostWarning: null,
-      selectedNodeShapeTypeMismatchWarning: null,
       onPropertyChange,
       onOpenGraphChildSettings: vi.fn(),
       onReadsContextChange: vi.fn(),
@@ -187,6 +183,33 @@ describe('Inspector and node authoring behavior', () => {
     ).toEqual({ join_policy: 'k_of_n', join_k: '2' })
   })
 
+  it('maps node kind edits to typed config and visual shape data', () => {
+    const subflowData = applyNodePropertyChangeToData(
+      { label: 'Task', kind: 'agent_task', config: { kind: 'agent_task', prompt: 'Do it' } },
+      'kind',
+      'subflow',
+    )
+    expect(subflowData).toMatchObject({
+      label: 'Task',
+      kind: 'subflow',
+      shape: 'house',
+      config: { kind: 'subflow', prompt: 'Do it' },
+      flow_ref: 'child.yaml',
+    })
+    expect(subflowData).not.toHaveProperty('type')
+
+    expect(
+      applyNodePropertyChangeToData(
+        { kind: 'subflow', config: { kind: 'subflow' } },
+        'flow_ref',
+        'nested/child.yaml',
+      ),
+    ).toMatchObject({
+      flow_ref: 'nested/child.yaml',
+      config: { kind: 'subflow', flow_ref: 'nested/child.yaml' },
+    })
+  })
+
   it('renders and edits full manager-loop authoring fields in the node inspector', () => {
     const onPropertyChange = vi.fn()
     render(
@@ -198,7 +221,7 @@ describe('Inspector and node authoring behavior', () => {
           data: {
             label: 'Manager',
             shape: 'house',
-            type: 'stack.manager_loop',
+            flow_ref: 'child.yaml',
             'manager.poll_interval': '25ms',
             'manager.max_cycles': '4',
             'manager.stop_condition': 'context.stack.child.ready=true',
@@ -207,7 +230,6 @@ describe('Inspector and node authoring behavior', () => {
             'stack.child_autostart': false,
           },
         }}
-        graphAttrs={{ 'stack.child_dotfile': 'child.dot' }}
         visibility={getNodeFieldVisibility('stack.manager_loop')}
         readsContextDraft=""
         readsContextError={null}
@@ -218,7 +240,6 @@ describe('Inspector and node authoring behavior', () => {
         selectedNodeExtensionEntries={[]}
         selectedNodeToolHookPreWarning={null}
         selectedNodeToolHookPostWarning={null}
-        selectedNodeShapeTypeMismatchWarning={null}
         onPropertyChange={onPropertyChange}
         onOpenGraphChildSettings={vi.fn()}
         onReadsContextChange={vi.fn()}

@@ -33,7 +33,7 @@
     "body": null,
     "headers": {},
     "method": "GET",
-    "path": "/workspace/api/flows/missing.dot",
+    "path": "/workspace/api/flows/missing.yaml",
     "query": {}
   },
   "requirements": [
@@ -43,7 +43,7 @@
   "response": {
     "body": {
       "json": {
-        "detail": "Unknown flow: missing.dot"
+        "detail": "Unknown flow: missing.yaml"
       },
       "kind": "json"
     },

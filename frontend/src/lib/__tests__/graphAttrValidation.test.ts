@@ -7,36 +7,33 @@ import { describe, expect, it } from 'vitest'
 
 describe('graphAttrValidation', () => {
   it('normalizes graph attrs using key-specific rules', () => {
-    expect(normalizeGraphAttrValue('spark.title', '  Implement From Plan File  ')).toBe(
+    expect(normalizeGraphAttrValue('title', '  Implement From Plan File  ')).toBe(
       'Implement From Plan File',
     )
     expect(
       normalizeGraphAttrValue(
-        'spark.description',
+        'description',
         '  Snapshot a plan file, implement it, and iterate until complete.  ',
       ),
     ).toBe(
       'Snapshot a plan file, implement it, and iterate until complete.',
     )
     expect(normalizeGraphAttrValue('goal', '  Ship release  ')).toBe('Ship release')
-    expect(normalizeGraphAttrValue('default_max_retries', ' 003 ')).toBe('3')
-    expect(normalizeGraphAttrValue('default_max_retries', 'abc')).toBe('abc')
-    expect(normalizeGraphAttrValue('default_fidelity', ' Summary:High ')).toBe('summary:high')
-    expect(normalizeGraphAttrValue('model_stylesheet', '  .fast { llm_model: x; }  ')).toBe(
-      '  .fast { llm_model: x; }  ',
-    )
+    expect(normalizeGraphAttrValue('max_retries', ' 003 ')).toBe('3')
+    expect(normalizeGraphAttrValue('max_retries', 'abc')).toBe('abc')
+    expect(normalizeGraphAttrValue('fidelity', ' Summary:High ')).toBe('summary:high')
   })
 
   it('validates fidelity and retry constraints', () => {
-    expect(validateGraphAttrValue('default_max_retries', '')).toBeNull()
-    expect(validateGraphAttrValue('default_max_retries', '2')).toBeNull()
-    expect(validateGraphAttrValue('default_max_retries', '-1')).toBe(
-      'Default max retries must be a non-negative integer.',
+    expect(validateGraphAttrValue('max_retries', '')).toBeNull()
+    expect(validateGraphAttrValue('max_retries', '2')).toBeNull()
+    expect(validateGraphAttrValue('max_retries', '-1')).toBe(
+      'Max retries default must be a non-negative integer.',
     )
 
-    expect(validateGraphAttrValue('default_fidelity', '')).toBeNull()
-    expect(validateGraphAttrValue('default_fidelity', 'summary:medium')).toBeNull()
-    expect(validateGraphAttrValue('default_fidelity', 'ultra')).toContain('Default fidelity must be one of')
+    expect(validateGraphAttrValue('fidelity', '')).toBeNull()
+    expect(validateGraphAttrValue('fidelity', 'summary:medium')).toBeNull()
+    expect(validateGraphAttrValue('fidelity', 'ultra')).toContain('Fidelity default must be one of')
   })
 
   it('warns for malformed tool hook commands', () => {

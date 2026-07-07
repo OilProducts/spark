@@ -24,16 +24,14 @@ const resetStore = () => {
     projectSessionsByPath: {},
     projectRegistrationError: null,
     recentProjectPaths: [],
+    flowMetadata: {},
+    flowMetadataErrors: {},
+    flowMetadataUserEditVersion: 0,
     graphAttrs: {},
     graphAttrErrors: {},
     graphAttrsUserEditVersion: 0,
-    canonicalDefaults: {
-      node: {},
-      edge: {},
-    },
-    canonicalSubgraphs: [],
-    canonicalStructureUserEditVersion: 0,
     editorGraphSettingsPanelOpenByFlow: {},
+    editorShowAdvancedFlowMetadataByFlow: {},
     editorShowAdvancedGraphAttrsByFlow: {},
     editorLaunchInputDraftsByFlow: {},
     editorLaunchInputDraftErrorByFlow: {},
@@ -161,7 +159,7 @@ describe('project scope store behavior', () => {
         message: 'diag',
       },
     ])
-    store.setGraphAttrs({ goal: 'A' })
+    store.setFlowMetadata({ goal: 'A' })
     store.markSaveSuccess()
     store.setActiveProjectPath('/tmp/project-b')
 
@@ -205,74 +203,26 @@ describe('project scope store behavior', () => {
     expect(next.selectedRunStatusFetchedAtMs).toBe(101)
   })
 
-  it('tracks user graph attr edits separately from hydrated replacements', () => {
+  it('tracks user FlowDefinition metadata edits separately from hydrated replacements', () => {
     const store = useStore.getState()
 
-    store.replaceGraphAttrs({ goal: 'Hydrated goal' })
+    store.replaceFlowMetadata({ goal: 'Hydrated goal' })
     let next = useStore.getState()
-    expect(next.graphAttrs).toEqual({ goal: 'Hydrated goal' })
-    expect(next.graphAttrsUserEditVersion).toBe(0)
+    expect(next.flowMetadata).toEqual({ goal: 'Hydrated goal' })
+    expect(next.flowMetadataUserEditVersion).toBe(0)
 
-    store.updateGraphAttr('goal', 'Edited goal')
+    store.updateFlowMetadata('goal', 'Edited goal')
     next = useStore.getState()
-    expect(next.graphAttrs.goal).toBe('Edited goal')
-    expect(next.graphAttrsUserEditVersion).toBe(1)
+    expect(next.flowMetadata.goal).toBe('Edited goal')
+    expect(next.flowMetadataUserEditVersion).toBe(1)
 
-    store.setGraphAttrs({
-      ...next.graphAttrs,
+    store.setFlowMetadata({
+      ...next.flowMetadata,
       retry_target: 'retry-node',
     })
     next = useStore.getState()
-    expect(next.graphAttrs.retry_target).toBe('retry-node')
-    expect(next.graphAttrsUserEditVersion).toBe(2)
-  })
-
-  it('tracks canonical defaults and subgraph edits separately from hydrated replacements', () => {
-    const store = useStore.getState()
-
-    store.replaceCanonicalFlowScopes(
-      {
-        node: { timeout: '5m' },
-        edge: { weight: 1 },
-      },
-      [
-        {
-          id: 'cluster_review',
-          attrs: { label: 'Review' },
-          nodeIds: ['author'],
-          defaults: {
-            node: {},
-            edge: {},
-          },
-          subgraphs: [],
-        },
-      ],
-    )
-    let next = useStore.getState()
-    expect(next.canonicalDefaults.node.timeout).toBe('5m')
-    expect(next.canonicalSubgraphs[0].id).toBe('cluster_review')
-    expect(next.canonicalStructureUserEditVersion).toBe(0)
-
-    store.setCanonicalDefaults({
-      ...next.canonicalDefaults,
-      node: {
-        ...next.canonicalDefaults.node,
-        thread_id: 'review-thread',
-      },
-    })
-    next = useStore.getState()
-    expect(next.canonicalDefaults.node.thread_id).toBe('review-thread')
-    expect(next.canonicalStructureUserEditVersion).toBe(1)
-
-    store.setCanonicalSubgraphs([
-      {
-        ...next.canonicalSubgraphs[0],
-        nodeIds: ['author', 'review'],
-      },
-    ])
-    next = useStore.getState()
-    expect(next.canonicalSubgraphs[0].nodeIds).toEqual(['author', 'review'])
-    expect(next.canonicalStructureUserEditVersion).toBe(2)
+    expect(next.flowMetadata.retry_target).toBe('retry-node')
+    expect(next.flowMetadataUserEditVersion).toBe(2)
   })
 
   it('does not persist run selection into project-scoped workspace state', () => {

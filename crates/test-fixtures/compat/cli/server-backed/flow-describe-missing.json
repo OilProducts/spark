@@ -7,7 +7,7 @@
       "flow",
       "describe",
       "--flow",
-      "missing.dot",
+      "missing.yaml",
       "--base-url",
       "__API_BASE_URL__"
     ],
@@ -19,7 +19,7 @@
       "flow",
       "describe",
       "--flow",
-      "missing.dot",
+      "missing.yaml",
       "--base-url",
       "__API_BASE_URL__"
     ]
@@ -87,7 +87,7 @@
   },
   "process": {
     "returncode": 3,
-    "stderr": "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.dot\"}\n",
+    "stderr": "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n",
     "stdout": ""
   },
   "provenance": {

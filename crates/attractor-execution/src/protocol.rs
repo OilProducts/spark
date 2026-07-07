@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use attractor_core::{ContextMap, DotGraph, FailureKind, Outcome, OutcomeStatus};
+use attractor_core::{ContextMap, FailureKind, FlowDefinition, Outcome, OutcomeStatus};
 use attractor_runtime::{
     ChildInterventionRequest, ChildInterventionResult, ChildRunRequest, ChildRunResult,
     HumanAnswer, HumanQuestion,
@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkerNodeRequest {
     pub run_id: String,
-    pub graph: DotGraph,
+    pub flow: FlowDefinition,
     pub node_id: String,
     #[serde(default)]
     pub prompt: String,
