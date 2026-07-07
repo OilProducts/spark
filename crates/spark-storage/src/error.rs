@@ -73,6 +73,12 @@ pub enum StorageError {
 
     #[error("{reason}")]
     InvalidConversationState { path: PathBuf, reason: String },
+
+    #[error("Conversation commit rejected for {conversation_id}: {reason}")]
+    ConversationCommitRejected {
+        conversation_id: String,
+        reason: String,
+    },
 }
 
 impl StorageError {

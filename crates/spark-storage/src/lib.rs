@@ -12,6 +12,9 @@ pub mod atomic;
 /// Typed codecs for persisted files.
 pub mod codecs;
 
+/// Typed conversation record model and commit boundary.
+pub mod conversation;
+
 /// Storage error types.
 pub mod error;
 
