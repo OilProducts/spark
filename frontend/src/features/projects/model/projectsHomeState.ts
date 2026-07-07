@@ -361,20 +361,59 @@ function rebuildTurnTimelineEntries(
     }
 }
 
+function buildTimelineEntriesForOrderedTurns(record: Pick<
+    NormalizedConversationRecord,
+    'orderedTurnIds' | 'turnsById' | 'orderedSegmentIdsByTurnId' | 'segmentsById'
+>): Pick<
+    NormalizedConversationRecord,
+    'timelineEntryIds' | 'timelineEntriesById' | 'timelineEntryIdsByTurnId'
+> {
+    const timelineEntryIds: string[] = []
+    const timelineEntriesById: Record<string, ConversationTimelineEntry> = {}
+    const timelineEntryIdsByTurnId: Record<string, string[]> = {}
+
+    record.orderedTurnIds.forEach((turnId) => {
+        const turn = record.turnsById[turnId]
+        if (!turn) {
+            timelineEntryIdsByTurnId[turnId] = []
+            return
+        }
+        const entries = buildConversationTimelineEntriesForTurn(
+            turn,
+            (record.orderedSegmentIdsByTurnId[turnId] || [])
+                .map((segmentId) => record.segmentsById[segmentId])
+                .filter(Boolean),
+        )
+        const entryIds = entries.map((entry) => entry.id)
+        timelineEntryIds.push(...entryIds)
+        timelineEntryIdsByTurnId[turnId] = entryIds
+        entries.forEach((entry) => {
+            timelineEntriesById[entry.id] = entry
+        })
+    })
+
+    return {
+        timelineEntryIds,
+        timelineEntriesById,
+        timelineEntryIdsByTurnId,
+    }
+}
+
 export function hydrateConversationRecordFromSnapshot(
     snapshot: ConversationSnapshotResponse,
 ): NormalizedConversationRecord {
     const orderedSegmentIdsByTurnId: Record<string, string[]> = {}
+    const segmentsById = indexById(snapshot.segments)
     snapshot.segments.forEach((segment) => {
-        orderedSegmentIdsByTurnId[segment.turn_id] = [
-            ...(orderedSegmentIdsByTurnId[segment.turn_id] || []),
-            segment.id,
-        ]
+        if (!orderedSegmentIdsByTurnId[segment.turn_id]) {
+            orderedSegmentIdsByTurnId[segment.turn_id] = []
+        }
+        orderedSegmentIdsByTurnId[segment.turn_id].push(segment.id)
     })
     Object.keys(orderedSegmentIdsByTurnId).forEach((turnId) => {
         orderedSegmentIdsByTurnId[turnId].sort((leftId, rightId) => {
-            const left = snapshot.segments.find((segment) => segment.id === leftId)
-            const right = snapshot.segments.find((segment) => segment.id === rightId)
+            const left = segmentsById[leftId]
+            const right = segmentsById[rightId]
             if (!left || !right) {
                 return leftId.localeCompare(rightId)
             }
@@ -387,7 +426,7 @@ export function hydrateConversationRecordFromSnapshot(
         })
     })
 
-    let record: NormalizedConversationRecord = {
+    const recordBase: NormalizedConversationRecord = {
         schema_version: snapshot.schema_version,
         revision: snapshot.revision,
         conversation_id: snapshot.conversation_id,
@@ -403,7 +442,7 @@ export function hydrateConversationRecordFromSnapshot(
         orderedTurnIds: snapshot.turns.map((turn) => turn.id),
         turnsById: indexById(snapshot.turns),
         orderedSegmentIdsByTurnId,
-        segmentsById: indexById(snapshot.segments),
+        segmentsById,
         event_log: snapshot.event_log,
         flowRunRequestIds: snapshot.flow_run_requests.map((request) => request.id),
         flowRunRequestsById: indexById(snapshot.flow_run_requests),
@@ -415,10 +454,10 @@ export function hydrateConversationRecordFromSnapshot(
         timelineEntriesById: {},
         timelineEntryIdsByTurnId: {},
     }
-    record.orderedTurnIds.forEach((turnId) => {
-        record = rebuildTurnTimelineEntries(record, turnId)
-    })
-    return record
+    return {
+        ...recordBase,
+        ...buildTimelineEntriesForOrderedTurns(recordBase),
+    }
 }
 
 function isConversationRecordAtLeastAsFreshAsSnapshot(

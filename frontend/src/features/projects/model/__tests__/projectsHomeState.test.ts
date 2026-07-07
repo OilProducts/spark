@@ -189,12 +189,63 @@ describe('applyConversationSnapshotToCache', () => {
     expect(record.flowRunRequestsById['request-1']?.status).toBe('pending')
     expect(record.proposedPlanIds).toEqual(['plan-1'])
     expect(record.proposedPlansById['plan-1']?.title).toBe('Implementation plan')
+    expect(record.timelineEntryIds).toEqual([
+      'turn-user',
+      'segment-assistant',
+      'segment-request-1',
+      'segment-plan-1',
+    ])
+    expect(record.timelineEntryIdsByTurnId).toEqual({
+      'turn-user': ['turn-user'],
+      'turn-assistant': ['segment-assistant', 'segment-request-1', 'segment-plan-1'],
+    })
+    expect(record.timelineEntriesById['segment-plan-1']).toMatchObject({
+      kind: 'plan',
+      artifactId: 'plan-1',
+    })
     expect(getConversationTimelineEntries(record).map((entry) => entry.id)).toEqual([
       'turn-user',
       'segment-assistant',
       'segment-request-1',
       'segment-plan-1',
     ])
+  })
+
+  it('hydrates a snapshot with many same-turn segments using stable bulk ordering', () => {
+    const segmentCount = 160
+    const turnId = 'turn-assistant-large'
+    const turns: ConversationTurnResponse[] = [
+      buildTurn({
+        id: turnId,
+        content: '',
+        timestamp: '2026-03-06T15:00:00Z',
+      }),
+    ]
+    const segments: ConversationSegmentResponse[] = Array.from({ length: segmentCount }, (_, offset) => {
+      const index = segmentCount - offset - 1
+      return buildSegment({
+        id: `${turnId}-message-${index.toString().padStart(3, '0')}`,
+        turn_id: turnId,
+        order: index,
+        timestamp: `2026-03-06T15:00:${(index % 60).toString().padStart(2, '0')}Z`,
+        content: `Message ${index}`,
+      })
+    })
+    const expectedSegmentIds = Array.from(
+      { length: segmentCount },
+      (_, index) => `${turnId}-message-${index.toString().padStart(3, '0')}`,
+    )
+
+    const record = hydrateConversationRecordFromSnapshot(buildSnapshot({
+      turns,
+      segments,
+    }))
+
+    expect(record.orderedTurnIds).toEqual([turnId])
+    expect(record.orderedSegmentIdsByTurnId[turnId]).toEqual(expectedSegmentIds)
+    expect(record.timelineEntryIds).toEqual(expectedSegmentIds)
+    expect(record.timelineEntryIdsByTurnId[turnId]).toEqual(expectedSegmentIds)
+    expect(getConversationTimelineEntries(record).map((entry) => entry.id)).toEqual(record.timelineEntryIds)
   })
 
   it('accepts same-timestamp snapshots when revision advances', () => {
