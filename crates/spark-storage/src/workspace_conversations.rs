@@ -667,6 +667,7 @@ impl ConversationRepository {
             .get("conversation_id")
             .and_then(Value::as_str)
             .and_then(non_empty_str)
+            .map(str::to_string)
             .ok_or_else(|| StorageError::InvalidRepositoryPath {
                 path: PathBuf::from("conversation snapshot"),
                 reason: "Conversation id is required.".to_string(),
@@ -708,9 +709,9 @@ impl ConversationRepository {
         core.entry("revision".to_string())
             .or_insert_with(|| json!(0));
         core.entry("conversation_id".to_string())
-            .or_insert_with(|| json!(conversation_id));
+            .or_insert_with(|| json!(&conversation_id));
         core.entry("project_path".to_string())
-            .or_insert_with(|| json!(project_path));
+            .or_insert_with(|| json!(&project_path));
         core.entry("chat_mode".to_string())
             .or_insert_with(|| json!("chat"));
         core.entry("provider".to_string())
@@ -731,7 +732,7 @@ impl ConversationRepository {
 
         let state_path = project_paths
             .conversations_dir
-            .join(conversation_id)
+            .join(&conversation_id)
             .join("state.json");
         write_json_atomic(
             &state_path,
@@ -744,9 +745,9 @@ impl ConversationRepository {
                 .flow_run_requests_dir
                 .join(format!("{conversation_id}.json")),
             &json!({
-                "conversation_id": conversation_id,
+                "conversation_id": &conversation_id,
                 "project_id": project_paths.project_id,
-                "project_path": project_path,
+                "project_path": &project_path,
                 "event_log": array_or_empty(object.get("event_log")),
                 "flow_run_requests": array_or_empty(object.get("flow_run_requests")),
             }),
@@ -757,9 +758,9 @@ impl ConversationRepository {
                 .flow_launches_dir
                 .join(format!("{conversation_id}.json")),
             &json!({
-                "conversation_id": conversation_id,
+                "conversation_id": &conversation_id,
                 "project_id": project_paths.project_id,
-                "project_path": project_path,
+                "project_path": &project_path,
                 "flow_launches": array_or_empty(object.get("flow_launches")),
                 "run_recoveries": array_or_empty(object.get("run_recoveries")),
             }),
@@ -770,13 +771,85 @@ impl ConversationRepository {
                 .proposed_plans_dir
                 .join(format!("{conversation_id}.json")),
             &json!({
-                "conversation_id": conversation_id,
+                "conversation_id": &conversation_id,
                 "project_id": project_paths.project_id,
-                "project_path": project_path,
+                "project_path": &project_path,
                 "proposed_plans": array_or_empty(object.get("proposed_plans")),
             }),
             JsonWriteOptions::default(),
         )
+    }
+
+    pub fn persist_snapshot_with_events(
+        &self,
+        snapshot: &mut Value,
+        events: &mut [Value],
+    ) -> Result<()> {
+        let object = snapshot
+            .as_object()
+            .ok_or_else(|| StorageError::InvalidDocumentShape {
+                path: PathBuf::from("conversation snapshot"),
+                format: "JSON",
+                expected: "object",
+            })?;
+        let conversation_id = object
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .and_then(non_empty_str)
+            .map(str::to_string)
+            .ok_or_else(|| StorageError::InvalidRepositoryPath {
+                path: PathBuf::from("conversation snapshot"),
+                reason: "Conversation id is required.".to_string(),
+            })?;
+        let project_path = object
+            .get("project_path")
+            .and_then(Value::as_str)
+            .and_then(normalize_project_path_string)
+            .ok_or_else(|| StorageError::InvalidRepositoryPath {
+                path: PathBuf::from("conversation snapshot"),
+                reason: "Project path is required.".to_string(),
+            })?;
+
+        let incoming_revision = snapshot
+            .get("revision")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let latest_snapshot = self.read_snapshot(&conversation_id, Some(&project_path))?;
+        let latest_revision = latest_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.get("revision").and_then(Value::as_i64))
+            .unwrap_or(0);
+        if latest_revision > incoming_revision && has_turn_or_segment_upsert(events) {
+            if let Some(latest_snapshot) = latest_snapshot.as_ref() {
+                rebase_conversation_snapshot(snapshot, latest_snapshot, events);
+            }
+        }
+        let updated_at = snapshot
+            .get("updated_at")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        refresh_conversation_snapshot_payloads(events, snapshot);
+        let mut next_revision = latest_revision + 1;
+        for event in events.iter_mut() {
+            if !is_conversation_journal_payload(event) {
+                continue;
+            }
+            stamp_conversation_journal_payload(event, next_revision, &updated_at);
+            next_revision += 1;
+        }
+        let final_revision = next_revision - 1;
+        if let Some(object) = snapshot.as_object_mut() {
+            object.insert("revision".to_string(), json!(final_revision));
+            if !updated_at.is_empty() {
+                object.insert("updated_at".to_string(), json!(updated_at));
+            }
+        }
+        self.write_snapshot(snapshot)?;
+        for event in events {
+            self.append_conversation_event(&conversation_id, &project_path, event)?;
+        }
+        Ok(())
     }
 
     pub fn append_codex_jsonrpc_trace(
@@ -1203,6 +1276,109 @@ fn event_revision(payload: &Value) -> Option<i64> {
                 Value::Number(number) => number.as_i64(),
                 _ => None,
             }),
+    }
+}
+
+fn is_conversation_journal_payload(payload: &Value) -> bool {
+    matches!(
+        payload.get("type").and_then(Value::as_str),
+        Some("turn_upsert" | "segment_upsert" | "conversation_snapshot")
+    )
+}
+
+fn has_turn_or_segment_upsert(events: &[Value]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("turn_upsert" | "segment_upsert")
+        )
+    })
+}
+
+fn stamp_conversation_journal_payload(payload: &mut Value, revision: i64, updated_at: &str) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    object.insert("revision".to_string(), json!(revision));
+    if !updated_at.is_empty() {
+        object.insert("updated_at".to_string(), json!(updated_at));
+    }
+    if object.get("type").and_then(Value::as_str) == Some("conversation_snapshot") {
+        if let Some(state_object) = object.get_mut("state").and_then(Value::as_object_mut) {
+            state_object.insert("revision".to_string(), json!(revision));
+            if !updated_at.is_empty() {
+                state_object.insert("updated_at".to_string(), json!(updated_at));
+            }
+        }
+    }
+}
+
+fn refresh_conversation_snapshot_payloads(events: &mut [Value], snapshot: &Value) {
+    for event in events {
+        if event.get("type").and_then(Value::as_str) != Some("conversation_snapshot") {
+            continue;
+        }
+        if let Some(object) = event.as_object_mut() {
+            object.insert("state".to_string(), snapshot.clone());
+        }
+    }
+}
+
+fn rebase_conversation_snapshot(snapshot: &mut Value, latest_snapshot: &Value, events: &[Value]) {
+    let updated_at = snapshot
+        .get("updated_at")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut rebased = latest_snapshot.clone();
+    if let Some(updated_at) = updated_at {
+        if let Some(object) = rebased.as_object_mut() {
+            object.insert("updated_at".to_string(), json!(updated_at));
+        }
+    }
+    for event in events {
+        match event.get("type").and_then(Value::as_str) {
+            Some("turn_upsert") => {
+                if let Some(turn) = event.get("turn") {
+                    upsert_array_item_by_id(&mut rebased, "turns", turn.clone());
+                }
+            }
+            Some("segment_upsert") => {
+                if let Some(segment) = event.get("segment") {
+                    upsert_array_item_by_id(&mut rebased, "segments", segment.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    *snapshot = rebased;
+}
+
+fn upsert_array_item_by_id(snapshot: &mut Value, key: &str, item: Value) {
+    let Some(item_id) = item
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(non_empty_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Some(object) = snapshot.as_object_mut() else {
+        return;
+    };
+    let entry = object.entry(key.to_string()).or_insert_with(|| json!([]));
+    if !entry.is_array() {
+        *entry = json!([]);
+    }
+    let Some(items) = entry.as_array_mut() else {
+        return;
+    };
+    if let Some(existing) = items
+        .iter_mut()
+        .find(|existing| existing.get("id").and_then(Value::as_str) == Some(item_id.as_str()))
+    {
+        *existing = item;
+    } else {
+        items.push(item);
     }
 }
 

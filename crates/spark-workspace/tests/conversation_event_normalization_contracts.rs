@@ -1251,6 +1251,98 @@ fn stream_error_with_final_text_and_usage_stays_failed() {
 }
 
 #[test]
+fn late_segment_updates_get_new_journal_revisions_without_changing_transcript_order() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let service = WorkspaceConversationService::new(settings);
+    let (prepared, _snapshot) = service
+        .start_turn(
+            "conversation-late-segment",
+            ConversationTurnRequest {
+                project_path: "/projects/late-segment".to_string(),
+                message: "Run a tool then explain".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+
+    service
+        .ingest_agent_turn_output(
+            "conversation-late-segment",
+            "/projects/late-segment",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![
+                    tool_event("tool_call_started", "tool-1", "running", "partial output"),
+                    content_completed("assistant", "Tool is running.", "app-turn", "final"),
+                ],
+                final_assistant_text: Some("Tool is running.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("initial ingest");
+
+    let completed = service
+        .ingest_agent_turn_output(
+            "conversation-late-segment",
+            "/projects/late-segment",
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![tool_event(
+                    "tool_call_completed",
+                    "tool-1",
+                    "completed",
+                    "full output",
+                )],
+                final_assistant_text: Some("Tool is running.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("late tool completion");
+
+    let segments = completed["segments"].as_array().expect("segments");
+    let tool = segment_by_kind(segments, "tool_call");
+    let assistant = segment_by_kind(segments, "assistant_message");
+    assert_eq!(tool["status"], "complete");
+    assert_eq!(tool["tool_call"]["output"], "full output");
+    assert!(
+        tool["order"].as_i64().expect("tool order")
+            < assistant["order"].as_i64().expect("assistant order")
+    );
+
+    let events = service
+        .read_events_after("conversation-late-segment", "/projects/late-segment", 0)
+        .expect("events");
+    let assistant_revision = events
+        .iter()
+        .find(|event| {
+            event["type"] == "segment_upsert"
+                && event["segment"]["kind"] == "assistant_message"
+                && event["segment"]["content"] == "Tool is running."
+        })
+        .and_then(|event| event["revision"].as_i64())
+        .expect("assistant revision");
+    let completed_tool_revision = events
+        .iter()
+        .filter(|event| {
+            event["type"] == "segment_upsert"
+                && event["segment"]["kind"] == "tool_call"
+                && event["segment"]["status"] == "complete"
+        })
+        .filter_map(|event| event["revision"].as_i64())
+        .max()
+        .expect("completed tool revision");
+    assert!(completed_tool_revision > assistant_revision);
+    let completed_tool_event = events
+        .iter()
+        .find(|event| event["revision"].as_i64() == Some(completed_tool_revision))
+        .expect("completed tool event");
+    assert_eq!(completed_tool_event["segment"]["order"], tool["order"]);
+}
+
+#[test]
 fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -1724,6 +1816,54 @@ fn request_user_input_live_request_is_answerable_before_original_turn_finishes()
     assert_eq!(completed_assistant_turn["status"], "complete");
     assert_eq!(completed_assistant_turn["content"], "Approved.");
     assert_eq!(backend.answer_requests().lock().expect("answers").len(), 1);
+
+    let completed_segments = completed["segments"].as_array().expect("segments");
+    assert!(completed_segments.iter().any(|segment| {
+        segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["request_id"] == "input-1"
+            && segment["request_user_input"]["status"] == "answered"
+    }));
+    assert!(completed_segments.iter().any(|segment| {
+        segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["request_id"] == "input-2"
+            && segment["request_user_input"]["status"] == "pending"
+    }));
+
+    let events = service
+        .read_events_after(
+            "conversation-input-live-pending",
+            "/projects/input-live-pending",
+            0,
+        )
+        .expect("events");
+    let revisions = events
+        .iter()
+        .map(|event| event["revision"].as_i64().expect("revision"))
+        .collect::<Vec<_>>();
+    assert!(revisions.windows(2).all(|window| window[0] < window[1]));
+    let answer_revision = events
+        .iter()
+        .find(|event| {
+            event["type"] == "segment_upsert"
+                && event["segment"]["kind"] == "request_user_input"
+                && event["segment"]["request_user_input"]["request_id"] == "input-1"
+                && event["segment"]["request_user_input"]["status"] == "answered"
+        })
+        .and_then(|event| event["revision"].as_i64())
+        .expect("answer revision");
+    let after_answer = service
+        .read_events_after(
+            "conversation-input-live-pending",
+            "/projects/input-live-pending",
+            answer_revision,
+        )
+        .expect("events after answer");
+    assert!(after_answer.iter().any(|event| {
+        event["type"] == "segment_upsert"
+            && event["segment"]["kind"] == "request_user_input"
+            && event["segment"]["request_user_input"]["request_id"] == "input-2"
+            && event["segment"]["request_user_input"]["status"] == "pending"
+    }));
 }
 
 #[test]
@@ -1950,7 +2090,7 @@ impl AgentTurnBackend for BlockingRequestInputBackend {
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
         self.requests.lock().expect("requests").push(request);
-        if let Some(sink) = event_sink {
+        if let Some(sink) = event_sink.as_ref() {
             sink(request_user_input_event());
         }
         {
@@ -1969,6 +2109,9 @@ impl AgentTurnBackend for BlockingRequestInputBackend {
                 retryable: false,
                 raw: None,
             });
+        }
+        if let Some(sink) = event_sink.as_ref() {
+            sink(request_user_input_event_with("input-2", "decision-2"));
         }
         Ok(AgentTurnOutput {
             events: vec![content_completed(
@@ -2232,18 +2375,22 @@ fn token_usage(usage: Value) -> TurnStreamEvent {
 }
 
 fn request_user_input_event() -> TurnStreamEvent {
+    request_user_input_event_with("input-1", "decision")
+}
+
+fn request_user_input_event_with(item_id: &str, question_id: &str) -> TurnStreamEvent {
     TurnStreamEvent {
         kind: TurnStreamEventKind::RequestUserInputRequested,
         channel: None,
-        source: source("app-turn", "input-1"),
+        source: source("app-turn", item_id),
         content_delta: None,
         message: None,
         tool_call: None,
         request_user_input: Some(json!({
-            "itemId": "input-1",
+            "itemId": item_id,
             "questions": [
                 {
-                    "id": "decision",
+                    "id": question_id,
                     "header": "Approve",
                     "question": "Approve this change?",
                     "options": [

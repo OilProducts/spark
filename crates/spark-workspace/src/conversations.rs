@@ -660,14 +660,7 @@ impl WorkspaceConversationService {
         touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
         emitted_payloads.push(build_turn_upsert_payload(&snapshot, &user_turn));
         emitted_payloads.push(build_turn_upsert_payload(&snapshot, &assistant_turn));
-        stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            &project_path,
-            &emitted_payloads,
-        )?;
+        repository.persist_snapshot_with_events(&mut snapshot, &mut emitted_payloads)?;
 
         let mut metadata = BTreeMap::from([
             (
@@ -856,14 +849,7 @@ impl WorkspaceConversationService {
         );
         touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
         emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
-        stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            &project_path,
-            &emitted_payloads,
-        )?;
+        repository.persist_snapshot_with_events(&mut snapshot, &mut emitted_payloads)?;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -906,14 +892,7 @@ impl WorkspaceConversationService {
             &prepared.project_path,
         )?;
         emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
-        stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            &prepared.conversation_id,
-            &prepared.project_path,
-            &emitted_payloads,
-        )?;
+        repository.persist_snapshot_with_events(&mut snapshot, &mut emitted_payloads)?;
         prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
         Ok(snapshot)
     }
@@ -1298,18 +1277,11 @@ impl WorkspaceConversationService {
                 "timestamp": now,
             }),
         );
-        touch_snapshot(
+        persist_snapshot(
             &repository,
+            &handle_match.conversation_id,
+            &handle_match.project_path,
             &mut snapshot,
-            &handle_match.conversation_id,
-            &handle_match.project_path,
-        )?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            &handle_match.conversation_id,
-            &handle_match.project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
         )?;
 
         Ok(FlowRunRequestCreateResponse {
@@ -1378,14 +1350,7 @@ impl WorkspaceConversationService {
                     "timestamp": now,
                 }),
             );
-            touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-            repository.write_snapshot(&snapshot)?;
-            append_events(
-                &repository,
-                conversation_id,
-                &project_path,
-                &[build_conversation_snapshot_payload(&snapshot)],
-            )?;
+            persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
             return Ok(snapshot);
         }
@@ -1460,14 +1425,7 @@ impl WorkspaceConversationService {
                 "timestamp": now,
             }),
         );
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            &project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
-        )?;
+        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
 
         let launch_artifact =
             artifact_at(&snapshot, "flow_run_requests", request_index).unwrap_or_default();
@@ -1508,14 +1466,7 @@ impl WorkspaceConversationService {
                 }),
             },
         );
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            &project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
-        )?;
+        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -1569,14 +1520,7 @@ impl WorkspaceConversationService {
                     "timestamp": now,
                 }),
             );
-            touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-            repository.write_snapshot(&snapshot)?;
-            append_events(
-                &repository,
-                conversation_id,
-                &project_path,
-                &[build_conversation_snapshot_payload(&snapshot)],
-            )?;
+            persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
             return Ok(snapshot);
         }
@@ -1665,14 +1609,7 @@ impl WorkspaceConversationService {
                 "timestamp": now,
             }),
         );
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            &project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
-        )?;
+        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
 
         let launch_index =
             artifact_index(&snapshot, "flow_launches", &flow_launch_id).ok_or_else(|| {
@@ -1730,14 +1667,7 @@ impl WorkspaceConversationService {
                 }),
             },
         );
-        touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            &project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
-        )?;
+        persist_snapshot(&repository, conversation_id, &project_path, &mut snapshot)?;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -2294,14 +2224,7 @@ impl WorkspaceConversationService {
                 "timestamp": now,
             }),
         );
-        touch_snapshot(&repository, &mut snapshot, conversation_id, project_path)?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            conversation_id,
-            project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
-        )?;
+        persist_snapshot(&repository, conversation_id, project_path, &mut snapshot)?;
         Ok(FlowLaunchArtifactCreated {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.to_string(),
@@ -2364,18 +2287,11 @@ impl WorkspaceConversationService {
                 }),
             },
         );
-        touch_snapshot(
+        persist_snapshot(
             &repository,
+            &artifact.conversation_id,
+            &artifact.project_path,
             &mut snapshot,
-            &artifact.conversation_id,
-            &artifact.project_path,
-        )?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            &artifact.conversation_id,
-            &artifact.project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
         )?;
         Ok(())
     }
@@ -2486,18 +2402,11 @@ impl WorkspaceConversationService {
                 "timestamp": now,
             }),
         );
-        touch_snapshot(
+        persist_snapshot(
             &repository,
+            &selection.conversation_id,
+            &selection.project_path,
             &mut snapshot,
-            &selection.conversation_id,
-            &selection.project_path,
-        )?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            &selection.conversation_id,
-            &selection.project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
         )?;
         Ok(RunRecoveryArtifactCreated {
             run_recovery_id,
@@ -2544,18 +2453,11 @@ impl WorkspaceConversationService {
                 "timestamp": now,
             }),
         );
-        touch_snapshot(
+        persist_snapshot(
             &repository,
+            &selection.conversation_id,
+            &selection.project_path,
             &mut snapshot,
-            &selection.conversation_id,
-            &selection.project_path,
-        )?;
-        repository.write_snapshot(&snapshot)?;
-        append_events(
-            &repository,
-            &selection.conversation_id,
-            &selection.project_path,
-            &[build_conversation_snapshot_payload(&snapshot)],
         )?;
         Ok(())
     }
@@ -5436,49 +5338,6 @@ fn build_conversation_snapshot_payload(snapshot: &Value) -> Value {
     })
 }
 
-fn stamp_progress_payloads_with_state_revision(snapshot: &mut Value, payloads: &mut [Value]) {
-    if payloads.is_empty() {
-        return;
-    }
-    let base_revision = snapshot
-        .get("revision")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let updated_at = snapshot
-        .get("updated_at")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let final_revision = base_revision + payloads.len() as i64 - 1;
-    for (index, payload) in payloads.iter_mut().enumerate() {
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("revision".to_string(), json!(base_revision + index as i64));
-            object.insert("updated_at".to_string(), json!(updated_at));
-            if object.get("type").and_then(Value::as_str) == Some("conversation_snapshot") {
-                if let Some(state_object) = object.get_mut("state").and_then(Value::as_object_mut) {
-                    state_object.insert("revision".to_string(), json!(final_revision));
-                    state_object.insert("updated_at".to_string(), json!(updated_at));
-                }
-            }
-        }
-    }
-    if let Some(object) = snapshot.as_object_mut() {
-        object.insert("revision".to_string(), json!(final_revision));
-    }
-}
-
-fn append_events(
-    repository: &ConversationRepository,
-    conversation_id: &str,
-    project_path: &str,
-    events: &[Value],
-) -> WorkspaceResult<()> {
-    for event in events {
-        repository.append_conversation_event(conversation_id, project_path, event)?;
-    }
-    Ok(())
-}
-
 fn persist_snapshot_with_payloads(
     repository: &ConversationRepository,
     conversation_id: &str,
@@ -5488,9 +5347,24 @@ fn persist_snapshot_with_payloads(
 ) -> WorkspaceResult<()> {
     touch_snapshot(repository, snapshot, conversation_id, project_path)?;
     emitted_payloads.push(build_conversation_snapshot_payload(snapshot));
-    stamp_progress_payloads_with_state_revision(snapshot, emitted_payloads);
-    repository.write_snapshot(snapshot)?;
-    append_events(repository, conversation_id, project_path, emitted_payloads)
+    repository.persist_snapshot_with_events(snapshot, emitted_payloads)?;
+    Ok(())
+}
+
+fn persist_snapshot(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    snapshot: &mut Value,
+) -> WorkspaceResult<()> {
+    let mut emitted_payloads = Vec::new();
+    persist_snapshot_with_payloads(
+        repository,
+        conversation_id,
+        project_path,
+        snapshot,
+        &mut emitted_payloads,
+    )
 }
 
 fn append_mode_change_turn(snapshot: &mut Value, chat_mode: &str) -> Value {
