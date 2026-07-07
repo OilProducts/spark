@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::records::{TranscriptSegment, TranscriptTurn};
+
+/// Wire payload discriminant for transient stream deltas.
+pub const TRANSIENT_STREAM_EVENT_TYPE: &str = "stream_delta";
 
 /// A live stream update for connected clients. Transient events carry a
 /// per-turn stream sequence instead of a durable revision, are never appended
@@ -18,6 +21,19 @@ pub struct TransientStreamEvent {
     pub base_revision: i64,
     #[serde(flatten)]
     pub body: TransientStreamBody,
+}
+
+impl TransientStreamEvent {
+    /// The live wire payload for this delta. Carries `type: "stream_delta"`
+    /// and no `revision`, so the journal appender refuses it and clients can
+    /// discriminate committed events from transients on payload type alone.
+    pub fn wire_payload(&self) -> Value {
+        let mut payload = serde_json::to_value(self).unwrap_or_else(|_| json!({}));
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("type".to_string(), json!(TRANSIENT_STREAM_EVENT_TYPE));
+        }
+        payload
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

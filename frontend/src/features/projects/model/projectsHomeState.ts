@@ -8,6 +8,7 @@ import {
     type ConversationSegmentResponse,
     type ConversationSegmentUpsertEventResponse,
     type ConversationSnapshotResponse,
+    type ConversationStreamDeltaEventResponse,
     type ConversationSummaryResponse,
     type ConversationTurnResponse,
     type ConversationTurnUpsertEventResponse,
@@ -30,6 +31,8 @@ export type {
 } from '@/lib/workspaceClient'
 
 export type ConversationStreamEvent = ConversationTurnUpsertEventResponse | ConversationSegmentUpsertEventResponse
+
+export type ConversationStreamDelta = ConversationStreamDeltaEventResponse
 
 export type NormalizedConversationRecord = {
     schema_version: ConversationSnapshotResponse['schema_version']
@@ -632,6 +635,111 @@ export function applyConversationStreamEventToCache(
                     current.summariesByProjectPath[projectPath] || [],
                     buildConversationSummaryFromRecord(mergedRecord),
                 ),
+            },
+        },
+    }
+}
+
+export type ApplyTransientConversationEventResult =
+    | {
+        status: 'applied'
+        record: NormalizedConversationRecord
+        cache: ProjectConversationCacheState
+    }
+    | {
+        status: 'dropped'
+        cache: ProjectConversationCacheState
+    }
+
+/**
+ * Apply a transient stream delta to the render cache. Transients update the
+ * visible turn/segment state but never advance the committed revision, never
+ * touch summaries or artifact records, and are simply dropped when stale or
+ * when no committed record exists yet — the next committed event or snapshot
+ * restores durable state.
+ */
+export function applyTransientConversationEventToCache(
+    current: ProjectConversationCacheState,
+    event: ConversationStreamDeltaEventResponse,
+): ApplyTransientConversationEventResult {
+    const existingRecord = current.conversationsById[event.conversation_id]
+    if (!existingRecord || event.base_revision < existingRecord.revision) {
+        return { status: 'dropped', cache: current }
+    }
+    let mergedRecord: NormalizedConversationRecord = existingRecord
+    if (event.delta_kind === 'turn_delta' && event.turn) {
+        const currentTurn = existingRecord.turnsById[event.turn.id] || null
+        const turn = sanitizeStreamingTurnUpsert(currentTurn, event.turn)
+        mergedRecord = {
+            ...existingRecord,
+            orderedTurnIds: existingRecord.turnsById[turn.id]
+                ? existingRecord.orderedTurnIds
+                : [...existingRecord.orderedTurnIds, turn.id],
+            turnsById: {
+                ...existingRecord.turnsById,
+                [turn.id]: turn,
+            },
+        }
+        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, turn.id)
+    } else if (event.delta_kind === 'segment_delta' && event.segment) {
+        const segment = event.segment
+        const turnSegmentIds = existingRecord.orderedSegmentIdsByTurnId[segment.turn_id] || []
+        const nextTurnSegmentIds = turnSegmentIds.includes(segment.id)
+            ? turnSegmentIds
+            : [...turnSegmentIds, segment.id]
+        const nextSegmentsById = {
+            ...existingRecord.segmentsById,
+            [segment.id]: segment,
+        }
+        nextTurnSegmentIds.sort((leftId, rightId) => {
+            const left = nextSegmentsById[leftId]
+            const right = nextSegmentsById[rightId]
+            if (!left || !right) {
+                return leftId.localeCompare(rightId)
+            }
+            const orderDelta = left.order - right.order
+            if (orderDelta !== 0) {
+                return orderDelta
+            }
+            return left.timestamp.localeCompare(right.timestamp) || left.id.localeCompare(right.id)
+        })
+        mergedRecord = {
+            ...existingRecord,
+            segmentsById: nextSegmentsById,
+            orderedSegmentIdsByTurnId: {
+                ...existingRecord.orderedSegmentIdsByTurnId,
+                [segment.turn_id]: nextTurnSegmentIds,
+            },
+        }
+        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, segment.turn_id)
+    } else if (event.delta_kind === 'token_usage' && event.token_usage) {
+        const turn = existingRecord.turnsById[event.turn_id]
+        if (!turn) {
+            return { status: 'dropped', cache: current }
+        }
+        mergedRecord = {
+            ...existingRecord,
+            turnsById: {
+                ...existingRecord.turnsById,
+                [event.turn_id]: {
+                    ...turn,
+                    token_usage: event.token_usage,
+                },
+            },
+        }
+        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, event.turn_id)
+    } else {
+        return { status: 'dropped', cache: current }
+    }
+
+    return {
+        status: 'applied',
+        record: mergedRecord,
+        cache: {
+            ...current,
+            conversationsById: {
+                ...current.conversationsById,
+                [event.conversation_id]: mergedRecord,
             },
         },
     }

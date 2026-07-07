@@ -1370,29 +1370,48 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
         .expect("execute turn");
 
     let live_payloads = progress_payloads.lock().expect("progress payloads");
+    // Committed start events keep the journal wire shape.
     assert!(live_payloads.iter().any(|payload| {
         payload["type"] == "turn_upsert"
             && payload["turn"]["role"] == "user"
             && payload["turn"]["content"] == "Stream this"
     }));
+    // Streamed updates are transient deltas: coalesced bodies, a per-turn
+    // stream sequence, the committed base revision, and no durable revision.
     assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "turn_upsert"
+        payload["type"] == "stream_delta"
+            && payload["delta_kind"] == "turn_delta"
             && payload["turn"]["role"] == "assistant"
             && payload["turn"]["status"] == "streaming"
             && payload["turn"]["content"] == "Hel"
+            && payload.get("revision").is_none()
     }));
     assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "segment_upsert"
+        payload["type"] == "stream_delta"
+            && payload["delta_kind"] == "segment_delta"
             && payload["segment"]["kind"] == "assistant_message"
             && payload["segment"]["status"] == "streaming"
             && payload["segment"]["content"] == "Hel"
     }));
     assert!(live_payloads.iter().any(|payload| {
-        payload["type"] == "segment_upsert"
+        payload["type"] == "stream_delta"
+            && payload["delta_kind"] == "segment_delta"
             && payload["segment"]["kind"] == "reasoning"
             && payload["segment"]["status"] == "streaming"
             && payload["segment"]["content"] == "Thinking"
     }));
+    let stream_sequences = live_payloads
+        .iter()
+        .filter(|payload| payload["type"] == "stream_delta")
+        .map(|payload| payload["stream_sequence"].as_i64().expect("sequence"))
+        .collect::<Vec<_>>();
+    let mut sorted_sequences = stream_sequences.clone();
+    sorted_sequences.sort_unstable();
+    sorted_sequences.dedup();
+    assert_eq!(
+        stream_sequences, sorted_sequences,
+        "stream sequences strictly increase"
+    );
     drop(live_payloads);
 
     let assistant_turn = snapshot["turns"]

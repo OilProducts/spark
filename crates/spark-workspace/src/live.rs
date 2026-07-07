@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
+use spark_storage::conversation::TRANSIENT_STREAM_EVENT_TYPE;
 
 use crate::conversations::WorkspaceConversationService;
 use crate::triggers::WorkspaceTriggerService;
@@ -397,6 +398,28 @@ pub fn conversation_event_envelope(
     revision: i64,
 ) -> LiveEnvelope {
     let raw_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    if raw_type == TRANSIENT_STREAM_EVENT_TYPE {
+        // Transient deltas are stream-local: they carry a stream-sequence
+        // cursor instead of a committed revision and are never journaled.
+        let stream_sequence = event
+            .get("stream_sequence")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        return LiveEnvelope {
+            event_type: "conversation.stream_delta".to_string(),
+            project_path: Some(project_path.to_string()),
+            resource: LiveResource {
+                kind: "conversation".to_string(),
+                id: Some(conversation_id.to_string()),
+            },
+            cursor: Some(LiveCursor {
+                kind: "conversation_stream_sequence".to_string(),
+                value: stream_sequence,
+            }),
+            payload: event,
+            reason: None,
+        };
+    }
     let event_type = match raw_type {
         "turn_upsert" => "conversation.turn_upsert".to_string(),
         "segment_upsert" => "conversation.segment_upsert".to_string(),

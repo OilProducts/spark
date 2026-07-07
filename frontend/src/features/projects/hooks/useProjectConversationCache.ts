@@ -5,12 +5,14 @@ import type {
     ConversationSummaryResponse,
     ConversationSegmentUpsertEventResponse,
     ConversationSnapshotResponse,
+    ConversationStreamDeltaEventResponse,
     ConversationTurnUpsertEventResponse,
 } from '@/lib/workspaceClient'
 import { fetchProjectConversationListValidated } from '@/lib/workspaceClient'
 import {
     applyConversationSnapshotToCache,
     applyConversationStreamEventToCache,
+    applyTransientConversationEventToCache,
     setProjectConversationSummaryList,
     type ConversationStreamEvent,
 } from '../model/projectsHomeState'
@@ -181,9 +183,30 @@ export function useProjectConversationCache({
         return result
     }, [commitConversationCache])
 
+    const applyTransientConversationEvent = useCallback((
+        projectPath: string,
+        event: ConversationStreamDeltaEventResponse,
+        source = 'unknown',
+    ) => {
+        const result = applyTransientConversationEventToCache(conversationCacheRef.current, event)
+        if (result.status === 'dropped') {
+            return result
+        }
+        commitConversationCache(result.cache)
+        debugProjectChat('apply transient conversation stream delta', {
+            source,
+            projectPath,
+            conversationId: event.conversation_id,
+            deltaKind: event.delta_kind,
+            streamSequence: event.stream_sequence,
+        })
+        return result
+    }, [commitConversationCache])
+
     return {
         applyConversationSnapshot,
         applyConversationStreamEvent,
+        applyTransientConversationEvent,
         commitConversationCache,
         conversationCache,
         conversationCacheRef,

@@ -1,6 +1,7 @@
 import {
   applyConversationSnapshotToCache,
   applyConversationStreamEventToCache,
+  applyTransientConversationEventToCache,
   EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
   getConversationTimelineEntries,
   hydrateConversationRecordFromSnapshot,
@@ -9,6 +10,7 @@ import {
 import type {
   ConversationSegmentResponse,
   ConversationSnapshotResponse,
+  ConversationStreamDeltaEventResponse,
   ConversationTurnResponse,
   FlowLaunchResponse,
   FlowRunRequestResponse,
@@ -687,5 +689,127 @@ describe('applyConversationSnapshotToCache', () => {
     expect(result.summariesByProjectPath[projectSnapshot.project_path]).toBeUndefined()
     expect(result.conversationsById[otherSnapshot.conversation_id]?.project_path).toBe(otherSnapshot.project_path)
     expect(result.summariesByProjectPath[otherSnapshot.project_path]).toHaveLength(1)
+  })
+})
+
+describe('applyTransientConversationEventToCache', () => {
+  const buildDelta = (
+    overrides: Partial<ConversationStreamDeltaEventResponse> = {},
+  ): ConversationStreamDeltaEventResponse => ({
+    type: 'stream_delta',
+    conversation_id: 'conversation-1',
+    turn_id: 'turn-assistant',
+    stream_sequence: 1,
+    base_revision: 3,
+    delta_kind: 'segment_delta',
+    segment: buildSegment({
+      status: 'streaming',
+      completed_at: null,
+      content: 'Partial stream',
+    }),
+    ...overrides,
+  })
+
+  const seededCache = () => applyConversationSnapshotToCache(
+    EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+    '/tmp/project-contract-behavior',
+    buildSnapshot({ revision: 3 }),
+  ).cache
+
+  it('applies segment deltas to the timeline without advancing the committed revision', () => {
+    const cache = seededCache()
+    const result = applyTransientConversationEventToCache(cache, buildDelta())
+
+    expect(result.status).toBe('applied')
+    if (result.status !== 'applied') {
+      return
+    }
+    expect(result.record.revision).toBe(3)
+    expect(result.record.segmentsById['segment-assistant']?.content).toBe('Partial stream')
+    const entries = getConversationTimelineEntries(result.record)
+    expect(entries.some((entry) => 'content' in entry && entry.content === 'Partial stream')).toBe(true)
+  })
+
+  it('applies turn deltas with streaming-content sanitization and no revision change', () => {
+    const cache = seededCache()
+    const result = applyTransientConversationEventToCache(cache, buildDelta({
+      delta_kind: 'turn_delta',
+      segment: undefined,
+      turn: buildTurn({ status: 'streaming', content: 'Live turn content' }),
+    }))
+
+    expect(result.status).toBe('applied')
+    if (result.status !== 'applied') {
+      return
+    }
+    expect(result.record.revision).toBe(3)
+    expect(result.record.turnsById['turn-assistant']?.content).toBe('Live turn content')
+    expect(result.record.turnsById['turn-assistant']?.status).toBe('streaming')
+  })
+
+  it('drops deltas whose base revision is behind the committed record', () => {
+    const cache = seededCache()
+    const result = applyTransientConversationEventToCache(cache, buildDelta({ base_revision: 2 }))
+
+    expect(result.status).toBe('dropped')
+    expect(result.cache).toBe(cache)
+  })
+
+  it('drops deltas for unknown conversations instead of buffering them', () => {
+    const result = applyTransientConversationEventToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      buildDelta({ conversation_id: 'conversation-unknown' }),
+    )
+
+    expect(result.status).toBe('dropped')
+    expect(result.cache).toBe(EMPTY_PROJECT_CONVERSATION_CACHE_STATE)
+  })
+
+  it('lets a later committed segment upsert win over prior transients and advance the revision', () => {
+    const cache = seededCache()
+    const transient = applyTransientConversationEventToCache(cache, buildDelta())
+    expect(transient.status).toBe('applied')
+    if (transient.status !== 'applied') {
+      return
+    }
+
+    const committed = applyConversationStreamEventToCache(
+      transient.cache,
+      '/tmp/project-contract-behavior',
+      {
+        type: 'segment_upsert',
+        revision: 4,
+        conversation_id: 'conversation-1',
+        project_path: '/tmp/project-contract-behavior',
+        title: 'Contract behavior',
+        updated_at: '2026-03-06T15:02:00Z',
+        segment: buildSegment({ content: 'Final committed content' }),
+      },
+    )
+
+    expect(committed.status).toBe('applied')
+    if (committed.status !== 'applied') {
+      return
+    }
+    expect(committed.record.revision).toBe(4)
+    expect(committed.record.segmentsById['segment-assistant']?.content).toBe('Final committed content')
+  })
+
+  it('merges token usage deltas onto the targeted turn', () => {
+    const cache = seededCache()
+    const result = applyTransientConversationEventToCache(cache, buildDelta({
+      delta_kind: 'token_usage',
+      segment: undefined,
+      token_usage: { total: { inputTokens: 12, outputTokens: 5 } },
+    }))
+
+    expect(result.status).toBe('applied')
+    if (result.status !== 'applied') {
+      return
+    }
+    expect(result.record.revision).toBe(3)
+    expect(result.record.turnsById['turn-assistant']?.token_usage).toEqual({
+      total: { inputTokens: 12, outputTokens: 5 },
+    })
   })
 })

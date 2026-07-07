@@ -901,12 +901,13 @@ impl ConversationRepository {
         project_path: &str,
         payload: &Value,
     ) -> Result<()> {
+        let payload_type = payload
+            .get("type")
+            .and_then(Value::as_str)
+            .and_then(non_empty_str);
         if event_revision(payload).is_none()
-            || payload
-                .get("type")
-                .and_then(Value::as_str)
-                .and_then(non_empty_str)
-                .is_none()
+            || payload_type.is_none()
+            || payload_type == Some(crate::conversation::TRANSIENT_STREAM_EVENT_TYPE)
         {
             return Ok(());
         }

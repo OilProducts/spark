@@ -31,4 +31,4 @@ pub use records::{
     SEGMENT_KIND_MODEL_TOOL_CALL, SEGMENT_KIND_PLAN, SEGMENT_KIND_REASONING,
     SEGMENT_KIND_REQUEST_USER_INPUT, SEGMENT_KIND_TOOL_CALL,
 };
-pub use transient::{TransientStreamBody, TransientStreamEvent};
+pub use transient::{TransientStreamBody, TransientStreamEvent, TRANSIENT_STREAM_EVENT_TYPE};

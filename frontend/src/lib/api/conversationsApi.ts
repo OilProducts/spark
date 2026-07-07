@@ -210,6 +210,18 @@ export interface ConversationSegmentUpsertEventResponse {
     proposed_plans?: ProposedPlanArtifactResponse[]
 }
 
+export interface ConversationStreamDeltaEventResponse {
+    type: 'stream_delta'
+    conversation_id: string
+    turn_id: string
+    stream_sequence: number
+    base_revision: number
+    delta_kind: 'turn_delta' | 'segment_delta' | 'token_usage'
+    turn?: ConversationTurnResponse
+    segment?: ConversationSegmentResponse
+    token_usage?: Record<string, unknown>
+}
+
 function parseConversationTurnResponse(value: unknown): ConversationTurnResponse | null {
     const record = asUnknownRecord(value)
     if (!record) {
@@ -698,6 +710,44 @@ export function parseConversationStreamEventResponse(
             ...(flow_launches ? { flow_launches } : {}),
             ...(proposed_plans ? { proposed_plans } : {}),
         }
+    }
+    return null
+}
+
+export function parseConversationStreamDeltaEventResponse(
+    payload: unknown,
+): ConversationStreamDeltaEventResponse | null {
+    const record = asUnknownRecord(payload)
+    if (
+        !record
+        || record.type !== 'stream_delta'
+        || typeof record.conversation_id !== 'string'
+        || typeof record.turn_id !== 'string'
+        || typeof record.stream_sequence !== 'number'
+        || !Number.isFinite(record.stream_sequence)
+        || typeof record.base_revision !== 'number'
+        || !Number.isFinite(record.base_revision)
+    ) {
+        return null
+    }
+    const base = {
+        type: 'stream_delta' as const,
+        conversation_id: record.conversation_id,
+        turn_id: record.turn_id,
+        stream_sequence: record.stream_sequence,
+        base_revision: record.base_revision,
+    }
+    if (record.delta_kind === 'turn_delta') {
+        const turn = parseConversationTurnResponse(record.turn)
+        return turn ? { ...base, delta_kind: 'turn_delta', turn } : null
+    }
+    if (record.delta_kind === 'segment_delta') {
+        const segment = parseConversationSegmentResponse(record.segment)
+        return segment ? { ...base, delta_kind: 'segment_delta', segment } : null
+    }
+    if (record.delta_kind === 'token_usage') {
+        const tokenUsage = asUnknownRecord(record.token_usage)
+        return tokenUsage ? { ...base, delta_kind: 'token_usage', token_usage: tokenUsage } : null
     }
     return null
 }

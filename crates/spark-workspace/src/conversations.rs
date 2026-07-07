@@ -22,7 +22,7 @@ use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
 use spark_storage::conversation::{
     ArtifactCollection, ConversationCommit, ConversationMetadataPatch, ConversationMutation,
-    TranscriptSegment, TranscriptTurn, ORDER_UNASSIGNED,
+    TranscriptSegment, TranscriptTurn, TransientStreamBody, TransientStreamEvent, ORDER_UNASSIGNED,
 };
 use spark_storage::{
     ConversationRepository, ProjectRegistry, StorageError, CONVERSATION_STATE_SCHEMA_VERSION,
@@ -3346,6 +3346,7 @@ fn live_conversation_turn_event_sink(
         snapshot,
         base_revision,
         pending_payloads: Vec::new(),
+        stream_sequence: 0,
         assistant_turn_id,
         chat_mode,
         repository,
@@ -3367,6 +3368,8 @@ struct LiveConversationTurnState {
     /// All turn/segment upserts materialized since the last mid-turn commit;
     /// committed together when the turn must persist durable state early.
     pending_payloads: Vec<Value>,
+    /// Monotonic sequence for transient stream deltas published this turn.
+    stream_sequence: u64,
     assistant_turn_id: String,
     chat_mode: String,
     repository: ConversationRepository,
@@ -3505,8 +3508,45 @@ impl LiveConversationTurnState {
         self.pending_payloads
             .extend(emitted_payloads.iter().cloned());
         for payload in emitted_payloads {
-            (self.progress)(payload);
+            if let Some(delta) = self.transient_wire_payload(&payload) {
+                (self.progress)(delta);
+            }
         }
+    }
+
+    /// Convert a working-view upsert into a transient stream delta. Deltas
+    /// carry a per-turn stream sequence and the committed base revision, never
+    /// a durable revision.
+    fn transient_wire_payload(&mut self, payload: &Value) -> Option<Value> {
+        let body = match payload.get("type").and_then(Value::as_str) {
+            Some("turn_upsert") => {
+                let turn: TranscriptTurn =
+                    serde_json::from_value(payload.get("turn")?.clone()).ok()?;
+                TransientStreamBody::TurnDelta { turn }
+            }
+            Some("segment_upsert") => {
+                let segment: TranscriptSegment =
+                    serde_json::from_value(payload.get("segment")?.clone()).ok()?;
+                TransientStreamBody::SegmentDelta { segment }
+            }
+            _ => return None,
+        };
+        let turn_id = match &body {
+            TransientStreamBody::TurnDelta { turn } => turn.id.clone(),
+            TransientStreamBody::SegmentDelta { segment } => segment.turn_id.clone(),
+            TransientStreamBody::TokenUsage { .. } => self.assistant_turn_id.clone(),
+        };
+        self.stream_sequence += 1;
+        Some(
+            TransientStreamEvent {
+                conversation_id: self.conversation_id.clone(),
+                turn_id,
+                stream_sequence: self.stream_sequence,
+                base_revision: self.base_revision,
+                body,
+            }
+            .wire_payload(),
+        )
     }
 
     fn emit_materialized_segment(

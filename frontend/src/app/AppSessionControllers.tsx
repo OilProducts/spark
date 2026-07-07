@@ -16,6 +16,7 @@ import type {
     ConversationStreamEvent,
     ConversationSummaryResponse,
 } from '@/features/projects/model/projectsHomeState'
+import type { ConversationStreamDeltaEventResponse } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
@@ -79,6 +80,11 @@ type HomeConversationSyncControllerProps = {
         event: ConversationStreamEvent,
         source?: string,
     ) => ApplyConversationStreamEventResult | undefined
+    applyTransientConversationEvent: (
+        projectPath: string,
+        event: ConversationStreamDeltaEventResponse,
+        source?: string,
+    ) => unknown
     appendProjectEvent: (projectPath: string, message: string) => void
     setProjectPanelError: (projectPath: string, value: string | null) => void
 }
@@ -89,6 +95,7 @@ function HomeConversationSyncController({
     isForegroundProject,
     applyConversationSnapshot,
     applyConversationStreamEvent,
+    applyTransientConversationEvent,
     appendProjectEvent,
     setProjectPanelError,
 }: HomeConversationSyncControllerProps) {
@@ -106,6 +113,7 @@ function HomeConversationSyncController({
         appendLocalProjectEvent,
         applyConversationSnapshot,
         applyConversationStreamEvent,
+        applyTransientConversationEvent,
         formatErrorMessage: extractApiErrorMessage,
         setPanelError,
     })
@@ -181,6 +189,7 @@ export function HomeSessionController() {
     const {
         applyConversationSnapshot,
         applyConversationStreamEvent,
+        applyTransientConversationEvent,
         loadProjectConversationSummaries,
     } = useProjectConversationCache({
         persistProjectState,
@@ -316,6 +325,7 @@ export function HomeSessionController() {
                     isForegroundProject={isHomeVisible && activeProjectPath === projectPath}
                     applyConversationSnapshot={applyConversationSnapshot}
                     applyConversationStreamEvent={applyConversationStreamEvent}
+                    applyTransientConversationEvent={applyTransientConversationEvent}
                     appendProjectEvent={appendProjectEvent}
                     setProjectPanelError={setProjectPanelError}
                 />

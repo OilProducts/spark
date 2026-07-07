@@ -747,6 +747,212 @@ impl AgentTurnBackend for StaticAgentTurnBackend {
     }
 }
 
+struct StreamingAgentTurnBackend {
+    stream_events: Vec<TurnStreamEvent>,
+    output: AgentTurnOutput,
+}
+
+impl AgentTurnBackend for StreamingAgentTurnBackend {
+    fn run_turn(&self, _request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        Ok(self.output.clone())
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<spark_agent_adapter::AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        if let Some(sink) = event_sink {
+            for event in &self.stream_events {
+                sink(event.clone());
+            }
+        }
+        self.run_turn(request)
+    }
+}
+
+#[tokio::test]
+async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-transient");
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(StreamingAgentTurnBackend {
+            stream_events: vec![
+                content_delta("Str", "app-turn-transient", "final-answer"),
+                content_delta("eaming.", "app-turn-transient", "final-answer"),
+                request_user_input_event(),
+            ],
+            output: AgentTurnOutput {
+                events: vec![content_completed(
+                    TurnStreamChannel::Assistant,
+                    "Streaming.",
+                    "app-turn-transient",
+                    "final-answer",
+                )],
+                final_assistant_text: Some("Streaming.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+        }),
+    );
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id=conversation-transient&conversation_project_path={}&conversation_revision=2",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/conversation-transient/turns",
+        Some(json!({
+            "project_path": project_path,
+            "message": "Stream transient deltas."
+        })),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+
+    let mut envelopes = Vec::new();
+    let mut turn_completed = false;
+    for _ in 0..60 {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        if envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["status"] == "complete"
+            && envelope["payload"]["turn"]["content"] == "Streaming."
+        {
+            turn_completed = true;
+        }
+        envelopes.push(envelope);
+        if turn_completed {
+            break;
+        }
+    }
+    assert!(turn_completed, "committed completion turn upsert arrives");
+
+    // Transient deltas ride conversation.stream_delta envelopes with a
+    // stream-sequence cursor, no revision, and coalesced render bodies.
+    let deltas = envelopes
+        .iter()
+        .filter(|envelope| envelope["type"] == "conversation.stream_delta")
+        .collect::<Vec<_>>();
+    assert!(!deltas.is_empty(), "stream deltas were published live");
+    for delta in &deltas {
+        assert_eq!(delta["cursor"]["kind"], "conversation_stream_sequence");
+        assert_eq!(delta["payload"]["type"], "stream_delta");
+        assert!(delta["payload"].get("revision").is_none());
+        assert_eq!(
+            delta["payload"]["conversation_id"],
+            "conversation-transient"
+        );
+    }
+    let sequences = deltas
+        .iter()
+        .map(|delta| delta["cursor"]["value"].as_i64().expect("sequence"))
+        .collect::<Vec<_>>();
+    let mut sorted = sequences.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sequences, sorted, "stream sequences strictly increase");
+    assert!(deltas.iter().any(|delta| {
+        delta["payload"]["delta_kind"] == "segment_delta"
+            && delta["payload"]["segment"]["kind"] == "assistant_message"
+            && delta["payload"]["segment"]["content"] == "Str"
+    }));
+    assert!(deltas.iter().any(|delta| {
+        delta["payload"]["delta_kind"] == "turn_delta"
+            && delta["payload"]["turn"]["status"] == "streaming"
+            && delta["payload"]["turn"]["content"] == "Streaming."
+    }));
+
+    // The pending request-user-input mid-turn commit publishes durable
+    // segment upserts with real revision cursors.
+    assert!(envelopes.iter().any(|envelope| {
+        envelope["type"] == "conversation.segment_upsert"
+            && envelope["cursor"]["kind"] == "conversation_revision"
+            && envelope["payload"]["segment"]["kind"] == "request_user_input"
+            && envelope["payload"]["segment"]["request_user_input"]["status"] == "pending"
+    }));
+
+    // Reconnect hydration restores committed state without any stream deltas.
+    let hydrated = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/conversations/conversation-transient?project_path={}",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(hydrated.status(), StatusCode::OK);
+    let hydrated_snapshot = json_body(hydrated).await;
+    let final_revision = hydrated_snapshot["revision"]
+        .as_i64()
+        .expect("final revision");
+
+    // Replay after reconnect returns only committed journal entries: stream
+    // deltas are gone and every envelope carries a contiguous revision cursor.
+    let replay = request(
+        app,
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id=conversation-transient&conversation_project_path={}&conversation_revision=2",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(replay.status(), StatusCode::OK);
+    let mut replay_stream = replay.into_body().into_data_stream();
+    let mut replayed = Vec::new();
+    for _ in 2..final_revision {
+        replayed.push(sse_data_json(&next_sse_chunk(&mut replay_stream).await));
+    }
+    assert!(!replayed.is_empty(), "replay returns committed entries");
+    for envelope in &replayed {
+        assert_ne!(envelope["type"], "conversation.stream_delta");
+        assert_eq!(envelope["cursor"]["kind"], "conversation_revision");
+    }
+    assert_eq!(
+        replayed
+            .iter()
+            .map(|envelope| envelope["cursor"]["value"].as_i64().expect("revision"))
+            .collect::<Vec<_>>(),
+        (3..=final_revision).collect::<Vec<_>>()
+    );
+    assert!(replayed.iter().any(|envelope| {
+        envelope["type"] == "conversation.turn_upsert"
+            && envelope["payload"]["turn"]["content"] == "Streaming."
+            && envelope["payload"]["turn"]["status"] == "complete"
+    }));
+    assert!(hydrated_snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["role"] == "assistant"
+            && turn["status"] == "complete"
+            && turn["content"] == "Streaming."));
+    assert!(hydrated_snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .any(|segment| segment["kind"] == "request_user_input"
+            && segment["request_user_input"]["status"] == "pending"));
+}
+
 #[tokio::test]
 async fn live_route_replays_run_journals_and_runs_overview() {
     let temp = tempfile::tempdir().expect("tempdir");

@@ -3,8 +3,10 @@ import {
     ApiHttpError,
     fetchConversationSnapshotValidated,
     parseConversationSnapshotResponse,
+    parseConversationStreamDeltaEventResponse,
     parseConversationStreamEventResponse,
     type ConversationSnapshotResponse,
+    type ConversationStreamDeltaEventResponse,
     type ConversationTurnUpsertEventResponse,
     type ConversationSegmentUpsertEventResponse,
 } from '@/lib/workspaceClient'
@@ -22,6 +24,11 @@ type UseConversationStreamArgs = {
         event: ConversationStreamEvent,
         source?: string,
     ) => ApplyConversationStreamEventResult | undefined
+    applyTransientConversationEvent: (
+        projectPath: string,
+        event: ConversationStreamDeltaEventResponse,
+        source?: string,
+    ) => unknown
     formatErrorMessage: (error: unknown, fallback: string) => string
     setPanelError: (message: string | null) => void
 }
@@ -32,6 +39,7 @@ export function useConversationStream({
     appendLocalProjectEvent,
     applyConversationSnapshot,
     applyConversationStreamEvent,
+    applyTransientConversationEvent,
     formatErrorMessage,
     setPanelError,
 }: UseConversationStreamArgs) {
@@ -62,6 +70,7 @@ export function useConversationStream({
 
     const snapshotHandlerRef = useRef(applyConversationSnapshot)
     const eventHandlerRef = useRef(applyConversationStreamEvent)
+    const transientHandlerRef = useRef(applyTransientConversationEvent)
     const errorFormatterRef = useRef(formatErrorMessage)
     const appendEventRef = useRef(appendLocalProjectEvent)
     const setPanelErrorRef = useRef(setPanelError)
@@ -69,6 +78,7 @@ export function useConversationStream({
     useEffect(() => {
         snapshotHandlerRef.current = applyConversationSnapshot
         eventHandlerRef.current = applyConversationStreamEvent
+        transientHandlerRef.current = applyTransientConversationEvent
         errorFormatterRef.current = formatErrorMessage
         appendEventRef.current = appendLocalProjectEvent
         setPanelErrorRef.current = setPanelError
@@ -76,6 +86,7 @@ export function useConversationStream({
         appendLocalProjectEvent,
         applyConversationSnapshot,
         applyConversationStreamEvent,
+        applyTransientConversationEvent,
         formatErrorMessage,
         setPanelError,
     ])
@@ -174,6 +185,15 @@ export function useConversationStream({
                     )
                     snapshotHandlerRef.current(activeProjectPath, snapshot, 'event-stream-snapshot')
                     replayPendingEventsAfterSnapshot(snapshot)
+                    return
+                }
+                if (detail.type === 'conversation.stream_delta' || payload.type === 'stream_delta') {
+                    // Transient deltas render live but are droppable: never
+                    // buffered pre-snapshot and never treated as committed.
+                    const delta = parseConversationStreamDeltaEventResponse(payload)
+                    if (delta) {
+                        transientHandlerRef.current(activeProjectPath, delta, 'event-stream')
+                    }
                     return
                 }
                 const parsedEvent = parseConversationStreamEventResponse(
