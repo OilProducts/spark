@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { RunTranscriptEntry, RunTranscriptSegmentEntry, PendingInterviewGate } from '../model/shared'
+import type { RunBoundaryMeta, RunTranscriptEntry, PendingInterviewGate } from '../model/shared'
 import { formatTimestamp, RUN_JOURNAL_WINDOW_SIZE, TIMELINE_SEVERITY_STYLES } from '../model/shared'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { ProjectConversationRequestUserInputCard } from '@/features/projects/components/ProjectConversationRequestUserInputCard'
@@ -21,17 +21,21 @@ interface RunTranscriptCardProps {
     isNarrowViewport?: boolean
 }
 
-function sourceLabel(entry: Extract<RunTranscriptEntry, { kind: 'boundary' }>) {
-    if (entry.sourceScope !== 'child') {
+function sourceLabel(meta: RunBoundaryMeta) {
+    if (meta.source_scope !== 'child') {
         return null
     }
-    const flowLabel = entry.sourceFlowName ? `Child flow ${entry.sourceFlowName}` : 'Child flow'
-    return entry.sourceParentNodeId ? `${flowLabel} via ${entry.sourceParentNodeId}` : flowLabel
+    const flowLabel = meta.source_flow_name ? `Child flow ${meta.source_flow_name}` : 'Child flow'
+    return meta.source_parent_node_id ? `${flowLabel} via ${meta.source_parent_node_id}` : flowLabel
 }
 
-function BoundaryRow({ entry }: { entry: Extract<RunTranscriptEntry, { kind: 'boundary' }> }) {
-    const label = entry.nodeId ?? 'run'
-    const source = sourceLabel(entry)
+function BoundaryRow({ entry }: { entry: RunTranscriptEntry }) {
+    const meta = entry.boundary
+    if (!meta) {
+        return null
+    }
+    const label = meta.node_id ?? 'run'
+    const source = sourceLabel(meta)
     return (
         <li className="flex justify-center">
             <div
@@ -42,8 +46,8 @@ function BoundaryRow({ entry }: { entry: Extract<RunTranscriptEntry, { kind: 'bo
                     <div className="min-w-0">
                         <p className="truncate text-xs font-semibold text-foreground">
                             {label}
-                            {entry.stageIndex !== null ? ` · index ${entry.stageIndex}` : ''}
-                            {entry.attempt !== null ? ` · attempt ${entry.attempt}` : ''}
+                            {meta.stage_index !== null && meta.stage_index !== undefined ? ` · index ${meta.stage_index}` : ''}
+                            {meta.attempt !== null && meta.attempt !== undefined ? ` · attempt ${meta.attempt}` : ''}
                         </p>
                         {source ? (
                             <p className="text-[11px] text-muted-foreground">{source}</p>
@@ -65,19 +69,19 @@ function BoundaryRow({ entry }: { entry: Extract<RunTranscriptEntry, { kind: 'bo
                     </span>
                 </div>
                 <p className="mt-1 text-[10px] text-muted-foreground">
-                    {formatTimestamp(entry.startedAt ?? entry.endedAt)}
-                    {entry.endedAt && entry.startedAt ? ` - ${formatTimestamp(entry.endedAt)}` : ''}
-                    {entry.model ? ` · ${entry.model}` : ''}
+                    {formatTimestamp(meta.started_at ?? meta.ended_at ?? null)}
+                    {meta.ended_at && meta.started_at ? ` - ${formatTimestamp(meta.ended_at)}` : ''}
+                    {meta.model ? ` · ${meta.model}` : ''}
                 </p>
             </div>
         </li>
     )
 }
 
-type RunMessageSegmentEntry = RunTranscriptSegmentEntry & { kind: 'assistant_message' | 'plan' | 'reasoning' }
-type RunNoticeSegmentEntry = RunTranscriptSegmentEntry & { kind: 'context_compaction' }
-type RunRequestUserInputSegmentEntry = RunTranscriptSegmentEntry & { kind: 'request_user_input' }
-type RunToolCallSegmentEntry = RunTranscriptSegmentEntry & { kind: 'tool_call' }
+type RunMessageSegmentEntry = RunTranscriptEntry & { kind: 'assistant_message' | 'plan' | 'reasoning' }
+type RunNoticeSegmentEntry = RunTranscriptEntry & { kind: 'context_compaction' }
+type RunRequestUserInputSegmentEntry = RunTranscriptEntry & { kind: 'request_user_input' }
+type RunToolCallSegmentEntry = RunTranscriptEntry & { kind: 'tool_call' }
 
 function MessageRow({ entry }: { entry: RunMessageSegmentEntry }) {
     const isThinking = entry.kind === 'reasoning'
@@ -129,11 +133,13 @@ function toRequestUserInputEntry(entry: RunRequestUserInputSegmentEntry): Extrac
         role: 'system',
         timestamp: entry.timestamp,
         content: entry.content,
-        status: entry.status === 'running'
+        status: entry.status === 'running' || entry.status === 'streaming'
             ? 'streaming'
-            : entry.status === 'answered'
-                ? 'complete'
-                : entry.status,
+            : entry.status === 'pending'
+                ? 'pending'
+                : entry.status === 'failed'
+                    ? 'failed'
+                    : 'complete',
         requestUserInput: {
             requestId: request?.request_id ?? entry.id,
             status: request?.status ?? 'pending',
@@ -256,7 +262,7 @@ function ToolCallTranscriptRow({
 
 function transcriptSearchText(entry: RunTranscriptEntry): string {
     if (entry.kind === 'boundary') {
-        return entry.summary
+        return entry.boundary?.summary ?? entry.content
     }
     if (entry.kind === 'tool_call') {
         const toolCall = entry.tool_call

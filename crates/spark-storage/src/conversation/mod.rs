@@ -30,8 +30,8 @@ pub use journal::{JournalEntry, JournalEntryKind};
 pub use mutations::{ConversationMetadataPatch, ConversationMutation};
 pub use projection::{record_from_snapshot, snapshot_from_record};
 pub use records::{
-    ArtifactCollection, ConversationArtifacts, ConversationMeta, ConversationRecord, Transcript,
-    TranscriptSegment, TranscriptTurn, ORDER_UNASSIGNED, SEGMENT_KIND_AGENT_EVENT,
+    ArtifactCollection, BoundaryMeta, ConversationArtifacts, ConversationMeta, ConversationRecord,
+    Transcript, TranscriptSegment, TranscriptTurn, ORDER_UNASSIGNED, SEGMENT_KIND_AGENT_EVENT,
     SEGMENT_KIND_ASSISTANT_MESSAGE, SEGMENT_KIND_BOUNDARY, SEGMENT_KIND_CONTEXT_COMPACTION,
     SEGMENT_KIND_MODEL_TOOL_CALL, SEGMENT_KIND_PLAN, SEGMENT_KIND_REASONING,
     SEGMENT_KIND_REQUEST_USER_INPUT, SEGMENT_KIND_TOOL_CALL,

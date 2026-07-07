@@ -275,7 +275,7 @@ fn raw_event_append_does_not_update_render_transcript() {
     assert_eq!(events.last().and_then(|event| event.sequence), Some(4));
 
     let transcript = store.read_transcript(&paths).expect("transcript");
-    assert!(transcript.entries.is_empty());
+    assert!(transcript.segments.is_empty());
 }
 
 #[test]

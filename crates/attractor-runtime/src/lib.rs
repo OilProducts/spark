@@ -101,4 +101,4 @@ pub use terminal::{
     resolve_terminal_workflow_outcome, GoalGateCheck, TerminalWorkflowOutcome,
     GOAL_GATE_NO_RETRY_TARGET_REASON, GOAL_GATE_UNSATISFIED_OUTCOME_CODE,
 };
-pub use transcript::{read_run_transcript, RunTranscript, RunTranscriptEntry};
+pub use transcript::read_run_transcript;

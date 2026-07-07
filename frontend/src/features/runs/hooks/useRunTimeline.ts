@@ -40,7 +40,6 @@ type UseRunTimelineArgs = {
 type TimelineProjection = {
     filteredCount: number
     groupedEntries: GroupedTimelineEntry[]
-    progressProjection: RunProgressProjection
 }
 
 const DEFAULT_TIMELINE_SESSION = {
@@ -87,11 +86,6 @@ const DEFAULT_RUN_JOURNAL_STATE: RunJournalStateEntry = {
 const EMPTY_TIMELINE_PROJECTION: TimelineProjection = {
     filteredCount: 0,
     groupedEntries: [],
-    progressProjection: {
-        activeEntry: null,
-        recentEntries: [],
-        nodeOptions: [],
-    },
 }
 
 const isRunTranscriptEntry = (entry: unknown): entry is RunTranscriptEntry => {
@@ -100,11 +94,9 @@ const isRunTranscriptEntry = (entry: unknown): entry is RunTranscriptEntry => {
     }
     const record = entry as Record<string, unknown>
     const kind = record.kind
-    if (kind === 'boundary') {
-        return typeof record.id === 'string' && typeof record.sequence === 'number'
-    }
     return (
-        kind === 'assistant_message'
+        kind === 'boundary'
+        || kind === 'assistant_message'
         || kind === 'plan'
         || kind === 'reasoning'
         || kind === 'context_compaction'
@@ -117,36 +109,19 @@ const buildTranscriptProjection = (
     entries: RunTranscriptEntry[],
 ): RunTranscriptProjection => ({
     entries: mergeTranscriptEntries(entries).sort((left, right) => {
-        const leftOrder = left.kind === 'boundary' ? left.sequence : left.order
-        const rightOrder = right.kind === 'boundary' ? right.sequence : right.order
-        if (leftOrder !== rightOrder) {
-            return leftOrder - rightOrder
+        if (left.order !== right.order) {
+            return left.order - right.order
         }
         return left.id.localeCompare(right.id)
     }),
 })
 
-const transcriptMergeKey = (entry: RunTranscriptEntry): string => (
-    entry.kind === 'boundary'
-        ? [
-            'boundary',
-            entry.sourceScope,
-            entry.sourceParentNodeId ?? '',
-            entry.sourceFlowName ?? '',
-            entry.nodeId ?? '',
-            entry.stageIndex ?? '',
-            entry.attempt ?? '',
-        ].join('::')
-        : entry.id
-)
-
 const mergeTranscriptEntries = (entries: RunTranscriptEntry[]): RunTranscriptEntry[] => (
-    Array.from(new Map(entries.map((entry) => [transcriptMergeKey(entry), entry])).values())
+    Array.from(new Map(entries.map((entry) => [entry.id, entry])).values())
 )
 
 const buildTimelineProjection = (
     journalState: RunJournalStateEntry,
-    selectedRunCurrentNode: string | null | undefined,
     filters: {
         timelineTypeFilter: string
         timelineCategoryFilter: 'all' | TimelineEventCategory
@@ -190,7 +165,6 @@ const buildTimelineProjection = (
     return {
         filteredCount,
         groupedEntries,
-        progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
     }
 }
 
@@ -198,7 +172,6 @@ const applyLiveMutationToProjection = (
     projection: TimelineProjection,
     mutation: Extract<RunJournalMutation, { kind: 'append_live' }>,
     journalState: RunJournalStateEntry,
-    selectedRunCurrentNode: string | null | undefined,
     filters: {
         timelineTypeFilter: string
         timelineCategoryFilter: 'all' | TimelineEventCategory
@@ -210,10 +183,7 @@ const applyLiveMutationToProjection = (
         return null
     }
     if (!matchesTimelineFilters(mutation.entry, filters)) {
-        return {
-            ...projection,
-            progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
-        }
+        return projection
     }
 
     const correlation = timelineCorrelationDescriptorFromEvent(mutation.entry, journalState._retryCorrelationEntityKeys)
@@ -225,7 +195,6 @@ const applyLiveMutationToProjection = (
                 correlation: null,
                 events: [mutation.entry],
             }, ...projection.groupedEntries],
-            progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
         }
     }
 
@@ -238,7 +207,6 @@ const applyLiveMutationToProjection = (
                 correlation,
                 events: [mutation.entry],
             }, ...projection.groupedEntries],
-            progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
         }
     }
 
@@ -255,7 +223,6 @@ const applyLiveMutationToProjection = (
             ...projection.groupedEntries.slice(0, existingIndex),
             ...projection.groupedEntries.slice(existingIndex + 1),
         ],
-        progressProjection: buildRunProgressProjection(iterateRunJournalEntries(journalState.segments), selectedRunCurrentNode),
     }
 }
 
@@ -337,7 +304,7 @@ export function useRunTimeline({
             && previous.revision === journalState.revision - 1
             && liveMutation
         ) {
-            const nextProjection = applyLiveMutationToProjection(previous.projection, liveMutation, journalState, selectedRunCurrentNode, timelineFilters)
+            const nextProjection = applyLiveMutationToProjection(previous.projection, liveMutation, journalState, timelineFilters)
             if (nextProjection) {
                 projectionCacheRef.current = {
                     filterKey,
@@ -349,7 +316,7 @@ export function useRunTimeline({
             }
         }
 
-        const nextProjection = buildTimelineProjection(journalState, selectedRunCurrentNode, timelineFilters)
+        const nextProjection = buildTimelineProjection(journalState, timelineFilters)
         projectionCacheRef.current = {
             filterKey,
             projection: nextProjection,
@@ -357,7 +324,7 @@ export function useRunTimeline({
             runId: selectedRunTimelineId,
         }
         return nextProjection
-    }, [filterKey, journalState, journalState.lastMutation, journalState.revision, selectedRunCurrentNode, selectedRunTimelineId, timelineFilters])
+    }, [filterKey, journalState, journalState.lastMutation, journalState.revision, selectedRunTimelineId, timelineFilters])
 
     const pendingInterviewGates = useMemo(
         () => mergePendingInterviewGatesWithSnapshots(journalState.pendingInterviewGates, pendingQuestionSnapshots),
@@ -487,6 +454,12 @@ export function useRunTimeline({
         ),
         [selectedRunTimelineId, transcriptState.entries, transcriptState.runId],
     )
+    // Live LLM progress renders from the transcript record, never from
+    // operational journal payload internals.
+    const progressProjection = useMemo<RunProgressProjection>(
+        () => buildRunProgressProjection(transcriptProjection.entries, selectedRunCurrentNode),
+        [selectedRunCurrentNode, transcriptProjection.entries],
+    )
     const groupedPendingInterviewGates = useMemo(() => {
         return buildGroupedPendingInterviewGates(visiblePendingInterviewGates)
     }, [visiblePendingInterviewGates])
@@ -601,7 +574,7 @@ export function useRunTimeline({
         latestTimelineEvent: latestRunStateTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError: timelineSession.pendingGateActionError,
-        progressProjection: timelineProjection.progressProjection,
+        progressProjection,
         setFreeformAnswersByGateId: (next: SetStateAction<Record<string, string>>) => patchTimelineSession({
             freeformAnswersByGateId: typeof next === 'function'
                 ? next(timelineSession.freeformAnswersByGateId)

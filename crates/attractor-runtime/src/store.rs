@@ -19,7 +19,8 @@ use crate::records::{normalize_record_for_write, read_run_record, write_run_reco
 use crate::results::{
     materialize_run_result, read_materialized_run_result, write_run_result, ResultSummaryFn,
 };
-use crate::transcript::{read_run_transcript, RunTranscript};
+use crate::transcript::read_run_transcript;
+use spark_storage::conversation::Transcript;
 
 #[derive(Debug, Clone)]
 pub struct RunStore {
@@ -305,7 +306,7 @@ impl RunStore {
         Ok(journal_entries_from_events(&self.read_raw_events(paths)?))
     }
 
-    pub fn read_transcript(&self, paths: &RunRootPaths) -> Result<RunTranscript> {
+    pub fn read_transcript(&self, paths: &RunRootPaths) -> Result<Transcript> {
         read_run_transcript(paths)
     }
 

@@ -72,6 +72,7 @@ fn segment(id: &str, turn_id: &str, order: i64) -> TranscriptSegment {
         tool_call: None,
         request_user_input: None,
         source: Some(json!({})),
+        boundary: None,
         extra: serde_json::Map::new(),
     }
 }

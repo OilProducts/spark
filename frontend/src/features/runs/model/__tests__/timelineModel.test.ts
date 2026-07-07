@@ -1,7 +1,6 @@
 import {
   buildGroupedPendingInterviewGates,
   buildPendingInterviewGates,
-  buildRunProgressEntries,
   buildRunProgressProjection,
   filterTimelineEvents,
   toTimelineEvent,
@@ -164,44 +163,29 @@ describe('timelineModel', () => {
     })).toBeNull()
   })
 
-  it('reconstructs bounded LLM progress entries from content events', () => {
-    const events = [
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 1,
-        emitted_at: '2026-04-06T12:00:00Z',
-        node_id: 'draft',
-        channel: 'assistant',
-        status: 'streaming',
-        content_delta: '## Draft\n\nUse ',
-        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
-      }),
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 2,
-        emitted_at: '2026-04-06T12:00:01Z',
-        node_id: 'draft',
-        channel: 'assistant',
-        status: 'streaming',
-        content_delta: '**markdown**.',
-        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
-      }),
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 3,
-        emitted_at: '2026-04-06T12:00:02Z',
-        node_id: 'draft',
-        channel: 'assistant',
-        status: 'complete',
-        content_delta: '## Draft\n\nUse **markdown**.',
-        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
-      }),
-    ].filter(Boolean)
+  const transcriptSegment = (overrides: Record<string, unknown>) => ({
+    id: 'segment-assistant-run-node-draft',
+    turn_id: 'run-node-draft',
+    order: 1,
+    kind: 'assistant_message',
+    role: 'assistant',
+    status: 'complete',
+    timestamp: '2026-04-06T12:00:00Z',
+    updated_at: '2026-04-06T12:00:02Z',
+    content: 'Draft output',
+    ...overrides,
+  })
 
-    const progressEntries = buildRunProgressEntries(events)
+  it('builds progress entries from coalesced transcript segments', () => {
+    const projection = buildRunProgressProjection([
+      transcriptSegment({
+        content: '## Draft\n\nUse **markdown**.',
+        order: 3,
+      }),
+    ] as never, null)
 
-    expect(progressEntries).toHaveLength(1)
-    expect(progressEntries[0]).toMatchObject({
+    expect(projection.recentEntries).toHaveLength(1)
+    expect(projection.recentEntries[0]).toMatchObject({
       nodeId: 'draft',
       channel: 'assistant',
       status: 'complete',
@@ -210,41 +194,23 @@ describe('timelineModel', () => {
     })
   })
 
-  it('selects the newest current-node LLM stream as active progress', () => {
-    const events = [
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 1,
-        emitted_at: '2026-04-06T12:00:00Z',
-        node_id: 'draft',
-        channel: 'assistant',
-        status: 'complete',
-        content_delta: 'Draft output',
-        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+  it('selects the newest current-node transcript stream as active progress', () => {
+    const projection = buildRunProgressProjection([
+      transcriptSegment({ order: 1 }),
+      transcriptSegment({
+        id: 'segment-assistant-run-node-validate',
+        turn_id: 'run-node-validate',
+        order: 2,
+        content: 'Older validate output',
       }),
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 2,
-        emitted_at: '2026-04-06T12:01:00Z',
-        node_id: 'validate',
-        channel: 'assistant',
-        status: 'complete',
-        content_delta: 'Older validate output',
-        source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
+      transcriptSegment({
+        id: 'segment-reasoning-run-node-validate-r-0',
+        turn_id: 'run-node-validate',
+        kind: 'reasoning',
+        order: 3,
+        content: 'Newest validate output',
       }),
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 3,
-        emitted_at: '2026-04-06T12:02:00Z',
-        node_id: 'validate',
-        channel: 'reasoning',
-        status: 'complete',
-        content_delta: 'Newest validate output',
-        source: { app_turn_id: 'turn-3', item_id: 'msg-1' },
-      }),
-    ].filter(Boolean)
-
-    const projection = buildRunProgressProjection(events, 'validate')
+    ] as never, 'validate')
 
     expect(projection.activeEntry).toMatchObject({
       nodeId: 'validate',
@@ -257,20 +223,9 @@ describe('timelineModel', () => {
   })
 
   it('falls back to recent progress entries when the current node has no LLM content', () => {
-    const events = [
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 1,
-        emitted_at: '2026-04-06T12:00:00Z',
-        node_id: 'draft',
-        channel: 'assistant',
-        status: 'complete',
-        content_delta: 'Draft output',
-        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
-      }),
-    ].filter(Boolean)
-
-    const projection = buildRunProgressProjection(events, 'validate')
+    const projection = buildRunProgressProjection([
+      transcriptSegment({}),
+    ] as never, 'validate')
 
     expect(projection.activeEntry).toBeNull()
     expect(projection.recentEntries).toHaveLength(1)
@@ -278,30 +233,16 @@ describe('timelineModel', () => {
   })
 
   it('supports concrete node filtering from the progress projection', () => {
-    const events = [
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 1,
-        emitted_at: '2026-04-06T12:00:00Z',
-        node_id: 'draft',
-        channel: 'assistant',
-        status: 'complete',
-        content_delta: 'Draft output',
-        source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
+    const projection = buildRunProgressProjection([
+      transcriptSegment({}),
+      transcriptSegment({
+        id: 'segment-assistant-run-node-validate',
+        turn_id: 'run-node-validate',
+        order: 2,
+        content: 'Validate output',
       }),
-      toTimelineEvent({
-        type: 'LLMContent',
-        sequence: 2,
-        emitted_at: '2026-04-06T12:01:00Z',
-        node_id: 'validate',
-        channel: 'assistant',
-        status: 'complete',
-        content_delta: 'Validate output',
-        source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
-      }),
-    ].filter(Boolean)
+    ] as never, 'validate')
 
-    const projection = buildRunProgressProjection(events, 'validate')
     const visibleEntries = [
       projection.activeEntry,
       ...projection.recentEntries,
@@ -314,83 +255,27 @@ describe('timelineModel', () => {
     })
   })
 
-  it('does not build progress rows from legacy CodergenAdapter stream content', () => {
-    const events = [
-      toTimelineEvent({
-        type: 'StageStarted',
-        sequence: 1,
-        emitted_at: '2026-04-06T12:00:00Z',
-        node_id: 'implement',
-        index: 1,
+  it('does not build progress rows from boundaries, tool calls, or empty segments', () => {
+    const projection = buildRunProgressProjection([
+      transcriptSegment({
+        id: 'boundary-root-root--implement-0-1',
+        kind: 'boundary',
+        status: 'completed',
+        content: 'Stage implement completed',
+        boundary: { node_id: 'implement', source_scope: 'root', summary: 'Stage implement completed' },
       }),
-      toTimelineEvent({
-        type: 'CodergenAdapter',
-        sequence: 2,
-        emitted_at: '2026-04-06T12:00:01Z',
-        node_id: 'implement',
-        adapter_event_type: 'codex_app_server_session_event',
-        payload: {
-          kind: 'content_delta',
-          category: 'assistant_text',
-          turn_stream_event: {
-            kind: 'content_delta',
-            channel: 'assistant',
-            content_delta: 'Drafted ',
-            source: {
-              backend: 'codex_app_server',
-              app_turn_id: 'turn-1',
-              item_id: 'msg-1',
-              raw_kind: 'assistant_delta',
-            },
-          },
-        },
+      transcriptSegment({
+        id: 'segment-tool-run-node-implement-call-1',
+        kind: 'tool_call',
+        role: 'system',
+        content: 'Run ls',
+        tool_call: { id: 'call-1', kind: 'command_execution', status: 'completed', title: 'Run ls', file_paths: [] },
       }),
-      toTimelineEvent({
-        type: 'CodergenAdapter',
-        sequence: 3,
-        emitted_at: '2026-04-06T12:00:02Z',
-        node_id: 'implement',
-        adapter_event_type: 'codex_app_server_session_event',
-        payload: {
-          kind: 'content_completed',
-          category: 'assistant_text',
-          turn_stream_event: {
-            kind: 'content_completed',
-            channel: 'assistant',
-            content_delta: 'Drafted final patch.',
-            source: {
-              backend: 'codex_app_server',
-              app_turn_id: 'turn-1',
-              item_id: 'msg-1',
-              raw_kind: 'assistant_message_completed',
-            },
-          },
-        },
-      }),
-      toTimelineEvent({
-        type: 'CodergenAdapter',
-        sequence: 4,
-        emitted_at: '2026-04-06T12:00:03Z',
-        node_id: 'implement',
-        adapter_event_type: 'codex_app_server_session_event',
-        payload: {
-          kind: 'token_usage_updated',
-          category: 'usage',
-          token_usage: { total: { totalTokens: 12 } },
-          turn_stream_event: {
-            kind: 'token_usage_updated',
-            token_usage: { total: { totalTokens: 12 } },
-            source: {
-              backend: 'codex_app_server',
-              raw_kind: 'token_usage_updated',
-            },
-          },
-        },
-      }),
-    ].filter(Boolean)
+      transcriptSegment({ content: '   ' }),
+    ] as never, null)
 
-    const progressEntries = buildRunProgressEntries(events)
-
-    expect(progressEntries).toHaveLength(0)
+    expect(projection.activeEntry).toBeNull()
+    expect(projection.recentEntries).toHaveLength(0)
+    expect(projection.nodeOptions).toEqual([])
   })
 })

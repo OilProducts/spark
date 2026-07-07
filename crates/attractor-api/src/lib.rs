@@ -960,7 +960,7 @@ impl AttractorApiService {
                 200,
                 json!({
                     "pipeline_id": pipeline_id,
-                    "entries": transcript.entries,
+                    "entries": transcript.segments,
                 }),
             ),
             Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),

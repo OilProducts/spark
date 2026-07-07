@@ -1,3 +1,5 @@
+import type { ConversationSegmentResponse } from '@/lib/api/conversationsApi'
+
 export interface TokenUsageBucket {
     input_tokens: number
     cached_input_tokens: number
@@ -187,77 +189,44 @@ export interface RunProgressProjection {
 
 export type RunTranscriptBoundaryStatus = 'running' | 'completed' | 'failed' | 'retrying'
 
-export interface RunTranscriptBoundaryEntry {
-    id: string
-    kind: 'boundary'
-    sequence: number
-    nodeId: string | null
-    stageIndex: number | null
-    attempt: number | null
-    status: RunTranscriptBoundaryStatus
-    startedAt: string | null
-    endedAt: string | null
-    model: string | null
-    sourceScope: TimelineSourceScope
-    sourceParentNodeId: string | null
-    sourceFlowName: string | null
+/// Run-only workflow boundary metadata, carried outside the shared segment
+/// core on `kind: 'boundary'` segments (mirrors the backend BoundaryMeta).
+export interface RunBoundaryMeta {
+    node_id?: string | null
+    stage_index?: number | null
+    attempt?: number | null
+    source_scope: TimelineSourceScope
+    source_parent_node_id?: string | null
+    source_flow_name?: string | null
+    model?: string | null
+    started_at?: string | null
+    ended_at?: string | null
     summary: string
 }
 
-export interface RunTranscriptSegmentToolCall {
-    id: string
-    kind: 'command_execution' | 'file_change' | 'dynamic_tool'
-    status: 'running' | 'completed' | 'failed'
-    title: string
-    command?: string | null
-    output?: string | null
-    output_size?: number | null
-    output_truncated?: boolean
-    file_paths: string[]
-}
+type ChatRequestUserInput = NonNullable<ConversationSegmentResponse['request_user_input']>
+type ChatRequestUserInputQuestion = ChatRequestUserInput['questions'][number]
 
-export interface RunTranscriptRequestUserInput {
-    request_id: string
-    status: 'pending' | 'answered' | 'expired'
-    questions: Array<{
-        id: string
-        header: string
-        question: string
-        question_type: 'MULTIPLE_CHOICE' | 'FREEFORM'
-        options: Array<{
-            label: string
-            value?: string | null
-            description?: string | null
-        }>
-        allow_other: boolean
-        is_secret: boolean
+/// Run human-gate questions may carry a semantic answer `value` per option
+/// (the journal/questions-API answer token) on top of the shared option core.
+export type RunRequestUserInput = Omit<ChatRequestUserInput, 'questions'> & {
+    questions: Array<Omit<ChatRequestUserInputQuestion, 'options'> & {
+        options: Array<ChatRequestUserInputQuestion['options'][number] & { value?: string | null }>
     }>
-    answers: Record<string, string>
-    submitted_at?: string | null
 }
 
-export interface RunTranscriptSegmentEntry {
-    id: string
-    turn_id: string
-    order: number
-    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input'
-    role: 'assistant' | 'system'
-    status: 'pending' | 'answered' | 'streaming' | 'complete' | 'failed' | 'running'
-    timestamp: string
-    updated_at: string
-    content: string
-    completed_at?: string | null
-    error?: string | null
-    artifact_id?: string | null
-    phase?: string | null
-    tool_call?: RunTranscriptSegmentToolCall | null
-    request_user_input?: RunTranscriptRequestUserInput | null
+/// Run transcripts reuse the project-chat segment record, extended with the
+/// `boundary` kind and its run-only metadata. No independent copy of the
+/// segment field set exists on the runs side.
+export type RunTranscriptEntry = Omit<ConversationSegmentResponse, 'kind' | 'status' | 'request_user_input' | 'source'> & {
+    kind: ConversationSegmentResponse['kind'] | 'boundary'
+    status: ConversationSegmentResponse['status'] | 'answered' | RunTranscriptBoundaryStatus
+    request_user_input?: RunRequestUserInput | null
+    /// Run segments carry run-scope provenance (node_id, source_scope, ...)
+    /// beyond the chat source core.
     source?: Record<string, unknown> | null
+    boundary?: RunBoundaryMeta | null
 }
-
-export type RunTranscriptEntry =
-    | RunTranscriptBoundaryEntry
-    | RunTranscriptSegmentEntry
 
 export interface RunTranscriptProjection {
     entries: RunTranscriptEntry[]

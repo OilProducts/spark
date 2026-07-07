@@ -1,72 +1,46 @@
+//! Run transcript persistence on the shared conversation record model.
+//!
+//! Runs reuse `spark_storage::conversation::{Transcript, TranscriptSegment}`
+//! as their durable render record. Workflow boundaries are segments of kind
+//! `boundary` whose run-only metadata lives in [`BoundaryMeta`], outside the
+//! shared segment core. Renderable LLM output must come from this record, not
+//! from the operational journal.
+
 use std::collections::BTreeMap;
 
 use attractor_core::RawRuntimeEvent;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use spark_agent_adapter::codergen::{CodergenEvent, CodergenExecution};
 use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
-use spark_storage::{read_json, write_json_atomic, JsonWriteOptions};
+use spark_storage::conversation::{
+    assistant_segment_id, context_compaction_segment_id, plan_segment_id, reasoning_segment_id,
+    request_user_input_segment_id, segment_source, tool_call_id, tool_segment_id, BoundaryMeta,
+    Transcript, TranscriptSegment, SEGMENT_KIND_ASSISTANT_MESSAGE, SEGMENT_KIND_BOUNDARY,
+    SEGMENT_KIND_CONTEXT_COMPACTION, SEGMENT_KIND_PLAN, SEGMENT_KIND_REASONING,
+    SEGMENT_KIND_REQUEST_USER_INPUT, SEGMENT_KIND_TOOL_CALL,
+};
+use spark_storage::{write_json_atomic, JsonWriteOptions};
 
 use crate::error::Result;
 use crate::paths::RunRootPaths;
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunTranscript {
-    pub entries: Vec<RunTranscriptEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum RunTranscriptEntry {
-    Boundary(RunTranscriptBoundaryEntry),
-    Segment(RunTranscriptSegmentEntry),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunTranscriptBoundaryEntry {
-    pub kind: String,
-    pub id: String,
-    pub sequence: u64,
-    pub node_id: Option<String>,
-    pub stage_index: Option<u64>,
-    pub attempt: Option<u64>,
-    pub status: String,
-    pub started_at: Option<String>,
-    pub ended_at: Option<String>,
-    pub model: Option<String>,
-    pub source_scope: String,
-    pub source_parent_node_id: Option<String>,
-    pub source_flow_name: Option<String>,
-    pub summary: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunTranscriptSegmentEntry {
-    pub id: String,
-    pub turn_id: String,
-    pub order: u64,
-    pub kind: String,
-    pub role: String,
-    pub status: String,
-    pub timestamp: String,
-    pub updated_at: String,
-    pub content: String,
-    pub completed_at: Option<String>,
-    pub error: Option<String>,
-    pub artifact_id: Option<String>,
-    pub phase: Option<String>,
-    pub tool_call: Option<Value>,
-    pub request_user_input: Option<Value>,
-    pub source: Option<Value>,
-}
-
-pub fn read_run_transcript(paths: &RunRootPaths) -> Result<RunTranscript> {
-    if !paths.transcript_json().exists() {
-        return Ok(RunTranscript::default());
+pub fn read_run_transcript(paths: &RunRootPaths) -> Result<Transcript> {
+    let path = paths.transcript_json();
+    if !path.exists() {
+        return Ok(Transcript::default());
     }
-    Ok(read_json(paths.transcript_json())?)
+    let payload: Value = spark_storage::read_json(&path)?;
+    if payload.get("segments").is_some() {
+        let transcript: Transcript = serde_json::from_value(payload).map_err(|source| {
+            spark_storage::StorageError::JsonRead {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        return Ok(transcript);
+    }
+    Ok(legacy_transcript_from_entries(&payload))
 }
 
 pub fn persist_transcript_runtime_event(
@@ -82,7 +56,7 @@ pub fn persist_transcript_runtime_event(
             upsert_run_boundary(&mut transcript, event, sequence);
         }
         "StageStarted" | "StageCompleted" | "StageFailed" | "StageRetrying" => {
-            upsert_boundary(&mut transcript, event, sequence);
+            upsert_stage_boundary(&mut transcript, event, sequence);
         }
         "human_gate" => {
             if event
@@ -104,21 +78,17 @@ pub fn persist_transcript_runtime_event(
                 .or_else(|| string_payload(event, "prompt"))
                 .or_else(|| string_payload(event, "question"))
                 .unwrap_or_else(|| "Interview update".to_string());
-            upsert_entry(
-                &mut transcript,
+            let mut segment = segment_shell(
                 &id,
-                RunTranscriptEntry::Segment(segment_entry(
-                    id.clone(),
-                    "run".to_string(),
-                    sequence,
-                    "context_compaction",
-                    "system",
-                    "complete",
-                    event.emitted_at.clone(),
-                    event.emitted_at.clone(),
-                    content,
-                )),
+                "run",
+                sequence as i64,
+                SEGMENT_KIND_CONTEXT_COMPACTION,
+                "system",
+                "complete",
+                &event.emitted_at,
             );
+            segment.content = content;
+            transcript.upsert_segment(segment);
         }
         _ => {}
     }
@@ -160,7 +130,80 @@ pub fn persist_codergen_transcript_event(
     write_transcript(paths, &mut transcript)
 }
 
-fn upsert_run_boundary(transcript: &mut RunTranscript, event: &RawRuntimeEvent, sequence: u64) {
+fn node_turn_id(node_id: &str) -> String {
+    format!("run-node-{node_id}")
+}
+
+fn segment_shell(
+    id: &str,
+    turn_id: &str,
+    order: i64,
+    kind: &str,
+    role: &str,
+    status: &str,
+    timestamp: &str,
+) -> TranscriptSegment {
+    TranscriptSegment {
+        id: id.to_string(),
+        turn_id: turn_id.to_string(),
+        order,
+        kind: kind.to_string(),
+        role: role.to_string(),
+        status: status.to_string(),
+        timestamp: timestamp.to_string(),
+        updated_at: timestamp.to_string(),
+        content: String::new(),
+        completed_at: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        artifact_id: None,
+        tool_call: None,
+        request_user_input: None,
+        source: None,
+        boundary: None,
+        extra: Map::new(),
+    }
+}
+
+fn next_transcript_order(transcript: &Transcript) -> i64 {
+    transcript
+        .segments
+        .iter()
+        .map(|segment| segment.order)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn write_transcript(paths: &RunRootPaths, transcript: &mut Transcript) -> Result<()> {
+    transcript.segments.sort_by(|left, right| {
+        left.order
+            .cmp(&right.order)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    write_json_atomic(
+        paths.transcript_json(),
+        transcript,
+        JsonWriteOptions::default(),
+    )?;
+    Ok(())
+}
+
+fn boundary_status(event_type: &str, event: &RawRuntimeEvent) -> String {
+    match event_type {
+        "PipelineCompleted" => {
+            string_payload(event, "status").unwrap_or_else(|| "completed".to_string())
+        }
+        "PipelineFailed" | "StageFailed" => "failed".to_string(),
+        "StageCompleted" => "completed".to_string(),
+        "StageRetrying" => "retrying".to_string(),
+        _ => "running".to_string(),
+    }
+}
+
+fn upsert_run_boundary(transcript: &mut Transcript, event: &RawRuntimeEvent, sequence: u64) {
     let source_scope = string_payload(event, "source_scope").unwrap_or_else(|| "root".to_string());
     let source_parent_node_id = string_payload(event, "source_parent_node_id");
     let source_flow_name = string_payload(event, "source_flow_name");
@@ -170,13 +213,7 @@ fn upsert_run_boundary(transcript: &mut RunTranscript, event: &RawRuntimeEvent, 
         source_parent_node_id.as_deref().unwrap_or("root"),
         source_flow_name.as_deref().unwrap_or("")
     );
-    let status = match event.event_type.as_str() {
-        "PipelineCompleted" => {
-            string_payload(event, "status").unwrap_or_else(|| "completed".to_string())
-        }
-        "PipelineFailed" => "failed".to_string(),
-        _ => "running".to_string(),
-    };
+    let status = boundary_status(event.event_type.as_str(), event);
     let summary = match event.event_type.as_str() {
         "PipelineCompleted" => {
             let outcome = string_payload(event, "outcome").unwrap_or_else(|| status.clone());
@@ -189,130 +226,45 @@ fn upsert_run_boundary(transcript: &mut RunTranscript, event: &RawRuntimeEvent, 
             .map(|name| format!("Run {name} started"))
             .unwrap_or_else(|| "Run started".to_string()),
     };
-    let previous = transcript.entries.iter().find_map(|entry| match entry {
-        RunTranscriptEntry::Boundary(existing) if existing.id == key => Some(existing.clone()),
-        _ => None,
-    });
+    let previous = transcript.find_segment(&key).cloned();
+    let previous_meta = previous
+        .as_ref()
+        .and_then(|segment| segment.boundary.clone());
     let started_at = if event.event_type == "PipelineStarted" {
         Some(event.emitted_at.clone())
     } else {
-        previous.as_ref().and_then(|entry| entry.started_at.clone())
-    };
-    let next = RunTranscriptBoundaryEntry {
-        kind: "boundary".to_string(),
-        id: key.clone(),
-        sequence: previous
+        previous_meta
             .as_ref()
-            .map(|entry| entry.sequence)
-            .unwrap_or(sequence),
+            .and_then(|meta| meta.started_at.clone())
+    };
+    let ended_at = if event.event_type == "PipelineStarted" {
+        previous_meta
+            .as_ref()
+            .and_then(|meta| meta.ended_at.clone())
+    } else {
+        Some(event.emitted_at.clone())
+    };
+    let meta = BoundaryMeta {
         node_id: None,
         stage_index: None,
         attempt: None,
-        status,
-        started_at,
-        ended_at: if event.event_type == "PipelineStarted" {
-            previous.as_ref().and_then(|entry| entry.ended_at.clone())
-        } else {
-            Some(event.emitted_at.clone())
-        },
-        model: previous
-            .as_ref()
-            .and_then(|entry| entry.model.clone())
-            .or_else(|| string_payload(event, "model")),
         source_scope,
         source_parent_node_id,
         source_flow_name,
-        summary,
+        model: previous_meta
+            .as_ref()
+            .and_then(|meta| meta.model.clone())
+            .or_else(|| string_payload(event, "model")),
+        started_at,
+        ended_at,
+        summary: summary.clone(),
     };
-    upsert_entry(transcript, &key, RunTranscriptEntry::Boundary(next));
+    upsert_boundary_segment(
+        transcript, &key, previous, meta, status, summary, event, sequence,
+    );
 }
 
-fn persist_codergen_event(
-    transcript: &mut RunTranscript,
-    _run_id: &str,
-    node_id: &str,
-    event: &CodergenEvent,
-) {
-    let Some(turn_event) = event
-        .payload
-        .get("turn_stream_event")
-        .and_then(|value| serde_json::from_value::<TurnStreamEvent>(value.clone()).ok())
-    else {
-        return;
-    };
-    match turn_event.kind {
-        TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted => {
-            upsert_message(transcript, node_id, event, &turn_event);
-        }
-        TurnStreamEventKind::ToolCallStarted
-        | TurnStreamEventKind::ToolCallUpdated
-        | TurnStreamEventKind::ToolCallCompleted
-        | TurnStreamEventKind::ToolCallFailed => {
-            upsert_tool_call(transcript, node_id, event, &turn_event);
-        }
-        TurnStreamEventKind::RequestUserInputRequested => {
-            let sequence = next_transcript_sequence(transcript);
-            let request = normalize_request_user_input_value(
-                turn_event.request_user_input.as_ref().unwrap_or(&json!({})),
-                &format!("request-{sequence}"),
-            );
-            let request_id = request
-                .get("request_id")
-                .and_then(Value::as_str)
-                .unwrap_or("request");
-            let id = format!("segment-request-user-input-{node_id}-{request_id}");
-            let mut segment = segment_entry(
-                id.clone(),
-                format!("run-node-{node_id}"),
-                sequence,
-                "request_user_input",
-                "system",
-                request
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("pending"),
-                String::new(),
-                String::new(),
-                request_user_input_prompt_summary(&request),
-            );
-            segment.request_user_input = Some(Value::Object(request));
-            segment.source = Some(turn_event_source_value(&turn_event));
-            upsert_entry(transcript, &id, RunTranscriptEntry::Segment(segment));
-        }
-        TurnStreamEventKind::ContextCompactionStarted
-        | TurnStreamEventKind::ContextCompactionCompleted
-        | TurnStreamEventKind::Error => {
-            let sequence = next_transcript_sequence(transcript);
-            let id = format!("segment-notice-{node_id}-{sequence}");
-            let status = if matches!(turn_event.kind, TurnStreamEventKind::Error) {
-                "failed"
-            } else {
-                "complete"
-            };
-            let mut segment = segment_entry(
-                id.clone(),
-                format!("run-node-{node_id}"),
-                sequence,
-                "context_compaction",
-                "system",
-                status,
-                String::new(),
-                String::new(),
-                turn_event
-                    .message
-                    .clone()
-                    .or_else(|| turn_event.error.clone())
-                    .or_else(|| turn_event.status.clone())
-                    .unwrap_or_else(|| turn_event.kind.as_str().to_string()),
-            );
-            segment.source = Some(turn_event_source_value(&turn_event));
-            upsert_entry(transcript, &id, RunTranscriptEntry::Segment(segment));
-        }
-        _ => {}
-    }
-}
-
-fn upsert_boundary(transcript: &mut RunTranscript, event: &RawRuntimeEvent, sequence: u64) {
+fn upsert_stage_boundary(transcript: &mut Transcript, event: &RawRuntimeEvent, sequence: u64) {
     let node_id = string_payload(event, "node_id")
         .or_else(|| string_payload(event, "node"))
         .or_else(|| string_payload(event, "stage"));
@@ -337,12 +289,7 @@ fn upsert_boundary(transcript: &mut RunTranscript, event: &RawRuntimeEvent, sequ
             .map(|value| value.to_string())
             .unwrap_or_else(|| "na".to_string())
     );
-    let status = match event.event_type.as_str() {
-        "StageCompleted" => "completed",
-        "StageFailed" => "failed",
-        "StageRetrying" => "retrying",
-        _ => "running",
-    };
+    let status = boundary_status(event.event_type.as_str(), event);
     let summary = match event.event_type.as_str() {
         "StageCompleted" => format!(
             "Stage {} completed",
@@ -359,221 +306,345 @@ fn upsert_boundary(transcript: &mut RunTranscript, event: &RawRuntimeEvent, sequ
         "StageRetrying" => format!("Stage {} retrying", node_id.as_deref().unwrap_or("unknown")),
         _ => format!("Stage {} started", node_id.as_deref().unwrap_or("unknown")),
     };
-    let previous = transcript.entries.iter().find_map(|entry| match entry {
-        RunTranscriptEntry::Boundary(existing) if existing.id == key => Some(existing.clone()),
-        _ => None,
-    });
+    let previous = transcript.find_segment(&key).cloned();
+    let previous_meta = previous
+        .as_ref()
+        .and_then(|segment| segment.boundary.clone());
     let started_at = if event.event_type == "StageStarted" {
         Some(event.emitted_at.clone())
     } else {
-        previous.as_ref().and_then(|entry| entry.started_at.clone())
-    };
-    let next = RunTranscriptBoundaryEntry {
-        kind: "boundary".to_string(),
-        id: key.clone(),
-        sequence: previous
+        previous_meta
             .as_ref()
-            .map(|entry| entry.sequence)
-            .unwrap_or(sequence),
+            .and_then(|meta| meta.started_at.clone())
+    };
+    let ended_at = if status == "running" {
+        previous_meta
+            .as_ref()
+            .and_then(|meta| meta.ended_at.clone())
+    } else {
+        Some(event.emitted_at.clone())
+    };
+    let meta = BoundaryMeta {
         node_id,
         stage_index,
         attempt,
-        status: status.to_string(),
-        started_at,
-        ended_at: if status == "running" {
-            previous.as_ref().and_then(|entry| entry.ended_at.clone())
-        } else {
-            Some(event.emitted_at.clone())
-        },
-        model: previous
-            .as_ref()
-            .and_then(|entry| entry.model.clone())
-            .or_else(|| string_payload(event, "model")),
         source_scope,
         source_parent_node_id,
         source_flow_name,
-        summary,
+        model: previous_meta
+            .as_ref()
+            .and_then(|meta| meta.model.clone())
+            .or_else(|| string_payload(event, "model")),
+        started_at,
+        ended_at,
+        summary: summary.clone(),
     };
-    upsert_entry(transcript, &key, RunTranscriptEntry::Boundary(next));
+    upsert_boundary_segment(
+        transcript, &key, previous, meta, status, summary, event, sequence,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_boundary_segment(
+    transcript: &mut Transcript,
+    key: &str,
+    previous: Option<TranscriptSegment>,
+    meta: BoundaryMeta,
+    status: String,
+    summary: String,
+    event: &RawRuntimeEvent,
+    sequence: u64,
+) {
+    let order = previous
+        .as_ref()
+        .map(|segment| segment.order)
+        .unwrap_or(sequence as i64);
+    let timestamp = previous
+        .as_ref()
+        .map(|segment| segment.timestamp.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| event.emitted_at.clone());
+    let turn_id = meta
+        .node_id
+        .as_deref()
+        .map(node_turn_id)
+        .unwrap_or_else(|| "run".to_string());
+    let mut segment = segment_shell(
+        key,
+        &turn_id,
+        order,
+        SEGMENT_KIND_BOUNDARY,
+        "system",
+        &status,
+        &timestamp,
+    );
+    segment.updated_at = event.emitted_at.clone();
+    segment.content = summary;
+    segment.boundary = Some(meta);
+    transcript.upsert_segment(segment);
+}
+
+fn persist_codergen_event(
+    transcript: &mut Transcript,
+    _run_id: &str,
+    node_id: &str,
+    event: &CodergenEvent,
+) {
+    let Some(turn_event) = event
+        .payload
+        .get("turn_stream_event")
+        .and_then(|value| serde_json::from_value::<TurnStreamEvent>(value.clone()).ok())
+    else {
+        return;
+    };
+    match turn_event.kind {
+        TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted => {
+            upsert_message(transcript, node_id, event, &turn_event);
+        }
+        TurnStreamEventKind::ToolCallStarted
+        | TurnStreamEventKind::ToolCallUpdated
+        | TurnStreamEventKind::ToolCallCompleted
+        | TurnStreamEventKind::ToolCallFailed => {
+            upsert_tool_call(transcript, node_id, &turn_event);
+        }
+        TurnStreamEventKind::RequestUserInputRequested => {
+            let order = next_transcript_order(transcript);
+            let request = normalize_request_user_input_value(
+                turn_event.request_user_input.as_ref().unwrap_or(&json!({})),
+                &format!("request-{order}"),
+            );
+            let scope_key = node_turn_id(node_id);
+            let id = request_user_input_segment_id(&scope_key, &turn_event, &request);
+            let mut segment = segment_shell(
+                &id,
+                &scope_key,
+                order,
+                SEGMENT_KIND_REQUEST_USER_INPUT,
+                "system",
+                request
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("pending"),
+                "",
+            );
+            segment.content = request_user_input_prompt_summary(&request);
+            segment.request_user_input = Some(Value::Object(request));
+            segment.source = Some(segment_source(&turn_event, None));
+            transcript.upsert_segment(segment);
+        }
+        TurnStreamEventKind::ContextCompactionStarted
+        | TurnStreamEventKind::ContextCompactionCompleted => {
+            let scope_key = node_turn_id(node_id);
+            let id = context_compaction_segment_id(&scope_key, &turn_event);
+            let complete = turn_event.kind == TurnStreamEventKind::ContextCompactionCompleted;
+            let order = transcript
+                .find_segment(&id)
+                .map(|segment| segment.order)
+                .unwrap_or_else(|| next_transcript_order(transcript));
+            let mut segment = segment_shell(
+                &id,
+                &scope_key,
+                order,
+                SEGMENT_KIND_CONTEXT_COMPACTION,
+                "system",
+                if complete { "complete" } else { "running" },
+                "",
+            );
+            segment.content = turn_event
+                .message
+                .clone()
+                .or_else(|| turn_event.status.clone())
+                .unwrap_or_else(|| turn_event.kind.as_str().to_string());
+            segment.source = Some(segment_source(&turn_event, None));
+            transcript.upsert_segment(segment);
+        }
+        TurnStreamEventKind::Error => {
+            let order = next_transcript_order(transcript);
+            let id = format!("segment-notice-{node_id}-{order}");
+            let mut segment = segment_shell(
+                &id,
+                &node_turn_id(node_id),
+                order,
+                SEGMENT_KIND_CONTEXT_COMPACTION,
+                "system",
+                "failed",
+                "",
+            );
+            segment.content = turn_event
+                .message
+                .clone()
+                .or_else(|| turn_event.error.clone())
+                .or_else(|| turn_event.status.clone())
+                .unwrap_or_else(|| turn_event.kind.as_str().to_string());
+            segment.source = Some(segment_source(&turn_event, None));
+            transcript.upsert_segment(segment);
+        }
+        _ => {}
+    }
 }
 
 fn upsert_message(
-    transcript: &mut RunTranscript,
+    transcript: &mut Transcript,
     node_id: &str,
     event: &CodergenEvent,
     turn_event: &TurnStreamEvent,
 ) {
-    let channel = match turn_event.channel.as_ref() {
-        Some(TurnStreamChannel::Reasoning) => "reasoning",
-        Some(TurnStreamChannel::Plan) => "plan",
-        _ => "assistant",
+    let scope_key = node_turn_id(node_id);
+    let (id, kind) = match turn_event.channel.as_ref() {
+        Some(TurnStreamChannel::Reasoning) => (
+            reasoning_segment_id(&scope_key, turn_event),
+            SEGMENT_KIND_REASONING,
+        ),
+        Some(TurnStreamChannel::Plan) => {
+            (plan_segment_id(&scope_key, turn_event), SEGMENT_KIND_PLAN)
+        }
+        _ => (
+            assistant_segment_id(&scope_key, turn_event),
+            SEGMENT_KIND_ASSISTANT_MESSAGE,
+        ),
     };
-    let source_key = turn_event
-        .source
-        .item_id
-        .as_deref()
-        .or(turn_event.source.response_id.as_deref())
-        .or(turn_event.source.summary_index.map(|_| "summary"))
-        .unwrap_or("default");
-    let id = format!("message-{node_id}-{channel}-{source_key}");
     let delta = turn_event
         .content_delta
         .as_deref()
         .or(turn_event.message.as_deref())
         .unwrap_or("");
-    let previous_content = transcript.entries.iter().find_map(|entry| match entry {
-        RunTranscriptEntry::Segment(message) if message.id == id => Some(message.content.clone()),
-        _ => None,
-    });
-    let status = if turn_event.kind == TurnStreamEventKind::ContentCompleted {
-        "complete"
-    } else {
-        "streaming"
-    };
-    let content = if status == "complete" {
+    let previous = transcript.find_segment(&id).cloned();
+    let complete = turn_event.kind == TurnStreamEventKind::ContentCompleted;
+    let content = if complete {
         delta.to_string()
     } else {
-        format!("{}{}", previous_content.unwrap_or_default(), delta)
+        format!(
+            "{}{}",
+            previous
+                .as_ref()
+                .map(|segment| segment.content.clone())
+                .unwrap_or_default(),
+            delta
+        )
     };
-    upsert_entry(
-        transcript,
+    let emitted_at = string_map_payload(&event.payload, "emitted_at").unwrap_or_default();
+    let order = previous
+        .as_ref()
+        .map(|segment| segment.order)
+        .unwrap_or_else(|| next_transcript_order(transcript));
+    let timestamp = previous
+        .as_ref()
+        .map(|segment| segment.timestamp.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| emitted_at.clone());
+    let mut segment = segment_shell(
         &id,
-        RunTranscriptEntry::Segment({
-            let mut segment = segment_entry(
-                id.clone(),
-                format!("run-node-{node_id}"),
-                next_transcript_sequence(transcript),
-                match channel {
-                    "reasoning" => "reasoning",
-                    "plan" => "plan",
-                    _ => "assistant_message",
-                },
-                "assistant",
-                status,
-                string_map_payload(&event.payload, "emitted_at").unwrap_or_default(),
-                string_map_payload(&event.payload, "emitted_at").unwrap_or_default(),
-                content,
-            );
-            segment.source = Some(turn_event_source_value(turn_event));
-            segment
-        }),
+        &scope_key,
+        order,
+        kind,
+        "assistant",
+        if complete { "complete" } else { "streaming" },
+        &timestamp,
     );
+    segment.updated_at = emitted_at;
+    segment.content = content;
+    segment.source = Some(segment_source(turn_event, None));
+    transcript.upsert_segment(segment);
 }
 
-fn upsert_final_assistant_text(transcript: &mut RunTranscript, node_id: &str, response_text: &str) {
+fn upsert_final_assistant_text(transcript: &mut Transcript, node_id: &str, response_text: &str) {
     if response_text.trim().is_empty() || has_complete_assistant_message(transcript, node_id) {
         return;
     }
-    let id = format!("message-{node_id}-assistant-default");
-    upsert_entry(
-        transcript,
+    let scope_key = node_turn_id(node_id);
+    let id = format!("segment-assistant-{scope_key}");
+    let order = transcript
+        .find_segment(&id)
+        .map(|segment| segment.order)
+        .unwrap_or_else(|| next_transcript_order(transcript));
+    let mut segment = segment_shell(
         &id,
-        RunTranscriptEntry::Segment(segment_entry(
-            id.clone(),
-            format!("run-node-{node_id}"),
-            next_transcript_sequence(transcript),
-            "assistant_message",
-            "assistant",
-            "complete",
-            String::new(),
-            String::new(),
-            response_text.to_string(),
-        )),
+        &scope_key,
+        order,
+        SEGMENT_KIND_ASSISTANT_MESSAGE,
+        "assistant",
+        "complete",
+        "",
     );
+    segment.content = response_text.to_string();
+    transcript.upsert_segment(segment);
 }
 
-fn has_complete_assistant_message(transcript: &RunTranscript, node_id: &str) -> bool {
-    transcript.entries.iter().any(|entry| match entry {
-        RunTranscriptEntry::Segment(message) => {
-            message.turn_id == format!("run-node-{node_id}")
-                && message.kind == "assistant_message"
-                && message.status == "complete"
-                && !message.content.trim().is_empty()
-        }
-        _ => false,
+fn has_complete_assistant_message(transcript: &Transcript, node_id: &str) -> bool {
+    let turn_id = node_turn_id(node_id);
+    transcript.segments.iter().any(|segment| {
+        segment.turn_id == turn_id
+            && segment.kind == SEGMENT_KIND_ASSISTANT_MESSAGE
+            && segment.status == "complete"
+            && !segment.content.trim().is_empty()
     })
 }
 
-fn upsert_tool_call(
-    transcript: &mut RunTranscript,
-    node_id: &str,
-    _event: &CodergenEvent,
-    turn_event: &TurnStreamEvent,
-) {
+fn upsert_tool_call(transcript: &mut Transcript, node_id: &str, turn_event: &TurnStreamEvent) {
     let tool = turn_event.tool_call.clone().unwrap_or_else(|| json!({}));
-    let tool_id = tool
-        .get("id")
-        .and_then(Value::as_str)
-        .or(turn_event.source.item_id.as_deref())
-        .unwrap_or("tool");
-    let id = format!("tool-{node_id}-{tool_id}");
+    let scope_key = node_turn_id(node_id);
+    let id = tool_segment_id(&scope_key, turn_event, &tool);
     let status = match turn_event.kind {
         TurnStreamEventKind::ToolCallCompleted => "completed",
         TurnStreamEventKind::ToolCallFailed => "failed",
         _ => "running",
     };
     let normalized = normalize_tool_call(tool, status);
-    upsert_entry(
-        transcript,
+    let order = transcript
+        .find_segment(&id)
+        .map(|segment| segment.order)
+        .unwrap_or_else(|| next_transcript_order(transcript));
+    let mut segment = segment_shell(
         &id,
-        RunTranscriptEntry::Segment({
-            let mut segment = segment_entry(
-                id.clone(),
-                format!("run-node-{node_id}"),
-                next_transcript_sequence(transcript),
-                "tool_call",
-                "system",
-                status,
-                String::new(),
-                String::new(),
-                normalized
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Tool call")
-                    .to_string(),
-            );
-            segment.tool_call = Some(normalized);
-            segment.source = Some(turn_event_source_value(turn_event));
-            segment
-        }),
+        &scope_key,
+        order,
+        SEGMENT_KIND_TOOL_CALL,
+        "system",
+        status,
+        "",
     );
+    segment.content = normalized
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Tool call")
+        .to_string();
+    segment.source = Some(segment_source(
+        turn_event,
+        tool_call_id(&normalized).as_deref(),
+    ));
+    segment.tool_call = Some(normalized);
+    transcript.upsert_segment(segment);
 }
 
-fn upsert_input(transcript: &mut RunTranscript, event: &RawRuntimeEvent, sequence: u64) {
+fn upsert_input(transcript: &mut Transcript, event: &RawRuntimeEvent, sequence: u64) {
     let question_id = string_payload(event, "question_id").unwrap_or_else(|| sequence.to_string());
     let prompt = string_payload(event, "prompt").unwrap_or_default();
     let request = human_gate_request_user_input(event, &question_id, &prompt);
     let id = format!("segment-request-user-input-{question_id}");
-    upsert_entry(
-        transcript,
+    let turn_id = string_payload(event, "node_id")
+        .map(|node_id| node_turn_id(&node_id))
+        .unwrap_or_else(|| "run".to_string());
+    let mut segment = segment_shell(
         &id,
-        RunTranscriptEntry::Segment({
-            let mut segment = segment_entry(
-                id.clone(),
-                string_payload(event, "node_id")
-                    .map(|node_id| format!("run-node-{node_id}"))
-                    .unwrap_or_else(|| "run".to_string()),
-                sequence,
-                "request_user_input",
-                "system",
-                "pending",
-                event.emitted_at.clone(),
-                event.emitted_at.clone(),
-                prompt,
-            );
-            segment.request_user_input = Some(Value::Object(request));
-            segment.source = Some(json!({
-                "node_id": string_payload(event, "node_id"),
-                "source_scope": string_payload(event, "source_scope").unwrap_or_else(|| "root".to_string()),
-                "source_parent_node_id": string_payload(event, "source_parent_node_id"),
-                "source_flow_name": string_payload(event, "source_flow_name"),
-            }));
-            segment
-        }),
+        &turn_id,
+        sequence as i64,
+        SEGMENT_KIND_REQUEST_USER_INPUT,
+        "system",
+        "pending",
+        &event.emitted_at,
     );
+    segment.content = prompt;
+    segment.request_user_input = Some(Value::Object(request));
+    segment.source = Some(json!({
+        "node_id": string_payload(event, "node_id"),
+        "source_scope": string_payload(event, "source_scope").unwrap_or_else(|| "root".to_string()),
+        "source_parent_node_id": string_payload(event, "source_parent_node_id"),
+        "source_flow_name": string_payload(event, "source_flow_name"),
+    }));
+    transcript.upsert_segment(segment);
 }
 
-fn upsert_input_answer(transcript: &mut RunTranscript, event: &RawRuntimeEvent, sequence: u64) {
+fn upsert_input_answer(transcript: &mut Transcript, event: &RawRuntimeEvent, sequence: u64) {
     let question_id = string_payload(event, "question_id").unwrap_or_else(|| sequence.to_string());
     let answer = event.payload.get("answers").cloned().unwrap_or_else(|| {
         let mut answers = Map::new();
@@ -583,18 +654,14 @@ fn upsert_input_answer(transcript: &mut RunTranscript, event: &RawRuntimeEvent, 
         );
         Value::Object(answers)
     });
-    let existing = transcript.entries.iter().find_map(|entry| match entry {
-        RunTranscriptEntry::Segment(segment)
-            if segment.kind == "request_user_input"
-                && request_user_input_matches(
-                    segment.request_user_input.as_ref(),
-                    &question_id,
-                ) =>
-        {
-            Some(segment.clone())
-        }
-        _ => None,
-    });
+    let existing = transcript
+        .segments
+        .iter()
+        .find(|segment| {
+            segment.kind == SEGMENT_KIND_REQUEST_USER_INPUT
+                && request_user_input_matches(segment.request_user_input.as_ref(), &question_id)
+        })
+        .cloned();
     let prompt = existing
         .as_ref()
         .map(|segment| segment.content.clone())
@@ -614,31 +681,29 @@ fn upsert_input_answer(transcript: &mut RunTranscript, event: &RawRuntimeEvent, 
         normalize_answer_value(answer, &question_id),
     );
     request.insert("submitted_at".to_string(), json!(event.emitted_at.clone()));
-    let id = existing
-        .as_ref()
-        .map(|segment| segment.id.clone())
-        .unwrap_or_else(|| format!("segment-request-user-input-{question_id}"));
     let mut segment = existing.unwrap_or_else(|| {
-        segment_entry(
-            id.clone(),
-            string_payload(event, "node_id")
-                .or_else(|| string_payload(event, "stage"))
-                .map(|node_id| format!("run-node-{node_id}"))
-                .unwrap_or_else(|| "run".to_string()),
-            sequence,
-            "request_user_input",
+        let turn_id = string_payload(event, "node_id")
+            .or_else(|| string_payload(event, "stage"))
+            .map(|node_id| node_turn_id(&node_id))
+            .unwrap_or_else(|| "run".to_string());
+        let id = format!("segment-request-user-input-{question_id}");
+        let mut shell = segment_shell(
+            &id,
+            &turn_id,
+            sequence as i64,
+            SEGMENT_KIND_REQUEST_USER_INPUT,
             "system",
             "pending",
-            event.emitted_at.clone(),
-            event.emitted_at.clone(),
-            prompt,
-        )
+            &event.emitted_at,
+        );
+        shell.content = prompt;
+        shell
     });
     segment.status = "answered".to_string();
     segment.updated_at = event.emitted_at.clone();
     segment.completed_at = Some(event.emitted_at.clone());
     segment.request_user_input = Some(Value::Object(request));
-    upsert_entry(transcript, &id, RunTranscriptEntry::Segment(segment));
+    transcript.upsert_segment(segment);
 }
 
 fn request_user_input_matches(request: Option<&Value>, question_id: &str) -> bool {
@@ -683,91 +748,6 @@ fn normalize_tool_call(tool: Value, status: &str) -> Value {
         "output_size": tool.get("outputSize").or_else(|| tool.get("output_size")).cloned().unwrap_or(Value::Null),
         "output_truncated": tool.get("outputTruncated").or_else(|| tool.get("output_truncated")).and_then(Value::as_bool).unwrap_or(false),
         "file_paths": tool.get("filePaths").or_else(|| tool.get("file_paths")).cloned().unwrap_or_else(|| json!([])),
-    })
-}
-
-fn upsert_entry(transcript: &mut RunTranscript, id: &str, entry: RunTranscriptEntry) {
-    transcript
-        .entries
-        .retain(|existing| entry_id(existing) != id);
-    transcript.entries.push(entry);
-}
-
-fn write_transcript(paths: &RunRootPaths, transcript: &mut RunTranscript) -> Result<()> {
-    transcript.entries.sort_by(|left, right| {
-        entry_sequence(left)
-            .cmp(&entry_sequence(right))
-            .then_with(|| entry_id(left).cmp(entry_id(right)))
-    });
-    write_json_atomic(
-        paths.transcript_json(),
-        transcript,
-        JsonWriteOptions::default(),
-    )?;
-    Ok(())
-}
-
-fn next_transcript_sequence(transcript: &RunTranscript) -> u64 {
-    transcript
-        .entries
-        .iter()
-        .map(entry_sequence)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1)
-}
-
-fn entry_sequence(entry: &RunTranscriptEntry) -> u64 {
-    match entry {
-        RunTranscriptEntry::Boundary(entry) => entry.sequence,
-        RunTranscriptEntry::Segment(entry) => entry.order,
-    }
-}
-
-fn entry_id(entry: &RunTranscriptEntry) -> &str {
-    match entry {
-        RunTranscriptEntry::Boundary(entry) => &entry.id,
-        RunTranscriptEntry::Segment(entry) => &entry.id,
-    }
-}
-
-fn segment_entry(
-    id: String,
-    turn_id: String,
-    order: u64,
-    kind: &str,
-    role: &str,
-    status: &str,
-    timestamp: String,
-    updated_at: String,
-    content: String,
-) -> RunTranscriptSegmentEntry {
-    RunTranscriptSegmentEntry {
-        id,
-        turn_id,
-        order,
-        kind: kind.to_string(),
-        role: role.to_string(),
-        status: status.to_string(),
-        timestamp,
-        updated_at,
-        content,
-        completed_at: None,
-        error: None,
-        artifact_id: None,
-        phase: None,
-        tool_call: None,
-        request_user_input: None,
-        source: None,
-    }
-}
-
-fn turn_event_source_value(turn_event: &TurnStreamEvent) -> Value {
-    json!({
-        "app_turn_id": turn_event.source.app_turn_id,
-        "item_id": turn_event.source.item_id,
-        "summary_index": turn_event.source.summary_index,
-        "raw_kind": turn_event.source.raw_kind,
     })
 }
 
@@ -956,4 +936,82 @@ fn string_map_payload(payload: &BTreeMap<String, Value>, key: &str) -> Option<St
 
 fn numeric_payload(event: &RawRuntimeEvent, key: &str) -> Option<u64> {
     event.payload.get(key).and_then(Value::as_u64)
+}
+
+/// Legacy `{"entries": [...]}` run transcript files, read-compatibly converted
+/// to the shared record shape.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyBoundaryEntry {
+    id: String,
+    sequence: u64,
+    node_id: Option<String>,
+    stage_index: Option<u64>,
+    attempt: Option<u64>,
+    status: String,
+    started_at: Option<String>,
+    ended_at: Option<String>,
+    model: Option<String>,
+    source_scope: String,
+    source_parent_node_id: Option<String>,
+    source_flow_name: Option<String>,
+    summary: String,
+}
+
+fn legacy_transcript_from_entries(payload: &Value) -> Transcript {
+    let mut transcript = Transcript::default();
+    let Some(entries) = payload.get("entries").and_then(Value::as_array) else {
+        return transcript;
+    };
+    for entry in entries {
+        if entry.get("kind").and_then(Value::as_str) == Some(SEGMENT_KIND_BOUNDARY) {
+            let Ok(legacy) = serde_json::from_value::<LegacyBoundaryEntry>(entry.clone()) else {
+                continue;
+            };
+            let turn_id = legacy
+                .node_id
+                .as_deref()
+                .map(node_turn_id)
+                .unwrap_or_else(|| "run".to_string());
+            let timestamp = legacy
+                .started_at
+                .clone()
+                .or_else(|| legacy.ended_at.clone())
+                .unwrap_or_default();
+            let mut segment = segment_shell(
+                &legacy.id,
+                &turn_id,
+                legacy.sequence as i64,
+                SEGMENT_KIND_BOUNDARY,
+                "system",
+                &legacy.status,
+                &timestamp,
+            );
+            segment.updated_at = legacy.ended_at.clone().unwrap_or(timestamp);
+            segment.content = legacy.summary.clone();
+            segment.boundary = Some(BoundaryMeta {
+                node_id: legacy.node_id,
+                stage_index: legacy.stage_index,
+                attempt: legacy.attempt,
+                source_scope: legacy.source_scope,
+                source_parent_node_id: legacy.source_parent_node_id,
+                source_flow_name: legacy.source_flow_name,
+                model: legacy.model,
+                started_at: legacy.started_at,
+                ended_at: legacy.ended_at,
+                summary: legacy.summary,
+            });
+            transcript.upsert_segment(segment);
+            continue;
+        }
+        if let Ok(segment) = serde_json::from_value::<TranscriptSegment>(entry.clone()) {
+            transcript.upsert_segment(segment);
+        }
+    }
+    transcript.segments.sort_by(|left, right| {
+        left.order
+            .cmp(&right.order)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    transcript
 }

@@ -151,6 +151,9 @@ pub struct TranscriptSegment {
     pub request_user_input: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<Value>,
+    /// Run-scope boundary metadata; present only on `boundary` segments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<BoundaryMeta>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -163,6 +166,32 @@ impl TranscriptSegment {
     pub fn has_unassigned_order(&self) -> bool {
         self.order < 0
     }
+}
+
+/// Run-only workflow boundary metadata, quarantined outside the shared
+/// segment core.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct BoundaryMeta {
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub stage_index: Option<u64>,
+    #[serde(default)]
+    pub attempt: Option<u64>,
+    #[serde(default)]
+    pub source_scope: String,
+    #[serde(default)]
+    pub source_parent_node_id: Option<String>,
+    #[serde(default)]
+    pub source_flow_name: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+    #[serde(default)]
+    pub summary: String,
 }
 
 /// The canonical durable render state: ordered turns and segments.
