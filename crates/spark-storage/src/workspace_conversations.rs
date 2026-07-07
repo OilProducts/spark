@@ -550,7 +550,7 @@ impl ConversationRepository {
     ) -> Result<Option<PathBuf>> {
         Ok(self
             .conversation_root(conversation_id, project_path)?
-            .map(|root| root.join("session.json")))
+            .map(|root| root.join(crate::conversation::RUNTIME_SESSION_FILE_NAME)))
     }
 
     pub fn conversation_keyed_session_path(

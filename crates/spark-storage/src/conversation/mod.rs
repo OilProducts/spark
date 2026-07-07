@@ -14,6 +14,7 @@ mod migrate;
 mod mutations;
 mod projection;
 mod records;
+mod runtime_session;
 mod store;
 mod transient;
 
@@ -35,5 +36,8 @@ pub use records::{
     SEGMENT_KIND_ASSISTANT_MESSAGE, SEGMENT_KIND_BOUNDARY, SEGMENT_KIND_CONTEXT_COMPACTION,
     SEGMENT_KIND_MODEL_TOOL_CALL, SEGMENT_KIND_PLAN, SEGMENT_KIND_REASONING,
     SEGMENT_KIND_REQUEST_USER_INPUT, SEGMENT_KIND_TOOL_CALL,
+};
+pub use runtime_session::{
+    RuntimeSession, RUNTIME_SESSION_FILE_NAME, RUNTIME_SESSION_SCHEMA_VERSION,
 };
 pub use transient::{TransientStreamBody, TransientStreamEvent, TRANSIENT_STREAM_EVENT_TYPE};

@@ -22,7 +22,8 @@ use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
 use spark_storage::conversation::{
     ArtifactCollection, ConversationCommit, ConversationMetadataPatch, ConversationMutation,
-    TranscriptSegment, TranscriptTurn, TransientStreamBody, TransientStreamEvent, ORDER_UNASSIGNED,
+    RuntimeSession, TranscriptSegment, TranscriptTurn, TransientStreamBody, TransientStreamEvent,
+    ORDER_UNASSIGNED, RUNTIME_SESSION_SCHEMA_VERSION,
 };
 use spark_storage::{
     ConversationRepository, ProjectRegistry, StorageError, CONVERSATION_STATE_SCHEMA_VERSION,
@@ -639,7 +640,8 @@ impl WorkspaceConversationService {
                 ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
             ));
         }
-        let previous_app_thread_id = latest_codex_app_thread_id(&snapshot);
+        let previous_app_thread_id =
+            resume_codex_app_thread_id(&repository, conversation_id, &project_path, &snapshot);
 
         let user_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
@@ -777,6 +779,21 @@ impl WorkspaceConversationService {
             output.app_turn_id.as_deref(),
         ) {
             emit_assistant_turn_upsert(&snapshot, assistant_turn_id, &mut emitted_payloads);
+        }
+        if output
+            .thread_resume_failure
+            .as_ref()
+            .is_some_and(failure_is_codex_thread_resume)
+        {
+            tombstone_runtime_session(&repository, conversation_id, &project_path);
+        } else {
+            record_runtime_session_thread(
+                &repository,
+                conversation_id,
+                &project_path,
+                assistant_turn_id,
+                output.app_thread_id.as_deref(),
+            );
         }
         let mut buffered_plan_assistant_event: Option<TurnStreamEvent> = None;
 
@@ -3392,6 +3409,13 @@ impl LiveConversationTurnState {
                 &self.assistant_turn_id,
                 &mut emitted_payloads,
             );
+            record_runtime_session_thread(
+                &self.repository,
+                &self.conversation_id,
+                &self.project_path,
+                &self.assistant_turn_id,
+                event.source.app_thread_id.as_deref(),
+            );
         }
         ensure_assistant_streaming(
             &mut self.snapshot,
@@ -5128,6 +5152,110 @@ fn apply_assistant_turn_app_server_ids(
         set_string_value(turn, "app_turn_id", &app_turn_id);
     }
     changed
+}
+
+/// Prompt-time thread continuity: the runtime-session sidecar is the
+/// authority; the transcript turn scan remains only as a fallback for
+/// conversations that predate the sidecar.
+fn resume_codex_app_thread_id(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    snapshot: &Value,
+) -> Option<String> {
+    match repository.read_runtime_session(conversation_id, Some(project_path)) {
+        Ok(Some(session)) => {
+            if session.resume_failed {
+                None
+            } else {
+                session.thread_id
+            }
+        }
+        _ => latest_codex_app_thread_id(snapshot),
+    }
+}
+
+/// Best-effort continuity write when a turn observes a provider thread id.
+/// Failures are ignored: losing the sidecar only costs thread resume.
+fn record_runtime_session_thread(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+    assistant_turn_id: &str,
+    app_thread_id: Option<&str>,
+) {
+    let Some(thread_id) = app_thread_id.and_then(non_empty_string) else {
+        return;
+    };
+    let existing = repository
+        .read_runtime_session(conversation_id, Some(project_path))
+        .ok()
+        .flatten();
+    let unchanged = existing.as_ref().is_some_and(|session| {
+        !session.resume_failed
+            && session.thread_id.as_deref() == Some(thread_id.as_str())
+            && session.last_turn_id.as_deref() == Some(assistant_turn_id)
+    });
+    if unchanged {
+        return;
+    }
+    let now = iso_now();
+    let established_at = existing
+        .as_ref()
+        .filter(|session| {
+            !session.resume_failed && session.thread_id.as_deref() == Some(thread_id.as_str())
+        })
+        .map(|session| session.established_at.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| now.clone());
+    let _ = repository.write_runtime_session(
+        conversation_id,
+        project_path,
+        &RuntimeSession {
+            schema_version: RUNTIME_SESSION_SCHEMA_VERSION,
+            provider: "codex_app_server".to_string(),
+            thread_id: Some(thread_id),
+            established_at,
+            last_turn_id: Some(assistant_turn_id.to_string()),
+            resume_failed: false,
+            updated_at: now,
+        },
+    );
+}
+
+/// Best-effort continuity tombstone after a thread resume failure: the failed
+/// thread id is kept for debugging, but prompt construction stops resuming it.
+fn tombstone_runtime_session(
+    repository: &ConversationRepository,
+    conversation_id: &str,
+    project_path: &str,
+) {
+    let now = iso_now();
+    let mut session = repository
+        .read_runtime_session(conversation_id, Some(project_path))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| RuntimeSession {
+            schema_version: RUNTIME_SESSION_SCHEMA_VERSION,
+            provider: "codex_app_server".to_string(),
+            thread_id: None,
+            established_at: now.clone(),
+            last_turn_id: None,
+            resume_failed: true,
+            updated_at: now.clone(),
+        });
+    session.resume_failed = true;
+    session.updated_at = now;
+    let _ = repository.write_runtime_session(conversation_id, project_path, &session);
+}
+
+fn failure_is_codex_thread_resume(failure: &AgentThreadResumeFailure) -> bool {
+    failure.error_code.as_deref().is_some_and(|error_code| {
+        matches!(
+            error_code,
+            "codex_app_server_resume_failed" | "thread_resume_failed"
+        )
+    })
 }
 
 fn latest_codex_app_thread_id(snapshot: &Value) -> Option<String> {

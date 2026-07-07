@@ -2543,3 +2543,171 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::<PathBuf>::new(),
     }
 }
+
+#[test]
+fn runtime_session_records_thread_continuity_and_tombstones_on_resume_failure() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            app_thread_id: Some("thread-alpha".to_string()),
+            final_assistant_text: Some("First answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "thread resume failed".to_string(),
+                error_code: Some("thread_resume_failed".to_string()),
+                details: Some(json!({"thread_id": "thread-alpha"})),
+            }),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Fresh thread answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+    let repository = spark_storage::ConversationRepository::new(&settings.data_dir);
+
+    service
+        .execute_turn(
+            "conversation-runtime-session",
+            ConversationTurnRequest {
+                project_path: "/projects/runtime-session".to_string(),
+                message: "Establish the thread".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("first turn");
+    let first_assistant_turn_id = requests.lock().expect("requests")[0].metadata
+        ["spark.workspace.assistant_turn_id"]
+        .as_str()
+        .expect("assistant turn id")
+        .to_string();
+    let session = repository
+        .read_runtime_session(
+            "conversation-runtime-session",
+            Some("/projects/runtime-session"),
+        )
+        .expect("read session")
+        .expect("session written after thread id observed");
+    assert_eq!(session.provider, "codex_app_server");
+    assert_eq!(session.thread_id.as_deref(), Some("thread-alpha"));
+    assert_eq!(
+        session.last_turn_id.as_deref(),
+        Some(first_assistant_turn_id.as_str())
+    );
+    assert!(!session.resume_failed);
+    assert!(!session.established_at.is_empty());
+
+    service
+        .execute_turn(
+            "conversation-runtime-session",
+            ConversationTurnRequest {
+                project_path: "/projects/runtime-session".to_string(),
+                message: "Resume the previous thread".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("resume failure turn");
+    assert_eq!(
+        requests.lock().expect("requests")[1].metadata["spark.runtime.codex_app_server.thread_id"],
+        json!("thread-alpha")
+    );
+    let tombstoned = repository
+        .read_runtime_session(
+            "conversation-runtime-session",
+            Some("/projects/runtime-session"),
+        )
+        .expect("read tombstone")
+        .expect("session still present");
+    assert!(tombstoned.resume_failed);
+    assert_eq!(
+        tombstoned.thread_id.as_deref(),
+        Some("thread-alpha"),
+        "failed thread id is kept for debugging"
+    );
+
+    service
+        .execute_turn(
+            "conversation-runtime-session",
+            ConversationTurnRequest {
+                project_path: "/projects/runtime-session".to_string(),
+                message: "Start over".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("fresh thread turn");
+    assert!(
+        !requests.lock().expect("requests")[2]
+            .metadata
+            .contains_key("spark.runtime.codex_app_server.thread_id"),
+        "tombstoned continuity must not resume the failed thread"
+    );
+}
+
+#[test]
+fn runtime_session_absent_falls_back_to_transcript_turn_scan() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            app_thread_id: Some("thread-legacy".to_string()),
+            final_assistant_text: Some("First answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Second answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+    let repository = spark_storage::ConversationRepository::new(&settings.data_dir);
+
+    service
+        .execute_turn(
+            "conversation-legacy-continuity",
+            ConversationTurnRequest {
+                project_path: "/projects/runtime-session".to_string(),
+                message: "Establish the thread".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("first turn");
+
+    // Conversations that predate the runtime-session sidecar have only the
+    // transcript turn stamps; continuity must still resume via the turn scan.
+    let session_path = repository
+        .conversation_session_path(
+            "conversation-legacy-continuity",
+            Some("/projects/runtime-session"),
+        )
+        .expect("session path")
+        .expect("conversation root");
+    assert!(session_path.exists());
+    fs::remove_file(&session_path).expect("remove session sidecar");
+
+    service
+        .execute_turn(
+            "conversation-legacy-continuity",
+            ConversationTurnRequest {
+                project_path: "/projects/runtime-session".to_string(),
+                message: "Continue without a sidecar".to_string(),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("second turn");
+    assert_eq!(
+        requests.lock().expect("requests")[1].metadata["spark.runtime.codex_app_server.thread_id"],
+        json!("thread-legacy")
+    );
+}
