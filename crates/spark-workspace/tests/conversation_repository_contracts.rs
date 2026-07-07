@@ -177,9 +177,17 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
         .expect("project");
     assert!(project
         .conversations_dir
-        .join("conversation-settings/state.json")
+        .join("conversation-settings/conversation.json")
         .exists());
     assert!(project
+        .conversations_dir
+        .join("conversation-settings/journal.jsonl")
+        .exists());
+    assert!(!project
+        .conversations_dir
+        .join("conversation-settings/state.json")
+        .exists());
+    assert!(!project
         .flow_run_requests_dir
         .join("conversation-settings.json")
         .exists());

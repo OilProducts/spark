@@ -10,10 +10,15 @@
 mod commit;
 mod identity;
 mod journal;
+mod migrate;
 mod mutations;
 mod projection;
 mod records;
+mod store;
 mod transient;
+
+pub(crate) use migrate::migrate_legacy_conversation;
+pub(crate) use store::{read_record, ConversationRecordPaths};
 
 pub use commit::ConversationCommit;
 pub use identity::{

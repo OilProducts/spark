@@ -8,6 +8,7 @@ use super::journal::{JournalEntry, JournalEntryKind};
 use super::mutations::{ConversationMetadataPatch, ConversationMutation};
 use super::projection::{record_from_snapshot, snapshot_from_record};
 use super::records::{ConversationRecord, TranscriptSegment};
+use super::store::{write_record, ConversationRecordPaths, RecordWritePlan};
 
 /// The result of one committed conversation mutation batch.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +64,10 @@ impl ConversationRepository {
         let now = iso_now();
         let mut entry_kinds = Vec::new();
         let mut snapshot_level_change = false;
+        let mut write_plan = RecordWritePlan {
+            everything: latest_snapshot.is_none(),
+            ..RecordWritePlan::default()
+        };
         for mutation in mutations {
             match mutation {
                 ConversationMutation::MetadataUpdated { patch } => {
@@ -72,11 +77,13 @@ impl ConversationRepository {
                 ConversationMutation::TurnUpserted { turn } => {
                     record.transcript.upsert_turn(turn.clone());
                     entry_kinds.push(JournalEntryKind::TurnUpserted { turn });
+                    write_plan.transcript = true;
                 }
                 ConversationMutation::SegmentUpserted { mut segment } => {
                     resolve_segment_order(&record, &mut segment);
                     record.transcript.upsert_segment(segment.clone());
                     entry_kinds.push(JournalEntryKind::SegmentUpserted { segment });
+                    write_plan.transcript = true;
                 }
                 ConversationMutation::ArtifactUpserted {
                     collection,
@@ -84,10 +91,12 @@ impl ConversationRepository {
                 } => {
                     upsert_artifact(record.artifacts.collection_mut(collection), artifact);
                     snapshot_level_change = true;
+                    write_plan.touch_collection(collection);
                 }
                 ConversationMutation::WorkflowEventAppended { event } => {
                     record.artifacts.event_log.push(event);
                     snapshot_level_change = true;
+                    write_plan.event_log = true;
                 }
             }
         }
@@ -112,7 +121,12 @@ impl ConversationRepository {
             .collect();
 
         let snapshot = snapshot_from_record(&record);
-        self.write_snapshot(&snapshot)?;
+        let record_paths = ConversationRecordPaths::new(
+            self.project_paths(&record.meta.project_path)?
+                .conversations_dir
+                .join(conversation_id),
+        );
+        write_record(&record_paths, &record, &write_plan)?;
         let mut journal_payloads = Vec::with_capacity(journal_entries.len());
         for entry in &journal_entries {
             let payload = entry.legacy_event_payload(&record.meta, &snapshot);

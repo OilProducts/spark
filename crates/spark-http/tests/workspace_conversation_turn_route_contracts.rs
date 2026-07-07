@@ -248,11 +248,19 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
         .expect("project");
     assert!(project
         .conversations_dir
-        .join("conversation-http-turn/state.json")
+        .join("conversation-http-turn/conversation.json")
         .exists());
     assert!(project
         .conversations_dir
-        .join("conversation-http-turn/events.jsonl")
+        .join("conversation-http-turn/transcript.json")
+        .exists());
+    assert!(project
+        .conversations_dir
+        .join("conversation-http-turn/journal.jsonl")
+        .exists());
+    assert!(!project
+        .conversations_dir
+        .join("conversation-http-turn/state.json")
         .exists());
     let persisted = WorkspaceConversationService::new(settings.clone())
         .get_snapshot("conversation-http-turn", Some("/projects/http-turn"))

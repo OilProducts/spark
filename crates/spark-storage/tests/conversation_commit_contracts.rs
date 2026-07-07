@@ -148,6 +148,37 @@ fn commit_conversation_creates_conversations_and_allocates_strictly_increasing_r
             .collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
+
+    // A fresh conversation persists only split record files — no legacy
+    // state.json/events.jsonl and no project-level sidecar files.
+    let root = conversation_dir(&_temp, project_path, "conversation-a");
+    for expected in [
+        "conversation.json",
+        "transcript.json",
+        "event-log.json",
+        "journal.jsonl",
+        "artifacts/flow-run-requests.json",
+        "artifacts/flow-launches.json",
+        "artifacts/run-recoveries.json",
+        "artifacts/proposed-plans.json",
+    ] {
+        assert!(root.join(expected).exists(), "missing {expected}");
+    }
+    assert!(!root.join("state.json").exists());
+    assert!(!root.join("events.jsonl").exists());
+    let project = ProjectRegistry::new(_temp.path().join("spark-home"))
+        .ensure_project_paths(project_path)
+        .expect("project paths");
+    assert!(!project
+        .flow_run_requests_dir
+        .join("conversation-a.json")
+        .exists());
+    let meta: Value = serde_json::from_str(
+        &fs::read_to_string(root.join("conversation.json")).expect("conversation.json"),
+    )
+    .expect("meta json");
+    assert_eq!(meta["revision"], 3);
+    assert!(meta.get("turns").is_none());
 }
 
 #[test]
@@ -466,9 +497,9 @@ fn transient_stream_events_are_never_appended_to_the_journal() {
     assert_eq!(replay.len(), 1);
     assert_eq!(replay[0]["type"], "turn_upsert");
 
-    let events_text = fs::read_to_string(
-        conversation_dir(&temp, project_path, "conversation-g").join("events.jsonl"),
+    let journal_text = fs::read_to_string(
+        conversation_dir(&temp, project_path, "conversation-g").join("journal.jsonl"),
     )
-    .expect("events file");
-    assert_eq!(events_text.lines().count(), 1);
+    .expect("journal file");
+    assert_eq!(journal_text.lines().count(), 1);
 }

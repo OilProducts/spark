@@ -49,11 +49,16 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
     let project_paths = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project_path.to_str().expect("utf-8"))
         .expect("paths");
-    let sidecar = settings
+    let artifact_file = project_paths
+        .conversations_dir
+        .join("conversation-http-review/artifacts/flow-run-requests.json");
+    assert!(artifact_file.exists());
+    // The legacy project-level sidecar is absorbed by migration.
+    assert!(!settings
         .projects_dir
-        .join(project_paths.project_id)
-        .join("flow-run-requests/conversation-http-review.json");
-    assert!(sidecar.exists());
+        .join(&project_paths.project_id)
+        .join("flow-run-requests/conversation-http-review.json")
+        .exists());
 
     let duplicate = request_json(
         app.clone(),
