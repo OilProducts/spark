@@ -1055,6 +1055,34 @@ impl AttractorApiService {
         }
     }
 
+    /// Transcript segments projected from the combined (parent + child) run
+    /// journal — the same resequenced view the live stream cursors over.
+    pub fn get_pipeline_segments(&self, pipeline_id: &str) -> RuntimeRouteResponse {
+        let store = RunStore::for_settings(&self.settings);
+        let entries = match attractor_runtime::combined_run_journal_entries(&store, pipeline_id) {
+            Ok(Some(entries)) => entries,
+            Ok(None) => {
+                return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
+            }
+            Err(error) => {
+                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
+            }
+        };
+        let mut projection = attractor_runtime::project_run_segments(&entries);
+        for segment in &mut projection.segments {
+            truncate_segment_tool_output_preview(segment);
+        }
+        RuntimeRouteResponse::json(
+            200,
+            json!({
+                "pipeline_id": pipeline_id,
+                "run_id": pipeline_id,
+                "segments": projection.segments,
+                "newest_sequence": projection.newest_sequence,
+            }),
+        )
+    }
+
     pub fn get_pipeline_journal(
         &self,
         pipeline_id: &str,
@@ -1794,6 +1822,7 @@ fn dispatch_pipeline_route(
             query_i64(query, "before_sequence"),
         ),
         ("GET", "transcript") => service.get_pipeline_transcript(pipeline_id),
+        ("GET", "segments") => service.get_pipeline_segments(pipeline_id),
         ("GET", "events") => match query_i64_strict(
             query,
             "after_sequence",
@@ -2839,4 +2868,27 @@ fn child_event_groups(children: &[RunBundle]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// Mirrors the conversation UI preview shape: `tool_call.output` is capped for
+/// hydration payloads, with `output_size`/`output_truncated` recording the
+/// full size. (8 KiB, same as the chat snapshot preview.)
+fn truncate_segment_tool_output_preview(segment: &mut Value) {
+    const SEGMENT_TOOL_OUTPUT_PREVIEW_BYTES: usize = 8 * 1024;
+    let Some(tool_call) = segment.get_mut("tool_call").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(output) = tool_call
+        .get("output")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let output_size = output.len();
+    let (preview, truncated) =
+        spark_common::segments::truncate_utf8(&output, SEGMENT_TOOL_OUTPUT_PREVIEW_BYTES);
+    tool_call.insert("output".to_string(), json!(preview));
+    tool_call.insert("output_size".to_string(), json!(output_size));
+    tool_call.insert("output_truncated".to_string(), json!(truncated));
 }

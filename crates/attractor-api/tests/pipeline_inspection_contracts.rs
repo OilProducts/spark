@@ -505,3 +505,144 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[test]
+fn segments_route_projects_combined_run_transcript_with_previews() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("Project Segments");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let store = RunStore::for_settings(&settings);
+
+    // Parent run with a streamed tool call whose output exceeds the preview cap.
+    let mut parent = attractor_core::RunRecord::new(
+        "run-segments-route",
+        project_path.to_string_lossy().to_string(),
+    );
+    parent.flow_name = "segments".to_string();
+    parent.status = "running".to_string();
+    let parent_paths = store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: parent,
+            checkpoint: None,
+            manifest: None,
+            flow_source: None,
+            flow_definition_json: None,
+        })
+        .expect("parent run");
+    let big_output = "x".repeat(9 * 1024);
+    for event in [
+        json!({
+            "type": "CodergenAdapter",
+            "run_id": "run-segments-route",
+            "emitted_at": "2026-07-08T11:00:01.000000000Z",
+            "adapter_event_type": "codex_app_server_session_event",
+            "node_id": "implement",
+            "payload": {"turn_stream_event": {
+                "kind": "tool_call_completed",
+                "tool_call": {"id": "call-1", "name": "shell", "status": "completed", "output": big_output},
+                "source": {"backend": "codex_app_server", "app_turn_id": "t-1", "item_id": "call-1"},
+            }},
+        }),
+        json!({
+            "type": "CodergenAdapter",
+            "run_id": "run-segments-route",
+            "emitted_at": "2026-07-08T11:00:02.000000000Z",
+            "adapter_event_type": "rust_agent_session_event",
+            "node_id": "implement",
+            "payload": {"turn_stream_event": {
+                "kind": "content_completed",
+                "channel": "assistant",
+                "content_delta": "Parent answer.",
+                "message": "Parent answer.",
+                "source": {"backend": "rust_unified_llm_adapter"},
+            }},
+        }),
+    ] {
+        store
+            .append_event(
+                &parent_paths,
+                serde_json::from_value(event).expect("raw event"),
+            )
+            .expect("append parent event");
+    }
+
+    // Child run streaming its own assistant text.
+    let mut child = attractor_core::RunRecord::new(
+        "run-segments-child",
+        project_path.to_string_lossy().to_string(),
+    );
+    child.flow_name = "child-flow".to_string();
+    child.status = "running".to_string();
+    child.parent_run_id = Some("run-segments-route".to_string());
+    child.root_run_id = Some("run-segments-route".to_string());
+    child.parent_node_id = Some("manager".to_string());
+    let child_paths = store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: child,
+            checkpoint: None,
+            manifest: None,
+            flow_source: None,
+            flow_definition_json: None,
+        })
+        .expect("child run");
+    store
+        .append_event(
+            &child_paths,
+            serde_json::from_value(json!({
+                "type": "CodergenAdapter",
+                "run_id": "run-segments-child",
+                "emitted_at": "2026-07-08T11:00:03.000000000Z",
+                "adapter_event_type": "codex_app_server_session_event",
+                "node_id": "child_step",
+                "payload": {"turn_stream_event": {
+                    "kind": "content_completed",
+                    "channel": "assistant",
+                    "content_delta": "Child answer.",
+                    "message": "Child answer.",
+                    "source": {"backend": "codex_app_server"},
+                }},
+            }))
+            .expect("raw event"),
+        )
+        .expect("append child event");
+
+    let response = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-segments-route/segments",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["pipeline_id"], json!("run-segments-route"));
+    let segments = response.body["segments"].as_array().expect("segments");
+    assert_eq!(segments.len(), 3);
+
+    let tool = segments
+        .iter()
+        .find(|segment| segment["kind"] == "tool_call")
+        .expect("tool segment");
+    assert_eq!(tool["tool_call"]["output_truncated"], json!(true));
+    assert_eq!(tool["tool_call"]["output_size"], json!(9 * 1024));
+    assert!(
+        tool["tool_call"]["output"].as_str().expect("preview").len() <= 8 * 1024,
+        "preview must be capped",
+    );
+
+    let child_segment = segments
+        .iter()
+        .find(|segment| segment["source_scope"] == "child")
+        .expect("child segment");
+    assert_eq!(child_segment["content"], "Child answer.");
+    assert_eq!(child_segment["source_flow_name"], "child-flow");
+    assert_eq!(child_segment["source_parent_node_id"], "manager");
+    assert!(response.body["newest_sequence"].as_u64().expect("cursor") >= 3);
+
+    let missing = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-unknown/segments",
+        "",
+        settings,
+    );
+    assert_eq!(missing.status_code, 404);
+}
