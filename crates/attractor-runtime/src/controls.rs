@@ -392,7 +392,7 @@ impl RuntimeControls {
         let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         if !matches!(
             crate::records::normalize_run_status(&record.status).as_str(),
-            "queued" | "running" | "pause_requested" | "cancel_requested"
+            "queued" | "running" | "waiting" | "pause_requested" | "cancel_requested"
         ) {
             return Ok(RuntimeControlStatus {
                 status: "ignored".to_string(),
