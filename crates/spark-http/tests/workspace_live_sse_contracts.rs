@@ -909,7 +909,10 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     assert_eq!(upsert["payload"]["run"]["model"], "compat-model");
 
     let service = AttractorApiService::new(settings.clone());
+    // Wait for terminal state: this section exercises steer-event streaming
+    // from a settled journal cursor, not detached-launch behavior.
     let started = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-live-selected".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),

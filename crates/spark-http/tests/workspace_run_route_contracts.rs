@@ -262,6 +262,9 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
     assert_eq!(launched.0, StatusCode::OK);
     assert_eq!(launched.1["ok"], true);
     assert_eq!(launched.1["status"], "started");
+    // The launch response returns at run start; the codergen invocation
+    // happens on the detached execution thread.
+    wait_for_codergen_calls(&calls, 1);
     let requests = calls.lock().expect("calls");
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
@@ -494,5 +497,19 @@ impl ProviderAdapter for RecordingAdapter {
 
     fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
         unimplemented!("workspace route codergen uses complete")
+    }
+}
+
+fn wait_for_codergen_calls<T>(calls: &std::sync::Arc<std::sync::Mutex<Vec<T>>>, expected: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if calls.lock().expect("calls").len() >= expected {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "codergen backend was never invoked by the detached run",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }

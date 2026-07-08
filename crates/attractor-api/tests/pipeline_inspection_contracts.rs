@@ -13,6 +13,7 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     let project_path = temp.path().join("Project Inspect");
     let service = AttractorApiService::new(settings.clone());
     let start = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-inspect".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -119,6 +120,7 @@ fn artifact_endpoint_rejects_symlink_file_escape() {
     let project_path = temp.path().join("Project Symlink Artifact");
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-symlink-artifact".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -162,6 +164,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     let project_path = temp.path().join("Project Journal");
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-journal".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -319,6 +322,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     }));
 
     service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-other".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -356,12 +360,14 @@ fn run_listing_filters_by_project_path_query() {
     let project_b = temp.path().join("ProjectB");
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-project-a".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_a.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
     service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-project-b".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_b.to_string_lossy().to_string(),

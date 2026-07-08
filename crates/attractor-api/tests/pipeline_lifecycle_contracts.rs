@@ -15,6 +15,7 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
     let service = AttractorApiService::new(settings.clone());
 
     let response = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-api-start".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -126,6 +127,7 @@ fn start_pipeline_uses_launch_context_llm_selection_before_graph_defaults() {
     let service = AttractorApiService::new(settings.clone());
 
     let response = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-api-launch-context".to_string()),
         flow_content: Some(
             r#"
@@ -206,6 +208,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     let service = AttractorApiService::new(settings.clone());
 
     let first = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-duplicate".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -214,6 +217,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     assert_eq!(first.body["status"], json!("started"));
 
     let duplicate = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-duplicate".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -225,6 +229,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     );
 
     let missing_content = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -234,6 +239,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     );
 
     let parse_error = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-parse-error".to_string()),
         flow_content: Some("digraph {".to_string()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -243,6 +249,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     assert!(parse_error.body["errors"].as_array().expect("errors").len() == 1);
 
     let launch_context_error = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-bad-context".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -310,4 +317,113 @@ fn settings(root: &Path) -> SparkSettings {
         ui_dir: None,
         project_roots: Vec::new(),
     }
+}
+
+fn wait_for_terminal_status(settings: &SparkSettings, run_id: &str) -> String {
+    let store = RunStore::for_settings(settings);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = store
+            .read_run_bundle(run_id)
+            .ok()
+            .flatten()
+            .and_then(|bundle| bundle.record)
+            .map(|record| record.status);
+        if let Some(status) = status.as_deref() {
+            if matches!(status, "completed" | "failed" | "canceled" | "paused") {
+                return status.to_string();
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "run {run_id} never reached a terminal status (last: {status:?})",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn detached_start_returns_immediately_with_a_running_record() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project_path = temp.path().join("Project Detached");
+    let service = AttractorApiService::new(settings.clone());
+
+    let response = service.start_pipeline(PipelineStartRequest {
+        run_id: Some("run-detached".to_string()),
+        flow_content: Some(simple_flow()),
+        working_directory: project_path.to_string_lossy().to_string(),
+        model: Some("compat-model".to_string()),
+        ..PipelineStartRequest::default()
+    });
+
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["status"], json!("started"));
+    assert_eq!(response.body["run_id"], json!("run-detached"));
+    assert_eq!(response.body["terminal_status"], json!("running"));
+
+    // The run record and initial journal exist the moment the response is
+    // built, even if the background executor has not progressed yet.
+    let bundle = RunStore::for_settings(&settings)
+        .read_run_bundle("run-detached")
+        .expect("read run")
+        .expect("run exists");
+    let record = bundle.record.expect("record");
+    assert_eq!(record.flow_name, "");
+    assert!(bundle
+        .raw_events
+        .iter()
+        .any(|event| event.event_type == "lifecycle"));
+
+    assert_eq!(
+        wait_for_terminal_status(&settings, "run-detached"),
+        "completed"
+    );
+}
+
+#[test]
+fn retry_route_executes_the_prepared_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project_path = temp.path().join("Project Retry Exec");
+    let service = AttractorApiService::new(settings.clone());
+
+    // Seed a failed run with a stored graph source and checkpoint.
+    let store = RunStore::for_settings(&settings);
+    let mut record = attractor_core::RunRecord::new(
+        "run-retry-exec",
+        project_path.to_string_lossy().to_string(),
+    );
+    record.flow_name = "retry-exec.dot".to_string();
+    record.status = "failed".to_string();
+    let graph = attractor_dsl::parse_dot(&simple_flow()).expect("graph");
+    let checkpoint = attractor_core::CheckpointState {
+        timestamp: "2026-07-08T10:00:00Z".to_string(),
+        current_node: "start".to_string(),
+        completed_nodes: Vec::new(),
+        context: Default::default(),
+        retry_counts: Default::default(),
+        logs: Vec::new(),
+    };
+    store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record,
+            checkpoint: Some(checkpoint),
+            manifest: None,
+            graph_source: Some(simple_flow()),
+            graph_dot: Some(attractor_dsl::format_readable_dot(&graph)),
+        })
+        .expect("seed failed run");
+
+    let response = service.retry_pipeline_route("run-retry-exec");
+    assert_eq!(response.status_code, 200);
+    assert_eq!(response.body["status"], json!("started"));
+
+    assert_eq!(
+        wait_for_terminal_status(&settings, "run-retry-exec"),
+        "completed",
+        "retry must actually execute the prepared run",
+    );
 }
