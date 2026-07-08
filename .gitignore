@@ -19,5 +19,3 @@ frontend/.tmp-*/
 .idea/
 .planflow/
 .codex
-compose.override.yaml
-compose.override.yml

@@ -9,9 +9,6 @@ setup:
   npm --prefix frontend ci
   cargo fetch
 
-dev-docker:
-  bash scripts/dev-docker.sh
-
 run-docker:
   bash scripts/run-docker.sh
 
@@ -22,8 +19,13 @@ dev-run: frontend-deps
 test: frontend-deps
   cargo fmt --all -- --check
   cargo test --workspace --all-features
+  npm --prefix frontend run lint
   npm --prefix frontend run test:unit
   npm --prefix frontend run build
+
+# Browser end-to-end smoke suite (needs Playwright browsers: npx playwright install).
+smoke: frontend-deps
+  npm --prefix frontend run ui:smoke
 
 # Build local release binaries and the production frontend.
 deliverable: frontend-deps

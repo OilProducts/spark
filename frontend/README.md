@@ -43,9 +43,9 @@ From the repo root, `just dev-run` is the normal full-stack workflow.
 - `npm run build`: type-check and produce a production build in `dist/`
 - `npm run lint`: run ESLint
 - `npm run preview`: serve the production build locally
-- `npm run shadcn:verify`: verify `components.json` and the shadcn-managed primitives against the pinned repo-local baseline, including `native-select`, without depending on live `shadcn@latest` network calls at evaluation time
 - `npm run test:unit`: run Vitest unit tests
 - `npm run test:unit:watch`: run Vitest in watch mode
+- `npm run ui:smoke`: run the Playwright end-to-end smoke suite (also available as `just smoke` from the repo root)
 
 ## Build Output
 
