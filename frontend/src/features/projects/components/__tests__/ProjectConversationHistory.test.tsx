@@ -362,6 +362,21 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).queryByText('**bold**')).not.toBeInTheDocument()
     })
 
+    it('wraps long uninterrupted assistant markdown content inside the message bubble', () => {
+        const longToken = 'rapid-pond-' + 'x'.repeat(120)
+
+        renderHistory([
+            makeMessageEntry({
+                content: longToken,
+            }),
+        ])
+
+        const paragraph = screen.getByText(longToken)
+        expect(paragraph).toHaveClass('break-words')
+        expect(paragraph).toHaveClass('[overflow-wrap:anywhere]')
+        expect(paragraph.closest('div')).toHaveClass('min-w-0')
+    })
+
     it('renders assistant fenced code blocks as preformatted code', () => {
         renderHistory([
             makeMessageEntry({
@@ -373,6 +388,7 @@ describe('ProjectConversationHistory', () => {
         const codeBlock = history.querySelector('pre > code')
         expect(codeBlock).not.toBeNull()
         expect(codeBlock).toHaveTextContent('npm test')
+        expect(codeBlock?.closest('pre')).toHaveClass('overflow-x-hidden')
     })
 
     it('does not rerender an older unchanged assistant markdown row when the latest assistant markdown changes', () => {

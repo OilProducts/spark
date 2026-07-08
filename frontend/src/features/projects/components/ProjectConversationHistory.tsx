@@ -92,8 +92,8 @@ export const ToolCallRow = memo(function ToolCallRow({
     const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
 
     return (
-        <li className="flex justify-start">
-            <div className="w-full rounded-md border border-border bg-muted/40 px-3 py-2">
+        <li className="flex min-w-0 justify-start">
+            <div className="min-w-0 w-full rounded-md border border-border bg-muted/40 px-3 py-2">
                 <Button
                     type="button"
                     data-testid={`project-tool-call-toggle-${entry.toolCall.id}`}
@@ -128,21 +128,21 @@ export const ToolCallRow = memo(function ToolCallRow({
                 {isExpanded ? (
                     <div className="mt-2 space-y-2">
                         {entry.toolCall.command ? (
-                            <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground">
+                            <p className="whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground [overflow-wrap:anywhere]">
                                 {entry.toolCall.command}
                             </p>
                         ) : null}
                         {entry.toolCall.filePaths.length > 0 ? (
                             <ul className="space-y-1">
                                 {entry.toolCall.filePaths.map((path) => (
-                                    <li key={path} className="font-mono text-[11px] text-muted-foreground">
+                                    <li key={path} className="break-words font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
                                         {path}
                                     </li>
                                 ))}
                             </ul>
                         ) : null}
                         {displayedOutput ? (
-                            <pre className="max-h-40 overflow-auto rounded border border-border/60 bg-background/80 px-2 py-1 whitespace-pre-wrap font-mono text-[11px] text-muted-foreground">
+                            <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
                                 {displayedOutput}
                             </pre>
                         ) : null}
@@ -222,7 +222,7 @@ const RequestUserInputRow = memo(function RequestUserInputRow({
     onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
 }) {
     return (
-        <li className="flex justify-start">
+        <li className="flex min-w-0 justify-start">
             <ProjectConversationRequestUserInputCard
                 actionError={actionError}
                 entry={entry}
@@ -252,7 +252,7 @@ const ThinkingRow = memo(function ThinkingRow({
 
     return (
         <li className="flex justify-start">
-            <div className="max-w-[85%] rounded border border-border/80 bg-background px-3 py-2 text-muted-foreground">
+            <div className="min-w-0 max-w-[85%] rounded border border-border/80 bg-background px-3 py-2 text-muted-foreground">
                 {isExpandable ? (
                     <Button
                         type="button"
@@ -276,7 +276,7 @@ const ThinkingRow = memo(function ThinkingRow({
                     <p className="text-xs font-semibold text-foreground">{heading}</p>
                 )}
                 {isExpanded && details ? (
-                    <p className="mt-2 whitespace-pre-wrap text-xs italic leading-5">
+                    <p className="mt-2 whitespace-pre-wrap break-words text-xs italic leading-5 [overflow-wrap:anywhere]">
                         {details}
                     </p>
                 ) : null}
@@ -383,10 +383,10 @@ const PlanRow = memo(function PlanRow({
     const launchFlowName = planLaunch?.flow_name || 'software-development/implement-change-request.yaml'
 
     return (
-        <li className="flex justify-start">
+        <li className="flex min-w-0 justify-start">
             <div
                 data-testid={`project-plan-card-${entry.id}`}
-                className="max-w-[85%] rounded-md border border-emerald-400/40 bg-emerald-50/60 px-3 py-2 text-foreground"
+                className="min-w-0 max-w-[85%] rounded-md border border-emerald-400/40 bg-emerald-50/60 px-3 py-2 text-foreground"
             >
                 <div className="flex flex-wrap items-center gap-2">
                     <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/80">
@@ -399,7 +399,7 @@ const PlanRow = memo(function PlanRow({
                     ) : null}
                 </div>
                 {entry.status === 'failed' ? (
-                    <p className="whitespace-pre-wrap text-xs leading-5">{content}</p>
+                    <p className="whitespace-pre-wrap break-words text-xs leading-5 [overflow-wrap:anywhere]">{content}</p>
                 ) : (
                     <ProjectConversationMarkdown content={content} />
                 )}
@@ -507,10 +507,10 @@ const MessageRow = memo(function MessageRow({
 
     return (
         <li
-            className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex min-w-0 ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
         >
             <div
-                className={`max-w-[85%] rounded border px-3 py-2 ${
+                className={`min-w-0 max-w-[85%] rounded border px-3 py-2 ${
                     entry.role === 'user'
                         ? 'border-primary/40 bg-primary/10 text-foreground'
                         : entry.presentation === 'thinking'
@@ -527,7 +527,7 @@ const MessageRow = memo(function MessageRow({
                     <ProjectConversationMarkdown content={entry.content} />
                 ) : (
                     <p
-                        className={`whitespace-pre-wrap text-xs leading-5 ${
+                        className={`whitespace-pre-wrap break-words text-xs leading-5 [overflow-wrap:anywhere] ${
                             entry.presentation === 'thinking' ? 'italic' : ''
                         }`}
                     >

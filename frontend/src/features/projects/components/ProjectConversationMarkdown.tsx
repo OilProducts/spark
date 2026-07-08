@@ -4,7 +4,7 @@ import ReactMarkdown, { type Components } from 'react-markdown'
 import { cn } from '@/lib/utils'
 
 const INLINE_CODE_CONTAINER_CLASS_NAME =
-    '[&_code]:rounded [&_code]:border [&_code]:border-border/60 [&_code]:bg-background/80 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[11px] [&_code]:text-foreground'
+    '[&_code]:rounded [&_code]:border [&_code]:border-border/60 [&_code]:bg-background/80 [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-[11px] [&_code]:text-foreground [&_code]:[overflow-wrap:anywhere]'
 
 const markdownComponents: Components = {
     a({ children }) {
@@ -23,7 +23,7 @@ const markdownComponents: Components = {
         )
     },
     code({ children, className }) {
-        return <code className={cn('font-mono text-[11px] text-foreground', className)}>{children}</code>
+        return <code className={cn('whitespace-pre-wrap break-words font-mono text-[11px] text-foreground [overflow-wrap:anywhere]', className)}>{children}</code>
     },
     em({ children }) {
         return <em className="italic text-foreground">{children}</em>
@@ -78,21 +78,21 @@ const markdownComponents: Components = {
         return <span className="font-medium text-foreground">{alt}</span>
     },
     li({ children }) {
-        return <li className={cn('break-words', INLINE_CODE_CONTAINER_CLASS_NAME)}>{children}</li>
+        return <li className={cn('break-words [overflow-wrap:anywhere]', INLINE_CODE_CONTAINER_CLASS_NAME)}>{children}</li>
     },
     ol({ children }) {
         return <ol className="list-decimal space-y-1 pl-5 text-xs leading-5 text-foreground">{children}</ol>
     },
     p({ children }) {
         return (
-            <p className={cn('min-w-0 break-words text-xs leading-5 text-foreground', INLINE_CODE_CONTAINER_CLASS_NAME)}>
+            <p className={cn('min-w-0 break-words text-xs leading-5 text-foreground [overflow-wrap:anywhere]', INLINE_CODE_CONTAINER_CLASS_NAME)}>
                 {children}
             </p>
         )
     },
     pre({ children }) {
         return (
-            <pre className="overflow-x-auto rounded border border-border/60 bg-background/80 px-3 py-2">
+            <pre className="max-w-full overflow-x-hidden whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-3 py-2 [overflow-wrap:anywhere]">
                 {children}
             </pre>
         )
@@ -111,7 +111,7 @@ interface ProjectConversationMarkdownProps {
 
 function ProjectConversationMarkdownComponent({ content }: ProjectConversationMarkdownProps) {
     return (
-        <div className="space-y-2 text-foreground">
+        <div className="min-w-0 space-y-2 break-words text-foreground [overflow-wrap:anywhere]">
             <ReactMarkdown components={markdownComponents} skipHtml>
                 {content}
             </ReactMarkdown>
