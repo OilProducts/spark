@@ -499,10 +499,8 @@ const pendingGateSemanticFallbackOptions = (
 }
 
 type TimelineFilters = {
-    timelineTypeFilter: string
     timelineCategoryFilter: 'all' | TimelineEventCategory
     timelineSeverityFilter: 'all' | TimelineSeverity
-    timelineNodeStageFilter: string
 }
 
 const buildTimelineTypeOptions = (timelineEvents: Iterable<TimelineEventEntry>) => {
@@ -515,34 +513,12 @@ const buildTimelineTypeOptions = (timelineEvents: Iterable<TimelineEventEntry>) 
 
 const matchesTimelineFilters = (
     event: TimelineEventEntry,
-    {
-        timelineTypeFilter,
-        timelineCategoryFilter,
-        timelineSeverityFilter,
-        timelineNodeStageFilter,
-    }: TimelineFilters,
+    { timelineCategoryFilter, timelineSeverityFilter }: TimelineFilters,
 ) => {
-    const normalizedNodeStageFilter = timelineNodeStageFilter.trim().toLowerCase()
-
-    if (timelineTypeFilter !== 'all' && event.type !== timelineTypeFilter) {
-        return false
-    }
     if (timelineCategoryFilter !== 'all' && event.category !== timelineCategoryFilter) {
         return false
     }
-    if (timelineSeverityFilter !== 'all' && event.severity !== timelineSeverityFilter) {
-        return false
-    }
-    if (!normalizedNodeStageFilter) {
-        return true
-    }
-
-    const nodeIdMatch = (event.nodeId ?? '').toLowerCase().includes(normalizedNodeStageFilter)
-    const stageIndexMatch = event.stageIndex !== null && String(event.stageIndex).includes(normalizedNodeStageFilter)
-    const sourceParentNodeMatch = (event.sourceParentNodeId ?? '').toLowerCase().includes(normalizedNodeStageFilter)
-    const sourceFlowMatch = (event.sourceFlowName ?? '').toLowerCase().includes(normalizedNodeStageFilter)
-    const sourceScopeMatch = event.sourceScope.toLowerCase().includes(normalizedNodeStageFilter)
-    return nodeIdMatch || stageIndexMatch || sourceParentNodeMatch || sourceFlowMatch || sourceScopeMatch
+    return timelineSeverityFilter === 'all' || event.severity === timelineSeverityFilter
 }
 
 const filterTimelineEvents = (
