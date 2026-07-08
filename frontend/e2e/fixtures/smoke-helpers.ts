@@ -6,7 +6,7 @@ import { expect, type Page } from '@playwright/test'
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const screenshotDir = path.resolve(testDir, '..', '..', 'artifacts', 'ui-smoke')
 const repoRoot = path.resolve(testDir, '..', '..', '..')
-const smokeFixturePath = path.join(repoRoot, 'tests', 'fixtures', 'flows', 'editor-smoke-base.dot')
+const smokeFixturePath = path.join(repoRoot, 'crates', 'test-fixtures', 'flows', 'flows', 'editor-smoke-base.dot')
 const smokeFixtureContent = readFileSync(smokeFixturePath, 'utf-8')
 const smokeFlowRegistry = new WeakMap<Page, Set<string>>()
 
