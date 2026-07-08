@@ -83,7 +83,7 @@ const renderSourceLabel = (event: TimelineEventEntry) => {
     return event.sourceParentNodeId ? `${flowLabel} via ${event.sourceParentNodeId}` : flowLabel
 }
 
-function TranscriptRow({
+export function TranscriptRow({
     entry,
     isActiveEntry,
 }: {
@@ -133,7 +133,7 @@ function TranscriptRow({
     )
 }
 
-function EventRow({
+export function EventRow({
     event,
     correlationLabel,
 }: {

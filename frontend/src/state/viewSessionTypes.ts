@@ -61,6 +61,7 @@ export interface RunDetailSessionState {
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
     activityMode: 'all' | 'transcript' | 'events'
+    inspectorTab: 'result' | 'checkpoint' | 'context' | 'artifacts' | 'node'
     graphStatus: ResourceStatus
     graphError: string | null
     expandChildFlows: boolean

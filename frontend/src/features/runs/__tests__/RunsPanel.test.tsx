@@ -727,9 +727,8 @@ describe('RunsPanel', () => {
     const runActivityPanel = screen.getByTestId('run-activity-panel')
     const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
     const runGraphPanel = screen.getByTestId('run-graph-panel')
-    const runResultPanel = screen.getByTestId('run-result-panel')
+    const runInspectorPanel = screen.getByTestId('run-inspector-panel')
     const runActivityStreamPanel = screen.getByTestId('run-activity-stream-panel')
-    const runAdvancedPanel = screen.getByTestId('run-advanced-panel')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
@@ -754,15 +753,16 @@ describe('RunsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: validate')
     })
-    expect(screen.getByTestId('run-progress-entry-current-label')).toHaveTextContent('Current node')
-    expect(screen.getAllByTestId('run-progress-entry-node')[0]).toHaveTextContent('validate')
-    expect(screen.getByText('passed', { selector: 'strong' })).toBeVisible()
-    expect(screen.queryByText('Draft archive output.')).not.toBeInTheDocument()
+    const activityList = () => within(screen.getByTestId('run-activity-list'))
+    expect(activityList().getByTestId('run-progress-entry-current-label')).toHaveTextContent('Current node')
+    expect(activityList().getAllByTestId('run-progress-entry-node')[0]).toHaveTextContent('validate')
+    expect(activityList().getByText('passed', { selector: 'strong' })).toBeVisible()
+    expect(activityList().queryByText('Draft archive output.')).not.toBeInTheDocument()
     // Clearing the node focus reveals every transcript entry in the single stream.
     await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    expect(within(screen.getByTestId('run-activity-list')).getAllByTestId('run-progress-entry')).toHaveLength(2)
-    expect(screen.getByText('passed', { selector: 'strong' })).toBeVisible()
-    expect(screen.getByText('Draft archive output.')).toBeVisible()
+    expect(activityList().getAllByTestId('run-progress-entry')).toHaveLength(2)
+    expect(activityList().getByText('passed', { selector: 'strong' })).toBeVisible()
+    expect(activityList().getByText('Draft archive output.')).toBeVisible()
     // Selecting a graph node scopes the stream to that node's entries only.
     act(() => {
       useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft' })
@@ -773,12 +773,17 @@ describe('RunsPanel', () => {
     expect(within(scopedActivityList).getByTestId('run-progress-entry-node')).toHaveTextContent('draft')
     expect(within(scopedActivityList).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
     await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    expect(runAdvancedPanel).toBeVisible()
+    // Clearing node focus drops the inspector back to the run-scope Result tab;
+    // reference evidence lives behind inspector tabs, not an advanced drawer.
+    expect(runInspectorPanel).toBeVisible()
+    await waitFor(() => {
+      expect(screen.getByTestId('run-inspector-tab-result')).toHaveAttribute('aria-selected', 'true')
+    })
+    expect(screen.getByTestId('run-result-panel')).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     // The run graph is a persistent surface promoted out of the advanced section.
     expect(runGraphPanel).toBeVisible()
     expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-advanced-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'false')
@@ -787,10 +792,10 @@ describe('RunsPanel', () => {
       runPendingQuestionsPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runGraphPanel.compareDocumentPosition(runResultPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runGraphPanel.compareDocumentPosition(runInspectorPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runResultPanel.compareDocumentPosition(runActivityStreamPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runInspectorPanel.compareDocumentPosition(runActivityStreamPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
       nowSection.compareDocumentPosition(outcomeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -801,18 +806,15 @@ describe('RunsPanel', () => {
     expect(
       scopeSection.compareDocumentPosition(usageSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
-    expect(
-      runActivityStreamPanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
 
-    await user.click(screen.getByTestId('run-advanced-toggle-button'))
-
+    await user.click(screen.getByTestId('run-inspector-tab-checkpoint'))
     await waitFor(() => {
       expect(screen.getByTestId('run-checkpoint-panel')).toBeVisible()
     })
-    expect(screen.getByTestId('run-checkpoint-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-context-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-artifact-toggle-button')).toBeVisible()
+    await user.click(screen.getByTestId('run-inspector-tab-context'))
+    expect(screen.getByTestId('run-context-panel')).toBeVisible()
+    await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
+    expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
 
     // The persistent graph pane renders its canvas without any expand toggle.
     await waitFor(() => {

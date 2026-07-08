@@ -256,6 +256,18 @@ const buildContextExportPayload = (runId: string, contextEntries: ContextExportE
     2,
 )
 
+export const nodeRetryCountFromCheckpoint = (
+    checkpointData: CheckpointResponse | null,
+    nodeId: string | null,
+): number | null => {
+    if (!nodeId) {
+        return null
+    }
+    const retryCounts = asRecord(asRecord(checkpointData?.checkpoint)?.retry_counts)
+    const value = retryCounts?.[nodeId]
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
 const buildCheckpointSummary = (checkpointData: CheckpointResponse | null) => {
     const checkpointSnapshot = asRecord(checkpointData?.checkpoint)
     const currentNode = checkpointSnapshot?.current_node
