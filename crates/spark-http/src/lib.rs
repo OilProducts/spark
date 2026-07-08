@@ -508,6 +508,14 @@ pub(crate) fn publish_live_run_after(
             live_hub.publish(envelope);
         }
     }
+    // Transcript segments touched by the newly published journal window.
+    if let Ok(segment_envelopes) =
+        spark_workspace::live::run_segment_envelopes_after(settings, run_id, after_sequence)
+    {
+        for envelope in segment_envelopes {
+            live_hub.publish(envelope);
+        }
+    }
     if let Ok(Some(envelope)) = run_upsert_envelope(settings, run_id) {
         live_hub.publish(envelope);
     }

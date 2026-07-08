@@ -2243,3 +2243,124 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
                 == Some("approved")));
     drop(app);
 }
+
+#[tokio::test]
+async fn live_route_streams_run_segment_upserts_through_the_publisher() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_path = root.join("segment-project");
+    fs::create_dir_all(&project_path).expect("project");
+    let store = RunStore::for_settings(&settings);
+
+    // A failed run with a stored flow snapshot, checkpoint, and journaled
+    // agent stream events: retrying it flows through the observed store, so
+    // the coalescing publisher must emit run.segment_upsert envelopes.
+    let mut record = attractor_core::RunRecord::new(
+        "run-segment-live",
+        project_path.to_string_lossy().to_string(),
+    );
+    record.flow_name = "segment-live".to_string();
+    record.status = "failed".to_string();
+    let flow = concat!(
+        "schema_version: '1'\n",
+        "id: seg_live\n",
+        "title: Seg Live\n",
+        "nodes:\n",
+        "  start:\n",
+        "    kind: start\n",
+        "  done:\n",
+        "    kind: exit\n",
+        "edges:\n",
+        "  - from: start\n",
+        "    to: done\n",
+    );
+    let checkpoint = attractor_core::CheckpointState {
+        timestamp: "2026-07-08T12:00:00Z".to_string(),
+        current_node: "start".to_string(),
+        completed_nodes: Vec::new(),
+        context: Default::default(),
+        retry_counts: Default::default(),
+        logs: Vec::new(),
+    };
+    let paths = store
+        .create_run(CreateRunRequest {
+            record,
+            checkpoint: Some(checkpoint),
+            flow_source: Some(flow.to_string()),
+            flow_definition_json: None,
+            ..CreateRunRequest::default()
+        })
+        .expect("seed run");
+    store
+        .append_event(
+            &paths,
+            serde_json::from_value(json!({
+                "type": "CodergenAdapter",
+                "run_id": "run-segment-live",
+                "emitted_at": "2026-07-08T12:00:01.000000000Z",
+                "adapter_event_type": "rust_agent_session_event",
+                "node_id": "implement",
+                "payload": {"turn_stream_event": {
+                    "kind": "content_completed",
+                    "channel": "assistant",
+                    "content_delta": "Streamed answer.",
+                    "message": "Streamed answer.",
+                    "source": {"backend": "rust_unified_llm_adapter"},
+                }},
+            }))
+            .expect("raw event"),
+        )
+        .expect("append adapter event");
+
+    let app = build_app(settings.clone());
+    let before_sequence = latest_journal_sequence(&settings, "run-segment-live");
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?run_id=run-segment-live&run_sequence={before_sequence}"
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
+
+    let retried = request(
+        app.clone(),
+        "POST",
+        "/workspace/api/runs/run-segment-live/retry",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(retried.status(), StatusCode::OK);
+
+    // The publisher coalesces observer notifications and must deliver the
+    // projected segment while the retried run progresses.
+    let mut saw_segment_upsert = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !saw_segment_upsert {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never received run.segment_upsert",
+        );
+        let frame = next_sse_chunk(&mut stream).await;
+        if frame.starts_with(": keepalive") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        if envelope["type"] == "run.segment_upsert" {
+            assert_eq!(envelope["resource"]["kind"], "run");
+            assert_eq!(envelope["resource"]["id"], "run-segment-live");
+            assert_eq!(envelope["cursor"]["kind"], "run_sequence");
+            let segment = &envelope["payload"]["segment"];
+            assert_eq!(segment["kind"], "assistant_message");
+            assert_eq!(segment["content"], "Streamed answer.");
+            assert_eq!(segment["node_id"], "implement");
+            saw_segment_upsert = true;
+        }
+    }
+    drop(app);
+}
