@@ -21,6 +21,7 @@ import { useStore } from '@/store'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
+import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
 
 const completedNodesMatch = (left: string[], right: string[]) => (
     left.length === right.length && left.every((value, index) => value === right[index])
@@ -745,6 +746,58 @@ export function WorkspaceLiveEventsController() {
     return null
 }
 
+export function RunsHashRoutingController() {
+    const viewMode = useStore((state) => state.viewMode)
+    const selectedRunId = useStore((state) => state.selectedRunId)
+    const selectedNodeId = useStore((state) => (
+        state.selectedRunId
+            ? state.runDetailSessionsByRunId[state.selectedRunId]?.selectedNodeId ?? null
+            : null
+    ))
+
+    // Hash -> store: applies deep links on load and on hashchange. Store -> hash
+    // below uses history.replaceState, which does not fire hashchange, so the
+    // two directions cannot loop.
+    useEffect(() => {
+        const applyHash = () => {
+            const route = parseRunsHash(window.location.hash)
+            if (!route) {
+                return
+            }
+            const state = useStore.getState()
+            if (state.viewMode !== 'runs') {
+                state.setViewMode('runs')
+            }
+            if (state.selectedRunId !== route.runId) {
+                state.setSelectedRunId(route.runId)
+            }
+            const currentNodeId = state.runDetailSessionsByRunId[route.runId]?.selectedNodeId ?? null
+            if (currentNodeId !== route.nodeId) {
+                state.updateRunDetailSession(route.runId, { selectedNodeId: route.nodeId })
+            }
+        }
+        applyHash()
+        window.addEventListener('hashchange', applyHash)
+        return () => {
+            window.removeEventListener('hashchange', applyHash)
+        }
+    }, [])
+
+    // Store -> hash: the runs tab owns the hash; other tabs clear a stale runs hash.
+    useEffect(() => {
+        if (viewMode === 'runs' && selectedRunId) {
+            const nextHash = buildRunsHash(selectedRunId, selectedNodeId)
+            if (window.location.hash !== nextHash) {
+                window.history.replaceState(null, '', nextHash)
+            }
+        } else if (isRunsHash(window.location.hash)) {
+            window.history.replaceState(null, '', window.location.pathname + window.location.search)
+        }
+    }, [viewMode, selectedRunId, selectedNodeId])
+
+    return null
+}
+
 export function AppSessionControllers() {
     return (
         <>
@@ -752,6 +805,7 @@ export function AppSessionControllers() {
             <HomeSessionController />
             <RunsSessionController />
             <TriggersSessionController />
+            <RunsHashRoutingController />
         </>
     )
 }

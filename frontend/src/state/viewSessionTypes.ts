@@ -59,6 +59,7 @@ export interface RunDetailSessionState {
     summaryRecord: RunRecord | null
     completedNodesSnapshot: string[]
     statusFetchedAtMs: number | null
+    selectedNodeId: string | null
     graphStatus: ResourceStatus
     graphError: string | null
     expandChildFlows: boolean

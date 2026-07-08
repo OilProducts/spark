@@ -20,6 +20,7 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     summaryRecord: null,
     completedNodesSnapshot: [],
     statusFetchedAtMs: null,
+    selectedNodeId: null,
     graphStatus: 'idle',
     graphError: null,
     expandChildFlows: false,
