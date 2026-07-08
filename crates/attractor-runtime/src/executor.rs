@@ -61,6 +61,9 @@ pub struct ExecuteRunRequest {
 pub enum ExecutionStart {
     #[default]
     Fresh,
+    /// The run root was already created via [`prepare_fresh_run`]; execute from
+    /// the start node exactly as `Fresh` would, without re-creating the run.
+    Prepared { paths: crate::paths::RunRootPaths },
     Resume {
         paths: crate::paths::RunRootPaths,
         checkpoint: CheckpointState,
@@ -170,7 +173,7 @@ pub enum ExecutionControlAction {
 
 pub struct PipelineExecutor<E> {
     node_executor: E,
-    control: Option<Box<dyn FnMut() -> Option<ExecutionControlAction>>>,
+    control: Option<Box<dyn FnMut() -> Option<ExecutionControlAction> + Send>>,
 }
 
 impl<E> PipelineExecutor<E>
@@ -186,7 +189,7 @@ where
 
     pub fn with_control(
         node_executor: E,
-        control: impl FnMut() -> Option<ExecutionControlAction> + 'static,
+        control: impl FnMut() -> Option<ExecutionControlAction> + Send + 'static,
     ) -> Self {
         Self {
             node_executor,
@@ -221,34 +224,40 @@ where
 
         let (paths, resumed) = match start {
             ExecutionStart::Fresh => {
-                context = initialize_runtime_context(&flow, &start_node, &launch_context)?;
-                context.apply_updates(&runtime_context)?;
-                seed_execution_record_context(&mut context, &record)?;
-                reset_workflow_outcome_context(&mut context)?;
-                clear_runtime_retry_context(&mut context)?;
+                let fresh =
+                    build_fresh_run_state(&flow, &record, &launch_context, &runtime_context)?;
+                context = fresh.context;
                 completed_nodes = Vec::new();
                 retry_counts = BTreeMap::new();
-                current_node = start_node.clone();
+                current_node = fresh.current_node;
                 route_trace = vec![current_node.clone()];
-                let initial_checkpoint = checkpoint_from_context(
-                    &current_node,
-                    completed_nodes.clone(),
-                    &context,
-                    retry_counts.clone(),
-                );
                 let paths = store.create_run(CreateRunRequest {
                     record: record.clone(),
-                    checkpoint: Some(initial_checkpoint),
+                    checkpoint: Some(fresh.checkpoint),
                     manifest: Some(RunManifest {
                         goal: flow.goal.clone(),
                         graph_id: flow.id.clone(),
-                        start_node: start_node.clone(),
+                        start_node: current_node.clone(),
                         started_at: record.started_at.clone(),
                         extra: BTreeMap::new(),
                     }),
                     flow_source,
                     flow_definition_json,
                 })?;
+                (paths, false)
+            }
+            ExecutionStart::Prepared { paths } => {
+                // The run root was created by prepare_fresh_run with the same
+                // fresh state this rebuilds; execution proceeds exactly like
+                // Fresh from here (journal parity is contract-tested).
+                paths.ensure_exists()?;
+                let fresh =
+                    build_fresh_run_state(&flow, &record, &launch_context, &runtime_context)?;
+                context = fresh.context;
+                completed_nodes = Vec::new();
+                retry_counts = BTreeMap::new();
+                current_node = fresh.current_node;
+                route_trace = vec![current_node.clone()];
                 (paths, false)
             }
             ExecutionStart::Resume { paths, checkpoint } => {
@@ -842,6 +851,70 @@ fn context_from_checkpoint(
     let mut context = AttractorContext::from_map(values)?;
     seed_builtin_context(&mut context, current_node)?;
     Ok(context)
+}
+
+struct FreshRunState {
+    context: AttractorContext,
+    checkpoint: CheckpointState,
+    current_node: String,
+}
+
+fn build_fresh_run_state(
+    flow: &FlowDefinition,
+    record: &RunRecord,
+    launch_context: &LaunchContext,
+    runtime_context: &ContextMap,
+) -> Result<FreshRunState> {
+    let start_node = resolve_start_node(flow)?;
+    let mut context = initialize_runtime_context(flow, &start_node, launch_context)?;
+    context.apply_updates(runtime_context)?;
+    seed_execution_record_context(&mut context, record)?;
+    reset_workflow_outcome_context(&mut context)?;
+    clear_runtime_retry_context(&mut context)?;
+    let checkpoint = checkpoint_from_context(
+        &start_node,
+        Vec::<String>::new(),
+        &context,
+        BTreeMap::<String, u64>::new(),
+    );
+    Ok(FreshRunState {
+        context,
+        checkpoint,
+        current_node: start_node,
+    })
+}
+
+/// Creates the run root on disk exactly as an `ExecutionStart::Fresh` run
+/// would (record, initial checkpoint, manifest, graph artifacts, initial
+/// journal events), without executing any node. Pair with
+/// `ExecutionStart::Prepared { paths }` to run the pipeline afterwards —
+/// typically on a background thread after the launch response has been sent.
+pub fn prepare_fresh_run(
+    store: &RunStore,
+    record: &RunRecord,
+    flow: &FlowDefinition,
+    flow_source: Option<String>,
+    flow_definition_json: Option<String>,
+    launch_context: &LaunchContext,
+    runtime_context: &ContextMap,
+) -> Result<crate::paths::RunRootPaths> {
+    let mut record = record.clone();
+    ensure_run_record_defaults(&mut record);
+    let fresh = build_fresh_run_state(flow, &record, launch_context, runtime_context)?;
+    let manifest = RunManifest {
+        goal: flow.goal.clone(),
+        graph_id: flow.id.clone(),
+        start_node: fresh.current_node.clone(),
+        started_at: record.started_at.clone(),
+        extra: BTreeMap::new(),
+    };
+    store.create_run(CreateRunRequest {
+        record,
+        checkpoint: Some(fresh.checkpoint),
+        manifest: Some(manifest),
+        flow_source,
+        flow_definition_json,
+    })
 }
 
 fn seed_execution_record_context(context: &mut AttractorContext, record: &RunRecord) -> Result<()> {

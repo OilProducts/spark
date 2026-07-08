@@ -415,6 +415,7 @@ pub struct RuntimeHandlerRunner {
     child_run_launcher: Option<ChildRunLauncher>,
     child_status_resolver: Option<ChildStatusResolver>,
     child_intervention_requester: Option<ChildInterventionRequester>,
+    run_event_observer: Option<crate::store::RunEventObserver>,
 }
 
 struct BranchCompletion {
@@ -439,7 +440,17 @@ impl RuntimeHandlerRunner {
             child_run_launcher: None,
             child_status_resolver: None,
             child_intervention_requester: None,
+            run_event_observer: None,
         }
+    }
+
+    pub fn with_run_event_observer(mut self, observer: crate::store::RunEventObserver) -> Self {
+        self.run_event_observer = Some(observer);
+        self
+    }
+
+    pub(crate) fn run_event_observer(&self) -> Option<crate::store::RunEventObserver> {
+        self.run_event_observer.clone()
     }
 
     pub fn with_interviewer(interviewer: impl Interviewer + Send + 'static) -> Self {
@@ -669,6 +680,9 @@ impl RuntimeHandlerRunner {
                 )
             })?;
             append_event(paths, event)?;
+            if let Some(observer) = &self.run_event_observer {
+                observer(&paths.run_id);
+            }
         }
         Ok(())
     }
