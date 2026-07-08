@@ -15,6 +15,11 @@ run-docker:
 dev-run: frontend-deps
   bash scripts/dev-run.sh
 
+# Launch the Tauri desktop app (self-seeding runtime) with a fresh frontend build.
+dev-desktop: frontend-deps
+  npm --prefix frontend run build
+  cargo run -p spark-desktop --bin spark-desktop --all-features
+
 # Repository validation gate for the Rust cutover.
 test: frontend-deps
   cargo fmt --all -- --check
