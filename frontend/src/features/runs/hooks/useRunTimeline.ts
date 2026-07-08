@@ -44,8 +44,6 @@ type TimelineProjection = {
 }
 
 const DEFAULT_TIMELINE_SESSION = {
-    timelineTypeFilter: 'all',
-    timelineNodeStageFilter: '',
     timelineCategoryFilter: 'all' as const,
     timelineSeverityFilter: 'all' as const,
     pendingGateActionError: null as string | null,
@@ -124,10 +122,8 @@ const mergeTranscriptEntries = (entries: RunTranscriptEntry[]): RunTranscriptEnt
 const buildTimelineProjection = (
     journalState: RunJournalStateEntry,
     filters: {
-        timelineTypeFilter: string
         timelineCategoryFilter: 'all' | TimelineEventCategory
         timelineSeverityFilter: 'all' | TimelineSeverity
-        timelineNodeStageFilter: string
     },
 ): TimelineProjection => {
     const groupedEntries: GroupedTimelineEntry[] = []
@@ -174,10 +170,8 @@ const applyLiveMutationToProjection = (
     mutation: Extract<RunJournalMutation, { kind: 'append_live' }>,
     journalState: RunJournalStateEntry,
     filters: {
-        timelineTypeFilter: string
         timelineCategoryFilter: 'all' | TimelineEventCategory
         timelineSeverityFilter: 'all' | TimelineSeverity
-        timelineNodeStageFilter: string
     },
 ): TimelineProjection | null => {
     if (!mutation.appendedAsNewest || mutation.introducedRetryCorrelation) {
@@ -266,15 +260,11 @@ export function useRunTimeline({
         && ACTIVE_RUN_TRANSCRIPT_STATUSES.has(selectedRunStatus),
     )
     const timelineFilters = useMemo(() => ({
-        timelineTypeFilter: timelineSession.timelineTypeFilter,
         timelineCategoryFilter: timelineSession.timelineCategoryFilter,
         timelineSeverityFilter: timelineSession.timelineSeverityFilter,
-        timelineNodeStageFilter: timelineSession.timelineNodeStageFilter,
     }), [
         timelineSession.timelineCategoryFilter,
-        timelineSession.timelineNodeStageFilter,
         timelineSession.timelineSeverityFilter,
-        timelineSession.timelineTypeFilter,
     ])
     const projectionCacheRef = useRef<{
         filterKey: string
@@ -282,7 +272,7 @@ export function useRunTimeline({
         revision: number
         runId: string | null
     } | null>(null)
-    const filterKey = `${timelineFilters.timelineTypeFilter}::${timelineFilters.timelineCategoryFilter}::${timelineFilters.timelineSeverityFilter}::${timelineFilters.timelineNodeStageFilter}`
+    const filterKey = `${timelineFilters.timelineCategoryFilter}::${timelineFilters.timelineSeverityFilter}`
     const timelineProjection = useMemo(() => {
         if (!selectedRunTimelineId) {
             projectionCacheRef.current = {
@@ -588,15 +578,12 @@ export function useRunTimeline({
                 : next,
         }),
         setTimelineCategoryFilter: (value: 'all' | TimelineEventCategory) => patchTimelineSession({ timelineCategoryFilter: value }),
-        setTimelineNodeStageFilter: (value: string) => patchTimelineSession({ timelineNodeStageFilter: value }),
         setTimelineSeverityFilter: (value: 'all' | TimelineSeverity) => patchTimelineSession({ timelineSeverityFilter: value }),
-        setTimelineTypeFilter: (value: string) => patchTimelineSession({ timelineTypeFilter: value }),
         submittingGateIds: timelineSession.submittingGateIds,
         submitPendingGateAnswer,
         timelineCategoryFilter: timelineSession.timelineCategoryFilter,
         timelineError,
         timelineEventCount: journalState.loadedEntryCount,
-        timelineNodeStageFilter: timelineSession.timelineNodeStageFilter,
         timelineSeverityFilter: timelineSession.timelineSeverityFilter,
         transcriptProjection,
         timelineTypeFilter: timelineSession.timelineTypeFilter,

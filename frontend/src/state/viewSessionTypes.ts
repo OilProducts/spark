@@ -19,7 +19,6 @@ import type {
     RunRecord,
     TimelineEventCategory,
     TimelineSeverity,
-    RunProgressNodeFilter,
 } from '@/features/runs/model/shared'
 import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
 
@@ -76,14 +75,6 @@ export interface RunDetailSessionState {
     resultStatus: ResourceStatus
     resultError: string | null
     isSummaryCollapsed: boolean
-    isProgressCollapsed: boolean
-    progressNodeFilter: RunProgressNodeFilter
-    isTimelineCollapsed: boolean
-    isCheckpointCollapsed: boolean
-    isContextCollapsed: boolean
-    isArtifactsCollapsed: boolean
-    isAdvancedCollapsed: boolean
-    isGraphCollapsed: boolean
     contextData: ContextResponse | null
     contextStatus: ResourceStatus
     contextError: ContextErrorState | null
@@ -98,8 +89,6 @@ export interface RunDetailSessionState {
     artifactViewerError: string | null
     questionsStatus: ResourceStatus
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
-    timelineTypeFilter: string
-    timelineNodeStageFilter: string
     timelineCategoryFilter: 'all' | TimelineEventCategory
     timelineSeverityFilter: 'all' | TimelineSeverity
     pendingGateActionError: string | null
