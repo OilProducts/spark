@@ -21,9 +21,9 @@ use spark_common::events::{
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
 use spark_storage::conversation::{
-    ArtifactCollection, ConversationCommit, ConversationMetadataPatch, ConversationMutation,
-    RuntimeSession, TranscriptSegment, TranscriptTurn, TransientStreamBody, TransientStreamEvent,
-    ORDER_UNASSIGNED, RUNTIME_SESSION_SCHEMA_VERSION,
+    truncate_utf8, ArtifactCollection, ConversationCommit, ConversationMetadataPatch,
+    ConversationMutation, RuntimeSession, TranscriptSegment, TranscriptTurn, TransientStreamBody,
+    TransientStreamEvent, ORDER_UNASSIGNED, RUNTIME_SESSION_SCHEMA_VERSION,
 };
 use spark_storage::{
     ConversationRepository, ProjectRegistry, StorageError, CONVERSATION_STATE_SCHEMA_VERSION,
@@ -2241,6 +2241,17 @@ impl WorkspaceConversationService {
         segment_id: &str,
         project_path: Option<&str>,
     ) -> WorkspaceResult<Value> {
+        let requested_project_path = normalize_optional_project_path(project_path)?;
+        if let Some(output) = self.repository().read_segment_tool_output(
+            conversation_id,
+            requested_project_path.as_deref(),
+            segment_id,
+        )? {
+            return Ok(json!({
+                "output": output,
+                "output_size": output.len(),
+            }));
+        }
         let snapshot = self.get_snapshot_without_ui_truncation(conversation_id, project_path)?;
         let Some(segments) = snapshot.get("segments").and_then(Value::as_array) else {
             return Err(WorkspaceError::NotFound(
@@ -5865,6 +5876,11 @@ fn truncate_tool_call_outputs(snapshot: &mut Value) {
         else {
             continue;
         };
+        if tool_call.get("output_truncated").and_then(Value::as_bool) == Some(true) {
+            // Already a durable preview of an externalized output; its
+            // recorded size and truncation marker are authoritative.
+            continue;
+        }
         let Some(output) = tool_call
             .get("output")
             .and_then(Value::as_str)
@@ -5878,21 +5894,6 @@ fn truncate_tool_call_outputs(snapshot: &mut Value) {
         tool_call.insert("output_size".to_string(), json!(output_size));
         tool_call.insert("output_truncated".to_string(), json!(truncated));
     }
-}
-
-fn truncate_utf8(value: &str, byte_limit: usize) -> (String, bool) {
-    if value.len() <= byte_limit {
-        return (value.to_string(), false);
-    }
-    let mut end = 0;
-    for (index, ch) in value.char_indices() {
-        let next = index + ch.len_utf8();
-        if next > byte_limit {
-            break;
-        }
-        end = next;
-    }
-    (value[..end].to_string(), true)
 }
 
 fn derive_conversation_title(turns: Option<&Vec<Value>>) -> String {

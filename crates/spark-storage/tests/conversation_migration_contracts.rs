@@ -1,7 +1,9 @@
 use std::fs;
 
 use serde_json::{json, Value};
-use spark_storage::conversation::{ConversationMutation, TranscriptTurn};
+use spark_storage::conversation::{
+    ConversationMutation, TranscriptTurn, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
+};
 use spark_storage::{
     ConversationRepository, ProjectPaths, ProjectRegistry, CONVERSATION_STATE_SCHEMA_VERSION,
     UNSUPPORTED_CONVERSATION_STATE_SCHEMA,
@@ -198,17 +200,17 @@ fn legacy_conversation_migrates_once_on_first_read() {
         assert!(!dir.join("conversation-legacy.json").exists());
     }
 
-    // The journal starts with one snapshot checkpoint at the carried revision.
+    // The journal starts with one slim snapshot checkpoint at the carried
+    // revision — journal lines never embed full snapshots.
     let journal = fs::read_to_string(root.join("journal.jsonl")).expect("journal");
     let lines: Vec<Value> = journal
         .lines()
         .map(|line| serde_json::from_str(line).expect("journal line"))
         .collect();
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0]["type"], "conversation_snapshot");
+    assert_eq!(lines[0]["type"], "conversation_snapshot_ref");
     assert_eq!(lines[0]["revision"], 7);
-    assert_eq!(lines[0]["state"]["segments"][0]["id"], "segment-a");
-    assert_eq!(lines[0]["state"]["flow_run_requests"][0]["id"], "request-a");
+    assert!(lines[0].get("state").is_none());
 }
 
 #[test]
@@ -242,8 +244,9 @@ fn migration_preserves_revision_continuity_and_checkpoint_replay() {
         .expect("post-migration commit");
     assert_eq!(commit.revision, 8);
 
-    // Replay from a pre-migration cursor returns the checkpoint snapshot and
-    // the new committed entry, in revision order.
+    // Replay from a pre-migration cursor returns the slim checkpoint ref and
+    // the new committed entry, in revision order. (The live layer substitutes
+    // a fresh snapshot envelope when it sees the ref.)
     let replay = repo
         .read_conversation_events_after("conversation-cont", project_path, 3)
         .expect("replay");
@@ -258,9 +261,65 @@ fn migration_preserves_revision_continuity_and_checkpoint_replay() {
             })
             .collect::<Vec<_>>(),
         vec![
-            ("conversation_snapshot".to_string(), 7),
+            ("conversation_snapshot_ref".to_string(), 7),
             ("turn_upsert".to_string(), 8)
         ]
+    );
+}
+
+#[test]
+fn migration_externalizes_oversized_tool_outputs() {
+    let project_path = "/projects/migration-tool-output";
+    let (_temp, repo, project) = setup(project_path);
+    let big_output = "x".repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 3);
+    let snapshot = json!({
+        "schema_version": CONVERSATION_STATE_SCHEMA_VERSION,
+        "revision": 2,
+        "conversation_id": "conversation-tools",
+        "conversation_handle": "amber-anchor",
+        "project_path": project_path,
+        "chat_mode": "chat",
+        "provider": "codex",
+        "model": null,
+        "llm_profile": null,
+        "reasoning_effort": null,
+        "title": "Tool heavy",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:02Z",
+        "turns": [
+            {"id": "turn-assistant", "role": "assistant", "content": "", "timestamp": "2026-01-01T00:00:00Z", "status": "complete", "kind": "message"}
+        ],
+        "segments": [
+            {"id": "segment-tool-big", "turn_id": "turn-assistant", "order": 1, "kind": "tool_call", "role": "system", "status": "complete", "timestamp": "2026-01-01T00:00:01Z", "updated_at": "2026-01-01T00:00:01Z", "content": "Tool call", "source": {}, "tool_call": {"id": "call-1", "output": big_output}}
+        ]
+    });
+    write_legacy_files(&project, &snapshot);
+
+    let migrated = repo
+        .read_snapshot("conversation-tools", Some(project_path))
+        .expect("read")
+        .expect("snapshot");
+    let tool_call = &migrated["segments"][0]["tool_call"];
+    assert_eq!(tool_call["output_truncated"], true);
+    assert_eq!(
+        tool_call["output_size"].as_u64().expect("size") as usize,
+        big_output.len()
+    );
+    assert_eq!(
+        tool_call["output"].as_str().expect("preview").len(),
+        TOOL_OUTPUT_INLINE_LIMIT_BYTES
+    );
+
+    let sidecar = project
+        .conversations_dir
+        .join("conversation-tools")
+        .join("tool-output")
+        .join("segment-tool-big.txt");
+    assert_eq!(fs::read_to_string(sidecar).expect("sidecar"), big_output);
+    assert_eq!(
+        repo.read_segment_tool_output("conversation-tools", Some(project_path), "segment-tool-big")
+            .expect("sidecar read"),
+        Some(big_output)
     );
 }
 

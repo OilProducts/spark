@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
-use spark_storage::conversation::TRANSIENT_STREAM_EVENT_TYPE;
+use spark_storage::conversation::{CONVERSATION_SNAPSHOT_REF_TYPE, TRANSIENT_STREAM_EVENT_TYPE};
 
 use crate::conversations::WorkspaceConversationService;
 use crate::triggers::WorkspaceTriggerService;
@@ -334,9 +334,9 @@ fn conversation_envelopes(
             "conversation journal cannot replay from the requested revision",
         )]);
     }
-
     let mut envelopes = Vec::new();
     let mut expected_revision = revision + 1;
+    let mut saw_snapshot_ref = false;
     for event in events {
         let Some(event_revision) = value_revision(&event) else {
             continue;
@@ -350,6 +350,13 @@ fn conversation_envelopes(
             ));
             return Ok(envelopes);
         }
+        if event.get("type").and_then(Value::as_str) == Some(CONVERSATION_SNAPSHOT_REF_TYPE) {
+            // Snapshot-level commits journal slim ref lines that never embed
+            // state; the current committed snapshot supersedes the ref and
+            // everything after it.
+            saw_snapshot_ref = true;
+            break;
+        }
         envelopes.push(conversation_event_envelope(
             conversation_id,
             project_path,
@@ -357,6 +364,14 @@ fn conversation_envelopes(
             event_revision,
         ));
         expected_revision += 1;
+    }
+    if saw_snapshot_ref {
+        envelopes.push(conversation_snapshot_envelope_from_state(
+            conversation_id,
+            project_path,
+            snapshot,
+        ));
+        return Ok(envelopes);
     }
     if expected_revision <= snapshot_revision {
         envelopes.push(resync_required(

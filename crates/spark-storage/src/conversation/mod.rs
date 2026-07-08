@@ -16,10 +16,12 @@ mod projection;
 mod records;
 mod runtime_session;
 mod store;
+mod tool_output;
 mod transient;
 
 pub(crate) use migrate::migrate_legacy_conversation;
 pub(crate) use store::{read_record, ConversationRecordPaths};
+pub(crate) use tool_output::is_safe_segment_file_id;
 
 pub use commit::ConversationCommit;
 pub use identity::{
@@ -27,7 +29,7 @@ pub use identity::{
     model_tool_segment_id, plan_segment_id, reasoning_segment_id, request_user_input_segment_id,
     segment_source, tool_call_id, tool_segment_id,
 };
-pub use journal::{JournalEntry, JournalEntryKind};
+pub use journal::{JournalEntry, JournalEntryKind, CONVERSATION_SNAPSHOT_REF_TYPE};
 pub use mutations::{ConversationMetadataPatch, ConversationMutation};
 pub use projection::{record_from_snapshot, snapshot_from_record};
 pub use records::{
@@ -40,4 +42,5 @@ pub use records::{
 pub use runtime_session::{
     RuntimeSession, RUNTIME_SESSION_FILE_NAME, RUNTIME_SESSION_SCHEMA_VERSION,
 };
+pub use tool_output::{truncate_utf8, TOOL_OUTPUT_INLINE_LIMIT_BYTES};
 pub use transient::{TransientStreamBody, TransientStreamEvent, TRANSIENT_STREAM_EVENT_TYPE};

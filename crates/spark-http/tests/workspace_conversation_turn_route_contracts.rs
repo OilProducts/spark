@@ -629,9 +629,10 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
             && event["turn"]["status"] == "failed"
             && event["turn"]["error_code"] == "thread_resume_failed"
     }));
+    // The workflow-event commit journals a slim snapshot ref (durable
+    // event_log content is asserted through the persisted snapshot above).
     assert!(events.iter().any(|event| {
-        event["type"] == "conversation_snapshot"
-            && event["state"]["event_log"][0]["details"]["thread_id"] == "thread-http-resume"
+        event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()
     }));
 }
 

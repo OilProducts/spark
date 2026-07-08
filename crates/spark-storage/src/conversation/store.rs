@@ -25,6 +25,7 @@ pub(crate) const CONVERSATION_META_FILE_NAME: &str = "conversation.json";
 pub(crate) const TRANSCRIPT_FILE_NAME: &str = "transcript.json";
 pub(crate) const EVENT_LOG_FILE_NAME: &str = "event-log.json";
 pub(crate) const JOURNAL_FILE_NAME: &str = "journal.jsonl";
+pub(crate) const TOOL_OUTPUT_DIR_NAME: &str = "tool-output";
 pub(crate) const LEGACY_STATE_FILE_NAME: &str = "state.json";
 pub(crate) const LEGACY_EVENTS_FILE_NAME: &str = "events.jsonl";
 
@@ -61,6 +62,12 @@ impl ConversationRecordPaths {
 
     pub fn journal_jsonl(&self) -> PathBuf {
         self.root.join(JOURNAL_FILE_NAME)
+    }
+
+    pub fn tool_output_file(&self, segment_id: &str) -> PathBuf {
+        self.root
+            .join(TOOL_OUTPUT_DIR_NAME)
+            .join(format!("{segment_id}.txt"))
     }
 
     pub fn legacy_state_json(&self) -> PathBuf {

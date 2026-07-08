@@ -106,7 +106,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
             "turn_upsert",
             "turn_upsert",
             "turn_upsert",
-            "conversation_snapshot"
+            "conversation_snapshot_ref"
         ]
     );
     assert_eq!(
@@ -458,9 +458,33 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
             && event["turn"]["status"] == "complete"
     }));
 
-    let live_envelopes =
+    // Replay from a cursor older than a slim snapshot ref collapses to one
+    // fresh snapshot envelope carrying full current state.
+    let from_zero =
         conversation_envelopes_after(&settings, "conversation-execute", "/projects/execute", 0)
             .expect("live envelopes");
+    let snapshot_envelope = from_zero.last().expect("envelope");
+    assert_eq!(snapshot_envelope.event_type, "conversation.snapshot");
+    assert!(snapshot_envelope.payload["state"]["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["id"] == assistant_turn_id && turn["content"] == "Second answer"));
+
+    // Replay after the last ref streams the committed completion upserts.
+    let last_ref_revision = events
+        .iter()
+        .filter(|event| event["type"] == "conversation_snapshot_ref")
+        .filter_map(|event| event["revision"].as_i64())
+        .max()
+        .expect("snapshot ref revision");
+    let live_envelopes = conversation_envelopes_after(
+        &settings,
+        "conversation-execute",
+        "/projects/execute",
+        last_ref_revision,
+    )
+    .expect("live envelopes");
     assert!(live_envelopes.iter().any(|envelope| {
         envelope.event_type == "conversation.turn_upsert"
             && envelope.payload["turn"]["id"] == assistant_turn_id
@@ -937,7 +961,7 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
         .expect("events");
     assert!(events
         .iter()
-        .any(|event| event["type"] == "conversation_snapshot"));
+        .any(|event| event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()));
 
     let live_envelopes =
         conversation_envelopes_after(&settings, "conversation-events", "/projects/events", 0)
@@ -2484,6 +2508,67 @@ fn stream_error_event(message: &str) -> TurnStreamEvent {
         phase: Some("final_answer".to_string()),
         status: Some("failed".to_string()),
     }
+}
+
+#[test]
+fn live_replay_substitutes_a_fresh_snapshot_for_slim_journal_refs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let service = WorkspaceConversationService::new(settings.clone());
+
+    // start_turn commits three turn upserts plus a settings-change entry that
+    // is journaled as a slim conversation_snapshot_ref (revisions 1-4).
+    service
+        .start_turn(
+            "conversation-ref-replay",
+            ConversationTurnRequest {
+                project_path: "/projects/ref-replay".to_string(),
+                message: "Replay across refs".to_string(),
+                provider: Some("openai".to_string()),
+                model: Some("gpt-5".to_string()),
+                llm_profile: None,
+                reasoning_effort: None,
+                chat_mode: Some("plan".to_string()),
+            },
+        )
+        .expect("start turn");
+
+    // Replay from zero streams the committed turn upserts until the ref, then
+    // substitutes one fresh snapshot envelope for the ref and everything
+    // after it.
+    let envelopes = conversation_envelopes_after(
+        &settings,
+        "conversation-ref-replay",
+        "/projects/ref-replay",
+        0,
+    )
+    .expect("replay");
+    assert_eq!(envelopes.len(), 4);
+    for envelope in &envelopes[..3] {
+        assert_eq!(envelope.event_type, "conversation.turn_upsert");
+    }
+    let snapshot_envelope = &envelopes[3];
+    assert_eq!(snapshot_envelope.event_type, "conversation.snapshot");
+    assert_eq!(
+        snapshot_envelope.cursor.as_ref().expect("cursor").value,
+        4,
+        "snapshot envelope carries the current committed revision"
+    );
+    assert_eq!(
+        snapshot_envelope.payload["state"]["chat_mode"], "plan",
+        "snapshot payload carries full current state"
+    );
+
+    // A cursor pointing directly at the ref yields just the snapshot.
+    let envelopes = conversation_envelopes_after(
+        &settings,
+        "conversation-ref-replay",
+        "/projects/ref-replay",
+        3,
+    )
+    .expect("replay from ref");
+    assert_eq!(envelopes.len(), 1);
+    assert_eq!(envelopes[0].event_type, "conversation.snapshot");
 }
 
 fn structured_stream_error_event(

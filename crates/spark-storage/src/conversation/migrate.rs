@@ -18,8 +18,9 @@ use crate::workspace_conversations::{merge_sidecars, validate_supported_state};
 use crate::ProjectPaths;
 
 use super::journal::{JournalEntry, JournalEntryKind};
-use super::projection::{record_from_snapshot, snapshot_from_record};
+use super::projection::record_from_snapshot;
 use super::store::{write_record, ConversationRecordPaths, RecordWritePlan};
+use super::tool_output::externalize_segment_tool_output;
 
 pub(crate) fn migrate_legacy_conversation(
     project_paths: &ProjectPaths,
@@ -56,7 +57,10 @@ pub(crate) fn migrate_legacy_conversation(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| project_paths.project_path.clone());
     merge_sidecars(project_paths, conversation_id, &project_path, &mut payload);
-    let record = record_from_snapshot(&payload)?;
+    let mut record = record_from_snapshot(&payload)?;
+    for segment in &mut record.transcript.segments {
+        externalize_segment_tool_output(&paths, segment)?;
+    }
 
     write_record(
         &paths,
@@ -71,7 +75,7 @@ pub(crate) fn migrate_legacy_conversation(
         committed_at: record.meta.updated_at.clone(),
         kind: JournalEntryKind::SnapshotCommitted,
     }
-    .legacy_event_payload(&record.meta, &snapshot_from_record(&record));
+    .journal_line_payload(&record.meta);
     crate::append_jsonl_record(paths.journal_jsonl(), &checkpoint)?;
 
     rename_aside(&state_path)?;

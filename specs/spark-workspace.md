@@ -209,9 +209,9 @@ Spark conversation persistence separates durable render state from runtime conti
 
 The persistent authorities per conversation are:
 - `conversation.json`: stable metadata — id, handle, project path, settings, title, timestamps — plus the committed revision cursor. No transcript arrays, no protocol payloads.
-- `transcript.json`: canonical durable render state — ordered turns and segments with inline artifact anchors by id and kind. Values are coalesced render state, never raw deltas.
+- `transcript.json`: canonical durable render state — ordered turns and segments with inline artifact anchors by id and kind. Values are coalesced render state, never raw deltas. Tool-call segments store a bounded output preview; full outputs live in per-segment `tool-output/<segment_id>.txt` records written at the commit boundary and fetched on demand.
 - `artifacts/<kind>.json` and `event-log.json`: artifact records (flow run requests, flow launches, run recoveries, proposed plans) and the workflow event log. Transcript segments anchor artifacts by id; artifact state never subordinates to render state.
-- `journal.jsonl`: append-only committed mutation journal with strictly increasing revisions. Replay-after-revision serves reconnecting clients; a cursor the journal cannot cover recovers through a fresh snapshot.
+- `journal.jsonl`: append-only committed mutation journal with strictly increasing revisions. Journal lines never embed full snapshots — snapshot-level commits journal a slim ref, and replay across one recovers via a fresh snapshot envelope. Replay-after-revision serves reconnecting clients; a cursor the journal cannot cover recovers through a fresh snapshot.
 - `runtime-session.json`: best-effort model continuity (backend thread id, resume-failure tombstone). A separate failure domain: losing it only costs thread resume, never render state.
 - `codex-jsonrpc-trace.jsonl`: optional exact Codex app-server protocol transcript for debugging upstream behavior.
 

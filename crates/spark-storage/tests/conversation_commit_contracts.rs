@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use spark_storage::conversation::{
     record_from_snapshot, snapshot_from_record, ArtifactCollection, ConversationMetadataPatch,
     ConversationMutation, JournalEntryKind, TranscriptSegment, TranscriptTurn, TransientStreamBody,
-    TransientStreamEvent, ORDER_UNASSIGNED,
+    TransientStreamEvent, ORDER_UNASSIGNED, TOOL_OUTPUT_INLINE_LIMIT_BYTES,
 };
 use spark_storage::{ConversationRepository, ProjectRegistry, StorageError};
 
@@ -388,7 +388,18 @@ fn commit_conversation_applies_metadata_patches_and_workflow_events() {
     assert_eq!(commit.record.meta.chat_mode, "plan");
     assert_eq!(commit.record.meta.model.as_deref(), Some("gpt-5.3-codex"));
     assert_eq!(commit.revision, 1);
+    // Live payload carries full state for connected clients...
     assert_eq!(commit.journal_payloads[0]["type"], "conversation_snapshot");
+    assert_eq!(commit.journal_payloads[0]["state"]["chat_mode"], "plan");
+    // ...but the journal file line is a slim ref that never embeds state.
+    let journal = fs::read_to_string(
+        conversation_dir(&_temp, project_path, "conversation-e").join("journal.jsonl"),
+    )
+    .expect("journal");
+    let line: Value = serde_json::from_str(journal.lines().next().expect("line")).expect("json");
+    assert_eq!(line["type"], "conversation_snapshot_ref");
+    assert_eq!(line["revision"], 1);
+    assert!(line.get("state").is_none());
 
     let cleared = repo
         .commit_conversation(
@@ -412,6 +423,117 @@ fn commit_conversation_applies_metadata_patches_and_workflow_events() {
     assert_eq!(persisted["chat_mode"], "plan");
     assert_eq!(persisted["model"], Value::Null);
     assert_eq!(persisted["event_log"][0]["message"], "flow launched");
+}
+
+#[test]
+fn commit_conversation_externalizes_oversized_tool_outputs() {
+    let project_path = "/projects/commit-tool-output";
+    let (temp, repo) = setup(project_path);
+    let big_output = format!(
+        "line\u{2014}{}",
+        "y".repeat(TOOL_OUTPUT_INLINE_LIMIT_BYTES * 2)
+    );
+
+    let mut tool_segment = segment("segment-tool-call-1", "turn-assistant", ORDER_UNASSIGNED);
+    tool_segment.kind = "tool_call".to_string();
+    tool_segment.tool_call = Some(json!({"id": "call-1", "output": big_output}));
+    let mut unsafe_segment = segment("../escape", "turn-assistant", ORDER_UNASSIGNED);
+    unsafe_segment.kind = "tool_call".to_string();
+    unsafe_segment.tool_call = Some(json!({"id": "call-2", "output": big_output}));
+
+    let commit = repo
+        .commit_conversation(
+            "conversation-h",
+            project_path,
+            0,
+            vec![
+                ConversationMutation::TurnUpserted {
+                    turn: assistant_turn("turn-assistant", "streaming"),
+                },
+                ConversationMutation::SegmentUpserted {
+                    segment: tool_segment,
+                },
+                ConversationMutation::SegmentUpserted {
+                    segment: unsafe_segment,
+                },
+            ],
+        )
+        .expect("commit");
+
+    // Persisted transcript and journal line both carry the bounded preview.
+    let persisted = repo
+        .read_snapshot("conversation-h", Some(project_path))
+        .expect("read")
+        .expect("snapshot");
+    let stored = persisted["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .find(|segment| segment["id"] == "segment-tool-call-1")
+        .expect("tool segment")["tool_call"]
+        .clone();
+    assert_eq!(stored["output_truncated"], true);
+    assert_eq!(
+        stored["output_size"].as_u64().expect("size") as usize,
+        big_output.len()
+    );
+    assert!(stored["output"].as_str().expect("preview").len() <= TOOL_OUTPUT_INLINE_LIMIT_BYTES);
+    let journal_segment = commit
+        .journal_payloads
+        .iter()
+        .find(|payload| payload["segment"]["id"] == "segment-tool-call-1")
+        .expect("journal segment");
+    assert_eq!(
+        journal_segment["segment"]["tool_call"]["output_truncated"],
+        true
+    );
+
+    // The sidecar holds the full output and serves the read path.
+    let sidecar = conversation_dir(&temp, project_path, "conversation-h")
+        .join("tool-output")
+        .join("segment-tool-call-1.txt");
+    assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), big_output);
+    assert_eq!(
+        repo.read_segment_tool_output("conversation-h", Some(project_path), "segment-tool-call-1")
+            .expect("read output"),
+        Some(big_output.clone())
+    );
+
+    // Unsafe segment ids stay inline and never touch the filesystem.
+    let unsafe_stored = persisted["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .find(|segment| segment["id"] == "../escape")
+        .expect("unsafe segment")["tool_call"]
+        .clone();
+    assert!(unsafe_stored.get("output_truncated").is_none());
+    assert_eq!(unsafe_stored["output"], json!(big_output));
+    assert_eq!(
+        repo.read_segment_tool_output("conversation-h", Some(project_path), "../escape")
+            .expect("unsafe read"),
+        None
+    );
+
+    // Re-upserting the segment with its preview (a client echo) must not
+    // overwrite the sidecar with truncated content.
+    let mut echoed = segment("segment-tool-call-1", "turn-assistant", ORDER_UNASSIGNED);
+    echoed.kind = "tool_call".to_string();
+    echoed.tool_call = Some(json!({
+        "id": "call-1",
+        "output": stored["output"],
+        "output_size": stored["output_size"],
+        "output_truncated": true,
+        "status": "complete",
+    }));
+    repo.commit_conversation(
+        "conversation-h",
+        project_path,
+        commit.revision,
+        vec![ConversationMutation::SegmentUpserted { segment: echoed }],
+    )
+    .expect("echo commit");
+    assert_eq!(fs::read_to_string(&sidecar).expect("sidecar"), big_output);
 }
 
 #[test]

@@ -9,6 +9,7 @@ use super::mutations::{ConversationMetadataPatch, ConversationMutation};
 use super::projection::{record_from_snapshot, snapshot_from_record};
 use super::records::{ConversationRecord, TranscriptSegment};
 use super::store::{write_record, ConversationRecordPaths, RecordWritePlan};
+use super::tool_output::externalize_segment_tool_output;
 
 /// The result of one committed conversation mutation batch.
 #[derive(Debug, Clone, PartialEq)]
@@ -61,6 +62,12 @@ impl ConversationRepository {
 
         validate_segment_targets(conversation_id, &record, &mutations)?;
 
+        let record_paths = ConversationRecordPaths::new(
+            self.project_paths(&record.meta.project_path)?
+                .conversations_dir
+                .join(conversation_id),
+        );
+
         let now = iso_now();
         let mut entry_kinds = Vec::new();
         let mut snapshot_level_change = false;
@@ -81,6 +88,7 @@ impl ConversationRepository {
                 }
                 ConversationMutation::SegmentUpserted { mut segment } => {
                     resolve_segment_order(&record, &mut segment);
+                    externalize_segment_tool_output(&record_paths, &mut segment)?;
                     record.transcript.upsert_segment(segment.clone());
                     entry_kinds.push(JournalEntryKind::SegmentUpserted { segment });
                     write_plan.transcript = true;
@@ -121,17 +129,17 @@ impl ConversationRepository {
             .collect();
 
         let snapshot = snapshot_from_record(&record);
-        let record_paths = ConversationRecordPaths::new(
-            self.project_paths(&record.meta.project_path)?
-                .conversations_dir
-                .join(conversation_id),
-        );
         write_record(&record_paths, &record, &write_plan)?;
         let mut journal_payloads = Vec::with_capacity(journal_entries.len());
         for entry in &journal_entries {
-            let payload = entry.legacy_event_payload(&record.meta, &snapshot);
-            self.append_conversation_event(conversation_id, &record.meta.project_path, &payload)?;
-            journal_payloads.push(payload);
+            let line = entry.journal_line_payload(&record.meta);
+            self.append_conversation_event(conversation_id, &record.meta.project_path, &line)?;
+            journal_payloads.push(match entry.kind {
+                JournalEntryKind::SnapshotCommitted => {
+                    entry.live_event_payload(&record.meta, &snapshot)
+                }
+                _ => line,
+            });
         }
 
         Ok(ConversationCommit {

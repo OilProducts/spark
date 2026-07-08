@@ -557,6 +557,30 @@ impl ConversationRepository {
         Ok(Some(crate::conversation::snapshot_from_record(&record)))
     }
 
+    /// Read one segment's externalized tool output. Returns `None` when the
+    /// segment has no sidecar file (its output is stored inline) or the id is
+    /// not filesystem-safe.
+    pub fn read_segment_tool_output(
+        &self,
+        conversation_id: &str,
+        project_path: Option<&str>,
+        segment_id: &str,
+    ) -> Result<Option<String>> {
+        if !crate::conversation::is_safe_segment_file_id(segment_id) {
+            return Ok(None);
+        }
+        let Some(root) = self.conversation_root(conversation_id, project_path)? else {
+            return Ok(None);
+        };
+        let path =
+            crate::conversation::ConversationRecordPaths::new(root).tool_output_file(segment_id);
+        match fs::read_to_string(&path) {
+            Ok(output) => Ok(Some(output)),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StorageError::io("read segment tool output", &path, source)),
+        }
+    }
+
     pub fn append_codex_jsonrpc_trace(
         &self,
         conversation_id: &str,
