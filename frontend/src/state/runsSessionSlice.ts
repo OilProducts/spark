@@ -27,6 +27,7 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     graphNodes: [],
     graphEdges: [],
     graphLastLayoutMs: 0,
+    graphPaneHeight: 512,
     checkpointData: null,
     checkpointStatus: 'idle',
     checkpointError: null,

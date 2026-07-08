@@ -66,6 +66,7 @@ export interface RunDetailSessionState {
     graphNodes: Node[]
     graphEdges: Edge[]
     graphLastLayoutMs: number
+    graphPaneHeight: number
     checkpointData: CheckpointResponse | null
     checkpointStatus: ResourceStatus
     checkpointError: CheckpointErrorState | null

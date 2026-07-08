@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
     Background,
     Controls,
@@ -6,11 +6,12 @@ import {
     MiniMap,
     ReactFlow,
     ReactFlowProvider,
+    type Node,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
 import { isAbortError } from '@/lib/api/shared'
-import { useStore } from '@/store'
+import { useStore, type NodeStatus } from '@/store'
 import {
     buildHydratedFlowGraph,
     CanvasSessionModeProvider,
@@ -30,16 +31,33 @@ import {
 } from '@/components/ui/empty'
 import type { RunRecord } from '../model/shared'
 import { loadRunGraphPreview } from '../services/runGraphTransport'
-import { RunSectionToggleButton } from './RunSectionToggleButton'
+
+const MIN_GRAPH_PANE_HEIGHT = 280
+const MAX_GRAPH_PANE_HEIGHT = 960
+const GRAPH_PANE_KEYBOARD_STEP = 32
+
+const clampGraphPaneHeight = (height: number) => (
+    Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
+)
+
+const EMPTY_GRAPH_NODES: Node[] = []
 
 type RunGraphCanvasInnerProps = {
     run: RunRecord
     refreshToken: number
+    nodeStatusesById: Record<string, NodeStatus>
+    selectedNodeId: string | null
+    onSelectNode: (nodeId: string | null) => void
+    paneHeight: number
 }
 
 function RunGraphCanvasInner({
     run,
     refreshToken,
+    nodeStatusesById,
+    selectedNodeId,
+    onSelectNode,
+    paneHeight,
 }: RunGraphCanvasInnerProps) {
     const replaceRunGraphAttrs = useStore((state) => state.replaceRunGraphAttrs)
     const setRunDiagnostics = useStore((state) => state.setRunDiagnostics)
@@ -47,9 +65,26 @@ function RunGraphCanvasInner({
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const activeLoadRef = useRef(0)
-    const nodes = runDetailSession?.graphNodes ?? []
+    const nodes = runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES
     const edges = runDetailSession?.graphEdges ?? []
-    const lastLayoutMs = runDetailSession?.graphLastLayoutMs ?? 0
+
+    const decoratedNodes = useMemo(() => (
+        nodes.map((node) => {
+            const status = nodeStatusesById[node.id] ?? 'idle'
+            const selected = node.id === selectedNodeId
+            if ((node.data?.status ?? 'idle') === status && Boolean(node.selected) === selected) {
+                return node
+            }
+            return {
+                ...node,
+                selected,
+                data: {
+                    ...node.data,
+                    status,
+                },
+            }
+        })
+    ), [nodes, nodeStatusesById, selectedNodeId])
 
     useEffect(() => {
         const loadId = activeLoadRef.current + 1
@@ -155,9 +190,13 @@ function RunGraphCanvasInner({
     ])
 
     return (
-        <div data-testid="run-graph-canvas" className="h-[32rem] overflow-hidden rounded-md border border-border/80 bg-background">
+        <div
+            data-testid="run-graph-canvas"
+            className="overflow-hidden rounded-md border border-border/80 bg-background"
+            style={{ height: `${paneHeight}px` }}
+        >
             <ReactFlow
-                nodes={nodes}
+                nodes={decoratedNodes}
                 edges={edges}
                 fitView
                 nodesDraggable={false}
@@ -165,6 +204,12 @@ function RunGraphCanvasInner({
                 elementsSelectable={true}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
+                onNodeClick={(_, node: Node) => {
+                    onSelectNode(node.id === selectedNodeId ? null : node.id)
+                }}
+                onPaneClick={() => {
+                    onSelectNode(null)
+                }}
                 defaultEdgeOptions={{
                     markerEnd: {
                         type: MarkerType.ArrowClosed,
@@ -178,23 +223,37 @@ function RunGraphCanvasInner({
                 <Controls showInteractive={false} />
                 <Background gap={24} size={1} />
             </ReactFlow>
-            <div className="border-t border-border/70 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
-                Last layout: {Math.round(lastLayoutMs)}ms
-            </div>
         </div>
     )
 }
 
-export function RunGraphCard({ run }: { run: RunRecord }) {
+interface RunGraphCardProps {
+    run: RunRecord
+    nodeStatusesById: Record<string, NodeStatus>
+    selectedNodeId: string | null
+    onSelectNode: (nodeId: string | null) => void
+}
+
+export function RunGraphCard({
+    run,
+    nodeStatusesById,
+    selectedNodeId,
+    onSelectNode,
+}: RunGraphCardProps) {
     const diagnostics = useStore((state) => state.runDiagnostics)
     const [refreshToken, setRefreshToken] = useState(0)
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
-    const collapsed = runDetailSession?.isGraphCollapsed ?? true
     const graphStatus = runDetailSession?.graphStatus ?? 'idle'
     const graphError = runDetailSession?.graphError ?? null
     const expandChildFlows = runDetailSession?.expandChildFlows ?? false
+    const paneHeight = clampGraphPaneHeight(runDetailSession?.graphPaneHeight ?? 512)
     const hasRenderableGraph = (runDetailSession?.graphNodes.length ?? 0) > 0 || (runDetailSession?.graphEdges.length ?? 0) > 0
+    const resizeStateRef = useRef<{ startY: number; startHeight: number } | null>(null)
+
+    const setPaneHeight = (height: number) => {
+        updateRunDetailSession(run.run_id, { graphPaneHeight: clampGraphPaneHeight(height) })
+    }
 
     return (
         <Card data-testid="run-graph-panel" className="gap-4 py-4">
@@ -203,8 +262,8 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                     <div className="min-w-0 space-y-1">
                         <h3 className="text-sm font-semibold text-foreground">Run Graph</h3>
                         <p className="text-xs leading-5 text-muted-foreground">
-                            Stored run snapshot reference for the selected workflow. This card is a structural
-                            reference, not the primary live-status surface.
+                            Live node states for the selected run. Click a node to focus its
+                            activity; click the background to clear the selection.
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
@@ -221,16 +280,10 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                             onChange={(nextExpanded) => updateRunDetailSession(run.run_id, { expandChildFlows: nextExpanded })}
                             testId="run-child-flow-toggle"
                         />
-                        <RunSectionToggleButton
-                            collapsed={collapsed}
-                            onToggle={() => updateRunDetailSession(run.run_id, { isGraphCollapsed: !collapsed })}
-                            testId="run-graph-toggle-button"
-                        />
                     </div>
                 </div>
             </CardHeader>
-            {!collapsed ? (
-                <CardContent className="space-y-3 px-4">
+            <CardContent className="space-y-3 px-4">
                 {graphStatus !== 'ready' && !graphError ? (
                     <Alert
                         data-testid="run-graph-loading"
@@ -285,12 +338,50 @@ export function RunGraphCard({ run }: { run: RunRecord }) {
                             <RunGraphCanvasInner
                                 run={run}
                                 refreshToken={refreshToken}
+                                nodeStatusesById={nodeStatusesById}
+                                selectedNodeId={selectedNodeId}
+                                onSelectNode={onSelectNode}
+                                paneHeight={paneHeight}
                             />
                         </ReactFlowProvider>
                     </CanvasSessionModeProvider>
                 ) : null}
-                </CardContent>
-            ) : null}
+                <div
+                    data-testid="run-graph-resize-handle"
+                    role="separator"
+                    aria-label="Resize run graph"
+                    aria-orientation="horizontal"
+                    tabIndex={0}
+                    onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.currentTarget.setPointerCapture(event.pointerId)
+                        resizeStateRef.current = { startY: event.clientY, startHeight: paneHeight }
+                    }}
+                    onPointerMove={(event) => {
+                        const resizeState = resizeStateRef.current
+                        if (!resizeState) {
+                            return
+                        }
+                        setPaneHeight(resizeState.startHeight + (event.clientY - resizeState.startY))
+                    }}
+                    onPointerUp={(event) => {
+                        resizeStateRef.current = null
+                        event.currentTarget.releasePointerCapture(event.pointerId)
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.key === 'ArrowUp') {
+                            event.preventDefault()
+                            setPaneHeight(paneHeight - GRAPH_PANE_KEYBOARD_STEP)
+                        } else if (event.key === 'ArrowDown') {
+                            event.preventDefault()
+                            setPaneHeight(paneHeight + GRAPH_PANE_KEYBOARD_STEP)
+                        }
+                    }}
+                    className="group flex h-3 cursor-row-resize items-center justify-center rounded-sm hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                    <span className="h-1 w-12 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
+                </div>
+            </CardContent>
         </Card>
     )
 }
