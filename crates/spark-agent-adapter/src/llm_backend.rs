@@ -459,17 +459,6 @@ fn codergen_events_for_session_event(
     events
 }
 
-fn codergen_event_from_session_event(
-    request: &CodergenBackendRequest,
-    session: &Session,
-    event: &SessionEvent,
-) -> CodergenEvent {
-    codergen_event_from_session_event_with_metadata(
-        &codergen_session_metadata_payload(request, session),
-        event,
-    )
-}
-
 fn codergen_event_from_session_event_with_metadata(
     metadata_base: &BTreeMap<String, Value>,
     event: &SessionEvent,
