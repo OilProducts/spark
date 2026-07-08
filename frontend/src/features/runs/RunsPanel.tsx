@@ -14,7 +14,7 @@ import { RunSummaryCard } from './components/RunSummaryCard'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { STATUS_LABELS, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
-import { nodeRetryCountFromCheckpoint } from './model/runDetailsModel'
+import { nodeOutcomesFromCheckpoint, nodeRetryCountFromCheckpoint } from './model/runDetailsModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -272,13 +272,28 @@ export function RunsPanel() {
     const gateNodeId = visiblePendingInterviewGates[0]?.nodeId ?? humanGateNodeId
     const isSelectedRunActive = selectedRun ? ACTIVE_RUN_STATUSES.has(selectedRun.status) : false
     const completedNodesSnapshot = selectedRunSessionState?.completedNodesSnapshot
+    const checkpointNodeOutcomes = useMemo(
+        () => nodeOutcomesFromCheckpoint(checkpointData),
+        [checkpointData],
+    )
+    const selectedRunStatus = selectedRun?.status ?? null
     const runNodeStatuses = useMemo(() => buildRunNodeStatuses({
         completedNodes: completedNodesSnapshot ?? [],
+        nodeOutcomes: checkpointNodeOutcomes,
         currentNodeId: currentNodeForSummary,
         liveNodeStatuses,
         gateNodeId,
         isRunActive: isSelectedRunActive,
-    }), [completedNodesSnapshot, currentNodeForSummary, gateNodeId, isSelectedRunActive, liveNodeStatuses])
+        runStatus: selectedRunStatus,
+    }), [
+        checkpointNodeOutcomes,
+        completedNodesSnapshot,
+        currentNodeForSummary,
+        gateNodeId,
+        isSelectedRunActive,
+        liveNodeStatuses,
+        selectedRunStatus,
+    ])
     // Explicit node selection also focuses the inspector's node tab; the gate
     // auto-focus below deliberately does not, so it never hijacks a tab the
     // operator chose.

@@ -256,6 +256,25 @@ const buildContextExportPayload = (runId: string, contextEntries: ContextExportE
     2,
 )
 
+// Per-node outcome map the runtime persists into the checkpoint context; the
+// graph needs it because failed nodes also appear in completed_nodes.
+export const nodeOutcomesFromCheckpoint = (
+    checkpointData: CheckpointResponse | null,
+): Record<string, string> => {
+    const context = asRecord(asRecord(checkpointData?.checkpoint)?.context)
+    const outcomes = asRecord(context?.['_attractor.node_outcomes'])
+    if (!outcomes) {
+        return {}
+    }
+    const result: Record<string, string> = {}
+    for (const [nodeId, outcome] of Object.entries(outcomes)) {
+        if (typeof outcome === 'string') {
+            result[nodeId] = outcome
+        }
+    }
+    return result
+}
+
 export const nodeRetryCountFromCheckpoint = (
     checkpointData: CheckpointResponse | null,
     nodeId: string | null,
