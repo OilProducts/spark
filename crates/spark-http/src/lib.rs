@@ -503,10 +503,10 @@ pub(crate) fn publish_live_run_after(
     before_sequence: Option<u64>,
 ) {
     let after_sequence = before_sequence.unwrap_or(0);
-    if let Ok(envelopes) = run_envelopes_after(settings, run_id, after_sequence) {
-        for envelope in envelopes {
-            live_hub.publish(envelope);
-        }
+    let new_run_envelopes =
+        run_envelopes_after(settings, run_id, after_sequence).unwrap_or_default();
+    for envelope in &new_run_envelopes {
+        live_hub.publish(envelope.clone());
     }
     // Transcript segments touched by the newly published journal window.
     if let Ok(segment_envelopes) =
@@ -518,6 +518,14 @@ pub(crate) fn publish_live_run_after(
     }
     if let Ok(Some(envelope)) = run_upsert_envelope(settings, run_id) {
         live_hub.publish(envelope);
+    }
+    // Best-effort: workflow log projection must never fail the publish path.
+    if let Ok(entries) =
+        spark_workspace::project_run_milestones(settings, run_id, &new_run_envelopes)
+    {
+        for entry in &entries {
+            live_hub.publish(spark_workspace::workflow_log_envelope(entry));
+        }
     }
     publish_terminal_run_trigger_events(settings, live_hub, run_id);
 }

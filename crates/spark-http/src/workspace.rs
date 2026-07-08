@@ -1049,6 +1049,7 @@ fn live_query_subscribes(query: &spark_workspace::live::LiveQuery) -> bool {
         || query.run_id.is_some()
         || query.include_runs_overview
         || query.include_triggers
+        || query.include_workflow_log
 }
 
 fn current_conversation_revision(
