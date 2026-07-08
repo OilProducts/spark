@@ -1998,3 +1998,86 @@ fn write_legacy_conversation_files(data_dir: &Path, snapshot: &serde_json::Value
         .expect("sidecar");
     }
 }
+
+#[tokio::test]
+async fn live_route_streams_detached_run_progress_mid_flight() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+
+    // A custom handler slow enough that the run is verifiably mid-flight when
+    // the launch response and first live frames arrive. Slow tool nodes hold
+    // the run open without needing a custom handler type.
+    let app = build_app(settings.clone());
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?include_runs_overview=true&runs_project_path={}",
+            url_encode(&project_path_text)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
+
+    let launched = request(
+        app.clone(),
+        "POST",
+        "/attractor/pipelines",
+        Some(json!({
+            "flow_content": "schema_version: '1'\nid: slow_live\ntitle: Slow Live\nnodes:\n  start:\n    kind: start\n  a:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  b:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: a\n  - from: a\n    to: b\n  - from: b\n    to: done\n",
+            "working_directory": project_path_text,
+            "run_id": "run-mid-flight",
+            "model": "compat-model"
+        })),
+    )
+    .await;
+    assert_eq!(launched.status(), StatusCode::OK);
+    let launch_body = json_body(launched).await;
+    assert_eq!(launch_body["status"], "started");
+    assert_eq!(launch_body["terminal_status"], "running");
+
+    // While the run executes, the bridge must deliver a workflow-log
+    // run_started milestone and a run.upsert whose status is still running.
+    let store = RunStore::for_settings(&settings);
+    let mut saw_running_upsert = false;
+    let mut saw_terminal_upsert = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !(saw_running_upsert && saw_terminal_upsert) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "missing frames: running_upsert={saw_running_upsert} terminal_upsert={saw_terminal_upsert}",
+        );
+        let frame = next_sse_chunk(&mut stream).await;
+        if frame.starts_with(": keepalive") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        if envelope["type"] == "run.upsert"
+            && envelope["payload"]["run"]["run_id"] == "run-mid-flight"
+        {
+            match envelope["payload"]["run"]["status"].as_str() {
+                Some("running") => {
+                    // Confirm the run really is still executing on disk.
+                    let record_status = store
+                        .read_run_bundle("run-mid-flight")
+                        .expect("bundle")
+                        .and_then(|bundle| bundle.record)
+                        .map(|record| record.status);
+                    if record_status.as_deref() == Some("running") {
+                        saw_running_upsert = true;
+                    }
+                }
+                Some("completed") => saw_terminal_upsert = true,
+                _ => {}
+            }
+        }
+    }
+    drop(app);
+}

@@ -17,6 +17,7 @@ use attractor_dsl::{
     load_flow_content, parse_flow_definition,
     read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, FlowSourceError,
 };
+pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
     human_intervention_requested_event, ContinueRunRequest, ExecuteRunRequest, ExecutionStart,
     PipelineExecutor, RunBundle, RunStore, RuntimeControlError, RuntimeControls,
@@ -1527,11 +1528,33 @@ pub fn handle_attractor_request_with_runtime_handler_runner_factory(
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
 ) -> RuntimeRouteResponse {
-    AttractorApiService::new_with_runtime_handler_runner_factory(
+    handle_attractor_request_with_options(
+        method,
+        path,
+        body,
         settings,
         runtime_handler_runner_factory,
+        None,
     )
-    .dispatch(method, path, body)
+}
+
+pub fn handle_attractor_request_with_options(
+    method: &str,
+    path: &str,
+    body: &str,
+    settings: SparkSettings,
+    runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+    run_event_observer: Option<attractor_runtime::RunEventObserver>,
+) -> RuntimeRouteResponse {
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings,
+        runtime_handler_runner_factory,
+    );
+    let service = match run_event_observer {
+        Some(observer) => service.with_run_event_observer(observer),
+        None => service,
+    };
+    service.dispatch(method, path, body)
 }
 
 pub fn default_runtime_handler_runner_factory() -> RuntimeHandlerRunnerFactory {

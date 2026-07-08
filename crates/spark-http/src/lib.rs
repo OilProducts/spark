@@ -2,7 +2,7 @@
 
 //! Axum HTTP composition for Spark Workspace compatibility routes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -20,7 +20,7 @@ use spark_workspace::live::{
     LiveEnvelope,
 };
 use spark_workspace::{WorkspaceError, WorkspaceTriggerService};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
@@ -79,12 +79,18 @@ pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
 ) -> Router {
+    let settings = Arc::new(settings);
+    let live_hub = Arc::new(WorkspaceLiveHub::new());
+    let (run_event_observer, run_event_publisher) =
+        RunEventPublisher::spawn(settings.clone(), live_hub.clone());
     let state = HttpAppState {
-        settings: Arc::new(settings),
-        live_hub: Arc::new(WorkspaceLiveHub::new()),
+        settings,
+        live_hub,
         runtime_handler_runner_factory,
         agent_turn_backend,
+        run_event_observer,
         trigger_source_loop: None,
+        run_event_publisher,
     };
     let state = state.with_trigger_source_loop();
     Router::new()
@@ -108,8 +114,22 @@ pub(crate) struct HttpAppState {
     live_hub: Arc<WorkspaceLiveHub>,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
+    run_event_observer: RunEventObserverHandle,
     #[allow(dead_code)]
     trigger_source_loop: Option<Arc<TriggerSourceLoop>>,
+    #[allow(dead_code)]
+    run_event_publisher: Option<Arc<RunEventPublisher>>,
+}
+
+/// The app-wide run-event observer handed to every execution surface; fires
+/// into the coalescing publisher so background runs stream live updates.
+#[derive(Clone, Default)]
+pub(crate) struct RunEventObserverHandle(pub(crate) Option<attractor_api::RunEventObserver>);
+
+impl FromRef<HttpAppState> for RunEventObserverHandle {
+    fn from_ref(input: &HttpAppState) -> Self {
+        input.run_event_observer.clone()
+    }
 }
 
 impl FromRef<HttpAppState> for Arc<SparkSettings> {
@@ -153,6 +173,104 @@ impl WorkspaceLiveHub {
 
     pub(crate) fn publish(&self, envelope: LiveEnvelope) {
         let _ = self.sender.send(envelope);
+    }
+}
+
+struct RunEventPublisher {
+    cancellation: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl RunEventPublisher {
+    /// Spawns the coalescing publisher and returns the observer that feeds
+    /// it. Without a tokio runtime (pure-sync callers) both are inert.
+    fn spawn(
+        settings: Arc<SparkSettings>,
+        live_hub: Arc<WorkspaceLiveHub>,
+    ) -> (RunEventObserverHandle, Option<Arc<Self>>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return (RunEventObserverHandle(None), None);
+        };
+        let (sender, receiver) = mpsc::unbounded_channel::<String>();
+        let cancellation = CancellationToken::new();
+        let task_cancellation = cancellation.clone();
+        let handle = handle.spawn(run_event_publisher_loop(
+            settings,
+            live_hub,
+            receiver,
+            task_cancellation,
+        ));
+        let observer: attractor_api::RunEventObserver = Arc::new(move |run_id: &str| {
+            let _ = sender.send(run_id.to_string());
+        });
+        (
+            RunEventObserverHandle(Some(observer)),
+            Some(Arc::new(Self {
+                cancellation,
+                handle,
+            })),
+        )
+    }
+}
+
+impl Drop for RunEventPublisher {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.handle.abort();
+    }
+}
+
+/// Drains run-event notifications, coalescing bursts per run (~120ms) before
+/// publishing journal deltas, run.upserts, and terminal trigger events
+/// through publish_live_run_after.
+async fn run_event_publisher_loop(
+    settings: Arc<SparkSettings>,
+    live_hub: Arc<WorkspaceLiveHub>,
+    mut receiver: mpsc::UnboundedReceiver<String>,
+    cancellation: CancellationToken,
+) {
+    let mut last_published_sequence: HashMap<String, u64> = HashMap::new();
+    loop {
+        let first = tokio::select! {
+            _ = cancellation.cancelled() => return,
+            received = receiver.recv() => received,
+        };
+        let Some(first) = first else {
+            return;
+        };
+        let mut pending: BTreeSet<String> = BTreeSet::new();
+        pending.insert(first);
+        // Coalesce the burst: chatty executors notify per journal append.
+        tokio::select! {
+            _ = cancellation.cancelled() => return,
+            _ = time::sleep(Duration::from_millis(120)) => {}
+        }
+        while let Ok(run_id) = receiver.try_recv() {
+            pending.insert(run_id);
+        }
+        for run_id in pending {
+            let before_sequence = last_published_sequence.get(&run_id).copied();
+            let publish_settings = settings.clone();
+            let publish_hub = live_hub.clone();
+            let publish_run_id = run_id.clone();
+            let published_through = tokio::task::spawn_blocking(move || {
+                publish_live_run_after(
+                    &publish_settings,
+                    &publish_hub,
+                    &publish_run_id,
+                    before_sequence,
+                );
+                latest_run_sequence(&publish_settings, &publish_run_id)
+                    .ok()
+                    .flatten()
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(sequence) = published_through {
+                last_published_sequence.insert(run_id, sequence);
+            }
+        }
     }
 }
 
@@ -327,12 +445,13 @@ async fn attractor_dispatch(
         .as_deref()
         .and_then(|run_id| latest_run_sequence(&settings, run_id).ok().flatten());
     let body = String::from_utf8_lossy(&body);
-    let response = attractor_api::handle_attractor_request_with_runtime_handler_runner_factory(
+    let response = attractor_api::handle_attractor_request_with_options(
         method.as_str(),
         path,
         &body,
         (*settings).clone(),
         state.runtime_handler_runner_factory.clone(),
+        state.run_event_observer.0.clone(),
     );
     if is_mutating_method(&method) && response.status_code < 400 {
         publish_attractor_live_updates(

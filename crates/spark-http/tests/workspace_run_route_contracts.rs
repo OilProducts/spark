@@ -566,6 +566,8 @@ fn write_legacy_conversation_files(data_dir: &Path, snapshot: &serde_json::Value
             serde_json::to_string_pretty(&payload).expect("sidecar json"),
         )
         .expect("sidecar");
+    }
+}
 
 fn wait_for_codergen_calls<T>(calls: &std::sync::Arc<std::sync::Mutex<Vec<T>>>, expected: usize) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
