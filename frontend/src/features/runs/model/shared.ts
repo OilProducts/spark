@@ -313,6 +313,7 @@ export const STATUS_STYLES: Record<string, string> = {
 
 export const STATUS_LABELS: Record<string, string> = {
     queued: 'Queued',
+    waiting: 'Needs input',
     completed: 'Completed',
     failed: 'Failed',
     pause_requested: 'Pausing',
@@ -322,9 +323,9 @@ export const STATUS_LABELS: Record<string, string> = {
     canceled: 'Canceled',
 }
 
-export const canCancelRun = (status: string) => status === 'running'
+export const canCancelRun = (status: string) => status === 'running' || status === 'waiting'
 
-export const canContinueRun = (status: string) => !['queued', 'running', 'cancel_requested', 'abort_requested', 'pause_requested'].includes(status)
+export const canContinueRun = (status: string) => !['queued', 'running', 'waiting', 'cancel_requested', 'abort_requested', 'pause_requested'].includes(status)
 export const canRetryRun = (status: string) => status === 'failed'
 
 export const cancelRunActionLabel = (status: string) => {
