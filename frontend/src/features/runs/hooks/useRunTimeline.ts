@@ -6,16 +6,11 @@ import type {
     GroupedTimelineEntry,
     PendingInterviewGate,
     PendingQuestionSnapshot,
-    RunProgressProjection,
-    RunTranscriptProjection,
-    RunTranscriptEntry,
     TimelineEventEntry,
     TimelineEventCategory,
     TimelineSeverity,
 } from '../model/shared'
 import {
-    buildAllRunProgressEntries,
-    buildRunProgressProjection,
     buildGroupedPendingInterviewGates,
     filterAnsweredPendingInterviewGates,
     logUnexpectedRunError,
@@ -121,6 +116,7 @@ const mergeTranscriptEntries = (entries: RunTranscriptEntry[]): RunTranscriptEnt
 
 const buildTimelineProjection = (
     journalState: RunJournalStateEntry,
+    _selectedRunCurrentNode: string | null | undefined,
     filters: {
         timelineCategoryFilter: 'all' | TimelineEventCategory
         timelineSeverityFilter: 'all' | TimelineSeverity
@@ -169,6 +165,7 @@ const applyLiveMutationToProjection = (
     projection: TimelineProjection,
     mutation: Extract<RunJournalMutation, { kind: 'append_live' }>,
     journalState: RunJournalStateEntry,
+    _selectedRunCurrentNode: string | null | undefined,
     filters: {
         timelineCategoryFilter: 'all' | TimelineEventCategory
         timelineSeverityFilter: 'all' | TimelineSeverity
@@ -178,7 +175,9 @@ const applyLiveMutationToProjection = (
         return null
     }
     if (!matchesTimelineFilters(mutation.entry, filters)) {
-        return projection
+        return {
+            ...projection,
+        }
     }
 
     const correlation = timelineCorrelationDescriptorFromEvent(mutation.entry, journalState._retryCorrelationEntityKeys)
@@ -462,11 +461,6 @@ export function useRunTimeline({
         }
         return null
     }, [journalState.revision, journalState.segments])
-    const allProgressEntries = useMemo(
-        () => buildAllRunProgressEntries(iterateRunJournalEntries(journalState.segments)),
-        // eslint-disable-next-line react-hooks/exhaustive-deps -- revision tracks journal segment mutations
-        [journalState.revision, journalState.segments],
-    )
 
     const patchTimelineSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRunTimelineId) {
@@ -559,7 +553,6 @@ export function useRunTimeline({
     ])
 
     return {
-        allProgressEntries,
         filteredTimelineEventCount: timelineProjection.filteredCount,
         freeformAnswersByGateId: timelineSession.freeformAnswersByGateId,
         groupedPendingInterviewGates,
@@ -571,7 +564,6 @@ export function useRunTimeline({
         latestTimelineEvent: latestRunStateTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError: timelineSession.pendingGateActionError,
-        progressProjection,
         setFreeformAnswersByGateId: (next: SetStateAction<Record<string, string>>) => patchTimelineSession({
             freeformAnswersByGateId: typeof next === 'function'
                 ? next(timelineSession.freeformAnswersByGateId)

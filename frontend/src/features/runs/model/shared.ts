@@ -169,69 +169,6 @@ export interface GroupedTimelineEntry {
     events: TimelineEventEntry[]
 }
 
-export interface RunProgressEntry {
-    id: string
-    nodeId: string | null
-    channel: 'assistant' | 'reasoning' | 'plan'
-    status: 'streaming' | 'complete'
-    content: string
-    updatedAt: string
-    latestSequence: number
-}
-
-export type RunProgressNodeFilter = 'current' | 'recent' | string
-
-export interface RunProgressProjection {
-    activeEntry: RunProgressEntry | null
-    recentEntries: RunProgressEntry[]
-    nodeOptions: string[]
-}
-
-export type RunTranscriptBoundaryStatus = 'running' | 'completed' | 'failed' | 'retrying'
-
-/// Run-only workflow boundary metadata, carried outside the shared segment
-/// core on `kind: 'boundary'` segments (mirrors the backend BoundaryMeta).
-export interface RunBoundaryMeta {
-    node_id?: string | null
-    stage_index?: number | null
-    attempt?: number | null
-    source_scope: TimelineSourceScope
-    source_parent_node_id?: string | null
-    source_flow_name?: string | null
-    model?: string | null
-    started_at?: string | null
-    ended_at?: string | null
-    summary: string
-}
-
-type ChatRequestUserInput = NonNullable<ConversationSegmentResponse['request_user_input']>
-type ChatRequestUserInputQuestion = ChatRequestUserInput['questions'][number]
-
-/// Run human-gate questions may carry a semantic answer `value` per option
-/// (the journal/questions-API answer token) on top of the shared option core.
-export type RunRequestUserInput = Omit<ChatRequestUserInput, 'questions'> & {
-    questions: Array<Omit<ChatRequestUserInputQuestion, 'options'> & {
-        options: Array<ChatRequestUserInputQuestion['options'][number] & { value?: string | null }>
-    }>
-}
-
-/// Run transcripts reuse the project-chat segment record, extended with the
-/// `boundary` kind and its run-only metadata. No independent copy of the
-/// segment field set exists on the runs side.
-export type RunTranscriptEntry = Omit<ConversationSegmentResponse, 'kind' | 'status' | 'request_user_input' | 'source'> & {
-    kind: ConversationSegmentResponse['kind'] | 'boundary'
-    status: ConversationSegmentResponse['status'] | 'answered' | RunTranscriptBoundaryStatus
-    request_user_input?: RunRequestUserInput | null
-    /// Run segments carry run-scope provenance (node_id, source_scope, ...)
-    /// beyond the chat source core.
-    source?: Record<string, unknown> | null
-    boundary?: RunBoundaryMeta | null
-}
-
-export interface RunTranscriptProjection {
-    entries: RunTranscriptEntry[]
-}
-
 export interface PendingQuestionOption {
     label: string
     value: string
