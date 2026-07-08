@@ -10,6 +10,7 @@ pub mod models;
 pub mod projects;
 pub mod settings;
 pub mod triggers;
+pub mod workflow_log;
 
 pub use conversations::{
     ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
@@ -35,3 +36,7 @@ pub use spark_triggers::{
     TriggerUpdateRequest, WebhookDispatchOutcome, WebhookHandleRequest, WebhookHandleResponse,
 };
 pub use triggers::WorkspaceTriggerService;
+pub use workflow_log::{
+    project_run_milestones, read_workflow_log_tail, workflow_log_envelope,
+    workflow_log_tail_envelopes, WorkflowLogEntry, WORKFLOW_LOG_TAIL_LIMIT,
+};

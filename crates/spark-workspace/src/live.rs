@@ -21,6 +21,7 @@ pub struct RawLiveQuery {
     pub runs_project_path: Option<String>,
     pub include_triggers: Option<String>,
     pub triggers_project_path: Option<String>,
+    pub include_workflow_log: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,7 @@ pub struct LiveQuery {
     pub runs_project_path: Option<String>,
     pub include_triggers: bool,
     pub triggers_project_path: Option<String>,
+    pub include_workflow_log: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,6 +79,7 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
     let runs_project_path = normalize_project_path_opt(raw.runs_project_path.as_deref())?;
     let include_triggers = parse_bool(raw.include_triggers.as_deref());
     let triggers_project_path = normalize_project_path_opt(raw.triggers_project_path.as_deref())?;
+    let include_workflow_log = parse_bool(raw.include_workflow_log.as_deref());
 
     let conversation_project_path = if conversation_id.is_some() {
         match conversation_project_path.or_else(|| project_path.clone()) {
@@ -122,6 +125,7 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
         runs_project_path,
         include_triggers,
         triggers_project_path,
+        include_workflow_log,
     })
 }
 
@@ -157,6 +161,12 @@ pub fn initial_live_envelopes(
         envelopes.push(trigger_snapshot_envelope(
             settings,
             query.triggers_project_path.as_deref(),
+        )?);
+    }
+    if query.include_workflow_log {
+        envelopes.extend(crate::workflow_log::workflow_log_tail_envelopes(
+            settings,
+            crate::workflow_log::WORKFLOW_LOG_TAIL_LIMIT,
         )?);
     }
     Ok(envelopes)
@@ -301,6 +311,8 @@ pub fn envelope_matches_query(envelope: &LiveEnvelope, query: &LiveQuery) -> boo
                 None => true,
             }
         }
+        // The workflow log is a global, all-project feed by design.
+        "workflow_log" => query.include_workflow_log,
         _ => false,
     }
 }

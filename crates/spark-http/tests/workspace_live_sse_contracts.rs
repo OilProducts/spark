@@ -21,8 +21,8 @@ use spark_common::settings::SparkSettings;
 use spark_http::{build_app, build_app_with_agent_turn_backend};
 use spark_storage::ConversationRepository;
 use spark_workspace::{
-    ConversationTurnRequest, TriggerCreateRequest, WorkspaceConversationService,
-    WorkspaceTriggerService,
+    project_run_milestones, ConversationTurnRequest, TriggerCreateRequest,
+    WorkspaceConversationService, WorkspaceTriggerService,
 };
 use tower::ServiceExt;
 
@@ -1201,6 +1201,119 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
         run_upsert["payload"]["run"]["flow_name"],
         "ops/webhook-live.dot"
     );
+}
+
+#[tokio::test]
+async fn live_route_streams_workflow_log_tail_and_new_milestones() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "ops/workflow-log.dot");
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+
+    // Seed one milestone before any stream connects: it must arrive as the
+    // initial tail for include_workflow_log subscribers.
+    let store = RunStore::for_settings(&settings);
+    let mut seeded = RunRecord::new("run-log-seeded", "/spark-contract-fixture/project");
+    seeded.flow_name = "ops/seeded.dot".to_string();
+    seeded.started_at = "2026-01-01T00:00:00Z".to_string();
+    store
+        .create_run(CreateRunRequest {
+            record: seeded,
+            ..CreateRunRequest::default()
+        })
+        .expect("seed run");
+    let seeded_entries =
+        project_run_milestones(&settings, "run-log-seeded", &[]).expect("seed milestones");
+    assert_eq!(seeded_entries.len(), 1);
+
+    let app = build_app(settings.clone());
+
+    let workflow_live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?include_workflow_log=true",
+        None,
+    )
+    .await;
+    assert_eq!(workflow_live.status(), StatusCode::OK);
+    let mut workflow_stream = workflow_live.into_body().into_data_stream();
+    let tail_entry = sse_data_json(&next_sse_chunk(&mut workflow_stream).await);
+    assert_eq!(tail_entry["type"], "workflow_log.entry");
+    assert_eq!(tail_entry["resource"]["kind"], "workflow_log");
+    assert_eq!(tail_entry["payload"]["kind"], "run_started");
+    assert_eq!(tail_entry["payload"]["run_id"], "run-log-seeded");
+    assert_eq!(tail_entry["payload"]["flow_name"], "ops/seeded.dot");
+    assert_eq!(tail_entry["cursor"]["kind"], "workflow_log_seq");
+
+    // A stream without the flag never sees workflow log envelopes: its first
+    // frame stays the keepalive even while milestones are published below.
+    let plain_live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?include_runs_overview=true&runs_project_path={}",
+            url_encode(&project_path_text)
+        ),
+        None,
+    )
+    .await;
+    let mut plain_stream = plain_live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut plain_stream).await, ": keepalive\n\n");
+
+    // Dispatch a webhook-triggered run: publish_live_run_after projects and
+    // publishes the run_started milestone live.
+    let created = request(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "name": "Workflow log live",
+            "source_type": "webhook",
+            "action": {
+                "flow_name": "ops/workflow-log.dot",
+                "project_path": project_path_text,
+                "static_context": {"origin": "workflow-log"}
+            },
+            "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body = json_body(created).await;
+    let webhook_key = created_body["source"]["webhook_key"]
+        .as_str()
+        .expect("webhook key")
+        .to_string();
+    let webhook_secret = created_body["webhook_secret"]
+        .as_str()
+        .expect("webhook secret")
+        .to_string();
+
+    let accepted = request_with_headers(
+        app,
+        "POST",
+        "/workspace/api/webhooks",
+        &[
+            ("X-Spark-Webhook-Key", webhook_key.as_str()),
+            ("X-Spark-Webhook-Secret", webhook_secret.as_str()),
+            ("X-Spark-Webhook-Request-Id", "workflow-log-request"),
+        ],
+        Some(json!({"payload": "workflow-log"})),
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+
+    let live_entry = sse_data_json(&next_sse_chunk(&mut workflow_stream).await);
+    assert_eq!(live_entry["type"], "workflow_log.entry");
+    assert_eq!(live_entry["payload"]["kind"], "run_started");
+    assert_eq!(live_entry["payload"]["flow_name"], "ops/workflow-log.dot");
+    assert_ne!(live_entry["payload"]["run_id"], "run-log-seeded");
+
+    // The plain stream's next frame is run detail traffic, not workflow log.
+    let plain_next = sse_data_json(&next_sse_chunk(&mut plain_stream).await);
+    assert_ne!(plain_next["resource"]["kind"], "workflow_log");
 }
 
 #[tokio::test]
