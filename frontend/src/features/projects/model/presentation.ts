@@ -1,30 +1,25 @@
 import type {
-    ConversationTimelineToolCall,
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
     ProjectProposedPlan,
 } from './types'
+
+// Transcript-facing presentation (tones, tool-call/thinking helpers) lives in
+// the shared segment rows module; re-exported here so existing imports hold.
+export {
+    getSurfaceToneClassName,
+    getToolCallStatusPresentation,
+    parseThinkingSummaryContent,
+    summarizeToolCallDetail,
+} from '@/components/app/transcript/SegmentRows'
+export type { SurfaceTone } from '@/components/app/transcript/SegmentRows'
 
 export type ProjectGitMetadata = {
     branch: string | null
     commit: string | null
 }
 
-export type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
-
-const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
-    neutral: 'bg-muted/50 text-muted-foreground',
-    info: 'bg-sky-500/15 text-sky-700',
-    success: 'bg-emerald-500/15 text-emerald-800',
-    warning: 'bg-amber-500/15 text-amber-800',
-    danger: 'bg-destructive/10 text-destructive',
-}
-
 export const PROPOSAL_DIFF_COLLAPSE_LINE_LIMIT = 12
-
-export const getSurfaceToneClassName = (tone: SurfaceTone) => (
-    `rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
-)
 
 export const getFlowRunRequestStatusPresentation = (status: ProjectFlowRunRequest['status']) => {
     if (status === 'launched') {
@@ -65,39 +60,3 @@ export const getProposedPlanStatusPresentation = (status: ProjectProposedPlan['s
     return { label: 'Pending review', tone: 'warning' as const }
 }
 
-export const getToolCallStatusPresentation = (status: 'running' | 'completed' | 'failed') => {
-    if (status === 'running') {
-        return { label: 'Running', tone: 'info' as const }
-    }
-    if (status === 'failed') {
-        return { label: 'Failed', tone: 'danger' as const }
-    }
-    return { label: 'Completed', tone: 'success' as const }
-}
-
-export const summarizeToolCallDetail = (toolCall: ConversationTimelineToolCall): string | null => {
-    if (toolCall.command) {
-        return toolCall.command
-    }
-    if (toolCall.filePaths.length > 0) {
-        return toolCall.filePaths[0]
-    }
-    if (toolCall.output) {
-        return toolCall.output.split(/\r?\n/, 1)[0]?.trim() || null
-    }
-    return null
-}
-
-export const parseThinkingSummaryContent = (content: string): { heading: string | null; details: string } => {
-    const trimmed = content.trim()
-    const headingMatch = trimmed.match(/^\*\*(.+?)\*\*(?:\s*[\r\n]+|\s+|$)/)
-    if (!headingMatch) {
-        return {
-            heading: trimmed.length > 0 ? trimmed : null,
-            details: '',
-        }
-    }
-    const heading = headingMatch[1]?.trim() || null
-    const details = trimmed.slice(headingMatch[0].length).trim()
-    return { heading, details }
-}
