@@ -39,8 +39,8 @@ use tokio::sync::broadcast;
 use tokio::time::{self, Duration};
 
 use crate::{
-    publish_live_run_after, publish_trigger_activation_outcomes, HttpAppState, WorkspaceApiError,
-    WorkspaceLiveHub,
+    publish_live_run_after, publish_trigger_activation_outcomes, HttpAppState,
+    RunEventObserverHandle, WorkspaceApiError, WorkspaceLiveHub,
 };
 
 type ApiResult<T> = std::result::Result<Json<T>, WorkspaceApiError>;
@@ -49,12 +49,18 @@ fn conversation_service(
     settings: &SparkSettings,
     runtime_handler_runner_factory: &attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: &Arc<dyn AgentTurnBackend>,
+    run_event_observer: &RunEventObserverHandle,
 ) -> WorkspaceConversationService {
-    WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
-        settings.clone(),
-        runtime_handler_runner_factory.clone(),
-        agent_turn_backend.clone(),
-    )
+    let service =
+        WorkspaceConversationService::new_with_runtime_handler_runner_factory_and_agent_turn_backend(
+            settings.clone(),
+            runtime_handler_runner_factory.clone(),
+            agent_turn_backend.clone(),
+        );
+    match &run_event_observer.0 {
+        Some(observer) => service.with_run_event_observer(observer.clone()),
+        None => service,
+    }
 }
 
 pub fn router() -> Router<HttpAppState> {
@@ -264,6 +270,7 @@ async fn send_conversation_turn(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_id): AxumPath<String>,
     payload: Result<Json<ConversationTurnRequest>, JsonRejection>,
@@ -274,6 +281,7 @@ async fn send_conversation_turn(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let conversation_id_for_start = conversation_id.clone();
@@ -369,6 +377,7 @@ async fn answer_conversation_request_user_input(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, request_id)): AxumPath<(String, String)>,
     payload: Result<Json<ConversationRequestUserInputAnswerRequest>, JsonRejection>,
@@ -379,6 +388,7 @@ async fn answer_conversation_request_user_input(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let conversation_id_for_answer = conversation_id.clone();
@@ -410,6 +420,7 @@ async fn create_flow_run_request_by_handle(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_handle): AxumPath<String>,
     payload: Result<Json<FlowRunRequestCreateByHandleRequest>, JsonRejection>,
@@ -419,6 +430,7 @@ async fn create_flow_run_request_by_handle(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     )
     .create_flow_run_request_by_handle(&conversation_handle, request)?;
     publish_conversation_snapshot(
@@ -434,6 +446,7 @@ async fn review_flow_run_request(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, request_id)): AxumPath<(String, String)>,
     payload: Result<Json<FlowRunRequestReviewRequest>, JsonRejection>,
@@ -444,6 +457,7 @@ async fn review_flow_run_request(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
@@ -463,6 +477,7 @@ async fn review_proposed_plan(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath((conversation_id, plan_id)): AxumPath<(String, String)>,
     payload: Result<Json<ProposedPlanReviewRequest>, JsonRejection>,
@@ -473,6 +488,7 @@ async fn review_proposed_plan(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     );
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let before_run_ids = current_conversation_run_ids(&service, &conversation_id, &project_path);
@@ -492,6 +508,7 @@ async fn launch_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     body: Bytes,
 ) -> Result<Response, WorkspaceApiError> {
@@ -503,6 +520,7 @@ async fn launch_workspace_run(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     )
     .launch_workspace_run(request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
@@ -514,6 +532,7 @@ async fn retry_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
     body: Bytes,
@@ -527,6 +546,7 @@ async fn retry_workspace_run(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     )
     .retry_workspace_run(&run_id, request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
@@ -539,6 +559,7 @@ async fn continue_workspace_run(
     State(settings): State<Arc<SparkSettings>>,
     State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(run_id): AxumPath<String>,
     body: Bytes,
@@ -552,6 +573,7 @@ async fn continue_workspace_run(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
+        &run_event_observer,
     )
     .continue_workspace_run(&run_id, request)?;
     publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);

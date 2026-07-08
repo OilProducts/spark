@@ -1821,3 +1821,110 @@ fn url_encode(value: &str) -> String {
         })
         .collect()
 }
+
+#[tokio::test]
+async fn live_route_streams_detached_run_progress_mid_flight() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+
+    // A custom handler slow enough that the run is verifiably mid-flight when
+    // the launch response and first live frames arrive.
+    let factory: attractor_api::RuntimeHandlerRunnerFactory = Arc::new(|| {
+        let mut runner = attractor_runtime::RuntimeHandlerRunner::new();
+        runner.register_thread_safe_handler_fn("slow.step", |_runtime| {
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(attractor_core::Outcome::new(
+                attractor_core::OutcomeStatus::Success,
+            ))
+        });
+        runner
+    });
+    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory);
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?include_runs_overview=true&include_workflow_log=true&runs_project_path={}",
+            url_encode(&project_path_text)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
+
+    let launched = request(
+        app.clone(),
+        "POST",
+        "/attractor/pipelines",
+        Some(json!({
+            "flow_content": "digraph SlowLive { start [shape=Mdiamond]; a [shape=box, type=\"slow.step\"]; b [shape=box, type=\"slow.step\"]; done [shape=Msquare]; start -> a -> b -> done }",
+            "working_directory": project_path_text,
+            "run_id": "run-mid-flight",
+            "model": "compat-model"
+        })),
+    )
+    .await;
+    assert_eq!(launched.status(), StatusCode::OK);
+    let launch_body = json_body(launched).await;
+    assert_eq!(launch_body["status"], "started");
+    assert_eq!(launch_body["terminal_status"], "running");
+
+    // While the run executes, the bridge must deliver a workflow-log
+    // run_started milestone and a run.upsert whose status is still running.
+    let store = RunStore::for_settings(&settings);
+    let mut saw_running_upsert = false;
+    let mut saw_run_started_milestone = false;
+    let mut saw_terminal_upsert = false;
+    let mut saw_terminal_milestone = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !(saw_running_upsert
+        && saw_run_started_milestone
+        && saw_terminal_upsert
+        && saw_terminal_milestone)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "missing frames: running_upsert={saw_running_upsert} started_milestone={saw_run_started_milestone} terminal_upsert={saw_terminal_upsert} terminal_milestone={saw_terminal_milestone}",
+        );
+        let frame = next_sse_chunk(&mut stream).await;
+        if frame.starts_with(": keepalive") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        if envelope["type"] == "run.upsert"
+            && envelope["payload"]["run"]["run_id"] == "run-mid-flight"
+        {
+            match envelope["payload"]["run"]["status"].as_str() {
+                Some("running") => {
+                    // Confirm the run really is still executing on disk.
+                    let record_status = store
+                        .read_run_bundle("run-mid-flight")
+                        .expect("bundle")
+                        .and_then(|bundle| bundle.record)
+                        .map(|record| record.status);
+                    if record_status.as_deref() == Some("running") {
+                        saw_running_upsert = true;
+                    }
+                }
+                Some("completed") => saw_terminal_upsert = true,
+                _ => {}
+            }
+        }
+        if envelope["type"] == "workflow_log.entry"
+            && envelope["payload"]["run_id"] == "run-mid-flight"
+        {
+            match envelope["payload"]["kind"].as_str() {
+                Some("run_started") => saw_run_started_milestone = true,
+                Some("run_completed") => saw_terminal_milestone = true,
+                _ => {}
+            }
+        }
+    }
+    drop(app);
+}

@@ -230,6 +230,7 @@ pub struct WorkspaceConversationService {
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
+    run_event_observer: Option<attractor_runtime::RunEventObserver>,
 }
 
 #[derive(Clone)]
@@ -336,7 +337,16 @@ impl WorkspaceConversationService {
             settings,
             runtime_handler_runner_factory,
             agent_turn_backend,
+            run_event_observer: None,
         }
+    }
+
+    pub fn with_run_event_observer(
+        mut self,
+        observer: attractor_runtime::RunEventObserver,
+    ) -> Self {
+        self.run_event_observer = Some(observer);
+        self
     }
 
     pub fn list_project_conversations(
@@ -2637,10 +2647,14 @@ impl WorkspaceConversationService {
     }
 
     fn runtime_api_service(&self) -> attractor_api::AttractorApiService {
-        attractor_api::AttractorApiService::new_with_runtime_handler_runner_factory(
+        let service = attractor_api::AttractorApiService::new_with_runtime_handler_runner_factory(
             self.settings.clone(),
             self.runtime_handler_runner_factory.clone(),
-        )
+        );
+        match &self.run_event_observer {
+            Some(observer) => service.with_run_event_observer(observer.clone()),
+            None => service,
+        }
     }
 }
 
