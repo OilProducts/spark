@@ -1439,7 +1439,9 @@ impl AttractorApiService {
         question_id: &str,
         request: HumanAnswerRequest,
     ) -> RuntimeRouteResponse {
-        let store = RunStore::for_settings(&self.settings);
+        // Observed store: answering must notify the live publisher so the
+        // waiting gate resumes and subscribers see run.question_answered.
+        let store = self.observed_store();
         let bundle = match store.read_run_bundle(pipeline_id) {
             Ok(Some(bundle)) => bundle,
             Ok(None) => {
@@ -1573,7 +1575,13 @@ pub fn default_runtime_handler_runner_factory() -> RuntimeHandlerRunnerFactory {
 pub fn rust_llm_runtime_handler_runner_factory(
     client: unified_llm_adapter::Client,
 ) -> RuntimeHandlerRunnerFactory {
-    Arc::new(move || RuntimeHandlerRunner::new().with_rust_llm_client(client.clone()))
+    Arc::new(move || {
+        RuntimeHandlerRunner::new()
+            .with_rust_llm_client(client.clone())
+            // Real deployments block human gates until answered; the default
+            // factory (tests) keeps skip semantics.
+            .with_blocking_human_gates()
+    })
 }
 
 pub fn preview(req: PreviewRequest) -> PreviewRouteResponse {

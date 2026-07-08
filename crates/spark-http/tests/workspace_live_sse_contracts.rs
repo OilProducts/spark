@@ -2172,3 +2172,171 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
     }
     drop(app);
 }
+
+#[tokio::test]
+async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("gate-project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+
+    // Production-shaped runner: blocking human gates enabled.
+    let factory: attractor_api::RuntimeHandlerRunnerFactory =
+        Arc::new(|| attractor_runtime::RuntimeHandlerRunner::new().with_blocking_human_gates());
+    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory);
+
+    let launched = request(
+        app.clone(),
+        "POST",
+        "/attractor/pipelines",
+        Some(json!({
+            "flow_content": "digraph GateLive { start [shape=Mdiamond]; review [shape=hexagon, prompt=\"Ship it?\"]; approved [shape=box, prompt=\"ship\"]; done [shape=Msquare]; start -> review; review -> approved [label=\"Approve\"]; approved -> done }",
+            "working_directory": project_path_text,
+            "run_id": "run-gate-live",
+            "model": "compat-model"
+        })),
+    )
+    .await;
+    assert_eq!(launched.status(), StatusCode::OK);
+
+    let live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?run_id=run-gate-live&run_sequence=0&include_workflow_log=true",
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut stream = live.into_body().into_data_stream();
+
+    // Phase 1: the gate opens — the pending question arrives via journal
+    // replay and the waiting-for-input milestone via the workflow-log tail
+    // (both published before this subscription); the record itself parks in
+    // 'waiting' on disk.
+    let store = RunStore::for_settings(&settings);
+    let wait_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = store
+            .read_run_bundle("run-gate-live")
+            .expect("bundle")
+            .and_then(|bundle| bundle.record)
+            .map(|record| record.status);
+        if status.as_deref() == Some("waiting") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < wait_deadline,
+            "run never parked in waiting (last: {status:?})",
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut question_id: Option<String> = None;
+    let mut saw_waiting_milestone = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while question_id.is_none() || !saw_waiting_milestone {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gate lifecycle frames missing: question={question_id:?} milestone={saw_waiting_milestone}",
+        );
+        let frame = next_sse_chunk(&mut stream).await;
+        if frame.starts_with(": keepalive") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        match envelope["type"].as_str() {
+            Some("run.question_pending") => {
+                let payload_question_id = envelope["payload"]["payload"]["question_id"]
+                    .as_str()
+                    .or_else(|| envelope["payload"]["question_id"].as_str())
+                    .map(str::to_string);
+                if payload_question_id.is_some() {
+                    question_id = payload_question_id;
+                }
+            }
+            Some("workflow_log.entry") => {
+                if envelope["payload"]["kind"] == "run_waiting_on_input" {
+                    saw_waiting_milestone = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let question_id = question_id.expect("question id");
+
+    // The pending question is also visible on the questions route.
+    let questions = request(
+        app.clone(),
+        "GET",
+        "/attractor/pipelines/run-gate-live/questions",
+        None,
+    )
+    .await;
+    let questions_body = json_body(questions).await;
+    assert_eq!(
+        questions_body["questions"][0]["question_id"],
+        json!(question_id.clone()),
+    );
+
+    // Phase 2: answer through the API route; the waiting gate resumes, the
+    // run routes down the approved edge and completes.
+    let answered = request(
+        app.clone(),
+        "POST",
+        &format!("/attractor/pipelines/run-gate-live/questions/{question_id}/answer"),
+        Some(json!({"question_id": question_id, "selected_value": "Approve"})),
+    )
+    .await;
+    assert_eq!(answered.status(), StatusCode::OK);
+
+    let mut saw_question_answered = false;
+    let mut saw_pipeline_completed = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !saw_question_answered || !saw_pipeline_completed {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "post-answer frames missing: answered={saw_question_answered} completed={saw_pipeline_completed}",
+        );
+        let frame = next_sse_chunk(&mut stream).await;
+        if frame.starts_with(": keepalive") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        match envelope["type"].as_str() {
+            Some("run.question_answered") => saw_question_answered = true,
+            Some("run.journal_entry") => {
+                if envelope["payload"]["raw_type"] == "PipelineCompleted" {
+                    saw_pipeline_completed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // The run resumed, took the approved route, and completed.
+    let final_status = store
+        .read_run_record(
+            &store
+                .find_run_root("run-gate-live")
+                .expect("find root")
+                .expect("root"),
+        )
+        .expect("record")
+        .expect("record")
+        .status;
+    assert_eq!(final_status, "completed");
+    let bundle = store
+        .read_run_bundle("run-gate-live")
+        .expect("bundle")
+        .expect("run exists");
+    assert!(bundle
+        .raw_events
+        .iter()
+        .any(|event| event.event_type == "StageCompleted"
+            && event
+                .payload
+                .get("node_id")
+                .and_then(|value| value.as_str())
+                == Some("approved")));
+    drop(app);
+}
