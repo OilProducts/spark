@@ -13,6 +13,7 @@ pub mod logging;
 pub mod paths;
 pub mod process;
 pub mod project;
+pub mod segments;
 pub mod settings;
 pub mod source_checkout;
 
