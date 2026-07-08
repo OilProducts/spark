@@ -60,6 +60,7 @@ export interface RunDetailSessionState {
     completedNodesSnapshot: string[]
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
+    activityMode: 'all' | 'transcript' | 'events'
     graphStatus: ResourceStatus
     graphError: string | null
     expandChildFlows: boolean

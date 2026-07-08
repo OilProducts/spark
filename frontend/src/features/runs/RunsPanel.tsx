@@ -5,14 +5,13 @@ import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
+import { RunActivityCard } from './components/RunActivityCard'
 import { RunAdvancedSection } from './components/RunAdvancedSection'
 import { RunArtifactsCard } from './components/RunArtifactsCard'
 import { RunCheckpointCard } from './components/RunCheckpointCard'
 import { RunContextCard } from './components/RunContextCard'
-import { RunEventTimelineCard } from './components/RunEventTimelineCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunList } from './components/RunList'
-import { RunProgressCard } from './components/RunProgressCard'
 import { RunSummaryCard } from './components/RunSummaryCard'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { RunResultCard } from './components/RunResultCard'
@@ -199,6 +198,7 @@ export function RunsPanel() {
     })
     const checkpointResumeNode = checkpointCurrentNode !== '—' ? checkpointCurrentNode : null
     const {
+        allProgressEntries,
         filteredTimelineEventCount,
         freeformAnswersByGateId,
         groupedPendingInterviewGates,
@@ -213,18 +213,13 @@ export function RunsPanel() {
         progressProjection,
         setFreeformAnswersByGateId,
         setTimelineCategoryFilter,
-        setTimelineNodeStageFilter,
         setTimelineSeverityFilter,
-        setTimelineTypeFilter,
         submittingGateIds,
         submitPendingGateAnswer,
         timelineCategoryFilter,
         timelineError,
         timelineEventCount,
-        timelineNodeStageFilter,
         timelineSeverityFilter,
-        timelineTypeFilter,
-        timelineTypeOptions,
         visiblePendingInterviewGates,
     } = useRunTimeline({
         pendingQuestionSnapshots,
@@ -235,9 +230,7 @@ export function RunsPanel() {
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
     const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
-    const isProgressCollapsed = selectedRunSessionState?.isProgressCollapsed ?? false
-    const progressNodeFilter = selectedRunSessionState?.progressNodeFilter ?? 'current'
-    const isTimelineCollapsed = selectedRunSessionState?.isTimelineCollapsed ?? false
+    const activityMode = selectedRunSessionState?.activityMode ?? 'all'
     const isAdvancedCollapsed = selectedRunSessionState?.isAdvancedCollapsed ?? true
     const isCheckpointCollapsed = selectedRunSessionState?.isCheckpointCollapsed ?? false
     const isContextCollapsed = selectedRunSessionState?.isContextCollapsed ?? false
@@ -601,45 +594,31 @@ export function RunsPanel() {
                             />
                         )}
                         {selectedRun && (
-                            <RunProgressCard
-                                collapsed={isProgressCollapsed}
-                                currentNodeId={currentNodeForSummary}
-                                isLive={isTimelineLive}
-                                progressNodeFilter={progressNodeFilter}
-                                progressProjection={progressProjection}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isProgressCollapsed: collapsed })
-                                }}
-                                onProgressNodeFilterChange={(filter) => {
-                                    patchSelectedRunSession({ progressNodeFilter: filter })
-                                }}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunEventTimelineCard
-                                collapsed={isTimelineCollapsed}
+                            <RunActivityCard
                                 isNarrowViewport={isNarrowViewport}
-                                isTimelineLive={isTimelineLive}
+                                isLive={isTimelineLive}
+                                activityMode={activityMode}
+                                onActivityModeChange={(mode) => {
+                                    patchSelectedRunSession({ activityMode: mode })
+                                }}
+                                selectedNodeId={selectedNodeId}
+                                onClearNodeSelection={() => {
+                                    selectNode(null)
+                                }}
+                                allProgressEntries={allProgressEntries}
+                                activeProgressEntryId={progressProjection.activeEntry?.id ?? null}
+                                groupedTimelineEntries={groupedTimelineEntries}
                                 timelineError={timelineError}
                                 timelineEventCount={timelineEventCount}
-                                timelineTypeFilter={timelineTypeFilter}
-                                timelineTypeOptions={timelineTypeOptions}
-                                timelineNodeStageFilter={timelineNodeStageFilter}
+                                filteredTimelineEventCount={filteredTimelineEventCount}
                                 timelineCategoryFilter={timelineCategoryFilter}
                                 timelineSeverityFilter={timelineSeverityFilter}
-                                filteredTimelineEventCount={filteredTimelineEventCount}
-                                groupedTimelineEntries={groupedTimelineEntries}
+                                onTimelineCategoryFilterChange={setTimelineCategoryFilter}
+                                onTimelineSeverityFilterChange={setTimelineSeverityFilter}
                                 hasOlderTimelineEvents={hasOlderTimelineEvents}
                                 isTimelineLoadingOlder={isTimelineLoadingOlder}
                                 onLoadOlderTimelineEvents={() => {
                                     void loadOlderTimelineEvents()
-                                }}
-                                onTimelineCategoryFilterChange={setTimelineCategoryFilter}
-                                onTimelineNodeStageFilterChange={setTimelineNodeStageFilter}
-                                onTimelineSeverityFilterChange={setTimelineSeverityFilter}
-                                onTimelineTypeFilterChange={setTimelineTypeFilter}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isTimelineCollapsed: collapsed })
                                 }}
                             />
                         )}

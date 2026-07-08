@@ -7,7 +7,6 @@ import type {
     GroupedTimelineEntry,
     RunProgressEntry,
     RunProgressProjection,
-    RunTranscriptEntry,
     TimelineCorrelationDescriptor,
     TimelineEventCategory,
     TimelineEventEntry,
@@ -36,9 +35,6 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     log: 'log',
     runtime: 'runtime',
     LLMContent: 'runtime',
-    LLMRequestStarted: 'runtime',
-    LLMRequestCompleted: 'runtime',
-    LLMTokenUsage: 'runtime',
     state: 'state',
     run_meta: 'metadata',
 }
@@ -816,46 +812,87 @@ const buildGroupedPendingInterviewGates = (
     return sortedGroups
 }
 
-const PROGRESS_SEGMENT_CHANNELS: Record<string, RunProgressEntry['channel']> = {
-    assistant_message: 'assistant',
-    reasoning: 'reasoning',
-    plan: 'plan',
+const asProgressChannel = (value: unknown): RunProgressEntry['channel'] | null => {
+    if (value === 'assistant' || value === 'reasoning' || value === 'plan') {
+        return value
+    }
+    return null
 }
 
-const progressNodeIdFromTurnId = (turnId: string): string | null => (
-    turnId.startsWith('run-node-') ? turnId.slice('run-node-'.length) : null
+const asProgressStatus = (value: unknown): RunProgressEntry['status'] => (
+    value === 'complete' ? 'complete' : 'streaming'
 )
 
-/// LLM progress rows come from the run transcript record (the render
-/// authority), never reconstructed from operational journal payloads.
-const buildAllRunProgressEntries = (
-    transcriptEntries: readonly RunTranscriptEntry[],
-): RunProgressEntry[] => {
-    const entries: RunProgressEntry[] = []
-    for (const segment of transcriptEntries) {
-        const channel = PROGRESS_SEGMENT_CHANNELS[segment.kind]
-        if (!channel || !segment.content.trim()) {
-            continue
-        }
-        entries.push({
-            id: `progress-${segment.id}`,
-            nodeId: progressNodeIdFromTurnId(segment.turn_id),
-            channel,
-            status: segment.status === 'complete' ? 'complete' : 'streaming',
-            content: segment.content,
-            updatedAt: segment.updated_at || segment.timestamp,
-            latestSequence: segment.order,
-        })
+const progressSourceKey = (payload: Record<string, unknown>): string => {
+    const source = asRecord(payload.source)
+    if (!source) {
+        return ''
     }
-    return entries.sort((left, right) => right.latestSequence - left.latestSequence)
+    return [
+        asTrimmedString(source.backend) ?? '',
+        asTrimmedString(source.app_turn_id) ?? '',
+        asTrimmedString(source.item_id) ?? '',
+        asTrimmedString(source.response_id) ?? '',
+        typeof source.summary_index === 'number' ? String(source.summary_index) : '',
+    ].join(':')
 }
 
+export const buildAllRunProgressEntries = (
+    timelineEntries: Iterable<TimelineEventEntry>,
+): RunProgressEntry[] => {
+    const byKey = new Map<string, RunProgressEntry>()
+    const sortedEntries = Array.from(timelineEntries)
+        .filter((entry) => entry.type === 'LLMContent')
+        .sort((left, right) => left.sequence - right.sequence)
+
+    for (const entry of sortedEntries) {
+        const payload = entry.payload
+        const channel = asProgressChannel(payload.channel)
+        const contentDelta = typeof payload.content_delta === 'string' ? payload.content_delta : ''
+        if (!channel || !contentDelta) {
+            continue
+        }
+        const nodeId = entry.nodeId ?? asTrimmedString(payload.node_id)
+        const key = [
+            entry.sourceScope,
+            entry.sourceParentNodeId ?? 'root',
+            nodeId ?? 'run',
+            channel,
+            progressSourceKey(payload),
+        ].join('::')
+        const previous = byKey.get(key)
+        const status = asProgressStatus(payload.status)
+        byKey.set(key, {
+            id: `progress-${key}`,
+            nodeId,
+            channel,
+            status,
+            content: status === 'complete'
+                ? contentDelta
+                : `${previous?.content ?? ''}${contentDelta}`,
+            updatedAt: entry.receivedAt,
+            latestSequence: entry.sequence,
+        })
+    }
+
+    return Array.from(byKey.values())
+        .sort((left, right) => right.latestSequence - left.latestSequence)
+}
+
+const buildRunProgressEntries = (
+    timelineEntries: Iterable<TimelineEventEntry>,
+    limit = 5,
+): RunProgressEntry[] => (
+    buildAllRunProgressEntries(timelineEntries)
+        .slice(0, Math.max(1, limit))
+)
+
 const buildRunProgressProjection = (
-    transcriptEntries: readonly RunTranscriptEntry[],
+    timelineEntries: Iterable<TimelineEventEntry>,
     currentNodeId: string | null | undefined,
     limit = 5,
 ): RunProgressProjection => {
-    const allEntries = buildAllRunProgressEntries(transcriptEntries)
+    const allEntries = buildAllRunProgressEntries(timelineEntries)
     const normalizedCurrentNodeId = currentNodeId?.trim() || null
     const activeEntry = normalizedCurrentNodeId
         ? allEntries.find((entry) => entry.nodeId === normalizedCurrentNodeId) ?? null
@@ -881,6 +918,7 @@ const buildRunProgressProjection = (
 
 export {
     buildRunProgressProjection,
+    buildRunProgressEntries,
     buildGroupedPendingInterviewGates,
     buildGroupedTimelineEntries,
     buildJournalPendingInterviewGates,

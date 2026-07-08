@@ -14,6 +14,7 @@ import type {
     TimelineSeverity,
 } from '../model/shared'
 import {
+    buildAllRunProgressEntries,
     buildRunProgressProjection,
     buildGroupedPendingInterviewGates,
     filterAnsweredPendingInterviewGates,
@@ -471,6 +472,11 @@ export function useRunTimeline({
         }
         return null
     }, [journalState.revision, journalState.segments])
+    const allProgressEntries = useMemo(
+        () => buildAllRunProgressEntries(iterateRunJournalEntries(journalState.segments)),
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- revision tracks journal segment mutations
+        [journalState.revision, journalState.segments],
+    )
 
     const patchTimelineSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRunTimelineId) {
@@ -563,6 +569,7 @@ export function useRunTimeline({
     ])
 
     return {
+        allProgressEntries,
         filteredTimelineEventCount: timelineProjection.filteredCount,
         freeformAnswersByGateId: timelineSession.freeformAnswersByGateId,
         groupedPendingInterviewGates,

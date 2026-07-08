@@ -422,20 +422,18 @@ const installCanvasWorkspaceFetchMock = () => {
         if (dot.includes('implement_review_loop')) {
           return new Response(JSON.stringify({
             status: 'ok',
-            flow: {
-              inputs: [
-                {
-                  key: 'context.request.summary',
-                  label: 'Request Summary',
-                  type: 'string',
-                  required: true,
-                },
-              ],
-            },
             graph: {
-              metadata: {
+              graph_attrs: {
                 label: 'Implementation Review Loop',
                 goal: null,
+                'spark.launch_inputs': JSON.stringify([
+                  {
+                    key: 'context.request.summary',
+                    label: 'Request Summary',
+                    type: 'string',
+                    required: true,
+                  },
+                ]),
               },
               nodes: [
                 { id: 'start', label: 'Start', shape: 'Mdiamond' },
@@ -457,7 +455,7 @@ const installCanvasWorkspaceFetchMock = () => {
         return new Response(JSON.stringify({
           status: 'ok',
           graph: {
-            metadata: {
+            graph_attrs: {
               label: 'Simple Linear Workflow',
               goal: 'Inspect the repo.',
               'spark.title': 'Simple Linear Workflow',
@@ -2126,21 +2124,6 @@ describe('App shell behavior', () => {
             ],
           })
         }
-        if (url.includes('/attractor/pipelines/run-session/result')) {
-          return jsonResponse({
-            run_id: 'run-session',
-            status: 'completed',
-            state: 'unavailable',
-            source_node_id: null,
-            source_artifact_path: null,
-            display_mode: null,
-            body_markdown: '',
-            summary_enabled: false,
-            summary_prompt: null,
-            summary_error: null,
-            error: null,
-          })
-        }
         if (url.includes('/attractor/pipelines/run-session/graph-preview')) {
           return jsonResponse({
             status: 'ok',
@@ -2182,60 +2165,6 @@ describe('App shell behavior', () => {
             has_older: false,
           })
         }
-        if (url.includes('/attractor/pipelines/run-session/transcript')) {
-          return jsonResponse({
-            pipeline_id: 'run-session',
-            entries: [
-              {
-                id: 'boundary-review',
-                kind: 'boundary',
-                sequence: 1,
-                nodeId: 'review',
-                stageIndex: 2,
-                attempt: null,
-                status: 'running',
-                startedAt: '2026-03-25T12:01:00Z',
-                endedAt: null,
-                model: null,
-                sourceScope: 'root',
-                sourceParentNodeId: null,
-                sourceFlowName: null,
-                summary: 'Stage review started',
-              },
-              {
-                id: 'segment-request-user-input-gate-freeform',
-                kind: 'request_user_input',
-                turn_id: 'run-node-review_gate',
-                order: 2,
-                role: 'system',
-                status: 'pending',
-                timestamp: '2026-03-25T12:02:00Z',
-                updated_at: '2026-03-25T12:02:00Z',
-                content: 'Need another review pass?',
-                request_user_input: {
-                  request_id: 'gate-freeform',
-                  status: 'pending',
-                  questions: [{
-                    id: 'gate-freeform',
-                    header: 'review_gate',
-                    question: 'Need another review pass?',
-                    question_type: 'FREEFORM',
-                    options: [],
-                    allow_other: true,
-                    is_secret: false,
-                  }],
-                  answers: {},
-                },
-                source: {
-                  node_id: 'review_gate',
-                  source_scope: 'root',
-                  source_parent_node_id: null,
-                  source_flow_name: null,
-                },
-              },
-            ],
-          })
-        }
         return jsonResponse({})
       }),
     )
@@ -2260,7 +2189,7 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-advanced-panel')).toBeVisible()
-      expect(screen.getByTestId('project-request-user-input-field-gate-freeform')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
     })
     expect(screen.queryByTestId('run-context-search-input')).not.toBeInTheDocument()
 
@@ -2296,10 +2225,23 @@ describe('App shell behavior', () => {
         }))
     })
 
+    // Focus the review node (as a graph-node click would) so the pending gate's
+    // auto-selection cannot scope the stream elsewhere.
+    act(() => {
+      useStore.getState().updateRunDetailSession('run-session', { selectedNodeId: 'review' })
+    })
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('review')
+      expect(
+        within(screen.getByTestId('run-activity-stream-panel')).getByText('Stage review started'),
+      ).toBeVisible()
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('run-activity-mode-events')).toBeVisible()
     })
 
+    await user.click(screen.getByTestId('run-activity-mode-events'))
+    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-category'), 'stage')
+    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
     await user.clear(screen.getByTestId('run-context-search-input'))
     await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
     await user.click(screen.getByTestId('run-artifact-view-button'))
@@ -2309,13 +2251,20 @@ describe('App shell behavior', () => {
     })
 
     await user.type(
-      screen.getByTestId('project-request-user-input-field-gate-freeform'),
+      screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform'),
       'Need another pass',
     )
 
     expect(useStore.getState().runDetailSessionsByRunId['run-session']).toMatchObject({
+      activityMode: 'events',
+      selectedNodeId: 'review',
+      timelineCategoryFilter: 'stage',
+      timelineSeverityFilter: 'info',
       contextSearchQuery: 'alpha',
       selectedArtifactPath: 'logs/summary.txt',
+      freeformAnswersByGateId: {
+        'gate-freeform': 'Need another pass',
+      },
     })
 
     await user.click(screen.getByTestId('nav-mode-projects'))
@@ -2324,11 +2273,14 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-session.dot')
     })
-    expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')
+    expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
+    expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
     expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
     expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
-    expect(screen.getByTestId('project-request-user-input-field-gate-freeform')).toBeVisible()
+    expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')
   })
 
   it('keeps selected run timeline sync live while Runs is hidden', async () => {
@@ -2382,21 +2334,6 @@ describe('App shell behavior', () => {
           artifacts: [],
         })
       }
-      if (url.includes('/attractor/pipelines/run-hidden/result')) {
-        return jsonResponse({
-          run_id: 'run-hidden',
-          status: 'running',
-          state: 'unavailable',
-          source_node_id: null,
-          source_artifact_path: null,
-          display_mode: null,
-          body_markdown: '',
-          summary_enabled: false,
-          summary_prompt: null,
-          summary_error: null,
-          error: null,
-        })
-      }
       if (url.includes('/attractor/pipelines/run-hidden/graph-preview')) {
         return jsonResponse({
           status: 'ok',
@@ -2427,12 +2364,6 @@ describe('App shell behavior', () => {
           oldest_sequence: null,
           newest_sequence: null,
           has_older: false,
-        })
-      }
-      if (url.includes('/attractor/pipelines/run-hidden/transcript')) {
-        return jsonResponse({
-          pipeline_id: 'run-hidden',
-          entries: [],
         })
       }
       return jsonResponse({})
@@ -2483,9 +2414,10 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-runs'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('review')
+      expect(
+        within(screen.getByTestId('run-activity-stream-panel')).getByText('Stage review started'),
+      ).toBeVisible()
     })
-    expect(screen.getByTestId('run-transcript-panel')).not.toHaveTextContent('review')
   })
 
   it('lets the operator resize the editor sidebar without affecting execution width', async () => {
@@ -2890,16 +2822,16 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
     })
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
-    const rawYamlEditor = await screen.findByTestId('raw-yaml-editor')
-    await user.type(rawYamlEditor, '\n# editor draft note')
+    await user.click(screen.getByRole('button', { name: 'Raw DOT' }))
+    const rawDotEditor = await screen.findByTestId('raw-dot-editor')
+    await user.type(rawDotEditor, '\n// editor draft note')
 
     await user.click(screen.getByTestId('nav-mode-execution'))
     expect(await screen.findByTestId('execution-launch-flow-name')).toHaveTextContent(REVIEW_FLOW_NAME)
     expect(screen.getByTestId('execution-launch-input-context.request.summary')).toHaveValue('Review the auth flow')
 
     await user.click(screen.getByTestId('nav-mode-editor'))
-    expect((await screen.findByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toContain('# editor draft note')
+    expect((await screen.findByTestId('raw-dot-editor') as HTMLTextAreaElement).value).toContain('// editor draft note')
   })
 
   it('keeps execution as a launch surface with the primary action inside the launch panel', async () => {

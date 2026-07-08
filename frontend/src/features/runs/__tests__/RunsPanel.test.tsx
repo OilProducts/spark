@@ -726,8 +726,9 @@ describe('RunsPanel', () => {
     const usageSection = screen.getByTestId('run-summary-section-usage')
     const runActivityPanel = screen.getByTestId('run-activity-panel')
     const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
-    const runProgressPanel = screen.getByTestId('run-progress-panel')
-    const runTimelinePanel = screen.getByTestId('run-event-timeline-panel')
+    const runGraphPanel = screen.getByTestId('run-graph-panel')
+    const runResultPanel = screen.getByTestId('run-result-panel')
+    const runActivityStreamPanel = screen.getByTestId('run-activity-stream-panel')
     const runAdvancedPanel = screen.getByTestId('run-advanced-panel')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
@@ -747,34 +748,49 @@ describe('RunsPanel', () => {
     })
     expect(runActivityPanel).toBeVisible()
     expect(runPendingQuestionsPanel).toBeVisible()
-    expect(runProgressPanel).toBeVisible()
-    expect(screen.getByTestId('run-progress-node-filter')).toHaveValue('current')
+    expect(runActivityStreamPanel).toBeVisible()
+    expect(runActivityStreamPanel).toHaveAttribute('data-responsive-layout', 'split')
+    // The pending gate auto-focuses its node, scoping the unified activity stream.
+    await waitFor(() => {
+      expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: validate')
+    })
     expect(screen.getByTestId('run-progress-entry-current-label')).toHaveTextContent('Current node')
     expect(screen.getAllByTestId('run-progress-entry-node')[0]).toHaveTextContent('validate')
     expect(screen.getByText('passed', { selector: 'strong' })).toBeVisible()
+    expect(screen.queryByText('Draft archive output.')).not.toBeInTheDocument()
+    // Clearing the node focus reveals every transcript entry in the single stream.
+    await user.click(screen.getByTestId('run-activity-node-scope-clear'))
+    expect(within(screen.getByTestId('run-activity-list')).getAllByTestId('run-progress-entry')).toHaveLength(2)
+    expect(screen.getByText('passed', { selector: 'strong' })).toBeVisible()
     expect(screen.getByText('Draft archive output.')).toBeVisible()
-    await user.selectOptions(screen.getByTestId('run-progress-node-filter'), 'recent')
-    expect(within(screen.getByTestId('run-progress-list')).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
-    expect(screen.getByText('Draft archive output.')).toBeVisible()
-    await user.selectOptions(screen.getByTestId('run-progress-node-filter'), 'draft')
-    const filteredProgressList = screen.getByTestId('run-progress-list')
-    expect(within(filteredProgressList).getAllByTestId('run-progress-entry-node')).toHaveLength(1)
-    expect(within(filteredProgressList).getByTestId('run-progress-entry-node')).toHaveTextContent('draft')
-    expect(runTimelinePanel).toBeVisible()
+    // Selecting a graph node scopes the stream to that node's entries only.
+    act(() => {
+      useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft' })
+    })
+    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: draft')
+    const scopedActivityList = screen.getByTestId('run-activity-list')
+    expect(within(scopedActivityList).getAllByTestId('run-progress-entry-node')).toHaveLength(1)
+    expect(within(scopedActivityList).getByTestId('run-progress-entry-node')).toHaveTextContent('draft')
+    expect(within(scopedActivityList).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('run-activity-node-scope-clear'))
     expect(runAdvancedPanel).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     // The run graph is a persistent surface promoted out of the advanced section.
-    expect(screen.getByTestId('run-graph-panel')).toBeVisible()
+    expect(runGraphPanel).toBeVisible()
     expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-advanced-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
-    expect(screen.getByTestId('run-progress-toggle-button')).toBeVisible()
+    expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'false')
     expect(runSummaryPanel).toContainElement(runActivityPanel)
     expect(
-      runPendingQuestionsPanel.compareDocumentPosition(runProgressPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runPendingQuestionsPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runProgressPanel.compareDocumentPosition(runTimelinePanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runGraphPanel.compareDocumentPosition(runResultPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    expect(
+      runResultPanel.compareDocumentPosition(runActivityStreamPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
       nowSection.compareDocumentPosition(outcomeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -786,7 +802,7 @@ describe('RunsPanel', () => {
       scopeSection.compareDocumentPosition(usageSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runTimelinePanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runActivityStreamPanel.compareDocumentPosition(runAdvancedPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
 
     await user.click(screen.getByTestId('run-advanced-toggle-button'))
@@ -2481,7 +2497,7 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
     })
 
     expect(latestEventSourceForRun(selectedRun.run_id)).toBeNull()
@@ -2521,7 +2537,7 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(latestEventSourceForRun(selectedRun.run_id)).not.toBe(initialReplaySource)
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
     })
 
     const replayAfterReselect = latestEventSourceForRun(selectedRun.run_id)
@@ -2776,23 +2792,23 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
       expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
     })
 
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'error')
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-empty')).toHaveTextContent('No journal entries match the current filters.')
+      expect(screen.getByTestId('run-activity-empty')).toHaveTextContent('No journal entries match the current filters.')
       expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
-      expect(screen.queryByTestId('run-event-timeline-list')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('run-activity-list')).not.toBeInTheDocument()
     })
 
     await user.click(screen.getByTestId('run-journal-load-older'))
 
     await waitFor(() => {
-      expect(screen.queryByTestId('run-event-timeline-empty')).not.toBeInTheDocument()
-      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('Stage legacy_validate failed: validation gate rejected')
+      expect(screen.queryByTestId('run-activity-empty')).not.toBeInTheDocument()
+      expect(screen.getByTestId('run-activity-list')).toHaveTextContent('Stage legacy_validate failed: validation gate rejected')
       expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(1)
       expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
     })
@@ -2816,8 +2832,8 @@ describe('RunsPanel', () => {
       project_path: '/tmp/project-one',
       ended_at: '2026-03-22T00:05:00Z',
     })
-    const groupedHistory = Array.from({ length: 140 }, (_, index) => {
-      const sequence = 140 - index
+    const groupedHistory = Array.from({ length: 180 }, (_, index) => {
+      const sequence = 180 - index
       return makeJournalEntry(
         sequence,
         {
@@ -2952,21 +2968,25 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
-      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', '140')
-      expect(screen.getAllByTestId('run-event-timeline-group')).toHaveLength(1)
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', '180')
     })
 
     const throughput = screen.getByTestId('run-event-timeline-throughput')
     const renderedCount = Number(throughput.getAttribute('data-rendered-count') ?? '0')
+    const windowSize = Number(throughput.getAttribute('data-window-size') ?? '0')
 
-    expect(renderedCount).toBeGreaterThan(0)
+    expect(windowSize).toBeGreaterThan(0)
+    expect(renderedCount).toBe(windowSize)
     expect(renderedCount).toBeLessThan(groupedHistory.length)
-    expect(renderedCount).toBeLessThanOrEqual(80)
     expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(renderedCount)
-    expect(screen.getByTestId('run-event-timeline-group-label')).toHaveTextContent('Retry sequence for review_loop')
-    expect(screen.getByText('140 entries')).toBeVisible()
-    expect(screen.getAllByTestId('run-event-timeline-row-summary')[0]).toHaveTextContent('Retry attempt 140')
+    expect(screen.getByTestId('run-activity-truncation-note')).toHaveTextContent(
+      `Showing the latest ${renderedCount} rows; ${groupedHistory.length - renderedCount} older loaded rows are hidden.`,
+    )
+    expect(screen.getAllByTestId('run-event-timeline-row-correlation')[0]).toHaveTextContent(
+      'Retry correlation: Retry sequence for review_loop',
+    )
+    expect(screen.getAllByTestId('run-event-timeline-row-summary')[0]).toHaveTextContent('Retry attempt 180')
     expect(
       screen.getAllByTestId('run-event-timeline-row-summary').some((node) => node.textContent === 'Retry attempt 1'),
     ).toBe(false)
@@ -3184,7 +3204,7 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
       expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
     })
 
@@ -3192,7 +3212,7 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
-      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent('Stage prepare completed')
+      expect(screen.getByTestId('run-activity-list')).toHaveTextContent('Stage prepare completed')
     })
 
     expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]).toMatchObject({
