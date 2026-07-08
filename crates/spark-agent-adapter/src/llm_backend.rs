@@ -769,10 +769,26 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
                 .run_agent_turn_with_event_sink(request, event_sink)
                 .map_err(codex_app_server_agent_error);
         }
-        let _ = event_sink;
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        if let Some(event_sink) = event_sink {
+            // Mirror the codex live+batch shape: stream each session event to
+            // the sink as it is emitted, while the drained queue still feeds
+            // the durable output batch afterwards.
+            let observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync> =
+                std::sync::Arc::new(move |event: &SessionEvent| {
+                    if let Some(turn_event) = event.to_turn_stream_event() {
+                        event_sink(turn_event);
+                    }
+                });
+            // Session construction already queued lifecycle events
+            // (session_start); replay them so the sink sees the full turn.
+            for event in session.event_queue.iter() {
+                observer(event);
+            }
+            session.set_event_observer(observer);
+        }
         let initial_history_len = session.history.len();
         if let Err(error) = session.process_input(&self.client, prompt) {
             let output = agent_output_from_session(&mut session, initial_history_len);
