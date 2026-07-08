@@ -1,8 +1,9 @@
 import { useMemo } from 'react'
 
+import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
+
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
-import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -16,11 +17,13 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { cn } from '@/lib/utils'
 import type {
     GroupedTimelineEntry,
-    RunProgressEntry,
     TimelineEventCategory,
     TimelineEventEntry,
     TimelineSeverity,
 } from '../model/shared'
+import { buildRunTranscriptGroups } from '../model/transcriptModel'
+import type { RunTranscriptGroup } from '../model/transcriptModel'
+import { RunTranscriptGroupSection, useTranscriptExpansion } from './RunTranscriptGroups'
 import {
     TIMELINE_CATEGORY_LABELS,
     TIMELINE_SEVERITY_LABELS,
@@ -29,12 +32,6 @@ import {
 } from '../model/shared'
 
 export type RunActivityMode = 'all' | 'transcript' | 'events'
-
-const CHANNEL_LABELS: Record<RunProgressEntry['channel'], string> = {
-    assistant: 'Assistant',
-    reasoning: 'Reasoning',
-    plan: 'Plan',
-}
 
 const ACTIVITY_MODE_OPTIONS: Array<{ value: RunActivityMode; label: string }> = [
     { value: 'all', label: 'All' },
@@ -45,7 +42,7 @@ const ACTIVITY_MODE_OPTIONS: Array<{ value: RunActivityMode; label: string }> = 
 const MAX_RENDERED_ACTIVITY_ROWS = 150
 
 type ActivityRow =
-    | { kind: 'transcript'; sequence: number; entry: RunProgressEntry }
+    | { kind: 'transcript'; sequence: number; group: RunTranscriptGroup }
     | {
         kind: 'event'
         sequence: number
@@ -60,8 +57,8 @@ interface RunActivityCardProps {
     onActivityModeChange: (mode: RunActivityMode) => void
     selectedNodeId: string | null
     onClearNodeSelection: () => void
-    allProgressEntries: RunProgressEntry[]
-    activeProgressEntryId: string | null
+    transcriptSegments: RunTranscriptSegment[]
+    transcriptError: string | null
     groupedTimelineEntries: GroupedTimelineEntry[]
     timelineError: string | null
     timelineEventCount: number
@@ -81,56 +78,6 @@ const renderSourceLabel = (event: TimelineEventEntry) => {
     }
     const flowLabel = event.sourceFlowName ? `Child flow ${event.sourceFlowName}` : 'Child flow'
     return event.sourceParentNodeId ? `${flowLabel} via ${event.sourceParentNodeId}` : flowLabel
-}
-
-export function TranscriptRow({
-    entry,
-    isActiveEntry,
-}: {
-    entry: RunProgressEntry
-    isActiveEntry: boolean
-}) {
-    return (
-        <article
-            key={entry.id}
-            data-testid="run-progress-entry"
-            className="rounded-md border border-border/70 bg-muted/20 px-3 py-2"
-        >
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
-                <span
-                    data-testid="run-progress-entry-channel"
-                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-semibold uppercase tracking-wide text-foreground"
-                >
-                    {CHANNEL_LABELS[entry.channel]}
-                </span>
-                {isActiveEntry ? (
-                    <span
-                        data-testid="run-progress-entry-current-label"
-                        className="inline-flex rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-sky-700"
-                    >
-                        Current node
-                    </span>
-                ) : null}
-                <span
-                    data-testid="run-progress-entry-status"
-                    className={cn(
-                        'inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide',
-                        entry.status === 'complete'
-                            ? 'border-green-500/40 bg-green-500/10 text-green-800'
-                            : 'border-sky-500/40 bg-sky-500/10 text-sky-700',
-                    )}
-                >
-                    {entry.status === 'complete' ? 'Complete' : 'Streaming'}
-                </span>
-                {entry.nodeId ? (
-                    <span data-testid="run-progress-entry-node" className="text-muted-foreground">
-                        Node: {entry.nodeId}
-                    </span>
-                ) : null}
-            </div>
-            <ProjectConversationMarkdown content={entry.content} />
-        </article>
-    )
 }
 
 export function EventRow({
@@ -199,8 +146,8 @@ export function RunActivityCard({
     onActivityModeChange,
     selectedNodeId,
     onClearNodeSelection,
-    allProgressEntries,
-    activeProgressEntryId,
+    transcriptSegments,
+    transcriptError,
     groupedTimelineEntries,
     timelineError,
     timelineEventCount,
@@ -213,11 +160,10 @@ export function RunActivityCard({
     isTimelineLoadingOlder,
     onLoadOlderTimelineEvents,
 }: RunActivityCardProps) {
-    const scopedProgressEntries = useMemo(() => (
-        selectedNodeId
-            ? allProgressEntries.filter((entry) => entry.nodeId === selectedNodeId)
-            : allProgressEntries
-    ), [allProgressEntries, selectedNodeId])
+    const expansion = useTranscriptExpansion()
+    const transcriptGroups = useMemo(() => (
+        buildRunTranscriptGroups(transcriptSegments, selectedNodeId)
+    ), [transcriptSegments, selectedNodeId])
 
     const scopedTimelineGroups = useMemo(() => {
         if (!selectedNodeId) {
@@ -240,8 +186,8 @@ export function RunActivityCard({
     const activityRows = useMemo<ActivityRow[]>(() => {
         const rows: ActivityRow[] = []
         if (activityMode !== 'events') {
-            for (const entry of scopedProgressEntries) {
-                rows.push({ kind: 'transcript', sequence: entry.latestSequence, entry })
+            for (const group of transcriptGroups) {
+                rows.push({ kind: 'transcript', sequence: group.latestSequence, group })
             }
         }
         if (activityMode !== 'transcript') {
@@ -259,7 +205,7 @@ export function RunActivityCard({
         }
         rows.sort((left, right) => right.sequence - left.sequence)
         return rows
-    }, [activityMode, scopedProgressEntries, scopedTimelineGroups])
+    }, [activityMode, transcriptGroups, scopedTimelineGroups])
 
     const renderedRows = activityRows.slice(0, MAX_RENDERED_ACTIVITY_ROWS)
     const truncatedRowCount = activityRows.length - renderedRows.length
@@ -366,6 +312,14 @@ export function RunActivityCard({
                         <AlertDescription className="text-inherit">{timelineError}</AlertDescription>
                     </Alert>
                 ) : null}
+                {transcriptError && activityMode !== 'events' ? (
+                    <Alert
+                        data-testid="run-transcript-error"
+                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
+                    >
+                        <AlertDescription className="text-inherit">{transcriptError}</AlertDescription>
+                    </Alert>
+                ) : null}
                 {!timelineError && showEventFilters ? (
                     <div className={`grid gap-2 ${isNarrowViewport ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
                         <Field className="space-y-1.5">
@@ -421,10 +375,10 @@ export function RunActivityCard({
                         {renderedRows.map((row) => (
                             row.kind === 'transcript'
                                 ? (
-                                    <TranscriptRow
-                                        key={`transcript-${row.entry.id}`}
-                                        entry={row.entry}
-                                        isActiveEntry={row.entry.id === activeProgressEntryId}
+                                    <RunTranscriptGroupSection
+                                        key={`transcript-${row.group.turnId}`}
+                                        group={row.group}
+                                        expansion={expansion}
                                     />
                                 )
                                 : (

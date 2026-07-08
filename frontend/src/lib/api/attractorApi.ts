@@ -1,4 +1,6 @@
 import type { CanonicalPreviewGraphPayload } from '@/lib/canonicalFlowModel'
+import { parseConversationSegmentResponse } from './conversationsApi'
+import type { ConversationSegmentResponse } from './conversationsApi'
 import { encodeFlowPath } from '@/lib/flowPaths'
 import type { PipelineContinuePayload, PipelineStartPayload } from '@/lib/pipelineStartPayload'
 import {
@@ -1073,4 +1075,60 @@ export function pipelineArtifactHref(pipelineId: string, artifactPath: string, d
     const encodedPath = encodeArtifactPathSegments(artifactPath)
     const query = download ? '?download=1' : ''
     return attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/artifacts/${encodedPath}${query}`)
+}
+
+export interface RunTranscriptSegment extends ConversationSegmentResponse {
+    node_id: string | null
+    attempt: number
+    latest_sequence: number
+    source_scope: 'root' | 'child'
+    source_flow_name: string | null
+    source_parent_node_id: string | null
+    source_run_id: string | null
+}
+
+export interface RunSegmentsResponse {
+    run_id: string
+    segments: RunTranscriptSegment[]
+    newest_sequence: number
+}
+
+export function parseRunTranscriptSegment(value: unknown): RunTranscriptSegment | null {
+    const base = parseConversationSegmentResponse(value)
+    const record = asUnknownRecord(value)
+    if (!base || !record) {
+        return null
+    }
+    return {
+        ...base,
+        node_id: asOptionalNullableString(record.node_id) ?? null,
+        attempt: typeof record.attempt === 'number' ? record.attempt : 0,
+        latest_sequence: typeof record.latest_sequence === 'number' ? record.latest_sequence : 0,
+        source_scope: record.source_scope === 'child' ? 'child' : 'root',
+        source_flow_name: asOptionalNullableString(record.source_flow_name) ?? null,
+        source_parent_node_id: asOptionalNullableString(record.source_parent_node_id) ?? null,
+        source_run_id: asOptionalNullableString(record.source_run_id) ?? null,
+    }
+}
+
+function parseRunSegmentsResponse(payload: unknown): RunSegmentsResponse {
+    const record = expectObjectRecord(payload, '/attractor/pipelines/{id}/segments')
+    return {
+        run_id: expectString(record.run_id, 'run_id', '/attractor/pipelines/{id}/segments'),
+        segments: Array.isArray(record.segments)
+            ? record.segments
+                .map((entry) => parseRunTranscriptSegment(entry))
+                .filter((entry): entry is RunTranscriptSegment => entry !== null)
+            : [],
+        newest_sequence: typeof record.newest_sequence === 'number' ? record.newest_sequence : 0,
+    }
+}
+
+export function fetchRunSegmentsValidated(runId: string): Promise<RunSegmentsResponse> {
+    return fetchJsonWithValidation(
+        attractorUrl(`/pipelines/${encodeURIComponent(runId)}/segments`),
+        undefined,
+        '/attractor/pipelines/{id}/segments',
+        parseRunSegmentsResponse,
+    )
 }

@@ -5,6 +5,7 @@ import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
+import { useRunTranscriptStore } from './state/runTranscriptStore'
 import { RunActivityCard } from './components/RunActivityCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunInspectorPanel } from './components/RunInspectorPanel'
@@ -18,6 +19,9 @@ import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
+import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
+
+const EMPTY_TRANSCRIPT_SEGMENTS: RunTranscriptSegment[] = []
 
 const runRecordsMatch = (left: RunRecord | null, right: RunRecord | null) => {
     if (left === right) {
@@ -194,8 +198,12 @@ export function RunsPanel() {
         manageSync: false,
     })
     const checkpointResumeNode = checkpointCurrentNode !== '—' ? checkpointCurrentNode : null
+    const transcriptState = useRunTranscriptStore((state) => (
+        selectedRun ? state.byRunId[selectedRun.run_id] : undefined
+    ))
+    const transcriptSegments = transcriptState?.segments ?? EMPTY_TRANSCRIPT_SEGMENTS
+    const transcriptError = transcriptState?.status === 'error' ? transcriptState.error : null
     const {
-        allProgressEntries,
         filteredTimelineEventCount,
         freeformAnswersByGateId,
         groupedPendingInterviewGates,
@@ -207,7 +215,6 @@ export function RunsPanel() {
         latestTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError,
-        progressProjection,
         setFreeformAnswersByGateId,
         setTimelineCategoryFilter,
         setTimelineSeverityFilter,
@@ -600,7 +607,7 @@ export function RunsPanel() {
                                         patchSelectedRunSession({ inspectorTab: tab })
                                     }}
                                     selectedNodeId={selectedNodeId}
-                                    allProgressEntries={allProgressEntries}
+                                    transcriptSegments={transcriptSegments}
                                     groupedTimelineEntries={groupedTimelineEntries}
                                     nodeRetryCount={nodeRetryCountFromCheckpoint(checkpointData, selectedNodeId)}
                                     pendingGatesForNode={pendingGatesForSelectedNode}
@@ -685,8 +692,8 @@ export function RunsPanel() {
                                 onClearNodeSelection={() => {
                                     selectNode(null)
                                 }}
-                                allProgressEntries={allProgressEntries}
-                                activeProgressEntryId={progressProjection.activeEntry?.id ?? null}
+                                transcriptSegments={transcriptSegments}
+                                transcriptError={transcriptError}
                                 groupedTimelineEntries={groupedTimelineEntries}
                                 timelineError={timelineError}
                                 timelineEventCount={timelineEventCount}
