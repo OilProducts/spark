@@ -11,6 +11,9 @@ pub fn journal_entries_from_events(events: &[RawRuntimeEvent]) -> Vec<JournalEnt
 }
 
 pub fn journal_entry_from_event(event: &RawRuntimeEvent) -> Option<JournalEntry> {
+    if let Some(llm_content) = llm_content_event_from_adapter_stream(event) {
+        return journal_entry_from_event(&llm_content);
+    }
     let sequence = event.sequence?;
     let emitted_at = non_empty(&event.emitted_at)?;
     let raw_type = non_empty(&event.event_type)?;
@@ -501,6 +504,74 @@ fn source_prefix(
     } else {
         format!("Child flow via {parent}: ")
     }
+}
+
+/// Backends stream assistant/reasoning text as `CodergenAdapter` events with
+/// the delta nested under `payload.turn_stream_event`. Journal consumers (the
+/// Runs transcript, summaries) speak the flat `LLMContent` shape instead —
+/// project qualifying adapter events into that shape so the transcript is fed
+/// regardless of backend.
+fn llm_content_event_from_adapter_stream(event: &RawRuntimeEvent) -> Option<RawRuntimeEvent> {
+    if event.event_type != "CodergenAdapter" {
+        return None;
+    }
+    let adapter_payload = event.payload.get("payload").and_then(Value::as_object)?;
+    let stream_event = adapter_payload
+        .get("turn_stream_event")
+        .and_then(Value::as_object)?;
+    let kind = stream_event.get("kind").and_then(Value::as_str)?;
+    let status = match kind {
+        "content_delta" => "streaming",
+        "content_completed" => "complete",
+        _ => return None,
+    };
+    let channel = stream_event
+        .get("channel")
+        .and_then(value_to_non_empty_string)?;
+    // Deltas carry the increment in content_delta; completions carry the full
+    // accumulated text in message (consumers replace on complete).
+    let content = if status == "complete" {
+        stream_event
+            .get("message")
+            .and_then(value_to_non_empty_string)
+            .or_else(|| {
+                stream_event
+                    .get("content_delta")
+                    .and_then(value_to_non_empty_string)
+            })?
+    } else {
+        stream_event
+            .get("content_delta")
+            .and_then(Value::as_str)
+            .filter(|delta| !delta.is_empty())?
+            .to_string()
+    };
+    let mut payload = std::collections::BTreeMap::new();
+    payload.insert("channel".to_string(), Value::String(channel));
+    payload.insert("status".to_string(), Value::String(status.to_string()));
+    payload.insert("content_delta".to_string(), Value::String(content));
+    for key in [
+        "node_id",
+        "source_scope",
+        "source_parent_node_id",
+        "source_flow_name",
+    ] {
+        if let Some(value) = event.payload.get(key) {
+            payload.insert(key.to_string(), value.clone());
+        }
+    }
+    for key in ["source", "phase"] {
+        if let Some(value) = stream_event.get(key) {
+            payload.insert(key.to_string(), value.clone());
+        }
+    }
+    Some(RawRuntimeEvent {
+        sequence: event.sequence,
+        event_type: "LLMContent".to_string(),
+        run_id: event.run_id.clone(),
+        emitted_at: event.emitted_at.clone(),
+        payload,
+    })
 }
 
 fn string_payload(event: &RawRuntimeEvent, key: &str) -> Option<String> {
