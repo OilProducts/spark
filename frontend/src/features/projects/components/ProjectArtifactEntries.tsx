@@ -1,6 +1,5 @@
-import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { fetchPipelineResultValidated, type PipelineResultResponse } from "@/lib/attractorClient"
+import { usePipelineResultPreview } from "../hooks/usePipelineResultPreview"
 import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
@@ -21,23 +20,7 @@ type ProjectFlowRunRequestEntryProps = {
 }
 
 function ProjectFlowResultPreview({ runId }: { runId: string }) {
-    const [result, setResult] = useState<PipelineResultResponse | null>(null)
-    const [isLoading, setIsLoading] = useState(false)
-    const [error, setError] = useState<string | null>(null)
-
-    const viewResult = async () => {
-        setIsLoading(true)
-        setError(null)
-        try {
-            setResult(await fetchPipelineResultValidated(runId))
-        } catch (err) {
-            console.error(err)
-            setResult(null)
-            setError("Unable to load result.")
-        } finally {
-            setIsLoading(false)
-        }
-    }
+    const { result, isLoading, error, viewResult } = usePipelineResultPreview(runId)
 
     return (
         <div className="space-y-2">

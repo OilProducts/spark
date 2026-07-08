@@ -267,6 +267,7 @@ export function RunsPanel() {
     ]
     const showRunsTransportReconnectNotice = degradedTransportLabels.length > 0
     const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
+    // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
     const now = Date.now()
     const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
     const retryState = latestRetryTimelineEvent

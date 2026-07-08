@@ -22,6 +22,12 @@ export default defineConfig([
     rules: {
       'react-hooks/set-state-in-effect': 'off',
       'react-refresh/only-export-components': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+        destructuredArrayIgnorePattern: '^_',
+      }],
     },
   },
   {
@@ -33,34 +39,43 @@ export default defineConfig([
       'src/features/**/hooks/**',
       'src/features/**/model/**',
       'src/features/**/services/**',
+      'src/app/use*.{ts,tsx}',
     ],
     rules: {
-      'no-restricted-imports': ['error', {
+      '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [
           {
             name: '@/lib/attractorClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
           {
             name: '@/lib/workspaceClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
           {
             name: '@/lib/apiClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
           {
             name: '@/lib/validatedApiClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
         ],
         patterns: [
           {
-            group: ['@/lib/api/*'],
+            // @/lib/api/shared holds plain utilities (isAbortError), not client calls.
+            group: ['@/lib/api/*', '!@/lib/api/shared'],
             message: 'Presentation files must not import API client modules directly.',
+            allowTypeImports: true,
           },
           {
-            group: ['@/components', '@/components/**', '!@/components/ui/**', '!@/components/app/**'],
+            // Negated group patterns can't re-include children of an excluded
+            // parent dir (gitignore semantics), so allow ui/app via regex instead.
+            regex: '^@/components(?!/(ui|app)/)',
             message: 'Shared imports must come from @/components/ui/* or @/components/app/*, or stay inside the owning feature.',
           },
         ],

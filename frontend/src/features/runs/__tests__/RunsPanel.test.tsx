@@ -54,14 +54,6 @@ const resetRunsState = () => {
   })
 }
 
-const renderRunsPanel = () =>
-  render(
-    <DialogProvider>
-      <RunsSessionController />
-      <RunsPanel />
-    </DialogProvider>,
-  )
-
 const renderRunsWorkspace = () =>
   render(
     <DialogProvider>
@@ -1991,7 +1983,7 @@ describe('RunsPanel', () => {
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
 
-    const { latestSourceMatching, sourcesMatching } = installControllableEventSource()
+    const { latestSourceMatching } = installControllableEventSource()
     const countDetailFetches = (runId: string, resource: typeof detailResources[number]) => (
       fetchMock.mock.calls.filter(([request, init]) => {
         const method = init?.method ?? 'GET'

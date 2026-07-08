@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
 import { generateDot } from '@/lib/dotUtils'
-import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
-import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
+import { useLlmProfiles } from '@/hooks/useLlmProfiles'
 import { extractDebugErrorSummary, recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
@@ -89,7 +88,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicyLoadError, setLaunchPolicyLoadError] = useState<string | null>(null)
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
-    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
+    const llmProfiles = useLlmProfiles()
     const flowProviderFallback = graphAttrs.ui_default_llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
     const toolHookPreWarning = getToolHookCommandWarning(graphAttrs['tool.hooks.pre'] || '')
@@ -110,9 +109,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         [rawLaunchInputsValue],
     )
 
-    useEffect(() => {
-        void fetchLlmProfiles().then(setLlmProfiles)
-    }, [])
     const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? false) : false
     const showAdvancedGraphAttrs = activeFlow
         ? (editorShowAdvancedGraphAttrsByFlow[activeFlow] ?? false)

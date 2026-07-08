@@ -71,7 +71,7 @@ function parseLineOrientedDot(source: string): NonNullable<PreviewResponsePayloa
             Object.assign(graphAttrs, parseAttrs(extractAttrBody(line)))
             return
         }
-        const edgeMatch = line.match(/^"?([^"\s]+)"?\s*->\s*"?([^"\s;\[]+)"?\s*(?:\[(.*)\])?;?$/)
+        const edgeMatch = line.match(/^"?([^"\s]+)"?\s*->\s*"?([^"\s;[]+)"?\s*(?:\[(.*)\])?;?$/)
         if (edgeMatch) {
             edges.push({
                 from: edgeMatch[1],
@@ -80,7 +80,7 @@ function parseLineOrientedDot(source: string): NonNullable<PreviewResponsePayloa
             })
             return
         }
-        const nodeMatch = line.match(/^"?([^"\s\[]+)"?\s*\[(.*)\];?$/)
+        const nodeMatch = line.match(/^"?([^"\s[]+)"?\s*\[(.*)\];?$/)
         if (nodeMatch && !['node', 'edge'].includes(nodeMatch[1])) {
             nodes.push({
                 id: nodeMatch[1],

@@ -1,6 +1,6 @@
 import { memo, useCallback, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { fetchConversationSegmentToolOutputValidated } from '@/lib/workspaceClient'
+import { loadConversationSegmentToolOutput } from '../services/conversationToolOutput'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
@@ -596,11 +596,11 @@ export function ProjectConversationHistory({
             delete next[entry.id]
             return next
         })
-        void fetchConversationSegmentToolOutputValidated(activeConversationId, entry.id, activeProjectPath)
-            .then((payload) => {
+        void loadConversationSegmentToolOutput(activeConversationId, entry.id, activeProjectPath)
+            .then((output) => {
                 setFullToolOutputs((current) => ({
                     ...current,
-                    [entry.id]: payload.output,
+                    [entry.id]: output,
                 }))
             })
             .catch(() => {

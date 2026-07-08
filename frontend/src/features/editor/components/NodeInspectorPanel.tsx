@@ -1,8 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
-import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
+import { useLlmProfiles } from '@/hooks/useLlmProfiles'
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from '@/lib/llmSuggestions'
 import { WORKFLOW_NODE_SHAPE_OPTIONS } from '@/lib/workflowNodeShape'
 import type { DiagnosticEntry, GraphAttrs } from '@/store'
 import { Button } from '@/components/ui/button'
@@ -90,10 +90,7 @@ export function NodeInspectorPanel({
     onNodeExtensionAdd,
     renderFieldDiagnostics,
 }: NodeInspectorPanelProps) {
-    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
-    useEffect(() => {
-        void fetchLlmProfiles().then(setLlmProfiles)
-    }, [])
+    const llmProfiles = useLlmProfiles()
     const selectedProfile = (selectedNode?.data?.llm_profile as string) || ''
     const selectedProvider = (selectedNode?.data?.llm_provider as string) || ''
     const selectedJoinPolicy = (selectedNode?.data?.join_policy as string) || 'wait_all'
