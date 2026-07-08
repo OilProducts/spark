@@ -544,3 +544,19 @@ impl From<RuntimeControlError> for RuntimeStorageError {
         }
     }
 }
+
+/// Builds an execution control closure that observes persisted cancel and
+/// pause requests, so a running executor (typically on a background thread)
+/// honors POST cancel/pause routes mid-run.
+pub fn disk_execution_control(
+    paths: crate::paths::RunRootPaths,
+) -> impl FnMut() -> Option<crate::executor::ExecutionControlAction> + Send {
+    move || {
+        let record = crate::records::read_run_record(&paths).ok().flatten()?;
+        match crate::records::normalize_run_status(&record.status).as_str() {
+            "cancel_requested" => Some(crate::executor::ExecutionControlAction::Cancel),
+            "pause_requested" | "paused" => Some(crate::executor::ExecutionControlAction::Pause),
+            _ => None,
+        }
+    }
+}

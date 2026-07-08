@@ -324,7 +324,14 @@ fn launch_default_child_run(
     let Some(parent_paths) = runtime.run_paths.as_ref() else {
         return Err("parent run paths are unavailable".to_string());
     };
-    let store = RunStore::for_runs_dir(parent_paths.runs_dir.clone());
+    // Child runs inherit the parent's run-event observer so their journal
+    // appends reach the live layer too.
+    let store = match runner.run_event_observer() {
+        Some(observer) => {
+            RunStore::for_runs_dir(parent_paths.runs_dir.clone()).with_run_event_observer(observer)
+        }
+        None => RunStore::for_runs_dir(parent_paths.runs_dir.clone()),
+    };
     let start_node = resolve_start_node(&request.child_graph).map_err(|error| error.to_string())?;
     let mut child_context = request.parent_context.clone();
     clear_child_snapshot(&mut child_context);

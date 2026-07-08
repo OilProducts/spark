@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use attractor_core::{
     CheckpointState, DotGraph, RawRuntimeEvent, RunManifest, RunRecord, RunResult,
@@ -20,9 +21,24 @@ use crate::results::{
     materialize_run_result, read_materialized_run_result, write_run_result, ResultSummaryFn,
 };
 
-#[derive(Debug, Clone)]
+/// Notified with the run id after every durable run mutation (journal append,
+/// checkpoint save, record write) so a live layer can publish incrementally.
+pub type RunEventObserver = Arc<dyn Fn(&str) + Send + Sync>;
+
+#[derive(Clone)]
 pub struct RunStore {
     runs_dir: PathBuf,
+    run_event_observer: Option<RunEventObserver>,
+}
+
+impl std::fmt::Debug for RunStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RunStore")
+            .field("runs_dir", &self.runs_dir)
+            .field("run_event_observer", &self.run_event_observer.is_some())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,12 +70,29 @@ impl RunStore {
     pub fn for_settings(settings: &SparkSettings) -> Self {
         Self {
             runs_dir: settings.runs_dir.clone(),
+            run_event_observer: None,
         }
     }
 
     pub fn for_runs_dir(runs_dir: impl Into<PathBuf>) -> Self {
         Self {
             runs_dir: runs_dir.into(),
+            run_event_observer: None,
+        }
+    }
+
+    pub fn with_run_event_observer(mut self, observer: RunEventObserver) -> Self {
+        self.run_event_observer = Some(observer);
+        self
+    }
+
+    pub fn run_event_observer(&self) -> Option<RunEventObserver> {
+        self.run_event_observer.clone()
+    }
+
+    fn notify_run_event(&self, run_id: &str) {
+        if let Some(observer) = &self.run_event_observer {
+            observer(run_id);
         }
     }
 
@@ -136,6 +169,7 @@ impl RunStore {
             JsonWriteOptions::default(),
         )?;
         write_text_atomic(paths.result_markdown(), "")?;
+        self.notify_run_event(&record.run_id);
         Ok(paths)
     }
 
@@ -260,7 +294,9 @@ impl RunStore {
     }
 
     pub fn write_run_record(&self, paths: &RunRootPaths, record: &RunRecord) -> Result<()> {
-        write_run_record(paths, record)
+        write_run_record(paths, record)?;
+        self.notify_run_event(&paths.run_id);
+        Ok(())
     }
 
     pub fn update_run_record<F>(&self, run_id: &str, update: F) -> Result<Option<RunRecord>>
@@ -283,7 +319,9 @@ impl RunStore {
         paths: &RunRootPaths,
         event: RawRuntimeEvent,
     ) -> Result<RawRuntimeEvent> {
-        append_event(paths, event)
+        let event = append_event(paths, event)?;
+        self.notify_run_event(&paths.run_id);
+        Ok(event)
     }
 
     pub fn read_raw_events(&self, paths: &RunRootPaths) -> Result<Vec<RawRuntimeEvent>> {
@@ -300,7 +338,9 @@ impl RunStore {
         checkpoint: &CheckpointState,
         options: CheckpointWriteOptions,
     ) -> Result<()> {
-        save_checkpoint(paths, checkpoint, options)
+        save_checkpoint(paths, checkpoint, options)?;
+        self.notify_run_event(&paths.run_id);
+        Ok(())
     }
 
     pub fn read_checkpoint(&self, paths: &RunRootPaths) -> Result<Option<CheckpointState>> {

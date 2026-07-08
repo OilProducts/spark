@@ -43,6 +43,7 @@ pub use context::{
     RUNTIME_THREAD_ID_KEY, WORKFLOW_OUTCOME_KEY, WORKFLOW_OUTCOME_REASON_CODE_KEY,
     WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
 };
+pub use controls::disk_execution_control;
 pub use controls::{
     ContinueRunRequest, ContinueRunStarted, ControlResult, RetryRunPrepared, RuntimeControlError,
     RuntimeControlStatus, RuntimeControls,
@@ -62,8 +63,9 @@ pub use events::{
     stage_failed_event, stage_retrying_event, stage_started_event, state_event,
 };
 pub use executor::{
-    ExecuteRunRequest, ExecutionControlAction, ExecutionStart, NodeExecutionRequest, NodeExecutor,
-    PipelineExecutionResult, PipelineExecutor, RuntimeNodeError,
+    prepare_fresh_run, ExecuteRunRequest, ExecutionControlAction, ExecutionStart,
+    NodeExecutionRequest, NodeExecutor, PipelineExecutionResult, PipelineExecutor,
+    RuntimeNodeError,
 };
 pub use handlers::{
     resolve_handler_type_for_attrs, AutoApproveInterviewer, ChildInterventionRequest,
@@ -91,7 +93,7 @@ pub use routing::{
     routing_outcome_for_node, routing_outcome_for_node_with_prior, select_next_node,
     select_next_node_with_prior, NextNodeSelection,
 };
-pub use store::{CreateRunRequest, RunArtifactFile, RunBundle, RunStore};
+pub use store::{CreateRunRequest, RunArtifactFile, RunBundle, RunEventObserver, RunStore};
 pub use terminal::{
     check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,
     resolve_failure_retry_target, resolve_goal_gate_retry_target,
