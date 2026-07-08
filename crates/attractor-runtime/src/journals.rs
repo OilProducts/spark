@@ -321,6 +321,19 @@ fn journal_summary(
                 node_id.unwrap_or("unknown")
             )
         }
+        "CodergenAdapter" => string_payload(event, "adapter_event_type")
+            .map(|event_type| {
+                format!(
+                    "{source_prefix}Codergen adapter event for {}: {event_type}",
+                    node_id.unwrap_or("unknown")
+                )
+            })
+            .unwrap_or_else(|| {
+                format!(
+                    "{source_prefix}Codergen adapter event for {}",
+                    node_id.unwrap_or("unknown")
+                )
+            }),
         "ParallelStarted" => numeric_payload(event, "branch_count")
             .map(|count| format!("{source_prefix}Parallel fan-out started ({count} branches)"))
             .unwrap_or_else(|| format!("{source_prefix}Parallel fan-out started")),
