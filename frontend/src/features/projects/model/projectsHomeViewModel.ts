@@ -1,4 +1,3 @@
-import type { ProjectSessionState } from '@/store'
 import type { UiDefaults } from '@/state/store-types'
 import type {
     ConversationChatMode,
@@ -28,7 +27,6 @@ type BuildProjectsHomeViewModelArgs = {
     activeConversationId: string | null
     activeConversationRecord: NormalizedConversationRecord | null
     activeProjectPath: string | null
-    activeProjectScope: ProjectSessionState | null
     conversationCache: ProjectConversationCacheState
     pendingConversationTurn: PendingConversationTurnState | null
     projectGitMetadata: Record<string, ProjectGitMetadata>
@@ -45,7 +43,6 @@ export type ProjectsHomeViewModel = {
     activeFlowRunRequestsById: Map<string, ProjectFlowRunRequest>
     activeProposedPlansById: Map<string, ProjectProposedPlan>
     activeProjectConversationSummaries: ConversationSummaryResponse[]
-    activeProjectEventLog: ProjectSessionState['projectEventLog']
     activeProjectGitMetadata: ProjectGitMetadata
     activeProjectLabel: string | null
     chatSendButtonLabel: string
@@ -68,7 +65,6 @@ export function buildProjectsHomeViewModel({
     activeConversationId,
     activeConversationRecord,
     activeProjectPath,
-    activeProjectScope,
     conversationCache,
     pendingConversationTurn,
     projectGitMetadata,
@@ -126,7 +122,6 @@ export function buildProjectsHomeViewModel({
         activeProjectConversationSummaries: activeProjectPath
             ? conversationCache.summariesByProjectPath[activeProjectPath] || []
             : [],
-        activeProjectEventLog: activeProjectScope?.projectEventLog || [],
         activeProjectGitMetadata: activeProjectPath
             ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
             : EMPTY_PROJECT_GIT_METADATA,

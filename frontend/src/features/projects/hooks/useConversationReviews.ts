@@ -10,7 +10,6 @@ import { useDialogController } from '@/components/app/dialog-controller'
 type UseConversationReviewsArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
-    appendLocalProjectEvent: (message: string) => void
     applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => void
     formatErrorMessage: (error: unknown, fallback: string) => string
     model: string
@@ -20,7 +19,6 @@ type UseConversationReviewsArgs = {
 export function useConversationReviews({
     activeConversationId,
     activeProjectPath,
-    appendLocalProjectEvent,
     applyConversationSnapshot,
     formatErrorMessage,
     model,
@@ -67,15 +65,13 @@ export function useConversationReviews({
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to review the flow run request.')
             setPanelError(message)
-            appendLocalProjectEvent(`Flow run request review failed: ${message}`)
         } finally {
             setPendingFlowRunRequestId(null)
         }
     }, [
         activeConversationId,
         activeProjectPath,
-        appendLocalProjectEvent,
-        applyConversationSnapshot,
+            applyConversationSnapshot,
         formatErrorMessage,
         model,
         prompt,
@@ -102,15 +98,13 @@ export function useConversationReviews({
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to review the proposed plan.')
             setPanelError(message)
-            appendLocalProjectEvent(`Proposed plan review failed: ${message}`)
         } finally {
             setPendingProposedPlanId(null)
         }
     }, [
         activeConversationId,
         activeProjectPath,
-        appendLocalProjectEvent,
-        applyConversationSnapshot,
+            applyConversationSnapshot,
         formatErrorMessage,
         setPanelError,
     ])

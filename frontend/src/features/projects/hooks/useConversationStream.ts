@@ -17,7 +17,6 @@ type ConversationStreamEvent = ConversationTurnUpsertEventResponse | Conversatio
 type UseConversationStreamArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
-    appendLocalProjectEvent: (message: string) => void
     applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
     applyConversationStreamEvent: (
         projectPath: string,
@@ -36,7 +35,6 @@ type UseConversationStreamArgs = {
 export function useConversationStream({
     activeConversationId,
     activeProjectPath,
-    appendLocalProjectEvent,
     applyConversationSnapshot,
     applyConversationStreamEvent,
     applyTransientConversationEvent,
@@ -72,7 +70,6 @@ export function useConversationStream({
     const eventHandlerRef = useRef(applyConversationStreamEvent)
     const transientHandlerRef = useRef(applyTransientConversationEvent)
     const errorFormatterRef = useRef(formatErrorMessage)
-    const appendEventRef = useRef(appendLocalProjectEvent)
     const setPanelErrorRef = useRef(setPanelError)
 
     useEffect(() => {
@@ -80,11 +77,9 @@ export function useConversationStream({
         eventHandlerRef.current = applyConversationStreamEvent
         transientHandlerRef.current = applyTransientConversationEvent
         errorFormatterRef.current = formatErrorMessage
-        appendEventRef.current = appendLocalProjectEvent
         setPanelErrorRef.current = setPanelError
     }, [
-        appendLocalProjectEvent,
-        applyConversationSnapshot,
+            applyConversationSnapshot,
         applyConversationStreamEvent,
         applyTransientConversationEvent,
         formatErrorMessage,
@@ -137,7 +132,6 @@ export function useConversationStream({
                     }
                     const message = errorFormatterRef.current(error, 'Unable to load project conversation.')
                     setPanelErrorRef.current(message)
-                    appendEventRef.current(`Project chat sync failed: ${message}`)
                 } finally {
                     if (snapshotFetchMarker === currentFetchMarker) {
                         snapshotFetchInFlight = null

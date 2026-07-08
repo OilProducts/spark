@@ -555,9 +555,10 @@ describe('ProjectsPanel', () => {
     ).toBeVisible()
     expect(
       within(screen.getByTestId('project-event-log-surface')).getByText(
-        'Choose or add a project from the navbar to view workflow events.',
+        'No workflow events recorded yet.',
       ),
     ).toBeVisible()
+    expect(screen.getByTestId('workflow-event-log-scope-active')).toBeDisabled()
     expect(
       within(screen.getByTestId('project-ai-conversation-surface')).getByText(
         'Choose or add a project from the navbar to begin chatting.',
@@ -580,19 +581,54 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it('keeps the workflow event log project-scoped', async () => {
+  it('renders the global workflow event log with project scoping and run deep links', async () => {
+    const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/quick-switch-project')
       useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
-      useStore.getState().appendProjectEventEntry({
-        message: 'Approved plan',
-        timestamp: '2026-03-24T12:00:00Z',
-      })
+      useStore.getState().applyWorkflowLogEntries([
+        {
+          id: 'run-a:run_started',
+          seq: 0,
+          timestamp: '2026-03-24T12:00:00Z',
+          kind: 'run_started',
+          message: 'Started ops/deploy.dot',
+          project_path: '/tmp/quick-switch-project',
+          run_id: 'run-a',
+          flow_name: 'ops/deploy.dot',
+        },
+        {
+          id: 'run-b:run_failed',
+          seq: 1,
+          timestamp: '2026-03-24T12:05:00Z',
+          kind: 'run_failed',
+          message: 'ops/other.dot failed: boom',
+          project_path: '/tmp/other-project',
+          run_id: 'run-b',
+          flow_name: 'ops/other.dot',
+          node_id: 'deploy',
+        },
+      ])
     })
 
     renderProjectsPanelWithoutHomeController()
 
-    expect(screen.getByTestId('project-event-log-list')).toHaveTextContent('Approved plan')
+    // Global by default: entries from every project render, newest first, with
+    // project labels and deep links into the runs tab.
+    const logList = screen.getByTestId('project-event-log-list')
+    const rows = within(logList).getAllByTestId('workflow-event-log-row')
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toHaveTextContent('ops/other.dot failed: boom')
+    expect(rows[0]).toHaveTextContent('other-project')
+    expect(rows[0]).toHaveAttribute('href', '#/runs/run-b/deploy')
+    expect(rows[0]).toHaveAttribute('data-kind', 'run_failed')
+    expect(rows[1]).toHaveAttribute('href', '#/runs/run-a')
+
+    // Scoping to the active project filters the feed.
+    await user.click(screen.getByTestId('workflow-event-log-scope-active'))
+    const scopedRows = within(screen.getByTestId('project-event-log-list')).getAllByTestId('workflow-event-log-row')
+    expect(scopedRows).toHaveLength(1)
+    expect(scopedRows[0]).toHaveTextContent('Started ops/deploy.dot')
   })
 
   it('renders the server-created user turn before the assistant response completes', async () => {

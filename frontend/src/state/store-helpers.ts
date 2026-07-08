@@ -25,7 +25,6 @@ export const VIEW_MODES: ViewMode[] = ['home', 'projects', 'editor', 'execution'
 export const DEFAULT_PROJECT_SESSION_STATE: ProjectSessionState = {
     workingDir: DEFAULT_WORKING_DIRECTORY,
     conversationId: null,
-    projectEventLog: [],
 }
 
 const GRAPH_FIDELITY_OPTION_SET = new Set<string>([

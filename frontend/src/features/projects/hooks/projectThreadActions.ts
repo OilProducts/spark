@@ -36,7 +36,6 @@ type UseProjectThreadActionsArgs = {
     clearHomeConversationSession: (conversationId: string) => void
     setPanelError: (value: string | null) => void
     setPendingDeleteConversationId: (value: string | null) => void
-    appendLocalProjectEvent: (message: string) => void
     commitConversationCache: (
         next:
             | ProjectConversationCacheState
@@ -57,7 +56,6 @@ export function useProjectThreadActions({
     clearHomeConversationSession,
     setPanelError,
     setPendingDeleteConversationId,
-    appendLocalProjectEvent,
     commitConversationCache,
     persistProjectState,
 }: UseProjectThreadActionsArgs) {
@@ -154,15 +152,13 @@ export function useProjectThreadActions({
         } catch (error) {
             const message = extractApiErrorMessage(error, 'Unable to delete the thread.')
             setPanelError(message)
-            appendLocalProjectEvent(`Thread deletion failed: ${message}`)
         } finally {
             setPendingDeleteConversationId(null)
         }
     }, [
         activeConversationId,
         activeProjectPath,
-        appendLocalProjectEvent,
-        commitConversationCache,
+            commitConversationCache,
         conversationCacheRef,
         persistProjectState,
         resetComposer,

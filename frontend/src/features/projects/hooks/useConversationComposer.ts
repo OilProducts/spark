@@ -55,7 +55,6 @@ type UseConversationComposerArgs = {
         source?: string,
         options?: { forceWorkspaceSync?: boolean },
     ) => void
-    appendLocalProjectEvent: (message: string) => void
     formatErrorMessage: (error: unknown, fallback: string) => string
     setChatDraft: Dispatch<SetStateAction<string>>
     setPanelError: (message: string | null) => void
@@ -73,7 +72,6 @@ export function useConversationComposer({
     getCurrentConversationId,
     getCurrentConversationRevision,
     applyConversationSnapshot,
-    appendLocalProjectEvent,
     formatErrorMessage,
     setChatDraft,
     setPanelError,
@@ -112,7 +110,6 @@ export function useConversationComposer({
             } catch (error) {
                 const message = formatErrorMessage(error, 'Unable to switch the project chat mode.')
                 setPanelError(message)
-                appendLocalProjectEvent(`Project chat mode switch failed: ${message}`)
             }
             return
         }
@@ -139,7 +136,6 @@ export function useConversationComposer({
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to send the project chat turn.')
             setPanelError(message)
-            appendLocalProjectEvent(`Project chat turn failed: ${message}`)
         } finally {
             setPendingConversationTurn(null)
         }

@@ -1,5 +1,3 @@
-import type { ProjectSessionState } from '@/store'
-
 import { buildProjectsHomeViewModel } from '@/features/projects/model/projectsHomeViewModel'
 import { hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
@@ -77,24 +75,12 @@ const snapshot: ConversationSnapshotResponse = {
   ],
 }
 
-const activeProjectScope: ProjectSessionState = {
-  workingDir: '/tmp/project-alpha',
-  conversationId: 'conversation-1',
-  projectEventLog: [
-    {
-      message: 'Conversation resumed.',
-      timestamp: '2026-03-24T18:01:00Z',
-    },
-  ],
-}
-
 describe('buildProjectsHomeViewModel', () => {
   it('derives conversation, artifact, and surface state for the home controller', () => {
     const viewModel = buildProjectsHomeViewModel({
       activeConversationId: 'conversation-1',
       activeConversationRecord: hydrateConversationRecordFromSnapshot(snapshot),
       activeProjectPath: '/tmp/project-alpha',
-      activeProjectScope,
       conversationCache: {
         conversationsById: {
           'conversation-1': hydrateConversationRecordFromSnapshot(snapshot),
@@ -136,7 +122,6 @@ describe('buildProjectsHomeViewModel', () => {
       commit: 'abc123',
     })
     expect(viewModel.activeProjectConversationSummaries).toHaveLength(1)
-    expect(viewModel.activeProjectEventLog).toEqual(activeProjectScope.projectEventLog)
     expect(viewModel.latestFlowRunRequestId).toBe('request-1')
     expect(viewModel.latestFlowLaunchId).toBe('launch-1')
     expect(viewModel.activeFlowRunRequestsById.get('request-1')?.run_id).toBe('run-7')
@@ -159,7 +144,6 @@ describe('buildProjectsHomeViewModel', () => {
       activeConversationId: 'conversation-1',
       activeConversationRecord: record,
       activeProjectPath: '/tmp/project-alpha',
-      activeProjectScope,
       conversationCache: {
         conversationsById: {
           'conversation-1': record,

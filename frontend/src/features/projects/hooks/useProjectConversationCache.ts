@@ -131,10 +131,6 @@ export function useProjectConversationCache({
         if (shouldSyncActiveWorkspace) {
             updateProjectSessionState(projectPath, {
                 conversationId: snapshot.conversation_id,
-                projectEventLog: snapshot.event_log.map((entry) => ({
-                    message: entry.message,
-                    timestamp: entry.timestamp,
-                })),
             })
             if (latestProjectScope?.conversationId !== snapshot.conversation_id) {
                 void persistProjectState(projectPath, {

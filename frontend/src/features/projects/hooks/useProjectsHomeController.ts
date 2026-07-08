@@ -123,7 +123,6 @@ export function useProjectsHomeController() {
     const homeThreadSummariesStatusByProjectPath = useStore((state) => state.homeThreadSummariesStatusByProjectPath)
     const clearHomeConversationSession = useStore((state) => state.clearHomeConversationSession)
     const setConversationId = useStore((state) => state.setConversationId)
-    const appendProjectEventEntry = useStore((state) => state.appendProjectEventEntry)
     const updateProjectSessionState = useStore((state) => state.updateProjectSessionState)
     const projectGitMetadata = useStore((state) => state.homeProjectGitMetadataByPath)
     const model = useStore((state) => state.model)
@@ -192,7 +191,6 @@ export function useProjectsHomeController() {
         activeConversationId,
         activeConversationRecord,
         activeProjectPath,
-        activeProjectScope,
         conversationCache,
         pendingConversationTurn,
         projectGitMetadata,
@@ -217,7 +215,6 @@ export function useProjectsHomeController() {
         activeFlowRunRequestsById,
         activeProposedPlansById,
         activeProjectConversationSummaries,
-        activeProjectEventLog,
         activeProjectLabel,
         chatSendButtonLabel,
         hasRenderableConversationHistory,
@@ -257,13 +254,6 @@ export function useProjectsHomeController() {
         () => buildConversationHistoryRevisionKey(activeConversationHistory),
         [activeConversationHistory],
     )
-
-    const appendLocalProjectEvent = useCallback((message: string) => {
-        appendProjectEventEntry({
-            message,
-            timestamp: new Date().toISOString(),
-        })
-    }, [appendProjectEventEntry])
 
     const activateConversationThread = useCallback((projectPath: string, conversationId: string, source = 'unknown') => {
         debugProjectChat('activate conversation thread', {
@@ -376,7 +366,6 @@ export function useProjectsHomeController() {
             conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0
         ),
         applyConversationSnapshot,
-        appendLocalProjectEvent,
         formatErrorMessage: extractApiErrorMessage,
         setChatDraft,
         setPanelError,
@@ -409,9 +398,8 @@ export function useProjectsHomeController() {
         } catch (error) {
             const message = extractApiErrorMessage(error, 'Unable to update the project chat settings.')
             setPanelError(message)
-            appendLocalProjectEvent(`Project chat settings update failed: ${message}`)
         }
-    }, [activeProjectPath, appendLocalProjectEvent, applyConversationSnapshot, ensureConversationId, setPanelError])
+    }, [activeProjectPath, applyConversationSnapshot, ensureConversationId, setPanelError])
 
     const onChatModelChange = useCallback((value: string) => {
         void persistChatSettings({
@@ -453,7 +441,6 @@ export function useProjectsHomeController() {
         clearHomeConversationSession,
         setPanelError,
         setPendingDeleteConversationId,
-        appendLocalProjectEvent,
         commitConversationCache,
         persistProjectState,
     })
@@ -466,7 +453,6 @@ export function useProjectsHomeController() {
     } = useConversationReviews({
         activeConversationId,
         activeProjectPath,
-        appendLocalProjectEvent,
         applyConversationSnapshot,
         formatErrorMessage: extractApiErrorMessage,
         model,
@@ -504,7 +490,6 @@ export function useProjectsHomeController() {
         } catch (error) {
             const message = extractApiErrorMessage(error, 'Unable to submit the requested input.')
             setRequestUserInputActionError(message)
-            appendLocalProjectEvent(`Project chat request_user_input failed: ${message}`)
         } finally {
             setSubmittingRequestUserInputIds((current) => {
                 const next = { ...current }
@@ -512,7 +497,7 @@ export function useProjectsHomeController() {
                 return next
             })
         }
-    }, [activeConversationId, activeProjectPath, appendLocalProjectEvent, applyConversationSnapshot])
+    }, [activeConversationId, activeProjectPath, applyConversationSnapshot])
 
     return {
         isNarrowViewport,
@@ -551,8 +536,7 @@ export function useProjectsHomeController() {
             activeProjectConversationSummaries,
             activeProjectConversationSummariesStatus,
             pendingDeleteConversationId,
-            activeProjectEventLog,
-            isHomeSidebarResizing,
+                isHomeSidebarResizing,
             onCreateConversationThread,
             onSelectConversationThread,
             onDeleteConversationThread,

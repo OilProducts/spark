@@ -1,5 +1,11 @@
+import { useState } from "react"
 import type { KeyboardEventHandler, MutableRefObject, PointerEventHandler } from "react"
 import { FileText, Plus, Trash2 } from "lucide-react"
+
+import { buildRunsHash } from "@/app/runsRouting"
+import { useStore } from "@/store"
+import { formatProjectPathLabel } from "@/lib/projectPaths"
+import { cn } from "@/lib/utils"
 
 import { HomeProjectSidebar } from "./HomeProjectSidebar"
 import type { ProjectConversationSummary } from "../model/types"
@@ -11,11 +17,6 @@ import {
     EmptyDescription,
     EmptyHeader,
 } from "@/components/ui/empty"
-type ProjectEventLogEntry = {
-    message: string
-    timestamp: string
-}
-
 type ProjectsSidebarProps = {
     isNarrowViewport: boolean
     homeSidebarRef: MutableRefObject<HTMLDivElement | null>
@@ -26,7 +27,6 @@ type ProjectsSidebarProps = {
     activeProjectConversationSummaries: ProjectConversationSummary[]
     activeProjectConversationSummariesStatus: 'idle' | 'loading' | 'ready' | 'error'
     pendingDeleteConversationId: string | null
-    activeProjectEventLog: ProjectEventLogEntry[]
     isHomeSidebarResizing: boolean
     onCreateConversationThread: () => void
     onSelectConversationThread: (conversationId: string) => void
@@ -47,7 +47,6 @@ export function ProjectsSidebar({
     activeProjectConversationSummaries,
     activeProjectConversationSummariesStatus,
     pendingDeleteConversationId,
-    activeProjectEventLog,
     isHomeSidebarResizing,
     onCreateConversationThread,
     onSelectConversationThread,
@@ -57,6 +56,12 @@ export function ProjectsSidebar({
     formatConversationAgeShort,
     formatConversationTimestamp,
 }: ProjectsSidebarProps) {
+    const workflowEventLog = useStore((state) => state.workflowEventLog)
+    const [logScope, setLogScope] = useState<'all' | 'active'>('all')
+    const scopedWorkflowEntries = logScope === 'active' && activeProjectPath
+        ? workflowEventLog.filter((entry) => entry.project_path === activeProjectPath)
+        : workflowEventLog
+
     return (
         <HomeProjectSidebar className={isNarrowViewport ? "gap-4" : "h-full"}>
             <div
@@ -211,23 +216,78 @@ export function ProjectsSidebar({
                     data-testid="project-event-log-surface"
                     className={`flex min-h-[280px] flex-col rounded-md border border-border bg-card p-4 shadow-sm ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-hidden"}`}
                 >
-                    <div className="mb-3">
+                    <div className="mb-3 flex items-center justify-between gap-2">
                         <h3 className="text-sm font-semibold text-foreground">Workflow Event Log</h3>
+                        <div
+                            role="group"
+                            aria-label="Workflow event log scope"
+                            className="inline-flex overflow-hidden rounded-md border border-border"
+                        >
+                            <button
+                                type="button"
+                                data-testid="workflow-event-log-scope-all"
+                                aria-pressed={logScope === 'all'}
+                                onClick={() => setLogScope('all')}
+                                className={cn(
+                                    'px-2 py-0.5 text-[11px] font-medium transition-colors',
+                                    logScope === 'all'
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-background text-muted-foreground hover:bg-muted/60',
+                                )}
+                            >
+                                All projects
+                            </button>
+                            <button
+                                type="button"
+                                data-testid="workflow-event-log-scope-active"
+                                aria-pressed={logScope === 'active'}
+                                disabled={!activeProjectPath}
+                                onClick={() => setLogScope('active')}
+                                className={cn(
+                                    'px-2 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-50',
+                                    logScope === 'active'
+                                        ? 'bg-primary text-primary-foreground'
+                                        : 'bg-background text-muted-foreground hover:bg-muted/60',
+                                )}
+                            >
+                                This project
+                            </button>
+                        </div>
                     </div>
-                    {!activeProjectPath ? (
+                    {scopedWorkflowEntries.length === 0 ? (
                         <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                            Choose or add a project from the navbar to view workflow events.
-                        </p>
-                    ) : activeProjectEventLog.length === 0 ? (
-                        <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                            No workflow events recorded for this project yet.
+                            {logScope === 'active'
+                                ? 'No workflow events recorded for this project yet.'
+                                : 'No workflow events recorded yet.'}
                         </p>
                     ) : (
                         <ol data-testid="project-event-log-list" className="flex-1 space-y-2 overflow-y-auto pr-1">
-                            {[...activeProjectEventLog].reverse().map((entry, index) => (
-                                <li key={`${entry.timestamp}-${index}`} className="rounded border border-border px-2 py-1.5">
-                                    <p className="text-[10px] text-muted-foreground">{formatConversationTimestamp(entry.timestamp)}</p>
-                                    <p className="text-xs text-foreground">{entry.message}</p>
+                            {[...scopedWorkflowEntries].reverse().map((entry) => (
+                                <li key={entry.id}>
+                                    <a
+                                        data-testid="workflow-event-log-row"
+                                        data-kind={entry.kind}
+                                        href={buildRunsHash(entry.run_id, entry.node_id ?? null)}
+                                        className={cn(
+                                            'block rounded border border-border border-l-2 px-2 py-1.5 transition-colors hover:bg-muted/40',
+                                            entry.kind === 'run_failed' && 'border-l-destructive/70',
+                                            entry.kind === 'run_waiting_on_input' && 'border-l-sky-500/70',
+                                            entry.kind === 'run_completed' && 'border-l-green-500/70',
+                                            entry.kind === 'run_canceled' && 'border-l-amber-500/70',
+                                        )}
+                                    >
+                                        <p className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                            <span>{formatConversationTimestamp(entry.timestamp)}</span>
+                                            <span
+                                                data-testid="workflow-event-log-row-project"
+                                                className="truncate"
+                                                title={entry.project_path}
+                                            >
+                                                {formatProjectPathLabel(entry.project_path)}
+                                            </span>
+                                        </p>
+                                        <p className="text-xs text-foreground">{entry.message}</p>
+                                    </a>
                                 </li>
                             ))}
                         </ol>

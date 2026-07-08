@@ -349,21 +349,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 projectSessionsByPath: nextProjectSessionStates,
             }
         }),
-    appendProjectEventEntry: (entry) =>
-        set((state) => {
-            if (!state.activeProjectPath) {
-                return {}
-            }
-            const nextProjectSessionStates = { ...state.projectSessionsByPath }
-            const scoped = resolveProjectSessionState(nextProjectSessionStates[state.activeProjectPath], state.activeProjectPath)
-            nextProjectSessionStates[state.activeProjectPath] = {
-                ...scoped,
-                projectEventLog: [...scoped.projectEventLog, entry],
-            }
-            return {
-                projectSessionsByPath: nextProjectSessionStates,
-            }
-        }),
     updateProjectSessionState: (projectPath, patch) =>
         set((state) => {
             const normalizedProjectPath = normalizeProjectPath(projectPath)
