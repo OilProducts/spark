@@ -368,7 +368,7 @@ pub fn materialize_segment_for_event(
             Some(segment)
         }
         TurnStreamEventKind::Other(kind) if is_model_tool_call_kind(kind) => {
-            let tool_call = event.tool_call.clone()?;
+            let tool_call = normalize_tool_call_payload(event.tool_call.as_ref()?);
             let segment_id = model_tool_segment_id(assistant_turn_id, event, &tool_call);
             let status = model_tool_call_status(kind, &tool_call);
             let mut segment = find_segment(snapshot, &segment_id)
@@ -403,7 +403,7 @@ pub fn materialize_segment_for_event(
         | TurnStreamEventKind::ToolCallUpdated
         | TurnStreamEventKind::ToolCallCompleted
         | TurnStreamEventKind::ToolCallFailed => {
-            let tool_call = event.tool_call.clone()?;
+            let tool_call = normalize_tool_call_payload(event.tool_call.as_ref()?);
             let segment_id = tool_segment_id(assistant_turn_id, event, &tool_call);
             let status = tool_call_status(event, &tool_call);
             let mut segment = find_segment(snapshot, &segment_id)
@@ -796,6 +796,86 @@ pub fn request_user_input_segment_id(
         .or_else(|| event.source.item_id.as_deref().and_then(non_empty_string))
         .unwrap_or_else(|| "request".to_string());
     format!("segment-request-user-input-{app_turn_id}-{request_id}")
+}
+
+/// Canonicalizes a tool-call payload for display. rust_llm payloads already
+/// carry `title`/`kind`/`file_paths` and pass through untouched; raw codex
+/// app-server items (`type`/`command`/`aggregatedOutput`) gain the canonical
+/// display fields without losing any raw keys.
+pub fn normalize_tool_call_payload(raw: &Value) -> Value {
+    let Some(object) = raw.as_object() else {
+        return raw.clone();
+    };
+    if object.contains_key("title") {
+        return raw.clone();
+    }
+    let mut out = object.clone();
+    let item_type = object
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !out.contains_key("kind") {
+        let kind = match item_type {
+            "commandExecution" => "command_execution",
+            "fileChange" => "file_change",
+            _ => "dynamic_tool",
+        };
+        out.insert("kind".to_string(), json!(kind));
+    }
+    let command = object
+        .get("command")
+        .and_then(Value::as_str)
+        .and_then(non_empty_string);
+    let title = command
+        .as_deref()
+        .and_then(|command| command.lines().next())
+        .map(str::trim)
+        .and_then(non_empty_string)
+        .or_else(|| {
+            object
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(non_empty_string)
+        })
+        .or_else(|| non_empty_string(item_type))
+        .unwrap_or_else(|| "Tool call".to_string());
+    out.insert("title".to_string(), json!(title));
+    if !out.contains_key("output") {
+        if let Some(output) = object
+            .get("aggregatedOutput")
+            .and_then(Value::as_str)
+            .and_then(non_empty_string)
+        {
+            out.insert("output".to_string(), json!(output));
+        }
+    }
+    if !out.contains_key("file_paths") {
+        let paths: Vec<String> = object
+            .get("changes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|change| {
+                change
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .and_then(non_empty_string)
+                    .or_else(|| change.as_str().and_then(non_empty_string))
+            })
+            .collect();
+        out.insert("file_paths".to_string(), json!(paths));
+    }
+    if let Some(status) = object.get("status").and_then(Value::as_str) {
+        let normalized = match status {
+            "in_progress" | "inProgress" | "started" | "pending" => Some("running"),
+            "declined" | "errored" => Some("failed"),
+            _ => None,
+        };
+        if let Some(normalized) = normalized {
+            out.insert("status".to_string(), json!(normalized));
+        }
+    }
+    Value::Object(out)
 }
 
 pub fn tool_call_id(tool_call: &Value) -> Option<String> {
