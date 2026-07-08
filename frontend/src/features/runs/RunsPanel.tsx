@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useRunsList } from './hooks/useRunsList'
@@ -17,6 +17,7 @@ import { RunSummaryCard } from './components/RunSummaryCard'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { RunResultCard } from './components/RunResultCard'
 import { STATUS_LABELS, type RunRecord } from './model/shared'
+import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -271,6 +272,52 @@ export function RunsPanel() {
     const now = Date.now()
     const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
     const retryState = latestRetryTimelineEvent
+    const selectedNodeId = selectedRunSessionState?.selectedNodeId ?? null
+    const liveNodeStatuses = useStore((state) => state.nodeStatuses)
+    const humanGateNodeId = useStore((state) => state.humanGate?.nodeId ?? null)
+    const gateNodeId = visiblePendingInterviewGates[0]?.nodeId ?? humanGateNodeId
+    const isSelectedRunActive = selectedRun ? ACTIVE_RUN_STATUSES.has(selectedRun.status) : false
+    const completedNodesSnapshot = selectedRunSessionState?.completedNodesSnapshot
+    const runNodeStatuses = useMemo(() => buildRunNodeStatuses({
+        completedNodes: completedNodesSnapshot ?? [],
+        currentNodeId: currentNodeForSummary,
+        liveNodeStatuses,
+        gateNodeId,
+        isRunActive: isSelectedRunActive,
+    }), [completedNodesSnapshot, currentNodeForSummary, gateNodeId, isSelectedRunActive, liveNodeStatuses])
+    const selectNode = useCallback((nodeId: string | null) => {
+        if (!selectedRun?.run_id) {
+            return
+        }
+        updateRunDetailSession(selectedRun.run_id, { selectedNodeId: nodeId })
+    }, [selectedRun?.run_id, updateRunDetailSession])
+
+    useEffect(() => {
+        if (!selectedNodeId) {
+            return
+        }
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') {
+                selectNode(null)
+            }
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => {
+            window.removeEventListener('keydown', onKeyDown)
+        }
+    }, [selectedNodeId, selectNode])
+
+    // Focus the gate's node when a run starts waiting on input. Keyed on the gate
+    // node so an explicit clear afterwards is respected until the gate set changes.
+    useEffect(() => {
+        if (!gateNodeId || !selectedRun?.run_id) {
+            return
+        }
+        const session = useStore.getState().runDetailSessionsByRunId[selectedRun.run_id]
+        if ((session?.selectedNodeId ?? null) === null) {
+            updateRunDetailSession(selectedRun.run_id, { selectedNodeId: gateNodeId })
+        }
+    }, [gateNodeId, selectedRun?.run_id, updateRunDetailSession])
     const monitoringHeadline = selectedRun
         ? (
             visiblePendingInterviewGates.length > 0
@@ -532,6 +579,15 @@ export function RunsPanel() {
                             />
                         )}
                         {selectedRun && (
+                            <RunGraphCard
+                                key={`graph-${selectedRun.run_id}`}
+                                run={selectedRun}
+                                nodeStatusesById={runNodeStatuses}
+                                selectedNodeId={selectedNodeId}
+                                onSelectNode={selectNode}
+                            />
+                        )}
+                        {selectedRun && (
                             <RunResultCard
                                 result={resultData}
                                 resultError={resultError}
@@ -594,10 +650,6 @@ export function RunsPanel() {
                                     patchSelectedRunSession({ isAdvancedCollapsed: collapsed })
                                 }}
                             >
-                                <RunGraphCard
-                                    key={`graph-${selectedRun.run_id}`}
-                                    run={selectedRun}
-                                />
                                 <RunCheckpointCard
                                     collapsed={isCheckpointCollapsed}
                                     checkpointCompletedNodes={checkpointCompletedNodes}

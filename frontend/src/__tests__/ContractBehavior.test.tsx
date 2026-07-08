@@ -872,10 +872,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByText('run.outcome')).toBeVisible()
     expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
     expect(screen.getByTestId('run-graph-panel')).toBeVisible()
-    expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
-
-    await user.click(screen.getByTestId('run-graph-toggle-button'))
-
+    // The persistent graph pane stays rendered even under partial API failure.
     await waitFor(() => {
       expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })

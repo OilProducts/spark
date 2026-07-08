@@ -417,6 +417,9 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         <div
             data-testid={`workflow-node-${renderedShape}`}
             data-workflow-shape={renderedShape}
+            data-node-id={id}
+            data-node-status={isWaiting ? 'waiting' : status}
+            data-node-selected={selected ? 'true' : 'false'}
             className={cn(
                 'group relative select-none',
                 isReadOnlyPreviewNode ? 'opacity-90' : null,

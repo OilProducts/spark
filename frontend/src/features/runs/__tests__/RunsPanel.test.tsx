@@ -763,12 +763,12 @@ describe('RunsPanel', () => {
     expect(runTimelinePanel).toBeVisible()
     expect(runAdvancedPanel).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
+    // The run graph is a persistent surface promoted out of the advanced section.
+    expect(screen.getByTestId('run-graph-panel')).toBeVisible()
     expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-advanced-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-event-timeline-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-progress-toggle-button')).toBeVisible()
-    expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
     expect(runSummaryPanel).toContainElement(runActivityPanel)
     expect(
       runPendingQuestionsPanel.compareDocumentPosition(runProgressPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -793,18 +793,17 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-checkpoint-panel')).toBeVisible()
-      expect(screen.getByTestId('run-graph-panel')).toBeVisible()
     })
-    expect(screen.getByTestId('run-graph-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-checkpoint-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-context-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-artifact-toggle-button')).toBeVisible()
-    expect(screen.queryByTestId('run-graph-canvas')).not.toBeInTheDocument()
 
-    await user.click(screen.getByTestId('run-graph-toggle-button'))
+    // The persistent graph pane renders its canvas without any expand toggle.
     await waitFor(() => {
       expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })
+    expect(screen.queryByTestId('run-graph-toggle-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('run-graph-resize-handle')).toBeVisible()
 
     expect(
       runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
