@@ -13,6 +13,10 @@ backend() {
     source "${env_file}"
     set +a
   fi
+  # Keep the dev home's runtime layout and flow catalog current before serving,
+  # matching the desktop app's boot behavior. Seeding skips existing files, so
+  # locally edited flows are never overwritten.
+  SPARK_HOME="${spark_home}" cargo run -p spark-server --bin spark-server -- init
   SPARK_HOME="${spark_home}" cargo run -p spark-server --bin spark-server -- serve --host 127.0.0.1 --port "${spark_port}"
 }
 
