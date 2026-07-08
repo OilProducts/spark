@@ -807,7 +807,19 @@ impl AttractorApiService {
         let execution_metadata = attractor_execution::build_launch_metadata(&execution_selection);
 
         let mut record = RunRecord::new(&run_id, &working_directory);
-        record.flow_name = flow_name.clone().unwrap_or_default();
+        // Content launches have no catalog flow name; the flow's title (or
+        // id) is the run's real identity everywhere it shows.
+        record.flow_name = flow_name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| {
+                let title = flow.title.trim();
+                if title.is_empty() {
+                    flow.id.trim().to_string()
+                } else {
+                    title.to_string()
+                }
+            });
         record.working_directory = working_directory.clone();
         record.project_path = working_directory.clone();
         record.model = display_model.clone();

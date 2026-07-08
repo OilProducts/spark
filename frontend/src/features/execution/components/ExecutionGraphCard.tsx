@@ -128,6 +128,7 @@ function ExecutionGraphCanvas({
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
                 fitView
+                fitViewOptions={{ padding: 0.15 }}
                 nodesDraggable={false}
                 nodesConnectable={false}
                 elementsSelectable={isContinuationMode}
@@ -142,7 +143,7 @@ function ExecutionGraphCanvas({
                 multiSelectionKeyCode={null}
                 proOptions={{ hideAttribution: true }}
             >
-                <MiniMap pannable zoomable />
+                <MiniMap pannable zoomable position="top-right" />
                 <Controls showInteractive={false} />
                 <Background gap={24} size={1} />
             </ReactFlow>

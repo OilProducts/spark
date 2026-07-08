@@ -307,11 +307,12 @@ export const formatDuration = (start?: string, end?: string | null, status?: str
     if (end) {
         const parsed = Date.parse(end)
         if (Number.isFinite(parsed)) endMs = parsed
-    } else if (status === 'running' || status === 'pause_requested' || status === 'abort_requested' || status === 'cancel_requested') {
+    } else if (status === 'running' || status === 'waiting' || status === 'pause_requested' || status === 'abort_requested' || status === 'cancel_requested') {
         endMs = now ?? Date.now()
     }
     if (endMs === null) return '—'
     const delta = Math.max(0, endMs - startMs)
+    if (delta < 1000) return '<1s'
     const seconds = Math.floor(delta / 1000)
     const minutes = Math.floor(seconds / 60)
     const hours = Math.floor(minutes / 60)

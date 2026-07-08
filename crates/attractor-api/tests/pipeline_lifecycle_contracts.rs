@@ -385,7 +385,8 @@ fn detached_start_returns_immediately_with_a_running_record() {
         .expect("read run")
         .expect("run exists");
     let record = bundle.record.expect("record");
-    assert_eq!(record.flow_name, "");
+    // Content launches take the flow title as their display identity.
+    assert_eq!(record.flow_name, "API Lifecycle");
     assert!(bundle
         .raw_events
         .iter()

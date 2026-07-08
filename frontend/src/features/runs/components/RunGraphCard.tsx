@@ -199,6 +199,7 @@ function RunGraphCanvasInner({
                 nodes={decoratedNodes}
                 edges={edges}
                 fitView
+                fitViewOptions={{ padding: 0.15 }}
                 nodesDraggable={false}
                 nodesConnectable={false}
                 elementsSelectable={true}
@@ -219,7 +220,9 @@ function RunGraphCanvasInner({
                 multiSelectionKeyCode={null}
                 proOptions={{ hideAttribution: true }}
             >
-                <MiniMap pannable zoomable />
+                {decoratedNodes.length > 10 && paneHeight >= 480 ? (
+                    <MiniMap pannable zoomable position="top-right" />
+                ) : null}
                 <Controls showInteractive={false} />
                 <Background gap={24} size={1} />
             </ReactFlow>
