@@ -2188,16 +2188,15 @@ describe('App shell behavior', () => {
     await user.click(runRow!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-advanced-panel')).toBeVisible()
+      expect(screen.getByTestId('run-inspector-panel')).toBeVisible()
       expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
     })
     expect(screen.queryByTestId('run-context-search-input')).not.toBeInTheDocument()
 
-    await user.click(screen.getByTestId('run-advanced-toggle-button'))
+    await user.click(screen.getByTestId('run-inspector-tab-context'))
 
     await waitFor(() => {
       expect(screen.getByTestId('run-context-search-input')).toBeVisible()
-      expect(screen.getByTestId('run-artifact-view-button')).toBeVisible()
     })
 
     await waitFor(() => {
@@ -2244,6 +2243,7 @@ describe('App shell behavior', () => {
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
     await user.clear(screen.getByTestId('run-context-search-input'))
     await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
+    await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
     await user.click(screen.getByTestId('run-artifact-view-button'))
 
     await waitFor(() => {
@@ -2277,9 +2277,12 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')
     expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
     expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
-    expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
+    // The inspector restores its last active tab (Artifacts) across the switch.
+    expect(screen.getByTestId('run-inspector-tab-artifacts')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
     expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
+    await user.click(screen.getByTestId('run-inspector-tab-context'))
+    expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
     expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')
   })
 

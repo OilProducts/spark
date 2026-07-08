@@ -855,22 +855,28 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-advanced-panel')).toBeVisible()
+      expect(screen.getByTestId('run-inspector-panel')).toBeVisible()
     })
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
 
-    await user.click(screen.getByTestId('run-advanced-toggle-button'))
-
+    // Each inspector tab stays functional independently of the failed endpoint.
+    await user.click(screen.getByTestId('run-inspector-tab-checkpoint'))
     await waitFor(() => {
       expect(screen.getByTestId('run-checkpoint-error')).toBeVisible()
     })
-
     expect(screen.getByTestId('run-checkpoint-error')).toHaveTextContent('Unable to load checkpoint (HTTP 503).')
+
+    await user.click(screen.getByTestId('run-inspector-tab-context'))
     expect(screen.getByTestId('run-context-panel')).toBeVisible()
     expect(screen.getByTestId('run-context-table')).toBeVisible()
     expect(screen.getByText('graph.goal')).toBeVisible()
     expect(screen.getByText('run.outcome')).toBeVisible()
+    expect(screen.getByTestId('run-context-refresh-button')).toBeEnabled()
+
+    await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
     expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
+    expect(screen.getByTestId('run-artifact-refresh-button')).toBeEnabled()
+
     expect(screen.getByTestId('run-graph-panel')).toBeVisible()
     // The persistent graph pane stays rendered even under partial API failure.
     await waitFor(() => {
@@ -879,8 +885,6 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('run-partial-api-failure-banner')).toHaveTextContent(
       'Some run detail endpoints are unavailable.',
     )
-    expect(screen.getByTestId('run-context-refresh-button')).toBeEnabled()
-    expect(screen.getByTestId('run-artifact-refresh-button')).toBeEnabled()
   })
 
   it('[CID:12.2.03] keeps save paths non-destructive when save response shape drifts', async () => {

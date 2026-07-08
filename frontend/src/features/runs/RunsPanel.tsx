@@ -6,17 +6,14 @@ import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
 import { RunActivityCard } from './components/RunActivityCard'
-import { RunAdvancedSection } from './components/RunAdvancedSection'
-import { RunArtifactsCard } from './components/RunArtifactsCard'
-import { RunCheckpointCard } from './components/RunCheckpointCard'
-import { RunContextCard } from './components/RunContextCard'
 import { RunGraphCard } from './components/RunGraphCard'
+import { RunInspectorPanel } from './components/RunInspectorPanel'
 import { RunList } from './components/RunList'
 import { RunSummaryCard } from './components/RunSummaryCard'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
-import { RunResultCard } from './components/RunResultCard'
 import { STATUS_LABELS, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
+import { nodeRetryCountFromCheckpoint } from './model/runDetailsModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -231,10 +228,7 @@ export function RunsPanel() {
     ))
     const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
     const activityMode = selectedRunSessionState?.activityMode ?? 'all'
-    const isAdvancedCollapsed = selectedRunSessionState?.isAdvancedCollapsed ?? true
-    const isCheckpointCollapsed = selectedRunSessionState?.isCheckpointCollapsed ?? false
-    const isContextCollapsed = selectedRunSessionState?.isContextCollapsed ?? false
-    const isArtifactsCollapsed = selectedRunSessionState?.isArtifactsCollapsed ?? false
+    const inspectorTab = selectedRunSessionState?.inspectorTab ?? 'result'
     const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRun?.run_id) {
             return
@@ -278,11 +272,22 @@ export function RunsPanel() {
         gateNodeId,
         isRunActive: isSelectedRunActive,
     }), [completedNodesSnapshot, currentNodeForSummary, gateNodeId, isSelectedRunActive, liveNodeStatuses])
+    // Explicit node selection also focuses the inspector's node tab; the gate
+    // auto-focus below deliberately does not, so it never hijacks a tab the
+    // operator chose.
     const selectNode = useCallback((nodeId: string | null) => {
         if (!selectedRun?.run_id) {
             return
         }
-        updateRunDetailSession(selectedRun.run_id, { selectedNodeId: nodeId })
+        const session = useStore.getState().runDetailSessionsByRunId[selectedRun.run_id]
+        const currentTab = session?.inspectorTab ?? 'result'
+        const patch: Partial<RunDetailSessionState> = { selectedNodeId: nodeId }
+        if (nodeId) {
+            patch.inspectorTab = 'node'
+        } else if (currentTab === 'node') {
+            patch.inspectorTab = 'result'
+        }
+        updateRunDetailSession(selectedRun.run_id, patch)
     }, [selectedRun?.run_id, updateRunDetailSession])
 
     useEffect(() => {
@@ -311,6 +316,12 @@ export function RunsPanel() {
             updateRunDetailSession(selectedRun.run_id, { selectedNodeId: gateNodeId })
         }
     }, [gateNodeId, selectedRun?.run_id, updateRunDetailSession])
+
+    const pendingGatesForSelectedNode = useMemo(() => (
+        selectedNodeId
+            ? visiblePendingInterviewGates.filter((gate) => gate.nodeId === selectedNodeId)
+            : []
+    ), [selectedNodeId, visiblePendingInterviewGates])
     const monitoringHeadline = selectedRun
         ? (
             visiblePendingInterviewGates.length > 0
@@ -572,26 +583,95 @@ export function RunsPanel() {
                             />
                         )}
                         {selectedRun && (
-                            <RunGraphCard
-                                key={`graph-${selectedRun.run_id}`}
-                                run={selectedRun}
-                                nodeStatusesById={runNodeStatuses}
-                                selectedNodeId={selectedNodeId}
-                                onSelectNode={selectNode}
-                            />
-                        )}
-                        {selectedRun && (
-                            <RunResultCard
-                                result={resultData}
-                                resultError={resultError}
-                                isLoading={isResultLoading || resultStatus === 'idle'}
-                                onRefresh={() => {
-                                    void fetchResult()
-                                }}
-                                onViewSource={(artifactPath) => {
-                                    void viewArtifact({ path: artifactPath, viewable: true })
-                                }}
-                            />
+                            <div className={isNarrowViewport
+                                ? 'space-y-6'
+                                : 'grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]'}
+                            >
+                                <RunGraphCard
+                                    key={`graph-${selectedRun.run_id}`}
+                                    run={selectedRun}
+                                    nodeStatusesById={runNodeStatuses}
+                                    selectedNodeId={selectedNodeId}
+                                    onSelectNode={selectNode}
+                                />
+                                <RunInspectorPanel
+                                    inspectorTab={inspectorTab}
+                                    onInspectorTabChange={(tab) => {
+                                        patchSelectedRunSession({ inspectorTab: tab })
+                                    }}
+                                    selectedNodeId={selectedNodeId}
+                                    allProgressEntries={allProgressEntries}
+                                    groupedTimelineEntries={groupedTimelineEntries}
+                                    nodeRetryCount={nodeRetryCountFromCheckpoint(checkpointData, selectedNodeId)}
+                                    pendingGatesForNode={pendingGatesForSelectedNode}
+                                    resultCardProps={{
+                                        result: resultData,
+                                        resultError,
+                                        isLoading: isResultLoading || resultStatus === 'idle',
+                                        onRefresh: () => {
+                                            void fetchResult()
+                                        },
+                                        onViewSource: (artifactPath) => {
+                                            void viewArtifact({ path: artifactPath, viewable: true })
+                                        },
+                                    }}
+                                    checkpointCardProps={{
+                                        collapsed: false,
+                                        checkpointCompletedNodes,
+                                        checkpointCurrentNode,
+                                        checkpointData: checkpointData?.checkpoint ?? null,
+                                        checkpointError,
+                                        checkpointRetryCounters,
+                                        isLoading: isCheckpointLoading,
+                                        onCollapsedChange: () => {},
+                                        onRefresh: () => {
+                                            void fetchCheckpoint()
+                                        },
+                                        status: checkpointStatus,
+                                    }}
+                                    contextCardProps={{
+                                        collapsed: false,
+                                        contextCopyStatus,
+                                        contextError,
+                                        contextExportHref: contextExportHref || null,
+                                        filteredContextRows,
+                                        isLoading: isContextLoading,
+                                        onCollapsedChange: () => {},
+                                        onCopy: () => {
+                                            void copyContextToClipboard()
+                                        },
+                                        onRefresh: () => {
+                                            setContextCopyStatus('')
+                                            void fetchContext()
+                                        },
+                                        onSearchQueryChange: setContextSearchQuery,
+                                        runId: selectedRun.run_id,
+                                        searchQuery: contextSearchQuery,
+                                        status: contextStatus,
+                                    }}
+                                    artifactsCardProps={{
+                                        artifactDownloadHref: (artifactPath) => artifactDownloadHref(artifactPath) || null,
+                                        artifactEntries,
+                                        artifactError,
+                                        artifactViewerError,
+                                        artifactViewerPayload: artifactViewerPayload || null,
+                                        collapsed: false,
+                                        isArtifactViewerLoading,
+                                        isLoading: isArtifactLoading,
+                                        missingCoreArtifacts,
+                                        onCollapsedChange: () => {},
+                                        onRefresh: () => {
+                                            void fetchArtifacts()
+                                        },
+                                        onViewArtifact: (artifact) => {
+                                            void viewArtifact(artifact)
+                                        },
+                                        selectedArtifactEntry,
+                                        showPartialRunArtifactNote,
+                                        status: artifactStatus,
+                                    }}
+                                />
+                            </div>
                         )}
                         {selectedRun && (
                             <RunActivityCard
@@ -621,76 +701,6 @@ export function RunsPanel() {
                                     void loadOlderTimelineEvents()
                                 }}
                             />
-                        )}
-                        {selectedRun && (
-                            <RunAdvancedSection
-                                collapsed={isAdvancedCollapsed}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isAdvancedCollapsed: collapsed })
-                                }}
-                            >
-                                <RunCheckpointCard
-                                    collapsed={isCheckpointCollapsed}
-                                    checkpointCompletedNodes={checkpointCompletedNodes}
-                                    checkpointCurrentNode={checkpointCurrentNode}
-                                    checkpointData={checkpointData?.checkpoint ?? null}
-                                    checkpointError={checkpointError}
-                                    checkpointRetryCounters={checkpointRetryCounters}
-                                    isLoading={isCheckpointLoading}
-                                    onCollapsedChange={(collapsed) => {
-                                        patchSelectedRunSession({ isCheckpointCollapsed: collapsed })
-                                    }}
-                                    onRefresh={() => {
-                                        void fetchCheckpoint()
-                                    }}
-                                    status={checkpointStatus}
-                                />
-                                <RunContextCard
-                                    collapsed={isContextCollapsed}
-                                    contextCopyStatus={contextCopyStatus}
-                                    contextError={contextError}
-                                    contextExportHref={contextExportHref || null}
-                                    filteredContextRows={filteredContextRows}
-                                    isLoading={isContextLoading}
-                                    onCollapsedChange={(collapsed) => {
-                                        patchSelectedRunSession({ isContextCollapsed: collapsed })
-                                    }}
-                                    onCopy={() => {
-                                        void copyContextToClipboard()
-                                    }}
-                                    onRefresh={() => {
-                                        setContextCopyStatus('')
-                                        void fetchContext()
-                                    }}
-                                    onSearchQueryChange={setContextSearchQuery}
-                                    runId={selectedRun.run_id}
-                                    searchQuery={contextSearchQuery}
-                                    status={contextStatus}
-                                />
-                                <RunArtifactsCard
-                                    artifactDownloadHref={(artifactPath) => artifactDownloadHref(artifactPath) || null}
-                                    artifactEntries={artifactEntries}
-                                    artifactError={artifactError}
-                                    artifactViewerError={artifactViewerError}
-                                    artifactViewerPayload={artifactViewerPayload || null}
-                                    collapsed={isArtifactsCollapsed}
-                                    isArtifactViewerLoading={isArtifactViewerLoading}
-                                    isLoading={isArtifactLoading}
-                                    missingCoreArtifacts={missingCoreArtifacts}
-                                    onCollapsedChange={(collapsed) => {
-                                        patchSelectedRunSession({ isArtifactsCollapsed: collapsed })
-                                    }}
-                                    onRefresh={() => {
-                                        void fetchArtifacts()
-                                    }}
-                                    onViewArtifact={(artifact) => {
-                                        void viewArtifact(artifact)
-                                    }}
-                                    selectedArtifactEntry={selectedArtifactEntry}
-                                    showPartialRunArtifactNote={showPartialRunArtifactNote}
-                                    status={artifactStatus}
-                                />
-                            </RunAdvancedSection>
                         )}
                     </div>
                 </div>

@@ -763,7 +763,11 @@ export function RunsHashRoutingController() {
             }
             const currentNodeId = state.runDetailSessionsByRunId[route.runId]?.selectedNodeId ?? null
             if (currentNodeId !== route.nodeId) {
-                state.updateRunDetailSession(route.runId, { selectedNodeId: route.nodeId })
+                state.updateRunDetailSession(route.runId, {
+                    selectedNodeId: route.nodeId,
+                    // A node deep link lands on the node inspector tab.
+                    ...(route.nodeId ? { inspectorTab: 'node' as const } : {}),
+                })
             }
         }
         applyHash()
