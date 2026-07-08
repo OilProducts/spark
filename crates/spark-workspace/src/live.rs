@@ -211,6 +211,54 @@ pub fn latest_run_sequence(settings: &SparkSettings, run_id: &str) -> WorkspaceR
     Ok(entries.into_iter().map(|entry| entry.sequence).max())
 }
 
+/// Segment upserts for every projected transcript segment touched after the
+/// given combined-journal sequence. Full-segment snapshots on the run
+/// resource with the shared run_sequence cursor, so existing query gating
+/// and replay semantics apply unchanged.
+pub fn run_segment_envelopes_after(
+    settings: &SparkSettings,
+    run_id: &str,
+    after_sequence: u64,
+) -> WorkspaceResult<Vec<LiveEnvelope>> {
+    let store = RunStore::for_settings(settings);
+    let Some(entries) = run_journal_entries(&store, run_id)? else {
+        return Ok(Vec::new());
+    };
+    let projection = attractor_runtime::project_run_segments(&entries);
+    Ok(projection
+        .segments
+        .into_iter()
+        .filter(|segment| {
+            segment
+                .get("latest_sequence")
+                .and_then(Value::as_u64)
+                .is_some_and(|sequence| sequence > after_sequence)
+        })
+        .map(|segment| run_segment_upsert_envelope(run_id, segment))
+        .collect())
+}
+
+fn run_segment_upsert_envelope(run_id: &str, segment: Value) -> LiveEnvelope {
+    let sequence = segment
+        .get("latest_sequence")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    LiveEnvelope {
+        event_type: "run.segment_upsert".to_string(),
+        project_path: None,
+        resource: LiveResource {
+            kind: "run".to_string(),
+            id: Some(run_id.to_string()),
+        },
+        cursor: Some(LiveCursor {
+            kind: "run_sequence".to_string(),
+            value: sequence as i64,
+        }),
+        payload: json!({"run_id": run_id, "segment": segment}),
+        reason: None,
+    }
+}
+
 pub fn run_upsert_envelope(
     settings: &SparkSettings,
     run_id: &str,
