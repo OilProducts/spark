@@ -2790,3 +2790,43 @@ impl ProviderAdapter for ErroringStreamAdapter {
         ))
     }
 }
+
+#[test]
+fn non_codex_turns_stream_the_same_events_the_batch_returns() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let backend = RustLlmAgentTurnBackend::new(client);
+
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&streamed);
+    let output = backend
+        .run_turn_with_event_sink(
+            AgentTurnRequest {
+                conversation_id: "conversation-stream".to_string(),
+                project_path: "/repo".to_string(),
+                prompt: "Stream this turn".to_string(),
+                history: Vec::new(),
+                provider: None,
+                model: Some("gpt-agent".to_string()),
+                llm_profile: None,
+                reasoning_effort: None,
+                chat_mode: Some("agent".to_string()),
+                metadata: BTreeMap::new(),
+            },
+            Some(Arc::new(move |event| {
+                sink_events.lock().expect("streamed").push(event);
+            })),
+        )
+        .expect("agent output");
+
+    let streamed = streamed.lock().expect("streamed").clone();
+    assert!(
+        !streamed.is_empty(),
+        "the live sink must receive events during a non-codex turn",
+    );
+    // Live-plus-batch parity, mirroring the codex backend: every event the
+    // durable batch carries was also delivered to the sink, in order.
+    assert_eq!(streamed, output.events);
+}

@@ -191,6 +191,27 @@ impl Default for SessionState {
     }
 }
 
+/// Transient wiring, not session state: ignored by Debug/PartialEq/serde.
+#[derive(Clone, Default)]
+pub(crate) struct SessionEventObserver(
+    pub(crate) Option<std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync>>,
+);
+
+impl std::fmt::Debug for SessionEventObserver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("SessionEventObserver")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for SessionEventObserver {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: Uuid,
@@ -210,6 +231,11 @@ pub struct Session {
     pub follow_up_queue: VecDeque<UserTurn>,
     #[serde(default)]
     pub active_subagents: BTreeMap<String, SubAgentHandle>,
+    /// Live observer fired for every emitted event, before it enters the
+    /// queue — the seam that lets chat sinks and run journals stream while
+    /// process_input is still executing. Post-hoc queue drains are unchanged.
+    #[serde(default, skip)]
+    pub(crate) event_observer: SessionEventObserver,
     #[serde(default, skip)]
     pub(crate) active_subagent_workers: BTreeMap<String, SubAgentWorker>,
     #[serde(default, skip)]
@@ -306,6 +332,7 @@ impl Session {
             follow_up_queue: VecDeque::new(),
             active_subagents: BTreeMap::new(),
             active_subagent_workers: BTreeMap::new(),
+            event_observer: SessionEventObserver::default(),
             external_steering: None,
             system_prompt_snapshot,
             pending_question: None,
@@ -463,7 +490,17 @@ impl Session {
         if event.session_id.is_none() {
             event.session_id = Some(self.id);
         }
+        if let Some(observer) = &self.event_observer.0 {
+            observer(&event);
+        }
         self.event_queue.push_back(event);
+    }
+
+    pub fn set_event_observer(
+        &mut self,
+        observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync>,
+    ) {
+        self.event_observer = SessionEventObserver(Some(observer));
     }
 
     fn current_system_prompt(&self) -> String {
