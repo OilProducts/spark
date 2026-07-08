@@ -131,6 +131,18 @@ pub fn mark_record_retry_started(record: &mut RunRecord) {
     record.last_error.clear();
 }
 
+/// A run blocked on a human gate: still alive, surfaced as needs-input.
+pub fn mark_record_waiting(record: &mut RunRecord) {
+    record.status = "waiting".to_string();
+    record.ended_at = None;
+    record.last_error.clear();
+}
+
+pub fn mark_record_running_after_wait(record: &mut RunRecord) {
+    record.status = "running".to_string();
+    record.ended_at = None;
+}
+
 pub fn mark_record_paused(record: &mut RunRecord) {
     record.status = "paused".to_string();
     record.ended_at = Some(crate::events::utc_timestamp());

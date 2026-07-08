@@ -100,6 +100,7 @@ pub struct HandlerRuntime {
     pub artifacts_root: Option<PathBuf>,
     pub run_workdir: PathBuf,
     pub run_id: String,
+    pub stage_index: u64,
     pub run_paths: Option<RunRootPaths>,
     pub fallback_model: Option<String>,
     pub fallback_provider: Option<String>,
@@ -130,6 +131,7 @@ impl HandlerRuntime {
             artifacts_root,
             run_workdir: request.run_workdir,
             run_id: request.run_id,
+            stage_index: request.stage_index,
             run_paths: request.run_paths,
             fallback_model: request.fallback_model,
             fallback_provider: request.fallback_provider,
@@ -416,6 +418,7 @@ pub struct RuntimeHandlerRunner {
     child_status_resolver: Option<ChildStatusResolver>,
     child_intervention_requester: Option<ChildInterventionRequester>,
     run_event_observer: Option<crate::store::RunEventObserver>,
+    human_gate_blocking: bool,
 }
 
 struct BranchCompletion {
@@ -441,7 +444,17 @@ impl RuntimeHandlerRunner {
             child_status_resolver: None,
             child_intervention_requester: None,
             run_event_observer: None,
+            human_gate_blocking: false,
         }
+    }
+
+    /// Human gates without a queued answer publish a pending question and
+    /// block the (detached) executor thread until the answer route journals
+    /// one, honoring persisted cancel/pause requests. Off by default so test
+    /// runners keep skip semantics.
+    pub fn with_blocking_human_gates(mut self) -> Self {
+        self.human_gate_blocking = true;
+        self
     }
 
     pub fn with_run_event_observer(mut self, observer: crate::store::RunEventObserver) -> Self {
@@ -926,11 +939,24 @@ impl RuntimeHandlerRunner {
             interview_started_event(&runtime.run_id, &runtime.node_id, &question_text),
         )
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        let answer = self
+        let mut answer = self
             .interviewer
             .lock()
             .map_err(|_| RuntimeNodeError::runtime("interviewer lock poisoned"))?
             .ask(question);
+        if (answer.skipped || answer.value == "skipped")
+            && self.human_gate_blocking
+            && runtime.run_paths.is_some()
+        {
+            match self.wait_for_human_gate_answer(&runtime, &question_text, &choices)? {
+                HumanGateWaitResult::Answered(waited_answer) => {
+                    answer = waited_answer;
+                }
+                HumanGateWaitResult::Interrupted(outcome) => {
+                    return Ok(outcome);
+                }
+            }
+        }
         if answer.skipped || answer.value == "skipped" {
             self.emit_transcript_event(
                 &runtime,
@@ -981,6 +1007,126 @@ impl RuntimeHandlerRunner {
             notes: "human selection applied".to_string(),
             ..Outcome::new(OutcomeStatus::Success)
         })
+    }
+
+    /// Publishes the pending question, marks the run `waiting`, and polls the
+    /// journal until the answer route records an InterviewCompleted for this
+    /// question — or a persisted cancel/pause request interrupts the wait.
+    fn wait_for_human_gate_answer(
+        &self,
+        runtime: &HandlerRuntime,
+        question_text: &str,
+        choices: &[Choice],
+    ) -> std::result::Result<HumanGateWaitResult, RuntimeNodeError> {
+        let paths = runtime
+            .run_paths
+            .clone()
+            .ok_or_else(|| RuntimeNodeError::runtime("human gate wait requires run paths"))?;
+        let question_id = format!("{}-{}", runtime.node_id, runtime.stage_index);
+        let flow_name = crate::records::read_run_record(&paths)
+            .ok()
+            .flatten()
+            .map(|record| record.flow_name)
+            .unwrap_or_default();
+        let options = choices
+            .iter()
+            .map(|choice| {
+                json!({
+                    "label": choice.label,
+                    "value": choice.label,
+                    "key": choice.key,
+                })
+            })
+            .collect::<Vec<_>>();
+        self.emit(
+            runtime,
+            crate::events::human_gate_pending_event(
+                &runtime.run_id,
+                &question_id,
+                &runtime.node_id,
+                &flow_name,
+                question_text,
+                options,
+            ),
+        )
+        .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+        self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Waiting)?;
+
+        loop {
+            if let Some(answer_value) = journaled_gate_answer(&paths, &question_id) {
+                self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Running)?;
+                return Ok(HumanGateWaitResult::Answered(HumanAnswer {
+                    value: answer_value.clone(),
+                    selected_values: vec![answer_value.clone()],
+                    selected_option: None,
+                    text: answer_value,
+                    skipped: false,
+                }));
+            }
+            let status = crate::records::read_run_record(&paths)
+                .ok()
+                .flatten()
+                .map(|record| crate::records::normalize_run_status(&record.status))
+                .unwrap_or_default();
+            match status.as_str() {
+                "cancel_requested" | "canceled" => {
+                    // Fail non-retryably; the executor's post-stage control
+                    // poll then finalizes the run as canceled.
+                    return Ok(HumanGateWaitResult::Interrupted(Outcome {
+                        status: OutcomeStatus::Fail,
+                        failure_reason: "Run cancel requested while waiting for human input"
+                            .to_string(),
+                        retryable: Some(false),
+                        failure_kind: Some(FailureKind::Runtime),
+                        ..Outcome::new(OutcomeStatus::Fail)
+                    }));
+                }
+                "pause_requested" | "paused" => {
+                    return Ok(HumanGateWaitResult::Interrupted(Outcome {
+                        status: OutcomeStatus::Fail,
+                        failure_reason: "Run paused while waiting for human input".to_string(),
+                        retryable: Some(false),
+                        failure_kind: Some(FailureKind::Runtime),
+                        ..Outcome::new(OutcomeStatus::Fail)
+                    }));
+                }
+                _ => {}
+            }
+            std::thread::sleep(std::time::Duration::from_millis(
+                HUMAN_GATE_POLL_INTERVAL_MS,
+            ));
+        }
+    }
+
+    fn write_gate_run_status(
+        &self,
+        paths: &RunRootPaths,
+        run_id: &str,
+        status: GateRunStatus,
+    ) -> std::result::Result<(), RuntimeNodeError> {
+        let Some(mut record) = crate::records::read_run_record(paths)
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?
+        else {
+            return Ok(());
+        };
+        // Never clobber an in-flight control request with a gate transition.
+        let current = crate::records::normalize_run_status(&record.status);
+        if matches!(
+            current.as_str(),
+            "cancel_requested" | "canceled" | "pause_requested" | "paused"
+        ) {
+            return Ok(());
+        }
+        match status {
+            GateRunStatus::Waiting => crate::records::mark_record_waiting(&mut record),
+            GateRunStatus::Running => crate::records::mark_record_running_after_wait(&mut record),
+        }
+        crate::records::write_run_record(paths, &record)
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+        if let Some(observer) = &self.run_event_observer {
+            observer(run_id);
+        }
+        Ok(())
     }
 
     fn execute_parallel(
@@ -1814,6 +1960,35 @@ fn human_skipped_outcome() -> Outcome {
         failure_reason: "human skipped interaction".to_string(),
         ..Outcome::new(OutcomeStatus::Fail)
     }
+}
+
+const HUMAN_GATE_POLL_INTERVAL_MS: u64 = 250;
+
+enum HumanGateWaitResult {
+    Answered(HumanAnswer),
+    Interrupted(Outcome),
+}
+
+enum GateRunStatus {
+    Waiting,
+    Running,
+}
+
+fn journaled_gate_answer(paths: &RunRootPaths, question_id: &str) -> Option<String> {
+    let events = crate::events::read_raw_events(paths).ok()?;
+    events.iter().rev().find_map(|event| {
+        if event.event_type != "InterviewCompleted" {
+            return None;
+        }
+        if event.payload.get("question_id").and_then(Value::as_str) != Some(question_id) {
+            return None;
+        }
+        event
+            .payload
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
 }
 
 fn select_choice(answer: &HumanAnswer, choices: &[Choice]) -> Option<Choice> {
