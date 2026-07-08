@@ -915,8 +915,15 @@ describe('RunsPanel', () => {
       expect(screen.getByText('selected.dot')).toBeVisible()
     })
 
-    const runCards = screen.getAllByTestId('run-history-row')
-    await user.click(runCards[1]!)
+    // The active run sorts into the Running group ahead of Recent history, so
+    // find its card by content rather than index.
+    expect(screen.getByTestId('run-list-group-running')).toBeVisible()
+    expect(screen.getByTestId('run-list-group-recent')).toBeVisible()
+    const selectedCard = screen
+      .getByText('selected.dot')
+      .closest('[data-testid="run-history-row"]')
+    expect(selectedCard).not.toBeNull()
+    await user.click(selectedCard!)
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-panel')).toBeVisible()

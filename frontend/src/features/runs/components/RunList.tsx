@@ -16,6 +16,14 @@ import {
     formatDuration,
 } from '../model/shared'
 
+const ACTIVE_LIST_STATUSES = new Set([
+    'running',
+    'queued',
+    'pause_requested',
+    'abort_requested',
+    'cancel_requested',
+])
+
 interface RunListProps {
     activeProjectPath: string | null
     error: string | null
@@ -66,21 +74,41 @@ export function RunList({
     }, [])
     const historyRuns = runs.filter((run) => run.status !== 'queued' || !run.execution_lock?.identity)
 
-    const renderRunRow = (run: RunRecord) => {
+    // Work-queue grouping: children nest under their parent; parentless (or
+    // orphaned) runs bucket by how actionable they are.
+    const listedRunIds = new Set(historyRuns.map((run) => run.run_id))
+    const childRunsByParent = new Map<string, RunRecord[]>()
+    const topLevelRuns: RunRecord[] = []
+    for (const run of historyRuns) {
+        if (run.parent_run_id && listedRunIds.has(run.parent_run_id)) {
+            const siblings = childRunsByParent.get(run.parent_run_id) ?? []
+            siblings.push(run)
+            childRunsByParent.set(run.parent_run_id, siblings)
+        } else {
+            topLevelRuns.push(run)
+        }
+    }
+    const needsInputRuns = topLevelRuns.filter((run) => run.status === 'waiting')
+    const runningRuns = topLevelRuns.filter((run) => ACTIVE_LIST_STATUSES.has(run.status))
+    const recentRuns = topLevelRuns.filter(
+        (run) => run.status !== 'waiting' && !ACTIVE_LIST_STATUSES.has(run.status),
+    )
+
+    const renderRunRow = (run: RunRecord, depth = 0) => {
         const shortRunId = run.run_id.slice(0, 8)
-        const shortParentRunId = run.parent_run_id ? run.parent_run_id.slice(0, 8) : null
         const projectLabel = scopeMode === 'all' ? compactProjectLabel(run.project_path) : null
         const metaParts = [
             formatDuration(run.started_at, run.ended_at, run.status),
             shortRunId,
-            shortParentRunId ? `child of ${shortParentRunId}` : null,
         ].filter((value) => Boolean(value) && value !== '—')
         const holdsExecutionLock = run.execution_lock?.state === 'holding'
         const queuedForExecutionLock = run.execution_lock?.state === 'queued'
 
+        const childRuns = childRunsByParent.get(run.run_id) ?? []
+
         return (
+            <div key={run.run_id} className={cn(depth > 0 && 'ml-4 border-l border-border/60 pl-2')}>
             <article
-                key={run.run_id}
                 data-testid="run-history-row"
                 role="button"
                 tabIndex={0}
@@ -148,6 +176,38 @@ export function RunList({
                     </div>
                 </div>
             </article>
+            {childRuns.length > 0 ? (
+                <div data-testid="run-history-children" className="mt-2 space-y-2">
+                    {childRuns.map((child) => renderRunRow(child, depth + 1))}
+                </div>
+            ) : null}
+            </div>
+        )
+    }
+
+    const renderRunGroup = (
+        key: string,
+        label: string,
+        groupRuns: RunRecord[],
+        accent?: string,
+    ) => {
+        if (groupRuns.length === 0) {
+            return null
+        }
+        return (
+            <section key={key} data-testid={`run-list-group-${key}`} className="space-y-2">
+                <div className={cn(
+                    'flex items-center justify-between px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground',
+                    accent,
+                )}
+                >
+                    <span>{label}</span>
+                    <span data-testid={`run-list-group-${key}-count`}>{groupRuns.length}</span>
+                </div>
+                <div className="space-y-3">
+                    {groupRuns.map((run) => renderRunRow(run))}
+                </div>
+            </section>
         )
     }
 
@@ -244,18 +304,20 @@ export function RunList({
                     data-testid="run-list-scroll-region"
                     className="min-h-0 flex-1 overflow-y-auto px-3 pb-4"
                 >
-                    <div className="space-y-3">
+                    <div className="space-y-4">
+                        {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-sky-700')}
+                        {renderRunGroup('running', 'Running', runningRuns)}
                         {queuedLockGroups.map((group) => (
                             <section key={group.identity} className="space-y-2">
                                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-medium text-amber-800">
                                     Queued execution lock · {group.label}
                                 </div>
                                 <div className="space-y-3">
-                                    {group.runs.map(renderRunRow)}
+                                    {group.runs.map((run) => renderRunRow(run))}
                                 </div>
                             </section>
                         ))}
-                        {historyRuns.map(renderRunRow)}
+                        {renderRunGroup('recent', 'Recent', recentRuns)}
                     </div>
                 </div>
             )}
