@@ -7,12 +7,19 @@ import { useStore, type NodeStatus, type RuntimeStatus } from '@/store'
 import { Button } from '@/components/ui/button'
 import type { RunRecord } from './model/shared'
 import { toTimelineEvent } from './model/timelineModel'
-import { ApiHttpError, loadSelectedRunJournal, loadSelectedRunStatus } from './services/runStreamTransport'
+import {
+    ApiHttpError,
+    loadRunTranscript,
+    loadSelectedRunJournal,
+    loadSelectedRunStatus,
+    parseLiveRunTranscriptSegment,
+} from './services/runStreamTransport'
 import { useRunsTransportReconnectSignal } from './services/runsTransportReconnect'
 import {
     useRunJournalStore,
     type RunJournalStateEntry,
 } from './state/runJournalStore'
+import { useRunTranscriptStore } from './state/runTranscriptStore'
 
 const RUNTIME_STAGE_STATUS_MAP: Record<string, 'running' | 'success' | 'failed'> = {
     StageStarted: 'running',
@@ -572,6 +579,43 @@ export function RunStream() {
             handleMessage({ data: JSON.stringify(detail.entry) })
         }
 
+        const refreshRunTranscript = async () => {
+            const transcript = useRunTranscriptStore.getState()
+            if (transcript.byRunId[selectedRunId]?.status !== 'ready') {
+                transcript.patchRun(selectedRunId, { status: 'loading', error: null })
+            }
+            try {
+                const response = await loadRunTranscript(selectedRunId)
+                if (closed) {
+                    return
+                }
+                useRunTranscriptStore.getState().setSegments(
+                    selectedRunId,
+                    response.segments,
+                    response.newest_sequence,
+                )
+            } catch (error) {
+                if (closed) {
+                    return
+                }
+                useRunTranscriptStore.getState().patchRun(selectedRunId, {
+                    status: 'error',
+                    error: error instanceof Error ? error.message : 'Unable to load run transcript.',
+                })
+            }
+        }
+
+        const handleRunSegmentUpsert = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            if (detail?.runId !== selectedRunId || !detail.segment) {
+                return
+            }
+            const segment = parseLiveRunTranscriptSegment(detail.segment)
+            if (segment) {
+                useRunTranscriptStore.getState().applySegmentUpsert(selectedRunId, segment)
+            }
+        }
+
         const handleRunResyncRequired = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null
             if (detail?.runId !== selectedRunId) {
@@ -579,15 +623,19 @@ export function RunStream() {
             }
             void refreshSelectedRunStatus()
             void refreshSelectedRunJournal()
+            void refreshRunTranscript()
         }
 
         void startScopedStream()
+        void refreshRunTranscript()
         window.addEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
+        window.addEventListener('spark:run-segment-upsert', handleRunSegmentUpsert)
         window.addEventListener('spark:run-resync-required', handleRunResyncRequired)
 
         return () => {
             closed = true
             window.removeEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
+            window.removeEventListener('spark:run-segment-upsert', handleRunSegmentUpsert)
             window.removeEventListener('spark:run-resync-required', handleRunResyncRequired)
             patchRunJournal({
                 liveStatus: 'idle',

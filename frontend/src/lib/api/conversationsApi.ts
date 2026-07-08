@@ -259,7 +259,7 @@ function parseConversationTurnResponse(value: unknown): ConversationTurnResponse
     }
 }
 
-function parseConversationSegmentResponse(value: unknown): ConversationSegmentResponse | null {
+export function parseConversationSegmentResponse(value: unknown): ConversationSegmentResponse | null {
     const record = asUnknownRecord(value)
     if (
         !record

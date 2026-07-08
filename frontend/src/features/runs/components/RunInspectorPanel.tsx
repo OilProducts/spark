@@ -7,12 +7,14 @@ import {
     EmptyHeader,
 } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
+import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import type {
     GroupedTimelineEntry,
     PendingInterviewGate,
-    RunProgressEntry,
 } from '../model/shared'
-import { EventRow, TranscriptRow } from './RunActivityCard'
+import { buildRunTranscriptGroups } from '../model/transcriptModel'
+import { EventRow } from './RunActivityCard'
+import { RunTranscriptGroupSection, useTranscriptExpansion } from './RunTranscriptGroups'
 import { RunArtifactsCard } from './RunArtifactsCard'
 import { RunCheckpointCard } from './RunCheckpointCard'
 import { RunContextCard } from './RunContextCard'
@@ -32,7 +34,7 @@ interface RunInspectorPanelProps {
     onInspectorTabChange: (tab: RunInspectorTab) => void
     selectedNodeId: string | null
     // Node scope inputs
-    allProgressEntries: RunProgressEntry[]
+    transcriptSegments: RunTranscriptSegment[]
     groupedTimelineEntries: GroupedTimelineEntry[]
     nodeRetryCount: number | null
     pendingGatesForNode: PendingInterviewGate[]
@@ -45,21 +47,22 @@ interface RunInspectorPanelProps {
 
 function NodeScopeContent({
     selectedNodeId,
-    allProgressEntries,
+    transcriptSegments,
     groupedTimelineEntries,
     nodeRetryCount,
     pendingGatesForNode,
 }: Pick<
     RunInspectorPanelProps,
     | 'selectedNodeId'
-    | 'allProgressEntries'
+    | 'transcriptSegments'
     | 'groupedTimelineEntries'
     | 'nodeRetryCount'
     | 'pendingGatesForNode'
 >) {
-    const nodeTranscript = useMemo(() => (
-        allProgressEntries.filter((entry) => entry.nodeId === selectedNodeId)
-    ), [allProgressEntries, selectedNodeId])
+    const expansion = useTranscriptExpansion()
+    const nodeTranscriptGroups = useMemo(() => (
+        buildRunTranscriptGroups(transcriptSegments, selectedNodeId)
+    ), [transcriptSegments, selectedNodeId])
     const nodeEvents = useMemo(() => (
         groupedTimelineEntries.flatMap((group) => (
             group.events
@@ -95,16 +98,20 @@ function NodeScopeContent({
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Transcript
                 </h4>
-                {nodeTranscript.length === 0 ? (
+                {nodeTranscriptGroups.length === 0 ? (
                     <Empty data-testid="run-inspector-node-transcript-empty" className="text-sm text-muted-foreground">
                         <EmptyHeader>
-                            <EmptyDescription>No LLM content recorded at this node yet.</EmptyDescription>
+                            <EmptyDescription>No agent activity recorded at this node yet.</EmptyDescription>
                         </EmptyHeader>
                     </Empty>
                 ) : (
-                    <div data-testid="run-inspector-node-transcript" className="max-h-[24rem] space-y-2 overflow-auto pr-1">
-                        {nodeTranscript.map((entry) => (
-                            <TranscriptRow key={entry.id} entry={entry} isActiveEntry={false} />
+                    <div data-testid="run-inspector-node-transcript" className="max-h-[24rem] space-y-3 overflow-auto pr-1">
+                        {nodeTranscriptGroups.map((group) => (
+                            <RunTranscriptGroupSection
+                                key={group.turnId}
+                                group={group}
+                                expansion={expansion}
+                            />
                         ))}
                     </div>
                 )}
@@ -139,7 +146,7 @@ export function RunInspectorPanel({
     inspectorTab,
     onInspectorTabChange,
     selectedNodeId,
-    allProgressEntries,
+    transcriptSegments,
     groupedTimelineEntries,
     nodeRetryCount,
     pendingGatesForNode,
@@ -161,7 +168,7 @@ export function RunInspectorPanel({
             content = (
                 <NodeScopeContent
                     selectedNodeId={selectedNodeId}
-                    allProgressEntries={allProgressEntries}
+                    transcriptSegments={transcriptSegments}
                     groupedTimelineEntries={groupedTimelineEntries}
                     nodeRetryCount={nodeRetryCount}
                     pendingGatesForNode={pendingGatesForNode}

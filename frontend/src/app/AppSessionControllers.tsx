@@ -662,6 +662,12 @@ export function WorkspaceLiveEventsController() {
                     }))
                     return
                 }
+                if (envelope.type === 'run.segment_upsert' && envelope.resource?.id) {
+                    window.dispatchEvent(new CustomEvent('spark:run-segment-upsert', {
+                        detail: { runId: envelope.resource.id, segment: payload.segment },
+                    }))
+                    return
+                }
                 if (
                     (envelope.type === 'run.journal_entry'
                         || envelope.type === 'run.question_pending'

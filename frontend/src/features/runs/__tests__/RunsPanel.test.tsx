@@ -142,6 +142,32 @@ const makeJournalEntry = (
   }
 }
 
+const makeRunSegment = (overrides: {
+  id: string
+  turn_id: string
+  node_id: string
+  content: string
+  latest_sequence: number
+}) => ({
+  id: overrides.id,
+  turn_id: overrides.turn_id,
+  order: 1,
+  kind: 'assistant_message',
+  role: 'assistant',
+  status: 'complete',
+  timestamp: '2026-07-08T10:00:00Z',
+  updated_at: '2026-07-08T10:00:00Z',
+  content: overrides.content,
+  source: {},
+  node_id: overrides.node_id,
+  attempt: 0,
+  latest_sequence: overrides.latest_sequence,
+  source_scope: 'root',
+  source_flow_name: null,
+  source_parent_node_id: null,
+  source_run_id: null,
+})
+
 const makeJournalPage = (
   pipelineId: string,
   entries: ReturnType<typeof makeJournalEntry>[],
@@ -657,24 +683,30 @@ describe('RunsPanel', () => {
       }
       if (url.includes('/attractor/pipelines/run-selected/journal')) {
         return jsonResponse(makeJournalPage('run-selected', [
-          makeJournalEntry(3, {
-            type: 'LLMContent',
-            node_id: 'draft',
-            channel: 'assistant',
-            status: 'complete',
-            content_delta: 'Draft archive output.',
-            source: { app_turn_id: 'turn-2', item_id: 'msg-1' },
-          }, { summary: 'Assistant output complete for draft' }),
-          makeJournalEntry(2, {
-            type: 'LLMContent',
-            node_id: 'validate',
-            channel: 'assistant',
-            status: 'complete',
-            content_delta: 'Validation **passed**.',
-            source: { app_turn_id: 'turn-1', item_id: 'msg-1' },
-          }, { summary: 'Assistant output complete for validate' }),
           makeJournalEntry(1, { type: 'StageStarted', node_id: 'validate' }, { summary: 'Stage validate started' }),
         ]))
+      }
+      if (url.includes('/attractor/pipelines/run-selected/segments')) {
+        return jsonResponse({
+          run_id: 'run-selected',
+          newest_sequence: 3,
+          segments: [
+            makeRunSegment({
+              id: 'segment-assistant-turn-1-msg-1',
+              turn_id: 'root:validate:attempt-0',
+              node_id: 'validate',
+              content: 'Validation **passed**.',
+              latest_sequence: 2,
+            }),
+            makeRunSegment({
+              id: 'segment-assistant-turn-2-msg-1',
+              turn_id: 'root:draft:attempt-0',
+              node_id: 'draft',
+              content: 'Draft archive output.',
+              latest_sequence: 3,
+            }),
+          ],
+        })
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -754,13 +786,15 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: validate')
     })
     const activityList = () => within(screen.getByTestId('run-activity-list'))
-    expect(activityList().getByTestId('run-progress-entry-current-label')).toHaveTextContent('Current node')
-    expect(activityList().getAllByTestId('run-progress-entry-node')[0]).toHaveTextContent('validate')
+    await waitFor(() => {
+      expect(activityList().getAllByTestId('run-transcript-group').length).toBeGreaterThan(0)
+    })
+    expect(activityList().getByTestId('run-transcript-group')).toHaveAttribute('data-node-id', 'validate')
     expect(activityList().getByText('passed', { selector: 'strong' })).toBeVisible()
     expect(activityList().queryByText('Draft archive output.')).not.toBeInTheDocument()
-    // Clearing the node focus reveals every transcript entry in the single stream.
+    // Clearing the node focus reveals every transcript group in the single stream.
     await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    expect(activityList().getAllByTestId('run-progress-entry')).toHaveLength(2)
+    expect(activityList().getAllByTestId('run-transcript-group')).toHaveLength(2)
     expect(activityList().getByText('passed', { selector: 'strong' })).toBeVisible()
     expect(activityList().getByText('Draft archive output.')).toBeVisible()
     // Selecting a graph node scopes the stream to that node's entries only.
@@ -769,8 +803,8 @@ describe('RunsPanel', () => {
     })
     expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: draft')
     const scopedActivityList = screen.getByTestId('run-activity-list')
-    expect(within(scopedActivityList).getAllByTestId('run-progress-entry-node')).toHaveLength(1)
-    expect(within(scopedActivityList).getByTestId('run-progress-entry-node')).toHaveTextContent('draft')
+    expect(within(scopedActivityList).getAllByTestId('run-transcript-group')).toHaveLength(1)
+    expect(within(scopedActivityList).getByTestId('run-transcript-group')).toHaveAttribute('data-node-id', 'draft')
     expect(within(scopedActivityList).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
     await user.click(screen.getByTestId('run-activity-node-scope-clear'))
     // Clearing node focus drops the inspector back to the run-scope Result tab;
