@@ -18,8 +18,9 @@ use attractor_dsl::{
     read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, FlowSourceError,
 };
 use attractor_runtime::{
-    human_intervention_requested_event, ContinueRunRequest, ExecuteRunRequest, PipelineExecutor,
-    RunBundle, RunStore, RuntimeControlError, RuntimeControls, RuntimeHandlerRunner,
+    human_intervention_requested_event, ContinueRunRequest, ExecuteRunRequest, ExecutionStart,
+    PipelineExecutor, RunBundle, RunStore, RuntimeControlError, RuntimeControls,
+    RuntimeHandlerRunner,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -171,6 +172,10 @@ pub struct PipelineStartRequest {
     pub spec_id: Option<String>,
     #[serde(default)]
     pub plan_id: Option<String>,
+    /// When true, execute the pipeline inline and only respond at a terminal
+    /// state (the pre-detached behavior). Defaults to detached execution.
+    #[serde(default)]
+    pub wait: Option<bool>,
 }
 
 impl Default for PipelineStartRequest {
@@ -190,6 +195,7 @@ impl Default for PipelineStartRequest {
             launch_context: None,
             spec_id: None,
             plan_id: None,
+            wait: None,
         }
     }
 }
@@ -452,6 +458,7 @@ pub fn execution_placement_settings(settings: &SparkSettings) -> RuntimeRouteRes
 pub struct AttractorApiService {
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+    run_event_observer: Option<attractor_runtime::RunEventObserver>,
 }
 
 impl AttractorApiService {
@@ -469,7 +476,123 @@ impl AttractorApiService {
         Self {
             settings,
             runtime_handler_runner_factory,
+            run_event_observer: None,
         }
+    }
+
+    pub fn with_run_event_observer(
+        mut self,
+        observer: attractor_runtime::RunEventObserver,
+    ) -> Self {
+        self.run_event_observer = Some(observer);
+        self
+    }
+
+    fn observed_store(&self) -> RunStore {
+        let store = RunStore::for_settings(&self.settings);
+        match &self.run_event_observer {
+            Some(observer) => store.with_run_event_observer(observer.clone()),
+            None => store,
+        }
+    }
+
+    fn observed_node_executor(&self) -> attractor_runtime::RuntimeHandlerRunner {
+        let runner = (self.runtime_handler_runner_factory.as_ref())();
+        match &self.run_event_observer {
+            Some(observer) => runner.with_run_event_observer(observer.clone()),
+            None => runner,
+        }
+    }
+
+    /// Resumes an already-prepared run (continue/retry) on a background
+    /// thread from its persisted record and checkpoint.
+    fn spawn_prepared_resume(
+        &self,
+        run_id: &str,
+        flow: FlowDefinition,
+    ) -> std::result::Result<(), String> {
+        let store = self.observed_store();
+        let bundle = store
+            .read_run_bundle(run_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Unknown pipeline: {run_id}"))?;
+        let record = bundle
+            .record
+            .ok_or_else(|| format!("Run record unavailable: {run_id}"))?;
+        let checkpoint = bundle
+            .checkpoint
+            .ok_or_else(|| format!("Checkpoint unavailable: {run_id}"))?;
+        let execute_request = ExecuteRunRequest {
+            store: store.clone(),
+            record,
+            flow,
+            flow_source: None,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: ContextMap::default(),
+            max_steps: None,
+            start: ExecutionStart::Resume {
+                paths: bundle.paths.clone(),
+                checkpoint,
+            },
+        };
+        self.spawn_detached_execution(bundle.paths, execute_request)
+    }
+
+    /// If a continue/retry route prepared a run successfully, execute it
+    /// detached; failures to launch are persisted on the record so pollers
+    /// and the live stream observe them.
+    fn execute_prepared_route_response(
+        &self,
+        response: &RuntimeRouteResponse,
+        flow: FlowDefinition,
+    ) {
+        if response.status_code >= 400 {
+            return;
+        }
+        if response.body.get("status").and_then(Value::as_str) != Some("started") {
+            return;
+        }
+        let Some(run_id) = response.body.get("run_id").and_then(Value::as_str) else {
+            return;
+        };
+        if let Err(error) = self.spawn_prepared_resume(run_id, flow) {
+            let _ = self.observed_store().update_run_record(run_id, |record| {
+                record.status = "failed".to_string();
+                record.last_error = error.clone();
+            });
+        }
+    }
+
+    /// Runs a prepared pipeline on a dedicated background thread, honoring
+    /// persisted cancel/pause requests. Executor failures are recorded on the
+    /// run record — the launch response has already been sent by the time
+    /// they can occur.
+    fn spawn_detached_execution(
+        &self,
+        paths: attractor_runtime::paths::RunRootPaths,
+        execute_request: ExecuteRunRequest,
+    ) -> std::result::Result<(), String> {
+        let node_executor = self.observed_node_executor();
+        let store = execute_request.store.clone();
+        let run_id = paths.run_id.clone();
+        std::thread::Builder::new()
+            .name(format!("attractor-run-{run_id}"))
+            .spawn(move || {
+                let mut executor = PipelineExecutor::with_control(
+                    node_executor,
+                    attractor_runtime::disk_execution_control(paths),
+                );
+                if let Err(error) = executor.execute(execute_request) {
+                    let message = error.to_string();
+                    let _ = store.update_run_record(&run_id, |record| {
+                        record.status = "failed".to_string();
+                        record.last_error = message.clone();
+                    });
+                }
+            })
+            .map(|_handle| ())
+            .map_err(|error| format!("Unable to spawn run execution thread: {error}"))
     }
 
     pub fn get_status(&self) -> RuntimeRouteResponse {
@@ -579,7 +702,8 @@ impl AttractorApiService {
     }
 
     pub fn start_pipeline(&self, request: PipelineStartRequest) -> RuntimeRouteResponse {
-        let store = RunStore::for_settings(&self.settings);
+        let store = self.observed_store();
+        let wait_for_terminal = request.wait.unwrap_or(false);
         let flow_name = trimmed_option(request.flow_name.as_deref());
         let mut flow_content = trimmed_option(request.flow_content.as_deref());
         let mut flow_source_dir = None;
@@ -731,29 +855,59 @@ impl AttractorApiService {
         }
 
         let flow_definition_json = flow.to_canonical_json_string();
-        let mut executor = PipelineExecutor::new((self.runtime_handler_runner_factory.as_ref())());
-        let execution_result = match executor.execute(ExecuteRunRequest {
-            store: store.clone(),
-            record,
-            flow: flow.clone(),
-            flow_source: Some(flow_content.clone()),
-            flow_definition_json: Some(flow_definition_json),
-            launch_context,
-            runtime_context,
-            max_steps: None,
-            start: Default::default(),
-        }) {
-            Ok(result) => result,
+        // Create the run on disk before responding: the run_id resolves to a
+        // real record (and initial journal) the moment the caller sees it.
+        let paths = match attractor_runtime::prepare_fresh_run(
+            &store,
+            &record,
+            &flow,
+            Some(flow_content.clone()),
+            Some(flow_definition_json),
+            &launch_context,
+            &runtime_context,
+        ) {
+            Ok(paths) => paths,
             Err(error) => {
                 return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
             }
         };
+        let execute_request = ExecuteRunRequest {
+            store: store.clone(),
+            record,
+            flow: flow.clone(),
+            flow_source: None,
+            flow_definition_json: None,
+            launch_context,
+            runtime_context,
+            max_steps: None,
+            start: ExecutionStart::Prepared {
+                paths: paths.clone(),
+            },
+        };
 
-        let graph_paths = store
-            .read_run_bundle(&run_id)
-            .ok()
-            .flatten()
-            .map(|bundle| graph_artifact_paths(&bundle.paths));
+        let terminal_status = if wait_for_terminal {
+            let mut executor = PipelineExecutor::with_control(
+                self.observed_node_executor(),
+                attractor_runtime::disk_execution_control(paths.clone()),
+            );
+            match executor.execute(execute_request) {
+                Ok(result) => result.status,
+                Err(error) => {
+                    return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+                }
+            }
+        } else {
+            if let Err(error) = self.spawn_detached_execution(paths.clone(), execute_request) {
+                let _ = store.update_run_record(&run_id, |record| {
+                    record.status = "failed".to_string();
+                    record.last_error = error.clone();
+                });
+                return RuntimeRouteResponse::json(500, json!({"detail": error}));
+            }
+            "running".to_string()
+        };
+
+        let graph_paths = Some(graph_artifact_paths(&paths));
         let execution_metadata_value =
             serde_json::to_value(&execution_metadata).unwrap_or_else(|_| json!({}));
         RuntimeRouteResponse::json(
@@ -769,7 +923,7 @@ impl AttractorApiService {
                 diagnostic_payloads,
                 error_payloads,
                 graph_paths,
-                execution_result.status,
+                terminal_status,
             ),
         )
     }
@@ -1124,7 +1278,7 @@ impl AttractorApiService {
             Ok(flow) => flow,
             Err(error) => return flow_definition_validation_response(error),
         };
-        RuntimeControlService::new(store).continue_pipeline(
+        let response = RuntimeControlService::new(self.observed_store()).continue_pipeline(
             pipeline_id,
             request,
             ResolvedContinueFlow {
@@ -1133,12 +1287,37 @@ impl AttractorApiService {
                 flow_definition_json: Some(flow.to_canonical_json_string()),
                 flow_name: Some(flow_name),
             },
-        )
+        );
+        self.execute_prepared_route_response(&response, flow);
+        response
     }
 
     pub fn retry_pipeline_route(&self, pipeline_id: &str) -> RuntimeRouteResponse {
-        RuntimeControlService::new(RunStore::for_settings(&self.settings))
-            .retry_pipeline(pipeline_id)
+        let store = self.observed_store();
+        let response = RuntimeControlService::new(store.clone()).retry_pipeline(pipeline_id);
+        if response.status_code < 400
+            && response.body.get("status").and_then(Value::as_str) == Some("started")
+        {
+            // Retry re-executes the same run from its adjusted checkpoint; the
+            // flow comes from the run's stored source snapshot.
+            let flow = store
+                .read_run_bundle(pipeline_id)
+                .ok()
+                .flatten()
+                .and_then(|bundle| store.read_graph_source(&bundle.paths).ok().flatten())
+                .and_then(|source| parse_flow_definition(&source).ok());
+            match flow {
+                Some(flow) => self.execute_prepared_route_response(&response, flow),
+                None => {
+                    let _ = store.update_run_record(pipeline_id, |record| {
+                        record.status = "failed".to_string();
+                        record.last_error =
+                            "Retry could not load the stored run graph source.".to_string();
+                    });
+                }
+            }
+        }
+        response
     }
 
     pub fn cancel_pipeline_route(&self, pipeline_id: &str) -> RuntimeRouteResponse {

@@ -42,11 +42,41 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
     assert_eq!(retry.body["status"], json!("started"));
     assert_eq!(retry.body["pipeline_id"], json!("run-control"));
 
-    let cancel = service.cancel_pipeline_route("run-control");
+    // The retry executes detached; wait for it to finish so the metadata
+    // patch below cannot race the executor's record writes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = store
+            .read_run_bundle("run-control")
+            .expect("read")
+            .and_then(|bundle| bundle.record)
+            .map(|record| record.status);
+        if status.as_deref() == Some("completed") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "retried run never completed (last: {status:?})",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Cancel-request shape, proven against a run that is active on disk but
+    // has no executor attached, so the response is deterministic.
+    store
+        .create_run(CreateRunRequest {
+            record: running_record("run-control-cancel", &project_path),
+            checkpoint: Some(checkpoint("task")),
+            flow_source: Some(simple_flow()),
+            flow_definition_json: Some(simple_flow()),
+            ..CreateRunRequest::default()
+        })
+        .expect("running run");
+    let cancel = service.cancel_pipeline_route("run-control-cancel");
     assert_eq!(cancel.status_code, 200);
     assert_eq!(
         cancel.body,
-        json!({"status": "cancel_requested", "pipeline_id": "run-control"})
+        json!({"status": "cancel_requested", "pipeline_id": "run-control-cancel"})
     );
 
     let patch = service.patch_pipeline_metadata(
@@ -80,6 +110,7 @@ fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     let project_path = temp.path().join("Project Steer");
     let service = AttractorApiService::new(settings.clone());
     let started = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-steer".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -140,6 +171,7 @@ fn reset_clears_only_runs_directory() {
     let project_path = temp.path().join("Project Reset");
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
         run_id: Some("run-reset".to_string()),
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
@@ -165,6 +197,14 @@ fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {
     record.flow_name = "control.yaml".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
+    record.started_at = "2026-06-23T10:00:00Z".to_string();
+    record
+}
+
+fn running_record(run_id: &str, project_path: &Path) -> RunRecord {
+    let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
+    record.flow_name = "control.yaml".to_string();
+    record.status = "running".to_string();
     record.started_at = "2026-06-23T10:00:00Z".to_string();
     record
 }

@@ -202,6 +202,9 @@ async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_cli
         .find(|entry| entry["id"] == request_id)
         .expect("request");
     assert_eq!(request_record["status"], "launched");
+    // The review response returns at run start; the codergen invocation
+    // happens on the detached execution thread.
+    wait_for_codergen_calls(&calls, 1);
     let requests = calls.lock().expect("calls");
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
@@ -550,5 +553,17 @@ fn write_legacy_conversation_files(data_dir: &Path, snapshot: &serde_json::Value
             serde_json::to_string_pretty(&payload).expect("sidecar json"),
         )
         .expect("sidecar");
+
+fn wait_for_codergen_calls<T>(calls: &std::sync::Arc<std::sync::Mutex<Vec<T>>>, expected: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if calls.lock().expect("calls").len() >= expected {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "codergen backend was never invoked by the detached run",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
