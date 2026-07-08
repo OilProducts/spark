@@ -770,3 +770,128 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[tokio::test]
+async fn webhook_dispatch_returns_while_the_run_still_executes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("slow-webhook-project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+    let slow_flow_path = settings.flows_dir.join("ops/slow-webhook.yaml");
+    fs::create_dir_all(slow_flow_path.parent().expect("flow parent")).expect("flow parent");
+    fs::write(
+        slow_flow_path,
+        concat!(
+            "schema_version: '1'\n",
+            "id: slow_hook\n",
+            "title: Slow Hook\n",
+            "nodes:\n",
+            "  start:\n",
+            "    kind: start\n",
+            "  work:\n",
+            "    kind: tool\n",
+            "    config:\n",
+            "      kind: tool\n",
+            "      command: sleep 1\n",
+            "  done:\n",
+            "    kind: exit\n",
+            "edges:\n",
+            "  - from: start\n",
+            "    to: work\n",
+            "  - from: work\n",
+            "    to: done\n",
+        ),
+    )
+    .expect("write slow flow");
+
+    let app = spark_http::build_app(settings.clone());
+
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "name": "Slow webhook",
+            "source_type": "webhook",
+            "action": {
+                "flow_name": "ops/slow-webhook.yaml",
+                "project_path": project_path_text,
+                "static_context": {"origin": "slow"}
+            },
+            "source": {}
+        })),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    let webhook_key = created.1["source"]["webhook_key"]
+        .as_str()
+        .expect("key")
+        .to_string();
+    let webhook_secret = created.1["webhook_secret"]
+        .as_str()
+        .expect("secret")
+        .to_string();
+
+    // The dispatch must return at launch, not at run completion: well under
+    // the ~1s the single slow tool node takes.
+    let dispatch_started = std::time::Instant::now();
+    let accepted = request_json_with_headers(
+        app,
+        "POST",
+        "/workspace/api/webhooks",
+        &[
+            ("X-Spark-Webhook-Key", webhook_key.as_str()),
+            ("X-Spark-Webhook-Secret", webhook_secret.as_str()),
+            ("X-Spark-Webhook-Request-Id", "slow-dispatch"),
+        ],
+        Some(json!({"payload": "slow"})),
+    )
+    .await;
+    let dispatch_elapsed = dispatch_started.elapsed();
+    assert_eq!(accepted.0, StatusCode::OK);
+    assert!(
+        dispatch_elapsed < std::time::Duration::from_millis(450),
+        "webhook dispatch blocked on run execution: {dispatch_elapsed:?}",
+    );
+
+    let trigger_id = accepted.1["trigger_id"].as_str().expect("trigger id");
+    let state =
+        spark_storage::load_trigger_state(&settings.data_dir, trigger_id).expect("trigger state");
+    assert_eq!(
+        state.last_result.as_deref(),
+        Some("success"),
+        "activation success now means launched",
+    );
+    let run_id = state.recent_history[0]
+        .run_id
+        .as_deref()
+        .expect("run id")
+        .to_string();
+
+    // The run is still executing at dispatch time and completes on its own.
+    let store = RunStore::for_settings(&settings);
+    let running_now = store
+        .read_run_bundle(&run_id)
+        .expect("bundle")
+        .and_then(|bundle| bundle.record)
+        .map(|record| record.status);
+    assert_eq!(running_now.as_deref(), Some("running"));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = store
+            .read_run_bundle(&run_id)
+            .expect("bundle")
+            .and_then(|bundle| bundle.record)
+            .map(|record| record.status);
+        if status.as_deref() == Some("completed") {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached webhook run never completed (last: {status:?})",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
