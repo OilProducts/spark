@@ -148,7 +148,7 @@ impl CodexAppServerBackend {
         self.run_agent_turn_with_steering_and_sink(request, steering, None)
     }
 
-    pub(crate) fn run_agent_turn_with_steering_and_sink(
+    pub fn run_agent_turn_with_steering_and_sink(
         &self,
         request: AgentTurnRequest,
         steering: Option<SessionSteeringHandle>,

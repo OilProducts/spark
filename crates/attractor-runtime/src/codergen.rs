@@ -113,12 +113,24 @@ impl RuntimeCodergen {
         node_id: &str,
         context: ContextMap,
     ) -> Result<CodergenExecution, CodergenError> {
+        self.execute_with_event_sink(node_id, context, None)
+    }
+
+    pub fn execute_with_event_sink(
+        &mut self,
+        node_id: &str,
+        context: ContextMap,
+        event_sink: Option<spark_agent_adapter::CodergenStreamSink>,
+    ) -> Result<CodergenExecution, CodergenError> {
         let node =
             self.graph.nodes.get(node_id).cloned().ok_or_else(|| {
                 CodergenError::Backend(format!("unknown codergen node: {node_id}"))
             })?;
+        // The thread-local sink keeps the transcript.json write path fed
+        // while the stream sink journals events live.
         spark_agent_adapter::codergen::with_codergen_event_sink(self.event_sink.clone(), || {
-            self.handler.execute(CodergenRequest {
+            self.handler.execute_with_event_sink(
+                CodergenRequest {
                 node_id: node_id.to_string(),
                 node,
                 graph: self.graph.clone(),
@@ -130,7 +142,9 @@ impl RuntimeCodergen {
                 fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
                 project_path: self.project_path.clone(),
                 metadata: self.metadata.clone(),
-            })
+                },
+                event_sink,
+            )
         })
     }
 }

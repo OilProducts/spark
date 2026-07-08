@@ -28,9 +28,10 @@ pub use agent::{
 };
 pub use codergen::{
     ActiveCodergenSession, ActiveCodergenSessionGuard, CodergenBackend, CodergenBackendOutput,
-    CodergenBackendRequest, CodergenChildInterventionRequest, CodergenChildInterventionResult,
-    CodergenError, CodergenExecution, CodergenExecutionMode, CodergenHandler, CodergenRequest,
-    CodergenRuntimeMode, CodergenSessionInterventionBroker,
+    CodergenBackendRequest, CodergenBackendResponse, CodergenChildInterventionRequest,
+    CodergenChildInterventionResult, CodergenError, CodergenEvent, CodergenEventSink,
+    CodergenExecution, CodergenExecutionMode, CodergenHandler, CodergenRequest,
+    CodergenRuntimeMode, CodergenSessionInterventionBroker, CodergenStreamSink,
 };
 pub use codex_app_server::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
