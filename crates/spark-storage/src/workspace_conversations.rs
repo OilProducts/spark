@@ -729,16 +729,8 @@ impl ConversationRepository {
         core.entry("segments".to_string())
             .or_insert_with(|| json!([]));
 
-        let state_path = project_paths
-            .conversations_dir
-            .join(conversation_id)
-            .join("state.json");
-        write_json_atomic(
-            &state_path,
-            &Value::Object(core),
-            JsonWriteOptions::default(),
-        )?;
-
+        // Write sidecar documents before state.json: readers key on the state
+        // revision, so everything belonging to that revision must land first.
         write_json_atomic(
             project_paths
                 .flow_run_requests_dir
@@ -775,6 +767,16 @@ impl ConversationRepository {
                 "project_path": project_path,
                 "proposed_plans": array_or_empty(object.get("proposed_plans")),
             }),
+            JsonWriteOptions::default(),
+        )?;
+
+        let state_path = project_paths
+            .conversations_dir
+            .join(conversation_id)
+            .join("state.json");
+        write_json_atomic(
+            &state_path,
+            &Value::Object(core),
             JsonWriteOptions::default(),
         )
     }

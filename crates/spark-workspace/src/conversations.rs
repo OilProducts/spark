@@ -857,13 +857,15 @@ impl WorkspaceConversationService {
         touch_snapshot(&repository, &mut snapshot, conversation_id, &project_path)?;
         emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
         stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
-        repository.write_snapshot(&snapshot)?;
+        // Append events before publishing the snapshot so readers that observe the
+        // new snapshot revision always find its events in the journal.
         append_events(
             &repository,
             conversation_id,
             &project_path,
             &emitted_payloads,
         )?;
+        repository.write_snapshot(&snapshot)?;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         Ok(snapshot)
     }
@@ -907,13 +909,15 @@ impl WorkspaceConversationService {
         )?;
         emitted_payloads.push(build_conversation_snapshot_payload(&snapshot));
         stamp_progress_payloads_with_state_revision(&mut snapshot, &mut emitted_payloads);
-        repository.write_snapshot(&snapshot)?;
+        // Append events before publishing the snapshot so readers that observe the
+        // new snapshot revision always find its events in the journal.
         append_events(
             &repository,
             &prepared.conversation_id,
             &prepared.project_path,
             &emitted_payloads,
         )?;
+        repository.write_snapshot(&snapshot)?;
         prepare_snapshot_for_ui(&mut snapshot, &prepared.conversation_id);
         Ok(snapshot)
     }
@@ -1204,9 +1208,12 @@ impl WorkspaceConversationService {
             &handle_match.conversation_id,
             &handle_match.project_path,
         );
+        // Compare normalized forms: the registry stores canonical paths while a
+        // snapshot may hold an unresolved (e.g. symlinked) spelling of the same path.
+        let handle_project_path = normalize_or_raw_project_path(&handle_match.project_path);
         let actual_project_path =
-            snapshot_project_path(&snapshot).unwrap_or_else(|| handle_match.project_path.clone());
-        if actual_project_path != handle_match.project_path {
+            snapshot_project_path(&snapshot).unwrap_or_else(|| handle_project_path.clone());
+        if actual_project_path != handle_project_path {
             return Err(WorkspaceError::Validation(
                 "Conversation is already bound to a different project path.".to_string(),
             ));
@@ -1760,7 +1767,9 @@ impl WorkspaceConversationService {
                     ))
                 })?;
             if let Some(explicit_project_path) = explicit_project_path.as_deref() {
-                if explicit_project_path != handle_match.project_path {
+                if explicit_project_path
+                    != normalize_or_raw_project_path(&handle_match.project_path)
+                {
                     return Err(WorkspaceError::Validation(
                         "Explicit --project path does not match the project bound to the conversation handle."
                             .to_string(),
@@ -2236,7 +2245,7 @@ impl WorkspaceConversationService {
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, project_path);
         let actual_project_path = snapshot_project_path(&snapshot).unwrap_or_default();
-        if actual_project_path != project_path {
+        if actual_project_path != normalize_or_raw_project_path(project_path) {
             return Err(WorkspaceError::Validation(
                 "Conversation not found for project.".to_string(),
             ));
@@ -2394,7 +2403,7 @@ impl WorkspaceConversationService {
                 ))
             })?;
         if let Some(explicit_project_path) = explicit_project_path.as_deref() {
-            if explicit_project_path != handle_match.project_path {
+            if explicit_project_path != normalize_or_raw_project_path(&handle_match.project_path) {
                 return Err(WorkspaceError::Validation(
                     "Explicit --project path does not match the project bound to the conversation handle."
                         .to_string(),
@@ -2431,7 +2440,7 @@ impl WorkspaceConversationService {
             &selection.project_path,
         );
         let actual_project_path = snapshot_project_path(&snapshot).unwrap_or_default();
-        if actual_project_path != selection.project_path {
+        if actual_project_path != normalize_or_raw_project_path(&selection.project_path) {
             return Err(WorkspaceError::Validation(
                 "Conversation not found for project.".to_string(),
             ));
@@ -5450,8 +5459,11 @@ fn persist_snapshot_with_payloads(
     touch_snapshot(repository, snapshot, conversation_id, project_path)?;
     emitted_payloads.push(build_conversation_snapshot_payload(snapshot));
     stamp_progress_payloads_with_state_revision(snapshot, emitted_payloads);
+    // Append events before publishing the snapshot so readers that observe the
+    // new snapshot revision always find its events in the journal.
+    append_events(repository, conversation_id, project_path, emitted_payloads)?;
     repository.write_snapshot(snapshot)?;
-    append_events(repository, conversation_id, project_path, emitted_payloads)
+    Ok(())
 }
 
 fn append_mode_change_turn(snapshot: &mut Value, chat_mode: &str) -> Value {
@@ -5927,6 +5939,12 @@ fn normalize_project_path_string(value: &str) -> Option<String> {
         .ok()
         .flatten()
         .map(|path| path.to_string_lossy().into_owned())
+}
+
+// For equality checks against normalized paths: handle-repository records may hold
+// an unresolved (e.g. symlinked) spelling of a path the registry stores canonically.
+fn normalize_or_raw_project_path(value: &str) -> String {
+    normalize_project_path_string(value).unwrap_or_else(|| value.to_string())
 }
 
 fn set_string(snapshot: &mut Value, key: &str, value: &str) {

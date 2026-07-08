@@ -89,9 +89,11 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
     use std::os::unix::fs::PermissionsExt;
 
     let temp = tempfile::tempdir().expect("tempdir");
-    let install_root = temp.path().join("cargo-root");
+    // Canonicalize: init output prints canonical paths (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let install_root = root.join("cargo-root");
     let installed_bin = install_root.join("bin/spark-server");
-    let home = temp.path().join("home");
+    let home = root.join("home");
     fs::create_dir_all(installed_bin.parent().expect("bin parent")).expect("bin dir");
     fs::create_dir_all(&home).expect("home dir");
     fs::copy(env!("CARGO_BIN_EXE_spark-server"), &installed_bin).expect("copy binary");
@@ -159,8 +161,10 @@ spark-server: error: argument --port: invalid int value: 'not-a-port'\n"
 fn init_creates_runtime_layout_flows_and_catalog() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
-    let data_dir = temp.path().join("spark-home");
-    let flows_dir = temp.path().join("flows");
+    // Canonicalize: init output prints canonical paths (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let data_dir = root.join("spark-home");
+    let flows_dir = root.join("flows");
 
     let output = run_with_args_and_env(
         [
@@ -357,9 +361,11 @@ fn serve_debug_codex_jsonrpc_flag_and_env_enable_process_debug_configuration() {
 fn serve_configuration_preserves_ui_dir_and_rejects_missing_index() {
     let env = BTreeMap::new();
     let temp = tempfile::tempdir().expect("tempdir");
-    let data_dir = temp.path().join("spark-home");
-    let flows_dir = temp.path().join("flows");
-    let ui_dir = temp.path().join("ui");
+    // Canonicalize: resolved settings hold canonical paths (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let data_dir = root.join("spark-home");
+    let flows_dir = root.join("flows");
+    let ui_dir = root.join("ui");
     fs::create_dir_all(&ui_dir).expect("ui dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("index");
 
