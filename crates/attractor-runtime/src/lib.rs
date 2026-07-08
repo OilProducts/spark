@@ -20,6 +20,7 @@ pub mod records;
 pub mod results;
 pub mod retry;
 pub mod routing;
+pub mod segments;
 pub mod store;
 pub mod terminal;
 pub mod transcript;
@@ -77,7 +78,10 @@ pub use handlers::{
     HANDLER_CONDITIONAL, HANDLER_EXIT, HANDLER_FAN_IN, HANDLER_MANAGER_LOOP, HANDLER_PARALLEL,
     HANDLER_START, HANDLER_TOOL, HANDLER_WAIT_HUMAN,
 };
-pub use journals::{journal_entries_from_events, journal_entry_from_event};
+pub use journals::{
+    combined_run_journal_entries, journal_entries_from_events, journal_entry_from_event,
+    journal_replay_order, resequence_combined_journal,
+};
 pub use paths::{RunRootPaths, RuntimePaths};
 pub use records::{
     mark_record_cancel_requested, mark_record_canceled, mark_record_paused,
@@ -96,6 +100,7 @@ pub use routing::{
     routing_outcome_for_node, routing_outcome_for_node_with_prior, select_next_node,
     select_next_node_with_prior, NextNodeSelection,
 };
+pub use segments::{project_run_segments, RunSegmentProjection};
 pub use store::{CreateRunRequest, RunArtifactFile, RunBundle, RunEventObserver, RunStore};
 pub use terminal::{
     check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,

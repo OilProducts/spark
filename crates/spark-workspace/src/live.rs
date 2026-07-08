@@ -515,86 +515,8 @@ fn run_journal_entries(
     store: &RunStore,
     run_id: &str,
 ) -> WorkspaceResult<Option<Vec<JournalEntry>>> {
-    let Some(bundle) = store
-        .read_run_bundle(run_id)
-        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
-    else {
-        return Ok(None);
-    };
-    let mut parent_entries = bundle.journal;
-    parent_entries.sort_by(journal_replay_order);
-
-    let child_bundles = store
-        .list_child_run_bundles(run_id)
-        .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
-    if child_bundles.is_empty() {
-        return Ok(Some(parent_entries));
-    }
-
-    let mut entries = parent_entries;
-    for child in child_bundles {
-        let record = child.record.as_ref();
-        let child_run_id = record.map(|record| record.run_id.clone());
-        for mut entry in child.journal {
-            entry.source_scope = "child".to_string();
-            entry.source_parent_node_id = record.and_then(|record| record.parent_node_id.clone());
-            entry.source_flow_name = record.map(|record| record.flow_name.clone());
-            if let Some(payload) = entry.payload.as_object_mut() {
-                payload.insert("source_scope".to_string(), json!("child"));
-                payload.insert(
-                    "source_parent_node_id".to_string(),
-                    entry
-                        .source_parent_node_id
-                        .as_ref()
-                        .map_or(Value::Null, |value| json!(value)),
-                );
-                payload.insert(
-                    "source_flow_name".to_string(),
-                    entry
-                        .source_flow_name
-                        .as_ref()
-                        .map_or(Value::Null, |value| json!(value)),
-                );
-                payload.insert(
-                    "source_run_id".to_string(),
-                    child_run_id
-                        .as_ref()
-                        .map_or(Value::Null, |value| json!(value)),
-                );
-            }
-            entries.push(entry);
-        }
-    }
-    entries.sort_by(journal_replay_order);
-    resequence_combined_journal(&mut entries);
-    Ok(Some(entries))
-}
-
-fn journal_replay_order(left: &JournalEntry, right: &JournalEntry) -> std::cmp::Ordering {
-    left.emitted_at
-        .cmp(&right.emitted_at)
-        .then_with(|| journal_source_rank(left).cmp(&journal_source_rank(right)))
-        .then_with(|| left.sequence.cmp(&right.sequence))
-        .then_with(|| left.id.cmp(&right.id))
-}
-
-fn journal_source_rank(entry: &JournalEntry) -> u8 {
-    if entry.source_scope == "child" {
-        1
-    } else {
-        0
-    }
-}
-
-fn resequence_combined_journal(entries: &mut [JournalEntry]) {
-    for (index, entry) in entries.iter_mut().enumerate() {
-        let sequence = (index as u64).saturating_add(1);
-        entry.sequence = sequence;
-        entry.id = format!("journal-{sequence}");
-        if let Some(payload) = entry.payload.as_object_mut() {
-            payload.insert("sequence".to_string(), json!(sequence));
-        }
-    }
+    attractor_runtime::combined_run_journal_entries(store, run_id)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))
 }
 
 fn run_journal_envelope(run_id: &str, entry: JournalEntry) -> LiveEnvelope {
