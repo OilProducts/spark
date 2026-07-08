@@ -2225,17 +2225,21 @@ describe('App shell behavior', () => {
         }))
     })
 
+    // Focus the review node (as a graph-node click would) so the pending gate's
+    // auto-selection cannot scope the stream elsewhere.
+    act(() => {
+      useStore.getState().updateRunDetailSession('run-session', { selectedNodeId: 'review' })
+    })
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
+        within(screen.getByTestId('run-activity-stream-panel')).getByText('Stage review started'),
       ).toBeVisible()
     })
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-filter-type')).toBeVisible()
+      expect(screen.getByTestId('run-activity-mode-events')).toBeVisible()
     })
 
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-type'), 'StageStarted')
-    await user.type(screen.getByTestId('run-event-timeline-filter-node-stage'), 'review')
+    await user.click(screen.getByTestId('run-activity-mode-events'))
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-category'), 'stage')
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
     await user.clear(screen.getByTestId('run-context-search-input'))
@@ -2252,8 +2256,8 @@ describe('App shell behavior', () => {
     )
 
     expect(useStore.getState().runDetailSessionsByRunId['run-session']).toMatchObject({
-      timelineTypeFilter: 'StageStarted',
-      timelineNodeStageFilter: 'review',
+      activityMode: 'events',
+      selectedNodeId: 'review',
       timelineCategoryFilter: 'stage',
       timelineSeverityFilter: 'info',
       contextSearchQuery: 'alpha',
@@ -2269,8 +2273,8 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-session.dot')
     })
-    expect(screen.getByTestId('run-event-timeline-filter-type')).toHaveValue('StageStarted')
-    expect(screen.getByTestId('run-event-timeline-filter-node-stage')).toHaveValue('review')
+    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')
     expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
     expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
@@ -2411,7 +2415,7 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('run-event-timeline-panel')).getByText('Stage review started'),
+        within(screen.getByTestId('run-activity-stream-panel')).getByText('Stage review started'),
       ).toBeVisible()
     })
   })

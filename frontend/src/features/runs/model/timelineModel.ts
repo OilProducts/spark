@@ -837,7 +837,7 @@ const progressSourceKey = (payload: Record<string, unknown>): string => {
     ].join(':')
 }
 
-const buildAllRunProgressEntries = (
+export const buildAllRunProgressEntries = (
     timelineEntries: Iterable<TimelineEventEntry>,
 ): RunProgressEntry[] => {
     const byKey = new Map<string, RunProgressEntry>()

@@ -1491,9 +1491,9 @@ describe('Frontend contract behavior', () => {
       renderRunsPanelWithController()
 
       await waitFor(() => {
-        expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+        expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
       })
-      expect(screen.getByTestId('run-event-timeline-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('run-activity-stream-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
     } finally {
       act(() => {
         setViewportWidth(originalViewportWidth)
@@ -1773,7 +1773,7 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
     })
     expect(screen.queryByTestId('timeline-update-performance-budget')).not.toBeInTheDocument()
     expect(screen.queryByTestId('run-event-timeline-throughput')).not.toBeInTheDocument()
@@ -1794,7 +1794,7 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
     })
     const timelineBudget = screen.getByTestId('timeline-update-performance-budget')
     expect(timelineBudget).toHaveAttribute('data-budget-ms', '50')
@@ -1979,7 +1979,7 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-panel')).toBeVisible()
+      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
     })
     await waitFor(() => {
       expect(eventSource?.onmessage).toBeTruthy()
@@ -2010,9 +2010,11 @@ describe('Frontend contract behavior', () => {
     expect(throughputNotice).toHaveAttribute('data-loaded-count', String(totalEvents))
     expect(Number(throughputNotice.getAttribute('data-rendered-count'))).toBe(timelineRows.length)
     expect(Number(throughputNotice.getAttribute('data-window-size'))).toBeGreaterThan(0)
+    expect(timelineRows.length).toBeLessThanOrEqual(Number(throughputNotice.getAttribute('data-window-size')))
     expect(throughputNotice).toHaveTextContent(`Loaded ${totalEvents} journal entries.`)
     expect(throughputNotice).toHaveTextContent('Rendering')
-    expect(screen.getByTestId('run-event-timeline-list')).not.toHaveTextContent('stage_0')
+    expect(screen.getByTestId('run-activity-truncation-note')).toBeVisible()
+    expect(screen.getByTestId('run-activity-list')).not.toHaveTextContent('stage_0')
   })
 
   it('[CID:14.0.01] propagates navbar project context through Home, Execution, Triggers, and Runs', async () => {
@@ -4198,15 +4200,15 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-list')).toBeVisible()
+      expect(screen.getByTestId('run-activity-list')).toBeVisible()
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
+      expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
         'Interview completed for review_gate (accepted answer: Approve)',
       )
     })
-    expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
+    expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
       'Interview completed for release_gate (skipped)',
     )
   })
@@ -4338,15 +4340,15 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-list')).toBeVisible()
+      expect(screen.getByTestId('run-activity-list')).toBeVisible()
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
+      expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
         'Interview completed for review_gate (accepted answer: Approve)',
       )
     })
-    expect(screen.getByTestId('run-event-timeline-list')).toHaveTextContent(
+    expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
       'Interview completed for approval_gate (skipped)',
     )
   })
