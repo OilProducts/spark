@@ -167,24 +167,6 @@ export interface GroupedTimelineEntry {
     events: TimelineEventEntry[]
 }
 
-export interface RunProgressEntry {
-    id: string
-    nodeId: string | null
-    channel: 'assistant' | 'reasoning' | 'plan'
-    status: 'streaming' | 'complete'
-    content: string
-    updatedAt: string
-    latestSequence: number
-}
-
-export type RunProgressNodeFilter = 'current' | 'recent' | string
-
-export interface RunProgressProjection {
-    activeEntry: RunProgressEntry | null
-    recentEntries: RunProgressEntry[]
-    nodeOptions: string[]
-}
-
 export interface PendingQuestionOption {
     label: string
     value: string
