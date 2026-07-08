@@ -8,6 +8,7 @@ import type {
     RunsSessionSlice,
     TriggersSessionSlice,
 } from './viewSessionTypes'
+import type { WorkflowEventLogSlice } from './workflowEventLogSlice'
 
 export type ViewMode = 'home' | 'projects' | 'editor' | 'execution' | 'triggers' | 'settings' | 'runs'
 export type EditorMode = 'structured' | 'raw'
@@ -88,11 +89,6 @@ export interface ProjectRegistrationResult {
     error?: string
 }
 
-export interface ProjectEventLogEntry {
-    message: string
-    timestamp: string
-}
-
 export interface DiagnosticEntry {
     rule_id: string
     severity: DiagnosticSeverity
@@ -163,7 +159,6 @@ export interface ExecutionViewSession {
 export interface ProjectSessionState {
     workingDir: string
     conversationId: string | null
-    projectEventLog: ProjectEventLogEntry[]
 }
 
 export type ProjectSessionStatePatch = Partial<ProjectSessionState>
@@ -196,7 +191,6 @@ export interface WorkspaceSlice {
     activeFlow: string | null
     setActiveFlow: (flow: string | null) => void
     setConversationId: (id: string | null) => void
-    appendProjectEventEntry: (entry: ProjectEventLogEntry) => void
     updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
 }
 
@@ -337,6 +331,7 @@ export interface EditorSlice {
 
 export type AppState =
     & WorkspaceSlice
+    & WorkflowEventLogSlice
     & ExecutionLaunchSlice
     & ExecutionSessionSlice
     & RunInspectorSlice

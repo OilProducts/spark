@@ -21,6 +21,7 @@ import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSes
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
+import type { WorkflowLogEntry } from '@/state/workflowEventLogSlice'
 
 const completedNodesMatch = (left: string[], right: string[]) => (
     left.length === right.length && left.every((value, index) => value === right[index])
@@ -80,7 +81,6 @@ type HomeConversationSyncControllerProps = {
         event: ConversationStreamEvent,
         source?: string,
     ) => ApplyConversationStreamEventResult | undefined
-    appendProjectEvent: (projectPath: string, message: string) => void
     setProjectPanelError: (projectPath: string, value: string | null) => void
 }
 
@@ -90,13 +90,8 @@ function HomeConversationSyncController({
     isForegroundProject,
     applyConversationSnapshot,
     applyConversationStreamEvent,
-    appendProjectEvent,
     setProjectPanelError,
 }: HomeConversationSyncControllerProps) {
-    const appendLocalProjectEvent = useCallback((message: string) => {
-        appendProjectEvent(projectPath, message)
-    }, [appendProjectEvent, projectPath])
-
     const setPanelError = useCallback((value: string | null) => {
         setProjectPanelError(projectPath, value)
     }, [projectPath, setProjectPanelError])
@@ -104,7 +99,6 @@ function HomeConversationSyncController({
     useConversationStream({
         activeConversationId: isForegroundProject ? conversationId : null,
         activeProjectPath: isForegroundProject ? projectPath : null,
-        appendLocalProjectEvent,
         applyConversationSnapshot,
         applyConversationStreamEvent,
         formatErrorMessage: extractApiErrorMessage,
@@ -231,19 +225,6 @@ export function HomeSessionController() {
         setProjectRegistrationError: () => {},
     })
 
-    const appendProjectEvent = useCallback((projectPath: string, message: string) => {
-        const currentProjectEventLog = useStore.getState().projectSessionsByPath[projectPath]?.projectEventLog ?? []
-        updateProjectSessionState(projectPath, {
-            projectEventLog: [
-                ...currentProjectEventLog,
-                {
-                    message,
-                    timestamp: new Date().toISOString(),
-                },
-            ],
-        })
-    }, [updateProjectSessionState])
-
     const setProjectPanelError = useCallback((projectPath: string, value: string | null) => {
         updateHomeProjectSession(projectPath, { panelError: value })
     }, [updateHomeProjectSession])
@@ -317,7 +298,6 @@ export function HomeSessionController() {
                     isForegroundProject={isHomeVisible && activeProjectPath === projectPath}
                     applyConversationSnapshot={applyConversationSnapshot}
                     applyConversationStreamEvent={applyConversationStreamEvent}
-                    appendProjectEvent={appendProjectEvent}
                     setProjectPanelError={setProjectPanelError}
                 />
             ))}
@@ -556,6 +536,8 @@ export function WorkspaceLiveEventsController() {
                 params.set('triggers_project_path', triggersProjectPath)
             }
         }
+        // The workflow event log is a global, always-on feed for the Home pane.
+        params.set('include_workflow_log', 'true')
         return buildWorkspaceLiveEventsUrl(params)
     }, [
         activeConversationId,
@@ -620,6 +602,13 @@ export function WorkspaceLiveEventsController() {
                     && Number.isFinite(envelope.cursor.value)
                 ) {
                     latestRunSequenceById.current[envelope.resource.id] = envelope.cursor.value
+                }
+                if (envelope.type === 'workflow_log.entry' && envelope.resource?.kind === 'workflow_log') {
+                    const entry = envelope.payload as WorkflowLogEntry | undefined
+                    if (entry && typeof entry.id === 'string' && typeof entry.seq === 'number') {
+                        useStore.getState().applyWorkflowLogEntries([entry])
+                    }
+                    return
                 }
                 if (typeof envelope.sequence === 'number' && selectedRunId) {
                     window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {

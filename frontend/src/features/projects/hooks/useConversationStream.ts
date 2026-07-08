@@ -15,7 +15,6 @@ type ConversationStreamEvent = ConversationTurnUpsertEventResponse | Conversatio
 type UseConversationStreamArgs = {
     activeConversationId: string | null
     activeProjectPath: string | null
-    appendLocalProjectEvent: (message: string) => void
     applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
     applyConversationStreamEvent: (
         projectPath: string,
@@ -29,7 +28,6 @@ type UseConversationStreamArgs = {
 export function useConversationStream({
     activeConversationId,
     activeProjectPath,
-    appendLocalProjectEvent,
     applyConversationSnapshot,
     applyConversationStreamEvent,
     formatErrorMessage,
@@ -63,18 +61,15 @@ export function useConversationStream({
     const snapshotHandlerRef = useRef(applyConversationSnapshot)
     const eventHandlerRef = useRef(applyConversationStreamEvent)
     const errorFormatterRef = useRef(formatErrorMessage)
-    const appendEventRef = useRef(appendLocalProjectEvent)
     const setPanelErrorRef = useRef(setPanelError)
 
     useEffect(() => {
         snapshotHandlerRef.current = applyConversationSnapshot
         eventHandlerRef.current = applyConversationStreamEvent
         errorFormatterRef.current = formatErrorMessage
-        appendEventRef.current = appendLocalProjectEvent
         setPanelErrorRef.current = setPanelError
     }, [
-        appendLocalProjectEvent,
-        applyConversationSnapshot,
+            applyConversationSnapshot,
         applyConversationStreamEvent,
         formatErrorMessage,
         setPanelError,
@@ -126,7 +121,6 @@ export function useConversationStream({
                     }
                     const message = errorFormatterRef.current(error, 'Unable to load project conversation.')
                     setPanelErrorRef.current(message)
-                    appendEventRef.current(`Project chat sync failed: ${message}`)
                 } finally {
                     if (snapshotFetchMarker === currentFetchMarker) {
                         snapshotFetchInFlight = null
