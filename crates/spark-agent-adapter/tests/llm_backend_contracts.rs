@@ -2830,3 +2830,47 @@ fn non_codex_turns_stream_the_same_events_the_batch_returns() {
     // durable batch carries was also delivered to the sink, in order.
     assert_eq!(streamed, output.events);
 }
+
+#[test]
+fn agent_codergen_streams_a_prefix_of_the_output_events() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let mut backend = RustLlmCodergenBackend::new(client);
+
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&streamed);
+    let output = backend
+        .run_with_event_sink(
+            CodergenBackendRequest {
+                node_id: "implement".to_string(),
+                prompt: "Do the work".to_string(),
+                runtime_mode: CodergenRuntimeMode::agent(),
+                provider: "openai".to_string(),
+                model: Some("gpt-agent".to_string()),
+                ..CodergenBackendRequest::default()
+            },
+            Some(Arc::new(move |event| {
+                sink_events.lock().expect("streamed").push(event);
+            })),
+        )
+        .expect("codergen output");
+
+    let streamed = streamed.lock().expect("streamed").clone();
+    assert!(!streamed.is_empty(), "sink must receive events");
+    // Prefix contract: streamed events lead output.events by count and type.
+    assert!(streamed.len() <= output.events.len());
+    for (streamed_event, batch_event) in streamed.iter().zip(output.events.iter()) {
+        assert_eq!(streamed_event.event_type, batch_event.event_type);
+        assert_eq!(
+            streamed_event.payload.get("kind"),
+            batch_event.payload.get("kind"),
+        );
+    }
+    // The batch-only tail is the terminal completion record.
+    assert_eq!(
+        output.events.last().expect("terminal").event_type,
+        "rust_agent_adapter_request_completed",
+    );
+}

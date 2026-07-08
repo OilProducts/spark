@@ -2037,3 +2037,138 @@ async fn live_route_streams_run_segment_upserts_through_the_publisher() {
     }
     drop(app);
 }
+
+struct SlowStreamingCodergenBackend;
+
+impl spark_agent_adapter::CodergenBackend for SlowStreamingCodergenBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        spark_agent_adapter::CodergenBackend::run_with_event_sink(self, request, None)
+    }
+
+    fn run_with_event_sink(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let streamed = spark_agent_adapter::CodergenEvent::new(
+            "rust_agent_session_event",
+            std::collections::BTreeMap::from([
+                ("node_id".to_string(), json!(request.node_id.clone())),
+                (
+                    "turn_stream_event".to_string(),
+                    json!({
+                        "kind": "content_delta",
+                        "channel": "assistant",
+                        "content_delta": "Mid-node text",
+                        "message": "Mid-node text",
+                        "source": {"backend": "rust_unified_llm_adapter"},
+                    }),
+                ),
+            ]),
+        );
+        if let Some(sink) = &event_sink {
+            sink(streamed.clone());
+        }
+        // Keep the node running long enough for the live layer to publish
+        // the streamed event while execution is still inside this node.
+        std::thread::sleep(Duration::from_millis(900));
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response: spark_agent_adapter::CodergenBackendResponse::Text(
+                "{\"outcome\":\"success\"}".to_string(),
+            ),
+            events: vec![streamed],
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn live_route_streams_codergen_segments_while_the_node_executes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project_path_text = project_path.to_string_lossy().to_string();
+
+    let factory: attractor_api::RuntimeHandlerRunnerFactory = Arc::new(|| {
+        attractor_runtime::RuntimeHandlerRunner::new()
+            .with_codergen_backend_factory(|| Box::new(SlowStreamingCodergenBackend))
+    });
+    let app = spark_http::build_app_with_runtime_handler_runner_factory(settings.clone(), factory);
+
+    // Detached launch returns at prepare time; the codergen node then holds
+    // for ~900ms, leaving a wide window to subscribe and observe mid-node.
+    let launched = request(
+        app.clone(),
+        "POST",
+        "/attractor/pipelines",
+        Some(json!({
+            "flow_content": "digraph MidNode { start [shape=Mdiamond]; work [shape=box, prompt=\"stream\"]; done [shape=Msquare]; start -> work -> done }",
+            "working_directory": project_path_text,
+            "run_id": "run-mid-node",
+            "model": "compat-model"
+        })),
+    )
+    .await;
+    assert_eq!(launched.status(), StatusCode::OK);
+
+    let live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?run_id=run-mid-node&run_sequence=0",
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut stream = live.into_body().into_data_stream();
+
+    // The streamed segment must arrive while the codergen node is still
+    // executing (the backend holds the node open for ~900ms after sinking).
+    let store = RunStore::for_settings(&settings);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never received a mid-node run.segment_upsert",
+        );
+        let frame = next_sse_chunk(&mut stream).await;
+        if frame.starts_with(": keepalive") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        if envelope["type"] != "run.segment_upsert" {
+            continue;
+        }
+        let segment = &envelope["payload"]["segment"];
+        if segment["content"] != "Mid-node text" {
+            continue;
+        }
+        assert_eq!(segment["node_id"], "work");
+        assert_eq!(segment["status"], "streaming");
+        // Proof of mid-node delivery: the run record on disk is still running
+        // and the stage has not completed.
+        let bundle = store
+            .read_run_bundle("run-mid-node")
+            .expect("bundle")
+            .expect("run exists");
+        assert_eq!(bundle.record.expect("record").status, "running");
+        assert!(
+            !bundle.raw_events.iter().any(|event| {
+                event.event_type == "StageCompleted"
+                    && event
+                        .payload
+                        .get("node_id")
+                        .and_then(|value| value.as_str())
+                        == Some("work")
+            }),
+            "segment must arrive before the codergen stage completes",
+        );
+        break;
+    }
+    drop(app);
+}

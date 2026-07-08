@@ -603,11 +603,64 @@ impl CodergenEvent {
     }
 }
 
+/// Live consumer for codergen events as they are produced, so journals and
+/// transcripts stream while a node is still executing.
+pub type CodergenEventSink = std::sync::Arc<dyn Fn(CodergenEvent) + Send + Sync>;
+
 pub trait CodergenBackend {
     fn run(
         &mut self,
         request: CodergenBackendRequest,
     ) -> Result<CodergenBackendOutput, CodergenError>;
+
+    /// Streaming-capable variant. Contract for implementors: every event
+    /// delivered to the sink must be a prefix (by count and order) of the
+    /// returned `CodergenBackendOutput::events`. The default ignores the sink.
+    fn run_with_event_sink(
+        &mut self,
+        request: CodergenBackendRequest,
+        event_sink: Option<CodergenEventSink>,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
+        let _ = event_sink;
+        self.run(request)
+    }
+}
+
+/// Ordered event assembly that mirrors every push to an optional live sink,
+/// so the final `CodergenExecution::events` and the streamed sequence are the
+/// same list — no post-hoc dedupe needed by callers that consumed the sink.
+struct CodergenEventLog {
+    events: Vec<CodergenEvent>,
+    sink: Option<CodergenEventSink>,
+}
+
+impl CodergenEventLog {
+    fn new(sink: Option<CodergenEventSink>) -> Self {
+        Self {
+            events: Vec::new(),
+            sink,
+        }
+    }
+
+    fn push(&mut self, event: CodergenEvent) {
+        if let Some(sink) = &self.sink {
+            sink(event.clone());
+        }
+        self.events.push(event);
+    }
+
+    /// Backend outputs may already have streamed a prefix of their events
+    /// through the per-attempt sink; only the remainder is re-streamed here.
+    fn extend_from_backend(&mut self, backend_events: Vec<CodergenEvent>, already_streamed: usize) {
+        for (index, event) in backend_events.into_iter().enumerate() {
+            if index >= already_streamed {
+                if let Some(sink) = &self.sink {
+                    sink(event.clone());
+                }
+            }
+            self.events.push(event);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -635,6 +688,14 @@ impl CodergenHandler {
     pub fn execute(
         &mut self,
         request: CodergenRequest,
+    ) -> Result<CodergenExecution, CodergenError> {
+        self.execute_with_event_sink(request, None)
+    }
+
+    pub fn execute_with_event_sink(
+        &mut self,
+        request: CodergenRequest,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenExecution, CodergenError> {
         let stage_dir = ensure_stage_dir(request.logs_root.as_deref(), &request.node_id)?;
         let read_contract = resolve_context_read_contract(&request.node.attrs);
@@ -717,7 +778,8 @@ impl CodergenHandler {
             metadata,
         };
 
-        let mut events = vec![event(
+        let mut events = CodergenEventLog::new(event_sink);
+        events.push(event(
             "codergen_backend_request_started",
             [
                 ("node_id", json!(request.node_id.clone())),
@@ -731,7 +793,7 @@ impl CodergenHandler {
                 ),
                 ("runtime_mode", json!(backend_request.runtime_mode.clone())),
             ],
-        )];
+        ));
 
         let (outcome, response_text, repair_attempts, violations, usage) = if self.backend.is_none()
         {
@@ -767,7 +829,7 @@ impl CodergenHandler {
             outcome,
             prompt,
             response_text,
-            events,
+            events.events,
             repair_attempts,
             violations,
             usage,
@@ -778,7 +840,7 @@ impl CodergenHandler {
         &mut self,
         request: CodergenBackendRequest,
         write_contract: &ContextWriteContract,
-        events: &mut Vec<CodergenEvent>,
+        events: &mut CodergenEventLog,
         node_id: &str,
     ) -> Result<
         (
@@ -796,12 +858,23 @@ impl CodergenHandler {
         let mut usage = None;
 
         loop {
+            let streamed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let attempt_sink = events.sink.clone().map(|sink| {
+                let streamed = std::sync::Arc::clone(&streamed);
+                std::sync::Arc::new(move |event: CodergenEvent| {
+                    streamed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    sink(event);
+                }) as CodergenEventSink
+            });
             let output = self
                 .backend
                 .as_mut()
                 .expect("backend must exist")
-                .run(current_request.clone())?;
-            events.extend(output.events);
+                .run_with_event_sink(current_request.clone(), attempt_sink)?;
+            events.extend_from_backend(
+                output.events,
+                streamed.load(std::sync::atomic::Ordering::SeqCst),
+            );
             if output.usage.is_some() {
                 usage = output.usage;
             }

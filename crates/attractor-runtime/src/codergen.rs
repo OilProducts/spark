@@ -101,23 +101,35 @@ impl RuntimeCodergen {
         node_id: &str,
         context: ContextMap,
     ) -> Result<CodergenExecution, CodergenError> {
+        self.execute_with_event_sink(node_id, context, None)
+    }
+
+    pub fn execute_with_event_sink(
+        &mut self,
+        node_id: &str,
+        context: ContextMap,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
+    ) -> Result<CodergenExecution, CodergenError> {
         let node =
             self.graph.nodes.get(node_id).cloned().ok_or_else(|| {
                 CodergenError::Backend(format!("unknown codergen node: {node_id}"))
             })?;
-        self.handler.execute(CodergenRequest {
-            node_id: node_id.to_string(),
-            node,
-            graph: self.graph.clone(),
-            context,
-            logs_root: self.logs_root.clone(),
-            fallback_model: self.fallback_model.clone(),
-            fallback_provider: self.fallback_provider.clone(),
-            fallback_profile: self.fallback_profile.clone(),
-            fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
-            project_path: self.project_path.clone(),
-            metadata: self.metadata.clone(),
-        })
+        self.handler.execute_with_event_sink(
+            CodergenRequest {
+                node_id: node_id.to_string(),
+                node,
+                graph: self.graph.clone(),
+                context,
+                logs_root: self.logs_root.clone(),
+                fallback_model: self.fallback_model.clone(),
+                fallback_provider: self.fallback_provider.clone(),
+                fallback_profile: self.fallback_profile.clone(),
+                fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
+                project_path: self.project_path.clone(),
+                metadata: self.metadata.clone(),
+            },
+            event_sink,
+        )
     }
 }
 

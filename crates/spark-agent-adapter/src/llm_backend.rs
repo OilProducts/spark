@@ -14,7 +14,8 @@ use crate::agent::{
 };
 use crate::codergen::{
     ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
-    CodergenBackendResponse, CodergenError, CodergenEvent, CodergenSessionInterventionBroker,
+    CodergenBackendResponse, CodergenError, CodergenEvent, CodergenEventSink,
+    CodergenSessionInterventionBroker,
 };
 use crate::codex_app_server::{
     usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
@@ -63,12 +64,21 @@ impl CodergenBackend for RustLlmCodergenBackend {
         &mut self,
         request: CodergenBackendRequest,
     ) -> Result<CodergenBackendOutput, CodergenError> {
+        self.run_with_event_sink(request, None)
+    }
+
+    fn run_with_event_sink(
+        &mut self,
+        request: CodergenBackendRequest,
+        event_sink: Option<CodergenEventSink>,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
         if is_codex_provider_selector(&request.provider) {
-            return self.run_codex_app_server_codergen(request);
+            return self.run_codex_app_server_codergen(request, event_sink);
         }
         if request.runtime_mode.requires_agent() {
-            return self.run_agent_codergen(request);
+            return self.run_agent_codergen(request, event_sink);
         }
+        // Text-only completions have no incremental stream.
         self.run_text_only_codergen(request)
     }
 }
@@ -77,8 +87,20 @@ impl RustLlmCodergenBackend {
     fn run_codex_app_server_codergen(
         &mut self,
         request: CodergenBackendRequest,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let agent_request = codergen_agent_turn_request(&request);
+        // Live prefix contract: the sink receives exactly the events the
+        // output batch starts with (same mapping, same order).
+        let turn_event_sink: Option<AgentTurnEventSink> = event_sink.map(|sink| {
+            let sink_request = request.clone();
+            std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
+                sink(codergen_event_from_turn_stream_event(
+                    &sink_request,
+                    &turn_event,
+                ));
+            }) as AgentTurnEventSink
+        });
         let steering = SessionSteeringHandle::new();
         let _active_session = self.intervention_broker.as_ref().map(|broker| {
             broker.register(ActiveCodergenSession {
@@ -95,7 +117,7 @@ impl RustLlmCodergenBackend {
             })
         });
         let output = CodexAppServerBackend::new()
-            .run_agent_turn_with_steering(agent_request, Some(steering))
+            .run_agent_turn_with_steering_and_sink(agent_request, Some(steering), turn_event_sink)
             .map_err(codex_app_server_codergen_error)?;
         let usage = output
             .token_usage
@@ -239,11 +261,31 @@ impl RustLlmCodergenBackend {
     fn run_agent_codergen(
         &mut self,
         request: CodergenBackendRequest,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let agent_request = codergen_agent_turn_request(&request);
         let prompt = agent_request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, agent_request).map_err(codergen_adapter_error)?;
+        if let Some(sink) = event_sink {
+            // Live prefix contract: emit the same per-event mapping the
+            // post-run drain produces, in the same order — including events
+            // already queued by session construction.
+            let metadata_base = codergen_session_metadata_payload(&request, &session);
+            let node_id = request.node_id.clone();
+            let observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync> =
+                std::sync::Arc::new(move |event: &SessionEvent| {
+                    for codergen_event in
+                        codergen_events_for_session_event(&metadata_base, &node_id, event)
+                    {
+                        sink(codergen_event);
+                    }
+                });
+            for event in session.event_queue.iter() {
+                observer(event);
+            }
+            session.set_event_observer(observer);
+        }
         let initial_history_len = session.history.len();
         let _active_session = self.intervention_broker.as_ref().map(|broker| {
             broker.register(ActiveCodergenSession {
@@ -364,19 +406,14 @@ fn codergen_output_from_session(
         })
     };
 
+    let metadata_base = codergen_session_metadata_payload(&request, session);
     let mut events = Vec::new();
     for event in &session_events {
-        events.push(codergen_event_from_session_event(&request, session, event));
-        if let Some(raw_log_line) = raw_log_line_from_event(event) {
-            events.push(CodergenEvent::new(
-                "rust_agent_raw_log_line",
-                BTreeMap::from([
-                    ("node_id".to_string(), json!(request.node_id.clone())),
-                    ("direction".to_string(), json!(raw_log_line.direction)),
-                    ("line".to_string(), json!(raw_log_line.line)),
-                ]),
-            ));
-        }
+        events.extend(codergen_events_for_session_event(
+            &metadata_base,
+            &request.node_id,
+            event,
+        ));
     }
     if !session_events
         .iter()
@@ -400,12 +437,44 @@ fn codergen_output_from_session(
     }
 }
 
+fn codergen_events_for_session_event(
+    metadata_base: &BTreeMap<String, Value>,
+    node_id: &str,
+    event: &SessionEvent,
+) -> Vec<CodergenEvent> {
+    let mut events = vec![codergen_event_from_session_event_with_metadata(
+        metadata_base,
+        event,
+    )];
+    if let Some(raw_log_line) = raw_log_line_from_event(event) {
+        events.push(CodergenEvent::new(
+            "rust_agent_raw_log_line",
+            BTreeMap::from([
+                ("node_id".to_string(), json!(node_id)),
+                ("direction".to_string(), json!(raw_log_line.direction)),
+                ("line".to_string(), json!(raw_log_line.line)),
+            ]),
+        ));
+    }
+    events
+}
+
 fn codergen_event_from_session_event(
     request: &CodergenBackendRequest,
     session: &Session,
     event: &SessionEvent,
 ) -> CodergenEvent {
-    let mut payload = codergen_session_metadata_payload(request, session);
+    codergen_event_from_session_event_with_metadata(
+        &codergen_session_metadata_payload(request, session),
+        event,
+    )
+}
+
+fn codergen_event_from_session_event_with_metadata(
+    metadata_base: &BTreeMap<String, Value>,
+    event: &SessionEvent,
+) -> CodergenEvent {
+    let mut payload = metadata_base.clone();
     payload.insert("kind".to_string(), json!(event.kind.as_str()));
     payload.insert(
         "category".to_string(),

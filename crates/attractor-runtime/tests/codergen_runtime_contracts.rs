@@ -325,3 +325,116 @@ fn recorded_usage() -> Usage {
         ..Usage::default()
     }
 }
+
+struct StreamingFakeBackend;
+
+impl spark_agent_adapter::CodergenBackend for StreamingFakeBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        self.run_with_event_sink(request, None)
+    }
+
+    fn run_with_event_sink(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        // Prefix contract: streamed events lead the returned batch, in order;
+        // the terminal event is batch-only.
+        let streamed = [
+            spark_agent_adapter::CodergenEvent::new(
+                "fake_stream_event",
+                BTreeMap::from([
+                    ("node_id".to_string(), json!(request.node_id.clone())),
+                    ("step".to_string(), json!(1)),
+                ]),
+            ),
+            spark_agent_adapter::CodergenEvent::new(
+                "fake_stream_event",
+                BTreeMap::from([
+                    ("node_id".to_string(), json!(request.node_id.clone())),
+                    ("step".to_string(), json!(2)),
+                ]),
+            ),
+        ];
+        let mut events = Vec::new();
+        for event in streamed {
+            if let Some(sink) = &event_sink {
+                sink(event.clone());
+            }
+            events.push(event);
+        }
+        events.push(spark_agent_adapter::CodergenEvent::new(
+            "fake_request_completed",
+            BTreeMap::from([("node_id".to_string(), json!(request.node_id))]),
+        ));
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response: spark_agent_adapter::CodergenBackendResponse::Text("done".to_string()),
+            events,
+            usage: None,
+        })
+    }
+}
+
+#[test]
+fn live_sink_receives_prefix_and_execution_keeps_full_event_list() {
+    let graph = parse_dot(
+        r#"
+        digraph G {
+          graph [goal="Ship"];
+          task [shape=box, prompt="Plan for $goal"];
+        }
+        "#,
+    )
+    .expect("dot parses");
+    let logs_root = tempdir().unwrap();
+    let mut codergen = RuntimeCodergen::with_boxed_backend(
+        graph,
+        Some(logs_root.path().to_path_buf()),
+        Box::new(StreamingFakeBackend),
+    );
+
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&streamed);
+    let execution = codergen
+        .execute_with_event_sink(
+            "task",
+            ContextMap::new(),
+            Some(Arc::new(
+                move |event: spark_agent_adapter::CodergenEvent| {
+                    sink_events.lock().expect("streamed").push(event);
+                },
+            )),
+        )
+        .expect("codergen executes");
+
+    let streamed = streamed.lock().expect("streamed").clone();
+    let streamed_types: Vec<&str> = streamed
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    let execution_types: Vec<&str> = execution
+        .events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+
+    // Everything the execution records was streamed exactly once, in order —
+    // request lifecycle, backend prefix, batch-only tail, acceptance.
+    assert_eq!(streamed_types, execution_types);
+    assert_eq!(
+        execution_types,
+        vec![
+            "codergen_backend_request_started",
+            "fake_stream_event",
+            "fake_stream_event",
+            "fake_request_completed",
+            "codergen_backend_response_accepted",
+        ],
+    );
+    assert_eq!(streamed.len(), execution.events.len());
+}

@@ -681,10 +681,61 @@ impl RuntimeHandlerRunner {
                 ),
             ]),
         );
+        // Journal codergen events as they are produced so transcripts stream
+        // while the node executes; the event-log prefix contract means every
+        // event is sunk exactly once, so no post-hoc pass is needed.
+        let live_sink_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let live_sink = runtime.run_paths.as_ref().map(|paths| {
+            let paths = paths.clone();
+            let run_id = runtime.run_id.clone();
+            let node_id = runtime.node_id.clone();
+            let append_lock = Arc::clone(&self.event_append_lock);
+            let run_event_observer = self.run_event_observer.clone();
+            let sink_error = Arc::clone(&live_sink_error);
+            Arc::new(move |event: spark_agent_adapter::CodergenEvent| {
+                let raw_event = crate::events::codergen_adapter_event(
+                    &run_id,
+                    &node_id,
+                    &event.event_type,
+                    serde_json::to_value(&event.payload).unwrap_or_else(|_| json!({})),
+                );
+                let append_result = match append_lock.lock() {
+                    Ok(_guard) => crate::events::append_event(&paths, raw_event).map(|_| ()),
+                    Err(_) => Err(crate::error::RuntimeStorageError::io(
+                        "lock runtime event append",
+                        paths.events_jsonl(),
+                        std::io::Error::other("runtime event append lock poisoned"),
+                    )),
+                };
+                match append_result {
+                    Ok(()) => {
+                        if let Some(observer) = &run_event_observer {
+                            observer(&run_id);
+                        }
+                    }
+                    Err(error) => {
+                        let mut slot = sink_error
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        if slot.is_none() {
+                            *slot = Some(error.to_string());
+                        }
+                    }
+                }
+            }) as spark_agent_adapter::CodergenEventSink
+        });
+        let journaling_live = live_sink.is_some();
         let execution = codergen
-            .execute(&runtime.node_id, runtime.context.clone())
+            .execute_with_event_sink(&runtime.node_id, runtime.context.clone(), live_sink)
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        if runtime.run_paths.is_some() {
+        if let Some(error) = live_sink_error
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take()
+        {
+            return Err(RuntimeNodeError::runtime(error));
+        }
+        if runtime.run_paths.is_some() && !journaling_live {
             for event in codergen_events_for_journal(&runtime.run_id, &runtime.node_id, &execution)
             {
                 self.emit(&runtime, event)
