@@ -55,9 +55,11 @@ async fn workspace_source_activation_records_missing_flow_failures_without_launc
 #[tokio::test]
 async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_payload() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
+    // Canonicalize: dispatched run records hold canonical paths (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
     write_flow(&settings, "ops/run.yaml");
-    let project_path = temp.path().join("project");
+    let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let created = TriggerService::new(settings.clone())
         .create_trigger(TriggerCreateRequest {

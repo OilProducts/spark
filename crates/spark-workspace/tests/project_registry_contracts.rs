@@ -90,10 +90,12 @@ fn project_service_browse_defaults_to_project_root_and_sorts_directories() {
 #[test]
 fn project_service_metadata_returns_null_git_fields_for_non_repo() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let project_dir = temp.path().join("non-git-project");
+    // Canonicalize: metadata directories come back canonical (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let project_dir = root.join("non-git-project");
     fs::create_dir_all(&project_dir).expect("project");
 
-    let metadata = WorkspaceProjectService::new(settings(temp.path()))
+    let metadata = WorkspaceProjectService::new(settings(&root))
         .project_metadata(&project_dir.to_string_lossy())
         .expect("metadata");
 

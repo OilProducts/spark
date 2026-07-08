@@ -1287,9 +1287,12 @@ impl WorkspaceConversationService {
             &handle_match.project_path,
         );
         let base_revision = snapshot_revision(&snapshot);
+        // Compare normalized forms: the registry stores canonical paths while a
+        // snapshot may hold an unresolved (e.g. symlinked) spelling of the same path.
+        let handle_project_path = normalize_or_raw_project_path(&handle_match.project_path);
         let actual_project_path =
-            snapshot_project_path(&snapshot).unwrap_or_else(|| handle_match.project_path.clone());
-        if actual_project_path != handle_match.project_path {
+            snapshot_project_path(&snapshot).unwrap_or_else(|| handle_project_path.clone());
+        if actual_project_path != handle_project_path {
             return Err(WorkspaceError::Validation(
                 "Conversation is already bound to a different project path.".to_string(),
             ));
@@ -1852,7 +1855,9 @@ impl WorkspaceConversationService {
                     ))
                 })?;
             if let Some(explicit_project_path) = explicit_project_path.as_deref() {
-                if explicit_project_path != handle_match.project_path {
+                if explicit_project_path
+                    != normalize_or_raw_project_path(&handle_match.project_path)
+                {
                     return Err(WorkspaceError::Validation(
                         "Explicit --project path does not match the project bound to the conversation handle."
                             .to_string(),
@@ -2339,7 +2344,7 @@ impl WorkspaceConversationService {
             })?;
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, project_path);
         let actual_project_path = snapshot_project_path(&snapshot).unwrap_or_default();
-        if actual_project_path != project_path {
+        if actual_project_path != normalize_or_raw_project_path(project_path) {
             return Err(WorkspaceError::Validation(
                 "Conversation not found for project.".to_string(),
             ));
@@ -2493,7 +2498,7 @@ impl WorkspaceConversationService {
                 ))
             })?;
         if let Some(explicit_project_path) = explicit_project_path.as_deref() {
-            if explicit_project_path != handle_match.project_path {
+            if explicit_project_path != normalize_or_raw_project_path(&handle_match.project_path) {
                 return Err(WorkspaceError::Validation(
                     "Explicit --project path does not match the project bound to the conversation handle."
                         .to_string(),
@@ -2530,7 +2535,7 @@ impl WorkspaceConversationService {
             &selection.project_path,
         );
         let actual_project_path = snapshot_project_path(&snapshot).unwrap_or_default();
-        if actual_project_path != selection.project_path {
+        if actual_project_path != normalize_or_raw_project_path(&selection.project_path) {
             return Err(WorkspaceError::Validation(
                 "Conversation not found for project.".to_string(),
             ));
@@ -5264,6 +5269,12 @@ fn normalize_project_path_string(value: &str) -> Option<String> {
         .ok()
         .flatten()
         .map(|path| path.to_string_lossy().into_owned())
+}
+
+// For equality checks against normalized paths: handle-repository records may hold
+// an unresolved (e.g. symlinked) spelling of a path the registry stores canonically.
+fn normalize_or_raw_project_path(value: &str) -> String {
+    normalize_project_path_string(value).unwrap_or_else(|| value.to_string())
 }
 
 fn set_string(snapshot: &mut Value, key: &str, value: &str) {

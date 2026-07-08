@@ -7,8 +7,10 @@ use spark_storage::{ProjectRecordUpdate, ProjectRegistry};
 #[test]
 fn project_registry_registers_lists_and_preserves_toml_shape() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let home = temp.path().join("spark-home");
-    let project_dir = temp.path().join("Registered Project");
+    // Canonicalize: registered records hold canonical paths (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let home = root.join("spark-home");
+    let project_dir = root.join("Registered Project");
     fs::create_dir_all(&project_dir).expect("project dir");
     let registry = ProjectRegistry::new(&home);
 

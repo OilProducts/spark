@@ -127,7 +127,7 @@ fn collect_project_documents(
     profile: &ProviderProfile,
 ) -> Vec<ProjectDocument> {
     let working_directory_text = normalize_path_text(environment.working_directory());
-    let working_directory = resolve_path_text(&working_directory_text);
+    let working_directory = canonicalize_path(resolve_path_text(&working_directory_text));
     let git_root_text = exec_command_candidates(
         environment,
         "git rev-parse --show-toplevel",
@@ -136,6 +136,7 @@ fn collect_project_documents(
     let root = git_root_text
         .as_deref()
         .map(resolve_path_text)
+        .map(canonicalize_path)
         .unwrap_or_else(|| working_directory.clone());
     let filenames = recognized_filenames(instruction_provider_family(profile));
     let directories = path_chain(&root, &working_directory);
@@ -317,6 +318,14 @@ fn normal_components(path: &Path) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+// Resolve symlinks so the git root (physical path, e.g. /private/var on macOS)
+// and the working directory (possibly symlinked, e.g. /var) share a prefix for
+// path_chain and display_path. Falls back to the input for virtual backends
+// whose paths do not exist on the host filesystem.
+fn canonicalize_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn resolve_path_text(path_text: &str) -> PathBuf {

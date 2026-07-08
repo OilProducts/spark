@@ -13,7 +13,10 @@ use spark_storage::ConversationRepository;
 #[test]
 fn bootstrap_uses_app_owned_spark_data_directory_by_default() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
+    // Canonicalize: TempDir may be symlinked (macOS /var -> /private/var) while
+    // resolved settings paths are physical.
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let paths = DesktopPaths::new(root.join("data"), root.join("config"));
 
     let bootstrap =
         bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");

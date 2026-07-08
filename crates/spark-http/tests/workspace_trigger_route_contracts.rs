@@ -126,9 +126,11 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
 #[tokio::test]
 async fn webhook_route_authenticates_storage_backed_trigger_and_dispatches_run() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
+    // Canonicalize: dispatched run records hold canonical paths (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
     write_flow(&settings, "ops/run.yaml");
-    let project_dir = temp.path().join("webhook-project");
+    let project_dir = root.join("webhook-project");
     fs::create_dir_all(&project_dir).expect("project");
     let app = build_app(settings.clone());
 

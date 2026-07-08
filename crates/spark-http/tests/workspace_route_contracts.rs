@@ -11,8 +11,10 @@ use tower::ServiceExt;
 #[tokio::test]
 async fn workspace_project_routes_persist_records_and_return_json_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let project_dir = temp.path().join("project");
+    // Canonicalize: registered project paths come back canonical (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_dir = root.join("project");
     fs::create_dir_all(&project_dir).expect("project");
     let app = build_app(settings.clone());
 

@@ -570,8 +570,11 @@ async fn live_route_streams_structured_backend_failure_from_persisted_state() {
 #[tokio::test]
 async fn live_route_streams_backend_ingested_revision_range_for_request_user_input_answer_route() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let project_path = temp.path().join("project");
+    // Canonicalize: the SSE subscription and route publishes must agree on the
+    // canonical project path (macOS /var -> /private/var).
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
     let service = WorkspaceConversationService::new(settings.clone());

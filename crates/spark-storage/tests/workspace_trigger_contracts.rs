@@ -312,7 +312,9 @@ fn definition_with_source(
         source_type: source_type.to_string(),
         action: TriggerAction {
             flow_name: "ops/run.dot".to_string(),
-            project_path: Some("/tmp/project".to_string()),
+            // A prefix that exists on no platform: /tmp is a symlink on macOS and
+            // would be rewritten by canonicalization, breaking the round-trip.
+            project_path: Some("/spark-contract-fixture/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
         },
         source,

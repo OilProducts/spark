@@ -27,6 +27,14 @@ fn symlink_dir(original: &Path, link: &Path) {
     std::os::unix::fs::symlink(original, link).expect("symlink dir");
 }
 
+// TempDir may hand back a symlinked path (macOS /var -> /private/var); the code
+// under test resolves symlinks, so expectations must start from the physical path.
+fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    (temp, root)
+}
+
 fn env(entries: &[(&str, &Path)]) -> BTreeMap<String, String> {
     entries
         .iter()
@@ -36,11 +44,11 @@ fn env(entries: &[(&str, &Path)]) -> BTreeMap<String, String> {
 
 #[test]
 fn settings_resolution_preserves_precedence_and_derived_paths() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let env_home = temp.path().join("env-home");
-    let cli_home = temp.path().join("cli-home");
-    let flows = temp.path().join("flows");
-    let ui = temp.path().join("ui");
+    let (_temp, root) = canonical_tempdir();
+    let env_home = root.join("env-home");
+    let cli_home = root.join("cli-home");
+    let flows = root.join("flows");
+    let ui = root.join("ui");
     let env = env(&[
         ("SPARK_HOME", &env_home),
         ("SPARK_FLOWS_DIR", &flows),
@@ -73,9 +81,9 @@ fn settings_resolution_preserves_precedence_and_derived_paths() {
 
 #[test]
 fn project_roots_parse_absolute_entries_and_skip_empty_or_relative_entries() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let primary = temp.path().join("primary");
-    let secondary = temp.path().join("secondary");
+    let (_temp, root) = canonical_tempdir();
+    let primary = root.join("primary");
+    let secondary = root.join("secondary");
     let roots = std::env::join_paths([
         PathBuf::from("relative"),
         primary.clone(),
@@ -91,9 +99,9 @@ fn project_roots_parse_absolute_entries_and_skip_empty_or_relative_entries() {
 #[cfg(unix)]
 #[test]
 fn project_roots_resolve_existing_symlink_prefixes_without_requiring_missing_tails() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let real_root = temp.path().join("real-root");
-    let linked_root = temp.path().join("linked-root");
+    let (_temp, root) = canonical_tempdir();
+    let real_root = root.join("real-root");
+    let linked_root = root.join("linked-root");
     std::fs::create_dir_all(&real_root).expect("real root");
     symlink_dir(&real_root, &linked_root);
 
@@ -152,9 +160,11 @@ fn writable_directory_errors_use_compatible_message_shape() {
 
 #[test]
 fn project_identity_matches_slug_and_sha1_contract() {
-    let project_id = build_project_id("/tmp/Spark Demo!").expect("project id");
+    // Use a prefix that exists on no platform so resolve(strict=false) semantics
+    // keep the path verbatim; /tmp is a symlink on macOS and would change the hash.
+    let project_id = build_project_id("/spark-contract-fixture/Spark Demo!").expect("project id");
 
-    assert_eq!(project_id, "spark-demo-947f2a93a49a");
+    assert_eq!(project_id, "spark-demo-23a3ac05822d");
     assert_eq!(normalize_project_path("  ").expect("empty normalize"), None);
     assert_eq!(
         build_project_id("  ")
@@ -167,9 +177,9 @@ fn project_identity_matches_slug_and_sha1_contract() {
 #[cfg(unix)]
 #[test]
 fn project_identity_resolves_symlinked_prefixes_like_python_resolve_strict_false() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let real_root = temp.path().join("real-root");
-    let linked_root = temp.path().join("linked-root");
+    let (_temp, root) = canonical_tempdir();
+    let real_root = root.join("real-root");
+    let linked_root = root.join("linked-root");
     let real_project = real_root.join("Spark Demo!");
     std::fs::create_dir_all(&real_project).expect("real project");
     symlink_dir(&real_root, &linked_root);
@@ -198,9 +208,9 @@ fn project_identity_resolves_symlinked_prefixes_like_python_resolve_strict_false
 
 #[test]
 fn runtime_workspace_path_remaps_host_root_to_existing_runtime_root() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let host_root = temp.path().join("host/repo");
-    let runtime_root = temp.path().join("runtime/repo");
+    let (_temp, root) = canonical_tempdir();
+    let host_root = root.join("host/repo");
+    let runtime_root = root.join("runtime/repo");
     let runtime_file = runtime_root.join("project/src/main.rs");
     std::fs::create_dir_all(runtime_file.parent().expect("parent")).expect("runtime dirs");
     std::fs::write(&runtime_file, "fn main() {}\n").expect("runtime file");
@@ -218,9 +228,9 @@ fn runtime_workspace_path_remaps_host_root_to_existing_runtime_root() {
 
 #[test]
 fn runtime_workspace_path_keeps_existing_requested_path() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let host_root = temp.path().join("host/repo");
-    let runtime_root = temp.path().join("runtime/repo");
+    let (_temp, root) = canonical_tempdir();
+    let host_root = root.join("host/repo");
+    let runtime_root = root.join("runtime/repo");
     let requested = host_root.join("project/src/main.rs");
     let runtime_file = runtime_root.join("project/src/main.rs");
     std::fs::create_dir_all(requested.parent().expect("parent")).expect("host dirs");

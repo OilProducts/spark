@@ -559,7 +559,12 @@ fn webhook_create_request() -> TriggerCreateRequest {
 fn action() -> Map<String, Value> {
     Map::from_iter([
         ("flow_name".to_string(), json!("ops/run.dot")),
-        ("project_path".to_string(), json!("/tmp/project")),
+        // A prefix that exists on no platform: /tmp is a symlink on macOS and
+        // would be rewritten by canonicalization.
+        (
+            "project_path".to_string(),
+            json!("/spark-contract-fixture/project"),
+        ),
         ("static_context".to_string(), json!({"origin": "test"})),
     ])
 }
@@ -573,7 +578,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         source_type: "webhook".to_string(),
         action: TriggerAction {
             flow_name: "ops/run.dot".to_string(),
-            project_path: Some("/tmp/project".to_string()),
+            project_path: Some("/spark-contract-fixture/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("test"))]),
         },
         source: Map::from_iter([
