@@ -1,4 +1,5 @@
 export * from './RunStream'
 export * from './RunsPanel'
-export * from './components/RunSummaryCard'
+export * from './components/RunDetailsCard'
+export * from './components/RunHeaderBar'
 export * from './components/RunList'
