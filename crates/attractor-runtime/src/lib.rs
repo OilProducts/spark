@@ -24,6 +24,7 @@ pub mod segments;
 pub mod store;
 pub mod terminal;
 pub mod transcript;
+pub mod usage;
 
 pub use artifacts::{
     append_tool_hook_failure, copy_tool_artifact_matches, ensure_run_layout, list_artifacts,

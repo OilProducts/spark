@@ -718,6 +718,16 @@ where
                 )?;
             }
             completed_nodes.push(current_node.clone());
+            refresh_record_usage(&store, &paths, &mut record);
+            // Fold usage into the record on disk without clobbering it: the
+            // persisted record doubles as the control channel (cancel/pause
+            // requests land in its status), so only the usage fields merge.
+            if let Ok(Some(mut disk_record)) = store.read_run_record(&paths) {
+                disk_record.token_usage = record.token_usage;
+                disk_record.token_usage_breakdown = record.token_usage_breakdown.clone();
+                disk_record.estimated_model_cost = record.estimated_model_cost.clone();
+                write_run_record(&paths, &disk_record)?;
+            }
 
             if let Some(action) = self.poll_control() {
                 return match action {
@@ -1148,6 +1158,23 @@ fn ensure_run_record_defaults(record: &mut RunRecord) -> String {
     record.run_id.clone()
 }
 
+/// Refresh the record's token usage and estimated cost from the journal
+/// projection; a best-effort read that never fails the run.
+fn refresh_record_usage(
+    store: &RunStore,
+    paths: &crate::paths::RunRootPaths,
+    record: &mut RunRecord,
+) {
+    let Ok(entries) = store.read_journal(paths) else {
+        return;
+    };
+    if let Some(breakdown) = crate::usage::project_run_usage(&entries, &record.model) {
+        record.token_usage = Some(breakdown.totals.total_tokens);
+        record.estimated_model_cost = crate::usage::estimate_model_cost(&breakdown);
+        record.token_usage_breakdown = Some(breakdown.to_value());
+    }
+}
+
 fn outcome_from_node_error(error: RuntimeNodeError) -> Outcome {
     Outcome {
         status: OutcomeStatus::Fail,
@@ -1317,6 +1344,7 @@ fn finalize_completed(
     record.outcome_reason_message = outcome_reason_message.clone();
     record.ended_at = Some(crate::events::utc_timestamp());
     record.last_error.clear();
+    refresh_record_usage(store, paths, record);
     write_run_record(paths, record)?;
     store.append_event(
         paths,
@@ -1387,6 +1415,7 @@ fn finalize_failed(
     record.outcome_reason_message = None;
     record.ended_at = Some(crate::events::utc_timestamp());
     record.last_error = failure_reason.clone();
+    refresh_record_usage(store, paths, record);
     write_run_record(paths, record)?;
     store.append_event(
         paths,
