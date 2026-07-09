@@ -163,7 +163,7 @@ fn error_reason(error: StorageError) -> String {
 }
 
 #[test]
-fn legacy_dot_catalog_entries_migrate_to_yaml_keys_instead_of_failing_load() {
+fn legacy_dot_catalog_entries_are_skipped_instead_of_failing_load() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("config");
     fs::create_dir_all(&config_dir).expect("config dir");
@@ -180,56 +180,23 @@ fn legacy_dot_catalog_entries_migrate_to_yaml_keys_instead_of_failing_load() {
     .expect("write legacy catalog");
 
     let catalog = load_flow_catalog(&config_dir).expect("legacy catalog loads");
-    let migrated = catalog
-        .get("software-development/implement-change-request.yaml")
-        .expect("legacy entry migrated to .yaml key");
-    assert_eq!(
-        migrated.launch_policy.as_deref(),
-        Some(LAUNCH_POLICY_AGENT_REQUESTABLE)
-    );
-    assert!(!catalog.contains_key("software-development/implement-change-request.dot"));
-
-    // An explicit .yaml entry wins over a migrated legacy duplicate,
-    // regardless of file order.
-    fs::write(
-        config_dir.join("flow-catalog.toml"),
-        concat!(
-            "[flows.\"ops/run.dot\"]\n",
-            "launch_policy = \"agent_requestable\"\n",
-            "[flows.\"ops/run.yaml\"]\n",
-            "launch_policy = \"disabled\"\n",
-        ),
-    )
-    .expect("write duplicate catalog");
-    let catalog = load_flow_catalog(&config_dir).expect("duplicate catalog loads");
-    assert_eq!(catalog.len(), 1);
+    assert_eq!(catalog.len(), 1, "legacy .dot entry is skipped");
     assert_eq!(
         catalog
-            .get("ops/run.yaml")
-            .expect("yaml entry")
+            .get("software-development/spec-implementation/implement-spec.yaml")
+            .expect("yaml entry survives")
             .launch_policy
             .as_deref(),
         Some(LAUNCH_POLICY_DISABLED)
     );
 
-    fs::write(
-        config_dir.join("flow-catalog.toml"),
-        concat!(
-            "[flows.\"ops/run.yaml\"]\n",
-            "launch_policy = \"disabled\"\n",
-            "[flows.\"ops/run.dot\"]\n",
-            "launch_policy = \"agent_requestable\"\n",
-        ),
-    )
-    .expect("write reversed duplicate catalog");
-    let catalog = load_flow_catalog(&config_dir).expect("reversed catalog loads");
-    assert_eq!(catalog.len(), 1);
+    // Seeding after the skip re-registers the default flows under their
+    // .yaml names and the rewritten catalog drops the legacy keys.
+    let missing = spark_storage::seed_default_flow_catalog(&config_dir).expect("seed");
     assert_eq!(
-        catalog
-            .get("ops/run.yaml")
-            .expect("yaml entry")
-            .launch_policy
-            .as_deref(),
-        Some(LAUNCH_POLICY_DISABLED)
+        missing,
+        vec!["software-development/implement-change-request.yaml".to_string()]
     );
+    let rewritten = fs::read_to_string(config_dir.join("flow-catalog.toml")).expect("catalog");
+    assert!(!rewritten.contains(".dot"));
 }

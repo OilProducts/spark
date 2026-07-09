@@ -93,6 +93,16 @@ pub fn load_flow_catalog(
 
     let mut catalog = BTreeMap::new();
     for (raw_flow_name, raw_entry) in flows {
+        // Catalogs written before the YAML cutover may persist entries for
+        // ".dot" flows; those names no longer resolve. Skip them rather than
+        // failing startup on old state — the next catalog write drops them.
+        if raw_flow_name.ends_with(".dot") {
+            eprintln!(
+                "warning: ignoring legacy flow catalog entry {raw_flow_name:?} in {}",
+                path.display()
+            );
+            continue;
+        }
         let entry = raw_entry.as_table().ok_or_else(|| {
             invalid_catalog(
                 &path,
@@ -118,17 +128,7 @@ pub fn load_flow_catalog(
             None => None,
         };
         let execution_lock = parse_execution_lock(entry, raw_flow_name, &path)?;
-        // Catalogs written before the YAML cutover may persist entries for
-        // ".dot" flows; the cutover renamed those flows to ".yaml" in place,
-        // so migrate the key rather than failing startup on old state. An
-        // explicit ".yaml" entry always wins over a migrated legacy one.
-        let (flow_name, migrated) = match raw_flow_name.strip_suffix(".dot") {
-            Some(stem) => (normalize_flow_name(&format!("{stem}.yaml"))?, true),
-            None => (normalize_flow_name(raw_flow_name)?, false),
-        };
-        if migrated && catalog.contains_key(&flow_name) {
-            continue;
-        }
+        let flow_name = normalize_flow_name(raw_flow_name)?;
         catalog.insert(
             flow_name,
             FlowCatalogEntry {
