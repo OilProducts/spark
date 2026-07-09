@@ -82,6 +82,14 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
     assert_eq!(record.spec_id.as_deref(), Some("spec-1"));
     assert_eq!(record.plan_id.as_deref(), Some("plan-1"));
     assert_eq!(record.execution_mode, "native");
+    assert_eq!(
+        record.launch_context,
+        Some(
+            [("context.topic".to_string(), json!("api"))]
+                .into_iter()
+                .collect()
+        )
+    );
 
     let checkpoint = bundle.checkpoint.expect("checkpoint");
     assert_eq!(checkpoint.context["context.topic"], json!("api"));

@@ -830,6 +830,7 @@ impl AttractorApiService {
         record.spec_id = trimmed_option(request.spec_id.as_deref());
         record.plan_id = trimmed_option(request.plan_id.as_deref());
         record.root_run_id = Some(run_id.clone());
+        record.launch_context = Some(launch_context.values().clone());
         attractor_execution::apply_launch_metadata_to_record(&mut record, &execution_metadata);
 
         let mut runtime_context = requested_context;
@@ -2775,7 +2776,13 @@ fn list_run_records(
                 continue;
             }
             let raw = fs::read_to_string(&record_path).map_err(|error| error.to_string())?;
-            let value = serde_json::from_str::<Value>(&raw).map_err(|error| error.to_string())?;
+            let mut value =
+                serde_json::from_str::<Value>(&raw).map_err(|error| error.to_string())?;
+            // Launch inputs can be large; the runs list stays lean and the
+            // detail endpoint remains the only place they are exposed.
+            if let Some(object) = value.as_object_mut() {
+                object.remove("launch_context");
+            }
             if let Some(project_path_filter) = project_path_filter.as_deref() {
                 let project_path = value
                     .get("project_path")

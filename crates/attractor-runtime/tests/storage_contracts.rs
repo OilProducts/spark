@@ -193,8 +193,14 @@ fn run_record_round_trips_nulls_aliases_and_unknown_python_fields() {
         .expect("record");
     assert_eq!(loaded.status, "completed");
     assert_eq!(loaded.llm_provider, "openai");
+    assert_eq!(loaded.launch_context, None);
     loaded.outcome = Some("success".to_string());
     loaded.llm_profile = None;
+    loaded.launch_context = Some(
+        [("context.topic".to_string(), json!("legacy"))]
+            .into_iter()
+            .collect(),
+    );
     store
         .write_run_record(&paths, &loaded)
         .expect("rewrite record");
@@ -205,6 +211,7 @@ fn run_record_round_trips_nulls_aliases_and_unknown_python_fields() {
     assert_eq!(raw["llm_provider"], "openai");
     assert!(raw["llm_profile"].is_null());
     assert!(raw["continued_from_run_id"].is_null());
+    assert_eq!(raw["launch_context"], json!({"context.topic": "legacy"}));
 }
 
 #[test]

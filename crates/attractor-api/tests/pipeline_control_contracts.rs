@@ -104,6 +104,58 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
 }
 
 #[test]
+fn continue_inherits_source_launch_context() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("Project Continue Context");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let store = RunStore::for_settings(&settings);
+    let mut source_record = failed_record("run-continue-ctx", &project_path);
+    source_record.launch_context = Some(
+        [("context.topic".to_string(), json!("api"))]
+            .into_iter()
+            .collect(),
+    );
+    store
+        .create_run(CreateRunRequest {
+            record: source_record,
+            checkpoint: Some(checkpoint("task")),
+            flow_source: Some(simple_flow()),
+            flow_definition_json: Some(simple_flow()),
+            ..CreateRunRequest::default()
+        })
+        .expect("failed run");
+
+    let continued = handle_attractor_request(
+        "POST",
+        "/attractor/pipelines/run-continue-ctx/continue",
+        &json!({"start_node": "task", "flow_source_mode": "snapshot"}).to_string(),
+        settings.clone(),
+    );
+    assert_eq!(continued.status_code, 200);
+    assert_eq!(continued.body["status"], json!("started"));
+    let new_run_id = continued.body["pipeline_id"]
+        .as_str()
+        .expect("pipeline id")
+        .to_string();
+
+    let derived = store
+        .read_run_bundle(&new_run_id)
+        .expect("read derived run")
+        .expect("derived run exists")
+        .record
+        .expect("derived record");
+    assert_eq!(
+        derived.launch_context,
+        Some(
+            [("context.topic".to_string(), json!("api"))]
+                .into_iter()
+                .collect()
+        )
+    );
+}
+
+#[test]
 fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

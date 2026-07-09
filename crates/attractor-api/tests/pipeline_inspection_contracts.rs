@@ -18,6 +18,11 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
+        launch_context: Some(
+            [("context.topic".to_string(), json!("inspect"))]
+                .into_iter()
+                .collect(),
+        ),
         ..PipelineStartRequest::default()
     });
     assert_eq!(start.body["status"], json!("started"));
@@ -27,6 +32,20 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     assert_eq!(detail.body["run_id"], json!("run-inspect"));
     assert_eq!(detail.body["status"], json!("completed"));
     assert!(detail.body["progress"]["completed_count"].as_u64().unwrap() >= 1);
+    assert_eq!(
+        detail.body["launch_context"],
+        json!({"context.topic": "inspect"})
+    );
+
+    // The runs list stays lean: launch inputs are detail-only.
+    let listed = service.list_runs();
+    let listed_run = listed.body["runs"]
+        .as_array()
+        .expect("runs")
+        .iter()
+        .find(|run| run["run_id"] == json!("run-inspect"))
+        .expect("listed run");
+    assert!(listed_run.get("launch_context").is_none());
 
     let checkpoint = service.get_pipeline_checkpoint("run-inspect");
     assert_eq!(checkpoint.status_code, 200);

@@ -190,6 +190,8 @@ pub struct RunRecord {
     pub token_usage_breakdown: Option<Value>,
     #[serde(default)]
     pub estimated_model_cost: Option<Value>,
+    #[serde(default)]
+    pub launch_context: Option<crate::context::ContextMap>,
 }
 
 impl RunRecord {

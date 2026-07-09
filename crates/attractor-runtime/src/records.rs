@@ -45,6 +45,7 @@ const RUN_RECORD_FIELDS: &[&str] = &[
     "token_usage",
     "token_usage_breakdown",
     "estimated_model_cost",
+    "launch_context",
 ];
 
 pub fn read_run_record(paths: &RunRootPaths) -> Result<Option<RunRecord>> {

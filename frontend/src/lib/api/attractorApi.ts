@@ -169,6 +169,7 @@ export interface PipelineStatusResponse {
         queue_position?: number | null
     } | null
     cleanup_error?: string
+    launch_context?: Record<string, unknown> | null
 }
 
 export interface PipelineCancelResponse {
@@ -289,6 +290,7 @@ export interface RunRecordResponse {
         queue_position?: number | null
     } | null
     cleanup_error?: string
+    launch_context?: Record<string, unknown> | null
 }
 
 export interface PreviewRequestOptions {
@@ -791,6 +793,7 @@ function parseRunRecord(
             }
             : null,
         cleanup_error: asOptionalString(record.cleanup_error),
+        launch_context: asUnknownRecord(record.launch_context) ?? (record.launch_context === null ? null : undefined),
     }
 }
 
