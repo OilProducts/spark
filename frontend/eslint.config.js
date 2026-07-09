@@ -22,6 +22,13 @@ export default defineConfig([
     rules: {
       'react-hooks/set-state-in-effect': 'off',
       'react-refresh/only-export-components': 'off',
+      // An underscore prefix is the explicit "intentionally unused" marker.
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+        destructuredArrayIgnorePattern: '^_',
+      }],
     },
   },
   {
@@ -33,34 +40,45 @@ export default defineConfig([
       'src/features/**/hooks/**',
       'src/features/**/model/**',
       'src/features/**/services/**',
+      'src/app/use*.{ts,tsx}',
     ],
     rules: {
-      'no-restricted-imports': ['error', {
+      // The typescript-eslint extension understands type-only imports; types
+      // do not violate the no-direct-API-calls boundary.
+      'no-restricted-imports': 'off',
+      '@typescript-eslint/no-restricted-imports': ['error', {
         paths: [
           {
             name: '@/lib/attractorClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
           {
             name: '@/lib/workspaceClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
           {
             name: '@/lib/apiClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
           {
             name: '@/lib/validatedApiClient',
             message: 'Presentation files must not call API clients directly. Move API usage into feature hooks, services, or model loaders.',
+            allowTypeImports: true,
           },
         ],
         patterns: [
           {
             group: ['@/lib/api/*'],
             message: 'Presentation files must not import API client modules directly.',
+            allowTypeImports: true,
           },
           {
-            group: ['@/components', '@/components/**', '!@/components/ui/**', '!@/components/app/**'],
+            // Gitignore-style negations cannot re-include children of an
+            // excluded parent, so allow ui/app via regex instead of !globs.
+            regex: '^@/components(?!/(ui|app)/)',
             message: 'Shared imports must come from @/components/ui/* or @/components/app/*, or stay inside the owning feature.',
           },
         ],

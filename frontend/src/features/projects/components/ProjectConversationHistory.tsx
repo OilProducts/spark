@@ -1,5 +1,5 @@
 import { memo, useCallback, useState } from 'react'
-import { fetchConversationSegmentToolOutputValidated } from '@/lib/workspaceClient'
+import { loadConversationSegmentToolOutput } from '../services/conversationArtifacts'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,
@@ -395,7 +395,7 @@ export function ProjectConversationHistory({
             delete next[entry.id]
             return next
         })
-        void fetchConversationSegmentToolOutputValidated(activeConversationId, entry.id, activeProjectPath)
+        void loadConversationSegmentToolOutput(activeConversationId, entry.id, activeProjectPath)
             .then((payload) => {
                 setFullToolOutputs((current) => ({
                     ...current,

@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react"
 import { useStore } from "@/store"
-import { fetchLlmProfiles } from "@/lib/api/llmProfilesApi"
-import { fetchWorkspaceSettingsValidated, type WorkspaceSettingsResponse } from "@/lib/workspaceClient"
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from "@/lib/llmSuggestions"
+import { useLlmProfiles } from "@/lib/useLlmProfiles"
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from "@/lib/llmSuggestions"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Field, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
 import { NativeSelect } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch"
+import { useDialogController } from "@/components/app/dialog-controller"
+import { useWorkspaceSettings } from "./hooks/useWorkspaceSettings"
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -36,24 +37,14 @@ function getTauriInvoke(): TauriInvoke | null {
 export function SettingsPanel() {
     const uiDefaults = useStore((state) => state.uiDefaults)
     const setUiDefault = useStore((state) => state.setUiDefault)
-    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
-    const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettingsResponse | null>(null)
-    const [settingsError, setSettingsError] = useState<string | null>(null)
+    const { confirm } = useDialogController()
+    const llmProfiles = useLlmProfiles()
+    const { workspaceSettings, settingsError } = useWorkspaceSettings()
     const [desktopSettings, setDesktopSettings] = useState<DesktopServerSettings | null>(null)
     const [desktopSettingsError, setDesktopSettingsError] = useState<string | null>(null)
     const [isSavingDesktopSettings, setIsSavingDesktopSettings] = useState(false)
 
     useEffect(() => {
-        void fetchLlmProfiles().then(setLlmProfiles)
-        void fetchWorkspaceSettingsValidated()
-            .then((payload) => {
-                setWorkspaceSettings(payload)
-                setSettingsError(null)
-            })
-            .catch((error: unknown) => {
-                setWorkspaceSettings(null)
-                setSettingsError(error instanceof Error ? error.message : 'Unable to load workspace settings.')
-            })
         const invoke = getTauriInvoke()
         if (invoke) {
             void invoke<DesktopServerSettings>('desktop_server_settings')
@@ -73,7 +64,14 @@ export function SettingsPanel() {
         if (!invoke || !desktopSettings) {
             return
         }
-        const confirmedWarning = enabled ? window.confirm(desktopSettings.remote_access_warning) : false
+        const confirmedWarning = enabled
+            ? await confirm({
+                title: 'Enable remote access?',
+                description: desktopSettings.remote_access_warning,
+                confirmLabel: 'Enable',
+                cancelLabel: 'Cancel',
+            })
+            : false
         if (enabled && !confirmedWarning) {
             return
         }

@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
 import { generateFlowYaml } from '@/lib/flowYamlUtils'
-import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
-import type { LlmProfileMetadata } from '@/lib/llmSuggestions'
+import { useLlmProfiles } from '@/lib/useLlmProfiles'
 import { extractDebugErrorSummary, recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
@@ -79,7 +78,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicyLoadError, setLaunchPolicyLoadError] = useState<string | null>(null)
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
-    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
+    const llmProfiles = useLlmProfiles()
     const flowProviderFallback = flowMetadata.llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
@@ -95,9 +94,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         [rawLaunchInputsValue],
     )
 
-    useEffect(() => {
-        void fetchLlmProfiles().then(setLlmProfiles)
-    }, [])
     const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? false) : false
     const showAdvancedFlowMetadata = activeFlow
         ? (editorShowAdvancedFlowMetadataByFlow[activeFlow] ?? false)

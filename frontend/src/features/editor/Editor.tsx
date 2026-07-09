@@ -66,7 +66,7 @@ import {
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { isAbortError } from '@/lib/api/shared';
+import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
 import {
     loadEditorFlowPayload,

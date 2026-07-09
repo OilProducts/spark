@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { fetchPipelineResultValidated, type PipelineResultResponse } from "@/lib/attractorClient"
+import type { PipelineResultResponse } from "@/lib/attractorClient"
+import { loadPipelineResult } from "../services/conversationArtifacts"
 import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
@@ -29,7 +30,7 @@ function ProjectFlowResultPreview({ runId }: { runId: string }) {
         setIsLoading(true)
         setError(null)
         try {
-            setResult(await fetchPipelineResultValidated(runId))
+            setResult(await loadPipelineResult(runId))
         } catch (err) {
             console.error(err)
             setResult(null)

@@ -29,6 +29,37 @@ function loadStarterFlowPreview(flowRelativePath: string, expandChildren: boolea
     return payload
 }
 
+type LooseRecord = Record<string, unknown>
+
+interface LooseFlowNode extends LooseRecord {
+    kind?: string
+    label?: string
+    config?: LooseRecord & { kind?: string; flow_ref?: string; prompt?: string }
+    extensions?: LooseRecord
+    execution?: LooseRecord
+}
+
+interface LooseFlowEdge extends LooseRecord {
+    from?: string
+    to?: string
+    label?: string
+    condition?: string
+    extensions?: LooseRecord
+}
+
+interface LooseFlowDefinition extends LooseRecord {
+    title?: string
+    goal?: string
+    metadata?: LooseRecord
+    defaults?: {
+        llm_model?: string
+        llm_provider?: string
+        reasoning_effort?: string
+    }
+    nodes?: Record<string, LooseFlowNode>
+    edges?: LooseFlowEdge[]
+}
+
 function buildPreviewPayloadFromFlowFile(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
     if (flowPath.endsWith('.yaml') || flowPath.endsWith('.yml')) {
         return buildPreviewPayloadFromFlowDefinition(flowPath, expandChildren)
@@ -41,12 +72,9 @@ function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren:
     const graph = flowDefinitionToPreviewGraph(flow)
     if (expandChildren) {
         const childPreviews = Object.entries(flow.nodes ?? {})
-            .filter(([, node]) => {
-                const typedNode = node as Record<string, any>
-                return typedNode.kind === 'subflow' || typedNode.config?.kind === 'subflow'
-            })
+            .filter(([, node]) => node.kind === 'subflow' || node.config?.kind === 'subflow')
             .map(([nodeId, node]) => {
-                const flowRef = (node as Record<string, any>).config?.flow_ref
+                const flowRef = node.config?.flow_ref
                 if (typeof flowRef !== 'string' || flowRef.length === 0) {
                     return null
                 }
@@ -72,11 +100,11 @@ function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren:
     }
 }
 
-function parseFlowYamlFile(flowPath: string): Record<string, any> {
-    return loadYaml(readFileSync(flowPath, 'utf-8')) as Record<string, any>
+function parseFlowYamlFile(flowPath: string): LooseFlowDefinition {
+    return loadYaml(readFileSync(flowPath, 'utf-8')) as LooseFlowDefinition
 }
 
-function flowDefinitionToPreviewGraph(flow: Record<string, any>): NonNullable<PreviewResponsePayload['graph']> {
+function flowDefinitionToPreviewGraph(flow: LooseFlowDefinition): NonNullable<PreviewResponsePayload['graph']> {
     const graphAttrs = {
         ...(flow.metadata ?? {}),
         label: flow.title,
@@ -85,8 +113,7 @@ function flowDefinitionToPreviewGraph(flow: Record<string, any>): NonNullable<Pr
         llm_provider: flow.defaults?.llm_provider,
         reasoning_effort: flow.defaults?.reasoning_effort,
     }
-    const nodes = Object.entries(flow.nodes ?? {}).map(([id, node]) => {
-        const typedNode = node as Record<string, any>
+    const nodes = Object.entries(flow.nodes ?? {}).map(([id, typedNode]) => {
         return {
             ...(typedNode.extensions ?? {}),
             ...(typedNode.execution ?? {}),
@@ -98,7 +125,7 @@ function flowDefinitionToPreviewGraph(flow: Record<string, any>): NonNullable<Pr
         }
     })
     const edges = Array.isArray(flow.edges)
-        ? flow.edges.map((edge: Record<string, any>) => ({
+        ? flow.edges.map((edge) => ({
             ...(edge.extensions ?? {}),
             from: edge.from,
             to: edge.to,
@@ -158,7 +185,7 @@ function parseLineOrientedYamlCompat(source: string): NonNullable<PreviewRespons
             Object.assign(graphAttrs, parseAttrs(extractAttrBody(line)))
             return
         }
-        const edgeMatch = line.match(/^"?([^"\s]+)"?\s*->\s*"?([^"\s;\[]+)"?\s*(?:\[(.*)\])?;?$/)
+        const edgeMatch = line.match(/^"?([^"\s]+)"?\s*->\s*"?([^"\s;[]+)"?\s*(?:\[(.*)\])?;?$/)
         if (edgeMatch) {
             edges.push({
                 from: edgeMatch[1],
@@ -167,7 +194,7 @@ function parseLineOrientedYamlCompat(source: string): NonNullable<PreviewRespons
             })
             return
         }
-        const nodeMatch = line.match(/^"?([^"\s\[]+)"?\s*\[(.*)\];?$/)
+        const nodeMatch = line.match(/^"?([^"\s[]+)"?\s*\[(.*)\];?$/)
         if (nodeMatch && !['node', 'edge'].includes(nodeMatch[1])) {
             nodes.push({
                 id: nodeMatch[1],
@@ -672,7 +699,7 @@ describe('flowCanvasShared', () => {
                 flow: hydrated?.flow,
             },
         )
-        const roundTripped = loadYaml(yaml) as Record<string, any>
+        const roundTripped = loadYaml(yaml) as LooseRecord
 
         expect(roundTripped).toMatchObject({
             schema_version: '1.0',

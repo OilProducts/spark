@@ -7,7 +7,6 @@ import { GraphSettings } from '@/features/editor/GraphSettings'
 import { Navbar } from '@/app/Navbar'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { RunStream } from '@/features/runs/RunStream'
-import { pendingGateSemanticHint } from '@/features/runs/model/shared'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
@@ -17,17 +16,10 @@ import { ValidationPanel } from '@/features/editor/components/ValidationPanel'
 import {
   ApiHttpError,
   ApiSchemaError,
-  deleteConversationValidated,
   fetchConversationSnapshotValidated,
   fetchFlowListValidated,
   fetchFlowPayloadValidated,
-  fetchPipelineAnswerValidated,
-  fetchPipelineCancelValidated,
-  fetchPipelineCheckpointValidated,
-  fetchPipelineContextValidated,
   fetchPipelineGraphValidated,
-  fetchPipelineQuestionsValidated,
-  fetchPipelineStartValidated,
   fetchPipelineStatusValidated,
   fetchPreviewValidated,
   fetchProjectBrowseValidated,
@@ -35,9 +27,6 @@ import {
   fetchWorkspaceFlowRawValidated,
   fetchWorkspaceFlowValidated,
   updateWorkspaceFlowLaunchPolicyValidated,
-  fetchRunsListValidated,
-  sendConversationTurnValidated,
-  fetchRuntimeStatusValidated,
   parseConversationSnapshotResponse,
   parseFlowListResponse,
   parseFlowPayloadResponse,
@@ -97,89 +86,6 @@ const stableTimelineEvent = <T extends Record<string, unknown>>(sequence: number
   ...payload,
   sequence,
   emitted_at: stableTimelineTimestamp(sequence),
-})
-
-const transcriptInputEntry = (
-  sequence: number,
-  gate: {
-    questionId: string
-    nodeId: string
-    prompt: string
-    questionType?: string | null
-    stageIndex?: number | null
-    options?: Array<{ label: string; value: string; key?: string | null; description?: string | null }>
-  },
-) => {
-  const questionType = gate.questionType ?? 'MULTIPLE_CHOICE'
-  const options = gate.options ?? (
-    questionType === 'YES_NO'
-      ? [
-        { label: 'Yes', value: 'YES', key: null, description: null },
-        { label: 'No', value: 'NO', key: null, description: null },
-      ]
-      : questionType === 'CONFIRMATION'
-        ? [
-          { label: 'Confirm', value: 'YES', key: null, description: null },
-          { label: 'Cancel', value: 'NO', key: null, description: null },
-        ]
-        : []
-  )
-  return {
-    id: `segment-request-user-input-${gate.questionId}`,
-    kind: 'request_user_input',
-    turn_id: `run-node-${gate.nodeId}`,
-    order: sequence,
-    role: 'system',
-    status: 'pending',
-    timestamp: stableTimelineTimestamp(sequence),
-    updated_at: stableTimelineTimestamp(sequence),
-    content: gate.prompt,
-    request_user_input: {
-      request_id: gate.questionId,
-      status: 'pending',
-      questions: [{
-        id: gate.questionId,
-        header: gate.nodeId,
-        question: gate.prompt,
-        question_type: questionType === 'FREEFORM' ? 'FREEFORM' : 'MULTIPLE_CHOICE',
-        options: options.map((option) => ({
-          label: option.label,
-          value: option.value,
-          description: [
-            option.key ? `[${option.key}]` : null,
-            option.description,
-            pendingGateSemanticHint(questionType, option.value),
-          ]
-            .filter((value): value is string => Boolean(value))
-            .join(' ') || null,
-        })),
-        allow_other: questionType === 'FREEFORM',
-        is_secret: false,
-      }],
-      answers: {},
-    },
-    source: {
-      node_id: gate.nodeId,
-      source_scope: 'root',
-      source_parent_node_id: null,
-      source_flow_name: null,
-    },
-  }
-}
-
-const transcriptNoticeEntry = (
-  sequence: number,
-  content: string,
-) => ({
-  id: `segment-notice-${sequence}`,
-  kind: 'context_compaction',
-  turn_id: 'run',
-  order: sequence,
-  role: 'system',
-  status: 'complete',
-  content,
-  timestamp: stableTimelineTimestamp(sequence),
-  updated_at: stableTimelineTimestamp(sequence),
 })
 
 const buildPipelineStatusPayload = (

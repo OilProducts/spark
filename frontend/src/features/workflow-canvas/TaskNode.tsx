@@ -3,8 +3,8 @@ import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow 
 
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
-import { fetchLlmProfiles } from '@/lib/api/llmProfilesApi'
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
+import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from '@/lib/llmSuggestions'
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
 import {
     WORKFLOW_NODE_SHAPE_OPTIONS,
@@ -167,7 +167,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftLlmProvider, setDraftLlmProvider] = useState<string>((data.llm_provider as string) || '')
     const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
     const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
-    const [llmProfiles, setLlmProfiles] = useState<LlmProfileMetadata[]>([])
+    const llmProfiles = useLlmProfiles()
     const [draftAutoStatus, setDraftAutoStatus] = useState<boolean>(
         data.auto_status === true || data.auto_status === 'true',
     )
@@ -225,9 +225,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         }
     }, [isEditingLabel])
 
-    useEffect(() => {
-        void fetchLlmProfiles().then(setLlmProfiles)
-    }, [])
 
     const persistNodeData = (nextData: Record<string, unknown>) => {
         if (!isEditorCanvas || !flowName || isReadOnlyEditorCanvas) {

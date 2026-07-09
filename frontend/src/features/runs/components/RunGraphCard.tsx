@@ -10,7 +10,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
-import { isAbortError } from '@/lib/api/shared'
+import { isAbortError } from '@/lib/abortError'
 import { useStore, type NodeStatus } from '@/store'
 import {
     buildHydratedFlowGraph,

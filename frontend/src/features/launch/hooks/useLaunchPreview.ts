@@ -6,7 +6,7 @@ import {
     fetchPipelineGraphPreviewValidated,
     fetchPreviewValidated,
 } from '@/lib/attractorClient'
-import { isAbortError } from '@/lib/api/shared'
+import { isAbortError } from '@/lib/abortError'
 import { useStore } from '@/store'
 import type { DiagnosticEntry } from '@/state/store-types'
 
