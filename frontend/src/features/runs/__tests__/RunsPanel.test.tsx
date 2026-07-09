@@ -813,7 +813,6 @@ describe('RunsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-inspector-tab-activity')).toHaveAttribute('aria-selected', 'true')
     })
-    expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     // The run graph is a persistent surface beside the work pane.
     expect(runGraphPanel).toBeVisible()
     // Transcript-first: runs with agent output default the stream to the
@@ -834,10 +833,6 @@ describe('RunsPanel', () => {
 
     await user.click(screen.getByTestId('run-inspector-tab-details'))
     expect(screen.getByTestId('run-details-card')).toBeVisible()
-    await user.click(screen.getByTestId('run-inspector-tab-checkpoint'))
-    await waitFor(() => {
-      expect(screen.getByTestId('run-checkpoint-panel')).toBeVisible()
-    })
     await user.click(screen.getByTestId('run-inspector-tab-context'))
     expect(screen.getByTestId('run-context-panel')).toBeVisible()
     await user.click(screen.getByTestId('run-inspector-tab-artifacts'))

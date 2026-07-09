@@ -63,7 +63,7 @@ export interface RunDetailSessionState {
     activityMode: 'all' | 'transcript' | 'events' | null
     // null = auto: node when one is selected, result for terminal runs,
     // details otherwise. An explicit user choice sticks per run.
-    inspectorTab: 'activity' | 'result' | 'details' | 'checkpoint' | 'context' | 'artifacts' | null
+    inspectorTab: 'activity' | 'result' | 'details' | 'context' | 'artifacts' | null
     graphStatus: ResourceStatus
     graphError: string | null
     expandChildFlows: boolean

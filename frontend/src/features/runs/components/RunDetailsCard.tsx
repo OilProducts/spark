@@ -56,9 +56,11 @@ export interface RunDetailsCardProps {
     run: RunRecord
     activeProjectPath: string | null
     now: number
+    /** Node the checkpoint would resume from, for Continue/Retry decisions. */
+    resumeNode?: string | null
 }
 
-export function RunDetailsCard({ run, activeProjectPath, now }: RunDetailsCardProps) {
+export function RunDetailsCard({ run, activeProjectPath, now, resumeNode = null }: RunDetailsCardProps) {
     const usageBreakdown = run.token_usage_breakdown
     const modelUsageEntries = Object.entries(usageBreakdown?.by_model ?? {})
     const projectPath = run.project_path || activeProjectPath || '—'
@@ -90,6 +92,11 @@ export function RunDetailsCard({ run, activeProjectPath, now }: RunDetailsCardPr
                     {outcomeReason ? (
                         <SummaryRow testId="run-summary-outcome-reason" label="Reason" className="break-all md:col-span-2">
                             {outcomeReason}
+                        </SummaryRow>
+                    ) : null}
+                    {resumeNode ? (
+                        <SummaryRow testId="run-summary-resume-node" label="Resumes from">
+                            {resumeNode}
                         </SummaryRow>
                     ) : null}
                 </div>

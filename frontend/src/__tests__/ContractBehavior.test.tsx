@@ -952,15 +952,7 @@ describe('Frontend contract behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-inspector-panel')).toBeVisible()
     })
-    expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
-
     // Each inspector tab stays functional independently of the failed endpoint.
-    await user.click(screen.getByTestId('run-inspector-tab-checkpoint'))
-    await waitFor(() => {
-      expect(screen.getByTestId('run-checkpoint-error')).toBeVisible()
-    })
-    expect(screen.getByTestId('run-checkpoint-error')).toHaveTextContent('Unable to load checkpoint (HTTP 503).')
-
     await user.click(screen.getByTestId('run-inspector-tab-context'))
     expect(screen.getByTestId('run-context-panel')).toBeVisible()
     expect(screen.getByTestId('run-context-table')).toBeVisible()

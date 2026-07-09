@@ -13,7 +13,12 @@ import type {
     RunContextRow,
 } from './shared'
 
-const EXPECTED_CORE_ARTIFACT_PATHS = ['manifest.json', 'checkpoint.json']
+// Each core file may live at the run root or under logs/ depending on the
+// runtime vintage; either location satisfies the expectation.
+const EXPECTED_CORE_ARTIFACT_PATHS: string[][] = [
+    ['manifest.json', 'logs/manifest.json'],
+    ['checkpoint.json', 'logs/checkpoint.json'],
+]
 
 const asStringOption = (value: unknown): PendingQuestionOption | null => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -360,7 +365,9 @@ const buildArtifactDerivedState = (
         ? []
         : (() => {
             const available = new Set(artifactEntries.map((entry) => entry.path))
-            return EXPECTED_CORE_ARTIFACT_PATHS.filter((path) => !available.has(path))
+            return EXPECTED_CORE_ARTIFACT_PATHS
+                .filter((locations) => !locations.some((path) => available.has(path)))
+                .map((locations) => locations[0])
         })()
     const selectedArtifactEntry = selectedArtifactPath
         ? artifactEntries.find((entry) => entry.path === selectedArtifactPath) || null

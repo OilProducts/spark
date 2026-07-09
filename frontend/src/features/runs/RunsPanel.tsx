@@ -155,12 +155,8 @@ export function RunsPanel() {
         artifactStatus,
         artifactViewerError,
         artifactViewerPayload,
-        checkpointCompletedNodes,
         checkpointCurrentNode,
         checkpointData,
-        checkpointError,
-        checkpointStatus,
-        checkpointRetryCounters,
         contextCopyStatus,
         contextError,
         contextExportHref,
@@ -168,13 +164,11 @@ export function RunsPanel() {
         contextStatus,
         degradedDetailPanels,
         fetchArtifacts,
-        fetchCheckpoint,
         fetchContext,
         fetchResult,
         filteredContextRows,
         isArtifactLoading,
         isArtifactViewerLoading,
-        isCheckpointLoading,
         isContextLoading,
         isResultLoading,
         missingCoreArtifacts,
@@ -609,6 +603,7 @@ export function RunsPanel() {
                                         run: selectedRun,
                                         activeProjectPath,
                                         now,
+                                        resumeNode: checkpointResumeNode,
                                     }}
                                     resultCardProps={{
                                         result: resultData,
@@ -621,28 +616,12 @@ export function RunsPanel() {
                                             void viewArtifact({ path: artifactPath, viewable: true })
                                         },
                                     }}
-                                    checkpointCardProps={{
-                                        collapsed: false,
-                                        checkpointCompletedNodes,
-                                        checkpointCurrentNode,
-                                        checkpointData: checkpointData?.checkpoint ?? null,
-                                        checkpointError,
-                                        checkpointRetryCounters,
-                                        isLoading: isCheckpointLoading,
-                                        onCollapsedChange: () => {},
-                                        onRefresh: () => {
-                                            void fetchCheckpoint()
-                                        },
-                                        status: checkpointStatus,
-                                    }}
                                     contextCardProps={{
-                                        collapsed: false,
                                         contextCopyStatus,
                                         contextError,
                                         contextExportHref: contextExportHref || null,
                                         filteredContextRows,
                                         isLoading: isContextLoading,
-                                        onCollapsedChange: () => {},
                                         onCopy: () => {
                                             void copyContextToClipboard()
                                         },
@@ -661,11 +640,9 @@ export function RunsPanel() {
                                         artifactError,
                                         artifactViewerError,
                                         artifactViewerPayload: artifactViewerPayload || null,
-                                        collapsed: false,
                                         isArtifactViewerLoading,
                                         isLoading: isArtifactLoading,
                                         missingCoreArtifacts,
-                                        onCollapsedChange: () => {},
                                         onRefresh: () => {
                                             void fetchArtifacts()
                                         },
