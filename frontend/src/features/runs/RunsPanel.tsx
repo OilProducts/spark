@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
+import { LaunchPanel, loadRunSnapshotFlowContent, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
@@ -11,6 +13,7 @@ import { RunActivityCard } from './components/RunActivityCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunInspectorPanel } from './components/RunInspectorPanel'
 import { RunList } from './components/RunList'
+import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { type RunRecord } from './model/shared'
@@ -61,10 +64,11 @@ const runRecordsMatch = (left: RunRecord | null, right: RunRecord | null) => {
         'root_run_id',
         'child_invocation_index',
         'execution_lock',
+        'launch_context',
     ].every((key) => {
         const leftValue = left[key as keyof RunRecord]
         const rightValue = right[key as keyof RunRecord]
-        if (key === 'token_usage_breakdown' || key === 'estimated_model_cost' || key === 'execution_lock') {
+        if (key === 'token_usage_breakdown' || key === 'estimated_model_cost' || key === 'execution_lock' || key === 'launch_context') {
             return JSON.stringify(leftValue ?? null) === JSON.stringify(rightValue ?? null)
         }
         return leftValue === rightValue
@@ -97,12 +101,13 @@ export function RunsPanel() {
     const selectedRunStatusError = useStore((state) => state.selectedRunStatusError)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
-    const setViewMode = useStore((state) => state.setViewMode)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
-    const setExecutionFlow = useStore((state) => state.setExecutionFlow)
-    const setExecutionContinuation = useStore((state) => state.setExecutionContinuation)
-    const setWorkingDir = useStore((state) => state.setWorkingDir)
-    const setModel = useStore((state) => state.setModel)
+    const setViewMode = useStore((state) => state.setViewMode)
+    const setActiveFlow = useStore((state) => state.setActiveFlow)
+    const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
+    const flowCatalog = useFlowCatalog(Boolean(selectedRunId))
+    const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
+    const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
     const {
         error,
         isLoading,
@@ -407,19 +412,28 @@ export function RunsPanel() {
         if (projectPath) {
             setActiveProjectPath(projectPath)
         }
-        setExecutionFlow(run.flow_name || null)
-        setWorkingDir(run.working_directory || projectPath || '')
-        setModel(normalizedModel)
-        setExecutionContinuation({
+        setContinuationDraft({
             sourceRunId: run.run_id,
             sourceFlowName: run.flow_name || null,
             sourceWorkingDirectory: run.working_directory || projectPath || '',
             sourceModel: run.model || null,
             flowSourceMode: 'snapshot',
             startNodeId: null,
+            workingDir: run.working_directory || projectPath || '',
+            model: normalizedModel,
+            overrideFlowName: run.flow_name || null,
         })
-        setViewMode('execution')
     }
+    const activeContinuationDraft = continuationDraft && selectedRun?.run_id === continuationDraft.sourceRunId
+        ? continuationDraft
+        : null
+
+    // A draft belongs to its source run; selecting a different run discards it.
+    useEffect(() => {
+        if (continuationDraft && selectedRun && selectedRun.run_id !== continuationDraft.sourceRunId) {
+            setContinuationDraft(null)
+        }
+    }, [continuationDraft, selectedRun])
 
     return (
         <section
@@ -489,6 +503,13 @@ export function RunsPanel() {
                                 now={now}
                                 currentNodeId={currentNodeForSummary}
                                 onContinueFromRun={beginContinuation}
+                                onRerunRun={(run) => {
+                                    const projectPath = run.project_path || run.working_directory || null
+                                    if (projectPath) {
+                                        setActiveProjectPath(projectPath)
+                                    }
+                                    setRerunRun(run)
+                                }}
                                 onRequestCancel={(runId, currentStatus) => {
                                     void requestCancel(runId, currentStatus)
                                 }}
@@ -498,6 +519,17 @@ export function RunsPanel() {
                                 onFocusPendingQuestions={() => {
                                     questionsPanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
                                 }}
+                            />
+                        )}
+                        {selectedRun && activeContinuationDraft && (
+                            <RunContinuationPanel
+                                draft={activeContinuationDraft}
+                                activeProjectPath={activeProjectPath}
+                                onDraftChange={(patch) => {
+                                    setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
+                                }}
+                                onCancel={() => setContinuationDraft(null)}
+                                onContinued={() => setContinuationDraft(null)}
                             />
                         )}
                         {selectedRun && degradedRunPanels.length > 0 && (
@@ -553,8 +585,31 @@ export function RunsPanel() {
                                         key={`graph-${selectedRun.run_id}`}
                                         run={selectedRun}
                                         nodeStatusesById={runNodeStatuses}
-                                        selectedNodeId={selectedNodeId}
-                                        onSelectNode={selectNode}
+                                        selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
+                                        onSelectNode={activeContinuationDraft
+                                            ? (nodeId) => {
+                                                setContinuationDraft((draft) => (draft ? { ...draft, startNodeId: nodeId } : draft))
+                                            }
+                                            : selectNode}
+                                        onOpenInEditor={() => {
+                                            const flowName = selectedRun.flow_name
+                                            if (!flowName || !flowCatalog.flows.includes(flowName)) {
+                                                return
+                                            }
+                                            setActiveFlow(flowName)
+                                            setPendingEditorNodeSelection({
+                                                flowName,
+                                                nodeId: selectedNodeId ?? currentNodeForSummary ?? null,
+                                            })
+                                            setViewMode('editor')
+                                        }}
+                                        openInEditorDisabledReason={
+                                            selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
+                                                ? null
+                                                : flowCatalog.isLoaded
+                                                    ? "This run's flow is not installed in the catalog."
+                                                    : 'Loading the flow catalog…'
+                                        }
                                         fillHeight={!isNarrowViewport}
                                     />
                                 </div>
@@ -660,6 +715,45 @@ export function RunsPanel() {
                     </div>
                 </div>
             </div>
+            <Dialog
+                open={Boolean(rerunRun)}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setRerunRun(null)
+                    }
+                }}
+            >
+                <DialogContent
+                    data-testid="run-rerun-dialog"
+                    className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl"
+                >
+                    <DialogTitle className="sr-only">Re-run flow</DialogTitle>
+                    {rerunRun ? (
+                        <LaunchPanel
+                            target={{
+                                flowName: rerunRun.flow_name || null,
+                                loadFlowContent: () => loadRunSnapshotFlowContent(rerunRun.run_id),
+                                previewSource: {
+                                    kind: 'runSnapshot',
+                                    runId: rerunRun.run_id,
+                                    displayName: rerunRun.flow_name || null,
+                                },
+                            }}
+                            projectPath={rerunRun.project_path || rerunRun.working_directory || activeProjectPath}
+                            initialLaunchContext={rerunRun.launch_context ?? null}
+                            initialWorkingDirectory={rerunRun.working_directory || rerunRun.project_path || ''}
+                            initialModel={rerunRun.model === 'codex default (config/profile)' ? '' : rerunRun.model || ''}
+                            infoNotice={rerunRun.launch_context
+                                ? null
+                                : 'Original launch inputs were not recorded for this run; the form starts from the flow defaults.'}
+                            onLaunched={() => {
+                                setRerunRun(null)
+                            }}
+                            onClose={() => setRerunRun(null)}
+                        />
+                    ) : null}
+                </DialogContent>
+            </Dialog>
         </section>
     )
 }

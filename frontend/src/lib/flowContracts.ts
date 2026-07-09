@@ -280,3 +280,43 @@ export function buildLaunchContextFromValues(
 
     return { launchContext, errors }
 }
+
+// Inverse of buildLaunchContextFromValues: map a recorded launch context back
+// onto form values so a re-run can prefill the original inputs.
+export function launchContextToFormValues(
+    entries: LaunchInputDefinition[],
+    context: Record<string, unknown>,
+): LaunchInputFormValues {
+    const values: LaunchInputFormValues = {}
+    for (const entry of entries) {
+        const raw = context[entry.key]
+        if (raw === undefined || raw === null) {
+            values[entry.key] = ''
+            continue
+        }
+        if (entry.type === 'string') {
+            values[entry.key] = typeof raw === 'string' ? raw : String(raw)
+            continue
+        }
+        if (entry.type === 'string[]') {
+            values[entry.key] = Array.isArray(raw)
+                ? raw.map((item) => String(item)).join('\n')
+                : String(raw)
+            continue
+        }
+        if (entry.type === 'boolean') {
+            values[entry.key] = raw === true ? 'true' : raw === false ? 'false' : ''
+            continue
+        }
+        if (entry.type === 'number') {
+            values[entry.key] = typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : ''
+            continue
+        }
+        try {
+            values[entry.key] = JSON.stringify(raw)
+        } catch {
+            values[entry.key] = ''
+        }
+    }
+    return values
+}

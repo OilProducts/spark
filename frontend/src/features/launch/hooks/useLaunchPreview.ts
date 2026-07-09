@@ -1,41 +1,49 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { buildHydratedFlowGraph, normalizeLegacyDot, type HydratedFlowGraph } from '@/features/workflow-canvas'
+import {
+    fetchFlowPayloadValidated,
+    fetchPipelineGraphPreviewValidated,
+    fetchPreviewValidated,
+} from '@/lib/attractorClient'
 import { isAbortError } from '@/lib/api/shared'
 import { useStore } from '@/store'
-import type { ExecutionContinuationDraft } from '@/state/store-types'
+import type { DiagnosticEntry } from '@/state/store-types'
 
-import {
-    loadExecutionFlowPayload,
-    loadExecutionFlowPreview,
-    loadExecutionRunGraphPreview,
-} from '../services/executionPreviewTransport'
+import type { LaunchPreviewSource } from '../model/launchTypes'
 
 const unexpectedPreviewLoadMessage = 'Unable to load flow preview for launch inputs.'
 
-export function useExecutionLaunchPreview(
-    executionFlow: string | null,
-    executionContinuation: ExecutionContinuationDraft | null,
-    expandChildFlows: boolean,
-) {
+export interface LaunchPreviewState {
+    isLoadingPreview: boolean
+    previewLoadError: string | null
+    hydratedGraph: HydratedFlowGraph | null
+    diagnostics: DiagnosticEntry[]
+    hasValidationErrors: boolean
+    graphAttrs: Record<string, unknown>
+}
+
+export function useLaunchPreview(
+    source: LaunchPreviewSource | null,
+    expandChildFlows = false,
+): LaunchPreviewState {
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const replaceExecutionGraphAttrs = useStore((state) => state.replaceExecutionGraphAttrs)
-    const setExecutionDiagnostics = useStore((state) => state.setExecutionDiagnostics)
-    const clearExecutionDiagnostics = useStore((state) => state.clearExecutionDiagnostics)
     const [isLoadingPreview, setIsLoadingPreview] = useState(false)
     const [previewLoadError, setPreviewLoadError] = useState<string | null>(null)
     const [hydratedGraph, setHydratedGraph] = useState<HydratedFlowGraph | null>(null)
+    const [diagnostics, setDiagnostics] = useState<DiagnosticEntry[]>([])
+
+    const sourceKey = source
+        ? source.kind === 'flow'
+            ? `flow:${source.flowName}`
+            : `runSnapshot:${source.runId}:${source.displayName ?? ''}`
+        : null
 
     useEffect(() => {
-        const useRunSnapshot =
-            executionContinuation?.flowSourceMode === 'snapshot'
-            && Boolean(executionContinuation.sourceRunId)
-        const canLoadFlowPreview = Boolean(executionFlow)
-        if (!useRunSnapshot && !canLoadFlowPreview) {
-            replaceExecutionGraphAttrs({})
-            clearExecutionDiagnostics()
+        if (!source) {
             setPreviewLoadError(null)
             setHydratedGraph(null)
+            setDiagnostics([])
             setIsLoadingPreview(false)
             return
         }
@@ -50,9 +58,9 @@ export function useExecutionLaunchPreview(
                 let preview
                 let hydrated: HydratedFlowGraph | null = null
 
-                if (useRunSnapshot && executionContinuation) {
-                    preview = await loadExecutionRunGraphPreview(
-                        executionContinuation.sourceRunId,
+                if (source.kind === 'runSnapshot') {
+                    preview = await fetchPipelineGraphPreviewValidated(
+                        source.runId,
                         { signal: loadAbort.signal },
                         { expandChildren: expandChildFlows },
                     )
@@ -60,24 +68,24 @@ export function useExecutionLaunchPreview(
                         return
                     }
                     hydrated = buildHydratedFlowGraph(
-                        executionContinuation.sourceFlowName || executionContinuation.sourceRunId,
+                        source.displayName || source.runId,
                         preview,
                         uiDefaults,
                         undefined,
                         { expandChildren: expandChildFlows },
                     )
-                } else if (executionFlow) {
-                    const payload = await loadExecutionFlowPayload(executionFlow, { signal: loadAbort.signal })
+                } else {
+                    const payload = await fetchFlowPayloadValidated(source.flowName, { signal: loadAbort.signal })
                     if (cancelled) {
                         return
                     }
 
                     const normalizedContent = normalizeLegacyDot(payload.content)
-                    preview = await loadExecutionFlowPreview(
+                    preview = await fetchPreviewValidated(
                         normalizedContent,
                         { signal: loadAbort.signal },
                         {
-                            flowName: executionFlow,
+                            flowName: source.flowName,
                             expandChildren: expandChildFlows,
                         },
                     )
@@ -86,35 +94,27 @@ export function useExecutionLaunchPreview(
                     }
 
                     hydrated = buildHydratedFlowGraph(
-                        executionFlow,
+                        source.flowName,
                         preview,
                         uiDefaults,
                         normalizedContent,
                         { expandChildren: expandChildFlows },
                     )
-                } else {
-                    preview = null
                 }
 
                 if (cancelled) {
                     return
                 }
 
-                if (preview?.diagnostics) {
-                    setExecutionDiagnostics(preview.diagnostics)
-                } else {
-                    clearExecutionDiagnostics()
-                }
+                setDiagnostics(preview?.diagnostics ?? [])
                 setHydratedGraph(hydrated)
-                replaceExecutionGraphAttrs(hydrated?.graphAttrs ?? {})
             } catch (error) {
                 if (loadAbort.signal.aborted || isAbortError(error)) {
                     return
                 }
                 console.error(error)
                 setHydratedGraph(null)
-                replaceExecutionGraphAttrs({})
-                clearExecutionDiagnostics()
+                setDiagnostics([])
                 setPreviewLoadError(unexpectedPreviewLoadMessage)
             } finally {
                 if (!cancelled) {
@@ -129,19 +129,21 @@ export function useExecutionLaunchPreview(
             cancelled = true
             loadAbort.abort()
         }
-    }, [
-        clearExecutionDiagnostics,
-        expandChildFlows,
-        executionContinuation,
-        executionFlow,
-        replaceExecutionGraphAttrs,
-        setExecutionDiagnostics,
-        uiDefaults,
-    ])
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- sourceKey captures the source identity
+    }, [sourceKey, expandChildFlows, uiDefaults])
+
+    const hasValidationErrors = useMemo(
+        () => diagnostics.some((diagnostic) => diagnostic.severity === 'error'),
+        [diagnostics],
+    )
+    const graphAttrs = hydratedGraph?.graphAttrs ?? {}
 
     return {
         isLoadingPreview,
         previewLoadError,
         hydratedGraph,
+        diagnostics,
+        hasValidationErrors,
+        graphAttrs,
     }
 }

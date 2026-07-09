@@ -90,6 +90,8 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     setSelectedNodeId: (id) => set({ selectedNodeId: id }),
     selectedEdgeId: null,
     setSelectedEdgeId: (id) => set({ selectedEdgeId: id }),
+    pendingEditorNodeSelection: null,
+    setPendingEditorNodeSelection: (selection) => set({ pendingEditorNodeSelection: selection }),
     workingDir: initialWorkspaceEditorState.workingDir || DEFAULT_WORKING_DIRECTORY,
     setWorkingDir: (value) =>
         set((state) => {

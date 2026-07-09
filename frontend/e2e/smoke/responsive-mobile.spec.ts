@@ -229,14 +229,12 @@ test('mobile and narrow viewport usability is preserved for core project and ope
   await expect(page.getByTestId('top-nav-project-remove-button')).toBeVisible()
   await page.screenshot({ path: screenshotPath('13a-mobile-projects-operations.png'), fullPage: true })
 
-  await page.getByTestId('nav-mode-execution').click()
-  await expect(page.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'stacked')
-  await expect(page.getByTestId('execution-flow-panel')).toBeVisible()
-  await expect(page.getByTestId('execution-launch-panel')).toBeVisible()
-  await page.screenshot({ path: screenshotPath('13b-mobile-execution-controls.png'), fullPage: true })
+  await page.getByTestId('nav-mode-runs').click()
+  await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+  await page.screenshot({ path: screenshotPath('13b-mobile-runs-panel.png'), fullPage: true })
 })
 
-test('viewport regression baselines capture desktop shell layouts for projects and execution surfaces', async ({ page }) => {
+test('viewport regression baselines capture desktop shell layouts for projects and runs surfaces', async ({ page }) => {
   await seedRouteState(page)
   await stubResponsiveSmokeApis(page)
 
@@ -253,9 +251,7 @@ test('viewport regression baselines capture desktop shell layouts for projects a
   await expect(page.getByTestId('top-nav-project-remove-button')).toBeVisible()
   await page.screenshot({ path: screenshotPath('13c-desktop-projects-operations.png'), fullPage: true })
 
-  await page.getByTestId('nav-mode-execution').click()
-  await expect(page.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'split')
-  await expect(page.getByTestId('execution-flow-panel')).toBeVisible()
-  await expect(page.getByTestId('execution-launch-panel')).toBeVisible()
-  await page.screenshot({ path: screenshotPath('13d-desktop-execution-controls.png'), fullPage: true })
+  await page.getByTestId('nav-mode-runs').click()
+  await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
+  await page.screenshot({ path: screenshotPath('13d-desktop-runs-panel.png'), fullPage: true })
 })

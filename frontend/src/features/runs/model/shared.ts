@@ -68,6 +68,7 @@ export interface RunRecord {
         queue_position?: number | null
     } | null
     cleanup_error?: string
+    launch_context?: Record<string, unknown> | null
 }
 
 export interface CheckpointResponse {

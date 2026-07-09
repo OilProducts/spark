@@ -89,8 +89,6 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
 
     await page.getByTestId('nav-mode-editor').click()
     await expect(page.getByTestId('canvas-workspace-primary')).toBeVisible()
-    await page.getByTestId('nav-mode-execution').click()
-    await expect(page.getByTestId('execution-launch-panel')).toBeVisible()
     await page.getByTestId('nav-mode-runs').click()
     await expect(page.getByTestId('runs-panel')).toBeVisible()
     await page.screenshot({ path: screenshotPath('00-rust-product-shell.png'), fullPage: true })

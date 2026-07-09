@@ -127,7 +127,6 @@ export function useProjectsHomeController() {
     const projectGitMetadata = useStore((state) => state.homeProjectGitMetadataByPath)
     const model = useStore((state) => state.model)
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const setExecutionFlow = useStore((state) => state.setExecutionFlow)
     const setSelectedRunId = useStore((state) => state.setSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
 
@@ -464,9 +463,8 @@ export function useProjectsHomeController() {
             return
         }
         setSelectedRunId(request.run_id)
-        setExecutionFlow(request.flow_name || null)
         setViewMode('runs')
-    }, [setExecutionFlow, setSelectedRunId, setViewMode])
+    }, [setSelectedRunId, setViewMode])
 
     const onSubmitRequestUserInput = useCallback(async (requestId: string, answers: Record<string, string>) => {
         if (!activeConversationId || !activeProjectPath) {

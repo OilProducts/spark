@@ -20,7 +20,7 @@ export const UI_DEFAULTS_STORAGE_KEY = 'spark.ui_defaults'
 export const ROUTE_STATE_STORAGE_KEY = 'spark.ui_route_state'
 export const DEFAULT_WORKING_DIRECTORY = './test-app'
 export const RECENT_PROJECT_LIMIT = 5
-export const VIEW_MODES: ViewMode[] = ['home', 'projects', 'editor', 'execution', 'triggers', 'settings', 'runs']
+export const VIEW_MODES: ViewMode[] = ['home', 'projects', 'editor', 'triggers', 'settings', 'runs']
 
 export const DEFAULT_PROJECT_SESSION_STATE: ProjectSessionState = {
     workingDir: DEFAULT_WORKING_DIRECTORY,

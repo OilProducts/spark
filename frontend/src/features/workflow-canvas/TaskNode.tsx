@@ -98,26 +98,20 @@ function nextDefaultEnabledBooleanValue(currentValue: unknown, draftValue: boole
 function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNodeProps) {
     const canvasMode = useCanvasSessionMode()
     const isEditorCanvas = canvasMode === 'editor'
-    const isRunCanvas = canvasMode === 'execution' || canvasMode === 'runs'
-    const flowName = useStore((state) => (isEditorCanvas ? state.activeFlow : state.executionFlow))
+    const isRunCanvas = canvasMode === 'runs'
+    const flowName = useStore((state) => (isEditorCanvas ? state.activeFlow : null))
     const isExpandedChildPreview = useStore((state) => (
         isEditorCanvas && state.activeFlow
             ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? false)
             : false
     ))
     const executionHumanGate = useStore((state) => state.humanGate)
-    const flowMetadata = useStore((state) => {
-        if (isEditorCanvas) {
-            return state.flowMetadata
-        }
-        return canvasMode === 'runs' ? state.runGraphAttrs : state.executionGraphAttrs
-    })
-    const nodeDiagnostics = useStore((state) => {
-        if (isEditorCanvas) {
-            return state.nodeDiagnostics
-        }
-        return canvasMode === 'runs' ? state.runNodeDiagnostics : state.executionNodeDiagnostics
-    })
+    const flowMetadata = useStore((state) => (
+        isEditorCanvas ? state.flowMetadata : state.runGraphAttrs
+    ))
+    const nodeDiagnostics = useStore((state) => (
+        isEditorCanvas ? state.nodeDiagnostics : state.runNodeDiagnostics
+    ))
     const editorGraphBridgeRef = useEditorGraphBridgeRef()
     const { setNodes, getEdges } = useReactFlow()
     const readEdges = () => editorGraphBridgeRef?.current?.getEdges() ?? getEdges()

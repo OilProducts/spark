@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
+
 const launchInputTypeLabel = (type: string) => {
     switch (type) {
         case 'string':
@@ -40,29 +41,27 @@ const launchInputDesktopSpanClass = (
     return 'lg:col-span-6'
 }
 
-interface ExecutionLaunchInputsSurfaceProps {
+interface LaunchInputsFormProps {
     isNarrowViewport: boolean
-    executionFlowName: string | null
+    flowName: string | null
     parsedLaunchInputs: ParsedLaunchInputDefinitions
     launchInputValues: LaunchInputFormValues
-    launchInputCount: number
     launchInputsCollapsed: boolean
-    canCollapseLaunchInputs: boolean
     onToggleCollapsed: () => void
     onInputChange: (entry: LaunchInputDefinition, value: string) => void
 }
 
-export function ExecutionLaunchInputsSurface({
+export function LaunchInputsForm({
     isNarrowViewport,
-    executionFlowName,
+    flowName,
     parsedLaunchInputs,
     launchInputValues,
-    launchInputCount,
     launchInputsCollapsed,
-    canCollapseLaunchInputs,
     onToggleCollapsed,
     onInputChange,
-}: ExecutionLaunchInputsSurfaceProps) {
+}: LaunchInputsFormProps) {
+    const launchInputCount = parsedLaunchInputs.entries.length
+    const canCollapseLaunchInputs = launchInputCount > 0
     return (
         <div
             data-testid="execution-launch-inputs"
@@ -118,7 +117,7 @@ export function ExecutionLaunchInputsSurface({
                     >
                         {parsedLaunchInputs.entries.map((entry, index) => (
                             <div
-                                key={`${executionFlowName || 'flow'}-${entry.key}`}
+                                key={`${flowName || 'flow'}-${entry.key}`}
                                 data-testid={`execution-launch-input-field-${entry.key}`}
                                 className={`space-y-1.5 ${
                                     isNarrowViewport

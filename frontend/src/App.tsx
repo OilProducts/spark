@@ -1,7 +1,6 @@
 import { AppSessionControllers } from "@/app/AppSessionControllers"
 import { Navbar } from "@/app/Navbar"
 import { EditorWorkspace } from "@/features/editor"
-import { ExecutionWorkspace } from "@/features/execution"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
 import { SettingsPanel } from "@/features/settings"
@@ -12,7 +11,6 @@ function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isHomeMode = viewMode === 'home' || viewMode === 'projects'
   const isCanvasMode = viewMode === 'editor'
-  const isExecutionMode = viewMode === 'execution'
   const isRunsMode = viewMode === 'runs'
   const isTriggersMode = viewMode === 'triggers'
   const isSettingsMode = viewMode === 'settings'
@@ -41,15 +39,6 @@ function App() {
             }`}
           >
             <ProjectsPanel />
-          </div>
-          <div
-            data-testid="execution-workspace-primary"
-            data-execution-active={String(isExecutionMode)}
-            className={`absolute inset-0 ${
-              isExecutionMode ? 'block pointer-events-auto' : 'hidden pointer-events-none'
-            }`}
-          >
-            <ExecutionWorkspace />
           </div>
           <div
             data-testid="runs-workspace-primary"

@@ -166,9 +166,7 @@ export function applyNodePropertyChangeToData(
 export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const { confirm, prompt } = useDialogController()
     const activeFlow = useStore((state) => state.activeFlow)
-    const executionFlow = useStore((state) => state.executionFlow)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
-    const setExecutionFlow = useStore((state) => state.setExecutionFlow)
     const selectedNodeId = useStore((state) => state.selectedNodeId)
     const selectedEdgeId = useStore((state) => state.selectedEdgeId)
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId)
@@ -309,9 +307,6 @@ edges:
 
         if (activeFlow === fileName) {
             setActiveFlow(null);
-        }
-        if (executionFlow === fileName) {
-            setExecutionFlow(null)
         }
         await refreshFlows();
     };

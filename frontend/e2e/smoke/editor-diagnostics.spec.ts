@@ -72,10 +72,11 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
     await expect(page.locator('[data-inspector-scope="edge"]')).toBeVisible()
     await page.screenshot({ path: screenshotPath("05-edge-inspector.png"), fullPage: true })
 
-    await page.getByTestId("nav-mode-execution").click()
-    await expect(page.getByTestId("execution-launch-panel")).toBeVisible()
-    await expect(page.getByTestId("execution-no-flow-state")).toBeVisible()
-    await page.screenshot({ path: screenshotPath("06-execution-panel.png"), fullPage: true })
+    // Launching lives in the editor toolbar now; panel behavior is covered by
+    // launch-lifecycle.spec.ts (this fixture flow carries validation errors,
+    // so the button is present but gated).
+    await expect(page.getByTestId("editor-run-button")).toBeVisible()
+    await page.screenshot({ path: screenshotPath("06-editor-run-affordance.png"), fullPage: true })
 
     await page.getByTestId("nav-mode-settings").click()
     await expect(page.getByTestId("settings-panel")).toBeVisible()

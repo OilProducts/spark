@@ -67,9 +67,7 @@ export function ValidationEdge({
     const edgeDiagnostics = useAppStore((state) =>
         canvasMode === 'editor'
             ? state.edgeDiagnostics
-            : canvasMode === 'runs'
-                ? state.runEdgeDiagnostics
-                : state.executionEdgeDiagnostics,
+            : state.runEdgeDiagnostics,
     )
     const setSelectedNodeId = useAppStore((state) => state.setSelectedNodeId)
     const setSelectedEdgeId = useAppStore((state) => state.setSelectedEdgeId)

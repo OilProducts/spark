@@ -83,7 +83,6 @@ const resetAppShellState = () => {
     viewMode: 'projects',
     activeProjectPath: null,
     activeFlow: null,
-    executionFlow: null,
     selectedRunId: null,
     selectedRunRecord: null,
     selectedRunCompletedNodes: [],
@@ -151,14 +150,6 @@ const resetAppShellState = () => {
       },
       editTriggerDraftsByTriggerId: {},
     },
-    executionLaunchInputValues: {},
-    executionLaunchError: null,
-    executionLastLaunchFailure: null,
-    executionRunStartGitPolicyWarning: null,
-    executionCollapsedLaunchInputsByFlow: {},
-    executionGraphCollapsed: false,
-    executionOpenRunsAfterLaunch: false,
-    executionLaunchSuccessRunId: null,
   }))
 }
 
@@ -970,7 +961,7 @@ describe('App shell behavior', () => {
     })
   })
 
-  it('propagates navbar project switches across Home, Execution, Triggers, and Runs', async () => {
+  it('propagates navbar project switches across Home, Triggers, and Runs', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
@@ -1060,10 +1051,6 @@ describe('App shell behavior', () => {
     expect(screen.queryByText('Thread one')).not.toBeInTheDocument()
     expect(screen.getByTestId('top-nav-project-switcher')).toHaveTextContent('project-two')
     expect(screen.getByTestId('top-nav-project-switcher')).not.toHaveTextContent('/tmp/project-two')
-
-    await user.click(screen.getByTestId('nav-mode-execution'))
-    expect(await screen.findByTestId('execution-project-context-chip')).toHaveTextContent('project-two')
-    expect(screen.getByTestId('execution-no-flow-state')).toBeVisible()
 
     await user.click(screen.getByTestId('nav-mode-triggers'))
     expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-two')
@@ -2431,7 +2418,7 @@ describe('App shell behavior', () => {
     })
   })
 
-  it('lets the operator resize the editor sidebar without affecting execution width', async () => {
+  it('lets the operator resize the editor sidebar and keeps the width across tab switches', async () => {
     const user = userEvent.setup()
     setViewportWidth(1366)
     render(<App />)
@@ -2463,12 +2450,11 @@ describe('App shell behavior', () => {
     expect(useStore.getState().editorSidebarWidth).toBe(360)
     expect(inspectorPanel.style.width).toBe('360px')
 
-    await user.click(screen.getByTestId('nav-mode-execution'))
-    const executionFlowPanel = screen.getByTestId('execution-flow-panel')
-    expect(executionFlowPanel.className).toContain('w-72')
-    expect(executionFlowPanel).not.toHaveStyle({ width: '360px' })
+    await user.click(screen.getByTestId('nav-mode-runs'))
+    expect(screen.getByTestId('runs-panel')).toBeVisible()
 
     await user.click(screen.getByTestId('nav-mode-editor'))
+    expect(useStore.getState().editorSidebarWidth).toBe(360)
     expect(screen.getByTestId('inspector-panel').style.width).toBe('360px')
   })
 
@@ -2806,27 +2792,16 @@ describe('App shell behavior', () => {
     })
   })
 
-  it('keeps editor and execution sessions isolated across tab switches', async () => {
+  it('keeps the editor session intact across runs and triggers tab switches', async () => {
     const user = userEvent.setup()
     installCanvasWorkspaceFetchMock()
 
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-execution'))
-    const executionFlowTree = await screen.findByTestId('execution-flow-tree')
-    await user.click(within(executionFlowTree).getByRole('button', { name: REVIEW_FLOW_NAME }))
-    expect(await screen.findByTestId('execution-launch-inputs')).toBeVisible()
-
-    await user.type(
-      screen.getByTestId('execution-launch-input-context.request.summary'),
-      'Review the auth flow',
-    )
-
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect(screen.getByTestId('inspector-panel')).toBeVisible()
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
     expect(screen.getByTestId('canvas-workspace-primary')).toHaveAttribute('data-canvas-active', 'true')
-    expect(screen.getByTestId('execution-workspace-primary')).toHaveAttribute('data-execution-active', 'false')
 
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
     await user.click(within(editorFlowTree).getByRole('button', { name: LINEAR_FLOW_NAME }))
@@ -2837,31 +2812,42 @@ describe('App shell behavior', () => {
     const rawYamlEditor = await screen.findByTestId('raw-yaml-editor')
     await user.type(rawYamlEditor, '\n# editor draft note')
 
-    await user.click(screen.getByTestId('nav-mode-execution'))
-    expect(await screen.findByTestId('execution-launch-flow-name')).toHaveTextContent(REVIEW_FLOW_NAME)
-    expect(screen.getByTestId('execution-launch-input-context.request.summary')).toHaveValue('Review the auth flow')
+    await user.click(screen.getByTestId('nav-mode-runs'))
+    expect(screen.getByTestId('runs-panel')).toBeVisible()
+
+    await user.click(screen.getByTestId('nav-mode-triggers'))
+    expect(screen.getByTestId('triggers-panel')).toBeVisible()
 
     await user.click(screen.getByTestId('nav-mode-editor'))
     expect((await screen.findByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toContain('# editor draft note')
   })
 
-  it('keeps execution as a launch surface with the primary action inside the launch panel', async () => {
+  it('keeps the editor as the launch surface with the primary action inside the launch panel', async () => {
     const user = userEvent.setup()
     installCanvasWorkspaceFetchMock()
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-shell')
+      useStore.getState().setActiveProjectPath('/tmp/project-shell')
+    })
 
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-execution'))
-    const executionFlowTree = await screen.findByTestId('execution-flow-tree')
-    await user.click(within(executionFlowTree).getByRole('button', { name: REVIEW_FLOW_NAME }))
+    expect(screen.queryByTestId('nav-mode-execution')).not.toBeInTheDocument()
 
-    const executionWorkspace = await screen.findByTestId('execution-workspace')
-    const executionLaunchPanel = screen.getByTestId('execution-launch-panel')
-    const executionPrimaryAction = screen.getByTestId('execution-launch-primary-action')
+    await user.click(screen.getByTestId('nav-mode-editor'))
+    const editorFlowTree = await screen.findByTestId('editor-flow-tree')
+    await user.click(within(editorFlowTree).getByRole('button', { name: REVIEW_FLOW_NAME }))
+    await waitFor(() => {
+      expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
+    })
 
-    expect(executionWorkspace).toHaveAttribute('data-responsive-layout', 'split')
-    expect(executionLaunchPanel).toContainElement(executionPrimaryAction)
-    expect(screen.queryByTestId('execution-canvas-panel')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('execution-footer-controls')).not.toBeInTheDocument()
+    const runButton = screen.getByTestId('editor-run-button')
+    await waitFor(() => expect(runButton).toBeEnabled())
+    await user.click(runButton)
+
+    const editorRunPanel = await screen.findByTestId('editor-run-panel')
+    expect(editorRunPanel).toContainElement(screen.getByTestId('launch-panel'))
+    expect(editorRunPanel).toContainElement(screen.getByTestId('launch-panel-start-button'))
+    expect(await screen.findByTestId('execution-launch-input-context.request.summary')).toBeVisible()
   })
 })

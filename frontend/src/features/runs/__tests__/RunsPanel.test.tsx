@@ -94,6 +94,7 @@ const makeRun = (overrides: Partial<Record<string, unknown>> = {}) => ({
   root_run_id: (overrides.root_run_id as string | null | undefined) ?? null,
   child_invocation_index: (overrides.child_invocation_index as number | null | undefined) ?? null,
   execution_lock: (overrides.execution_lock as Record<string, unknown> | null | undefined) ?? null,
+  launch_context: (overrides.launch_context as Record<string, unknown> | null | undefined) ?? null,
 })
 
 const makeJournalEntry = (
@@ -957,7 +958,7 @@ describe('RunsPanel', () => {
     expect(useStore.getState().selectedRunId).toBe('run-selected')
   })
 
-  it('hands off continuation from the selected run into execution mode', async () => {
+  it('continues the selected run in place with graph-based restart node selection', async () => {
     const selectedRun = makeRun({
       run_id: 'run-to-continue',
       flow_name: 'selected.dot',
@@ -967,12 +968,39 @@ describe('RunsPanel', () => {
       model: 'codex default (config/profile)',
     })
 
+    const graphPreviewPayload = {
+      status: 'ok',
+      graph: {
+        graph_attrs: {},
+        nodes: [
+          { id: 'start', label: 'Start', shape: 'Mdiamond' },
+          { id: 'failed_node', label: 'Failed Node', shape: 'box' },
+          { id: 'done', label: 'Done', shape: 'Msquare' },
+        ],
+        edges: [
+          { from: 'start', to: 'failed_node', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+          { from: 'failed_node', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+        ],
+      },
+      diagnostics: [],
+      errors: [],
+    }
+
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
       const method = init?.method ?? 'GET'
+      if (url.includes('/attractor/pipelines/run-to-continue/continue') && method === 'POST') {
+        return jsonResponse({ status: 'started', pipeline_id: 'run-derived' })
+      }
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return jsonResponse({ branch: 'main' })
+      }
+      if (url.endsWith('/attractor/api/flows')) {
+        return jsonResponse(['selected.dot'])
       }
       if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
         return jsonResponse({ runs: [selectedRun] })
@@ -1001,29 +1029,33 @@ describe('RunsPanel', () => {
         })
       }
       if (url.includes('/attractor/pipelines/run-to-continue/graph-preview')) {
-        return jsonResponse({
-          status: 'ok',
-          graph: {
-            graph_attrs: {},
-            nodes: [
-              { id: 'start', label: 'Start', shape: 'Mdiamond' },
-              { id: 'failed_node', label: 'Failed Node', shape: 'box' },
-              { id: 'done', label: 'Done', shape: 'Msquare' },
-            ],
-            edges: [
-              { from: 'start', to: 'failed_node', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              { from: 'failed_node', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-            ],
-          },
-          diagnostics: [],
-          errors: [],
-        })
+        return jsonResponse(graphPreviewPayload)
       }
       if (url.includes('/attractor/pipelines/run-to-continue/questions')) {
         return jsonResponse({
           pipeline_id: 'run-to-continue',
           questions: [],
         })
+      }
+      if (url.includes('/attractor/pipelines/run-derived/')) {
+        if (url.includes('/graph-preview')) {
+          return jsonResponse(graphPreviewPayload)
+        }
+        if (url.includes('/checkpoint')) {
+          return jsonResponse({
+            pipeline_id: 'run-derived',
+            checkpoint: { current_node: 'failed_node', completed_nodes: [] },
+          })
+        }
+        if (url.includes('/context')) {
+          return jsonResponse({ pipeline_id: 'run-derived', context: {} })
+        }
+        if (url.includes('/artifacts')) {
+          return jsonResponse({ pipeline_id: 'run-derived', artifacts: [] })
+        }
+        if (url.includes('/questions')) {
+          return jsonResponse({ pipeline_id: 'run-derived', questions: [] })
+        }
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
@@ -1051,19 +1083,303 @@ describe('RunsPanel', () => {
 
     await user.click(screen.getByTestId('run-summary-continue-button'))
 
-    expect(useStore.getState().viewMode).toBe('execution')
+    // Continuation happens in place: no execution-tab handoff.
+    expect(useStore.getState().viewMode).toBe('runs')
     expect(useStore.getState().activeProjectPath).toBe('/tmp/project-one')
-    expect(useStore.getState().executionFlow).toBe('selected.dot')
-    expect(useStore.getState().workingDir).toBe('/tmp/project-one/worktree')
-    expect(useStore.getState().model).toBe('')
-    expect(useStore.getState().executionContinuation).toEqual({
-      sourceRunId: 'run-to-continue',
-      sourceFlowName: 'selected.dot',
-      sourceWorkingDirectory: '/tmp/project-one/worktree',
-      sourceModel: 'codex default (config/profile)',
-      flowSourceMode: 'snapshot',
-      startNodeId: null,
+    const continuationPanel = await screen.findByTestId('run-continuation-panel')
+    expect(continuationPanel).toBeVisible()
+    expect(screen.getByTestId('run-continuation-source-run')).toHaveTextContent('run-to-continue')
+    expect(screen.getByTestId('run-continuation-working-directory-input')).toHaveValue('/tmp/project-one/worktree')
+    expect(screen.getByTestId('run-continuation-model-input')).toHaveValue('')
+
+    const continueButton = screen.getByTestId('run-continuation-continue-button')
+    expect(continueButton).toBeDisabled()
+    expect(continueButton).toHaveAttribute('title', expect.stringContaining('restart node'))
+
+    fireEvent.click(await screen.findByText('Failed Node'))
+    await waitFor(() => {
+      expect(screen.getByTestId('run-continuation-selected-node-copy')).toHaveTextContent('failed_node')
     })
+
+    await waitFor(() => expect(continueButton).toBeEnabled())
+    await user.click(continueButton)
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/attractor/pipelines/run-to-continue/continue',
+        expect.objectContaining({ method: 'POST' }),
+      )
+    })
+    const continueCall = fetchMock.mock.calls.find(([input, init]) => {
+      const url = resolveRequestUrl(input)
+      return url.endsWith('/attractor/pipelines/run-to-continue/continue') && init?.method === 'POST'
+    })
+    expect(JSON.parse(String(continueCall?.[1]?.body))).toEqual({
+      start_node: 'failed_node',
+      flow_source_mode: 'snapshot',
+      working_directory: '/tmp/project-one/worktree',
+      model: null,
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-continuation-panel')).not.toBeInTheDocument()
+    })
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(useStore.getState().selectedRunId).toBe('run-derived')
+  })
+
+  const installRerunFetchMock = (selectedRun: ReturnType<typeof makeRun>) => {
+    const runId = selectedRun.run_id
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (url.endsWith('/attractor/pipelines') && method === 'POST') {
+        return jsonResponse({ status: 'started', pipeline_id: 'run-rerun-new' })
+      }
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/workspace/api/projects/metadata')) {
+        return jsonResponse({ branch: 'main' })
+      }
+      if (url.endsWith('/workspace/api/settings')) {
+        return jsonResponse({
+          execution_placement: {
+            execution_modes: ['native'],
+            config: {
+              filename: 'execution-profiles.toml',
+              path: '/tmp/config/execution-profiles.toml',
+              exists: false,
+              loaded: true,
+              synthesized_native_default: true,
+            },
+            default_execution_profile_id: null,
+            profiles: [
+              { id: 'native', label: 'Native', mode: 'native', enabled: true, image: null, capabilities: {}, metadata: {} },
+            ],
+            validation_errors: [],
+          },
+        })
+      }
+      if (url.endsWith('/attractor/api/flows')) {
+        return jsonResponse(['selected.dot'])
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (url.includes(`/attractor/pipelines/${runId}/artifacts/artifacts/flow/flow-source.yaml`)) {
+        return new Response('schema_version: "1"\nid: rerun_flow\n', {
+          status: 200,
+          headers: { 'Content-Type': 'text/plain' },
+        })
+      }
+      if (url.includes(`/attractor/pipelines/${runId}/checkpoint`)) {
+        return jsonResponse({
+          pipeline_id: runId,
+          checkpoint: { current_node: 'task', completed_nodes: ['start'] },
+        })
+      }
+      if (url.includes(`/attractor/pipelines/${runId}/context`)) {
+        return jsonResponse({ pipeline_id: runId, context: {} })
+      }
+      if (url.includes(`/attractor/pipelines/${runId}/artifacts`)) {
+        return jsonResponse({ pipeline_id: runId, artifacts: [] })
+      }
+      if (url.includes(`/attractor/pipelines/${runId}/graph-preview`)) {
+        return jsonResponse({
+          status: 'ok',
+          flow: {
+            inputs: [{ key: 'context.topic', label: 'Topic', type: 'string', required: true }],
+          },
+          graph: {
+            graph_attrs: {},
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'task', label: 'Task', shape: 'box' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'task', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+              { from: 'task', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
+      if (url.includes(`/attractor/pipelines/${runId}/questions`)) {
+        return jsonResponse({ pipeline_id: runId, questions: [] })
+      }
+      if (url.includes('/attractor/pipelines/run-rerun-new/')) {
+        return jsonResponse({})
+      }
+      throw new Error(`Unhandled request: ${method} ${url}`)
+    })
+    return fetchMock
+  }
+
+  it('re-runs a flow with the recorded launch inputs prefilled', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-to-rerun',
+      flow_name: 'selected.dot',
+      status: 'completed',
+      project_path: '/tmp/project-one',
+      working_directory: '/tmp/project-one/worktree',
+      launch_context: { 'context.topic': 'original topic' },
+    })
+    const fetchMock = installRerunFetchMock(selectedRun)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-history-row'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-summary-rerun-button'))
+
+    const dialog = await screen.findByTestId('run-rerun-dialog')
+    expect(dialog).toBeVisible()
+    expect(screen.queryByTestId('launch-panel-info-notice')).not.toBeInTheDocument()
+
+    // The recorded launch inputs prefill the form.
+    const topicInput = await screen.findByTestId('execution-launch-input-context.topic')
+    await waitFor(() => expect(topicInput).toHaveValue('original topic'))
+    expect(screen.getByTestId('launch-panel-working-directory-input')).toHaveValue('/tmp/project-one/worktree')
+
+    const startButton = screen.getByTestId('launch-panel-start-button')
+    await waitFor(() => expect(startButton).toBeEnabled())
+    await user.click(startButton)
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-rerun-dialog')).not.toBeInTheDocument()
+    })
+    const startCall = fetchMock.mock.calls.find(([input, init]) => {
+      const url = resolveRequestUrl(input)
+      return url.endsWith('/attractor/pipelines') && init?.method === 'POST'
+    })
+    expect(startCall).toBeDefined()
+    // The launch reproduces the exact flow snapshot that ran, not the current
+    // catalog flow.
+    expect(JSON.parse(String(startCall?.[1]?.body))).toMatchObject({
+      flow_content: 'schema_version: "1"\nid: rerun_flow\n',
+      flow_name: 'selected.dot',
+      working_directory: '/tmp/project-one/worktree',
+      launch_context: { 'context.topic': 'original topic' },
+    })
+    expect(useStore.getState().selectedRunId).toBe('run-rerun-new')
+    expect(useStore.getState().viewMode).toBe('runs')
+  })
+
+  it('opens the run flow in the editor with the relevant node queued for selection', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-to-rerun',
+      flow_name: 'selected.dot',
+      status: 'failed',
+      project_path: '/tmp/project-one',
+      working_directory: '/tmp/project-one/worktree',
+      current_node: 'task',
+    })
+    installRerunFetchMock(selectedRun)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-history-row'))
+
+    const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
+    await waitFor(() => expect(openButton).toBeEnabled())
+    await user.click(openButton)
+
+    expect(useStore.getState().viewMode).toBe('editor')
+    expect(useStore.getState().activeFlow).toBe('selected.dot')
+    expect(useStore.getState().pendingEditorNodeSelection).toEqual({
+      flowName: 'selected.dot',
+      nodeId: 'task',
+    })
+  })
+
+  it('disables the editor cross-link when the run flow is not in the catalog', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-to-rerun',
+      flow_name: 'Ad-hoc Content Flow',
+      status: 'completed',
+      project_path: '/tmp/project-one',
+      working_directory: '/tmp/project-one/worktree',
+    })
+    installRerunFetchMock(selectedRun)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('Ad-hoc Content Flow')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-history-row'))
+
+    const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
+    await waitFor(() => expect(openButton).toBeDisabled())
+    expect(openButton).toHaveAttribute('title', "This run's flow is not installed in the catalog.")
+  })
+
+  it('notes when a run predates launch-input recording', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-to-rerun',
+      flow_name: 'selected.dot',
+      status: 'completed',
+      project_path: '/tmp/project-one',
+      working_directory: '/tmp/project-one/worktree',
+      launch_context: null,
+    })
+    installRerunFetchMock(selectedRun)
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().setActiveProjectPath('/tmp/project-one')
+    })
+
+    const user = userEvent.setup()
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(screen.getByText('selected.dot')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-history-row'))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
+    })
+    await user.click(screen.getByTestId('run-summary-rerun-button'))
+
+    await screen.findByTestId('run-rerun-dialog')
+    expect(await screen.findByTestId('launch-panel-info-notice')).toHaveTextContent(
+      'Original launch inputs were not recorded for this run',
+    )
+    const topicInput = await screen.findByTestId('execution-launch-input-context.topic')
+    expect(topicInput).toHaveValue('')
   })
 
   it('only shows continuation for inactive runs', async () => {

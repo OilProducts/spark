@@ -1,7 +1,6 @@
 import type { RunRecord } from '@/features/runs/model/shared'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import type {
-    ExecutionSessionSlice,
     HomeSessionSlice,
     ResourceStatus,
     RunsSessionSlice,
@@ -9,7 +8,7 @@ import type {
 } from './viewSessionTypes'
 import type { WorkflowEventLogSlice } from './workflowEventLogSlice'
 
-export type ViewMode = 'home' | 'projects' | 'editor' | 'execution' | 'triggers' | 'settings' | 'runs'
+export type ViewMode = 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs'
 export type EditorMode = 'structured' | 'raw'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
@@ -102,17 +101,6 @@ export interface UiDefaults {
     reasoning_effort: string
 }
 
-export type ExecutionContinuationFlowSourceMode = 'snapshot' | 'flow_name'
-
-export interface ExecutionContinuationDraft {
-    sourceRunId: string
-    sourceFlowName: string | null
-    sourceWorkingDirectory: string
-    sourceModel: string | null
-    flowSourceMode: ExecutionContinuationFlowSourceMode
-    startNodeId: string | null
-}
-
 export interface RouteState {
     viewMode: ViewMode
     activeProjectPath: string | null
@@ -122,34 +110,6 @@ export interface CanvasViewportState {
     x: number
     y: number
     zoom: number
-}
-
-export interface EditorViewSession {
-    flowName: string | null
-    selectedNodeId: string | null
-    selectedEdgeId: string | null
-    viewport: CanvasViewportState | null
-    sidebarWidth: number
-    graphAttrs: FlowDefinitionMetadata
-    diagnostics: DiagnosticEntry[]
-    hasValidationErrors: boolean
-    rawYamlDraft: string
-    rawHandoffError: string | null
-    rawMode: 'structured' | 'raw'
-    saveState: SaveState
-}
-
-export interface ExecutionViewSession {
-    flowName: string | null
-    selectedRunId: string | null
-    selectedNodeId: string | null
-    selectedEdgeId: string | null
-    viewport: CanvasViewportState | null
-    graphAttrs: FlowDefinitionMetadata
-    diagnostics: DiagnosticEntry[]
-    hasValidationErrors: boolean
-    launchInputValues: Record<string, string>
-    launchError: string | null
 }
 
 export interface ProjectSessionState {
@@ -230,24 +190,6 @@ export interface RunInspectorSlice {
     clearHumanGate: () => void
 }
 
-export interface ExecutionLaunchSlice {
-    executionFlow: string | null
-    setExecutionFlow: (flow: string | null) => void
-    executionContinuation: ExecutionContinuationDraft | null
-    setExecutionContinuation: (draft: ExecutionContinuationDraft | null) => void
-    clearExecutionContinuation: () => void
-    setExecutionContinuationFlowSourceMode: (mode: ExecutionContinuationFlowSourceMode) => void
-    setExecutionContinuationStartNode: (nodeId: string | null) => void
-    executionGraphAttrs: FlowDefinitionMetadata
-    replaceExecutionGraphAttrs: (attrs: FlowDefinitionMetadata) => void
-    executionDiagnostics: DiagnosticEntry[]
-    setExecutionDiagnostics: (diagnostics: DiagnosticEntry[]) => void
-    clearExecutionDiagnostics: () => void
-    executionNodeDiagnostics: Record<string, DiagnosticEntry[]>
-    executionEdgeDiagnostics: Record<string, DiagnosticEntry[]>
-    executionHasValidationErrors: boolean
-}
-
 export interface EditorNodeInspectorSessionState {
     showAdvanced: boolean
     readsContextDraft: string
@@ -269,6 +211,8 @@ export interface EditorSlice {
     setSelectedNodeId: (id: string | null) => void
     selectedEdgeId: string | null
     setSelectedEdgeId: (id: string | null) => void
+    pendingEditorNodeSelection: { flowName: string; nodeId: string | null } | null
+    setPendingEditorNodeSelection: (selection: { flowName: string; nodeId: string | null } | null) => void
     workingDir: string
     setWorkingDir: (value: string) => void
     model: string
@@ -327,8 +271,6 @@ export interface EditorSlice {
 export type AppState =
     & WorkspaceSlice
     & WorkflowEventLogSlice
-    & ExecutionLaunchSlice
-    & ExecutionSessionSlice
     & RunInspectorSlice
     & RunsSessionSlice
     & TriggersSessionSlice

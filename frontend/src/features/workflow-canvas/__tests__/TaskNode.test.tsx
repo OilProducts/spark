@@ -46,12 +46,11 @@ const installDomMatrixReadOnlyStub = () => {
 const resetTaskNodeState = () => {
     useStore.setState({
         activeFlow: 'shape-test.dot',
-        executionFlow: 'shape-test.dot',
         flowMetadata: {},
         graphAttrs: {},
-        executionGraphAttrs: {},
+        runGraphAttrs: {},
         nodeDiagnostics: {},
-        executionNodeDiagnostics: {},
+        runNodeDiagnostics: {},
         humanGate: null,
         selectedRunId: null,
         selectedRunRecord: null,
@@ -89,7 +88,7 @@ const SingleNodeHarness = ({
     edges = [],
 }: {
     node: Node
-    mode?: 'editor' | 'execution'
+    mode?: 'editor' | 'runs'
     edges?: Edge[]
 }) => {
     const [canvasNodes, , onNodesChange] = useNodesState([node])
@@ -296,7 +295,7 @@ describe('TaskNode', () => {
         expect(screen.queryByDisplayValue('Task')).not.toBeInTheDocument()
     })
 
-    it('renders execution waiting and diagnostics overlays on non-rectangular nodes', () => {
+    it('renders run waiting and diagnostics overlays on non-rectangular nodes', () => {
         useStore.setState({
             humanGate: {
                 id: 'gate-1',
@@ -308,7 +307,7 @@ describe('TaskNode', () => {
                 ],
             },
             selectedRunId: 'run-1',
-            executionNodeDiagnostics: {
+            runNodeDiagnostics: {
                 human: [
                     {
                         rule_id: 'human_gate_warning',
@@ -321,7 +320,7 @@ describe('TaskNode', () => {
 
         const { container } = renderWithFlowProvider(
             <SingleNodeHarness
-                mode="execution"
+                mode="runs"
                 node={{
                     id: 'human',
                     type: getReactFlowNodeTypeForShape('hexagon'),

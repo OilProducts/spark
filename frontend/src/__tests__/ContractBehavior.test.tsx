@@ -1,7 +1,7 @@
 import App from '@/App'
 import { HomeSessionController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
-import { ExecutionControls } from '@/features/execution/ExecutionControls'
-import { ExecutionWorkspace } from '@/features/execution/ExecutionWorkspace'
+import { DialogProvider } from '@/components/app/dialog-controller'
+import { LaunchPanel, type LaunchPanelProps } from '@/features/launch'
 import { Editor } from '@/features/editor/Editor'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { Navbar } from '@/app/Navbar'
@@ -232,7 +232,6 @@ const resetContractState = () => {
     viewMode: 'editor',
     activeProjectPath: '/tmp/project-contract-behavior',
     activeFlow: 'contract-behavior.yaml',
-    executionFlow: null,
     selectedRunId: null,
     selectedRunRecord: null,
     selectedRunCompletedNodes: [],
@@ -312,6 +311,33 @@ const renderRunsPanelWithController = () =>
       <RunsPanel />
     </>,
   )
+
+const renderLaunchPanelWithDialogs = (overrides?: Partial<LaunchPanelProps>) => {
+  const onLaunched = vi.fn()
+  const onClose = vi.fn()
+  const props: LaunchPanelProps = {
+    target: {
+      flowName: 'contract-behavior.yaml',
+      loadFlowContent: async () => {
+        const response = await fetch('/attractor/api/flows/contract-behavior.yaml')
+        const payload = await response.json() as { content: string }
+        return payload.content
+      },
+      previewSource: { kind: 'flow', flowName: 'contract-behavior.yaml' },
+    },
+    projectPath: '/tmp/project-contract-behavior',
+    initialWorkingDirectory: DEFAULT_WORKING_DIRECTORY,
+    onLaunched,
+    onClose,
+    ...overrides,
+  }
+  render(
+    <DialogProvider>
+      <LaunchPanel {...props} />
+    </DialogProvider>,
+  )
+  return { onLaunched, onClose }
+}
 
 const renderWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)
 
@@ -1279,7 +1305,7 @@ describe('Frontend contract behavior', () => {
     expect(restoredStore.getState().projectSessionsByPath['/tmp/project-missing']).toBeUndefined()
   })
 
-  it('[CID:12.4.05] integrates direct execution launch contract and error paths', async () => {
+  it('[CID:12.4.05] integrates direct launch-panel launch contract and error paths', async () => {
     const buildLaunchFailureMessage = 'build launch contract failure'
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = requestUrl(input)
@@ -1294,6 +1320,21 @@ describe('Frontend contract behavior', () => {
       if (url.endsWith('/attractor/api/flows/contract-behavior.yaml')) {
         return jsonResponse({ content: 'digraph BuildContract { start -> end }' })
       }
+      if (url.endsWith('/attractor/preview') && init?.method === 'POST') {
+        return jsonResponse({
+          status: 'ok',
+          graph: {
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'end', label: 'End', shape: 'Msquare' },
+            ],
+            edges: [{ source: 'start', target: 'end' }],
+            graph_attrs: {},
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
       if (url.endsWith('/attractor/pipelines') && init?.method === 'POST') {
         return jsonResponse({ detail: buildLaunchFailureMessage }, { status: 503 })
       }
@@ -1304,30 +1345,23 @@ describe('Frontend contract behavior', () => {
     act(() => {
       useStore.setState((state) => ({
         ...state,
-        viewMode: 'execution',
         activeProjectPath: '/tmp/project-contract-behavior',
-        executionFlow: 'contract-behavior.yaml',
-        projectSessionsByPath: {
-          ...state.projectSessionsByPath,
-          '/tmp/project-contract-behavior': {
-            ...state.projectSessionsByPath['/tmp/project-contract-behavior'],
-
-
-          },
-        },
       }))
     })
 
     const user = userEvent.setup()
-    render(<ExecutionControls />)
+    const { onLaunched } = renderLaunchPanelWithDialogs()
 
-    await user.click(screen.getByTestId('execute-button'))
+    const startButton = screen.getByTestId('launch-panel-start-button')
+    await waitFor(() => expect(startButton).toBeEnabled())
+    await user.click(startButton)
 
     await waitFor(() => {
       expect(screen.getByTestId('launch-failure-message')).toHaveTextContent(buildLaunchFailureMessage)
     })
     expect(screen.getByTestId('launch-failure-diagnostics')).toHaveTextContent(buildLaunchFailureMessage)
     expect(screen.getByTestId('launch-retry-button')).toBeEnabled()
+    expect(onLaunched).not.toHaveBeenCalled()
 
     const pipelineCall = fetchMock.mock.calls.find(
       ([request, init]) => requestUrl(request as RequestInfo | URL).endsWith('/attractor/pipelines') && init?.method === 'POST',
@@ -1337,7 +1371,7 @@ describe('Frontend contract behavior', () => {
     expect(pipelinePayload.plan_id).toBeUndefined()
   })
 
-  it('[CID:13.1.01] supports keyboard navigation across projects, authoring, and execution mode tabs', async () => {
+  it('[CID:13.1.01] supports keyboard navigation across projects, authoring, and triggers mode tabs', async () => {
     act(() => {
       useStore.setState((state) => ({
         ...state,
@@ -1350,7 +1384,7 @@ describe('Frontend contract behavior', () => {
 
     const projectsTab = screen.getByTestId('nav-mode-projects')
     const editorTab = screen.getByTestId('nav-mode-editor')
-    const executionTab = screen.getByTestId('nav-mode-execution')
+    const triggersTab = screen.getByTestId('nav-mode-triggers')
 
     projectsTab.focus()
     expect(projectsTab).toHaveFocus()
@@ -1361,8 +1395,8 @@ describe('Frontend contract behavior', () => {
     expect(useStore.getState().viewMode).toBe('editor')
 
     await user.keyboard('{ArrowRight}')
-    expect(executionTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('execution')
+    expect(triggersTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('triggers')
 
     await user.keyboard('{ArrowLeft}')
     expect(editorTab).toHaveFocus()
@@ -1405,18 +1439,16 @@ describe('Frontend contract behavior', () => {
     act(() => {
       useStore.setState((state) => ({
         ...state,
-        viewMode: 'execution',
         activeProjectPath: '/tmp/project-contract-behavior',
-        executionFlow: 'contract-behavior.yaml',
         selectedRunId: 'run-focus-audit',
         runtimeStatus: 'running',
       }))
     })
 
-    render(<ExecutionControls />)
+    renderLaunchPanelWithDialogs()
 
-    expect(screen.getByTestId('execute-button').className).toContain('focus-visible')
-    expect(screen.getByLabelText('Open in Runs after launch').className).toContain('focus-visible')
+    expect(screen.getByTestId('launch-panel-start-button').className).toContain('focus-visible')
+    expect(screen.getByLabelText('Working directory').className).toContain('focus-visible')
 
     cleanup()
     act(() => {
@@ -1613,16 +1645,23 @@ describe('Frontend contract behavior', () => {
         resetContractState()
         useStore.setState((state) => ({
           ...state,
-          viewMode: 'execution',
+          viewMode: 'runs',
           selectedRunId: 'run-mobile-ops',
           runtimeStatus: 'running',
         }))
       })
-      render(<ExecutionWorkspace />)
+      render(<RunsPanel />)
 
-      expect(screen.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('execution-flow-panel')).toBeVisible()
-      expect(screen.getByTestId('execution-launch-panel')).toBeVisible()
+      expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+
+      cleanup()
+      act(() => {
+        resetContractState()
+      })
+      renderLaunchPanelWithDialogs()
+
+      expect(screen.getByTestId('launch-panel')).toBeVisible()
+      expect(screen.getByTestId('launch-panel-start-button')).toBeVisible()
 
       cleanup()
       act(() => {
@@ -1706,13 +1745,13 @@ describe('Frontend contract behavior', () => {
         resetContractState()
         useStore.setState((state) => ({
           ...state,
-          viewMode: 'execution',
+          viewMode: 'runs',
           selectedRunId: 'run-viewport-regression-desktop',
           runtimeStatus: 'running',
         }))
       })
-      render(<ExecutionWorkspace />)
-      expect(screen.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'split')
+      render(<RunsPanel />)
+      expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
 
       cleanup()
       setViewportWidth(760)
@@ -1720,13 +1759,13 @@ describe('Frontend contract behavior', () => {
         resetContractState()
         useStore.setState((state) => ({
           ...state,
-          viewMode: 'execution',
+          viewMode: 'runs',
           selectedRunId: 'run-viewport-regression-mobile',
           runtimeStatus: 'running',
         }))
       })
-      render(<ExecutionWorkspace />)
-      expect(screen.getByTestId('execution-workspace')).toHaveAttribute('data-responsive-layout', 'stacked')
+      render(<RunsPanel />)
+      expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
     } finally {
       setViewportWidth(originalViewportWidth)
     }
@@ -2107,7 +2146,7 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('run-activity-list')).not.toHaveTextContent('stage_0')
   })
 
-  it('[CID:14.0.01] propagates navbar project context through Home, Execution, Triggers, and Runs', async () => {
+  it('[CID:14.0.01] propagates navbar project context through Home, Triggers, and Runs', async () => {
     const buildProjectRecord = (projectPath: string) => ({
       project_id: projectPath.split('/').filter(Boolean).join('-'),
       project_path: projectPath,
@@ -2256,10 +2295,6 @@ describe('Frontend contract behavior', () => {
       expect(screen.getByText('Beta thread')).toBeVisible()
     })
     expect(screen.queryByText('Alpha thread')).not.toBeInTheDocument()
-
-    await user.click(screen.getByTestId('nav-mode-execution'))
-    expect(await screen.findByTestId('execution-project-context-chip')).toHaveTextContent('project-beta')
-    expect(screen.getByTestId('execution-no-flow-state')).toBeVisible()
 
     await user.click(screen.getByTestId('nav-mode-triggers'))
     expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-beta')
@@ -2840,7 +2875,6 @@ describe('Frontend contract behavior', () => {
     act(() => {
       useStore.setState((state) => ({
         ...state,
-        viewMode: 'execution',
         selectedRunId: runId,
         runtimeStatus: 'running',
         humanGate: {
@@ -2853,7 +2887,7 @@ describe('Frontend contract behavior', () => {
         },
       }))
     })
-    render(<ExecutionControls />)
+    renderLaunchPanelWithDialogs()
 
     expect(screen.queryByTestId('execution-pending-human-gate-banner')).not.toBeInTheDocument()
     expect(screen.queryByTestId('execution-pending-human-gate-view-run-button')).not.toBeInTheDocument()

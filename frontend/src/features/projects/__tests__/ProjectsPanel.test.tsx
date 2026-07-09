@@ -231,7 +231,6 @@ const resetProjectScopeState = () => {
     viewMode: 'projects',
     activeProjectPath: null,
     activeFlow: null,
-    executionFlow: null,
     selectedRunId: null,
     selectedRunRecord: null,
     selectedRunCompletedNodes: [],
@@ -1843,7 +1842,6 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(useStore.getState().selectedRunId).toBe('run-flow-123')
-      expect(useStore.getState().executionFlow).toBe('test-dispatch.dot')
       expect(useStore.getState().viewMode).toBe('runs')
     })
   })
@@ -2060,7 +2058,6 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(useStore.getState().selectedRunId).toBe('run-plan-123')
-      expect(useStore.getState().executionFlow).toBe('software-development/implement-change-request.dot')
       expect(useStore.getState().viewMode).toBe('runs')
     })
   })

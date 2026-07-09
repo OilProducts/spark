@@ -24,8 +24,6 @@ type ProjectScopeTransitionState = Pick<
     | 'viewMode'
     | 'workingDir'
     | 'activeFlow'
-    | 'executionFlow'
-    | 'executionContinuation'
     | 'selectedRunId'
     | 'selectedRunRecord'
     | 'selectedRunCompletedNodes'
@@ -144,11 +142,6 @@ const preserveEditorSession = (state: AppState) => ({
     saveErrorKind: state.saveErrorKind,
 })
 
-const preserveExecutionSession = (state: AppState) => ({
-    executionFlow: state.executionFlow,
-    executionContinuation: state.executionContinuation,
-})
-
 const preserveRunInspectionState = (state: AppState) => ({
     selectedRunId: state.selectedRunId,
     selectedRunRecord: state.selectedRunRecord,
@@ -261,7 +254,6 @@ export const buildHydrateProjectRegistryTransition = (
 
     return {
         ...preserveEditorSession(state),
-        ...preserveExecutionSession(state),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         activeProjectPath: nextActiveProjectPath,
@@ -351,7 +343,6 @@ export const buildRemoveProjectTransition = (
 
     return {
         ...preserveEditorSession(state),
-        ...preserveExecutionSession(state),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
@@ -412,7 +403,6 @@ export const buildSetActiveProjectTransition = (
 
     return {
         ...preserveEditorSession(state),
-        ...preserveExecutionSession(state),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         recentProjectPaths: pushRecentProjectPath(state.recentProjectPaths, nextProjectPath),
@@ -459,7 +449,6 @@ export const buildRegisterProjectTransition = (
         activeProjectPath: nextActiveProjectPath,
         projectSessionsByPath: nextProjectSessionStates,
         activeFlow: state.activeFlow,
-        executionFlow: state.activeProjectPath ? state.executionFlow : null,
         selectedRunId: state.activeProjectPath ? state.selectedRunId : null,
         selectedRunRecord: state.activeProjectPath ? state.selectedRunRecord : null,
         selectedRunCompletedNodes: state.activeProjectPath ? state.selectedRunCompletedNodes : [],

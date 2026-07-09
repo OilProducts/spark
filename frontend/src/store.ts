@@ -1,7 +1,5 @@
 import { create } from 'zustand'
 import { createEditorSlice } from './state/editorSlice'
-import { createExecutionLaunchSlice } from './state/executionLaunchSlice'
-import { createExecutionSessionSlice } from './state/executionSessionSlice'
 import { createHomeSessionSlice } from './state/homeSessionSlice'
 import { createRunInspectorSlice } from './state/runInspectorSlice'
 import { createRunsSessionSlice } from './state/runsSessionSlice'
@@ -17,8 +15,6 @@ export const useStore = create<AppState>()((...args) => ({
     ...createWorkspaceSlice(...args),
     ...createWorkflowEventLogSlice(...args),
     ...createHomeSessionSlice(...args),
-    ...createExecutionLaunchSlice(...args),
-    ...createExecutionSessionSlice(...args),
     ...createRunInspectorSlice(...args),
     ...createRunsSessionSlice(...args),
     ...createTriggersSessionSlice(...args),

@@ -1,4 +1,3 @@
-import type { LaunchInputFormValues } from '@/lib/flowContracts'
 import type { Edge, Node } from '@xyflow/react'
 import type {
     ConversationSummaryResponse,
@@ -121,12 +120,6 @@ export interface TriggersSessionState {
     editTriggerDraftsByTriggerId: Record<string, TriggerEditDraftState>
 }
 
-export interface LaunchFailureDiagnostics {
-    message: string
-    failedAt: string
-    flowSource: string | null
-}
-
 export interface HomeSessionSlice {
     homeConversationCache: HomeConversationCacheState
     homeThreadSummariesStatusByProjectPath: Record<string, ResourceStatus>
@@ -176,25 +169,3 @@ export interface TriggersSessionSlice {
     setTriggersSessionEditDraft: (triggerId: string, draft: TriggerEditDraftState | null) => void
 }
 
-export interface ExecutionSessionSlice {
-    executionLaunchInputValues: LaunchInputFormValues
-    executionLaunchError: string | null
-    executionLastLaunchFailure: LaunchFailureDiagnostics | null
-    executionRunStartGitPolicyWarning: string | null
-    executionCollapsedLaunchInputsByFlow: Record<string, boolean>
-    executionGraphCollapsed: boolean
-    executionExpandChildFlows: boolean
-    executionOpenRunsAfterLaunch: boolean
-    executionLaunchSuccessRunId: string | null
-    updateExecutionSession: (patch: {
-        executionLaunchInputValues?: LaunchInputFormValues
-        executionLaunchError?: string | null
-        executionLastLaunchFailure?: LaunchFailureDiagnostics | null
-        executionRunStartGitPolicyWarning?: string | null
-        executionCollapsedLaunchInputsByFlow?: Record<string, boolean>
-        executionGraphCollapsed?: boolean
-        executionExpandChildFlows?: boolean
-        executionOpenRunsAfterLaunch?: boolean
-        executionLaunchSuccessRunId?: string | null
-    }) => void
-}

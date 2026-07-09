@@ -36,6 +36,7 @@ export interface RunHeaderBarProps {
     onRequestCancel: (runId: string, currentStatus: string) => void
     onRequestRetry: (runId: string, currentStatus: string) => void
     onContinueFromRun: (run: RunRecord) => void
+    onRerunRun: (run: RunRecord) => void
     onFocusPendingQuestions: (() => void) | null
 }
 
@@ -46,10 +47,12 @@ export function RunHeaderBar({
     onRequestCancel,
     onRequestRetry,
     onContinueFromRun,
+    onRerunRun,
     onFocusPendingQuestions,
 }: RunHeaderBarProps) {
     const cancelAvailable = canCancelRun(run.status)
     const continueAvailable = canContinueRun(run.status)
+    const rerunAvailable = canContinueRun(run.status)
     const retryAvailable = canRetryRun(run.status)
     const statusChipClass = STATUS_CHIP_STYLES[run.status] ?? 'border-border bg-muted text-muted-foreground'
     const outcomeReason = run.status === 'failed' ? formatOutcomeReason(run) : null
@@ -98,6 +101,18 @@ export function RunHeaderBar({
                     {run.run_id}
                 </span>
                 <div className="ml-auto flex flex-wrap items-center gap-2">
+                    {rerunAvailable ? (
+                        <Button
+                            type="button"
+                            data-testid="run-summary-rerun-button"
+                            onClick={() => onRerunRun(run)}
+                            title="Launch a new run of this flow with the same inputs"
+                            variant="outline"
+                            size="xs"
+                        >
+                            Re-run
+                        </Button>
+                    ) : null}
                     {continueAvailable ? (
                         <Button
                             type="button"

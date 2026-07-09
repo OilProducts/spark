@@ -1,12 +1,9 @@
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
-type LaunchFailureDiagnostics = {
-    message: string
-    failedAt: string
-    flowSource: string | null
-}
 
-interface ExecutionNoticeStackProps {
+import type { LaunchFailureDiagnostics } from '../model/launchTypes'
+
+interface LaunchNoticeStackProps {
     showValidationWarningBanner: boolean
     runStartGitPolicyWarning: string | null
     runStartError: string | null
@@ -15,14 +12,14 @@ interface ExecutionNoticeStackProps {
     onRetry: () => void
 }
 
-export function ExecutionNoticeStack({
+export function LaunchNoticeStack({
     showValidationWarningBanner,
     runStartGitPolicyWarning,
     runStartError,
     lastLaunchFailure,
     canRetryLaunch,
     onRetry,
-}: ExecutionNoticeStackProps) {
+}: LaunchNoticeStackProps) {
     return (
         <div className="flex flex-wrap items-center gap-2">
             {showValidationWarningBanner ? (

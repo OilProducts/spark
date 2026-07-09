@@ -239,6 +239,8 @@ interface RunGraphCardProps {
     nodeStatusesById: Record<string, NodeStatus>
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
+    onOpenInEditor?: () => void
+    openInEditorDisabledReason?: string | null
     /** Fill the parent column instead of using the session pane height. */
     fillHeight?: boolean
 }
@@ -248,6 +250,8 @@ export function RunGraphCard({
     nodeStatusesById,
     selectedNodeId,
     onSelectNode,
+    onOpenInEditor,
+    openInEditorDisabledReason,
     fillHeight = false,
 }: RunGraphCardProps) {
     const diagnostics = useStore((state) => state.runDiagnostics)
@@ -279,6 +283,18 @@ export function RunGraphCard({
                         Run Graph
                     </h3>
                     <div className="flex items-center gap-2">
+                        {onOpenInEditor ? (
+                            <Button
+                                onClick={onOpenInEditor}
+                                data-testid="run-graph-open-in-editor-button"
+                                variant="outline"
+                                size="xs"
+                                disabled={Boolean(openInEditorDisabledReason)}
+                                title={openInEditorDisabledReason ?? 'Open this flow in the Editor with the selected node focused'}
+                            >
+                                Open in Editor
+                            </Button>
+                        ) : null}
                         <Button
                             onClick={() => setRefreshToken((current) => current + 1)}
                             data-testid="run-graph-refresh-button"

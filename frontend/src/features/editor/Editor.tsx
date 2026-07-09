@@ -14,6 +14,7 @@ import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeP
 import '@xyflow/react/dist/style.css';
 
 import { useStore, type FlowDefinitionMetadata } from '@/store';
+import { LaunchPanel, loadCatalogFlowContent } from '@/features/launch';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
     clearFlowYamlSerializationContext,
@@ -184,6 +185,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const selectedEdgeId = useStore((state) => state.selectedEdgeId);
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId);
     const setSelectedEdgeId = useStore((state) => state.setSelectedEdgeId);
+    const pendingEditorNodeSelection = useStore((state) => state.pendingEditorNodeSelection);
+    const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection);
     const editorMode = useStore((state) => state.editorMode);
     const setEditorMode = useStore((state) => state.setEditorMode);
     const rawYamlDraft = useStore((state) => state.rawYamlDraft);
@@ -212,6 +215,11 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         state.activeFlow ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? false) : false
     ));
     const setEditorExpandChildFlows = useStore((state) => state.setEditorExpandChildFlows);
+    const hasValidationErrors = useStore((state) => state.hasValidationErrors);
+    const saveState = useStore((state) => state.saveState);
+    const workingDir = useStore((state) => state.workingDir);
+    const model = useStore((state) => state.model);
+    const setViewMode = useStore((state) => state.setViewMode);
     const [nodes, setNodes] = useNodesState<Node>([]);
     const [edges, setEdges] = useEdgesState<Edge>([]);
     const hydratedRef = useRef(false);
@@ -242,6 +250,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     });
     const [isDragging, setIsDragging] = useState(false);
     const [isRawHandoffInFlight, setIsRawHandoffInFlight] = useState(false);
+    const [isRunPanelOpen, setIsRunPanelOpen] = useState(false);
     const [isHydrated, setIsHydrated] = useState(false);
     const [lastLayoutMs, setLastLayoutMs] = useState(0);
     const [lastPreviewMs, setLastPreviewMs] = useState(0);
@@ -267,6 +276,20 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     }), [setEdges, setNodes]);
 
     useRegisterEditorGraphBridge(editorGraphBridge);
+
+    useEffect(() => {
+        setIsRunPanelOpen(false);
+    }, [flowName]);
+
+    const runDisabledReason = !activeProjectPath
+        ? 'Select an active project before running.'
+        : hasValidationErrors
+            ? 'Fix validation errors before running.'
+            : saveState === 'saving'
+                ? 'Waiting for the flow to finish saving.'
+                : saveState === 'error' || saveState === 'conflict'
+                    ? 'Resolve the flow save error before running.'
+                    : undefined;
 
     useEffect(() => {
         expandChildFlowsRef.current = expandChildFlows;
@@ -1267,6 +1290,37 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         }
     }, [edges, nodes, selectedEdgeId, selectedNodeId, setSelectedEdgeId, setSelectedNodeId]);
 
+    // Deep-link entry (e.g. "Open in Editor" from a run): the flow-load effect
+    // clears selection mid-load, so a requested node selection waits here until
+    // the target flow is hydrated, then applies once and is consumed.
+    useEffect(() => {
+        if (!pendingEditorNodeSelection || !isHydrated) {
+            return;
+        }
+        if (pendingEditorNodeSelection.flowName !== flowName) {
+            if (flowName) {
+                // Hydrated into a different flow than the deep link targeted;
+                // the request is stale.
+                setPendingEditorNodeSelection(null);
+            }
+            return;
+        }
+        const { nodeId } = pendingEditorNodeSelection;
+        if (nodeId && nodes.some((node) => node.id === nodeId)) {
+            setSelectedEdgeId(null);
+            setSelectedNodeId(nodeId);
+        }
+        setPendingEditorNodeSelection(null);
+    }, [
+        flowName,
+        isHydrated,
+        nodes,
+        pendingEditorNodeSelection,
+        setPendingEditorNodeSelection,
+        setSelectedEdgeId,
+        setSelectedNodeId,
+    ]);
+
     useEffect(() => {
         if (
             !isActive
@@ -1510,6 +1564,20 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             Add Node
                         </Button>
                     )}
+                    {editorMode === 'structured' && (
+                        <Button
+                            data-testid="editor-run-button"
+                            onClick={() => {
+                                flushPendingSave();
+                                setIsRunPanelOpen(true);
+                            }}
+                            disabled={Boolean(runDisabledReason)}
+                            title={runDisabledReason}
+                            className="shadow-sm"
+                        >
+                            Run
+                        </Button>
+                    )}
                     {showPerformanceDebug ? (
                         <>
                             <div
@@ -1544,6 +1612,29 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             )}
 
             {flowName && editorMode === 'structured' && <ValidationPanel />}
+
+            {flowName && editorMode === 'structured' && isRunPanelOpen ? (
+                <div
+                    data-testid="editor-run-panel"
+                    className="absolute bottom-4 right-4 top-16 z-20 flex w-[26rem] max-w-[calc(100%-2rem)] flex-col rounded-lg border border-border bg-background/95 p-4 shadow-lg"
+                >
+                    <LaunchPanel
+                        target={{
+                            flowName,
+                            loadFlowContent: () => loadCatalogFlowContent(flowName),
+                            previewSource: { kind: 'flow', flowName },
+                        }}
+                        projectPath={activeProjectPath}
+                        initialWorkingDirectory={workingDir}
+                        initialModel={model}
+                        onLaunched={() => {
+                            setIsRunPanelOpen(false);
+                            setViewMode('runs');
+                        }}
+                        onClose={() => setIsRunPanelOpen(false)}
+                    />
+                </div>
+            ) : null}
         </div>
     );
 }
