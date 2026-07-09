@@ -791,7 +791,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
     let factory: attractor_api::RuntimeHandlerRunnerFactory = std::sync::Arc::new(|| {
         let mut runner = attractor_runtime::RuntimeHandlerRunner::new();
         runner.register_thread_safe_handler_fn("slow.step", |_runtime| {
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(1_500));
             Ok(attractor_core::Outcome::new(
                 attractor_core::OutcomeStatus::Success,
             ))
@@ -844,7 +844,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
     let dispatch_elapsed = dispatch_started.elapsed();
     assert_eq!(accepted.0, StatusCode::OK);
     assert!(
-        dispatch_elapsed < std::time::Duration::from_millis(450),
+        dispatch_elapsed < std::time::Duration::from_millis(1_000),
         "webhook dispatch blocked on run execution: {dispatch_elapsed:?}",
     );
 

@@ -203,6 +203,55 @@ export interface PendingInterviewGateGroup {
     gates: PendingInterviewGate[]
 }
 
+// Human vocabulary for journal event types; raw runtime names stay available
+// in the payload for anyone who needs them.
+export const TIMELINE_TYPE_LABELS: Record<string, string> = {
+    PipelineStarted: 'Run started',
+    PipelineCompleted: 'Run completed',
+    PipelineFailed: 'Run failed',
+    PipelinePaused: 'Run paused',
+    PipelineRetryStarted: 'Retry started',
+    PipelineRetryCompleted: 'Retry completed',
+    CancelRequested: 'Cancel requested',
+    StageStarted: 'Stage started',
+    StageCompleted: 'Stage completed',
+    StageFailed: 'Stage failed',
+    StageRetrying: 'Stage retrying',
+    CheckpointSaved: 'Checkpoint',
+    ChildRunStarted: 'Child run started',
+    ChildRunCompleted: 'Child run completed',
+    ParallelStarted: 'Fan-out started',
+    ParallelCompleted: 'Fan-out completed',
+    ParallelBranchStarted: 'Branch started',
+    ParallelBranchCompleted: 'Branch completed',
+    InterviewStarted: 'Gate opened',
+    InterviewCompleted: 'Input received',
+    human_gate: 'Waiting for input',
+    HumanInterventionRequested: 'Steer requested',
+    ChildInterventionRequested: 'Child steer requested',
+    LLMContent: 'Assistant output',
+    CodergenAdapter: 'Agent event',
+    runtime: 'Status',
+    lifecycle: 'Lifecycle',
+    run_meta: 'Run metadata',
+    state: 'Node state',
+    log: 'Log',
+}
+
+export const humanizeTimelineType = (type: string): string => {
+    const label = TIMELINE_TYPE_LABELS[type]
+    if (label) {
+        return label
+    }
+    // CamelCase / snake_case fallback: "SomeNewEvent" -> "Some new event".
+    const spaced = type
+        .replace(/_/g, ' ')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+        .trim()
+    return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : type
+}
+
 export const TIMELINE_CATEGORY_LABELS: Record<TimelineEventCategory, string> = {
     lifecycle: 'Lifecycle',
     stage: 'Stage',

@@ -214,9 +214,13 @@ const timelineSummaryFromEvent = (
         const outcome = typeof payload.outcome === 'string' && payload.outcome.trim().length > 0
             ? payload.outcome.trim()
             : null
-        return outcome
+        const notes = typeof payload.notes === 'string' && payload.notes.trim().length > 0
+            ? payload.notes.trim()
+            : null
+        const base = outcome
             ? `${sourcePrefix}Stage ${nodeId || 'unknown'} completed (${outcome})`
             : `${sourcePrefix}Stage ${nodeId || 'unknown'} completed`
+        return notes ? `${base} — ${notes}` : base
     }
     if (type === 'StageFailed') {
         const error = typeof payload.error === 'string' && payload.error.trim().length > 0

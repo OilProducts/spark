@@ -240,3 +240,57 @@ fn disk_control_cancels_a_run_mid_flight() {
         .expect("record");
     assert_eq!(final_record.status, "canceled");
 }
+
+#[test]
+fn stage_completed_events_carry_truncated_outcome_notes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = temp_store(&temp);
+    let project_path = temp.path().join("Project Notes");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+
+    let long_notes = "fetched 12 tickers ".repeat(30);
+    let expected_notes = long_notes.chars().take(200).collect::<String>();
+    let notes_for_handler = long_notes.clone();
+    let mut executor = PipelineExecutor::new(move |_request: NodeExecutionRequest| {
+        Ok(Outcome {
+            notes: notes_for_handler.clone(),
+            ..Outcome::new(OutcomeStatus::Success)
+        })
+    });
+    executor
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: record("run-notes", &project_path),
+            graph: simple_graph(),
+            graph_source: None,
+            graph_dot: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: ExecutionStart::Fresh,
+        })
+        .expect("notes execute");
+
+    let paths = store
+        .run_root(&project_path.to_string_lossy(), "run-notes")
+        .expect("run root");
+    let events = store.read_raw_events(&paths).expect("events");
+    let stage_completed = events
+        .iter()
+        .find(|event| {
+            event.event_type == "StageCompleted"
+                && event
+                    .payload
+                    .get("node_id")
+                    .and_then(|value| value.as_str())
+                    == Some("plan")
+        })
+        .expect("stage completed event");
+    let notes = stage_completed
+        .payload
+        .get("notes")
+        .and_then(|value| value.as_str())
+        .expect("notes present");
+    assert_eq!(notes.chars().count(), 200);
+    assert_eq!(notes, expected_notes);
+}

@@ -3022,7 +3022,7 @@ describe('RunsPanel', () => {
       `Showing the latest ${renderedCount} rows; ${groupedHistory.length - renderedCount} older loaded rows are hidden.`,
     )
     expect(screen.getAllByTestId('run-event-timeline-row-correlation')[0]).toHaveTextContent(
-      'Retry correlation: Retry sequence for review_loop',
+      'Retry sequence for review_loop',
     )
     expect(screen.getAllByTestId('run-event-timeline-row-summary')[0]).toHaveTextContent('Retry attempt 180')
     expect(

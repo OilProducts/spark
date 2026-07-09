@@ -29,6 +29,7 @@ import {
     TIMELINE_SEVERITY_LABELS,
     TIMELINE_SEVERITY_STYLES,
     formatTimestamp,
+    humanizeTimelineType,
 } from '../model/shared'
 
 export type RunActivityMode = 'all' | 'transcript' | 'events'
@@ -96,22 +97,18 @@ export function EventRow({
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
                 <span
                     data-testid="run-event-timeline-row-type"
-                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-semibold uppercase tracking-wide text-foreground"
+                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-medium text-foreground"
                 >
-                    {event.type}
+                    {humanizeTimelineType(event.type)}
                 </span>
-                <span
-                    data-testid="run-event-timeline-row-category"
-                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 uppercase tracking-wide text-muted-foreground"
-                >
-                    {TIMELINE_CATEGORY_LABELS[event.category]}
-                </span>
-                <span
-                    data-testid="run-event-timeline-row-severity"
-                    className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
-                >
-                    {TIMELINE_SEVERITY_LABELS[event.severity]}
-                </span>
+                {event.severity !== 'info' ? (
+                    <span
+                        data-testid="run-event-timeline-row-severity"
+                        className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
+                    >
+                        {TIMELINE_SEVERITY_LABELS[event.severity]}
+                    </span>
+                ) : null}
                 <span data-testid="run-event-timeline-row-time" className="text-muted-foreground">
                     {formatTimestamp(event.receivedAt)}
                 </span>
@@ -178,9 +175,7 @@ export function RunActivityCard({
     }, [groupedTimelineEntries, selectedNodeId])
 
     const correlationLabelFor = (group: GroupedTimelineEntry) => (
-        group.correlation
-            ? `${group.correlation.kind === 'retry' ? 'Retry correlation' : 'Interview correlation'}: ${group.correlation.label}`
-            : null
+        group.correlation?.label ?? null
     )
 
     const activityRows = useMemo<ActivityRow[]>(() => {
@@ -194,6 +189,11 @@ export function RunActivityCard({
             for (const group of scopedTimelineGroups) {
                 const correlationLabel = correlationLabelFor(group)
                 for (const event of group.events) {
+                    // The narrative view folds checkpoint/state bookkeeping
+                    // away; Events mode and the category filter keep them.
+                    if (activityMode === 'all' && (event.category === 'checkpoint' || event.category === 'state')) {
+                        continue
+                    }
                     rows.push({
                         kind: 'event',
                         sequence: event.sequence,

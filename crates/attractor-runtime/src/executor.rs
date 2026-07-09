@@ -22,7 +22,8 @@ use crate::error::{Result, RuntimeStorageError};
 use crate::events::{
     checkpoint_saved_event, cleanup_error_event, log_event, pipeline_completed_event_with_reasons,
     pipeline_failed_event, pipeline_paused_event, pipeline_started_event, runtime_status_event,
-    stage_completed_event, stage_failed_event, stage_retrying_event, stage_started_event,
+    stage_completed_event, stage_completed_event_with_notes, stage_failed_event,
+    stage_retrying_event, stage_started_event,
 };
 use crate::records::{mark_record_canceled, mark_record_paused, write_run_record};
 use crate::results::write_run_result;
@@ -703,11 +704,12 @@ where
             } else {
                 store.append_event(
                     &paths,
-                    stage_completed_event(
+                    stage_completed_event_with_notes(
                         &run_id,
                         stage_index,
                         &current_node,
                         outcome.status.as_str(),
+                        Some(outcome.notes.as_str()),
                     ),
                 )?;
             }
