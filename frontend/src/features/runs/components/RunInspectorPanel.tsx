@@ -17,13 +17,15 @@ import { EventRow } from './RunActivityCard'
 import { RunTranscriptGroupSection, useTranscriptExpansion } from './RunTranscriptGroups'
 import { RunArtifactsCard } from './RunArtifactsCard'
 import { RunCheckpointCard } from './RunCheckpointCard'
+import { RunDetailsCard } from './RunDetailsCard'
 import { RunContextCard } from './RunContextCard'
 import { RunResultCard } from './RunResultCard'
 
-export type RunInspectorTab = 'result' | 'checkpoint' | 'context' | 'artifacts' | 'node'
+export type RunInspectorTab = 'result' | 'details' | 'checkpoint' | 'context' | 'artifacts' | 'node'
 
 const RUN_SCOPE_TABS: Array<{ value: RunInspectorTab; label: string }> = [
     { value: 'result', label: 'Result' },
+    { value: 'details', label: 'Details' },
     { value: 'checkpoint', label: 'Checkpoint' },
     { value: 'context', label: 'Context' },
     { value: 'artifacts', label: 'Artifacts' },
@@ -40,6 +42,7 @@ interface RunInspectorPanelProps {
     pendingGatesForNode: PendingInterviewGate[]
     // Run scope card props, passed through unchanged
     resultCardProps: ComponentProps<typeof RunResultCard>
+    detailsCardProps: ComponentProps<typeof RunDetailsCard>
     checkpointCardProps: ComponentProps<typeof RunCheckpointCard>
     contextCardProps: ComponentProps<typeof RunContextCard>
     artifactsCardProps: ComponentProps<typeof RunArtifactsCard>
@@ -151,6 +154,7 @@ export function RunInspectorPanel({
     nodeRetryCount,
     pendingGatesForNode,
     resultCardProps,
+    detailsCardProps,
     checkpointCardProps,
     contextCardProps,
     artifactsCardProps,
@@ -174,6 +178,9 @@ export function RunInspectorPanel({
                     pendingGatesForNode={pendingGatesForNode}
                 />
             )
+            break
+        case 'details':
+            content = <RunDetailsCard {...detailsCardProps} />
             break
         case 'checkpoint':
             content = <RunCheckpointCard {...checkpointCardProps} />

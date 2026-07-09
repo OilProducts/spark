@@ -7,7 +7,7 @@ import {
 } from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -239,6 +239,11 @@ const installControllableEventSource = () => {
     ),
     CLOSED: ControllableEventSource.CLOSED,
   }
+}
+
+const openDetailsTab = async () => {
+  const tab = await screen.findByTestId('run-inspector-tab-details')
+  fireEvent.click(tab)
 }
 
 describe('RunsPanel', () => {
@@ -752,32 +757,22 @@ describe('RunsPanel', () => {
     expect(detailScrollRegion).toHaveClass('overflow-auto')
 
     const runSummaryPanel = screen.getByTestId('run-summary-panel')
-    const nowSection = screen.getByTestId('run-summary-section-now')
-    const outcomeSection = screen.getByTestId('run-summary-section-outcome')
-    const scopeSection = screen.getByTestId('run-summary-section-scope')
-    const usageSection = screen.getByTestId('run-summary-section-usage')
-    const runActivityPanel = screen.getByTestId('run-activity-panel')
     const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
     const runGraphPanel = screen.getByTestId('run-graph-panel')
     const runInspectorPanel = screen.getByTestId('run-inspector-panel')
     const runActivityStreamPanel = screen.getByTestId('run-activity-stream-panel')
+    // Monitoring folds into the compact header strip: identity, status, and
+    // ambient facts on the masthead, no drawer-style NOW box.
+    expect(screen.getByTestId('run-header-title')).toHaveTextContent('selected.dot')
+    expect(screen.getByTestId('run-header-fact-node')).toHaveTextContent('validate')
+    expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
+    // Reference detail lives behind the inspector Details tab.
+    await user.click(screen.getByTestId('run-inspector-tab-details'))
+    expect(screen.getByTestId('run-summary-section-scope')).toHaveTextContent('Scope')
+    expect(screen.getByTestId('run-summary-section-usage')).toHaveTextContent('Usage')
     expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
-    expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
-    expect(nowSection).toHaveTextContent('Now')
-    expect(outcomeSection).toHaveTextContent('Outcome')
-    expect(scopeSection).toHaveTextContent('Scope')
-    expect(usageSection).toHaveTextContent('Usage')
-    expect(screen.getByTestId('run-summary-now-current-node')).toHaveTextContent('validate')
-    expect(screen.getByTestId('run-summary-now-completed-nodes')).toHaveTextContent('1')
-    await waitFor(() => {
-      expect(screen.getByTestId('run-summary-now-pending-questions')).toHaveTextContent('1')
-    })
-    expect(screen.getByTestId('run-summary-now-waiting-state')).toHaveTextContent('Operator input')
-    await waitFor(() => {
-      expect(screen.getByTestId('run-summary-now-latest-journal')).toHaveTextContent('Stage validate started')
-    })
-    expect(runActivityPanel).toBeVisible()
+    await user.click(screen.getByTestId('run-inspector-tab-result'))
     expect(runPendingQuestionsPanel).toBeVisible()
     expect(runActivityStreamPanel).toBeVisible()
     expect(runActivityStreamPanel).toHaveAttribute('data-responsive-layout', 'split')
@@ -817,11 +812,13 @@ describe('RunsPanel', () => {
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     // The run graph is a persistent surface promoted out of the advanced section.
     expect(runGraphPanel).toBeVisible()
-    expect(screen.getByTestId('run-summary-toggle-button')).toBeVisible()
     expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'false')
-    expect(runSummaryPanel).toContainElement(runActivityPanel)
+    // The masthead leads the detail stack: header, gates, graph, inspector, activity.
+    expect(
+      runSummaryPanel.compareDocumentPosition(runPendingQuestionsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     expect(
       runPendingQuestionsPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
@@ -830,15 +827,6 @@ describe('RunsPanel', () => {
     ).toBeTruthy()
     expect(
       runInspectorPanel.compareDocumentPosition(runActivityStreamPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      nowSection.compareDocumentPosition(outcomeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      outcomeSection.compareDocumentPosition(scopeSection) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      scopeSection.compareDocumentPosition(usageSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
 
     await user.click(screen.getByTestId('run-inspector-tab-checkpoint'))
@@ -961,7 +949,7 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-panel')).toBeVisible()
-      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('selected.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('selected.dot')
     })
 
     expect(useStore.getState().viewMode).toBe('runs')
@@ -1057,6 +1045,7 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-summary-continue-button')).toBeVisible()
     })
 
+    await openDetailsTab()
     expect(screen.getByTestId('run-summary-section-scope')).toHaveTextContent('/tmp/project-one')
 
     await user.click(screen.getByTestId('run-summary-continue-button'))
@@ -1267,6 +1256,7 @@ describe('RunsPanel', () => {
     })
 
     await user.click(screen.getAllByTestId('run-history-row')[0]!)
+    await openDetailsTab()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-outcome')).toHaveTextContent('Failure')
@@ -1281,6 +1271,7 @@ describe('RunsPanel', () => {
     expect(screen.queryByTestId('run-summary-last-error')).not.toBeInTheDocument()
 
     await user.click(screen.getAllByTestId('run-history-row')[1]!)
+    await openDetailsTab()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('lineage.dot')
@@ -1443,11 +1434,9 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('run-history-row'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-status')).toHaveTextContent('Completed')
+      expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
     })
 
-    expect(screen.getByTestId('run-activity-status')).toHaveTextContent('Completed')
-    expect(screen.getByTestId('run-activity-headline')).toHaveTextContent('Completed successfully')
 
     act(() => {
       runsListSource()?.emit({
@@ -1569,7 +1558,7 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('run-history-row'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-status')).toHaveTextContent('running')
+      expect(screen.getByTestId('run-header-status')).toHaveTextContent('running')
     })
 
     act(() => {
@@ -1591,8 +1580,9 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-status')).toHaveTextContent('Completed')
+      expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
     })
+    await openDetailsTab()
     expect(screen.getByTestId('run-summary-outcome')).toHaveTextContent('Failure')
     expect(screen.getByTestId('run-summary-outcome-reason')).toHaveTextContent('Live gate failed')
     expect(screen.getByTestId('run-history-row')).toHaveTextContent('Completed')
@@ -1737,7 +1727,7 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('run-history-row'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-panel')).toBeVisible()
+      expect(screen.getByTestId('run-summary-panel')).toBeVisible()
     })
 
     expect(openedUrls.filter((url) => url.includes('/workspace/api/live/events')).length).toBeGreaterThanOrEqual(2)
@@ -1844,6 +1834,7 @@ describe('RunsPanel', () => {
     })
 
     await user.click(screen.getByTestId('run-history-row'))
+    await openDetailsTab()
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-estimated-model-cost')).toHaveTextContent('—')
@@ -2067,7 +2058,7 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-panel')).toBeVisible()
+      expect(screen.getByTestId('run-summary-panel')).toBeVisible()
       expect(latestSourceMatching('/workspace/api/live/events')?.url).toContain(`run_id=${selectedRun.run_id}`)
       expect(latestSourceMatching('/workspace/api/live/events')?.url).toContain('run_sequence=0')
     })
@@ -2259,7 +2250,7 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('run-history-row'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-panel')).toBeVisible()
+      expect(screen.getByTestId('run-summary-panel')).toBeVisible()
       expect(latestSourceMatching(liveEventsUrl)?.url).toContain('run_id=run-reconnect')
       expect(latestSourceMatching(liveEventsUrl)?.url).toContain('run_sequence=0')
     })

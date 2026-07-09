@@ -60,7 +60,7 @@ export interface RunDetailSessionState {
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
     activityMode: 'all' | 'transcript' | 'events'
-    inspectorTab: 'result' | 'checkpoint' | 'context' | 'artifacts' | 'node'
+    inspectorTab: 'result' | 'details' | 'checkpoint' | 'context' | 'artifacts' | 'node'
     graphStatus: ResourceStatus
     graphError: string | null
     expandChildFlows: boolean
@@ -74,7 +74,6 @@ export interface RunDetailSessionState {
     resultData: PipelineResultResponse | null
     resultStatus: ResourceStatus
     resultError: string | null
-    isSummaryCollapsed: boolean
     contextData: ContextResponse | null
     contextStatus: ResourceStatus
     contextError: ContextErrorState | null

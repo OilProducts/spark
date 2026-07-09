@@ -36,7 +36,6 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     resultData: null,
     resultStatus: 'idle',
     resultError: null,
-    isSummaryCollapsed: false,
     contextData: null,
     contextStatus: 'idle',
     contextError: null,

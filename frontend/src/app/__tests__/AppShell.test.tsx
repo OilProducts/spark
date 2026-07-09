@@ -2026,10 +2026,10 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-projects'))
     await user.click(screen.getByTestId('nav-mode-runs'))
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-two.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
     })
     expect(screen.getByText('Run history across all projects.')).toBeVisible()
-    expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-two.dot')
+    expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
     expect(useStore.getState().selectedRunId).toBe('run-two')
   })
 
@@ -2271,7 +2271,7 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-runs'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('review-session.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-session.dot')
     })
     expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useRunsList } from './hooks/useRunsList'
@@ -10,9 +10,9 @@ import { RunActivityCard } from './components/RunActivityCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunInspectorPanel } from './components/RunInspectorPanel'
 import { RunList } from './components/RunList'
-import { RunSummaryCard } from './components/RunSummaryCard'
+import { RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
-import { STATUS_LABELS, type RunRecord } from './model/shared'
+import { type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint, nodeRetryCountFromCheckpoint } from './model/runDetailsModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
@@ -79,12 +79,6 @@ const mergeSelectedRunTelemetry = (currentRecord: RunRecord, summaryRecord: RunR
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
-const summarizeCompletedNodeCount = (completedNodesSummary: string) => {
-    if (completedNodesSummary === '—') {
-        return '0'
-    }
-    return String(completedNodesSummary.split(',').map((node) => node.trim()).filter(Boolean).length)
-}
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
@@ -211,8 +205,6 @@ export function RunsPanel() {
         hasOlderTimelineEvents,
         isTimelineLive,
         isTimelineLoadingOlder,
-        latestRetryTimelineEvent,
-        latestTimelineEvent,
         loadOlderTimelineEvents,
         pendingGateActionError,
         setFreeformAnswersByGateId,
@@ -233,7 +225,6 @@ export function RunsPanel() {
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
-    const isSummaryCollapsed = selectedRunSessionState?.isSummaryCollapsed ?? false
     const activityMode = selectedRunSessionState?.activityMode ?? 'all'
     const inspectorTab = selectedRunSessionState?.inspectorTab ?? 'result'
     const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
@@ -264,8 +255,8 @@ export function RunsPanel() {
     const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
     // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
     const now = Date.now()
+    const questionsPanelRef = useRef<HTMLDivElement | null>(null)
     const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
-    const retryState = latestRetryTimelineEvent
     const selectedNodeId = selectedRunSessionState?.selectedNodeId ?? null
     const liveNodeStatuses = useStore((state) => state.nodeStatuses)
     const humanGateNodeId = useStore((state) => state.humanGate?.nodeId ?? null)
@@ -344,70 +335,6 @@ export function RunsPanel() {
             ? visiblePendingInterviewGates.filter((gate) => gate.nodeId === selectedNodeId)
             : []
     ), [selectedNodeId, visiblePendingInterviewGates])
-    const monitoringHeadline = selectedRun
-        ? (
-            visiblePendingInterviewGates.length > 0
-                ? `Waiting for operator input at ${currentNodeForSummary || 'current node'}`
-                : latestTimelineEvent?.summary
-                    || (selectedRun.status === 'queued' && selectedRun.execution_lock
-                        ? `Queued behind ${selectedRun.execution_lock.key}`
-                        : null)
-                    || (
-                        ACTIVE_RUN_STATUSES.has(selectedRun.status)
-                            ? (currentNodeForSummary ? `Running ${currentNodeForSummary}` : `Run status: ${STATUS_LABELS[selectedRun.status] || selectedRun.status}`)
-                            : selectedRun.status === 'completed' && selectedRun.outcome === 'success'
-                                ? 'Completed successfully'
-                                : selectedRun.status === 'completed' && selectedRun.outcome === 'failure'
-                                    ? 'Completed with failure'
-                                    : `Run status: ${STATUS_LABELS[selectedRun.status] || selectedRun.status}`
-                    )
-        )
-        : ''
-    const monitoringFacts = selectedRun
-        ? [
-            {
-                id: 'current-node',
-                label: 'Current node',
-                value: currentNodeForSummary || '—',
-                testId: 'run-summary-now-current-node',
-            },
-            {
-                id: 'completed-nodes',
-                label: 'Completed nodes',
-                value: summarizeCompletedNodeCount(checkpointCompletedNodes),
-                testId: 'run-summary-now-completed-nodes',
-            },
-            {
-                id: 'pending-questions',
-                label: 'Pending questions',
-                value: String(visiblePendingInterviewGates.length),
-                testId: 'run-summary-now-pending-questions',
-            },
-            {
-                id: 'latest-journal',
-                label: 'Latest journal entry',
-                value: latestTimelineEvent ? latestTimelineEvent.summary : '—',
-                testId: 'run-summary-now-latest-journal',
-            },
-            ...(visiblePendingInterviewGates.length > 0
-                ? [{
-                    id: 'waiting-state',
-                    label: 'Waiting on',
-                    value: 'Operator input',
-                    testId: 'run-summary-now-waiting-state',
-                }]
-                : []),
-            ...(retryState
-                ? [{
-                    id: 'retry-state',
-                    label: 'Retry state',
-                    value: retryState.summary,
-                    testId: 'run-summary-now-retry-state',
-                }]
-                : []),
-        ]
-        : []
-
     const selectRun = (run: RunRecord) => {
         setRunsSelectedRunIdForScope(
             buildRunsScopeKey(scopeMode, activeProjectPath),
@@ -550,15 +477,10 @@ export function RunsPanel() {
                             </Alert>
                         )}
                         {selectedRun && (
-                            <RunSummaryCard
-                                activeProjectPath={activeProjectPath}
-                                collapsed={isSummaryCollapsed}
-                                monitoringFacts={monitoringFacts}
-                                monitoringHeadline={monitoringHeadline}
+                            <RunHeaderBar
+                                run={selectedRun}
                                 now={now}
-                                onCollapsedChange={(collapsed) => {
-                                    patchSelectedRunSession({ isSummaryCollapsed: collapsed })
-                                }}
+                                currentNodeId={currentNodeForSummary}
                                 onContinueFromRun={beginContinuation}
                                 onRequestCancel={(runId, currentStatus) => {
                                     void requestCancel(runId, currentStatus)
@@ -566,7 +488,9 @@ export function RunsPanel() {
                                 onRequestRetry={(runId, currentStatus) => {
                                     void requestRetry(runId, currentStatus)
                                 }}
-                                run={selectedRun}
+                                onFocusPendingQuestions={() => {
+                                    questionsPanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+                                }}
                             />
                         )}
                         {selectedRun && degradedRunPanels.length > 0 && (
@@ -588,6 +512,7 @@ export function RunsPanel() {
                             </Alert>
                         )}
                         {selectedRun && (
+                            <div ref={questionsPanelRef}>
                             <RunQuestionsPanel
                                 freeformAnswersByGateId={freeformAnswersByGateId}
                                 groupedPendingInterviewGates={groupedPendingInterviewGates}
@@ -603,6 +528,7 @@ export function RunsPanel() {
                                 pendingGateActionError={pendingGateActionError}
                                 submittingGateIds={submittingGateIds}
                             />
+                            </div>
                         )}
                         {selectedRun && (
                             <div className={isNarrowViewport
@@ -626,6 +552,11 @@ export function RunsPanel() {
                                     groupedTimelineEntries={groupedTimelineEntries}
                                     nodeRetryCount={nodeRetryCountFromCheckpoint(checkpointData, selectedNodeId)}
                                     pendingGatesForNode={pendingGatesForSelectedNode}
+                                    detailsCardProps={{
+                                        run: selectedRun,
+                                        activeProjectPath,
+                                        now,
+                                    }}
                                     resultCardProps={{
                                         result: resultData,
                                         resultError,
