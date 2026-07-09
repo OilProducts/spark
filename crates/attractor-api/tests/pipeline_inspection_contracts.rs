@@ -256,7 +256,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
         .expect("read")
         .expect("run");
     store
-        .append_transcript_event(
+        .append_event(
             &bundle.paths,
             human_gate_pending_event(
                 "run-journal",
@@ -303,7 +303,6 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     assert!(journal_json.contains("Human gate pending"));
     assert!(!journal_json.contains("\"kind\":\"request_user_input\""));
     assert!(!journal_json.contains("\"request_user_input\""));
-    assert!(!journal_json.contains("turn_stream_event"));
 
     let questions = service.list_pipeline_questions("run-journal");
     assert_eq!(questions.status_code, 200);

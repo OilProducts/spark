@@ -9,9 +9,8 @@
 use std::collections::BTreeMap;
 
 use attractor_core::RawRuntimeEvent;
-use serde::Deserialize;
 use serde_json::{json, Map, Value};
-use spark_agent_adapter::codergen::{CodergenEvent, CodergenExecution};
+use spark_agent_adapter::codergen::CodergenEvent;
 use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
 use spark_storage::conversation::{
     assistant_segment_id, context_compaction_segment_id, plan_segment_id, reasoning_segment_id,
@@ -20,43 +19,63 @@ use spark_storage::conversation::{
     SEGMENT_KIND_CONTEXT_COMPACTION, SEGMENT_KIND_PLAN, SEGMENT_KIND_REASONING,
     SEGMENT_KIND_REQUEST_USER_INPUT, SEGMENT_KIND_TOOL_CALL,
 };
-use spark_storage::{write_json_atomic, JsonWriteOptions};
 
-use crate::error::Result;
-use crate::paths::RunRootPaths;
-
-pub fn read_run_transcript(paths: &RunRootPaths) -> Result<Transcript> {
-    let path = paths.transcript_json();
-    if !path.exists() {
-        return Ok(Transcript::default());
-    }
-    let payload: Value = spark_storage::read_json(&path)?;
-    if payload.get("segments").is_some() {
-        let transcript: Transcript = serde_json::from_value(payload).map_err(|source| {
-            spark_storage::StorageError::JsonRead {
-                path: path.clone(),
-                source,
+/// Deterministic read-time projection of the combined (parent + child)
+/// journal into the run transcript main's write path used to persist: the
+/// same boundary, gate, compaction, and codergen-stream segments, derived on
+/// every read with `sequence` taken from the resequenced combined journal.
+pub fn project_run_transcript(entries: &[attractor_core::JournalEntry]) -> Transcript {
+    let mut transcript = Transcript::default();
+    let mut replay = entries.to_vec();
+    replay.sort_by(|left, right| left.sequence.cmp(&right.sequence));
+    for entry in &replay {
+        match entry.raw_type.as_str() {
+            "CodergenAdapter" | "LLMContent" => {
+                let turn_stream_event = entry.payload.get("turn_stream_event").or_else(|| {
+                    entry
+                        .payload
+                        .get("payload")
+                        .and_then(|payload| payload.get("turn_stream_event"))
+                });
+                let (Some(node_id), Some(turn_stream_event)) =
+                    (entry.node_id.as_deref(), turn_stream_event)
+                else {
+                    continue;
+                };
+                let event = CodergenEvent::new(
+                    entry.raw_type.clone(),
+                    BTreeMap::from([("turn_stream_event".to_string(), turn_stream_event.clone())]),
+                );
+                persist_codergen_event(&mut transcript, "", node_id, &event);
             }
-        })?;
-        return Ok(transcript);
+            _ => {
+                let Ok(event) = serde_json::from_value::<RawRuntimeEvent>(entry.payload.clone())
+                else {
+                    continue;
+                };
+                apply_transcript_runtime_event(&mut transcript, &event, entry.sequence);
+            }
+        }
     }
-    Ok(legacy_transcript_from_entries(&payload))
+    transcript.segments.sort_by(|left, right| {
+        left.order
+            .cmp(&right.order)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    transcript
 }
 
-pub fn persist_transcript_runtime_event(
-    paths: &RunRootPaths,
+fn apply_transcript_runtime_event(
+    transcript: &mut Transcript,
     event: &RawRuntimeEvent,
-) -> Result<()> {
-    let Some(sequence) = event.sequence else {
-        return Ok(());
-    };
-    let mut transcript = read_run_transcript(paths)?;
+    sequence: u64,
+) {
     match event.event_type.as_str() {
         "PipelineStarted" | "PipelineCompleted" | "PipelineFailed" => {
-            upsert_run_boundary(&mut transcript, event, sequence);
+            upsert_run_boundary(transcript, event, sequence);
         }
         "StageStarted" | "StageCompleted" | "StageFailed" | "StageRetrying" => {
-            upsert_stage_boundary(&mut transcript, event, sequence);
+            upsert_stage_boundary(transcript, event, sequence);
         }
         "human_gate" => {
             if event
@@ -64,13 +83,13 @@ pub fn persist_transcript_runtime_event(
                 .get("answer")
                 .is_some_and(|answer| !answer.is_null())
             {
-                upsert_input_answer(&mut transcript, event, sequence);
+                upsert_input_answer(transcript, event, sequence);
             } else {
-                upsert_input(&mut transcript, event, sequence);
+                upsert_input(transcript, event, sequence);
             }
         }
         "InterviewCompleted" => {
-            upsert_input_answer(&mut transcript, event, sequence);
+            upsert_input_answer(transcript, event, sequence);
         }
         "InterviewInform" => {
             let id = format!("segment-notice-journal-{sequence}");
@@ -92,42 +111,6 @@ pub fn persist_transcript_runtime_event(
         }
         _ => {}
     }
-    write_transcript(paths, &mut transcript)
-}
-
-pub fn persist_codergen_transcript(
-    paths: &RunRootPaths,
-    run_id: &str,
-    node_id: &str,
-    execution: &CodergenExecution,
-) -> Result<()> {
-    let mut transcript = read_run_transcript(paths)?;
-    for event in &execution.events {
-        persist_codergen_event(&mut transcript, run_id, node_id, event);
-    }
-    upsert_final_assistant_text(&mut transcript, node_id, &execution.response_text);
-    write_transcript(paths, &mut transcript)
-}
-
-pub fn persist_codergen_final_response_text(
-    paths: &RunRootPaths,
-    node_id: &str,
-    response_text: &str,
-) -> Result<()> {
-    let mut transcript = read_run_transcript(paths)?;
-    upsert_final_assistant_text(&mut transcript, node_id, response_text);
-    write_transcript(paths, &mut transcript)
-}
-
-pub fn persist_codergen_transcript_event(
-    paths: &RunRootPaths,
-    run_id: &str,
-    node_id: &str,
-    event: &CodergenEvent,
-) -> Result<()> {
-    let mut transcript = read_run_transcript(paths)?;
-    persist_codergen_event(&mut transcript, run_id, node_id, event);
-    write_transcript(paths, &mut transcript)
 }
 
 fn node_turn_id(node_id: &str) -> String {
@@ -175,20 +158,6 @@ fn next_transcript_order(transcript: &Transcript) -> i64 {
         .max()
         .unwrap_or(0)
         .saturating_add(1)
-}
-
-fn write_transcript(paths: &RunRootPaths, transcript: &mut Transcript) -> Result<()> {
-    transcript.segments.sort_by(|left, right| {
-        left.order
-            .cmp(&right.order)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    write_json_atomic(
-        paths.transcript_json(),
-        transcript,
-        JsonWriteOptions::default(),
-    )?;
-    Ok(())
 }
 
 fn boundary_status(event_type: &str, event: &RawRuntimeEvent) -> String {
@@ -547,39 +516,6 @@ fn upsert_message(
     transcript.upsert_segment(segment);
 }
 
-fn upsert_final_assistant_text(transcript: &mut Transcript, node_id: &str, response_text: &str) {
-    if response_text.trim().is_empty() || has_complete_assistant_message(transcript, node_id) {
-        return;
-    }
-    let scope_key = node_turn_id(node_id);
-    let id = format!("segment-assistant-{scope_key}");
-    let order = transcript
-        .find_segment(&id)
-        .map(|segment| segment.order)
-        .unwrap_or_else(|| next_transcript_order(transcript));
-    let mut segment = segment_shell(
-        &id,
-        &scope_key,
-        order,
-        SEGMENT_KIND_ASSISTANT_MESSAGE,
-        "assistant",
-        "complete",
-        "",
-    );
-    segment.content = response_text.to_string();
-    transcript.upsert_segment(segment);
-}
-
-fn has_complete_assistant_message(transcript: &Transcript, node_id: &str) -> bool {
-    let turn_id = node_turn_id(node_id);
-    transcript.segments.iter().any(|segment| {
-        segment.turn_id == turn_id
-            && segment.kind == SEGMENT_KIND_ASSISTANT_MESSAGE
-            && segment.status == "complete"
-            && !segment.content.trim().is_empty()
-    })
-}
-
 fn upsert_tool_call(transcript: &mut Transcript, node_id: &str, turn_event: &TurnStreamEvent) {
     let tool = turn_event.tool_call.clone().unwrap_or_else(|| json!({}));
     let scope_key = node_turn_id(node_id);
@@ -936,82 +872,4 @@ fn string_map_payload(payload: &BTreeMap<String, Value>, key: &str) -> Option<St
 
 fn numeric_payload(event: &RawRuntimeEvent, key: &str) -> Option<u64> {
     event.payload.get(key).and_then(Value::as_u64)
-}
-
-/// Legacy `{"entries": [...]}` run transcript files, read-compatibly converted
-/// to the shared record shape.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyBoundaryEntry {
-    id: String,
-    sequence: u64,
-    node_id: Option<String>,
-    stage_index: Option<u64>,
-    attempt: Option<u64>,
-    status: String,
-    started_at: Option<String>,
-    ended_at: Option<String>,
-    model: Option<String>,
-    source_scope: String,
-    source_parent_node_id: Option<String>,
-    source_flow_name: Option<String>,
-    summary: String,
-}
-
-fn legacy_transcript_from_entries(payload: &Value) -> Transcript {
-    let mut transcript = Transcript::default();
-    let Some(entries) = payload.get("entries").and_then(Value::as_array) else {
-        return transcript;
-    };
-    for entry in entries {
-        if entry.get("kind").and_then(Value::as_str) == Some(SEGMENT_KIND_BOUNDARY) {
-            let Ok(legacy) = serde_json::from_value::<LegacyBoundaryEntry>(entry.clone()) else {
-                continue;
-            };
-            let turn_id = legacy
-                .node_id
-                .as_deref()
-                .map(node_turn_id)
-                .unwrap_or_else(|| "run".to_string());
-            let timestamp = legacy
-                .started_at
-                .clone()
-                .or_else(|| legacy.ended_at.clone())
-                .unwrap_or_default();
-            let mut segment = segment_shell(
-                &legacy.id,
-                &turn_id,
-                legacy.sequence as i64,
-                SEGMENT_KIND_BOUNDARY,
-                "system",
-                &legacy.status,
-                &timestamp,
-            );
-            segment.updated_at = legacy.ended_at.clone().unwrap_or(timestamp);
-            segment.content = legacy.summary.clone();
-            segment.boundary = Some(BoundaryMeta {
-                node_id: legacy.node_id,
-                stage_index: legacy.stage_index,
-                attempt: legacy.attempt,
-                source_scope: legacy.source_scope,
-                source_parent_node_id: legacy.source_parent_node_id,
-                source_flow_name: legacy.source_flow_name,
-                model: legacy.model,
-                started_at: legacy.started_at,
-                ended_at: legacy.ended_at,
-                summary: legacy.summary,
-            });
-            transcript.upsert_segment(segment);
-            continue;
-        }
-        if let Ok(segment) = serde_json::from_value::<TranscriptSegment>(entry.clone()) {
-            transcript.upsert_segment(segment);
-        }
-    }
-    transcript.segments.sort_by(|left, right| {
-        left.order
-            .cmp(&right.order)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    transcript
 }

@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use attractor_core::{ContextMap, DotGraph, Outcome, RawRuntimeEvent};
 use serde_json::{json, Value};
 use spark_agent_adapter::{
-    codergen::CodergenEventSink, CodergenBackend, CodergenError, CodergenExecution,
-    CodergenHandler, CodergenRequest,
+    CodergenBackend, CodergenError, CodergenExecution, CodergenHandler, CodergenRequest,
 };
 
 use crate::events::{
@@ -22,7 +21,6 @@ pub struct RuntimeCodergen {
     fallback_reasoning_effort: Option<String>,
     project_path: Option<PathBuf>,
     metadata: BTreeMap<String, Value>,
-    event_sink: Option<CodergenEventSink>,
 }
 
 impl RuntimeCodergen {
@@ -37,7 +35,6 @@ impl RuntimeCodergen {
             fallback_reasoning_effort: None,
             project_path: None,
             metadata: BTreeMap::new(),
-            event_sink: None,
         }
     }
 
@@ -56,7 +53,6 @@ impl RuntimeCodergen {
             fallback_reasoning_effort: None,
             project_path: None,
             metadata: BTreeMap::new(),
-            event_sink: None,
         }
     }
 
@@ -75,7 +71,6 @@ impl RuntimeCodergen {
             fallback_reasoning_effort: None,
             project_path: None,
             metadata: BTreeMap::new(),
-            event_sink: None,
         }
     }
 
@@ -103,11 +98,6 @@ impl RuntimeCodergen {
         self
     }
 
-    pub fn with_event_sink(mut self, event_sink: Option<CodergenEventSink>) -> Self {
-        self.event_sink = event_sink;
-        self
-    }
-
     pub fn execute(
         &mut self,
         node_id: &str,
@@ -120,17 +110,14 @@ impl RuntimeCodergen {
         &mut self,
         node_id: &str,
         context: ContextMap,
-        event_sink: Option<spark_agent_adapter::CodergenStreamSink>,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
     ) -> Result<CodergenExecution, CodergenError> {
         let node =
             self.graph.nodes.get(node_id).cloned().ok_or_else(|| {
                 CodergenError::Backend(format!("unknown codergen node: {node_id}"))
             })?;
-        // The thread-local sink keeps the transcript.json write path fed
-        // while the stream sink journals events live.
-        spark_agent_adapter::codergen::with_codergen_event_sink(self.event_sink.clone(), || {
-            self.handler.execute_with_event_sink(
-                CodergenRequest {
+        self.handler.execute_with_event_sink(
+            CodergenRequest {
                 node_id: node_id.to_string(),
                 node,
                 graph: self.graph.clone(),
@@ -142,10 +129,9 @@ impl RuntimeCodergen {
                 fallback_reasoning_effort: self.fallback_reasoning_effort.clone(),
                 project_path: self.project_path.clone(),
                 metadata: self.metadata.clone(),
-                },
-                event_sink,
-            )
-        })
+            },
+            event_sink,
+        )
     }
 }
 

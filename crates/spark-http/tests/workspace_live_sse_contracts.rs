@@ -2379,7 +2379,7 @@ impl spark_agent_adapter::CodergenBackend for SlowStreamingCodergenBackend {
     fn run_with_event_sink(
         &mut self,
         request: spark_agent_adapter::CodergenBackendRequest,
-        event_sink: Option<spark_agent_adapter::CodergenStreamSink>,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
     ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
     {
         let streamed = spark_agent_adapter::CodergenEvent::new(

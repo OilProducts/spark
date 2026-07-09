@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -604,43 +603,9 @@ impl CodergenEvent {
     }
 }
 
-pub type CodergenEventSink = Arc<dyn Fn(&CodergenEvent) + Send + Sync>;
-
-thread_local! {
-    static CURRENT_CODERGEN_EVENT_SINK: RefCell<Option<CodergenEventSink>> = RefCell::new(None);
-}
-
-pub fn emit_codergen_event(event: &CodergenEvent) {
-    CURRENT_CODERGEN_EVENT_SINK.with(|current| {
-        if let Some(sink) = current.borrow().as_ref() {
-            sink(event);
-        }
-    });
-}
-
-pub fn with_codergen_event_sink<T>(
-    event_sink: Option<CodergenEventSink>,
-    run: impl FnOnce() -> T,
-) -> T {
-    struct SinkGuard(Option<CodergenEventSink>);
-
-    impl Drop for SinkGuard {
-        fn drop(&mut self) {
-            let previous = self.0.take();
-            CURRENT_CODERGEN_EVENT_SINK.with(|current| {
-                *current.borrow_mut() = previous;
-            });
-        }
-    }
-
-    let previous = CURRENT_CODERGEN_EVENT_SINK.with(|current| current.replace(event_sink));
-    let _guard = SinkGuard(previous);
-    run()
-}
-
 /// Live consumer for codergen events as they are produced, so journals and
 /// transcripts stream while a node is still executing.
-pub type CodergenStreamSink = std::sync::Arc<dyn Fn(CodergenEvent) + Send + Sync>;
+pub type CodergenEventSink = std::sync::Arc<dyn Fn(CodergenEvent) + Send + Sync>;
 
 pub trait CodergenBackend {
     fn run(
@@ -654,7 +619,7 @@ pub trait CodergenBackend {
     fn run_with_event_sink(
         &mut self,
         request: CodergenBackendRequest,
-        event_sink: Option<CodergenStreamSink>,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let _ = event_sink;
         self.run(request)
@@ -666,11 +631,11 @@ pub trait CodergenBackend {
 /// same list — no post-hoc dedupe needed by callers that consumed the sink.
 struct CodergenEventLog {
     events: Vec<CodergenEvent>,
-    sink: Option<CodergenStreamSink>,
+    sink: Option<CodergenEventSink>,
 }
 
 impl CodergenEventLog {
-    fn new(sink: Option<CodergenStreamSink>) -> Self {
+    fn new(sink: Option<CodergenEventSink>) -> Self {
         Self {
             events: Vec::new(),
             sink,
@@ -730,7 +695,7 @@ impl CodergenHandler {
     pub fn execute_with_event_sink(
         &mut self,
         request: CodergenRequest,
-        event_sink: Option<CodergenStreamSink>,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenExecution, CodergenError> {
         let stage_dir = ensure_stage_dir(request.logs_root.as_deref(), &request.node_id)?;
         let read_contract = resolve_context_read_contract(&request.node.attrs);
@@ -899,7 +864,7 @@ impl CodergenHandler {
                 std::sync::Arc::new(move |event: CodergenEvent| {
                     streamed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     sink(event);
-                }) as CodergenStreamSink
+                }) as CodergenEventSink
             });
             let output = self
                 .backend

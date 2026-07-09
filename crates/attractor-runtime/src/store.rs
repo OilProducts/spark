@@ -20,8 +20,6 @@ use crate::records::{normalize_record_for_write, read_run_record, write_run_reco
 use crate::results::{
     materialize_run_result, read_materialized_run_result, write_run_result, ResultSummaryFn,
 };
-use crate::transcript::read_run_transcript;
-use spark_storage::conversation::Transcript;
 
 /// Notified with the run id after every durable run mutation (journal append,
 /// checkpoint save, record write) so a live layer can publish incrementally.
@@ -326,26 +324,12 @@ impl RunStore {
         Ok(event)
     }
 
-    pub fn append_transcript_event(
-        &self,
-        paths: &RunRootPaths,
-        event: RawRuntimeEvent,
-    ) -> Result<RawRuntimeEvent> {
-        let event = self.append_event(paths, event)?;
-        crate::transcript::persist_transcript_runtime_event(paths, &event)?;
-        Ok(event)
-    }
-
     pub fn read_raw_events(&self, paths: &RunRootPaths) -> Result<Vec<RawRuntimeEvent>> {
         crate::events::read_raw_events(paths)
     }
 
     pub fn read_journal(&self, paths: &RunRootPaths) -> Result<Vec<attractor_core::JournalEntry>> {
         Ok(journal_entries_from_events(&self.read_raw_events(paths)?))
-    }
-
-    pub fn read_transcript(&self, paths: &RunRootPaths) -> Result<Transcript> {
-        read_run_transcript(paths)
     }
 
     pub fn save_checkpoint(

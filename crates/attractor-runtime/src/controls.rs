@@ -302,7 +302,7 @@ impl RuntimeControls {
             flow_source: request.flow_source,
             flow_definition_json: request.flow_definition_json,
         })?;
-        self.store.append_transcript_event(
+        self.store.append_event(
             &paths,
             crate::events::pipeline_started_event(&new_run_id, &request.flow.id, start_node, false),
         )?;

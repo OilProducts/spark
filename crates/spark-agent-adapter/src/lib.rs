@@ -31,7 +31,7 @@ pub use codergen::{
     CodergenBackendRequest, CodergenBackendResponse, CodergenChildInterventionRequest,
     CodergenChildInterventionResult, CodergenError, CodergenEvent, CodergenEventSink,
     CodergenExecution, CodergenExecutionMode, CodergenHandler, CodergenRequest,
-    CodergenRuntimeMode, CodergenSessionInterventionBroker, CodergenStreamSink,
+    CodergenRuntimeMode, CodergenSessionInterventionBroker,
 };
 pub use codex_app_server::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,

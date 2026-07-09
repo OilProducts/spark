@@ -1129,8 +1129,8 @@ impl AttractorApiService {
 
     pub fn get_pipeline_transcript(&self, pipeline_id: &str) -> RuntimeRouteResponse {
         let store = RunStore::for_settings(&self.settings);
-        let bundle = match store.read_run_bundle(pipeline_id) {
-            Ok(Some(bundle)) => bundle,
+        let entries = match attractor_runtime::combined_run_journal_entries(&store, pipeline_id) {
+            Ok(Some(entries)) => entries,
             Ok(None) => {
                 return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
             }
@@ -1138,16 +1138,14 @@ impl AttractorApiService {
                 return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
             }
         };
-        match store.read_transcript(&bundle.paths) {
-            Ok(transcript) => RuntimeRouteResponse::json(
-                200,
-                json!({
-                    "pipeline_id": pipeline_id,
-                    "entries": transcript.segments,
-                }),
-            ),
-            Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
-        }
+        let transcript = attractor_runtime::project_run_transcript(&entries);
+        RuntimeRouteResponse::json(
+            200,
+            json!({
+                "pipeline_id": pipeline_id,
+                "entries": transcript.segments,
+            }),
+        )
     }
 
     pub fn get_pipeline_events(
@@ -1502,7 +1500,7 @@ impl AttractorApiService {
                 .map(str::to_string),
             answer.to_string(),
         );
-        if let Err(error) = store.append_transcript_event(&bundle.paths, event) {
+        if let Err(error) = store.append_event(&bundle.paths, event) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
         }
         RuntimeRouteResponse::json(

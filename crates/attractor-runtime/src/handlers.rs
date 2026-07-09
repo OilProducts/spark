@@ -333,36 +333,22 @@ fn default_manager_loop_source() -> String {
     "manager_loop".to_string()
 }
 
-fn codergen_event_sink(
-    runtime: &HandlerRuntime,
-) -> Option<spark_agent_adapter::codergen::CodergenEventSink> {
-    let paths = runtime.run_paths.clone()?;
-    let run_id = runtime.run_id.clone();
-    let node_id = runtime.node_id.clone();
-    let trace_path = runtime
-        .logs_root
-        .as_ref()
-        .map(|logs_root| logs_root.join(&node_id).join(AGENT_TRACE_FILE_NAME));
-    Some(Arc::new(move |event: &CodergenEvent| {
-        if let Err(error) =
-            crate::transcript::persist_codergen_transcript_event(&paths, &run_id, &node_id, event)
-        {
-            eprintln!("failed to persist codergen transcript event: {error}");
+fn write_agent_trace_event(trace_path: Option<&std::path::Path>, event: &CodergenEvent) {
+    if !should_write_agent_trace(event) {
+        return;
+    }
+    let Some(trace_path) = trace_path else {
+        return;
+    };
+    if let Some(parent) = trace_path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            eprintln!("failed to create agent trace directory: {error}");
+            return;
         }
-        if should_write_agent_trace(event) {
-            if let Some(trace_path) = trace_path.as_ref() {
-                if let Some(parent) = trace_path.parent() {
-                    if let Err(error) = fs::create_dir_all(parent) {
-                        eprintln!("failed to create agent trace directory: {error}");
-                        return;
-                    }
-                }
-                if let Err(error) = append_jsonl(trace_path, event) {
-                    eprintln!("failed to append agent trace event: {error}");
-                }
-            }
-        }
-    }))
+    }
+    if let Err(error) = append_jsonl(trace_path, event) {
+        eprintln!("failed to append agent trace event: {error}");
+    }
 }
 
 fn should_write_agent_trace(event: &CodergenEvent) -> bool {
@@ -716,8 +702,7 @@ impl RuntimeHandlerRunner {
                     ),
                 )
             })?;
-            let event = append_event(paths, event)?;
-            crate::transcript::persist_transcript_runtime_event(paths, &event)?;
+            append_event(paths, event)?;
         }
         Ok(())
     }
@@ -762,14 +747,16 @@ impl RuntimeHandlerRunner {
                     json!(runtime.run_workdir.to_string_lossy().to_string()),
                 ),
             ]),
-        )
-        .with_event_sink(self.codergen_event_sink(&runtime));
+        );
         // Journal codergen events as they are produced so transcripts stream
         // while the node executes; the event-log prefix contract means every
         // event is sunk exactly once, so no post-hoc pass is needed. The
-        // transcript sink above stays in place until the transcript.json
-        // write path is retired in favor of the journal projection.
+        // transcript renders from the journal projection at read time.
         let live_sink_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let trace_path = runtime
+            .logs_root
+            .as_ref()
+            .map(|logs_root| logs_root.join(&runtime.node_id).join(AGENT_TRACE_FILE_NAME));
         let live_sink = runtime.run_paths.as_ref().map(|paths| {
             let paths = paths.clone();
             let run_id = runtime.run_id.clone();
@@ -777,7 +764,9 @@ impl RuntimeHandlerRunner {
             let append_lock = Arc::clone(&self.event_append_lock);
             let run_event_observer = self.run_event_observer.clone();
             let sink_error = Arc::clone(&live_sink_error);
+            let trace_path = trace_path.clone();
             Arc::new(move |event: spark_agent_adapter::CodergenEvent| {
+                write_agent_trace_event(trace_path.as_deref(), &event);
                 let raw_event = crate::events::codergen_adapter_event(
                     &run_id,
                     &node_id,
@@ -807,7 +796,7 @@ impl RuntimeHandlerRunner {
                         }
                     }
                 }
-            }) as spark_agent_adapter::CodergenStreamSink
+            }) as spark_agent_adapter::CodergenEventSink
         });
         let journaling_live = live_sink.is_some();
         let execution = codergen
@@ -820,14 +809,6 @@ impl RuntimeHandlerRunner {
         {
             return Err(RuntimeNodeError::runtime(error));
         }
-        if let Some(paths) = runtime.run_paths.as_ref() {
-            crate::transcript::persist_codergen_final_response_text(
-                paths,
-                &runtime.node_id,
-                &execution.response_text,
-            )
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-        }
         if runtime.run_paths.is_some() && !journaling_live {
             for event in codergen_events_for_journal(&runtime.run_id, &runtime.node_id, &execution)
             {
@@ -835,14 +816,37 @@ impl RuntimeHandlerRunner {
                     .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
             }
         }
+        // Text-only completions never stream a content event, so the final
+        // response text would otherwise be invisible to the journal-projected
+        // transcript. Journal a synthetic completion for those.
+        let streamed_assistant_content = execution.events.iter().any(|event| {
+            event
+                .payload
+                .get("turn_stream_event")
+                .and_then(|value| value.get("kind"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|kind| matches!(kind, "content_delta" | "content_completed"))
+        });
+        if runtime.run_paths.is_some()
+            && !streamed_assistant_content
+            && !execution.response_text.trim().is_empty()
+        {
+            self.emit(
+                &runtime,
+                crate::events::codergen_adapter_event(
+                    &runtime.run_id,
+                    &runtime.node_id,
+                    "final_response_text",
+                    json!({"turn_stream_event": {
+                        "kind": "content_completed",
+                        "channel": "assistant",
+                        "message": execution.response_text.clone(),
+                    }}),
+                ),
+            )
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+        }
         Ok(codergen_outcome(execution))
-    }
-
-    fn codergen_event_sink(
-        &self,
-        runtime: &HandlerRuntime,
-    ) -> Option<spark_agent_adapter::codergen::CodergenEventSink> {
-        codergen_event_sink(runtime)
     }
 
     fn execute_tool(

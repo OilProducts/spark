@@ -1,105 +1,146 @@
-use std::collections::BTreeMap;
-
-use attractor_core::{Outcome, OutcomeStatus, RawRuntimeEvent};
-use attractor_runtime::paths::RunRootPaths;
-use attractor_runtime::read_run_transcript;
-use attractor_runtime::transcript::{
-    persist_codergen_transcript, persist_transcript_runtime_event,
-};
+use attractor_core::JournalEntry;
+use attractor_runtime::project_run_transcript;
 use serde_json::{json, Value};
-use spark_agent_adapter::codergen::{CodergenEvent, CodergenExecution};
 
-fn run_paths(temp: &tempfile::TempDir) -> RunRootPaths {
-    let paths = RunRootPaths::new(temp.path().join("runs"), "/projects/project-a", "run-a")
-        .expect("run paths");
-    std::fs::create_dir_all(&paths.root).expect("run root");
-    paths
-}
-
-fn execution(events: Vec<CodergenEvent>, response_text: &str) -> CodergenExecution {
-    CodergenExecution {
-        outcome: Outcome::new(OutcomeStatus::Success),
-        prompt: String::new(),
-        response_text: response_text.to_string(),
-        events,
-        repair_attempts: 0,
-        contract_violations: Vec::new(),
-        usage: None,
-    }
-}
-
-fn runtime_event(event_type: &str, sequence: u64, payload: Value) -> RawRuntimeEvent {
-    RawRuntimeEvent {
-        run_id: "run-a".to_string(),
-        event_type: event_type.to_string(),
+fn journal_entry(
+    sequence: u64,
+    raw_type: &str,
+    node_id: Option<&str>,
+    payload: Value,
+) -> JournalEntry {
+    JournalEntry {
+        id: format!("journal-{sequence}"),
+        sequence,
         emitted_at: format!("2026-01-01T00:00:{sequence:02}Z"),
-        sequence: Some(sequence),
-        payload: payload
-            .as_object()
-            .expect("payload object")
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect::<BTreeMap<_, _>>(),
+        kind: "other".to_string(),
+        raw_type: raw_type.to_string(),
+        severity: "info".to_string(),
+        summary: String::new(),
+        node_id: node_id.map(str::to_string),
+        stage_index: None,
+        source_scope: "root".to_string(),
+        source_parent_node_id: None,
+        source_flow_name: None,
+        question_id: None,
+        payload,
     }
 }
 
-fn codergen_turn_event(turn_stream_event: Value) -> CodergenEvent {
-    CodergenEvent::new(
-        "turn_stream_event",
-        BTreeMap::from([
-            ("turn_stream_event".to_string(), turn_stream_event),
-            ("emitted_at".to_string(), json!("2026-01-01T00:00:10Z")),
-        ]),
+/// Journal payloads mirror the serialized RawRuntimeEvent shape.
+fn runtime_entry(
+    sequence: u64,
+    raw_type: &str,
+    node_id: Option<&str>,
+    payload: Value,
+) -> JournalEntry {
+    let mut event_payload = payload.as_object().cloned().unwrap_or_default();
+    let payload_value = json!({
+        "run_id": "run-a",
+        "type": raw_type,
+        "emitted_at": format!("2026-01-01T00:00:{sequence:02}Z"),
+        "sequence": sequence,
+    });
+    let mut merged = payload_value.as_object().cloned().expect("object");
+    merged.append(&mut event_payload);
+    journal_entry(sequence, raw_type, node_id, Value::Object(merged))
+}
+
+fn adapter_entry(sequence: u64, node_id: &str, turn_stream_event: Value) -> JournalEntry {
+    journal_entry(
+        sequence,
+        "CodergenAdapter",
+        Some(node_id),
+        json!({
+            "adapter_event_type": "rust_agent_session_event",
+            "node_id": node_id,
+            "payload": {"turn_stream_event": turn_stream_event},
+        }),
+    )
+}
+
+/// Content deltas surface in the journal as flat LLMContent entries carrying
+/// the same turn_stream_event passthrough.
+fn llm_content_entry(sequence: u64, node_id: &str, turn_stream_event: Value) -> JournalEntry {
+    journal_entry(
+        sequence,
+        "LLMContent",
+        Some(node_id),
+        json!({
+            "node_id": node_id,
+            "turn_stream_event": turn_stream_event,
+        }),
     )
 }
 
 #[test]
 fn codergen_events_coalesce_into_shared_segments() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let paths = run_paths(&temp);
-    let execution = execution(
-        vec![
-            codergen_turn_event(json!({
+    let entries = vec![
+        llm_content_entry(
+            10,
+            "build",
+            json!({
                 "kind": "content_delta",
                 "channel": "assistant",
                 "content_delta": "Hello ",
-            })),
-            codergen_turn_event(json!({
+            }),
+        ),
+        llm_content_entry(
+            11,
+            "build",
+            json!({
                 "kind": "content_delta",
                 "channel": "assistant",
                 "content_delta": "world",
-            })),
-            codergen_turn_event(json!({
+            }),
+        ),
+        llm_content_entry(
+            12,
+            "build",
+            json!({
                 "kind": "content_completed",
                 "channel": "assistant",
                 "content_delta": "Hello world",
-            })),
-            codergen_turn_event(json!({
+            }),
+        ),
+        llm_content_entry(
+            13,
+            "build",
+            json!({
                 "kind": "content_delta",
                 "channel": "reasoning",
                 "content_delta": "thinking...",
-            })),
-            codergen_turn_event(json!({
+            }),
+        ),
+        adapter_entry(
+            14,
+            "build",
+            json!({
                 "kind": "tool_call_started",
                 "tool_call": {"id": "call-1", "title": "Run ls", "command": "ls"},
-            })),
-            codergen_turn_event(json!({
+            }),
+        ),
+        adapter_entry(
+            15,
+            "build",
+            json!({
                 "kind": "tool_call_completed",
                 "tool_call": {"id": "call-1", "title": "Run ls", "command": "ls", "output": "README.md"},
-            })),
-            codergen_turn_event(json!({
+            }),
+        ),
+        adapter_entry(
+            16,
+            "build",
+            json!({
                 "kind": "request_user_input_requested",
                 "request_user_input": {
                     "request_id": "request-1",
                     "questions": [{"id": "q1", "question": "Approve?", "options": []}],
                 },
-            })),
-        ],
-        "Hello world",
-    );
-    persist_codergen_transcript(&paths, "run-a", "build", &execution).expect("persist");
+            }),
+        ),
+    ];
 
-    let transcript = read_run_transcript(&paths).expect("read");
+    let transcript = project_run_transcript(&entries);
     let assistant = transcript
         .segments
         .iter()
@@ -139,44 +180,27 @@ fn codergen_events_coalesce_into_shared_segments() {
         "request-1"
     );
     assert_eq!(input.content, "Approve?");
-
-    // The persisted file is the shared record shape.
-    let raw: Value =
-        serde_json::from_str(&std::fs::read_to_string(paths.transcript_json()).expect("file"))
-            .expect("json");
-    assert!(raw.get("segments").is_some());
-    assert!(raw.get("entries").is_none());
 }
 
 #[test]
 fn runtime_events_produce_boundary_segments_with_metadata() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let paths = run_paths(&temp);
-    persist_transcript_runtime_event(
-        &paths,
-        &runtime_event("PipelineStarted", 1, json!({"name": "compat-flow"})),
-    )
-    .expect("pipeline started");
-    persist_transcript_runtime_event(
-        &paths,
-        &runtime_event(
-            "StageStarted",
+    let entries = vec![
+        runtime_entry(1, "PipelineStarted", None, json!({"name": "compat-flow"})),
+        runtime_entry(
             2,
+            "StageStarted",
+            Some("build"),
             json!({"node_id": "build", "stage_index": 0, "attempt": 1}),
         ),
-    )
-    .expect("stage started");
-    persist_transcript_runtime_event(
-        &paths,
-        &runtime_event(
-            "StageCompleted",
+        runtime_entry(
             3,
+            "StageCompleted",
+            Some("build"),
             json!({"node_id": "build", "stage_index": 0, "attempt": 1}),
         ),
-    )
-    .expect("stage completed");
+    ];
 
-    let transcript = read_run_transcript(&paths).expect("read");
+    let transcript = project_run_transcript(&entries);
     let boundaries = transcript
         .segments
         .iter()
@@ -206,64 +230,28 @@ fn runtime_events_produce_boundary_segments_with_metadata() {
 }
 
 #[test]
-fn legacy_entries_transcript_files_read_compatibly() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let paths = run_paths(&temp);
-    std::fs::write(
-        paths.transcript_json(),
-        serde_json::to_string_pretty(&json!({
-            "entries": [
-                {
-                    "kind": "boundary",
-                    "id": "boundary-root-root--build-0-1",
-                    "sequence": 4,
-                    "nodeId": "build",
-                    "stageIndex": 0,
-                    "attempt": 1,
-                    "status": "completed",
-                    "startedAt": "2026-01-01T00:00:01Z",
-                    "endedAt": "2026-01-01T00:00:04Z",
-                    "model": "compat-model",
-                    "sourceScope": "root",
-                    "sourceParentNodeId": null,
-                    "sourceFlowName": null,
-                    "summary": "Stage build completed"
-                },
-                {
-                    "id": "message-build-assistant-default",
-                    "turn_id": "run-node-build",
-                    "order": 5,
-                    "kind": "assistant_message",
-                    "role": "assistant",
-                    "status": "complete",
-                    "timestamp": "2026-01-01T00:00:05Z",
-                    "updated_at": "2026-01-01T00:00:05Z",
-                    "content": "Done.",
-                    "completed_at": null,
-                    "error": null,
-                    "artifact_id": null,
-                    "phase": null,
-                    "tool_call": null,
-                    "request_user_input": null,
-                    "source": null
-                }
-            ]
-        }))
-        .expect("json"),
-    )
-    .expect("write legacy");
-
-    let transcript = read_run_transcript(&paths).expect("read");
-    assert_eq!(transcript.segments.len(), 2);
-    let boundary = &transcript.segments[0];
-    assert_eq!(boundary.kind, "boundary");
-    assert_eq!(boundary.order, 4);
-    assert_eq!(boundary.content, "Stage build completed");
-    let meta = boundary.boundary.as_ref().expect("meta");
-    assert_eq!(meta.node_id.as_deref(), Some("build"));
-    assert_eq!(meta.model.as_deref(), Some("compat-model"));
-    let message = &transcript.segments[1];
-    assert_eq!(message.kind, "assistant_message");
-    assert_eq!(message.content, "Done.");
-    assert_eq!(message.order, 5);
+fn projection_is_deterministic_regardless_of_entry_order() {
+    let mut entries = vec![
+        runtime_entry(
+            2,
+            "StageStarted",
+            Some("build"),
+            json!({"node_id": "build", "stage_index": 0, "attempt": 1}),
+        ),
+        llm_content_entry(
+            3,
+            "build",
+            json!({
+                "kind": "content_completed",
+                "channel": "assistant",
+                "content_delta": "Done.",
+            }),
+        ),
+        runtime_entry(1, "PipelineStarted", None, json!({"name": "compat-flow"})),
+    ];
+    let forward = project_run_transcript(&entries);
+    entries.reverse();
+    let reversed = project_run_transcript(&entries);
+    assert_eq!(forward, reversed);
+    assert_eq!(forward.segments.len(), 3);
 }

@@ -13,9 +13,9 @@ use crate::agent::{
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
 use crate::codergen::{
-    emit_codergen_event, ActiveCodergenSession, CodergenBackend, CodergenBackendOutput,
-    CodergenBackendRequest, CodergenBackendResponse, CodergenError, CodergenEvent,
-    CodergenSessionInterventionBroker, CodergenStreamSink,
+    ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
+    CodergenBackendResponse, CodergenError, CodergenEvent, CodergenEventSink,
+    CodergenSessionInterventionBroker,
 };
 use crate::codex_app_server::{
     usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
@@ -70,7 +70,7 @@ impl CodergenBackend for RustLlmCodergenBackend {
     fn run_with_event_sink(
         &mut self,
         request: CodergenBackendRequest,
-        event_sink: Option<CodergenStreamSink>,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         if is_codex_provider_selector(&request.provider) {
             return self.run_codex_app_server_codergen(request, event_sink);
@@ -87,7 +87,7 @@ impl RustLlmCodergenBackend {
     fn run_codex_app_server_codergen(
         &mut self,
         request: CodergenBackendRequest,
-        event_sink: Option<CodergenStreamSink>,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let agent_request = codergen_agent_turn_request(&request);
         // Live prefix contract: the stream sink receives exactly the events
@@ -97,11 +97,11 @@ impl RustLlmCodergenBackend {
         let stream_sink = event_sink;
         let turn_event_sink: Option<AgentTurnEventSink> =
             Some(std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
-                let codergen_event =
-                    codergen_event_from_turn_stream_event(&sink_request, &turn_event);
-                emit_codergen_event(&codergen_event);
                 if let Some(sink) = &stream_sink {
-                    sink(codergen_event);
+                    sink(codergen_event_from_turn_stream_event(
+                        &sink_request,
+                        &turn_event,
+                    ));
                 }
             }) as AgentTurnEventSink);
         let steering = SessionSteeringHandle::new();
@@ -181,7 +181,6 @@ impl RustLlmCodergenBackend {
                 ("token_usage".to_string(), json!(output.token_usage.clone())),
             ]),
         );
-        emit_codergen_event(&completed_event);
         events.push(completed_event);
         Ok(CodergenBackendOutput {
             response,
@@ -267,7 +266,7 @@ impl RustLlmCodergenBackend {
     fn run_agent_codergen(
         &mut self,
         request: CodergenBackendRequest,
-        event_sink: Option<CodergenStreamSink>,
+        event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let agent_request = codergen_agent_turn_request(&request);
         let prompt = agent_request.prompt.clone();
@@ -415,28 +414,26 @@ fn codergen_output_from_session(
     let metadata_base = codergen_session_metadata_payload(&request, session);
     let mut events = Vec::new();
     for event in &session_events {
-        for codergen_event in
-            codergen_events_for_session_event(&metadata_base, &request.node_id, event)
-        {
-            emit_codergen_event(&codergen_event);
-            events.push(codergen_event);
-        }
+        events.extend(codergen_events_for_session_event(
+            &metadata_base,
+            &request.node_id,
+            event,
+        ));
     }
     if !session_events
         .iter()
         .any(|event| event.kind == EventKind::ModelUsageUpdate)
     {
         if let Some(usage) = usage.as_ref() {
-            let usage_event = codergen_usage_event_from_assistant_turn(&request, session, usage);
-            emit_codergen_event(&usage_event);
-            events.push(usage_event);
+            events.push(codergen_usage_event_from_assistant_turn(
+                &request, session, usage,
+            ));
         }
     }
     let completed_event = CodergenEvent::new(
         "rust_agent_adapter_request_completed",
         codergen_completion_event_payload(&request, session, usage.as_ref()),
     );
-    emit_codergen_event(&completed_event);
     events.push(completed_event);
 
     CodergenBackendOutput {

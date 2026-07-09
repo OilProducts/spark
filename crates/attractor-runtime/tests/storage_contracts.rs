@@ -274,8 +274,19 @@ fn raw_event_append_does_not_update_render_transcript() {
     let events = store.read_raw_events(&paths).expect("events");
     assert_eq!(events.last().and_then(|event| event.sequence), Some(4));
 
-    let transcript = store.read_transcript(&paths).expect("transcript");
-    assert!(transcript.segments.is_empty());
+    // Transcripts are a read-time projection of the journal now: the
+    // appended stage event surfaces as a boundary segment on read.
+    let transcript =
+        attractor_runtime::project_run_transcript(&store.read_journal(&paths).expect("journal"));
+    assert!(transcript
+        .segments
+        .iter()
+        .any(|segment| segment.kind == "boundary"
+            && segment
+                .boundary
+                .as_ref()
+                .and_then(|meta| meta.node_id.as_deref())
+                == Some("work")));
 }
 
 #[test]

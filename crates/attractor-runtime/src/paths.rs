@@ -77,10 +77,6 @@ impl RunRootPaths {
         self.root.join("events.jsonl")
     }
 
-    pub fn transcript_json(&self) -> PathBuf {
-        self.root.join("transcript.json")
-    }
-
     pub fn state_json(&self) -> PathBuf {
         self.root.join("state.json")
     }
