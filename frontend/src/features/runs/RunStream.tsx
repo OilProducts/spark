@@ -147,6 +147,8 @@ export function RunStream() {
     const [showSavedToast, setShowSavedToast] = useState(false)
     const [fadeSavedToast, setFadeSavedToast] = useState(false)
     const stageCursorsRef = useRef<Record<string, RuntimeStageCursor>>({})
+    const lastLiveSequenceRef = useRef<number | null>(null)
+    const resyncInFlightRef = useRef(false)
     const savedToastFadeTimerRef = useRef<number | null>(null)
     const savedToastDismissTimerRef = useRef<number | null>(null)
     const saveStateLabel =
@@ -166,6 +168,7 @@ export function RunStream() {
 
     useEffect(() => {
         stageCursorsRef.current = {}
+        lastLiveSequenceRef.current = null
         resetNodeStatuses()
         clearHumanGate()
         if (!selectedRunId) {
@@ -424,6 +427,16 @@ export function RunStream() {
                 const rawType = timelineEvent?.type
                     ?? (typeof rawRecord.raw_type === 'string' ? rawRecord.raw_type : typeof rawRecord.type === 'string' ? rawRecord.type : '')
 
+                const liveSequence = timelineEvent?.sequence
+                if (typeof liveSequence === 'number' && Number.isFinite(liveSequence)) {
+                    const lastLiveSequence = lastLiveSequenceRef.current
+                    if (lastLiveSequence !== null && liveSequence > lastLiveSequence + 1) {
+                        resyncFromDurableState()
+                    }
+                    if (lastLiveSequence === null || liveSequence > lastLiveSequence) {
+                        lastLiveSequenceRef.current = liveSequence
+                    }
+                }
                 const runtimeNodeId = timelineEvent?.nodeId ?? (typeof payload.node_id === 'string' ? payload.node_id : null)
                 const runtimeNodeStatus = RUNTIME_STAGE_STATUS_MAP[rawType]
                 const runtimeStageIndex = timelineEvent?.stageIndex ?? (
@@ -616,14 +629,32 @@ export function RunStream() {
             }
         }
 
+        // Live-derived node state may be built on dropped frames: clear the
+        // overlay and rebuild everything from durable state. Deduped so a
+        // burst of gap signals triggers one refetch cycle.
+        const resyncFromDurableState = () => {
+            if (resyncInFlightRef.current) {
+                return
+            }
+            resyncInFlightRef.current = true
+            stageCursorsRef.current = {}
+            lastLiveSequenceRef.current = null
+            resetNodeStatuses()
+            void Promise.allSettled([
+                refreshSelectedRunStatus(),
+                refreshSelectedRunJournal(),
+                refreshRunTranscript(),
+            ]).finally(() => {
+                resyncInFlightRef.current = false
+            })
+        }
+
         const handleRunResyncRequired = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null
             if (detail?.runId !== selectedRunId) {
                 return
             }
-            void refreshSelectedRunStatus()
-            void refreshSelectedRunJournal()
-            void refreshRunTranscript()
+            resyncFromDurableState()
         }
 
         void startScopedStream()

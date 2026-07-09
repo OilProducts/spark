@@ -679,6 +679,47 @@ fn trigger_snapshot_envelope(
     })
 }
 
+/// Envelopes telling a subscriber that the broadcast ring overwrote frames it
+/// had not read yet: one `resync_required` per resource the query follows, so
+/// the client refetches durable state instead of rendering a gapped stream.
+pub fn lagged_resync_envelopes(query: &LiveQuery) -> Vec<LiveEnvelope> {
+    const REASON: &str = "live event stream lagged behind the publisher and dropped frames";
+    let mut envelopes = Vec::new();
+    if let Some(conversation_id) = query.conversation_id.as_deref() {
+        envelopes.push(resync_required(
+            "conversation",
+            Some(conversation_id.to_string()),
+            query.conversation_project_path.clone(),
+            REASON,
+        ));
+    }
+    if let Some(run_id) = query.run_id.as_deref() {
+        envelopes.push(resync_required(
+            "run",
+            Some(run_id.to_string()),
+            None,
+            REASON,
+        ));
+    }
+    if query.include_runs_overview {
+        envelopes.push(resync_required(
+            "runs_overview",
+            None,
+            query.runs_project_path.clone(),
+            REASON,
+        ));
+    }
+    if query.include_triggers {
+        envelopes.push(resync_required(
+            "trigger",
+            None,
+            query.triggers_project_path.clone(),
+            REASON,
+        ));
+    }
+    envelopes
+}
+
 fn resync_required(
     kind: &str,
     id: Option<String>,

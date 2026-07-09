@@ -24,8 +24,8 @@ use spark_workspace::conversations::{
 };
 use spark_workspace::live::{
     conversation_envelopes_after, conversation_event_envelope, conversation_snapshot_envelope,
-    envelope_matches_query, initial_live_envelopes, latest_run_sequence, trigger_delete_envelope,
-    trigger_upsert_envelope, validate_live_query, RawLiveQuery,
+    envelope_matches_query, initial_live_envelopes, lagged_resync_envelopes, latest_run_sequence,
+    trigger_delete_envelope, trigger_upsert_envelope, validate_live_query, RawLiveQuery,
 };
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
 use spark_workspace::WorkspaceError;
@@ -648,7 +648,16 @@ async fn workspace_live_events(
                             Ok(envelope) if envelope_matches_query(&envelope, &query) => {
                                 yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
                             }
-                            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                            Ok(_) => {}
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                // The ring overwrote frames this subscriber
+                                // never read; a silent gap would leave stale
+                                // state rendered (e.g. node statuses), so
+                                // tell it to refetch.
+                                for envelope in lagged_resync_envelopes(&query) {
+                                    yield Ok::<Bytes, Infallible>(sse_data_frame(&envelope));
+                                }
+                            }
                             Err(broadcast::error::RecvError::Closed) => break,
                         }
                     }

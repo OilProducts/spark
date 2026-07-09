@@ -3028,6 +3028,104 @@ describe('RunsPanel', () => {
     ).toBe(false)
   })
 
+  it('resyncs node statuses from durable state when the live stream gaps', async () => {
+    const selectedRun = makeRun({
+      run_id: 'run-live-gap',
+      flow_name: 'selected.dot',
+      status: 'running',
+      outcome: null,
+      ended_at: null,
+      project_path: '/tmp/project-one',
+    })
+    let statusFetchCount = 0
+    let journalFetchCount = 0
+
+    const fetchMock = vi.mocked(global.fetch)
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      const method = init?.method ?? 'GET'
+      if (method !== 'GET') {
+        throw new Error(`Unhandled request: ${method} ${url}`)
+      }
+      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+        return jsonResponse({ runs: [selectedRun] })
+      }
+      if (/\/attractor\/pipelines\/run-live-gap$/.test(url)) {
+        statusFetchCount += 1
+        return jsonResponse({
+          ...selectedRun,
+          pipeline_id: selectedRun.run_id,
+          completed_nodes: statusFetchCount > 1 ? ['start', 'implement'] : ['start'],
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-gap/journal')) {
+        journalFetchCount += 1
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          entries: [],
+          oldest_sequence: null,
+          newest_sequence: null,
+          has_older: false,
+        })
+      }
+      if (url.includes('/attractor/pipelines/run-live-gap/segments')) {
+        return jsonResponse({
+          pipeline_id: selectedRun.run_id,
+          run_id: selectedRun.run_id,
+          segments: [],
+          newest_sequence: 0,
+        })
+      }
+      return jsonResponse({})
+    })
+
+    act(() => {
+      useStore.getState().setViewMode('runs')
+      useStore.getState().setSelectedRunId('run-live-gap')
+    })
+    renderRunsWorkspace()
+
+    await waitFor(() => {
+      expect(statusFetchCount).toBeGreaterThan(0)
+    })
+    const statusFetchesBeforeGap = statusFetchCount
+    const journalFetchesBeforeGap = journalFetchCount
+
+    const emitEntry = (sequence: number, nodeId: string, type: string) => {
+      window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {
+        detail: {
+          runId: 'run-live-gap',
+          entry: {
+            type,
+            sequence,
+            emitted_at: `2026-03-22T00:00:0${sequence}Z`,
+            node_id: nodeId,
+            index: 2,
+            source_scope: 'root',
+          },
+        },
+      }))
+    }
+
+    // Contiguous delivery paints the live overlay without any refetch.
+    act(() => {
+      emitEntry(5, 'evaluate', 'StageStarted')
+    })
+    expect(useStore.getState().nodeStatuses.evaluate).toBe('running')
+    expect(statusFetchCount).toBe(statusFetchesBeforeGap)
+
+    // A sequence jump means frames were dropped: the stale live overlay is
+    // discarded and durable state is refetched.
+    act(() => {
+      emitEntry(9, 'record', 'StageStarted')
+    })
+    await waitFor(() => {
+      expect(statusFetchCount).toBeGreaterThan(statusFetchesBeforeGap)
+      expect(journalFetchCount).toBeGreaterThan(journalFetchesBeforeGap)
+    })
+    expect(useStore.getState().nodeStatuses.evaluate).toBeUndefined()
+  })
+
   it('keeps exhausted journal history marked complete after reselect so Load older does not reappear', async () => {
     const selectedRun = makeRun({
       run_id: 'run-history-exhausted',
