@@ -1157,7 +1157,8 @@ fn resolution_inputs_for_request(request: &CodergenRequest) -> LlmResolutionInpu
         node_provider: attr_text(&request.node.attrs, "llm_provider"),
         node_profile: attr_text(&request.node.attrs, "llm_profile"),
         node_reasoning_effort: attr_text(&request.node.attrs, "reasoning_effort"),
-        node_reasoning_is_default_placeholder: reasoning_attr.is_some_and(|attr| attr.line == 0),
+        node_reasoning_is_default_placeholder: reasoning_attr.is_some()
+            && !attractor_core::node_has_explicit_attr(&request.node, "reasoning_effort"),
         fallback_model: request.fallback_model.clone(),
         fallback_provider: request.fallback_provider.clone(),
         fallback_profile: request.fallback_profile.clone(),
