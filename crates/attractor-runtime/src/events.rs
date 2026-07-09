@@ -449,8 +449,21 @@ pub fn stage_completed_event(
     node_id: impl Into<String>,
     outcome: impl Into<String>,
 ) -> RawRuntimeEvent {
+    stage_completed_event_with_notes(run_id, index, node_id, outcome, None)
+}
+
+/// Notes carry the outcome's human-readable result (tool stdout, completion
+/// summaries) into the journal, truncated so chatty tools cannot bloat it.
+pub fn stage_completed_event_with_notes(
+    run_id: impl Into<String>,
+    index: u64,
+    node_id: impl Into<String>,
+    outcome: impl Into<String>,
+    notes: Option<&str>,
+) -> RawRuntimeEvent {
+    const STAGE_NOTES_LIMIT: usize = 200;
     let node_id = node_id.into();
-    event_with_payload(
+    let mut event = event_with_payload(
         run_id,
         "StageCompleted",
         [
@@ -459,7 +472,12 @@ pub fn stage_completed_event(
             ("node_id", json!(node_id)),
             ("outcome", json!(outcome.into())),
         ],
-    )
+    );
+    if let Some(notes) = notes.map(str::trim).filter(|notes| !notes.is_empty()) {
+        let truncated: String = notes.chars().take(STAGE_NOTES_LIMIT).collect();
+        event.payload.insert("notes".to_string(), json!(truncated));
+    }
+    event
 }
 
 pub fn stage_failed_event(

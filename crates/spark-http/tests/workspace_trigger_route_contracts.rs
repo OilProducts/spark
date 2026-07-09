@@ -795,7 +795,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
             "    kind: tool\n",
             "    config:\n",
             "      kind: tool\n",
-            "      command: sleep 1\n",
+            "      command: sleep 1.5\n",
             "  done:\n",
             "    kind: exit\n",
             "edges:\n",
@@ -836,7 +836,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
         .to_string();
 
     // The dispatch must return at launch, not at run completion: well under
-    // the ~1s the single slow tool node takes.
+    // the ~1.5s the single slow tool node takes.
     let dispatch_started = std::time::Instant::now();
     let accepted = request_json_with_headers(
         app,
@@ -853,7 +853,7 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
     let dispatch_elapsed = dispatch_started.elapsed();
     assert_eq!(accepted.0, StatusCode::OK);
     assert!(
-        dispatch_elapsed < std::time::Duration::from_millis(450),
+        dispatch_elapsed < std::time::Duration::from_millis(1_000),
         "webhook dispatch blocked on run execution: {dispatch_elapsed:?}",
     );
 

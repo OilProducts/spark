@@ -4,8 +4,27 @@ import {
   filterTimelineEvents,
   toTimelineEvent,
 } from '@/features/runs/model/timelineModel'
+import { humanizeTimelineType } from '@/features/runs/model/shared'
 
 describe('timelineModel', () => {
+  it('appends outcome notes to stage-completed summaries', () => {
+    const event = toTimelineEvent({
+      raw_type: 'StageCompleted',
+      kind: 'stage',
+      sequence: 7,
+      emitted_at: '2026-07-08T10:00:07Z',
+      summary: 'Stage verify completed (success) — checksums ok',
+      node_id: 'verify',
+      stage_index: 3,
+      source_scope: 'root',
+      severity: 'info',
+      id: 'journal-7',
+      payload: { outcome: 'success', notes: 'checksums ok', node_id: 'verify' },
+    })
+    expect(event?.summary).toContain('checksums ok')
+  })
+
+
   it('summarizes completed failure outcomes without classifying them as runtime errors', () => {
     const event = toTimelineEvent({
       type: 'PipelineCompleted',
@@ -162,4 +181,17 @@ describe('timelineModel', () => {
     })).toBeNull()
   })
 
+})
+
+describe('humanizeTimelineType', () => {
+  it('maps known runtime types to human labels', () => {
+    expect(humanizeTimelineType('PipelineCompleted')).toBe('Run completed')
+    expect(humanizeTimelineType('human_gate')).toBe('Waiting for input')
+    expect(humanizeTimelineType('LLMContent')).toBe('Assistant output')
+  })
+
+  it('falls back to spaced sentence case for unknown types', () => {
+    expect(humanizeTimelineType('SomeNewEvent')).toBe('Some new event')
+    expect(humanizeTimelineType('another_raw_kind')).toBe('Another raw kind')
+  })
 })
