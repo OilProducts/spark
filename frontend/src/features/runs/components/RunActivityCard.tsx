@@ -12,7 +12,6 @@ import {
     EmptyDescription,
     EmptyHeader,
 } from '@/components/ui/empty'
-import { Field, FieldLabel } from '@/components/ui/field'
 import { NativeSelect } from '@/components/ui/native-select'
 import { cn } from '@/lib/utils'
 import type {
@@ -92,45 +91,49 @@ export function EventRow({
     return (
         <article
             data-testid="run-event-timeline-row"
-            className="rounded-md border border-border/70 bg-muted/30 px-3 py-2"
+            className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-1.5"
         >
-            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+            <div className="flex items-center gap-2 text-[11px]">
                 <span
                     data-testid="run-event-timeline-row-type"
-                    className="inline-flex rounded border border-border/80 bg-background px-1.5 py-0.5 font-medium text-foreground"
+                    className="inline-flex shrink-0 rounded border border-border/80 bg-background px-1.5 py-0.5 font-medium text-foreground"
                 >
                     {humanizeTimelineType(event.type)}
                 </span>
                 {event.severity !== 'info' ? (
                     <span
                         data-testid="run-event-timeline-row-severity"
-                        className={`inline-flex rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
+                        className={`inline-flex shrink-0 rounded border px-1.5 py-0.5 uppercase tracking-wide ${TIMELINE_SEVERITY_STYLES[event.severity]}`}
                     >
                         {TIMELINE_SEVERITY_LABELS[event.severity]}
                     </span>
                 ) : null}
-                <span data-testid="run-event-timeline-row-time" className="text-muted-foreground">
+                <span data-testid="run-event-timeline-row-time" className="ml-auto shrink-0 text-muted-foreground">
                     {formatTimestamp(event.receivedAt)}
                 </span>
             </div>
-            {correlationLabel ? (
-                <p data-testid="run-event-timeline-row-correlation" className="mt-1 text-xs text-muted-foreground">
-                    {correlationLabel}
-                </p>
-            ) : null}
-            <p data-testid="run-event-timeline-row-summary" className="mt-1 text-sm text-foreground">
+            <p data-testid="run-event-timeline-row-summary" className="mt-0.5 text-sm text-foreground">
                 {event.summary}
             </p>
-            {event.nodeId ? (
-                <p data-testid="run-event-timeline-row-node" className="text-xs text-muted-foreground">
-                    Node: {event.nodeId}
-                    {event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''}
-                </p>
-            ) : null}
-            {sourceLabel ? (
-                <p data-testid="run-event-timeline-row-source" className="text-xs text-muted-foreground">
-                    Source: {sourceLabel}
-                </p>
+            {correlationLabel || event.nodeId || sourceLabel ? (
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
+                    {correlationLabel ? (
+                        <span data-testid="run-event-timeline-row-correlation">
+                            {correlationLabel}
+                        </span>
+                    ) : null}
+                    {event.nodeId ? (
+                        <span data-testid="run-event-timeline-row-node">
+                            Node: {event.nodeId}
+                            {event.stageIndex !== null ? ` (index ${event.stageIndex})` : ''}
+                        </span>
+                    ) : null}
+                    {sourceLabel ? (
+                        <span data-testid="run-event-timeline-row-source">
+                            Source: {sourceLabel}
+                        </span>
+                    ) : null}
+                </div>
             ) : null}
         </article>
     )
@@ -216,17 +219,16 @@ export function RunActivityCard({
         <Card
             data-testid="run-activity-stream-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={cn('gap-4 py-4', isNarrowViewport ? 'p-3' : undefined)}
+            className={cn('gap-2 py-3', isNarrowViewport ? 'p-3' : undefined)}
         >
             <CardHeader className="gap-1 px-4">
-                <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                        <h3 className="text-sm font-semibold text-foreground">Activity</h3>
-                        <p className="text-xs leading-5 text-muted-foreground">
-                            Transcript and journal history in one stream, newest first. Select a
-                            graph node to focus its activity.
-                        </p>
-                    </div>
+                <div className="flex items-center justify-between gap-3">
+                    <h3
+                        className="text-sm font-semibold text-foreground"
+                        title="Transcript and journal history in one stream, newest first. Select a graph node to focus its activity."
+                    >
+                        Activity
+                    </h3>
                     <div className="flex items-center gap-2">
                         <div
                             role="group"
@@ -264,7 +266,7 @@ export function RunActivityCard({
                     </div>
                 </div>
             </CardHeader>
-            <CardContent className="space-y-3 px-4">
+            <CardContent className="space-y-2 px-4">
                 {isPerformanceDebugEnabled() ? (
                     <>
                         <div
@@ -321,35 +323,31 @@ export function RunActivityCard({
                     </Alert>
                 ) : null}
                 {!timelineError && showEventFilters ? (
-                    <div className={`grid gap-2 ${isNarrowViewport ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
-                        <Field className="space-y-1.5">
-                            <FieldLabel>Category</FieldLabel>
-                            <NativeSelect
-                                data-testid="run-event-timeline-filter-category"
-                                value={timelineCategoryFilter}
-                                onChange={(event) => onTimelineCategoryFilterChange(event.target.value as 'all' | TimelineEventCategory)}
-                                className="h-8 text-xs"
-                            >
-                                <option value="all">All categories</option>
-                                {Object.entries(TIMELINE_CATEGORY_LABELS).map(([category, label]) => (
-                                    <option key={category} value={category}>{label}</option>
-                                ))}
-                            </NativeSelect>
-                        </Field>
-                        <Field className="space-y-1.5">
-                            <FieldLabel>Severity</FieldLabel>
-                            <NativeSelect
-                                data-testid="run-event-timeline-filter-severity"
-                                value={timelineSeverityFilter}
-                                onChange={(event) => onTimelineSeverityFilterChange(event.target.value as 'all' | TimelineSeverity)}
-                                className="h-8 text-xs"
-                            >
-                                <option value="all">All severities</option>
-                                <option value="info">Info</option>
-                                <option value="warning">Warning</option>
-                                <option value="error">Error</option>
-                            </NativeSelect>
-                        </Field>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <NativeSelect
+                            aria-label="Category"
+                            data-testid="run-event-timeline-filter-category"
+                            value={timelineCategoryFilter}
+                            onChange={(event) => onTimelineCategoryFilterChange(event.target.value as 'all' | TimelineEventCategory)}
+                            className="h-7 w-auto min-w-32 text-xs"
+                        >
+                            <option value="all">All categories</option>
+                            {Object.entries(TIMELINE_CATEGORY_LABELS).map(([category, label]) => (
+                                <option key={category} value={category}>{label}</option>
+                            ))}
+                        </NativeSelect>
+                        <NativeSelect
+                            aria-label="Severity"
+                            data-testid="run-event-timeline-filter-severity"
+                            value={timelineSeverityFilter}
+                            onChange={(event) => onTimelineSeverityFilterChange(event.target.value as 'all' | TimelineSeverity)}
+                            className="h-7 w-auto min-w-28 text-xs"
+                        >
+                            <option value="all">All severities</option>
+                            <option value="info">Info</option>
+                            <option value="warning">Warning</option>
+                            <option value="error">Error</option>
+                        </NativeSelect>
                     </div>
                 ) : null}
                 {!timelineError && scopedEmpty ? (
@@ -370,7 +368,7 @@ export function RunActivityCard({
                 {renderedRows.length > 0 ? (
                     <div
                         data-testid="run-activity-list"
-                        className="max-h-[32rem] space-y-2 overflow-auto pr-1"
+                        className="max-h-[32rem] space-y-1.5 overflow-auto pr-1"
                     >
                         {renderedRows.map((row) => (
                             row.kind === 'transcript'

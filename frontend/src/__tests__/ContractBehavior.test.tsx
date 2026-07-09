@@ -2282,7 +2282,7 @@ describe('Frontend contract behavior', () => {
       ).toBe(true)
     })
     expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-beta')
-    expect(screen.getByText('Run history for the active project.')).toBeVisible()
+    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
     expect(screen.getByText('beta.yaml')).toBeVisible()
   })
 

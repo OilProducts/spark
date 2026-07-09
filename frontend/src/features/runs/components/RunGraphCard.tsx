@@ -259,16 +259,15 @@ export function RunGraphCard({
     }
 
     return (
-        <Card data-testid="run-graph-panel" className="gap-4 py-4">
+        <Card data-testid="run-graph-panel" className="gap-2 py-3">
             <CardHeader className="gap-1 px-4">
-                <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 space-y-1">
-                        <h3 className="text-sm font-semibold text-foreground">Run Graph</h3>
-                        <p className="text-xs leading-5 text-muted-foreground">
-                            Live node states for the selected run. Click a node to focus its
-                            activity; click the background to clear the selection.
-                        </p>
-                    </div>
+                <div className="flex items-center justify-between gap-3">
+                    <h3
+                        className="text-sm font-semibold text-foreground"
+                        title="Live node states for the selected run. Click a node to focus its activity; click the background to clear the selection."
+                    >
+                        Run Graph
+                    </h3>
                     <div className="flex items-center gap-2">
                         <Button
                             onClick={() => setRefreshToken((current) => current + 1)}
@@ -286,7 +285,7 @@ export function RunGraphCard({
                     </div>
                 </div>
             </CardHeader>
-            <CardContent className="space-y-3 px-4">
+            <CardContent className="space-y-2 px-4">
                 {graphStatus !== 'ready' && !graphError ? (
                     <Alert
                         data-testid="run-graph-loading"

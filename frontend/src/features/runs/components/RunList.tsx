@@ -121,7 +121,7 @@ export function RunList({
                     }
                 }}
                 className={cn(
-                    'rounded-lg border border-border/80 bg-card/80 px-3 py-2.5 shadow-sm outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
+                    'rounded-lg border border-border/80 bg-card/80 px-3 py-2 shadow-sm outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
                     selectedRunId === run.run_id && 'border-primary/50 bg-muted/30 ring-1 ring-primary/20',
                 )}
             >
@@ -204,7 +204,7 @@ export function RunList({
                     <span>{label}</span>
                     <span data-testid={`run-list-group-${key}-count`}>{groupRuns.length}</span>
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-2">
                     {groupRuns.map((run) => renderRunRow(run))}
                 </div>
             </section>
@@ -216,29 +216,27 @@ export function RunList({
             data-testid="run-list-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={`bg-background flex shrink-0 flex-col overflow-hidden z-40 ${
-                isNarrowViewport ? 'w-full max-h-[46vh] rounded-md border' : 'w-80 border-r'
+                isNarrowViewport ? 'w-full max-h-[46vh] rounded-md border' : 'w-64 border-r'
             }`}
         >
-            <div className="px-4 pb-2 pt-4">
-                <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-foreground">
-                    <span>Runs</span>
-                    <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
-                </div>
-                <Badge
-                    data-testid="runs-project-context-chip"
-                    variant="outline"
-                    className="mt-3"
-                    title={activeProjectPath || 'No active project'}
-                >
-                    <span className="text-muted-foreground">Project:</span>
-                    <span className="max-w-40 truncate">{activeProjectLabel}</span>
-                </Badge>
-            </div>
-            <div className="space-y-3 px-4 pb-3">
-                <div className="space-y-1">
-                    <h2 className="text-sm font-semibold tracking-tight">Run History</h2>
-                    <p className="text-xs text-muted-foreground">{summaryLabel}</p>
-                    <p className="text-xs text-muted-foreground">{scopeDescription}</p>
+            <div className="space-y-2 px-3 pb-2 pt-3">
+                <div className="flex items-center justify-between gap-2">
+                    <Badge
+                        data-testid="runs-project-context-chip"
+                        variant="outline"
+                        className="min-w-0"
+                        title={activeProjectPath || 'No active project'}
+                    >
+                        <span className="text-muted-foreground">Project:</span>
+                        <span className="max-w-28 truncate">{activeProjectLabel}</span>
+                    </Badge>
+                    <span
+                        data-testid="runs-scope-description"
+                        className="min-w-0 truncate text-xs text-muted-foreground"
+                        title={scopeDescription}
+                    >
+                        {summaryLabel}
+                    </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                     <Button
@@ -304,7 +302,7 @@ export function RunList({
                     data-testid="run-list-scroll-region"
                     className="min-h-0 flex-1 overflow-y-auto px-3 pb-4"
                 >
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                         {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-sky-700')}
                         {renderRunGroup('running', 'Running', runningRuns)}
                         {queuedLockGroups.map((group) => (

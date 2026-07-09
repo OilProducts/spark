@@ -330,7 +330,7 @@ describe('RunsPanel', () => {
         resolveRequestUrl(request as RequestInfo | URL).includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one'),
       ),
     ).toBe(true)
-    expect(screen.getByText('Run history for the active project.')).toBeVisible()
+    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
 
     await user.click(screen.getByTestId('runs-scope-all-projects'))
 
@@ -343,7 +343,7 @@ describe('RunsPanel', () => {
         return url.endsWith('/attractor/runs') && !url.includes('project_path=')
       }),
     ).toBe(true)
-    expect(screen.getByText('Run history across all projects.')).toBeVisible()
+    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history across all projects.')
   })
 
   it('renders execution lock holders and groups queued attempts by lock identity', async () => {

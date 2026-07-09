@@ -1079,7 +1079,7 @@ describe('App shell behavior', () => {
       ).toBe(true)
     })
     expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-two')
-    expect(screen.getByText('Run history for the active project.')).toBeVisible()
+    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
     expect(screen.getByText('review-two.dot')).toBeVisible()
   })
 
@@ -2030,7 +2030,7 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
     })
-    expect(screen.getByText('Run history across all projects.')).toBeVisible()
+    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history across all projects.')
     expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
     expect(useStore.getState().selectedRunId).toBe('run-two')
   })
