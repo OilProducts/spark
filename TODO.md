@@ -20,6 +20,9 @@
   smoke flows against the Activity stream / inspector layout.
 - [ ] **Manual desktop verification** of blocking human gates and live chat/run
   streaming (`just dev-desktop`).
+- [ ] **Parent-run usage rollup**: run token usage/cost is per-record; child-run
+  usage does not aggregate into the parent (matches old Python behavior). Roll
+  up over the combined journal if parent totals should include children.
 - [ ] **Human gate wait timeout**: gates now block in production; add a
   `wait_timeout_seconds` node attribute so unattended runs can time out instead
   of waiting forever.
