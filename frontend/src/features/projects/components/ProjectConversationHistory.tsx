@@ -1,5 +1,5 @@
 import { memo, useCallback, useState } from 'react'
-import { loadConversationSegmentToolOutput } from '../services/conversationToolOutput'
+import { fetchConversationSegmentToolOutputValidated } from '@/lib/workspaceClient'
 import type {
     ConversationTimelineEntry,
     ProjectFlowLaunch,

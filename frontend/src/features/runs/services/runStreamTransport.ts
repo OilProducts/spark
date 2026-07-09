@@ -1,7 +1,6 @@
 import {
     ApiHttpError,
     fetchPipelineJournalValidated,
-    fetchPipelineTranscriptValidated,
     fetchPipelineStatusValidated,
 } from '@/lib/attractorClient'
 

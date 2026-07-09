@@ -1,5 +1,3 @@
-import type { ConversationSegmentResponse } from '@/lib/api/conversationsApi'
-
 export interface TokenUsageBucket {
     input_tokens: number
     cached_input_tokens: number

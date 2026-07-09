@@ -2726,7 +2726,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -2773,19 +2773,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptInputEntry(1, {
-                questionId: gateId,
-                nodeId: 'review_gate',
-                prompt: pendingPrompt,
-                options: [{ label: 'Approve', value: 'approve' }],
-              }),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -2852,9 +2839,9 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent(pendingPrompt)
+    expect(screen.getByTestId('run-pending-human-gate-item')).toHaveTextContent(pendingPrompt)
 
     cleanup()
     act(() => {
@@ -2869,7 +2856,7 @@ describe('Frontend contract behavior', () => {
           nodeId: 'review_gate',
           prompt: pendingPrompt,
           options: [{ label: 'Approve', value: 'approve' }],
-          flowName: 'contract-behavior.yaml',
+          flowName: 'contract-behavior.dot',
         },
       }))
     })
@@ -2888,7 +2875,7 @@ describe('Frontend contract behavior', () => {
     const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -2933,37 +2920,6 @@ describe('Frontend contract behavior', () => {
         return jsonResponse({
           pipeline_id: runId,
           artifacts: [],
-        })
-      }
-      if (url.endsWith(`${runApiPath}/transcript`)) {
-        return jsonResponse({
-          pipeline_id: runId,
-          entries: [
-            transcriptInputEntry(1, {
-              questionId: gateId,
-              nodeId: 'review_gate',
-              prompt: pendingPrompt,
-              options: [
-                { label: 'Approve', value: 'approve' },
-                { label: 'Reject', value: 'reject' },
-              ],
-            }),
-          ],
-        })
-      }
-      if (url.endsWith(`${runApiPath}/questions`)) {
-        return jsonResponse({
-          pipeline_id: runId,
-          questions: [{
-            question_id: gateId,
-            node_id: 'review_gate',
-            prompt: pendingPrompt,
-            type: 'MULTIPLE_CHOICE',
-            options: [
-              { label: 'Approve', value: 'approve' },
-              { label: 'Reject', value: 'reject' },
-            ],
-          }],
         })
       }
       if (url.endsWith(`${runApiPath}/graph`)) {
@@ -3036,16 +2992,11 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
 
-    const [answerButton] = await waitFor(() => {
-      const buttons = screen.getAllByTestId('run-pending-human-gate-answer-approve')
-      expect(buttons.length).toBeGreaterThan(0)
-      return buttons
-    })
+    const answerButton = screen.getByTestId('run-pending-human-gate-answer-approve')
     fireEvent.click(answerButton)
-    fireEvent.click(screen.getByTestId(`project-request-user-input-submit-${gateId}`))
 
     await waitFor(() => {
       const submissionCall = fetchMock.mock.calls.find(([input]) => requestUrl(input as RequestInfo | URL).endsWith(answerPath))
@@ -3058,7 +3009,9 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent(pendingPrompt)
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-pending-human-gate-item')).not.toBeInTheDocument()
+    })
   })
 
   it('[CID:10.2.01] renders MULTIPLE_CHOICE pending gate options with option metadata', async () => {
@@ -3068,7 +3021,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3115,33 +3068,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptInputEntry(1, {
-                questionId: gateId,
-                nodeId: 'review_gate',
-                prompt: pendingPrompt,
-                questionType: 'MULTIPLE_CHOICE',
-                options: [
-                  {
-                    key: 'A',
-                    label: 'Approve',
-                    value: 'approve',
-                    description: 'Ship now to production.',
-                  },
-                  {
-                    key: 'R',
-                    label: 'Request Rework',
-                    value: 'rework',
-                    description: 'Send build back for revision.',
-                  },
-                ],
-              }),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -3222,12 +3148,14 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
 
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent(pendingPrompt)
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent('[A] Ship now to production.')
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent('[R] Send build back for revision.')
+    expect(screen.getByTestId('run-pending-human-gate-item')).toHaveTextContent(pendingPrompt)
+    expect(screen.getByTestId('run-pending-human-gate-option-metadata-approve')).toHaveTextContent('[A]')
+    expect(screen.getByTestId('run-pending-human-gate-option-metadata-approve')).toHaveTextContent('Ship now to production.')
+    expect(screen.getByTestId('run-pending-human-gate-option-metadata-rework')).toHaveTextContent('[R]')
+    expect(screen.getByTestId('run-pending-human-gate-option-metadata-rework')).toHaveTextContent('Send build back for revision.')
   })
 
   it('[CID:10.2.02] renders YES_NO and CONFIRMATION pending gates with explicit yes/no and confirm/cancel semantics', async () => {
@@ -3239,7 +3167,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3286,25 +3214,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptInputEntry(1, {
-                questionId: yesNoGateId,
-                nodeId: 'review_gate',
-                prompt: yesNoPrompt,
-                questionType: 'YES_NO',
-              }),
-              transcriptInputEntry(2, {
-                questionId: confirmationGateId,
-                nodeId: 'release_gate',
-                prompt: confirmationPrompt,
-                questionType: 'CONFIRMATION',
-              }),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -3380,10 +3289,10 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
 
-    const pendingItems = screen.getAllByTestId('run-transcript-input')
+    const pendingItems = screen.getAllByTestId('run-pending-human-gate-item')
     const yesNoItem = pendingItems.find((item) => item.textContent?.includes(yesNoPrompt))
     const confirmationItem = pendingItems.find((item) => item.textContent?.includes(confirmationPrompt))
 
@@ -3393,14 +3302,14 @@ describe('Frontend contract behavior', () => {
     const yesNoScope = within(yesNoItem as HTMLElement)
     expect(yesNoScope.getByRole('button', { name: 'Yes' })).toBeVisible()
     expect(yesNoScope.getByRole('button', { name: 'No' })).toBeVisible()
-    expect(yesNoItem).toHaveTextContent('Sends YES')
-    expect(yesNoItem).toHaveTextContent('Sends NO')
+    expect(yesNoScope.getByText('Sends YES')).toBeVisible()
+    expect(yesNoScope.getByText('Sends NO')).toBeVisible()
 
     const confirmationScope = within(confirmationItem as HTMLElement)
     expect(confirmationScope.getByRole('button', { name: 'Confirm' })).toBeVisible()
     expect(confirmationScope.getByRole('button', { name: 'Cancel' })).toBeVisible()
-    expect(confirmationItem).toHaveTextContent('Sends YES')
-    expect(confirmationItem).toHaveTextContent('Sends NO')
+    expect(confirmationScope.getByText('Sends YES')).toBeVisible()
+    expect(confirmationScope.getByText('Sends NO')).toBeVisible()
   })
 
   it('[CID:10.2.03] renders FREEFORM pending gates with text input and submit action', async () => {
@@ -3412,7 +3321,7 @@ describe('Frontend contract behavior', () => {
     const answerPath = `${runApiPath}/questions/${encodeURIComponent(gateId)}/answer`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3457,19 +3366,6 @@ describe('Frontend contract behavior', () => {
         return jsonResponse({
           pipeline_id: runId,
           artifacts: [],
-        })
-      }
-      if (url.endsWith(`${runApiPath}/transcript`)) {
-        return jsonResponse({
-          pipeline_id: runId,
-          entries: [
-            transcriptInputEntry(1, {
-              questionId: gateId,
-              nodeId: 'review_gate',
-              prompt: pendingPrompt,
-              questionType: 'FREEFORM',
-            }),
-          ],
         })
       }
       if (url.endsWith(`${runApiPath}/graph`)) {
@@ -3539,13 +3435,13 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
 
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent(pendingPrompt)
-    const input = screen.getByTestId(`project-request-user-input-field-${gateId}`) as HTMLInputElement
-    const submitButton = screen.getByTestId(`project-request-user-input-submit-${gateId}`)
-    expect(submitButton).toBeEnabled()
+    expect(screen.getByTestId('run-pending-human-gate-item')).toHaveTextContent(pendingPrompt)
+    const input = screen.getByTestId(`run-pending-human-gate-freeform-input-${gateId}`) as HTMLInputElement
+    const submitButton = screen.getByTestId(`run-pending-human-gate-freeform-submit-${gateId}`)
+    expect(submitButton).toBeDisabled()
 
     fireEvent.change(input, { target: { value: freeformAnswer } })
     expect(input.value).toBe(freeformAnswer)
@@ -3563,7 +3459,9 @@ describe('Frontend contract behavior', () => {
       }))
     })
 
-    expect(screen.getByTestId('run-transcript-input')).toHaveTextContent(pendingPrompt)
+    await waitFor(() => {
+      expect(screen.queryByTestId('run-pending-human-gate-item')).not.toBeInTheDocument()
+    })
   })
 
   it('[CID:10.2.04] covers each supported human-gate question type with type-specific UI affordances', async () => {
@@ -3571,7 +3469,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3622,51 +3520,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptInputEntry(1, {
-                questionId: multipleChoiceGateId,
-                nodeId: 'review_gate_multiple',
-                prompt: 'Choose deployment strategy',
-                questionType: 'MULTIPLE_CHOICE',
-                options: [
-                  {
-                    key: 'P',
-                    label: 'Promote',
-                    value: 'promote',
-                    description: 'Advance this build to production.',
-                  },
-                  {
-                    key: 'H',
-                    label: 'Hold',
-                    value: 'hold',
-                    description: 'Pause rollout and gather more evidence.',
-                  },
-                ],
-              }),
-              transcriptInputEntry(2, {
-                questionId: yesNoGateId,
-                nodeId: 'review_gate_yes_no',
-                prompt: 'Continue migration?',
-                questionType: 'YES_NO',
-              }),
-              transcriptInputEntry(3, {
-                questionId: confirmationGateId,
-                nodeId: 'release_gate_confirmation',
-                prompt: 'Finalize promotion?',
-                questionType: 'CONFIRMATION',
-              }),
-              transcriptInputEntry(4, {
-                questionId: freeformGateId,
-                nodeId: 'release_gate_freeform',
-                prompt: 'Add release notes before promotion.',
-                questionType: 'FREEFORM',
-              }),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -3774,18 +3627,18 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
 
     await waitFor(() => {
-      const pendingItems = screen.getAllByTestId('run-transcript-input')
+      const pendingItems = screen.getAllByTestId('run-pending-human-gate-item')
       expect(pendingItems.some((item) => item.textContent?.includes('Choose deployment strategy'))).toBe(true)
       expect(pendingItems.some((item) => item.textContent?.includes('Continue migration?'))).toBe(true)
       expect(pendingItems.some((item) => item.textContent?.includes('Finalize promotion?'))).toBe(true)
       expect(pendingItems.some((item) => item.textContent?.includes('Add release notes before promotion.'))).toBe(true)
     })
 
-    const pendingItems = screen.getAllByTestId('run-transcript-input')
+    const pendingItems = screen.getAllByTestId('run-pending-human-gate-item')
     const multipleChoiceItem = pendingItems.find((item) => item.textContent?.includes('Choose deployment strategy'))
     const yesNoItem = pendingItems.find((item) => item.textContent?.includes('Continue migration?'))
     const confirmationItem = pendingItems.find((item) => item.textContent?.includes('Finalize promotion?'))
@@ -3796,24 +3649,27 @@ describe('Frontend contract behavior', () => {
 
     const multipleChoiceScope = within(multipleChoiceItem as HTMLElement)
     expect(multipleChoiceScope.getByRole('button', { name: 'Promote' })).toBeVisible()
-    expect(multipleChoiceItem).toHaveTextContent('[P] Advance this build to production.')
+    expect(screen.getByTestId('run-pending-human-gate-option-metadata-promote')).toHaveTextContent('[P]')
+    expect(screen.getByTestId('run-pending-human-gate-option-metadata-promote')).toHaveTextContent(
+      'Advance this build to production.',
+    )
 
     const yesNoScope = within(yesNoItem as HTMLElement)
     expect(yesNoScope.getByRole('button', { name: 'Yes' })).toBeVisible()
     expect(yesNoScope.getByRole('button', { name: 'No' })).toBeVisible()
-    expect(yesNoItem).toHaveTextContent('Sends YES')
-    expect(yesNoItem).toHaveTextContent('Sends NO')
+    expect(yesNoScope.getByText('Sends YES')).toBeVisible()
+    expect(yesNoScope.getByText('Sends NO')).toBeVisible()
 
     const confirmationScope = within(confirmationItem as HTMLElement)
     expect(confirmationScope.getByRole('button', { name: 'Confirm' })).toBeVisible()
     expect(confirmationScope.getByRole('button', { name: 'Cancel' })).toBeVisible()
-    expect(confirmationItem).toHaveTextContent('Sends YES')
-    expect(confirmationItem).toHaveTextContent('Sends NO')
+    expect(confirmationScope.getByText('Sends YES')).toBeVisible()
+    expect(confirmationScope.getByText('Sends NO')).toBeVisible()
 
-    const freeformInput = screen.getByTestId(`project-request-user-input-field-${freeformGateId}`)
-    const freeformSubmit = screen.getByTestId(`project-request-user-input-submit-${freeformGateId}`)
+    const freeformInput = screen.getByTestId(`run-pending-human-gate-freeform-input-${freeformGateId}`)
+    const freeformSubmit = screen.getByTestId(`run-pending-human-gate-freeform-submit-${freeformGateId}`)
     expect(freeformInput).toBeVisible()
-    expect(freeformSubmit).toBeEnabled()
+    expect(freeformSubmit).toBeDisabled()
   })
 
   it('[CID:10.4.01] groups multi-question pending prompts by originating stage', async () => {
@@ -3821,7 +3677,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -3868,38 +3724,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptInputEntry(1, {
-                questionId: 'gate-review-1',
-                nodeId: 'review_gate',
-                stageIndex: 2,
-                questionType: 'MULTIPLE_CHOICE',
-                prompt: 'Choose deployment strategy',
-                options: [
-                  { label: 'Promote', value: 'promote' },
-                  { label: 'Rollback', value: 'rollback' },
-                ],
-              }),
-              transcriptInputEntry(2, {
-                questionId: 'gate-review-2',
-                nodeId: 'review_gate',
-                stageIndex: 2,
-                questionType: 'FREEFORM',
-                prompt: 'Why this strategy?',
-              }),
-              transcriptInputEntry(3, {
-                questionId: 'gate-approval-1',
-                nodeId: 'approval_gate',
-                stageIndex: 3,
-                questionType: 'CONFIRMATION',
-                prompt: 'Finalize production promotion?',
-              }),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -3991,16 +3815,28 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-transcript-input')).toHaveLength(3)
+      expect(screen.getAllByTestId('run-pending-human-gate-group')).toHaveLength(2)
     })
 
-    const pendingItems = screen.getAllByTestId('run-transcript-input')
-    expect(pendingItems[0]).toHaveTextContent('review_gate')
-    expect(pendingItems[0]).toHaveTextContent('Choose deployment strategy')
-    expect(pendingItems[1]).toHaveTextContent('review_gate')
-    expect(pendingItems[1]).toHaveTextContent('Why this strategy?')
-    expect(pendingItems[2]).toHaveTextContent('approval_gate')
-    expect(pendingItems[2]).toHaveTextContent('Finalize production promotion?')
+    const groups = screen.getAllByTestId('run-pending-human-gate-group')
+    const reviewGroup = groups.find((group) =>
+      within(group).getByTestId('run-pending-human-gate-group-heading').textContent?.includes('review_gate'),
+    )
+    const approvalGroup = groups.find((group) =>
+      within(group).getByTestId('run-pending-human-gate-group-heading').textContent?.includes('approval_gate'),
+    )
+
+    expect(reviewGroup).toBeTruthy()
+    expect(approvalGroup).toBeTruthy()
+
+    const reviewScope = within(reviewGroup as HTMLElement)
+    expect(reviewScope.getAllByTestId('run-pending-human-gate-item')).toHaveLength(2)
+    expect(reviewScope.getByText(/Choose deployment strategy/)).toBeVisible()
+    expect(reviewScope.getByText(/Why this strategy\?/)).toBeVisible()
+
+    const approvalScope = within(approvalGroup as HTMLElement)
+    expect(approvalScope.getAllByTestId('run-pending-human-gate-item')).toHaveLength(1)
+    expect(approvalScope.getByText(/Finalize production promotion\?/)).toBeVisible()
   })
 
   it('[CID:10.4.02] displays interviewer inform messages in context of the originating stage', async () => {
@@ -4008,7 +3844,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4055,15 +3891,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptNoticeEntry(1, 'Policy reminder: include rollback evidence.'),
-              transcriptNoticeEntry(2, 'Approver is offline; escalation path is active.'),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -4137,17 +3964,26 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toBeVisible()
+      expect(screen.getByTestId('run-pending-human-gates-panel')).toBeVisible()
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('Policy reminder: include rollback evidence.')
-      expect(screen.getByTestId('run-transcript-panel')).toHaveTextContent('Approver is offline; escalation path is active.')
+      expect(screen.getByText('Policy reminder: include rollback evidence.')).toBeVisible()
+      expect(screen.getByText('Approver is offline; escalation path is active.')).toBeVisible()
     })
 
-    expect(screen.getAllByTestId('run-transcript-notice')).toHaveLength(2)
-    expect(screen.queryAllByTestId('run-transcript-input')).toHaveLength(0)
-    expect(screen.queryAllByRole('button', { name: 'Submit' })).toHaveLength(0)
+    const groups = screen.getAllByTestId('run-pending-human-gate-group')
+    const reviewGroup = groups.find((group) =>
+      within(group).getByTestId('run-pending-human-gate-group-heading').textContent?.includes('review_gate'),
+    )
+    const approvalGroup = groups.find((group) =>
+      within(group).getByTestId('run-pending-human-gate-group-heading').textContent?.includes('approval_gate'),
+    )
+    expect(reviewGroup).toBeTruthy()
+    expect(approvalGroup).toBeTruthy()
+
+    expect(within(reviewGroup as HTMLElement).queryAllByRole('button')).toHaveLength(0)
+    expect(within(approvalGroup as HTMLElement).queryAllByRole('button')).toHaveLength(0)
   })
 
   it('[CID:10.4.03] preserves grouped interaction order and audit metadata', async () => {
@@ -4155,7 +3991,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4202,39 +4038,6 @@ describe('Frontend contract behavior', () => {
           return jsonResponse({
             pipeline_id: runId,
             artifacts: [],
-          })
-        }
-        if (url.endsWith(`${runApiPath}/transcript`)) {
-          return jsonResponse({
-            pipeline_id: runId,
-            entries: [
-              transcriptInputEntry(1, {
-                questionId: 'gate-review-1',
-                nodeId: 'review_gate',
-                stageIndex: 2,
-                questionType: 'MULTIPLE_CHOICE',
-                prompt: 'Choose deployment strategy',
-                options: [
-                  { label: 'Promote', value: 'promote' },
-                  { label: 'Rollback', value: 'rollback' },
-                ],
-              }),
-              transcriptNoticeEntry(2, 'Policy reminder: include rollback evidence.'),
-              transcriptInputEntry(3, {
-                questionId: 'gate-review-2',
-                nodeId: 'review_gate',
-                stageIndex: 2,
-                questionType: 'FREEFORM',
-                prompt: 'Why this strategy?',
-              }),
-              transcriptInputEntry(4, {
-                questionId: 'gate-approval-1',
-                nodeId: 'approval_gate',
-                stageIndex: 3,
-                questionType: 'CONFIRMATION',
-                prompt: 'Finalize production promotion?',
-              }),
-            ],
           })
         }
         if (url.endsWith(`${runApiPath}/graph`)) {
@@ -4334,22 +4137,40 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-transcript-input')).toHaveLength(3)
+      expect(screen.getAllByTestId('run-pending-human-gate-group')).toHaveLength(2)
     })
 
-    const transcriptPanel = screen.getByTestId('run-transcript-panel')
-    expect(transcriptPanel).toHaveTextContent('Choose deployment strategy')
-    expect(transcriptPanel).toHaveTextContent('Policy reminder: include rollback evidence.')
-    expect(transcriptPanel).toHaveTextContent('Why this strategy?')
-    expect(transcriptPanel).toHaveTextContent('Finalize production promotion?')
+    const groups = screen.getAllByTestId('run-pending-human-gate-group')
+    const groupHeadings = groups.map((group) =>
+      within(group).getByTestId('run-pending-human-gate-group-heading').textContent,
+    )
+    expect(groupHeadings).toEqual([
+      'review_gate (index 2)',
+      'approval_gate (index 3)',
+    ])
 
-    const reviewItems = screen.getAllByTestId('run-transcript-input')
-    expect(reviewItems[0]).toHaveTextContent('review_gate')
+    const reviewGroup = groups[0]
+    const reviewScope = within(reviewGroup)
+    const reviewItems = reviewScope.getAllByTestId('run-pending-human-gate-item')
+    expect(reviewItems).toHaveLength(3)
     expect(reviewItems[0]).toHaveTextContent('Choose deployment strategy')
-    expect(reviewItems[1]).toHaveTextContent('review_gate')
-    expect(reviewItems[1]).toHaveTextContent('Why this strategy?')
-    expect(reviewItems[2]).toHaveTextContent('approval_gate')
-    expect(reviewItems[2]).toHaveTextContent('Finalize production promotion?')
+    expect(reviewItems[1]).toHaveTextContent('Policy reminder: include rollback evidence.')
+    expect(reviewItems[2]).toHaveTextContent('Why this strategy?')
+
+    const firstAudit = within(reviewItems[0]).getByTestId('run-pending-human-gate-item-audit')
+    expect(firstAudit).toHaveTextContent('Order #1')
+    expect(firstAudit).toHaveTextContent('Question ID: gate-review-1')
+    expect(firstAudit).toHaveTextContent('Received:')
+
+    const secondAudit = within(reviewItems[1]).getByTestId('run-pending-human-gate-item-audit')
+    expect(secondAudit).toHaveTextContent('Order #2')
+    expect(secondAudit).toHaveTextContent('Question ID: —')
+    expect(secondAudit).toHaveTextContent('Received:')
+
+    const thirdAudit = within(reviewItems[2]).getByTestId('run-pending-human-gate-item-audit')
+    expect(thirdAudit).toHaveTextContent('Order #3')
+    expect(thirdAudit).toHaveTextContent('Question ID: gate-review-2')
+    expect(thirdAudit).toHaveTextContent('Received:')
   })
 
   it('[CID:10.3.02] renders accepted and skipped human-gate provenance in run timeline summaries', async () => {
@@ -4357,7 +4178,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -4499,7 +4320,7 @@ describe('Frontend contract behavior', () => {
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const runRecord = {
       run_id: runId,
-      flow_name: 'contract-behavior.yaml',
+      flow_name: 'contract-behavior.dot',
       status: 'running',
       outcome: null,
       working_directory: '/tmp/project-contract-behavior/workspace',
@@ -5214,22 +5035,15 @@ digraph contract_behavior {
       {
         id: 'task',
         position: { x: 0, y: 0 },
-        data: {
-          label: 'Task',
-          kind: 'agent_task',
-          config: { kind: 'agent_task', prompt: 'Do work' },
-          shape: 'box',
-          prompt: 'Do work',
-        },
+        data: { label: 'Task', shape: 'box', type: 'codergen', prompt: 'Do work' },
       },
       {
         id: 'gate',
         position: { x: 150, y: 0 },
         data: {
           label: 'Gate',
-          kind: 'human_gate',
-          config: { kind: 'human_gate', prompt: 'Choose path' },
           shape: 'hexagon',
+          type: 'wait.human',
           prompt: 'Choose path',
           'human.default_choice': 'fix',
         },
