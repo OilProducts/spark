@@ -848,3 +848,74 @@ fn read_jsonrpc_log(path: &std::path::Path) -> Vec<Value> {
 fn fake_codex_app_server_bin() -> &'static str {
     env!("CARGO_BIN_EXE_spark-agent-fake-codex-app-server")
 }
+
+#[test]
+fn model_list_parses_across_payload_dialects() {
+    use spark_agent_adapter::codex_models_from_list_result;
+
+    // The shape the current codex app-server emits: data entries with
+    // camelCase fields and object-shaped reasoning efforts.
+    let parsed = codex_models_from_list_result(&serde_json::json!({
+        "data": [
+            {
+                "id": "gpt-5.5",
+                "displayName": "GPT-5.5",
+                "isDefault": true,
+                "defaultReasoningEffort": "Medium",
+                "supportedReasoningEfforts": [
+                    {"reasoningEffort": "Low", "description": "Fast"},
+                    {"reasoningEffort": "Medium", "description": "Balanced"},
+                    {"reasoningEffort": "xhigh", "description": "Max"},
+                ],
+            },
+            {"model": "gpt-5.5-mini", "label": "GPT-5.5 Mini"},
+        ],
+    }));
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].id, "gpt-5.5");
+    assert_eq!(parsed[0].display, "GPT-5.5");
+    assert!(parsed[0].is_default);
+    assert_eq!(
+        parsed[0].supported_reasoning_efforts,
+        vec!["low", "medium", "xhigh"]
+    );
+    assert_eq!(
+        parsed[0].default_reasoning_effort.as_deref(),
+        Some("medium")
+    );
+    assert_eq!(parsed[1].id, "gpt-5.5-mini");
+    assert_eq!(parsed[1].display, "GPT-5.5 Mini");
+    assert!(!parsed[1].is_default);
+
+    // Snake_case under "models" with string efforts and nested reasoning.
+    let parsed = codex_models_from_list_result(&serde_json::json!({
+        "models": [{
+            "name": "gpt-legacy",
+            "display_name": "Legacy",
+            "is_default": true,
+            "reasoning": {"supported_efforts": ["low", "high"], "default": "high"},
+        }],
+    }));
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].id, "gpt-legacy");
+    assert_eq!(parsed[0].supported_reasoning_efforts, vec!["low", "high"]);
+    assert_eq!(parsed[0].default_reasoning_effort.as_deref(), Some("high"));
+
+    assert!(codex_models_from_list_result(&serde_json::json!({})).is_empty());
+}
+
+#[test]
+fn list_available_codex_models_queries_the_local_app_server() {
+    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let models = spark_agent_adapter::list_available_codex_models().expect("model list");
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0].id, "gpt-codex-test");
+    assert_eq!(models[0].display, "Codex Test");
+    assert!(models[0].is_default);
+    assert_eq!(models[0].supported_reasoning_efforts, vec!["medium"]);
+    assert_eq!(
+        models[0].default_reasoning_effort.as_deref(),
+        Some("medium")
+    );
+}

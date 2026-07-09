@@ -1730,6 +1730,138 @@ fn runtime_root(env_map: &BTreeMap<String, String>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".spark").join("runtime").join("codex"))
 }
 
+/// A model the local codex install can actually serve, per `model/list`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CodexModelMetadata {
+    pub id: String,
+    pub display: String,
+    pub is_default: bool,
+    pub supported_reasoning_efforts: Vec<String>,
+    pub default_reasoning_effort: Option<String>,
+}
+
+/// Ask the local codex app-server which models it serves. Spawns a short
+/// lived app-server process; callers cache the result.
+pub fn list_available_codex_models() -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
+    let working_dir = env::current_dir().unwrap_or_else(|_| env::temp_dir());
+    let mut client = CodexAppServerClient::connect(working_dir)?;
+    let result = client.list_models()?;
+    Ok(codex_models_from_list_result(&result))
+}
+
+/// Parse a `model/list` result across the payload dialects codex has used:
+/// entries under `data` or `models`, camelCase or snake_case fields, and
+/// reasoning efforts as plain strings or `{reasoningEffort, description}`
+/// objects.
+pub fn codex_models_from_list_result(result: &Value) -> Vec<CodexModelMetadata> {
+    let entries = result
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| result.get("models").and_then(Value::as_array));
+    let Some(entries) = entries else {
+        return Vec::new();
+    };
+    let mut models = Vec::new();
+    for entry in entries {
+        let Some(id) = first_string(entry, &["id", "model", "name"]) else {
+            continue;
+        };
+        let display = first_string(
+            entry,
+            &["display", "displayName", "display_name", "label", "name"],
+        )
+        .unwrap_or_else(|| id.clone());
+        let is_default = entry
+            .get("isDefault")
+            .or_else(|| entry.get("is_default"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let reasoning = entry.get("reasoning").cloned().unwrap_or(Value::Null);
+        let efforts_value = first_value(
+            entry,
+            &[
+                "supportedReasoningEfforts",
+                "supported_reasoning_efforts",
+                "reasoningEfforts",
+                "reasoning_efforts",
+            ],
+        )
+        .or_else(|| {
+            first_value(
+                &reasoning,
+                &["supportedEfforts", "supported_efforts", "efforts"],
+            )
+        });
+        let supported_reasoning_efforts = efforts_value
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .map(|items| {
+                let mut efforts = Vec::new();
+                for item in items {
+                    let Some(effort) = reasoning_effort_from_value(item) else {
+                        continue;
+                    };
+                    if !efforts.contains(&effort) {
+                        efforts.push(effort);
+                    }
+                }
+                efforts
+            })
+            .unwrap_or_default();
+        let default_reasoning_effort = first_value(
+            entry,
+            &[
+                "defaultReasoningEffort",
+                "default_reasoning_effort",
+                "reasoningEffort",
+                "reasoning_effort",
+            ],
+        )
+        .or_else(|| first_value(&reasoning, &["defaultEffort", "default_effort", "default"]))
+        .as_ref()
+        .and_then(reasoning_effort_from_value);
+        models.push(CodexModelMetadata {
+            id,
+            display,
+            is_default,
+            supported_reasoning_efforts,
+            default_reasoning_effort,
+        });
+    }
+    models
+}
+
+fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn first_value(value: &Value, keys: &[&str]) -> Option<Value> {
+    keys.iter().find_map(|key| value.get(*key).cloned())
+}
+
+fn reasoning_effort_from_value(value: &Value) -> Option<String> {
+    let text = match value {
+        Value::String(text) => Some(text.as_str()),
+        Value::Object(_) => value
+            .get("reasoningEffort")
+            .or_else(|| value.get("reasoning_effort"))
+            .or_else(|| value.get("effort"))
+            .or_else(|| value.get("id"))
+            .or_else(|| value.get("value"))
+            .and_then(Value::as_str),
+        _ => None,
+    }?;
+    let normalized = text.trim().to_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 fn codex_executable() -> String {
     env::var("SPARK_CODEX_APP_SERVER_BIN")
         .ok()

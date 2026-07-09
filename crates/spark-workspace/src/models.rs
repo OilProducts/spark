@@ -1,3 +1,6 @@
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use spark_common::settings::SparkSettings;
@@ -5,6 +8,12 @@ use spark_common::settings::SparkSettings;
 use crate::errors::{WorkspaceError, WorkspaceResult};
 
 const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];
+
+/// The codex model list comes from a spawned app-server process, so it is
+/// cached briefly; the installed model set changes on codex upgrades, not
+/// per request.
+const CODEX_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
+static CODEX_MODELS_CACHE: Mutex<Option<(Instant, Vec<ChatModelMetadata>)>> = Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatModelMetadata {
@@ -17,20 +26,74 @@ pub struct ChatModelMetadata {
 }
 
 pub fn chat_models(settings: &SparkSettings) -> WorkspaceResult<Value> {
-    let mut models = Vec::new();
-    if let Some(model) = unified_llm_adapter::get_model_info("codex") {
-        models.push(ChatModelMetadata {
-            provider: "codex".to_string(),
-            id: model.id,
-            display: model.display_name,
-            is_default: true,
-            supported_reasoning_efforts: reasoning_efforts(model.supports_reasoning),
-            default_reasoning_effort: default_reasoning_effort(model.supports_reasoning),
-        });
-    }
+    let mut models = codex_chat_models();
     models.extend(public_unified_chat_models());
     models.extend(configured_profile_chat_models(settings)?);
     Ok(serde_json::json!({ "models": models }))
+}
+
+/// Codex models come from the local install itself (`model/list`), so the
+/// chooser only offers what codex will actually serve; the static catalog
+/// entry is the fallback when codex is unreachable.
+fn codex_chat_models() -> Vec<ChatModelMetadata> {
+    if let Ok(cache) = CODEX_MODELS_CACHE.lock() {
+        if let Some((fetched_at, models)) = cache.as_ref() {
+            if fetched_at.elapsed() < CODEX_MODELS_CACHE_TTL {
+                return models.clone();
+            }
+        }
+    }
+    let live = spark_agent_adapter::list_available_codex_models()
+        .map(codex_chat_models_from_metadata)
+        .unwrap_or_default();
+    if !live.is_empty() {
+        if let Ok(mut cache) = CODEX_MODELS_CACHE.lock() {
+            *cache = Some((Instant::now(), live.clone()));
+        }
+        return live;
+    }
+    fallback_codex_chat_models()
+}
+
+pub fn codex_chat_models_from_metadata(
+    metadata: Vec<spark_agent_adapter::CodexModelMetadata>,
+) -> Vec<ChatModelMetadata> {
+    let has_default = metadata.iter().any(|model| model.is_default);
+    metadata
+        .into_iter()
+        .enumerate()
+        .map(|(index, model)| ChatModelMetadata {
+            provider: "codex".to_string(),
+            display: model.display,
+            is_default: model.is_default || (!has_default && index == 0),
+            supported_reasoning_efforts: if model.supported_reasoning_efforts.is_empty() {
+                REASONING_EFFORTS
+                    .iter()
+                    .map(|effort| effort.to_string())
+                    .collect()
+            } else {
+                model.supported_reasoning_efforts
+            },
+            default_reasoning_effort: model
+                .default_reasoning_effort
+                .or_else(|| Some("medium".to_string())),
+            id: model.id,
+        })
+        .collect()
+}
+
+fn fallback_codex_chat_models() -> Vec<ChatModelMetadata> {
+    let Some(model) = unified_llm_adapter::get_model_info("codex") else {
+        return Vec::new();
+    };
+    vec![ChatModelMetadata {
+        provider: "codex".to_string(),
+        id: model.id,
+        display: model.display_name,
+        is_default: true,
+        supported_reasoning_efforts: reasoning_efforts(model.supports_reasoning),
+        default_reasoning_effort: default_reasoning_effort(model.supports_reasoning),
+    }]
 }
 
 pub fn public_unified_chat_models() -> Vec<ChatModelMetadata> {

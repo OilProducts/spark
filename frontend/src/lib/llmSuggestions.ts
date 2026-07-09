@@ -12,10 +12,10 @@ export interface LlmProfileMetadata {
 }
 
 export const LLM_MODELS_BY_PROVIDER: Record<LlmProviderKey, string[]> = {
+    // Fallback only: the chat chooser gets the live list from the local
+    // codex install via /workspace/api/projects/chat-models.
     codex: [
-        'gpt-5.4',
-        'gpt-5.4-mini',
-        'gpt-5.2',
+        'gpt-5.5',
     ],
     openai: [
         'gpt-5.5',

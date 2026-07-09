@@ -295,3 +295,38 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::<PathBuf>::new(),
     }
 }
+
+#[test]
+fn codex_chat_models_map_live_metadata_and_synthesize_a_default() {
+    let mapped = spark_workspace::models::codex_chat_models_from_metadata(vec![
+        spark_agent_adapter::CodexModelMetadata {
+            id: "gpt-5.5".to_string(),
+            display: "GPT-5.5".to_string(),
+            is_default: false,
+            supported_reasoning_efforts: vec!["low".to_string(), "medium".to_string()],
+            default_reasoning_effort: Some("medium".to_string()),
+        },
+        spark_agent_adapter::CodexModelMetadata {
+            id: "gpt-5.5-mini".to_string(),
+            display: "GPT-5.5 Mini".to_string(),
+            is_default: false,
+            supported_reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+        },
+    ]);
+    assert_eq!(mapped.len(), 2);
+    assert!(mapped.iter().all(|model| model.provider == "codex"));
+    // No entry claimed default, so the first one leads the chooser.
+    assert!(mapped[0].is_default);
+    assert!(!mapped[1].is_default);
+    assert_eq!(mapped[0].supported_reasoning_efforts, vec!["low", "medium"]);
+    // Missing effort metadata falls back to the full ladder + medium.
+    assert_eq!(
+        mapped[1].supported_reasoning_efforts,
+        vec!["low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(
+        mapped[1].default_reasoning_effort.as_deref(),
+        Some("medium")
+    );
+}
