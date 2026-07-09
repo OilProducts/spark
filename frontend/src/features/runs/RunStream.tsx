@@ -378,6 +378,8 @@ export function RunStream() {
             }
         }
 
+        const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'canceled', 'aborted'])
+
         const applyRuntimePatch = (runtimeStatus: RuntimeStatus, runtime: {
             outcome: 'success' | 'failure' | null
             outcomeReasonCode: string | null
@@ -390,6 +392,7 @@ export function RunStream() {
             if (currentRecord?.run_id !== selectedRunId) {
                 return
             }
+            const wasTerminal = TERMINAL_RUN_STATUSES.has(currentRecord.status)
             setSelectedRunSnapshot({
                 record: patchRunRecordFromRuntime(currentRecord, {
                     status: runtimeStatus,
@@ -401,6 +404,13 @@ export function RunStream() {
                 completedNodes: useStore.getState().selectedRunCompletedNodes,
                 fetchedAtMs: useStore.getState().selectedRunStatusFetchedAtMs,
             })
+            // A terminal transition is the authoritative end of the story:
+            // refetch durable state once so the final view (completed nodes,
+            // outcomes, transcript) cannot be left on whatever the live
+            // stream happened to deliver.
+            if (!wasTerminal && TERMINAL_RUN_STATUSES.has(runtimeStatus)) {
+                resyncFromDurableState()
+            }
         }
 
         const handleMessage = (event: { data: string }) => {
@@ -657,14 +667,36 @@ export function RunStream() {
             resyncFromDurableState()
         }
 
+        // The finalize record write guarantees a terminal run.upsert even
+        // when the journal frames around completion were dropped — and a
+        // dropped terminal frame has no successor to expose the gap, so this
+        // is the endgame backstop.
+        const handleRunUpsert = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            const run = detail?.run as { run_id?: string; status?: string } | undefined
+            if (!run || run.run_id !== selectedRunId || typeof run.status !== 'string') {
+                return
+            }
+            if (!TERMINAL_RUN_STATUSES.has(run.status)) {
+                return
+            }
+            const currentRecord = useStore.getState().selectedRunRecord
+            if (currentRecord?.run_id === selectedRunId && TERMINAL_RUN_STATUSES.has(currentRecord.status)) {
+                return
+            }
+            resyncFromDurableState()
+        }
+
         void startScopedStream()
         void refreshRunTranscript()
         window.addEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
         window.addEventListener('spark:run-segment-upsert', handleRunSegmentUpsert)
         window.addEventListener('spark:run-resync-required', handleRunResyncRequired)
+        window.addEventListener('spark:run-upsert', handleRunUpsert)
 
         return () => {
             closed = true
+            window.removeEventListener('spark:run-upsert', handleRunUpsert)
             window.removeEventListener('spark:run-journal-entry', handleLiveRunJournalEntry)
             window.removeEventListener('spark:run-segment-upsert', handleRunSegmentUpsert)
             window.removeEventListener('spark:run-resync-required', handleRunResyncRequired)

@@ -64,14 +64,18 @@ describe('RunStream save indicator', () => {
   })
 
   it('updates the selected run to a terminal state from the streamed runtime event', async () => {
+    // The executor writes the terminal record before appending the runtime
+    // event, so once the stream reports completion the status endpoint must
+    // serve the terminal record too (the terminal transition refetches it).
+    let runCompleted = false
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       if (url.endsWith('/attractor/pipelines/run-reconcile')) {
         return new Response(JSON.stringify({
           pipeline_id: 'run-reconcile',
           run_id: 'run-reconcile',
-          status: 'running',
-          outcome: null,
+          status: runCompleted ? 'completed' : 'running',
+          outcome: runCompleted ? 'success' : null,
           outcome_reason_code: null,
           outcome_reason_message: null,
           flow_name: 'selected.dot',
@@ -157,6 +161,7 @@ describe('RunStream save indicator', () => {
 
     expect(useStore.getState().runtimeStatus).toBe('running')
 
+    runCompleted = true
     await act(async () => {
       window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {
         detail: {

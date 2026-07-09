@@ -3124,6 +3124,19 @@ describe('RunsPanel', () => {
       expect(journalFetchCount).toBeGreaterThan(journalFetchesBeforeGap)
     })
     expect(useStore.getState().nodeStatuses.evaluate).toBeUndefined()
+
+    // A terminal run.upsert is the endgame backstop: even if every journal
+    // frame around completion was dropped, the finalize record write forces
+    // one last durable refetch.
+    const statusFetchesBeforeTerminal = statusFetchCount
+    act(() => {
+      window.dispatchEvent(new CustomEvent('spark:run-upsert', {
+        detail: { run: { ...selectedRun, status: 'completed', outcome: 'success' } },
+      }))
+    })
+    await waitFor(() => {
+      expect(statusFetchCount).toBeGreaterThan(statusFetchesBeforeTerminal)
+    })
   })
 
   it('keeps exhausted journal history marked complete after reselect so Load older does not reappear', async () => {
