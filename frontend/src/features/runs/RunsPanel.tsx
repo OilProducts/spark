@@ -226,7 +226,6 @@ export function RunsPanel() {
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
     const activityMode = selectedRunSessionState?.activityMode ?? 'all'
-    const inspectorTab = selectedRunSessionState?.inspectorTab ?? 'result'
     const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRun?.run_id) {
             return
@@ -256,8 +255,17 @@ export function RunsPanel() {
     // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
     const now = Date.now()
     const questionsPanelRef = useRef<HTMLDivElement | null>(null)
+    const detailsScrollRef = useRef<HTMLDivElement | null>(null)
     const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
     const selectedNodeId = selectedRunSessionState?.selectedNodeId ?? null
+    const storedInspectorTab = selectedRunSessionState?.inspectorTab ?? null
+    const isTerminalSelectedRun = selectedRun
+        ? ['completed', 'failed', 'canceled', 'aborted'].includes(selectedRun.status)
+        : false
+    // Lifecycle-aware default: a selected node inspects the node, terminal
+    // runs lead with the result, live runs lead with reference details.
+    const inspectorTab = storedInspectorTab
+        ?? (selectedNodeId ? 'node' : isTerminalSelectedRun ? 'result' : 'details')
     const liveNodeStatuses = useStore((state) => state.nodeStatuses)
     const humanGateNodeId = useStore((state) => state.humanGate?.nodeId ?? null)
     const gateNodeId = visiblePendingInterviewGates[0]?.nodeId ?? humanGateNodeId
@@ -288,17 +296,26 @@ export function RunsPanel() {
     // Explicit node selection also focuses the inspector's node tab; the gate
     // auto-focus below deliberately does not, so it never hijacks a tab the
     // operator chose.
+    // A new run starts reading from the top; scroll position must not leak
+    // from the previous selection.
+    useEffect(() => {
+        if (detailsScrollRef.current) {
+            detailsScrollRef.current.scrollTop = 0
+        }
+    }, [selectedRun?.run_id])
+
     const selectNode = useCallback((nodeId: string | null) => {
         if (!selectedRun?.run_id) {
             return
         }
         const session = useStore.getState().runDetailSessionsByRunId[selectedRun.run_id]
-        const currentTab = session?.inspectorTab ?? 'result'
+        const currentTab = session?.inspectorTab ?? null
         const patch: Partial<RunDetailSessionState> = { selectedNodeId: nodeId }
         if (nodeId) {
             patch.inspectorTab = 'node'
         } else if (currentTab === 'node') {
-            patch.inspectorTab = 'result'
+            // Back to the lifecycle default rather than pinning Result.
+            patch.inspectorTab = null
         }
         updateRunDetailSession(selectedRun.run_id, patch)
     }, [selectedRun?.run_id, updateRunDetailSession])
@@ -458,6 +475,7 @@ export function RunsPanel() {
                 />
                 <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden pl-6'}`}>
                     <div
+                        ref={detailsScrollRef}
                         data-testid="run-details-scroll-region"
                         className={isNarrowViewport ? 'space-y-6' : 'min-h-0 flex-1 space-y-6 overflow-auto pr-2'}
                     >
