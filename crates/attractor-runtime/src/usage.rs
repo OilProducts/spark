@@ -128,7 +128,7 @@ impl TokenUsageBreakdown {
 }
 
 /// USD per million tokens: (input, cached input, output).
-/// Rates checked against official OpenAI model documentation on 2026-04-09.
+/// Rates checked against the official OpenAI pricing page on 2026-07-09.
 const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("codex-mini-latest", (1.50, 0.375, 6.00)),
     ("gpt-4.1", (2.00, 0.50, 8.00)),
@@ -146,6 +146,13 @@ const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("gpt-5.4", (2.50, 0.25, 15.00)),
     ("gpt-5.4-mini", (0.75, 0.075, 4.50)),
     ("gpt-5.4-nano", (0.20, 0.02, 1.25)),
+    ("gpt-5.5", (5.00, 0.50, 30.00)),
+    // No dedicated 5.5 codex model id is published (Codex uses gpt-5.5);
+    // the alias covers clients that report one anyway.
+    ("gpt-5.5-codex", (5.00, 0.50, 30.00)),
+    ("gpt-5.6-sol", (5.00, 0.50, 30.00)),
+    ("gpt-5.6-terra", (2.50, 0.25, 15.00)),
+    ("gpt-5.6-luna", (1.00, 0.10, 6.00)),
 ];
 
 fn pricing_for_model(model: &str) -> Option<(f64, f64, f64)> {

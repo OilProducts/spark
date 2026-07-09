@@ -173,6 +173,30 @@ fn legacy_token_usage_events_only_count_when_no_completed_event_carried_usage() 
     assert!(project_run_usage(&[], "compat-model").is_none());
 }
 
+#[test]
+fn current_generation_models_are_priced() {
+    // gpt-5.5: $5.00 input / $0.50 cached / $30.00 output per million,
+    // per the official OpenAI pricing page (checked 2026-07-09).
+    let entries = vec![completed_entry(
+        1,
+        "codex_app_server_request_completed",
+        json!({
+            "model": "gpt-5.5",
+            "token_usage": {"total": {"inputTokens": 1_000_000, "cachedInputTokens": 400_000, "outputTokens": 100_000}},
+        }),
+    )];
+    let breakdown = project_run_usage(&entries, "fallback").expect("usage");
+    let cost = estimate_model_cost(&breakdown).expect("cost");
+    assert_eq!(cost["status"], "estimated");
+    // 600k uncached * 5.00 + 400k cached * 0.50 + 100k output * 30.00 per million.
+    let expected = (600_000.0 * 5.00 + 400_000.0 * 0.50 + 100_000.0 * 30.00) / 1_000_000.0;
+    let amount = cost["amount"].as_f64().expect("amount");
+    assert!(
+        (amount - expected).abs() < 1e-9,
+        "amount {amount} != {expected}"
+    );
+}
+
 struct UsageEmittingBackend;
 
 impl spark_agent_adapter::CodergenBackend for UsageEmittingBackend {
