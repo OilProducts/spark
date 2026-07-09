@@ -22,7 +22,7 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     statusFetchedAtMs: null,
     selectedNodeId: null,
     activityMode: 'all',
-    inspectorTab: 'result',
+    inspectorTab: null,
     graphStatus: 'idle',
     graphError: null,
     expandChildFlows: false,

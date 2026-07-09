@@ -794,21 +794,25 @@ describe('RunsPanel', () => {
     expect(activityList().getByText('Draft archive output.')).toBeVisible()
     // Selecting a graph node scopes the stream to that node's entries only.
     act(() => {
-      useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft' })
+      // Deep links and gate focus set only the node; with no explicit tab
+      // choice stored, the inspector auto-resolves to the Node tab.
+      useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft', inspectorTab: null })
     })
     expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: draft')
+    expect(screen.getByTestId('run-inspector-tab-node')).toHaveAttribute('aria-selected', 'true')
     const scopedActivityList = screen.getByTestId('run-activity-list')
     expect(within(scopedActivityList).getAllByTestId('run-transcript-group')).toHaveLength(1)
     expect(within(scopedActivityList).getByTestId('run-transcript-group')).toHaveAttribute('data-node-id', 'draft')
     expect(within(scopedActivityList).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
     await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    // Clearing node focus drops the inspector back to the run-scope Result tab;
-    // reference evidence lives behind inspector tabs, not an advanced drawer.
+    // Clearing node focus falls back to the lifecycle default: this run is
+    // still active, so the inspector leads with reference Details (Result is
+    // the default only once the run is terminal).
     expect(runInspectorPanel).toBeVisible()
     await waitFor(() => {
-      expect(screen.getByTestId('run-inspector-tab-result')).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByTestId('run-inspector-tab-details')).toHaveAttribute('aria-selected', 'true')
     })
-    expect(screen.getByTestId('run-result-panel')).toBeVisible()
+    expect(screen.getByTestId('run-details-card')).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     // The run graph is a persistent surface promoted out of the advanced section.
     expect(runGraphPanel).toBeVisible()

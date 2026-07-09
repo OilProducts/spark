@@ -60,7 +60,9 @@ export interface RunDetailSessionState {
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
     activityMode: 'all' | 'transcript' | 'events'
-    inspectorTab: 'result' | 'details' | 'checkpoint' | 'context' | 'artifacts' | 'node'
+    // null = auto: node when one is selected, result for terminal runs,
+    // details otherwise. An explicit user choice sticks per run.
+    inspectorTab: 'result' | 'details' | 'checkpoint' | 'context' | 'artifacts' | 'node' | null
     graphStatus: ResourceStatus
     graphError: string | null
     expandChildFlows: boolean

@@ -771,7 +771,6 @@ export function RunsHashRoutingController() {
                 state.updateRunDetailSession(route.runId, {
                     selectedNodeId: route.nodeId,
                     // A node deep link lands on the node inspector tab.
-                    ...(route.nodeId ? { inspectorTab: 'node' as const } : {}),
                 })
             }
         }
