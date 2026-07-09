@@ -816,8 +816,10 @@ describe('RunsPanel', () => {
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
     // The run graph is a persistent surface beside the work pane.
     expect(runGraphPanel).toBeVisible()
-    expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'false')
+    // Transcript-first: runs with agent output default the stream to the
+    // live transcript; All and Events remain one click away.
+    expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'false')
     // The masthead leads: header, gates, then the graph/work-pane row.
     expect(

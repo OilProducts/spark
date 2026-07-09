@@ -21,7 +21,7 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     completedNodesSnapshot: [],
     statusFetchedAtMs: null,
     selectedNodeId: null,
-    activityMode: 'all',
+    activityMode: null,
     inspectorTab: null,
     graphStatus: 'idle',
     graphError: null,

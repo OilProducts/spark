@@ -6,6 +6,7 @@ import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
 import { useRunTranscriptStore } from './state/runTranscriptStore'
+import { buildRunTranscriptGroups } from './model/transcriptModel'
 import { RunActivityCard } from './components/RunActivityCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunInspectorPanel } from './components/RunInspectorPanel'
@@ -225,7 +226,15 @@ export function RunsPanel() {
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
-    const activityMode = selectedRunSessionState?.activityMode ?? 'all'
+    const storedActivityMode = selectedRunSessionState?.activityMode ?? null
+    // Transcript-first: with no explicit mode chosen, lead with the live
+    // transcript whenever the run has agent output to show; tool-only runs
+    // fall back to the full activity stream.
+    const hasTranscriptContent = useMemo(
+        () => buildRunTranscriptGroups(transcriptSegments, null).length > 0,
+        [transcriptSegments],
+    )
+    const activityMode = storedActivityMode ?? (hasTranscriptContent ? 'transcript' : 'all')
     const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRun?.run_id) {
             return

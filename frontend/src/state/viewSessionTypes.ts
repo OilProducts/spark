@@ -59,7 +59,8 @@ export interface RunDetailSessionState {
     completedNodesSnapshot: string[]
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
-    activityMode: 'all' | 'transcript' | 'events'
+    /** null = auto: Transcript when the run has agent output, All otherwise. */
+    activityMode: 'all' | 'transcript' | 'events' | null
     // null = auto: node when one is selected, result for terminal runs,
     // details otherwise. An explicit user choice sticks per run.
     inspectorTab: 'activity' | 'result' | 'details' | 'checkpoint' | 'context' | 'artifacts' | null
