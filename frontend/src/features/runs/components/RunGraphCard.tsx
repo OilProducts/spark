@@ -48,7 +48,7 @@ type RunGraphCanvasInnerProps = {
     nodeStatusesById: Record<string, NodeStatus>
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
-    paneHeight: number
+    paneHeight: number | 'fill'
 }
 
 function RunGraphCanvasInner({
@@ -192,8 +192,12 @@ function RunGraphCanvasInner({
     return (
         <div
             data-testid="run-graph-canvas"
-            className="overflow-hidden rounded-md border border-border/80 bg-background"
-            style={{ height: `${paneHeight}px` }}
+            className={
+                paneHeight === 'fill'
+                    ? 'min-h-0 flex-1 overflow-hidden rounded-md border border-border/80 bg-background'
+                    : 'overflow-hidden rounded-md border border-border/80 bg-background'
+            }
+            style={paneHeight === 'fill' ? undefined : { height: `${paneHeight}px` }}
         >
             <ReactFlow
                 nodes={decoratedNodes}
@@ -220,7 +224,7 @@ function RunGraphCanvasInner({
                 multiSelectionKeyCode={null}
                 proOptions={{ hideAttribution: true }}
             >
-                {decoratedNodes.length > 10 && paneHeight >= 480 ? (
+                {decoratedNodes.length > 10 && (paneHeight === 'fill' || paneHeight >= 480) ? (
                     <MiniMap pannable zoomable position="top-right" />
                 ) : null}
                 <Controls showInteractive={false} />
@@ -235,6 +239,8 @@ interface RunGraphCardProps {
     nodeStatusesById: Record<string, NodeStatus>
     selectedNodeId: string | null
     onSelectNode: (nodeId: string | null) => void
+    /** Fill the parent column instead of using the session pane height. */
+    fillHeight?: boolean
 }
 
 export function RunGraphCard({
@@ -242,6 +248,7 @@ export function RunGraphCard({
     nodeStatusesById,
     selectedNodeId,
     onSelectNode,
+    fillHeight = false,
 }: RunGraphCardProps) {
     const diagnostics = useStore((state) => state.runDiagnostics)
     const [refreshToken, setRefreshToken] = useState(0)
@@ -259,11 +266,14 @@ export function RunGraphCard({
     }
 
     return (
-        <Card data-testid="run-graph-panel" className="gap-2 py-3">
+        <Card
+            data-testid="run-graph-panel"
+            className={fillHeight ? 'flex h-full min-h-0 flex-col gap-2 py-3' : 'gap-2 py-3'}
+        >
             <CardHeader className="gap-1 px-4">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     <h3
-                        className="text-sm font-semibold text-foreground"
+                        className="shrink-0 whitespace-nowrap text-sm font-semibold text-foreground"
                         title="Live node states for the selected run. Click a node to focus its activity; click the background to clear the selection."
                     >
                         Run Graph
@@ -285,7 +295,9 @@ export function RunGraphCard({
                     </div>
                 </div>
             </CardHeader>
-            <CardContent className="space-y-2 px-4">
+            <CardContent
+                className={fillHeight ? 'flex min-h-0 flex-1 flex-col gap-2 px-4' : 'space-y-2 px-4'}
+            >
                 {graphStatus !== 'ready' && !graphError ? (
                     <Alert
                         data-testid="run-graph-loading"
@@ -343,11 +355,12 @@ export function RunGraphCard({
                                 nodeStatusesById={nodeStatusesById}
                                 selectedNodeId={selectedNodeId}
                                 onSelectNode={onSelectNode}
-                                paneHeight={paneHeight}
+                                paneHeight={fillHeight ? 'fill' : paneHeight}
                             />
                         </ReactFlowProvider>
                     </CanvasSessionModeProvider>
                 ) : null}
+                {fillHeight ? null : (
                 <div
                     data-testid="run-graph-resize-handle"
                     role="separator"
@@ -383,6 +396,7 @@ export function RunGraphCard({
                 >
                     <span className="h-1 w-12 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
                 </div>
+                )}
             </CardContent>
         </Card>
     )

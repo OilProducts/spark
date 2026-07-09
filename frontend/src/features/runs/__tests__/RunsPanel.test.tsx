@@ -760,7 +760,6 @@ describe('RunsPanel', () => {
     const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
     const runGraphPanel = screen.getByTestId('run-graph-panel')
     const runInspectorPanel = screen.getByTestId('run-inspector-panel')
-    const runActivityStreamPanel = screen.getByTestId('run-activity-stream-panel')
     // Monitoring folds into the compact header strip: identity, status, and
     // ambient facts on the masthead, no drawer-style NOW box.
     expect(screen.getByTestId('run-header-title')).toHaveTextContent('selected.dot')
@@ -774,8 +773,11 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
     await user.click(screen.getByTestId('run-inspector-tab-result'))
     expect(runPendingQuestionsPanel).toBeVisible()
-    expect(runActivityStreamPanel).toBeVisible()
-    expect(runActivityStreamPanel).toHaveAttribute('data-responsive-layout', 'split')
+    // Panes are exclusive now: the Activity stream returns on its tab.
+    await user.click(screen.getByTestId('run-inspector-tab-activity'))
+    const activityPanel = screen.getByTestId('run-activity-stream-panel')
+    expect(activityPanel).toBeVisible()
+    expect(activityPanel).toHaveAttribute('data-responsive-layout', 'split')
     // The pending gate auto-focuses its node, scoping the unified activity stream.
     await waitFor(() => {
       expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: validate')
@@ -795,31 +797,29 @@ describe('RunsPanel', () => {
     // Selecting a graph node scopes the stream to that node's entries only.
     act(() => {
       // Deep links and gate focus set only the node; with no explicit tab
-      // choice stored, the inspector auto-resolves to the Node tab.
+      // choice stored, the inspector auto-resolves to the Activity stream.
       useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft', inspectorTab: null })
     })
     expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: draft')
-    expect(screen.getByTestId('run-inspector-tab-node')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('run-inspector-tab-activity')).toHaveAttribute('aria-selected', 'true')
     const scopedActivityList = screen.getByTestId('run-activity-list')
     expect(within(scopedActivityList).getAllByTestId('run-transcript-group')).toHaveLength(1)
     expect(within(scopedActivityList).getByTestId('run-transcript-group')).toHaveAttribute('data-node-id', 'draft')
     expect(within(scopedActivityList).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
     await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    // Clearing node focus falls back to the lifecycle default: this run is
-    // still active, so the inspector leads with reference Details (Result is
-    // the default only once the run is terminal).
+    // Clearing node focus keeps the Activity stream front and center; the
+    // live transcript is the default work surface.
     expect(runInspectorPanel).toBeVisible()
     await waitFor(() => {
-      expect(screen.getByTestId('run-inspector-tab-details')).toHaveAttribute('aria-selected', 'true')
+      expect(screen.getByTestId('run-inspector-tab-activity')).toHaveAttribute('aria-selected', 'true')
     })
-    expect(screen.getByTestId('run-details-card')).toBeVisible()
     expect(screen.queryByTestId('run-checkpoint-panel')).not.toBeInTheDocument()
-    // The run graph is a persistent surface promoted out of the advanced section.
+    // The run graph is a persistent surface beside the work pane.
     expect(runGraphPanel).toBeVisible()
     expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'false')
     expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'false')
-    // The masthead leads the detail stack: header, gates, graph, inspector, activity.
+    // The masthead leads: header, gates, then the graph/work-pane row.
     expect(
       runSummaryPanel.compareDocumentPosition(runPendingQuestionsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
@@ -829,10 +829,9 @@ describe('RunsPanel', () => {
     expect(
       runGraphPanel.compareDocumentPosition(runInspectorPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
-    expect(
-      runInspectorPanel.compareDocumentPosition(runActivityStreamPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
 
+    await user.click(screen.getByTestId('run-inspector-tab-details'))
+    expect(screen.getByTestId('run-details-card')).toBeVisible()
     await user.click(screen.getByTestId('run-inspector-tab-checkpoint'))
     await waitFor(() => {
       expect(screen.getByTestId('run-checkpoint-panel')).toBeVisible()
@@ -842,12 +841,13 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
     expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
 
-    // The persistent graph pane renders its canvas without any expand toggle.
+    // The persistent graph pane fills its column: canvas, no expand toggle,
+    // no manual resize handle.
     await waitFor(() => {
       expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })
     expect(screen.queryByTestId('run-graph-toggle-button')).not.toBeInTheDocument()
-    expect(screen.getByTestId('run-graph-resize-handle')).toBeVisible()
+    expect(screen.queryByTestId('run-graph-resize-handle')).not.toBeInTheDocument()
 
     expect(
       runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,

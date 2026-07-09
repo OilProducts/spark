@@ -2226,10 +2226,14 @@ describe('App shell behavior', () => {
         }))
     })
 
-    // Focus the review node (as a graph-node click would) so the pending gate's
-    // auto-selection cannot scope the stream elsewhere.
+    // Focus the review node (as a graph-node click would: selection plus the
+    // Activity tab) so the pending gate's auto-selection cannot scope the
+    // stream elsewhere.
     act(() => {
-      useStore.getState().updateRunDetailSession('run-session', { selectedNodeId: 'review' })
+      useStore.getState().updateRunDetailSession('run-session', {
+        selectedNodeId: 'review',
+        inspectorTab: 'activity',
+      })
     })
     await waitFor(() => {
       expect(
@@ -2243,6 +2247,7 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('run-activity-mode-events'))
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-category'), 'stage')
     await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
+    await user.click(screen.getByTestId('run-inspector-tab-context'))
     await user.clear(screen.getByTestId('run-context-search-input'))
     await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
     await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
@@ -2275,14 +2280,15 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-session.dot')
     })
-    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')
-    expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
-    expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
     // The inspector restores its last active tab (Artifacts) across the switch.
     expect(screen.getByTestId('run-inspector-tab-artifacts')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
     expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
+    await user.click(screen.getByTestId('run-inspector-tab-activity'))
+    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')
+    expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
+    expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
     await user.click(screen.getByTestId('run-inspector-tab-context'))
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
     expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')

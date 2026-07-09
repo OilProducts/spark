@@ -14,7 +14,7 @@ import { RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
-import { nodeOutcomesFromCheckpoint, nodeRetryCountFromCheckpoint } from './model/runDetailsModel'
+import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -259,13 +259,9 @@ export function RunsPanel() {
     const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
     const selectedNodeId = selectedRunSessionState?.selectedNodeId ?? null
     const storedInspectorTab = selectedRunSessionState?.inspectorTab ?? null
-    const isTerminalSelectedRun = selectedRun
-        ? ['completed', 'failed', 'canceled', 'aborted'].includes(selectedRun.status)
-        : false
-    // Lifecycle-aware default: a selected node inspects the node, terminal
-    // runs lead with the result, live runs lead with reference details.
-    const inspectorTab = storedInspectorTab
-        ?? (selectedNodeId ? 'node' : isTerminalSelectedRun ? 'result' : 'details')
+    // Activity-first: the live transcript stream is the default work surface;
+    // an explicit tab choice sticks per run.
+    const inspectorTab = storedInspectorTab ?? 'activity'
     const liveNodeStatuses = useStore((state) => state.nodeStatuses)
     const humanGateNodeId = useStore((state) => state.humanGate?.nodeId ?? null)
     const gateNodeId = visiblePendingInterviewGates[0]?.nodeId ?? humanGateNodeId
@@ -308,14 +304,11 @@ export function RunsPanel() {
         if (!selectedRun?.run_id) {
             return
         }
-        const session = useStore.getState().runDetailSessionsByRunId[selectedRun.run_id]
-        const currentTab = session?.inspectorTab ?? null
         const patch: Partial<RunDetailSessionState> = { selectedNodeId: nodeId }
         if (nodeId) {
-            patch.inspectorTab = 'node'
-        } else if (currentTab === 'node') {
-            // Back to the lifecycle default rather than pinning Result.
-            patch.inspectorTab = null
+            // Selecting a node is an intent to read its activity: land in the
+            // node-scoped live transcript stream.
+            patch.inspectorTab = 'activity'
         }
         updateRunDetailSession(selectedRun.run_id, patch)
     }, [selectedRun?.run_id, updateRunDetailSession])
@@ -347,11 +340,6 @@ export function RunsPanel() {
         }
     }, [gateNodeId, selectedRun?.run_id, updateRunDetailSession])
 
-    const pendingGatesForSelectedNode = useMemo(() => (
-        selectedNodeId
-            ? visiblePendingInterviewGates.filter((gate) => gate.nodeId === selectedNodeId)
-            : []
-    ), [selectedNodeId, visiblePendingInterviewGates])
     const selectRun = (run: RunRecord) => {
         setRunsSelectedRunIdForScope(
             buildRunsScopeKey(scopeMode, activeProjectPath),
@@ -475,9 +463,7 @@ export function RunsPanel() {
                 />
                 <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden pl-6'}`}>
                     <div
-                        ref={detailsScrollRef}
-                        data-testid="run-details-scroll-region"
-                        className={isNarrowViewport ? 'space-y-6' : 'min-h-0 flex-1 space-y-6 overflow-auto pr-2'}
+                        className={isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col gap-4'}
                     >
                         {showRunSelectionEmptyState && (
                             <div data-testid="run-selection-empty-state" className="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
@@ -530,7 +516,10 @@ export function RunsPanel() {
                             </Alert>
                         )}
                         {selectedRun && (
-                            <div ref={questionsPanelRef}>
+                            <div
+                                ref={questionsPanelRef}
+                                className={isNarrowViewport ? undefined : 'max-h-[38vh] shrink-0 overflow-y-auto'}
+                            >
                             <RunQuestionsPanel
                                 freeformAnswersByGateId={freeformAnswersByGateId}
                                 groupedPendingInterviewGates={groupedPendingInterviewGates}
@@ -551,25 +540,62 @@ export function RunsPanel() {
                         {selectedRun && (
                             <div className={isNarrowViewport
                                 ? 'space-y-6'
-                                : 'grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(20rem,26rem)]'}
+                                : 'flex min-h-0 flex-1 gap-4'}
                             >
-                                <RunGraphCard
-                                    key={`graph-${selectedRun.run_id}`}
-                                    run={selectedRun}
-                                    nodeStatusesById={runNodeStatuses}
-                                    selectedNodeId={selectedNodeId}
-                                    onSelectNode={selectNode}
-                                />
+                                <div className={isNarrowViewport
+                                    ? undefined
+                                    : 'flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
+                                >
+                                    <RunGraphCard
+                                        key={`graph-${selectedRun.run_id}`}
+                                        run={selectedRun}
+                                        nodeStatusesById={runNodeStatuses}
+                                        selectedNodeId={selectedNodeId}
+                                        onSelectNode={selectNode}
+                                        fillHeight={!isNarrowViewport}
+                                    />
+                                </div>
+                                <div className={isNarrowViewport
+                                    ? 'mt-6'
+                                    : 'flex min-h-0 min-w-0 flex-1 flex-col'}
+                                >
                                 <RunInspectorPanel
                                     inspectorTab={inspectorTab}
                                     onInspectorTabChange={(tab) => {
                                         patchSelectedRunSession({ inspectorTab: tab })
                                     }}
-                                    selectedNodeId={selectedNodeId}
-                                    transcriptSegments={transcriptSegments}
-                                    groupedTimelineEntries={groupedTimelineEntries}
-                                    nodeRetryCount={nodeRetryCountFromCheckpoint(checkpointData, selectedNodeId)}
-                                    pendingGatesForNode={pendingGatesForSelectedNode}
+                                    fillHeight={!isNarrowViewport}
+                                    scrollRegionRef={detailsScrollRef}
+                                    activityContent={
+                                        <RunActivityCard
+                                            fillHeight={!isNarrowViewport}
+                                        isNarrowViewport={isNarrowViewport}
+                                        isLive={isTimelineLive}
+                                        activityMode={activityMode}
+                                        onActivityModeChange={(mode) => {
+                                            patchSelectedRunSession({ activityMode: mode })
+                                        }}
+                                        selectedNodeId={selectedNodeId}
+                                        onClearNodeSelection={() => {
+                                            selectNode(null)
+                                        }}
+                                        transcriptSegments={transcriptSegments}
+                                        transcriptError={transcriptError}
+                                        groupedTimelineEntries={groupedTimelineEntries}
+                                        timelineError={timelineError}
+                                        timelineEventCount={timelineEventCount}
+                                        filteredTimelineEventCount={filteredTimelineEventCount}
+                                        timelineCategoryFilter={timelineCategoryFilter}
+                                        timelineSeverityFilter={timelineSeverityFilter}
+                                        onTimelineCategoryFilterChange={setTimelineCategoryFilter}
+                                        onTimelineSeverityFilterChange={setTimelineSeverityFilter}
+                                        hasOlderTimelineEvents={hasOlderTimelineEvents}
+                                        isTimelineLoadingOlder={isTimelineLoadingOlder}
+                                        onLoadOlderTimelineEvents={() => {
+                                            void loadOlderTimelineEvents()
+                                        }}
+                                        />
+                                    }
                                     detailsCardProps={{
                                         run: selectedRun,
                                         activeProjectPath,
@@ -642,36 +668,8 @@ export function RunsPanel() {
                                         status: artifactStatus,
                                     }}
                                 />
+                                </div>
                             </div>
-                        )}
-                        {selectedRun && (
-                            <RunActivityCard
-                                isNarrowViewport={isNarrowViewport}
-                                isLive={isTimelineLive}
-                                activityMode={activityMode}
-                                onActivityModeChange={(mode) => {
-                                    patchSelectedRunSession({ activityMode: mode })
-                                }}
-                                selectedNodeId={selectedNodeId}
-                                onClearNodeSelection={() => {
-                                    selectNode(null)
-                                }}
-                                transcriptSegments={transcriptSegments}
-                                transcriptError={transcriptError}
-                                groupedTimelineEntries={groupedTimelineEntries}
-                                timelineError={timelineError}
-                                timelineEventCount={timelineEventCount}
-                                filteredTimelineEventCount={filteredTimelineEventCount}
-                                timelineCategoryFilter={timelineCategoryFilter}
-                                timelineSeverityFilter={timelineSeverityFilter}
-                                onTimelineCategoryFilterChange={setTimelineCategoryFilter}
-                                onTimelineSeverityFilterChange={setTimelineSeverityFilter}
-                                hasOlderTimelineEvents={hasOlderTimelineEvents}
-                                isTimelineLoadingOlder={isTimelineLoadingOlder}
-                                onLoadOlderTimelineEvents={() => {
-                                    void loadOlderTimelineEvents()
-                                }}
-                            />
                         )}
                     </div>
                 </div>

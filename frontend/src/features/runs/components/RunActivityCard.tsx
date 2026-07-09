@@ -51,6 +51,8 @@ type ActivityRow =
     }
 
 interface RunActivityCardProps {
+    /** Fill the parent pane; the row list scrolls instead of capping height. */
+    fillHeight?: boolean
     isNarrowViewport: boolean
     isLive: boolean
     activityMode: RunActivityMode
@@ -140,6 +142,7 @@ export function EventRow({
 }
 
 export function RunActivityCard({
+    fillHeight = false,
     isNarrowViewport,
     isLive,
     activityMode,
@@ -219,16 +222,22 @@ export function RunActivityCard({
         <Card
             data-testid="run-activity-stream-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={cn('gap-2 py-3', isNarrowViewport ? 'p-3' : undefined)}
+            className={cn(
+                'gap-2 py-3',
+                fillHeight && 'flex h-full min-h-0 flex-col',
+                isNarrowViewport ? 'p-3' : undefined,
+            )}
         >
             <CardHeader className="gap-1 px-4">
-                <div className="flex items-center justify-between gap-3">
-                    <h3
-                        className="text-sm font-semibold text-foreground"
-                        title="Transcript and journal history in one stream, newest first. Select a graph node to focus its activity."
-                    >
-                        Activity
-                    </h3>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                    {fillHeight ? <span aria-hidden className="h-0 w-0" /> : (
+                        <h3
+                            className="text-sm font-semibold text-foreground"
+                            title="Transcript and journal history in one stream, newest first. Select a graph node to focus its activity."
+                        >
+                            Activity
+                        </h3>
+                    )}
                     <div className="flex items-center gap-2">
                         <div
                             role="group"
@@ -266,7 +275,7 @@ export function RunActivityCard({
                     </div>
                 </div>
             </CardHeader>
-            <CardContent className="space-y-2 px-4">
+            <CardContent className={cn('space-y-2 px-4', fillHeight && 'flex min-h-0 flex-1 flex-col')}>
                 {isPerformanceDebugEnabled() ? (
                     <>
                         <div
@@ -368,7 +377,10 @@ export function RunActivityCard({
                 {renderedRows.length > 0 ? (
                     <div
                         data-testid="run-activity-list"
-                        className="max-h-[32rem] space-y-1.5 overflow-auto pr-1"
+                        className={cn(
+                            'space-y-1.5 overflow-auto pr-1',
+                            fillHeight ? 'min-h-0 flex-1' : 'max-h-[32rem]',
+                        )}
                     >
                         {renderedRows.map((row) => (
                             row.kind === 'transcript'
