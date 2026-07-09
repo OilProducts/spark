@@ -2622,10 +2622,10 @@ describe('RunsPanel', () => {
     expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current started'))).toHaveLength(1)
     expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current completed'))).toHaveLength(1)
     expect(timelineSummaries).toEqual([
-      'Stage done completed',
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
-      'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
       'Stage prepare completed',
+      'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
+      'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
+      'Stage done completed',
     ])
   })
 
@@ -3021,7 +3021,8 @@ describe('RunsPanel', () => {
     expect(screen.getAllByTestId('run-event-timeline-row-correlation')[0]).toHaveTextContent(
       'Retry sequence for review_loop',
     )
-    expect(screen.getAllByTestId('run-event-timeline-row-summary')[0]).toHaveTextContent('Retry attempt 180')
+    // Chronological stream: the live edge (bottom) holds the newest attempt.
+    expect(screen.getAllByTestId('run-event-timeline-row-summary').at(-1)).toHaveTextContent('Retry attempt 180')
     expect(
       screen.getAllByTestId('run-event-timeline-row-summary').some((node) => node.textContent === 'Retry attempt 1'),
     ).toBe(false)

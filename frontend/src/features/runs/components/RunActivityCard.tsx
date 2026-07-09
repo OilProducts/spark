@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 
@@ -209,12 +209,49 @@ export function RunActivityCard({
                 }
             }
         }
-        rows.sort((left, right) => right.sequence - left.sequence)
+        // Chronological, like a log: the live edge is the bottom. A growing
+        // node keeps appending there, and a newly started node lands there
+        // too, so following the run means watching one place.
+        rows.sort((left, right) => left.sequence - right.sequence)
         return rows
     }, [activityMode, transcriptGroups, scopedTimelineGroups])
 
-    const renderedRows = activityRows.slice(0, MAX_RENDERED_ACTIVITY_ROWS)
+    const renderedRows = activityRows.slice(-MAX_RENDERED_ACTIVITY_ROWS)
     const truncatedRowCount = activityRows.length - renderedRows.length
+
+    // Stick to the live edge: while the operator is at (or near) the bottom,
+    // new activity keeps the view pinned there; scrolling up releases the
+    // pin until they return or jump back.
+    const listRef = useRef<HTMLDivElement | null>(null)
+    const isFollowingRef = useRef(true)
+    const [isFollowingLiveEdge, setIsFollowingLiveEdge] = useState(true)
+    const setFollowing = useCallback((following: boolean) => {
+        isFollowingRef.current = following
+        setIsFollowingLiveEdge((current) => (current === following ? current : following))
+    }, [])
+    const handleListScroll = useCallback(() => {
+        const list = listRef.current
+        if (!list) {
+            return
+        }
+        setFollowing(list.scrollHeight - list.scrollTop - list.clientHeight < 48)
+    }, [setFollowing])
+    const jumpToLatest = useCallback(() => {
+        const list = listRef.current
+        if (list) {
+            list.scrollTop = list.scrollHeight
+        }
+        setFollowing(true)
+    }, [setFollowing])
+    const liveEdgeSignature = renderedRows.length > 0
+        ? `${renderedRows.length}:${renderedRows[renderedRows.length - 1].sequence}:${transcriptSegments.length}`
+        : ''
+    useEffect(() => {
+        const list = listRef.current
+        if (list && isFollowingRef.current) {
+            list.scrollTop = list.scrollHeight
+        }
+    }, [liveEdgeSignature])
     const showEventFilters = activityMode !== 'transcript'
     const scopedEmpty = activityRows.length === 0
 
@@ -233,7 +270,7 @@ export function RunActivityCard({
                     {fillHeight ? <span aria-hidden className="h-0 w-0" /> : (
                         <h3
                             className="text-sm font-semibold text-foreground"
-                            title="Transcript and journal history in one stream, newest first. Select a graph node to focus its activity."
+                            title="Transcript and journal history in one chronological stream; the newest activity is at the bottom and the view follows it while a run is live. Select a graph node to focus its activity."
                         >
                             Activity
                         </h3>
@@ -359,6 +396,22 @@ export function RunActivityCard({
                         </NativeSelect>
                     </div>
                 ) : null}
+                {!timelineError && scopedEmpty && hasOlderTimelineEvents ? (
+                    <div className="flex justify-center">
+                        <Button
+                            type="button"
+                            data-testid="run-journal-load-older"
+                            variant="outline"
+                            size="sm"
+                            disabled={isTimelineLoadingOlder}
+                            onClick={() => {
+                                void onLoadOlderTimelineEvents()
+                            }}
+                        >
+                            {isTimelineLoadingOlder ? 'Loading…' : 'Load older'}
+                        </Button>
+                    </div>
+                ) : null}
                 {!timelineError && scopedEmpty ? (
                     <Empty data-testid="run-activity-empty" className="text-sm text-muted-foreground">
                         <EmptyHeader>
@@ -375,52 +428,66 @@ export function RunActivityCard({
                     </Empty>
                 ) : null}
                 {renderedRows.length > 0 ? (
-                    <div
-                        data-testid="run-activity-list"
-                        className={cn(
-                            'space-y-1.5 overflow-auto pr-1',
-                            fillHeight ? 'min-h-0 flex-1' : 'max-h-[32rem]',
-                        )}
-                    >
-                        {renderedRows.map((row) => (
-                            row.kind === 'transcript'
-                                ? (
-                                    <RunTranscriptGroupSection
-                                        key={`transcript-${row.group.turnId}`}
-                                        group={row.group}
-                                        expansion={expansion}
-                                    />
-                                )
-                                : (
-                                    <EventRow
-                                        key={`event-${row.event.id}`}
-                                        event={row.event}
-                                        correlationLabel={row.correlationLabel}
-                                    />
-                                )
-                        ))}
-                    </div>
-                ) : null}
-                {truncatedRowCount > 0 ? (
-                    <p data-testid="run-activity-truncation-note" className="text-center text-xs text-muted-foreground">
-                        Showing the latest {renderedRows.length} rows; {truncatedRowCount} older loaded rows are
-                        hidden. Narrow the filters or focus a node to see more.
-                    </p>
-                ) : null}
-                {hasOlderTimelineEvents ? (
-                    <div className="flex justify-center">
-                        <Button
-                            type="button"
-                            data-testid="run-journal-load-older"
-                            variant="outline"
-                            size="sm"
-                            disabled={isTimelineLoadingOlder}
-                            onClick={() => {
-                                void onLoadOlderTimelineEvents()
-                            }}
+                    <div className={cn('relative', fillHeight ? 'flex min-h-0 flex-1 flex-col' : undefined)}>
+                        <div
+                            ref={listRef}
+                            onScroll={handleListScroll}
+                            data-testid="run-activity-list"
+                            className={cn(
+                                'space-y-1.5 overflow-auto pr-1',
+                                fillHeight ? 'min-h-0 flex-1' : 'max-h-[32rem]',
+                            )}
                         >
-                            {isTimelineLoadingOlder ? 'Loading…' : 'Load older'}
-                        </Button>
+                            {hasOlderTimelineEvents ? (
+                                <div className="flex justify-center">
+                                    <Button
+                                        type="button"
+                                        data-testid="run-journal-load-older"
+                                        variant="outline"
+                                        size="sm"
+                                        disabled={isTimelineLoadingOlder}
+                                        onClick={() => {
+                                            void onLoadOlderTimelineEvents()
+                                        }}
+                                    >
+                                        {isTimelineLoadingOlder ? 'Loading…' : 'Load older'}
+                                    </Button>
+                                </div>
+                            ) : null}
+                            {truncatedRowCount > 0 ? (
+                                <p data-testid="run-activity-truncation-note" className="text-center text-xs text-muted-foreground">
+                                    Showing the latest {renderedRows.length} rows; {truncatedRowCount} older loaded rows are
+                                    hidden. Narrow the filters or focus a node to see more.
+                                </p>
+                            ) : null}
+                            {renderedRows.map((row) => (
+                                row.kind === 'transcript'
+                                    ? (
+                                        <RunTranscriptGroupSection
+                                            key={`transcript-${row.group.turnId}`}
+                                            group={row.group}
+                                            expansion={expansion}
+                                        />
+                                    )
+                                    : (
+                                        <EventRow
+                                            key={`event-${row.event.id}`}
+                                            event={row.event}
+                                            correlationLabel={row.correlationLabel}
+                                        />
+                                    )
+                            ))}
+                        </div>
+                        {!isFollowingLiveEdge ? (
+                            <button
+                                type="button"
+                                data-testid="run-activity-jump-to-latest"
+                                onClick={jumpToLatest}
+                                className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background/95 px-3 py-1 text-xs font-medium text-foreground shadow-sm hover:bg-muted"
+                            >
+                                Jump to latest ↓
+                            </button>
+                        ) : null}
                     </div>
                 ) : null}
             </CardContent>

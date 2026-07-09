@@ -2091,7 +2091,8 @@ describe('Frontend contract behavior', () => {
     })
 
     const timelineRows = screen.getAllByTestId('run-event-timeline-row')
-    expect(timelineRows[0]).toHaveTextContent(`stage_${totalEvents - 1}`)
+    // Chronological stream: the newest event holds the live edge at the bottom.
+    expect(timelineRows.at(-1)).toHaveTextContent(`stage_${totalEvents - 1}`)
     expect(timelineRows.length).toBeGreaterThan(0)
     expect(timelineRows.length).toBeLessThan(totalEvents)
 
