@@ -1511,7 +1511,11 @@ async fn json_body(response: Response<Body>) -> Value {
 }
 
 async fn next_sse_chunk(stream: &mut axum::body::BodyDataStream) -> String {
-    let chunk = tokio::time::timeout(Duration::from_secs(2), stream.next())
+    // Must exceed the 15s keepalive interval: between keepalives a quiet
+    // stream legitimately produces no frames, and a loaded test host can
+    // stretch any gap. Callers bound overall progress with their own
+    // deadlines.
+    let chunk = tokio::time::timeout(Duration::from_secs(20), stream.next())
         .await
         .expect("timely SSE frame")
         .expect("SSE stream item")
