@@ -118,7 +118,17 @@ pub fn load_flow_catalog(
             None => None,
         };
         let execution_lock = parse_execution_lock(entry, raw_flow_name, &path)?;
-        let flow_name = normalize_flow_name(raw_flow_name)?;
+        // Catalogs written before the YAML cutover may persist entries for
+        // ".dot" flows; the cutover renamed those flows to ".yaml" in place,
+        // so migrate the key rather than failing startup on old state. An
+        // explicit ".yaml" entry always wins over a migrated legacy one.
+        let (flow_name, migrated) = match raw_flow_name.strip_suffix(".dot") {
+            Some(stem) => (normalize_flow_name(&format!("{stem}.yaml"))?, true),
+            None => (normalize_flow_name(raw_flow_name)?, false),
+        };
+        if migrated && catalog.contains_key(&flow_name) {
+            continue;
+        }
         catalog.insert(
             flow_name,
             FlowCatalogEntry {
