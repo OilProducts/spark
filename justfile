@@ -23,6 +23,11 @@ dev-desktop: frontend-deps
   npm --prefix frontend run build
   cargo run -p spark-desktop --bin spark-desktop --all-features
 
+# Build and launch the desktop app with production frontend assets and release optimizations.
+run-release: frontend-deps
+  npm --prefix frontend run build
+  cargo run --release -p spark-desktop --bin spark-desktop --all-features
+
 # Repository validation gate for the Rust cutover.
 test: frontend-deps
   cargo fmt --all -- --check

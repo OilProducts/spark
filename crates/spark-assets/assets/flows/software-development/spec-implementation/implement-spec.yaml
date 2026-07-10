@@ -43,7 +43,7 @@ inputs:
   required: false
 defaults:
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
   reasoning_effort: high
 nodes:
   audit_milestone:
@@ -84,7 +84,7 @@ nodes:
         architecture when a material conflict is missing from .spark/spec-implementation/current/spec/contract-decisions.json.
         Keep the decision tied to milestone completion and truthful deliverability, not optimism.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -124,7 +124,7 @@ nodes:
     retry:
       max_retries: 1
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -180,7 +180,7 @@ nodes:
         in the current repository and the written spec rather than idealized greenfield assumptions. Respond with ONLY a JSON
         status envelope and return outcome success only after both files are written.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -220,7 +220,7 @@ nodes:
         is fundamentally unsound, the decisions are materially inconsistent with the spec, or the inputs are too under-specified
         to proceed truthfully, return outcome fail with preferred_label Blocked. Respond with ONLY a JSON status envelope.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -243,7 +243,7 @@ nodes:
         when deciding what is in scope. Respond with ONLY a JSON status envelope and return outcome success only after the
         requirements ledger is written.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -275,7 +275,7 @@ nodes:
         fail with preferred_label Blocked. Keep this decision tied to requirement coverage only; any remaining deliverability
         or repository-integrity cleanup that can fit inside one final cleanup/refactor milestone belongs to repository_integrity_audit.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -307,7 +307,7 @@ nodes:
         or unresolved prerequisites after any mechanical binding repair, keep the ledgers valid and return outcome fail with
         preferred_label Blocked.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -339,7 +339,7 @@ nodes:
         and does not add new requirement or decision coverage. Keep milestones.json valid JSON and respond with ONLY a JSON
         status envelope. Return outcome success only after the cleanup milestone plan is updated.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -367,7 +367,7 @@ nodes:
         and decisions into meaningful delivery slices. Respond with ONLY a JSON status envelope and return outcome success
         only after the milestone plan is written.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -398,7 +398,7 @@ nodes:
     retry:
       max_retries: 1
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -435,7 +435,7 @@ nodes:
         require broader redesign, or depend on missing external input, return outcome fail with preferred_label Blocked. Respond
         with ONLY a JSON status envelope.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -457,7 +457,7 @@ nodes:
         design instead of rewriting aimlessly. Respond with ONLY a JSON status envelope and return outcome success only after
         both files are updated.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -478,7 +478,7 @@ nodes:
         keep both JSON files valid, and respond with ONLY a JSON status envelope. Return outcome success only after the milestone
         plan is updated.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -535,7 +535,7 @@ nodes:
         ledgers, leave the files valid and return outcome fail with preferred_label Replan so milestone planning can be regenerated.
         If the plan is coherent after any needed repairs, return outcome success. Respond with ONLY a JSON status envelope.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false

@@ -6,7 +6,7 @@ description: Demonstrate a parent-child flow by running a bundled implementation
 goal: Run a bundled child implementation worker and summarize whether the change attempt succeeded.
 defaults:
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
 nodes:
   done:
     kind: exit
@@ -58,7 +58,7 @@ nodes:
       kind: agent_task
       prompt: Summarize why the child workflow failed, what it attempted, and what a human should inspect next.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -90,7 +90,7 @@ nodes:
       kind: agent_task
       prompt: Summarize what the child workflow accomplished, what changed, and what evidence supports the result.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false

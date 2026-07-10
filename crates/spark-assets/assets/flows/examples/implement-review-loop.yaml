@@ -22,7 +22,7 @@ inputs:
 defaults:
   fidelity: summary:high
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
 nodes:
   done:
     kind: exit
@@ -45,7 +45,7 @@ nodes:
         context.request.summary, context.request.target_paths, and context.request.acceptance_criteria. If the carryover context
         includes review feedback or required changes, address them directly in this pass.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -70,7 +70,7 @@ nodes:
         includes prior implementation failure or review feedback, use it to refine the next attempt instead of restating the
         goal.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -95,7 +95,7 @@ nodes:
         ONLY a JSON status envelope. Return outcome success only when the change is ready. Otherwise return outcome fail with
         failure_reason and context_updates for context.review.summary, context.review.required_changes, and context.review.blockers.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false

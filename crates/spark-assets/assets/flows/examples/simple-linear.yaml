@@ -5,7 +5,7 @@ description: A minimal starter flow that plans a small change, executes it, and 
 goal: Inspect the repository, make one targeted improvement, and summarize the result.
 defaults:
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
 nodes:
   done:
     kind: exit
@@ -26,7 +26,7 @@ nodes:
       kind: agent_task
       prompt: Carry out the planned improvement in the repository and validate the result before moving on.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -40,7 +40,7 @@ nodes:
       kind: agent_task
       prompt: Inspect the repository and plan the targeted improvement needed to satisfy the stated goal.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -66,7 +66,7 @@ nodes:
       kind: agent_task
       prompt: Summarize what changed, what was validated, and any remaining follow-up for the stated goal.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false

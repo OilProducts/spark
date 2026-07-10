@@ -5,7 +5,7 @@ description: ''
 goal: Plan, implement, and review a change with a parallel review stage.
 defaults:
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
 nodes:
   approval:
     kind: human_gate
@@ -27,7 +27,7 @@ nodes:
       kind: agent_task
       prompt: Review documentation updates
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -41,7 +41,7 @@ nodes:
       kind: agent_task
       prompt: Review test updates
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -79,7 +79,7 @@ nodes:
       kind: agent_task
       prompt: Finalize and summarize outputs
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -96,7 +96,7 @@ nodes:
       kind: agent_task
       prompt: Implement the planned changes
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -124,7 +124,7 @@ nodes:
       kind: agent_task
       prompt: Plan the implementation
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false

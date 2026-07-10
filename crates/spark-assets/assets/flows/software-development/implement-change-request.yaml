@@ -36,7 +36,7 @@ inputs:
 defaults:
   fidelity: summary:high
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
 nodes:
   done:
     kind: exit
@@ -88,7 +88,7 @@ nodes:
         any delete-or-simplify list. Use context.review.blockers only for genuine blockers such as ambiguous requirements,
         unavailable required evidence, or external input a model should not decide. Respond with ONLY a JSON status envelope.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -125,7 +125,7 @@ nodes:
         as the preferred deterministic gate when present unless a stronger deterministic repo-wide gate is available. Output:
         respond with ONLY a JSON status envelope after implementation and validation are complete.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -166,7 +166,7 @@ nodes:
     retry:
       max_retries: 1
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -204,7 +204,7 @@ nodes:
         is written, grounded in the approved request and repository state, and avoids optimistic claims. Output: respond with
         ONLY a JSON status envelope and return outcome success only after result.md is written.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false

@@ -11,7 +11,7 @@ goal: Implement the bound current milestone from the active software-development
 defaults:
   fidelity: summary:high
   llm_provider: codex
-  llm_model: gpt-5.5
+  llm_model: gpt-5.6-sol
   reasoning_effort: high
 nodes:
   assess_validation:
@@ -39,7 +39,7 @@ nodes:
         If validation is non-pass only because of a truly external blocker that cannot be resolved within this milestone,
         write .spark/spec-implementation/current/block-reason.md and return outcome fail with preferred_label Blocked.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -71,7 +71,7 @@ nodes:
         to a short summary of what remains blocked and why the milestone could not complete automatically. Respond with ONLY
         a JSON status envelope and return outcome success only after the result file and context updates are written.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -123,7 +123,7 @@ nodes:
         choosing one source. Preserve milestone metadata and keep the file valid JSON. Respond with ONLY a JSON status envelope
         and return outcome success only after the milestone state is written.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -168,7 +168,7 @@ nodes:
         conflict that is missing from .spark/spec-implementation/current/spec/contract-decisions.json, leave the milestone
         state valid and return outcome fail with preferred_label Blocked.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -200,7 +200,7 @@ nodes:
         Respond with ONLY a JSON status envelope. Return outcome success only when the active item has a passing validation
         result and the live binding agrees with the durable ledger.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -228,7 +228,7 @@ nodes:
         complete, or next; queue advancement belongs only to the queue-state nodes. If the cleanest path appears broader than
         the current item, keep the repository coherent so review can request Rewrite instead of cementing a brittle workaround.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -264,7 +264,7 @@ nodes:
         and return outcome fail with preferred_label Blocked without mutating queue state. Return outcome success only after
         the milestone state is updated and the live active-item binding is cleared.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -313,7 +313,7 @@ nodes:
         preferred_label Blocked without mutating queue state. Return outcome success only after the milestone state is updated
         and the live active-item binding is cleared.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -374,7 +374,7 @@ nodes:
         because of blocked dependencies or unresolved prerequisites, keep the milestone state valid and return outcome fail
         with preferred_label Blocked.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -424,7 +424,7 @@ nodes:
         or broader repository-integrity work before it can complete cleanly, plan toward Rewrite rather than a brittle local
         workaround or a weaker contract than the bound decisions.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -458,7 +458,7 @@ nodes:
         the current milestone. Respond with ONLY a JSON status envelope and return outcome success only after the milestone
         state file exists.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -508,7 +508,7 @@ nodes:
         missing prerequisite in validation-plan.json.scope_summary. Respond with ONLY a JSON status envelope and return outcome
         success only after the validation script, validation plan, and any required bootstrap files are written.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -535,7 +535,7 @@ nodes:
         list should come from context.milestone.requirement_ids. Respond with ONLY a JSON status envelope and return outcome
         success only after the result file is written.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -579,7 +579,7 @@ nodes:
         prerequisite that cannot be resolved within this milestone, write .spark/spec-implementation/current/block-reason.md
         and return outcome fail with preferred_label Blocked. Do not mutate the queue state directly in this node.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -619,7 +619,7 @@ nodes:
         without mutating queue state. Return outcome success only after the milestone state is updated and the live active-item
         binding is cleared.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -675,7 +675,7 @@ nodes:
         with ONLY a JSON status envelope. Return outcome success only when the active-item live binding is coherent and the
         durable ledger agrees with it.
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -726,7 +726,7 @@ nodes:
         item extraction can regenerate a coherent queue. If the item plan is coherent after any needed repairs or cleanup,
         return outcome success. Respond with ONLY a JSON status envelope.'
     execution:
-      llm_model: gpt-5.5
+      llm_model: gpt-5.6-sol
       reasoning_effort: high
     runtime:
       allow_partial: false
