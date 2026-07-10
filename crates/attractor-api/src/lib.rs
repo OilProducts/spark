@@ -745,16 +745,6 @@ impl AttractorApiService {
             Ok(flow) => flow,
             Err(error) => return flow_definition_validation_response(error),
         };
-        if let Err(error) = flow.validate() {
-            return RuntimeRouteResponse::json(
-                200,
-                json!({
-                    "status": "validation_error",
-                    "diagnostics": flow_diagnostics_payload(&error.diagnostics),
-                    "errors": flow_diagnostics_payload(&error.diagnostics),
-                }),
-            );
-        }
 
         let requested_context = request.launch_context.unwrap_or_default();
         let launch_context = match LaunchContext::new(requested_context.clone()) {
@@ -1647,30 +1637,7 @@ pub fn preview_with_config(
                 ),
             ),
         ),
-        Err(error) => PreviewRouteResponse::json(
-            200,
-            json!({
-                "status": "validation_error",
-                "diagnostics": [{
-                    "rule": "flow_definition",
-                    "rule_id": "flow_definition",
-                    "severity": "error",
-                    "message": error.detail(),
-                    "line": 0,
-                    "node": null,
-                    "node_id": null,
-                }],
-                "errors": [{
-                    "rule": "flow_definition",
-                    "rule_id": "flow_definition",
-                    "severity": "error",
-                    "message": error.detail(),
-                    "line": 0,
-                    "node": null,
-                    "node_id": null,
-                }],
-            }),
-        ),
+        Err(error) => PreviewRouteResponse::json(200, flow_definition_validation_payload(&error)),
     }
 }
 
@@ -1929,26 +1896,10 @@ fn collect_yaml_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<(
 }
 
 fn save_flow_request(flows_dir: &Path, req: SaveFlowRequest) -> RuntimeRouteResponse {
-    let flow = match parse_flow_definition(&req.content) {
-        Ok(flow) => flow,
-        Err(error) => return flow_save_definition_error_response(error),
-    };
     let canonical_content = match canonicalize_flow_yaml(&req.content) {
         Ok(content) => content,
         Err(error) => return flow_save_definition_error_response(error),
     };
-    if let Err(error) = flow.validate() {
-        return RuntimeRouteResponse::json(
-            422,
-            json!({
-                "detail": {
-                    "status": "validation_error",
-                    "diagnostics": flow_diagnostics_payload(&error.diagnostics),
-                    "errors": flow_diagnostics_payload(&error.diagnostics),
-                }
-            }),
-        );
-    }
 
     let flow_path = match resolve_flow_path(flows_dir, &req.name) {
         Ok(path) => path,
@@ -1979,28 +1930,7 @@ fn flow_save_definition_error_response(error: FlowSourceError) -> RuntimeRouteRe
     RuntimeRouteResponse::json(
         422,
         json!({
-            "detail": {
-                "status": "validation_error",
-                "error": error.detail(),
-                "diagnostics": [{
-                    "rule": "flow_definition",
-                    "rule_id": "flow_definition",
-                    "severity": "error",
-                    "message": error.detail(),
-                    "line": 0,
-                    "node": null,
-                    "node_id": null,
-                }],
-                "errors": [{
-                    "rule": "flow_definition",
-                    "rule_id": "flow_definition",
-                    "severity": "error",
-                    "message": error.detail(),
-                    "line": 0,
-                    "node": null,
-                    "node_id": null,
-                }],
-            }
+            "detail": flow_definition_validation_payload(&error)
         }),
     )
 }
@@ -2021,31 +1951,29 @@ fn validation_error_response(error: impl Into<String>) -> RuntimeRouteResponse {
 }
 
 fn flow_definition_validation_response(error: FlowSourceError) -> RuntimeRouteResponse {
-    RuntimeRouteResponse::json(
-        200,
-        json!({
-            "status": "validation_error",
-            "error": error.detail(),
-            "diagnostics": [{
-                "rule": "flow_definition",
-                "rule_id": "flow_definition",
-                "severity": "error",
-                "message": error.detail(),
-                "line": 0,
-                "node": null,
-                "node_id": null,
-            }],
-            "errors": [{
-                "rule": "flow_definition",
-                "rule_id": "flow_definition",
-                "severity": "error",
-                "message": error.detail(),
-                "line": 0,
-                "node": null,
-                "node_id": null,
-            }],
-        }),
-    )
+    RuntimeRouteResponse::json(200, flow_definition_validation_payload(&error))
+}
+
+fn flow_definition_validation_payload(error: &FlowSourceError) -> Value {
+    let diagnostics = if error.diagnostics().is_empty() {
+        vec![json!({
+            "rule": "flow_definition",
+            "rule_id": "flow_definition",
+            "severity": "error",
+            "message": error.detail(),
+            "line": 0,
+            "node": null,
+            "node_id": null,
+        })]
+    } else {
+        flow_diagnostics_payload(error.diagnostics())
+    };
+    json!({
+        "status": "validation_error",
+        "error": error.detail(),
+        "diagnostics": diagnostics,
+        "errors": diagnostics,
+    })
 }
 
 fn trimmed_option(value: Option<&str>) -> Option<String> {

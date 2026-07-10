@@ -202,9 +202,9 @@ test("medium graph performance profile renders optimizations for item 13.3-02", 
 
 test("validation panel supports filter and sort controls for item 7.1-01", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-validation-panel-${Date.now()}`
-  const promptToken = `validation-panel-${Date.now()}`
+  const promptToken = `diagnostic-edit-token-${Date.now()}`
   const warningLateMessage = `Validation warning late ${Date.now()}`
-  const warningEarlyMessage = `Validation warning early ${Date.now()}`
+  const warningEarlyMessage = `Validation warning early ${Date.now()} with enough detail to verify that a diagnostic wraps within the validation panel instead of forcing the fixed-width surface to overflow horizontally.`
   const errorMessage = `Validation error ${Date.now()}`
   const flowName = await createFlowForSmokeTest(page, "ui-smoke-validation-panel")
 
@@ -251,12 +251,12 @@ test("validation panel supports filter and sort controls for item 7.1-01", async
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
-    await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
-    await page.getByRole("button", { name: "Add Node" }).click()
-
-    const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
-    await expect(newNode).toBeVisible()
-    await newNode.click()
+    const promptNode = page
+      .locator(".react-flow__node")
+      .filter({ hasText: "Extract Testable Declarations" })
+      .first()
+    await expect(promptNode).toBeVisible()
+    await promptNode.click()
 
     const promptField = page.getByPlaceholder("Enter system prompt instructions...")
     await expect(promptField).toBeVisible()
@@ -274,6 +274,11 @@ test("validation panel supports filter and sort controls for item 7.1-01", async
 
     await page.getByTestId("validation-sort-select").selectOption("line")
     await expect(diagnostics.first()).toContainText(warningEarlyMessage)
+    const validationPanel = page.getByTestId("validation-panel")
+    await expect(validationPanel).toBeVisible()
+    await expect
+      .poll(() => validationPanel.evaluate((element) => element.scrollWidth <= element.clientWidth))
+      .toBe(true)
     await page.screenshot({ path: screenshotPath("13-validation-panel-filter-sort.png"), fullPage: true })
   } finally {
     await deleteFlowAfterSmoke(page, flowName)

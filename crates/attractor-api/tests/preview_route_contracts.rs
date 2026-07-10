@@ -36,10 +36,7 @@ fn preview_service_body_reports_yaml_parse_errors() {
     assert_eq!(response.status_code, 200);
     assert_eq!(response.content_type, "application/json");
     assert_eq!(response.body["status"], json!("validation_error"));
-    assert_eq!(
-        response.body["errors"][0]["rule_id"],
-        json!("flow_definition")
-    );
+    assert_eq!(response.body["errors"][0]["rule_id"], json!("parse_error"));
 }
 
 #[test]
@@ -63,9 +60,10 @@ edges:
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.body["status"], json!("validation_error"));
+    assert_eq!(response.body["errors"][0]["rule_id"], json!("edge_target"));
     assert_eq!(
-        response.body["errors"][0]["rule_id"],
-        json!("flow_definition")
+        response.body["errors"][0]["edge"],
+        json!(["start", "missing"])
     );
 }
 

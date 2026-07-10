@@ -258,6 +258,40 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     });
     assert_eq!(parse_error.body["status"], json!("validation_error"));
     assert!(parse_error.body["errors"].as_array().expect("errors").len() == 1);
+    assert_eq!(
+        parse_error.body["errors"][0]["rule_id"],
+        json!("parse_error")
+    );
+
+    let validation_error = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-validation-error".to_string()),
+        flow_content: Some(
+            r#"schema_version: "1"
+id: broken
+nodes:
+  start:
+    kind: start
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: missing
+"#
+            .to_string(),
+        ),
+        working_directory: project_path.to_string_lossy().to_string(),
+        ..PipelineStartRequest::default()
+    });
+    assert_eq!(validation_error.body["status"], json!("validation_error"));
+    assert_eq!(
+        validation_error.body["errors"][0]["rule_id"],
+        json!("edge_target")
+    );
+    assert_eq!(
+        validation_error.body["errors"][0]["edge"],
+        json!(["start", "missing"])
+    );
 
     let launch_context_error = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),

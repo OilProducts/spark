@@ -155,7 +155,7 @@ fn validation_endpoint_surfaces_flow_definition_errors_and_path_safety_errors() 
     let validation = service.validate_flow("broken.yaml").expect("parse payload");
     assert_eq!(validation["name"], "broken.yaml");
     assert_eq!(validation["status"], "validation_error");
-    assert_eq!(validation["diagnostics"][0]["rule_id"], "flow_definition");
+    assert_eq!(validation["diagnostics"][0]["rule_id"], "parse_error");
 
     let invalid_surface = service.list_flows(Some("invalid")).expect_err("surface");
     assert_eq!(invalid_surface.status_code(), 400);

@@ -138,7 +138,7 @@ fn save_parse_error_reports_flow_definition_diagnostics() {
     assert_eq!(response.body["detail"]["status"], json!("validation_error"));
     assert_eq!(
         response.body["detail"]["errors"][0]["rule_id"],
-        json!("flow_definition")
+        json!("parse_error")
     );
 }
 
@@ -160,12 +160,20 @@ nodes:
 edges:
   - from: start
     to: missing
-	"#
+"#
         .to_string(),
     });
 
     assert_eq!(response.status_code, 422);
     assert_eq!(response.body["detail"]["status"], json!("validation_error"));
+    assert_eq!(
+        response.body["detail"]["errors"][0]["rule_id"],
+        json!("edge_target")
+    );
+    assert_eq!(
+        response.body["detail"]["errors"][0]["edge"],
+        json!(["start", "missing"])
+    );
     assert!(!settings.flows_dir.join("broken.yaml").exists());
 }
 

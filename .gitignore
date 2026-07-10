@@ -20,3 +20,4 @@ frontend/.tmp-*/
 .codex
 compose.override.yaml
 compose.override.yml
+agent-notes.md

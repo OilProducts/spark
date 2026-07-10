@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use attractor_core::{FlowDefinition, FlowDefinitionError};
+use attractor_core::{FlowDefinition, FlowDefinitionError, FlowDiagnostic};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -9,6 +9,7 @@ use thiserror::Error;
 pub struct FlowSourceError {
     status_code: u16,
     detail: String,
+    diagnostics: Vec<FlowDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +25,7 @@ impl FlowSourceError {
         Self {
             status_code,
             detail: detail.into(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -33,6 +35,10 @@ impl FlowSourceError {
 
     pub fn detail(&self) -> &str {
         &self.detail
+    }
+
+    pub fn diagnostics(&self) -> &[FlowDiagnostic] {
+        &self.diagnostics
     }
 }
 
@@ -222,5 +228,10 @@ fn path_safety_error() -> FlowSourceError {
 }
 
 fn flow_definition_error(error: FlowDefinitionError) -> FlowSourceError {
-    FlowSourceError::new(422, error.to_string())
+    let detail = error.to_string();
+    FlowSourceError {
+        status_code: 422,
+        detail,
+        diagnostics: error.diagnostics,
+    }
 }
