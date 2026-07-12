@@ -399,6 +399,21 @@ pub fn materialize_segment_for_event(
             upsert_segment(snapshot, segment.clone());
             Some(segment)
         }
+        TurnStreamEventKind::ToolCallUpdated if event.tool_call.is_none() => {
+            let item_id = event.source.item_id.as_deref().and_then(non_empty_string)?;
+            let segment_id = tool_segment_id(assistant_turn_id, event, &json!({ "id": item_id }));
+            let mut segment = find_segment(snapshot, &segment_id).cloned()?;
+            append_tool_call_output(&mut segment, event.content_delta.as_deref().unwrap_or(""));
+            set_string_value(&mut segment, "status", "running");
+            set_string_value(&mut segment, "updated_at", now);
+            set_value(
+                &mut segment,
+                "source",
+                build_segment_source(event, Some(&item_id)),
+            );
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
         TurnStreamEventKind::ToolCallStarted
         | TurnStreamEventKind::ToolCallUpdated
         | TurnStreamEventKind::ToolCallCompleted
@@ -522,6 +537,23 @@ pub fn should_emit_segment_upsert_for_event(event: &TurnStreamEvent) -> bool {
         TurnStreamEventKind::Other(kind) if kind == "model_tool_call_delta" => false,
         _ => true,
     }
+}
+
+fn append_tool_call_output(segment: &mut Value, delta: &str) {
+    let Some(tool_call) = segment
+        .as_object_mut()
+        .and_then(|segment| segment.get_mut("tool_call"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let mut output = tool_call
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    output.push_str(delta);
+    tool_call.insert("output".to_string(), json!(output));
 }
 
 pub fn is_agent_event_kind(kind: &str) -> bool {
@@ -1140,6 +1172,58 @@ mod tests {
         event
     }
 
+    fn command_started(item_id: &str) -> TurnStreamEvent {
+        TurnStreamEvent {
+            kind: TurnStreamEventKind::ToolCallStarted,
+            channel: None,
+            source: crate::events::TurnStreamSource {
+                item_id: Some(item_id.to_string()),
+                raw_kind: Some("tool_item_started".to_string()),
+                ..crate::events::TurnStreamSource::default()
+            },
+            content_delta: None,
+            message: None,
+            tool_call: Some(json!({
+                "id": item_id,
+                "kind": "command_execution",
+                "status": "running",
+                "title": "Run command",
+                "command": "cargo test",
+                "output": Value::Null,
+                "file_paths": [],
+            })),
+            request_user_input: None,
+            token_usage: None,
+            error: None,
+            error_code: None,
+            details: None,
+            phase: None,
+            status: None,
+        }
+    }
+
+    fn command_output_delta(item_id: &str, delta: &str) -> TurnStreamEvent {
+        TurnStreamEvent {
+            kind: TurnStreamEventKind::ToolCallUpdated,
+            channel: None,
+            source: crate::events::TurnStreamSource {
+                item_id: Some(item_id.to_string()),
+                raw_kind: Some("command_output_delta".to_string()),
+                ..crate::events::TurnStreamSource::default()
+            },
+            content_delta: Some(delta.to_string()),
+            message: Some(delta.to_string()),
+            tool_call: None,
+            request_user_input: None,
+            token_usage: None,
+            error: None,
+            error_code: None,
+            details: None,
+            phase: None,
+            status: None,
+        }
+    }
+
     #[test]
     fn replaying_identical_events_and_timestamps_is_deterministic() {
         let events = vec![
@@ -1177,5 +1261,33 @@ mod tests {
         // Each turn gets its own order counter starting at 1.
         assert_eq!(segments[0]["order"], 1);
         assert_eq!(segments[1]["order"], 1);
+    }
+
+    #[test]
+    fn command_output_deltas_update_started_tool_segments_without_full_tool_payload() {
+        let mut container = serde_json::json!({});
+        materialize_segment_for_event(
+            &mut container,
+            "turn-1",
+            &command_started("cmd-1"),
+            "2026-07-08T10:00:00Z",
+        );
+        let delta_segment = materialize_segment_for_event(
+            &mut container,
+            "turn-1",
+            &command_output_delta("cmd-1", "running output\n"),
+            "2026-07-08T10:00:01Z",
+        )
+        .expect("delta updates existing command segment");
+
+        assert_eq!(delta_segment["kind"], "tool_call");
+        assert_eq!(delta_segment["status"], "running");
+        assert_eq!(delta_segment["tool_call"]["command"], "cargo test");
+        assert_eq!(delta_segment["tool_call"]["output"], "running output\n");
+        assert_eq!(delta_segment["source"]["raw_kind"], "command_output_delta");
+
+        let segments = container["segments"].as_array().expect("segments");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0]["tool_call"]["output"], "running output\n");
     }
 }
