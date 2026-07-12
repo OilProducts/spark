@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -1862,11 +1863,102 @@ fn reasoning_effort_from_value(value: &Value) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
-fn codex_executable() -> String {
-    env::var("SPARK_CODEX_APP_SERVER_BIN")
+fn codex_executable() -> PathBuf {
+    let explicit = env::var("SPARK_CODEX_APP_SERVER_BIN")
         .ok()
-        .and_then(|value| non_empty(&value).map(str::to_string))
-        .unwrap_or_else(|| "codex".to_string())
+        .and_then(|value| non_empty(&value).map(str::to_string));
+    let path = env::var_os("PATH");
+    resolve_codex_executable(
+        explicit.as_deref(),
+        path.as_deref(),
+        &bundled_codex_candidates(),
+    )
+}
+
+fn resolve_codex_executable(
+    explicit: Option<&str>,
+    path: Option<&OsStr>,
+    bundled_candidates: &[PathBuf],
+) -> PathBuf {
+    if let Some(explicit) = explicit.and_then(non_empty) {
+        return PathBuf::from(explicit);
+    }
+    if let Some(codex) = find_complete_codex_on_path(path) {
+        return codex;
+    }
+    if let Some(codex) = bundled_candidates
+        .iter()
+        .find_map(|candidate| complete_codex_candidate(candidate))
+    {
+        return codex;
+    }
+    PathBuf::from(codex_binary_name())
+}
+
+fn find_complete_codex_on_path(path: Option<&OsStr>) -> Option<PathBuf> {
+    let path = path?;
+    env::split_paths(path)
+        .map(|directory| directory.join(codex_binary_name()))
+        .find_map(|candidate| complete_codex_candidate(&candidate))
+}
+
+fn complete_codex_candidate(candidate: &Path) -> Option<PathBuf> {
+    if has_code_mode_host(candidate) {
+        return Some(candidate.to_path_buf());
+    }
+    let canonical = candidate.canonicalize().ok()?;
+    has_code_mode_host(&canonical).then_some(canonical)
+}
+
+fn has_code_mode_host(codex: &Path) -> bool {
+    codex.is_file()
+        && codex
+            .parent()
+            .map(|parent| parent.join(code_mode_host_binary_name()).is_file())
+            .unwrap_or(false)
+}
+
+fn codex_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "codex.exe"
+    } else {
+        "codex"
+    }
+}
+
+fn code_mode_host_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "codex-code-mode-host.exe"
+    } else {
+        "codex-code-mode-host"
+    }
+}
+
+fn bundled_codex_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let relative_paths = [
+            "Codex.app/Contents/Resources/codex",
+            "ChatGPT.app/Contents/Resources/codex",
+        ];
+        let mut candidates = relative_paths
+            .iter()
+            .map(|relative| PathBuf::from("/Applications").join(relative))
+            .collect::<Vec<_>>();
+        if let Some(home) = env::var_os("HOME").filter(|value| !value.is_empty()) {
+            let applications = PathBuf::from(home).join("Applications");
+            candidates.extend(
+                relative_paths
+                    .iter()
+                    .map(|relative| applications.join(relative)),
+            );
+        }
+        candidates
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
 }
 
 fn ensure_dir(path: &Path) -> Result<(), CodexAppServerError> {
@@ -2349,4 +2441,66 @@ pub fn usage_from_codex_token_payload(payload: &Value) -> Option<Usage> {
 fn value_u64(value: &Value, keys: &[&str]) -> Option<u64> {
     let object = value.as_object()?;
     keys.iter().find_map(|key| object.get(*key)?.as_u64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_codex(directory: &Path, include_host: bool) -> PathBuf {
+        fs::create_dir_all(directory).expect("codex directory");
+        let codex = directory.join(codex_binary_name());
+        fs::write(&codex, b"codex").expect("codex binary");
+        if include_host {
+            fs::write(directory.join(code_mode_host_binary_name()), b"host")
+                .expect("code-mode host");
+        }
+        codex
+    }
+
+    #[test]
+    fn codex_resolution_prefers_explicit_override() {
+        let resolved = resolve_codex_executable(
+            Some("/custom/codex"),
+            Some(OsStr::new("/ignored")),
+            &[PathBuf::from("/bundled/codex")],
+        );
+        assert_eq!(resolved, PathBuf::from("/custom/codex"));
+    }
+
+    #[test]
+    fn codex_resolution_uses_complete_path_installation_first() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path_codex = create_codex(&temp.path().join("path-bin"), true);
+        let bundled_codex = create_codex(&temp.path().join("bundled"), true);
+        let path = env::join_paths([path_codex.parent().expect("path parent")]).expect("PATH");
+
+        let resolved = resolve_codex_executable(None, Some(&path), &[bundled_codex]);
+
+        assert_eq!(resolved, path_codex);
+    }
+
+    #[test]
+    fn codex_resolution_uses_bundled_pair_when_path_host_is_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path_codex = create_codex(&temp.path().join("path-bin"), false);
+        let bundled_codex = create_codex(&temp.path().join("bundled"), true);
+        let path = env::join_paths([path_codex.parent().expect("path parent")]).expect("PATH");
+
+        let resolved =
+            resolve_codex_executable(None, Some(&path), std::slice::from_ref(&bundled_codex));
+
+        assert_eq!(resolved, bundled_codex);
+    }
+
+    #[test]
+    fn codex_resolution_keeps_legacy_path_fallback_without_complete_pair() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path_codex = create_codex(&temp.path().join("path-bin"), false);
+        let path = env::join_paths([path_codex.parent().expect("path parent")]).expect("PATH");
+
+        let resolved = resolve_codex_executable(None, Some(&path), &[]);
+
+        assert_eq!(resolved, PathBuf::from(codex_binary_name()));
+    }
 }
