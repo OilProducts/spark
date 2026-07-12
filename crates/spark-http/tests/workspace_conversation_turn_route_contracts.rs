@@ -517,13 +517,24 @@ async fn conversation_turn_route_persists_structured_backend_error_output() {
     assert_eq!(persisted["turns"], final_snapshot["turns"]);
     assert_eq!(persisted["segments"], final_snapshot["segments"]);
 
-    let events = WorkspaceConversationService::new(settings)
-        .read_events_after(
-            "conversation-http-output-error",
-            "/projects/http-output-error",
-            0,
-        )
-        .expect("events");
+    let events = wait_for_conversation_events(
+        &settings,
+        "conversation-http-output-error",
+        "/projects/http-output-error",
+        0,
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "turn_upsert"
+                    && event["turn"]["status"] == "failed"
+                    && event["turn"]["error"] == "route backend stream failed"
+            }) && events.iter().any(|event| {
+                event["type"] == "segment_upsert"
+                    && event["segment"]["status"] == "failed"
+                    && event["segment"]["error"] == "route backend stream failed"
+            })
+        },
+    )
+    .await;
     assert!(events.iter().any(|event| {
         event["type"] == "turn_upsert"
             && event["turn"]["status"] == "failed"
@@ -617,13 +628,18 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
     assert_eq!(persisted["turns"], final_snapshot["turns"]);
     assert_eq!(persisted["event_log"], final_snapshot["event_log"]);
 
-    let events = WorkspaceConversationService::new(settings)
-        .read_events_after(
-            "conversation-http-resume-failure",
-            "/projects/http-resume-failure",
-            0,
-        )
-        .expect("events");
+    let events = wait_for_conversation_events(
+        &settings,
+        "conversation-http-resume-failure",
+        "/projects/http-resume-failure",
+        0,
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()
+            })
+        },
+    )
+    .await;
     assert!(events.iter().any(|event| {
         event["type"] == "turn_upsert"
             && event["turn"]["status"] == "failed"
@@ -634,6 +650,34 @@ async fn conversation_turn_route_persists_thread_resume_failure_details() {
     assert!(events.iter().any(|event| {
         event["type"] == "conversation_snapshot_ref" && event.get("state").is_none()
     }));
+}
+
+async fn wait_for_conversation_events<F>(
+    settings: &SparkSettings,
+    conversation_id: &str,
+    project_path: &str,
+    revision: i64,
+    predicate: F,
+) -> Vec<Value>
+where
+    F: Fn(&[Value]) -> bool,
+{
+    let service = WorkspaceConversationService::new(settings.clone());
+    let mut last_events = Vec::new();
+    for _ in 0..100 {
+        let events = service
+            .read_events_after(conversation_id, project_path, revision)
+            .expect("events");
+        if predicate(&events) {
+            return events;
+        }
+        last_events = events;
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "conversation events did not satisfy predicate: {}",
+        serde_json::to_string_pretty(&last_events).expect("events json")
+    );
 }
 
 #[tokio::test]
