@@ -213,6 +213,8 @@ pub struct ManagerLoopConfig {
     pub child_autostart: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_workdir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_workdir_from: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

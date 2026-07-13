@@ -189,8 +189,24 @@ fn autostart_child_pipeline(
     let authored_child_workdir = manager_config(runtime)
         .and_then(|manager| manager.child_workdir.clone())
         .unwrap_or_else(|| flow_metadata_text(&runtime.flow, "stack.child_workdir"));
-    let child_workdir_path =
-        resolve_child_workdir_path(context, &runtime.run_workdir, &authored_child_workdir);
+    let child_workdir_from = manager_config(runtime)
+        .and_then(|manager| manager.child_workdir_from.clone())
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty());
+    let child_workdir_path = if let Some(workdir_key) = child_workdir_from {
+        if !authored_child_workdir.trim().is_empty() {
+            return Ok(Some(fail_outcome(
+                "Subflow declares both manager.child_workdir and manager.child_workdir_from"
+                    .to_string(),
+            )));
+        }
+        match resolve_context_child_workdir(context, &runtime.run_workdir, &workdir_key) {
+            Ok(path) => path,
+            Err(reason) => return Ok(Some(fail_outcome(reason))),
+        }
+    } else {
+        resolve_child_workdir_path(context, &runtime.run_workdir, &authored_child_workdir)
+    };
     let child_flow_path = resolve_child_flow_path(
         &child_flow_ref,
         &child_workdir_path,
@@ -1012,6 +1028,75 @@ fn resolve_child_workdir_path(
         return run_workdir;
     }
     resolve_path_from_base(authored_child_workdir, &run_workdir)
+}
+
+fn resolve_context_child_workdir(
+    context: &ContextMap,
+    run_workdir: &Path,
+    workdir_key: &str,
+) -> std::result::Result<PathBuf, String> {
+    let raw_value = context_path_value(context, workdir_key)
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!("manager.child_workdir_from key {workdir_key} did not resolve to a non-empty string")
+        })?;
+    let run_workdir =
+        context_path(context, "internal.run_workdir").unwrap_or_else(|| run_workdir.to_path_buf());
+    let candidate = resolve_path_from_base(&raw_value, &run_workdir);
+    if !candidate.is_dir() {
+        return Err(format!(
+            "manager.child_workdir_from directory does not exist: {}",
+            candidate.display()
+        ));
+    }
+    let candidate = fs::canonicalize(&candidate).map_err(|error| {
+        format!(
+            "Unable to canonicalize child working directory {}: {error}",
+            candidate.display()
+        )
+    })?;
+    let launch_root = fs::canonicalize(&run_workdir).map_err(|error| {
+        format!(
+            "Unable to canonicalize run working directory {}: {error}",
+            run_workdir.display()
+        )
+    })?;
+    if candidate.starts_with(&launch_root) {
+        return Ok(candidate);
+    }
+    let candidate_repo = git_common_dir(&candidate);
+    let launch_repo = git_common_dir(&launch_root);
+    match (candidate_repo, launch_repo) {
+        (Some(candidate_repo), Some(launch_repo)) if candidate_repo == launch_repo => {
+            Ok(candidate)
+        }
+        _ => Err(format!(
+            "manager.child_workdir_from directory {} is outside the run working directory {} and is not a linked worktree of the same repository",
+            candidate.display(),
+            launch_root.display()
+        )),
+    }
+}
+
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    fs::canonicalize(&text).ok()
 }
 
 fn resolve_child_flow_path(

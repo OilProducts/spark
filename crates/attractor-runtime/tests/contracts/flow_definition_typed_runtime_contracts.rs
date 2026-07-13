@@ -625,3 +625,266 @@ edges:
     assert_eq!(outcome.status, OutcomeStatus::Success);
     assert!(child_handler_observed_map.load(Ordering::SeqCst));
 }
+
+const CHILD_FLOW_SOURCE: &str = r#"
+schema_version: "1"
+id: child
+title: Child
+nodes:
+  start:
+    kind: start
+    config:
+      kind: start
+  done:
+    kind: exit
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: done
+"#;
+
+fn git_in(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.email=contracts@example.com",
+            "-c",
+            "user.name=Contracts",
+        ])
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn dynamic_workdir_subflow_node(child_workdir_from: &str) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::Subflow,
+        config: Some(NodeConfig::Subflow {
+            flow_ref: "child.yaml".to_string(),
+            input_map: BTreeMap::new(),
+        }),
+        manager: Some(ManagerLoopConfig {
+            max_cycles: Some(1),
+            child_autostart: Some(true),
+            child_workdir_from: Some(child_workdir_from.to_string()),
+            ..ManagerLoopConfig::default()
+        }),
+        ..FlowNode::default()
+    }
+}
+
+fn execute_dynamic_workdir_subflow(
+    node: FlowNode,
+    run_workdir: &std::path::Path,
+    flow_source_dir: &std::path::Path,
+    context_entries: Vec<(String, serde_json::Value)>,
+) -> (Outcome, Option<std::path::PathBuf>) {
+    let flow = FlowDefinition {
+        schema_version: "1".to_string(),
+        id: "dynamic-workdir".to_string(),
+        title: "Dynamic Workdir".to_string(),
+        nodes: [("run_child".to_string(), node)].into_iter().collect(),
+        ..FlowDefinition::default()
+    };
+    let observed_workdir = Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
+    let recorded = Arc::clone(&observed_workdir);
+    let mut runner = RuntimeHandlerRunner::new();
+    runner.set_child_run_launcher(move |request| {
+        *recorded.lock().expect("record child workdir") = Some(request.child_workdir.clone());
+        ChildRunResult {
+            run_id: request.child_run_id,
+            status: "completed".to_string(),
+            outcome: Some("success".to_string()),
+            ..ChildRunResult::default()
+        }
+    });
+    let mut context = ContextMap::from([
+        (
+            "internal.run_workdir".to_string(),
+            json!(run_workdir.to_string_lossy().to_string()),
+        ),
+        (
+            "internal.flow_source_dir".to_string(),
+            json!(flow_source_dir.to_string_lossy().to_string()),
+        ),
+    ]);
+    context.extend(context_entries);
+    let outcome = runner
+        .execute(attractor_runtime::NodeExecutionRequest {
+            node_id: "run_child".to_string(),
+            stage_index: 0,
+            context,
+            prompt: String::new(),
+            node: flow.nodes["run_child"].clone(),
+            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
+                "run_child",
+                &flow.nodes["run_child"],
+            ),
+            flow: flow.clone(),
+            outgoing_edges: Vec::new(),
+            run_paths: None,
+            run_workdir: run_workdir.to_path_buf(),
+            run_id: "parent-run".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("subflow outcome");
+    let observed = observed_workdir.lock().expect("read child workdir").clone();
+    (outcome, observed)
+}
+
+#[test]
+fn subflow_child_workdir_from_launches_child_in_context_directory() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    let workspace = temp.path().join("workspaces/run-123");
+    fs::create_dir_all(&workspace).expect("create workspace dir");
+
+    let (outcome, observed) = execute_dynamic_workdir_subflow(
+        dynamic_workdir_subflow_node("context.workspace.path"),
+        temp.path(),
+        temp.path(),
+        vec![(
+            "context.workspace.path".to_string(),
+            json!(workspace.to_string_lossy().to_string()),
+        )],
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Success);
+    assert_eq!(
+        observed.expect("child launched"),
+        fs::canonicalize(&workspace).expect("canonical workspace")
+    );
+}
+
+#[test]
+fn subflow_child_workdir_from_accepts_linked_worktree_of_same_repository() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).expect("create repo dir");
+    fs::write(repo.join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    git_in(&repo, &["init"]);
+    git_in(&repo, &["add", "--all"]);
+    git_in(&repo, &["commit", "-m", "initial"]);
+    let worktree = temp.path().join("repo-worktrees/run-123");
+    fs::create_dir_all(worktree.parent().expect("worktree parent")).expect("create worktree root");
+    git_in(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "spark/run-123",
+            worktree.to_str().expect("worktree path utf8"),
+        ],
+    );
+
+    let (outcome, observed) = execute_dynamic_workdir_subflow(
+        dynamic_workdir_subflow_node("context.workspace.path"),
+        &repo,
+        &repo,
+        vec![(
+            "context.workspace.path".to_string(),
+            json!(worktree.to_string_lossy().to_string()),
+        )],
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(
+        observed.expect("child launched"),
+        fs::canonicalize(&worktree).expect("canonical worktree")
+    );
+}
+
+#[test]
+fn subflow_child_workdir_from_rejects_directory_outside_launch_repository() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).expect("create repo dir");
+    fs::write(repo.join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    git_in(&repo, &["init"]);
+    let elsewhere = temp.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).expect("create outside dir");
+    git_in(&elsewhere, &["init"]);
+
+    let (outcome, observed) = execute_dynamic_workdir_subflow(
+        dynamic_workdir_subflow_node("context.workspace.path"),
+        &repo,
+        &repo,
+        vec![(
+            "context.workspace.path".to_string(),
+            json!(elsewhere.to_string_lossy().to_string()),
+        )],
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome.failure_reason.contains("child_workdir_from"),
+        "{}",
+        outcome.failure_reason
+    );
+    assert!(observed.is_none(), "child must not launch");
+}
+
+#[test]
+fn subflow_child_workdir_from_without_context_value_fails_before_launch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+
+    let (outcome, observed) = execute_dynamic_workdir_subflow(
+        dynamic_workdir_subflow_node("context.workspace.path"),
+        temp.path(),
+        temp.path(),
+        Vec::new(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome
+            .failure_reason
+            .contains("did not resolve to a non-empty string"),
+        "{}",
+        outcome.failure_reason
+    );
+    assert!(observed.is_none(), "child must not launch");
+}
+
+#[test]
+fn subflow_declaring_both_child_workdir_sources_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    let mut node = dynamic_workdir_subflow_node("context.workspace.path");
+    if let Some(manager) = node.manager.as_mut() {
+        manager.child_workdir = Some(".".to_string());
+    }
+
+    let (outcome, observed) = execute_dynamic_workdir_subflow(
+        node,
+        temp.path(),
+        temp.path(),
+        vec![(
+            "context.workspace.path".to_string(),
+            json!(temp.path().to_string_lossy().to_string()),
+        )],
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome
+            .failure_reason
+            .contains("both manager.child_workdir and manager.child_workdir_from"),
+        "{}",
+        outcome.failure_reason
+    );
+    assert!(observed.is_none(), "child must not launch");
+}

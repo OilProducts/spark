@@ -275,6 +275,12 @@
             "null"
           ]
         },
+        "child_workdir_from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "max_cycles": {
           "format": "uint64",
           "minimum": 0.0,
