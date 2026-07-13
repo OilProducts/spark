@@ -1,0 +1,78 @@
+schema_version: '1'
+id: merge_change
+title: Merge Change
+description: Integrate a completed Spark branch into a clean local target using a validated explicit merge commit.
+goal: Integrate a completed Spark branch into a clean local target using a validated explicit merge commit.
+inputs:
+- key: context.request.objective
+  label: Objective
+  type: string
+  description: Inline task objective. Provide this or artifact_path.
+  required: false
+- key: context.request.artifact_path
+  label: Artifact Path
+  type: string
+  description: Repository-relative task artifact. Provide this or objective.
+  required: false
+- key: context.request.target_paths
+  label: Target Paths
+  type: string[]
+  required: false
+- key: context.request.constraints
+  label: Constraints
+  type: string[]
+  required: false
+- key: context.request.acceptance_criteria
+  label: Acceptance Criteria
+  type: string[]
+  required: false
+- key: context.request.validation_command
+  label: Validation Command
+  type: string
+  required: false
+- key: context.request.base_ref
+  label: Base Ref
+  type: string
+  required: false
+- key: context.request.git_result
+  label: Git Result Settings
+  type: object
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+    workspace_policy: repository_integration
+    run_registry: .spark/software-development/runs
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  integrate:
+    kind: agent_task
+    label: Resolve Integration
+    config:
+      kind: agent_task
+      prompt: 'Inspect the runtime-prepared integration worktree. If Git reports conflicts, resolve only conflicts whose behavior-preserving resolution is unambiguous; otherwise return fail and leave the worktree inspectable. Do not commit, validate, move the target branch, release the repository lock, record final results, or clean worktrees; the launcher runtime performs those operations after this node succeeds. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: integrate
+- from: integrate
+  to: done
+  condition: outcome=success

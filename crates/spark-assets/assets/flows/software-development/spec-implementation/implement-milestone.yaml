@@ -1,6 +1,10 @@
 schema_version: '1'
 id: implement_milestone
 title: Implement Milestone
+metadata:
+  software_development:
+    launcher: false
+    worker: true
 description: A child milestone worker for the software-development spec implementation program. The committed spec package
   lives under specs/<slug>/ and is surfaced to this flow through the stable .spark/spec-implementation/current/spec/ symlink.
   It keeps the authoritative live active-item binding in protected context.item.* keys and the durable child queue ledger
@@ -48,6 +52,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       - context.item.title
       - context.item.summary
@@ -80,6 +87,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.milestone.id
       - context.milestone.title
       writes_context:
@@ -132,6 +142,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.milestone.id
       - context.milestone.title
       - context.milestone.objective
@@ -177,6 +190,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.milestone.id
       - context.milestone.title
       - context.milestone.objective
@@ -209,6 +225,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       - context.item.title
       writes_context:
@@ -236,6 +255,9 @@ nodes:
       goal_gate: false
     contracts:
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       - context.item.title
       - context.item.summary
@@ -273,6 +295,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       writes_context:
       - context.item.id
@@ -322,6 +347,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       writes_context:
       - context.item.id
@@ -382,6 +410,10 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
+      reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       writes_context:
       - context.item.id
       - context.item.title
@@ -432,6 +464,9 @@ nodes:
       goal_gate: false
     contracts:
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       - context.item.title
       - context.item.summary
@@ -467,6 +502,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.milestone.id
       - context.milestone.title
       - context.milestone.objective
@@ -517,6 +555,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.milestone.id
       - context.item.id
       - context.item.title
@@ -544,6 +585,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.milestone.id
       - context.milestone.requirement_ids
   review_current:
@@ -588,6 +632,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       - context.item.title
       - context.item.summary
@@ -628,6 +675,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       writes_context:
       - context.item.id
@@ -684,6 +734,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       - context.item.title
       - context.item.attempts
@@ -735,6 +788,9 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
       - context.item.id
       writes_context:
       - context.item.id

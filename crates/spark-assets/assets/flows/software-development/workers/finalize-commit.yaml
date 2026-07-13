@@ -1,0 +1,39 @@
+schema_version: '1'
+id: software_development_finalize_commit
+title: Finalize Commit
+description: Hidden reusable software-development worker.
+goal: Create the requested validated commit or milestone commits without including runtime registry artifacts.
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: false
+    worker: true
+nodes:
+  start:
+    kind: start
+    config:
+      kind: start
+  work:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: 'Create the requested validated commit or milestone commits without including runtime registry artifacts. Read the normalized run state under .spark/software-development/runs/<run-id>/ and update it atomically. Stay within the repository or its Spark-managed worktree. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
+  done:
+    kind: exit
+    config:
+      kind: exit
+edges:
+- from: start
+  to: work
+- from: work
+  to: done
+  condition: outcome=success

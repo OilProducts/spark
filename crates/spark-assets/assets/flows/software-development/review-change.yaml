@@ -1,0 +1,86 @@
+schema_version: '1'
+id: review_change
+title: Review Change
+description: Review a diff or branch; optionally apply accepted fixes on a separate isolated branch.
+goal: Review a diff or branch; optionally apply accepted fixes on a separate isolated branch.
+inputs:
+- key: context.request.objective
+  label: Objective
+  type: string
+  description: Inline task objective. Provide this or artifact_path.
+  required: false
+- key: context.request.artifact_path
+  label: Artifact Path
+  type: string
+  description: Repository-relative task artifact. Provide this or objective.
+  required: false
+- key: context.request.target_paths
+  label: Target Paths
+  type: string[]
+  required: false
+- key: context.request.constraints
+  label: Constraints
+  type: string[]
+  required: false
+- key: context.request.acceptance_criteria
+  label: Acceptance Criteria
+  type: string[]
+  required: false
+- key: context.request.validation_command
+  label: Validation Command
+  type: string
+  required: false
+- key: context.request.base_ref
+  label: Base Ref
+  type: string
+  required: false
+- key: context.request.git_result
+  label: Git Result Settings
+  type: object
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+    workspace_policy: read_only
+    run_registry: .spark/software-development/runs
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  execute:
+    kind: agent_task
+    label: Execute
+    config:
+      kind: agent_task
+      prompt: 'Inspect the normalized review target and record prioritized evidence-backed findings in result.json under the runtime-managed run directory. When context.request.git_result.apply_fixes is true, the runtime has already supplied a distinct isolated fix branch: apply only accepted high-confidence fixes there. Never create worktrees or branches, commit, perform final validation, or clean up; the launcher runtime owns those operations. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
+      - context.request.objective
+      - context.request.artifact_path
+      - context.request.target_paths
+      - context.request.constraints
+      - context.request.acceptance_criteria
+      - context.request.validation_command
+      - context.request.base_ref
+      - context.request.git_result
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: execute
+- from: execute
+  to: done
+  condition: outcome=success

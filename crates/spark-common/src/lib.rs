@@ -15,6 +15,7 @@ pub mod process;
 pub mod project;
 pub mod segments;
 pub mod settings;
+pub mod software_development;
 pub mod source_checkout;
 
 pub use error::{Result, SparkCommonError};

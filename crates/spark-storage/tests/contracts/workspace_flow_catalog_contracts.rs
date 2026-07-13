@@ -195,8 +195,29 @@ fn legacy_dot_catalog_entries_are_skipped_instead_of_failing_load() {
     let missing = spark_storage::seed_default_flow_catalog(&config_dir).expect("seed");
     assert_eq!(
         missing,
-        vec!["software-development/implement-change-request.yaml".to_string()]
+        vec![
+            "software-development/audit-codebase-health.yaml".to_string(),
+            "software-development/explore-codebase.yaml".to_string(),
+            "software-development/implement-change-request.yaml".to_string(),
+            "software-development/implement-change.yaml".to_string(),
+            "software-development/investigate-bug.yaml".to_string(),
+            "software-development/merge-change.yaml".to_string(),
+            "software-development/plan-change.yaml".to_string(),
+            "software-development/repair-validation.yaml".to_string(),
+            "software-development/review-change.yaml".to_string(),
+            "software-development/update-dependencies.yaml".to_string(),
+        ]
     );
     let rewritten = fs::read_to_string(config_dir.join("flow-catalog.toml")).expect("catalog");
     assert!(!rewritten.contains(".dot"));
+    let merge = read_flow_launch_policy(&config_dir, "software-development/merge-change.yaml")
+        .expect("merge policy");
+    assert_eq!(
+        merge.execution_lock,
+        Some(FlowExecutionLockConfig {
+            scope: "project".to_string(),
+            key: "software-development-integration".to_string(),
+            conflict_policy: "queue".to_string(),
+        })
+    );
 }

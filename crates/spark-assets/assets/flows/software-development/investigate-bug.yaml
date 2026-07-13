@@ -1,0 +1,86 @@
+schema_version: '1'
+id: investigate_bug
+title: Investigate Bug
+description: Reproduce or characterize a failure and produce a repair-ready root-cause diagnosis without editing.
+goal: Reproduce or characterize a failure and produce a repair-ready root-cause diagnosis without editing.
+inputs:
+- key: context.request.objective
+  label: Objective
+  type: string
+  description: Inline task objective. Provide this or artifact_path.
+  required: false
+- key: context.request.artifact_path
+  label: Artifact Path
+  type: string
+  description: Repository-relative task artifact. Provide this or objective.
+  required: false
+- key: context.request.target_paths
+  label: Target Paths
+  type: string[]
+  required: false
+- key: context.request.constraints
+  label: Constraints
+  type: string[]
+  required: false
+- key: context.request.acceptance_criteria
+  label: Acceptance Criteria
+  type: string[]
+  required: false
+- key: context.request.validation_command
+  label: Validation Command
+  type: string
+  required: false
+- key: context.request.base_ref
+  label: Base Ref
+  type: string
+  required: false
+- key: context.request.git_result
+  label: Git Result Settings
+  type: object
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+    workspace_policy: read_only
+    run_registry: .spark/software-development/runs
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  execute:
+    kind: agent_task
+    label: Execute
+    config:
+      kind: agent_task
+      prompt: 'Normalize the bug report, inspect the selected checkout or base ref without changing files, reproduce or characterize the failure through real interfaces, identify the root cause and affected path, and record a repair-ready diagnosis under .spark/software-development/runs/<run-id>/. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; reject both or neither, reject absolute or escaping artifact paths, and incorporate optional target_paths, constraints, acceptance_criteria, validation_command, base_ref, and git_result settings. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
+      - context.request.objective
+      - context.request.artifact_path
+      - context.request.target_paths
+      - context.request.constraints
+      - context.request.acceptance_criteria
+      - context.request.validation_command
+      - context.request.base_ref
+      - context.request.git_result
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: execute
+- from: execute
+  to: done
+  condition: outcome=success

@@ -11,9 +11,28 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "examples/simple-linear.yaml",
     "examples/supervision/implementation-worker.yaml",
     "examples/supervision/supervised-implementation.yaml",
+    "software-development/audit-codebase-health.yaml",
+    "software-development/explore-codebase.yaml",
     "software-development/implement-change-request.yaml",
+    "software-development/implement-change.yaml",
+    "software-development/investigate-bug.yaml",
+    "software-development/merge-change.yaml",
+    "software-development/plan-change.yaml",
+    "software-development/repair-validation.yaml",
+    "software-development/review-change.yaml",
     "software-development/spec-implementation/implement-milestone.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
+    "software-development/update-dependencies.yaml",
+    "software-development/workers/cleanup-workspace.yaml",
+    "software-development/workers/finalize-commit.yaml",
+    "software-development/workers/implement-task.yaml",
+    "software-development/workers/inspect-repository.yaml",
+    "software-development/workers/normalize-task.yaml",
+    "software-development/workers/plan-task.yaml",
+    "software-development/workers/prepare-isolation.yaml",
+    "software-development/workers/record-result.yaml",
+    "software-development/workers/review-result.yaml",
+    "software-development/workers/validate-task.yaml",
 ];
 
 #[test]
@@ -135,6 +154,24 @@ fn starter_flow_inventory_is_packaged_sorted_and_utf8() {
     for asset in assets {
         assert!(asset.name.ends_with(".yaml"));
         assert!(asset.content.contains("schema_version:"), "{}", asset.name);
+        let flow = attractor_dsl::parse_flow_definition(&asset.content).unwrap_or_else(|error| {
+            panic!("{} does not satisfy the flow schema: {error}", asset.name)
+        });
+        let software_metadata = flow.metadata.get("software_development");
+        if asset.name.starts_with("software-development/workers/")
+            || asset
+                .name
+                .contains("/spec-implementation/implement-milestone")
+        {
+            assert_ne!(
+                software_metadata
+                    .and_then(|value| value.get("launcher"))
+                    .and_then(serde_json::Value::as_bool),
+                Some(true),
+                "{} must not be requestable",
+                asset.name
+            );
+        }
     }
 
     for unsafe_name in [

@@ -26,8 +26,17 @@ pub const ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES: &[&str] =
     &[EXECUTION_LOCK_CONFLICT_POLICY_QUEUE];
 
 pub const DEFAULT_AGENT_REQUESTABLE_FLOWS: &[&str] = &[
+    "software-development/audit-codebase-health.yaml",
+    "software-development/explore-codebase.yaml",
     "software-development/implement-change-request.yaml",
+    "software-development/implement-change.yaml",
+    "software-development/investigate-bug.yaml",
+    "software-development/merge-change.yaml",
+    "software-development/plan-change.yaml",
+    "software-development/repair-validation.yaml",
+    "software-development/review-change.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
+    "software-development/update-dependencies.yaml",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,7 +294,13 @@ pub fn seed_default_flow_catalog(config_dir: impl AsRef<Path>) -> Result<Vec<Str
             normalized_flow_name.clone(),
             FlowCatalogEntry {
                 launch_policy: Some(LAUNCH_POLICY_AGENT_REQUESTABLE.to_string()),
-                execution_lock: None,
+                execution_lock: (*flow_name == "software-development/merge-change.yaml").then(
+                    || FlowExecutionLockConfig {
+                        scope: EXECUTION_LOCK_SCOPE_PROJECT.to_string(),
+                        key: "software-development-integration".to_string(),
+                        conflict_policy: EXECUTION_LOCK_CONFLICT_POLICY_QUEUE.to_string(),
+                    },
+                ),
             },
         );
         missing.push(normalized_flow_name);

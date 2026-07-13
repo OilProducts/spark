@@ -12,5 +12,7 @@ mod pipeline_inspection_contracts;
 mod pipeline_lifecycle_contracts;
 #[path = "contracts/preview_route_contracts.rs"]
 mod preview_route_contracts;
+#[path = "contracts/software_development_runtime_contracts.rs"]
+mod software_development_runtime_contracts;
 #[path = "contracts/status_route_contracts.rs"]
 mod status_route_contracts;

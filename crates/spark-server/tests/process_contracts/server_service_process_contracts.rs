@@ -32,14 +32,14 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
     assert_eq!(
         stdout_text(&install),
         format!(
-            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nSeeded flows: {}\ncreated=9 updated=0 skipped=0\n",
+            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nSeeded flows: {}\ncreated=28 updated=0 skipped=0\n",
             harness.unit_path.display(),
             harness.data_dir.display(),
             harness.flows_dir.display()
         )
     );
 
-    assert_eq!(count_yaml_files(&harness.flows_dir), 9);
+    assert_eq!(count_yaml_files(&harness.flows_dir), 28);
     assert!(harness
         .data_dir
         .join("config")

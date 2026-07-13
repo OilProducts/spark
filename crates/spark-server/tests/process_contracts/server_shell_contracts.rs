@@ -21,9 +21,28 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "examples/simple-linear.yaml",
     "examples/supervision/implementation-worker.yaml",
     "examples/supervision/supervised-implementation.yaml",
+    "software-development/audit-codebase-health.yaml",
+    "software-development/explore-codebase.yaml",
     "software-development/implement-change-request.yaml",
+    "software-development/implement-change.yaml",
+    "software-development/investigate-bug.yaml",
+    "software-development/merge-change.yaml",
+    "software-development/plan-change.yaml",
+    "software-development/repair-validation.yaml",
+    "software-development/review-change.yaml",
     "software-development/spec-implementation/implement-milestone.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
+    "software-development/update-dependencies.yaml",
+    "software-development/workers/cleanup-workspace.yaml",
+    "software-development/workers/finalize-commit.yaml",
+    "software-development/workers/implement-task.yaml",
+    "software-development/workers/inspect-repository.yaml",
+    "software-development/workers/normalize-task.yaml",
+    "software-development/workers/plan-task.yaml",
+    "software-development/workers/prepare-isolation.yaml",
+    "software-development/workers/record-result.yaml",
+    "software-development/workers/review-result.yaml",
+    "software-development/workers/validate-task.yaml",
 ];
 
 const TOP_LEVEL_HELP: &str = concat!(
@@ -116,7 +135,7 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         format!(
-            "Initialized Spark at {}\nSeeded flows: {}\ncreated=9 updated=0 skipped=0\n",
+            "Initialized Spark at {}\nSeeded flows: {}\ncreated=28 updated=0 skipped=0\n",
             data_dir.display(),
             data_dir.join("flows").display()
         )
@@ -183,7 +202,7 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     assert_eq!(
         output.stdout,
         format!(
-            "Initialized Spark at {}\nSeeded flows: {}\ncreated=9 updated=0 skipped=0\n",
+            "Initialized Spark at {}\nSeeded flows: {}\ncreated=28 updated=0 skipped=0\n",
             data_dir.display(),
             flows_dir.display()
         )
@@ -208,13 +227,14 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     );
     let catalog = fs::read_to_string(data_dir.join("config/flow-catalog.toml")).expect("catalog");
     assert_eq!(
-        catalog,
-        "[flows.\"software-development/implement-change-request.yaml\"]\n\
-launch_policy = \"agent_requestable\"\n\
-\n\
-[flows.\"software-development/spec-implementation/implement-spec.yaml\"]\n\
-launch_policy = \"agent_requestable\"\n"
+        catalog
+            .matches("launch_policy = \"agent_requestable\"")
+            .count(),
+        11
     );
+    assert!(catalog.contains("[flows.\"software-development/merge-change.yaml\".execution_lock]"));
+    assert!(catalog.contains("key = \"software-development-integration\""));
+    assert!(!catalog.contains("software-development/workers/"));
 }
 
 #[test]
@@ -253,7 +273,7 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(second.exit_code, 0);
-    assert!(second.stdout.ends_with("created=0 updated=0 skipped=9\n"));
+    assert!(second.stdout.ends_with("created=0 updated=0 skipped=28\n"));
     assert_eq!(
         fs::read_to_string(&edited_flow).expect("edited flow"),
         "edited: true\n"
@@ -272,7 +292,7 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(forced.exit_code, 0);
-    assert!(forced.stdout.ends_with("created=0 updated=9 skipped=0\n"));
+    assert!(forced.stdout.ends_with("created=0 updated=28 skipped=0\n"));
     assert_ne!(
         fs::read_to_string(&edited_flow).expect("forced flow"),
         "edited: true\n"

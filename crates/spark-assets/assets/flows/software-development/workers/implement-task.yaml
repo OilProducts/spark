@@ -1,0 +1,39 @@
+schema_version: '1'
+id: software_development_implement_task
+title: Implement Task
+description: Hidden reusable software-development worker.
+goal: Plan, implement, test, and review the bounded task inside the runtime-prepared workspace.
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: false
+    worker: true
+nodes:
+  start:
+    kind: start
+    config:
+      kind: start
+  work:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: 'Read task.json from the runtime-managed run directory, inspect the repository, make the smallest coherent implementation, and test and review the observable behavior. Work only in the already prepared workspace. Do not create worktrees or branches, commit, run final lifecycle validation, record result.json, or clean up; the launcher runtime owns those lifecycle operations. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - internal.software_development.run_dir
+      - internal.software_development.task_path
+      - internal.software_development.result_path
+  done:
+    kind: exit
+    config:
+      kind: exit
+edges:
+- from: start
+  to: work
+- from: work
+  to: done
+  condition: outcome=success
