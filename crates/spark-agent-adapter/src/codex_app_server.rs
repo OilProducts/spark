@@ -49,6 +49,7 @@ pub struct CodexAppServerError {
     pub message: String,
     pub retryable: bool,
     pub details: Option<Value>,
+    pub artifact: bool,
 }
 
 impl CodexAppServerError {
@@ -57,6 +58,7 @@ impl CodexAppServerError {
             message: message.into(),
             retryable: false,
             details: None,
+            artifact: false,
         }
     }
 
@@ -65,6 +67,16 @@ impl CodexAppServerError {
             message: message.into(),
             retryable: false,
             details: None,
+            artifact: false,
+        }
+    }
+
+    fn artifact(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable: false,
+            details: None,
+            artifact: true,
         }
     }
 
@@ -166,6 +178,16 @@ impl CodexAppServerBackend {
         steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
+        self.run_agent_turn_with_capture_observer(request, steering, event_sink, None)
+    }
+
+    pub(crate) fn run_agent_turn_with_capture_observer(
+        &self,
+        request: AgentTurnRequest,
+        steering: Option<SessionSteeringHandle>,
+        event_sink: Option<AgentTurnEventSink>,
+        capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<AgentTurnOutput, CodexAppServerError> {
         let trace_path = codex_jsonrpc_trace_enabled()
             .then(|| {
                 metadata_string(&request.metadata, &[CODEX_JSONRPC_TRACE_PATH_METADATA_KEY])
@@ -209,7 +231,8 @@ impl CodexAppServerBackend {
                 codex_app_server_thread_is_ephemeral(&request),
             )?
         };
-        let result = client.run_turn(
+        let capture_path = crate::initial_context::path_from_metadata(&request.metadata);
+        let result = client.run_turn_with_capture(
             &thread_id,
             &request.prompt,
             model.as_deref(),
@@ -218,6 +241,8 @@ impl CodexAppServerBackend {
             Some(&request.project_path),
             steering,
             event_sink,
+            capture_path.as_deref(),
+            capture_observer,
         )?;
         Ok(agent_output_from_app_server_result(result))
     }
@@ -564,6 +589,34 @@ impl CodexAppServerClient {
         steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
+        self.run_turn_with_capture(
+            thread_id,
+            prompt,
+            model,
+            reasoning_effort,
+            chat_mode,
+            cwd,
+            steering,
+            event_sink,
+            None,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_turn_with_capture(
+        &mut self,
+        thread_id: &str,
+        prompt: &str,
+        model: Option<&str>,
+        reasoning_effort: Option<&str>,
+        chat_mode: Option<&str>,
+        cwd: Option<&str>,
+        steering: Option<SessionSteeringHandle>,
+        event_sink: Option<AgentTurnEventSink>,
+        capture_path: Option<&Path>,
+        capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
         let mut params = json!({
             "threadId": thread_id,
             "input": [{"type": "text", "text": prompt}],
@@ -589,6 +642,21 @@ impl CodexAppServerClient {
         }
         if let Some(effort) = normalize_reasoning_effort(reasoning_effort)? {
             params["effort"] = json!(effort);
+        }
+        if let Some(path) = capture_path {
+            let turn_input = params
+                .pointer("/input/0/text")
+                .and_then(Value::as_str)
+                .expect("turn/start text input must be finalized");
+            crate::initial_context::write_if_absent(path, turn_input).map_err(|error| {
+                CodexAppServerError::artifact(format!(
+                    "persist initial LLM context at {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if let Some(observer) = capture_observer {
+                observer();
+            }
         }
         let response = self.send_request("turn/start", Some(params))?;
         if response.get("error").is_some() {

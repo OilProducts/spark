@@ -14,6 +14,7 @@ fn main() {
     } else {
         run_default(
             log_path,
+            &mode,
             mode == "model-list",
             mode == "request-user-input",
             mode == "tool-calls",
@@ -23,6 +24,7 @@ fn main() {
 
 fn run_default(
     log_path: Option<PathBuf>,
+    mode: &str,
     model_list_only: bool,
     request_user_input: bool,
     tool_calls: bool,
@@ -50,14 +52,34 @@ fn run_default(
         let method = message.get("method").and_then(Value::as_str).unwrap_or("");
         let request_id = message.get("id").cloned().unwrap_or(Value::Null);
         match method {
+            "initialize" if mode == "initialize-error" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"code": -32000, "message": "initialize failed"}}),
+            ),
             "initialize" => write_json(
                 &mut stdout,
                 json!({"id": request_id, "result": {"userAgent": "fake"}}),
             ),
             "initialized" => {}
+            "thread/start" if mode == "thread-start-error" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"code": -32000, "message": "thread start failed"}}),
+            ),
             "thread/start" if !model_list_only => write_json(
                 &mut stdout,
                 json!({"id": request_id, "result": {"thread": {"id": "thread-test"}}}),
+            ),
+            "thread/resume" if mode == "thread-resume-error" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"code": -32000, "message": "thread resume failed"}}),
+            ),
+            "thread/resume" if !model_list_only => write_json(
+                &mut stdout,
+                json!({"id": request_id, "result": {"thread": {"id": "thread-test"}}}),
+            ),
+            "turn/start" if mode == "turn-start-error" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"code": -32000, "message": "turn start failed"}}),
             ),
             "turn/start" if !model_list_only => {
                 write_json(

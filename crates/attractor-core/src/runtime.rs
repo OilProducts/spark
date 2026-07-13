@@ -360,4 +360,6 @@ pub struct ArtifactInfo {
     pub size_bytes: u64,
     pub media_type: String,
     pub viewable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_capture_kind: Option<String>,
 }

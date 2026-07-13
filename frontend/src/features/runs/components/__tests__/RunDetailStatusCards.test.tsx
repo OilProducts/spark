@@ -49,4 +49,39 @@ describe('Run detail status cards', () => {
     expect(screen.queryByTestId('run-artifact-empty')).not.toBeInTheDocument()
   })
 
+  it('shows the unobservable-instructions note only for a selected Codex context capture', () => {
+    const codexArtifact = {
+      path: 'logs/task/initial-context.txt',
+      size_bytes: 12,
+      media_type: 'text/plain',
+      viewable: true,
+      context_capture_kind: 'codex_turn_input' as const,
+    }
+    const props = {
+      artifactDownloadHref: () => null,
+      artifactEntries: [codexArtifact],
+      artifactError: null,
+      artifactViewerError: null,
+      artifactViewerPayload: 'Do the task',
+      isArtifactViewerLoading: false,
+      isLoading: false,
+      missingCoreArtifacts: [],
+      onRefresh: () => {},
+      onViewArtifact: () => {},
+      showPartialRunArtifactNote: false,
+      status: 'ready' as const,
+    }
+
+    const { rerender } = render(<RunArtifactsCard {...props} selectedArtifactEntry={codexArtifact} />)
+    expect(screen.getByTestId('run-artifact-codex-context-note')).toBeVisible()
+
+    rerender(
+      <RunArtifactsCard
+        {...props}
+        selectedArtifactEntry={{ ...codexArtifact, context_capture_kind: 'assembled_messages' }}
+      />,
+    )
+    expect(screen.queryByTestId('run-artifact-codex-context-note')).not.toBeInTheDocument()
+  })
+
 })

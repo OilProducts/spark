@@ -12,6 +12,7 @@ pub mod context;
 pub mod environment;
 pub mod events;
 pub mod history;
+mod initial_context;
 pub mod llm_backend;
 pub mod local_environment;
 pub mod profiles;

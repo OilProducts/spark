@@ -86,6 +86,7 @@ export interface ArtifactListEntry {
     size_bytes: number
     media_type: string
     viewable: boolean
+    context_capture_kind?: 'assembled_messages' | 'codex_turn_input'
 }
 
 export interface ArtifactListResponse {

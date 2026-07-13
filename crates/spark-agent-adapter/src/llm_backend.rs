@@ -95,6 +95,27 @@ impl RustLlmCodergenBackend {
         // mapped event also feeds the thread-local transcript sink.
         let sink_request = request.clone();
         let stream_sink = event_sink;
+        let capture_event =
+            crate::initial_context::path_from_metadata(&request.metadata).map(|_| {
+                CodergenEvent::new(
+                    "initial_context_captured",
+                    BTreeMap::from([
+                        ("node_id".to_string(), json!(request.node_id.clone())),
+                        (
+                            "context_capture_kind".to_string(),
+                            json!("codex_turn_input"),
+                        ),
+                    ]),
+                )
+            });
+        let capture_sink =
+            stream_sink
+                .clone()
+                .zip(capture_event.clone())
+                .map(|(sink, capture_event)| {
+                    std::sync::Arc::new(move || sink(capture_event.clone()))
+                        as std::sync::Arc<dyn Fn() + Send + Sync>
+                });
         let turn_event_sink: Option<AgentTurnEventSink> =
             Some(std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
                 if let Some(sink) = &stream_sink {
@@ -120,8 +141,19 @@ impl RustLlmCodergenBackend {
             })
         });
         let output = CodexAppServerBackend::new()
-            .run_agent_turn_with_steering_and_sink(agent_request, Some(steering), turn_event_sink)
-            .map_err(codex_app_server_codergen_error)?;
+            .run_agent_turn_with_capture_observer(
+                agent_request,
+                Some(steering),
+                turn_event_sink,
+                capture_sink,
+            )
+            .map_err(|error| {
+                if error.artifact {
+                    CodergenError::Artifact(error.message)
+                } else {
+                    codex_app_server_codergen_error(error)
+                }
+            })?;
         let usage = output
             .token_usage
             .as_ref()
@@ -145,7 +177,7 @@ impl RustLlmCodergenBackend {
                 ..Outcome::new(OutcomeStatus::Fail)
             })
         };
-        let mut events = Vec::new();
+        let mut events = capture_event.into_iter().collect::<Vec<_>>();
         for event in &output.events {
             let codergen_event = codergen_event_from_turn_stream_event(&request, event);
             events.push(codergen_event);
@@ -179,6 +211,10 @@ impl RustLlmCodergenBackend {
                     json!(request.runtime_mode.clone()),
                 ),
                 ("token_usage".to_string(), json!(output.token_usage.clone())),
+                (
+                    "context_capture_kind".to_string(),
+                    json!("codex_turn_input"),
+                ),
             ]),
         );
         events.push(completed_event);
@@ -220,6 +256,8 @@ impl RustLlmCodergenBackend {
             metadata,
         )
         .map_err(codergen_adapter_error)?;
+        crate::initial_context::capture_if_configured(&request.metadata, &request.prompt)
+            .map_err(|source| CodergenError::Artifact(source.to_string()))?;
         let response = self
             .client
             .complete(llm_request.request)
@@ -257,6 +295,10 @@ impl RustLlmCodergenBackend {
                     ),
                     ("write_contract".to_string(), json!(request.write_contract)),
                     ("runtime_mode".to_string(), json!(request.runtime_mode)),
+                    (
+                        "context_capture_kind".to_string(),
+                        json!("assembled_messages"),
+                    ),
                 ]),
             )],
             usage: Some(response.usage),
@@ -311,6 +353,12 @@ impl RustLlmCodergenBackend {
         });
         let process_error = session.process_input(&self.client, prompt).err();
         session.close();
+        if let Some(error) = process_error
+            .as_ref()
+            .filter(|error| error.error_code.as_deref() == Some("initial_context_artifact"))
+        {
+            return Err(CodergenError::Artifact(error.message.clone()));
+        }
         Ok(codergen_output_from_session(
             request,
             &mut session,
@@ -617,6 +665,10 @@ fn codergen_completion_event_payload(
         json!(request.contract_repair_attempts),
     );
     payload.insert("token_usage".to_string(), json!(usage));
+    payload.insert(
+        "context_capture_kind".to_string(),
+        json!("assembled_messages"),
+    );
     payload
 }
 

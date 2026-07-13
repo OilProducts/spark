@@ -226,7 +226,12 @@ pub fn list_artifacts(paths: &RunRootPaths) -> Result<Vec<ArtifactInfo>> {
         if matches!(name.to_str(), Some("artifacts" | "logs" | "result")) {
             continue;
         }
-        for filename in ["prompt.md", "response.md", "status.json"] {
+        for filename in [
+            "prompt.md",
+            "response.md",
+            "status.json",
+            "initial-context.txt",
+        ] {
             add_file(
                 &mut files,
                 &paths.root,
@@ -243,6 +248,7 @@ pub fn list_artifacts(paths: &RunRootPaths) -> Result<Vec<ArtifactInfo>> {
         &paths.artifacts_dir(),
     )?;
 
+    let capture_kinds = initial_context_capture_kinds(paths)?;
     let mut entries = Vec::new();
     for (relative_path, absolute_path) in files {
         if is_internal_file(&relative_path) {
@@ -252,6 +258,8 @@ pub fn list_artifacts(paths: &RunRootPaths) -> Result<Vec<ArtifactInfo>> {
             .map_err(|source| RuntimeStorageError::io("stat artifact", &absolute_path, source))?;
         let media_type = artifact_media_type(&absolute_path);
         entries.push(ArtifactInfo {
+            context_capture_kind: initial_context_node_id(&relative_path)
+                .and_then(|node_id| capture_kinds.get(node_id).cloned()),
             path: relative_path,
             size_bytes: metadata.len(),
             viewable: artifact_is_viewable(&media_type, &absolute_path),
@@ -259,6 +267,40 @@ pub fn list_artifacts(paths: &RunRootPaths) -> Result<Vec<ArtifactInfo>> {
         });
     }
     Ok(entries)
+}
+
+fn initial_context_capture_kinds(paths: &RunRootPaths) -> Result<BTreeMap<String, String>> {
+    let mut kinds = BTreeMap::new();
+    for event in crate::events::read_raw_events(paths)? {
+        let Some(node_id) = event.payload.get("node_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(kind) = event
+            .payload
+            .get("context_capture_kind")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                event
+                    .payload
+                    .get("payload")?
+                    .get("context_capture_kind")?
+                    .as_str()
+            })
+        else {
+            continue;
+        };
+        if matches!(kind, "assembled_messages" | "codex_turn_input") {
+            kinds
+                .entry(node_id.to_string())
+                .or_insert_with(|| kind.to_string());
+        }
+    }
+    Ok(kinds)
+}
+
+fn initial_context_node_id(path: &str) -> Option<&str> {
+    path.strip_prefix("logs/")?
+        .strip_suffix("/initial-context.txt")
 }
 
 pub fn append_run_log(paths: &RunRootPaths, message: &str) -> Result<()> {

@@ -904,6 +904,16 @@ impl Session {
         client: &Client,
         request: Request,
     ) -> Result<ModelResponseOutput, AdapterError> {
+        let initial_context = crate::initial_context::assembled_message_text(&request.messages);
+        crate::initial_context::capture_if_configured(&request.metadata, &initial_context)
+            .map_err(|source| {
+                let mut error = AdapterError::new(
+                    unified_llm_adapter::AdapterErrorKind::InvalidRequest,
+                    format!("persist initial LLM context: {source}"),
+                );
+                error.error_code = Some("initial_context_artifact".to_string());
+                error
+            })?;
         if self.provider_profile.supports("streaming") {
             self.stream_response(client, request)
         } else {

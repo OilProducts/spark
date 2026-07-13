@@ -1062,6 +1062,7 @@ export interface ArtifactListEntry {
     size_bytes: number
     media_type: string
     viewable: boolean
+    context_capture_kind?: 'assembled_messages' | 'codex_turn_input'
 }
 
 export interface ArtifactListResponse {
@@ -1084,6 +1085,9 @@ export function parseArtifactListResponse(
                     size_bytes: typeof entry.size_bytes === 'number' ? entry.size_bytes : 0,
                     media_type: expectString(entry.media_type, endpoint, 'media_type'),
                     viewable: entry.viewable === true,
+                    context_capture_kind: entry.context_capture_kind === 'assembled_messages' || entry.context_capture_kind === 'codex_turn_input'
+                        ? entry.context_capture_kind
+                        : undefined,
                 }))
             : [],
     }

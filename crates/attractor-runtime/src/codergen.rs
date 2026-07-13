@@ -152,7 +152,8 @@ pub fn codergen_events_for_journal(
             }
             "rust_llm_adapter_request_completed"
             | "rust_agent_adapter_request_completed"
-            | "codex_app_server_request_completed" => {
+            | "codex_app_server_request_completed"
+            | "simulated_llm_request_completed" => {
                 events.push(llm_request_completed_event(
                     run_id,
                     node_id,
@@ -203,6 +204,7 @@ fn low_volume_llm_payload(payload: &BTreeMap<String, Value>) -> Value {
         "runtime_mode",
         "repair_attempts",
         "token_usage",
+        "context_capture_kind",
     ] {
         if let Some(value) = payload.get(key) {
             output.insert(key.to_string(), value.clone());

@@ -62,6 +62,33 @@ fn fake_codex_app_server_bin() -> &'static str {
     env!("CARGO_BIN_EXE_spark-agent-fake-codex-app-server")
 }
 
+fn codex_codergen_request(
+    project_path: &Path,
+    capture_path: &Path,
+    prompt: &str,
+) -> CodergenBackendRequest {
+    CodergenBackendRequest {
+        node_id: "task".to_string(),
+        prompt: prompt.to_string(),
+        context: BTreeMap::new(),
+        response_contract: String::new(),
+        contract_repair_attempts: 0,
+        timeout_seconds: None,
+        write_contract: Default::default(),
+        provider: "codex".to_string(),
+        model: Some("gpt-codex-test".to_string()),
+        llm_profile: None,
+        reasoning_effort: Some("HIGH".to_string()),
+        repair_attempt: None,
+        runtime_mode: Default::default(),
+        project_path: Some(project_path.to_path_buf()),
+        metadata: BTreeMap::from([(
+            "spark.runtime.initial_context_path".to_string(),
+            json!(capture_path.to_string_lossy().to_string()),
+        )]),
+    }
+}
+
 fn wait_for_logged_method(log_path: &Path, method: &str) {
     let started = Instant::now();
     loop {
@@ -258,6 +285,7 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
     let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
     let client = Client::new();
     let mut backend = RustLlmCodergenBackend::new(client);
+    let capture_path = temp.path().join("initial-context.txt");
 
     let output = backend
         .run(CodergenBackendRequest {
@@ -275,7 +303,10 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
             repair_attempt: None,
             runtime_mode: Default::default(),
             project_path: Some(temp.path().to_path_buf()),
-            metadata: BTreeMap::new(),
+            metadata: BTreeMap::from([(
+                "spark.runtime.initial_context_path".to_string(),
+                json!(capture_path.to_string_lossy().to_string()),
+            )]),
         })
         .expect("codergen output");
 
@@ -313,11 +344,173 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
     assert!(turn_start["params"].get("reasoningEffort").is_none());
     assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
     assert_eq!(
+        fs::read_to_string(capture_path).expect("initial context"),
+        turn_start["params"]["input"][0]["text"]
+            .as_str()
+            .expect("turn input text")
+    );
+    assert_eq!(
         turn_start["params"]["collaborationMode"],
         json!({
             "mode": "default",
             "settings": {"model": "gpt-codex-test"}
         })
+    );
+}
+
+#[test]
+fn codex_pre_turn_failures_do_not_create_initial_context() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+
+    for mode in ["initialize-error", "thread-start-error"] {
+        std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", mode);
+        let capture_path = temp.path().join(format!("{mode}-context.txt"));
+        let mut backend = RustLlmCodergenBackend::new(Client::new());
+        assert!(backend
+            .run(codex_codergen_request(
+                temp.path(),
+                &capture_path,
+                "must not be captured",
+            ))
+            .is_err());
+        assert!(!capture_path.exists(), "{mode} created an artifact");
+    }
+
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", "thread-resume-error");
+    let capture_path = temp.path().join("resume-context.txt");
+    let mut request = codex_codergen_request(temp.path(), &capture_path, "must not be captured");
+    request.metadata.insert(
+        "spark.runtime.codex_app_server.thread_id".to_string(),
+        json!("thread-existing"),
+    );
+    let mut backend = RustLlmCodergenBackend::new(Client::new());
+    let output = backend.run(request).expect("resume failure is an outcome");
+    assert!(matches!(
+        output.response,
+        spark_agent_adapter::CodergenBackendResponse::Outcome(_)
+    ));
+    assert!(!capture_path.exists());
+}
+
+#[test]
+fn codex_capture_precedes_turn_transport_and_survives_provider_failure() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let capture_path = temp.path().join("initial-context.txt");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "turn-start-error");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let captured_events = Arc::new(Mutex::new(Vec::new()));
+    let event_sink = {
+        let captured_events = Arc::clone(&captured_events);
+        Arc::new(move |event: spark_agent_adapter::CodergenEvent| {
+            captured_events.lock().expect("events").push(event)
+        }) as spark_agent_adapter::CodergenEventSink
+    };
+    let mut backend = RustLlmCodergenBackend::new(Client::new());
+
+    assert!(backend
+        .run_with_event_sink(
+            codex_codergen_request(temp.path(), &capture_path, "exact turn input"),
+            Some(event_sink),
+        )
+        .is_err());
+
+    assert_eq!(
+        fs::read(&capture_path).expect("capture"),
+        b"exact turn input"
+    );
+    assert!(captured_events.lock().expect("events").iter().any(|event| {
+        event.event_type == "initial_context_captured"
+            && event.payload["context_capture_kind"] == json!("codex_turn_input")
+    }));
+    assert!(fs::read_to_string(log_path)
+        .expect("rpc log")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|message| message["method"] == json!("turn/start")));
+}
+
+#[test]
+fn codex_capture_failure_returns_artifact_error_without_turn_transport() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let capture_path = temp.path().join("initial-context.txt");
+    fs::create_dir(&capture_path).expect("blocking capture directory");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let mut backend = RustLlmCodergenBackend::new(Client::new());
+
+    let error = backend
+        .run(codex_codergen_request(
+            temp.path(),
+            &capture_path,
+            "must not be transported",
+        ))
+        .expect_err("capture failure");
+
+    assert!(matches!(
+        error,
+        spark_agent_adapter::CodergenError::Artifact(_)
+    ));
+    let methods = fs::read_to_string(log_path)
+        .expect("rpc log")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|message| message["method"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    assert_eq!(methods, ["initialize", "initialized", "thread/start"]);
+}
+
+#[test]
+fn codex_retry_contract_repair_and_resume_preserve_first_capture() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let capture_path = temp.path().join("initial-context.txt");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let mut backend = RustLlmCodergenBackend::new(Client::new());
+
+    backend
+        .run(codex_codergen_request(
+            temp.path(),
+            &capture_path,
+            "first request bytes",
+        ))
+        .expect("first request");
+    let mut repair = codex_codergen_request(temp.path(), &capture_path, "replacement repair");
+    repair.contract_repair_attempts = 1;
+    repair.repair_attempt = Some(1);
+    repair.metadata.insert(
+        "spark.runtime.codex_app_server.thread_id".to_string(),
+        json!("thread-test"),
+    );
+    backend.run(repair).expect("resumed repair request");
+
+    assert_eq!(
+        fs::read(capture_path).expect("capture"),
+        b"first request bytes"
     );
 }
 

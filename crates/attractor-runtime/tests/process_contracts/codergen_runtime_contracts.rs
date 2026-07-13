@@ -42,11 +42,10 @@ nodes:
 
     assert_eq!(execution.outcome.status.as_str(), "success");
     assert_eq!(
-        std::fs::read_to_string(logs_root.path().join("task/prompt.md"))
-            .unwrap()
-            .trim(),
+        std::fs::read_to_string(logs_root.path().join("task/initial-context.txt")).unwrap(),
         "Plan for docs"
     );
+    assert!(!logs_root.path().join("task/prompt.md").exists());
     assert_eq!(
         std::fs::read_to_string(logs_root.path().join("task/response.md"))
             .unwrap()
@@ -109,11 +108,10 @@ nodes:
     );
     assert_eq!(execution.usage.as_ref().expect("usage").total_tokens, 13);
     assert_eq!(
-        std::fs::read_to_string(logs_root.path().join("task/prompt.md"))
-            .unwrap()
-            .trim(),
+        std::fs::read_to_string(logs_root.path().join("task/initial-context.txt")).unwrap(),
         "Summarize Rust evidence"
     );
+    assert!(!logs_root.path().join("task/prompt.md").exists());
     assert_eq!(
         std::fs::read_to_string(logs_root.path().join("task/response.md"))
             .unwrap()
@@ -163,6 +161,50 @@ nodes:
 }
 
 #[test]
+fn initial_context_persistence_failure_prevents_provider_execution() {
+    let graph = FlowDefinition::from_yaml_str(
+        r#"
+schema_version: '1'
+id: g
+title: G
+nodes:
+  task:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: Never submit this
+    execution:
+      llm_provider: OpenAI
+      llm_model: blocked-model
+"#,
+    )
+    .expect("flow parses")
+    .to_runtime_dot_graph();
+    let logs_root = tempdir().unwrap();
+    std::fs::create_dir_all(logs_root.path().join("task/initial-context.txt"))
+        .expect("blocking directory");
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingProviderAdapter::new("openai", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], None).expect("client");
+    let mut codergen = RuntimeCodergen::with_backend(
+        graph,
+        Some(logs_root.path().to_path_buf()),
+        RustLlmCodergenBackend::new(client),
+    );
+
+    let error = codergen
+        .execute("task", ContextMap::new())
+        .expect_err("capture must fail");
+
+    assert!(matches!(
+        error,
+        spark_agent_adapter::CodergenError::Artifact(_)
+    ));
+    assert!(calls.lock().expect("calls").is_empty());
+}
+
+#[test]
 fn runtime_codergen_executes_agent_required_rust_session_backend_through_public_api() {
     let graph = FlowDefinition::from_yaml_str(
         r#"
@@ -187,6 +229,11 @@ nodes:
     .to_runtime_dot_graph();
     let logs_root = tempdir().unwrap();
     let project = tempdir().unwrap();
+    std::fs::write(
+        project.path().join("AGENTS.md"),
+        "Keep the captured project instructions byte-exact.",
+    )
+    .expect("project instructions");
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingProviderAdapter::new(
         "openai_compatible",
@@ -238,6 +285,22 @@ nodes:
         Some(&Message::user("Inspect with tools"))
     );
     assert!(!request.tools.is_empty());
+    let captured = std::fs::read_to_string(logs_root.path().join("task/initial-context.txt"))
+        .expect("initial context");
+    assert_eq!(
+        captured,
+        request
+            .messages
+            .iter()
+            .map(Message::text)
+            .collect::<String>()
+    );
+    assert!(captured.contains("Keep the captured project instructions byte-exact."));
+    assert_eq!(captured.matches("<tools>").count(), 1);
+    assert!(captured.ends_with("Inspect with tools"));
+    assert!(!captured.ends_with('\n'));
+    assert!(!captured.contains("\n---\n"));
+    assert!(!logs_root.path().join("task/prompt.md").exists());
     assert_eq!(
         request.metadata["spark.runtime.source"],
         json!("agent_turn")

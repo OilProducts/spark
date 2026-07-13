@@ -220,6 +220,11 @@ export function RunArtifactsCard({
                             <div className="mb-2 text-xs text-muted-foreground">
                                 {selectedArtifactEntry ? `Preview: ${selectedArtifactEntry.path}` : 'Select a viewable artifact to preview.'}
                             </div>
+                            {selectedArtifactEntry?.context_capture_kind === 'codex_turn_input' && (
+                                <div data-testid="run-artifact-codex-context-note" className="mb-2 text-xs text-muted-foreground">
+                                    Codex may add internal instructions that are not observable by Spark.
+                                </div>
+                            )}
                             {isArtifactViewerLoading && (
                                 <div data-testid="run-artifact-viewer-loading" className="text-xs text-muted-foreground">
                                     Loading artifact preview...

@@ -458,7 +458,7 @@ where
                     );
                 }
 
-                let exit_node = flow.nodes.get(&current_node).ok_or_else(|| {
+                flow.nodes.get(&current_node).ok_or_else(|| {
                     RuntimeStorageError::InvalidRuntimeGraph {
                         reason: format!("Unknown runtime node: {current_node}"),
                     }
@@ -467,7 +467,6 @@ where
                     &store,
                     &paths,
                     &current_node,
-                    &crate::flow_runtime::node_prompt(exit_node),
                     &Outcome::new(OutcomeStatus::Success),
                     &mut status_transitions,
                     &mut artifact_node_ids,
@@ -605,7 +604,6 @@ where
                 &store,
                 &paths,
                 &current_node,
-                &prompt,
                 &outcome,
                 &mut status_transitions,
                 &mut artifact_node_ids,
@@ -678,7 +676,6 @@ where
                     &store,
                     &paths,
                     &current_node,
-                    &prompt,
                     &outcome,
                     &mut status_transitions,
                     &mut artifact_node_ids,
@@ -1199,7 +1196,6 @@ fn write_stage_artifacts(
     store: &RunStore,
     paths: &crate::paths::RunRootPaths,
     node_id: &str,
-    prompt: &str,
     outcome: &Outcome,
     status_transitions: &mut BTreeMap<String, Vec<String>>,
     artifact_node_ids: &mut BTreeSet<String>,
@@ -1222,7 +1218,7 @@ fn write_stage_artifacts(
         paths,
         node_id,
         &NodeArtifacts {
-            prompt: Some(format!("{prompt}\n")),
+            prompt: None,
             response: Some(format!("{}\n", response_text_for_outcome(outcome))),
             status: Some(status),
             under_logs: true,

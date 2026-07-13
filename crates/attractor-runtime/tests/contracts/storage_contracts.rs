@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use attractor_core::{
-    CheckpointState, FlowDefinition, FlowEdge, FlowNode, NodeKind, RunManifest, RunRecord,
+    CheckpointState, FlowDefinition, FlowEdge, FlowNode, NodeKind, RawRuntimeEvent, RunManifest,
+    RunRecord,
 };
 use attractor_runtime::{
     checkpoint_saved_event, log_event, stage_completed_event, stage_started_event,
@@ -440,6 +441,26 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
             },
         )
         .expect("node artifacts");
+    std::fs::write(
+        paths.logs_dir().join("work/initial-context.txt"),
+        "captured request",
+    )
+    .expect("initial context");
+    let mut capture_event = RawRuntimeEvent::new("CodergenAdapter", "run-artifacts");
+    capture_event.payload.extend(BTreeMap::from([
+        ("node_id".to_string(), json!("work")),
+        (
+            "adapter_event_type".to_string(),
+            json!("codex_app_server_request_completed"),
+        ),
+        (
+            "payload".to_string(),
+            json!({"context_capture_kind": "codex_turn_input"}),
+        ),
+    ]));
+    store
+        .append_event(&paths, capture_event)
+        .expect("capture event");
 
     let artifacts = store.list_artifacts(&paths).expect("artifacts");
     let paths_only = artifacts
@@ -448,6 +469,10 @@ fn artifact_listing_is_relative_viewable_and_excludes_internal_state() {
         .collect::<Vec<_>>();
     assert!(paths_only.contains(&"artifacts/flow/flow-source.yaml"));
     assert!(paths_only.contains(&"logs/work/response.md"));
+    assert!(artifacts.iter().any(|artifact| {
+        artifact.path == "logs/work/initial-context.txt"
+            && artifact.context_capture_kind.as_deref() == Some("codex_turn_input")
+    }));
     assert!(paths_only.contains(&"logs/manifest.json"));
     assert!(paths_only.contains(&"result/result.json"));
     assert!(paths_only.contains(&"run.log"));

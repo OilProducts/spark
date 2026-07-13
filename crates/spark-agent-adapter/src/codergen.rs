@@ -742,10 +742,17 @@ impl CodergenHandler {
             );
         }
         prompt = compose_prompt(&prompt, &request.context, &read_contract.declared_keys);
-        write_stage_file(stage_dir.as_deref(), "prompt.md", &prompt)?;
-
         let resolution_inputs = resolution_inputs_for_request(&request);
         let mut metadata = request.metadata.clone();
+        if let Some(stage_dir) = stage_dir.as_ref() {
+            metadata.insert(
+                crate::initial_context::INITIAL_CONTEXT_PATH_METADATA_KEY.to_string(),
+                json!(stage_dir
+                    .join("initial-context.txt")
+                    .to_string_lossy()
+                    .to_string()),
+            );
+        }
         if codex_jsonrpc_trace_enabled() {
             if let Some(stage_dir) = stage_dir.as_ref() {
                 metadata.insert(
@@ -797,6 +804,8 @@ impl CodergenHandler {
 
         let (outcome, response_text, repair_attempts, violations, usage) = if self.backend.is_none()
         {
+            crate::initial_context::capture_if_configured(&backend_request.metadata, &prompt)
+                .map_err(|source| CodergenError::Artifact(source.to_string()))?;
             let response_text = format!("[Simulated] Response for stage: {}", request.node_id);
             let outcome = with_builtin_response_context(
                 Outcome {
@@ -807,6 +816,13 @@ impl CodergenHandler {
                 &request.node_id,
                 &response_text,
             );
+            events.push(event(
+                "simulated_llm_request_completed",
+                [
+                    ("node_id", json!(request.node_id.clone())),
+                    ("context_capture_kind", json!("assembled_messages")),
+                ],
+            ));
             (outcome, response_text, 0, Vec::new(), None)
         } else {
             self.run_backend_with_contract(
