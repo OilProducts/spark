@@ -1,0 +1,64 @@
+schema_version: '1'
+id: integrate_ready_branches
+title: Integrate Ready Branches
+description: Repeatedly pick the next ready spark/* branch and integrate it through Merge Change until none remain.
+goal: Repeatedly pick the next ready spark/* branch and integrate it through Merge Change until none remain.
+inputs:
+- key: context.request.selection_criteria
+  label: Selection Criteria
+  type: string
+  description: Optional guidance on which branches count as ready or the order to integrate them.
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  pick_next:
+    kind: agent_task
+    label: Pick Next Branch
+    config:
+      kind: agent_task
+      prompt: 'Decide which branch to integrate next, without changing any files. Inventory candidate branches with git: spark/* branches not yet merged into HEAD (git branch --list "spark/*" --no-merged HEAD). A branch is ready when its run finished successfully: it carries validated commits beyond its base and its worktree was removed (git worktree list shows no checkout for it); branches whose worktree still exists belong to failed or in-progress runs and are not ready. Apply context.request.selection_criteria when present. Choose exactly one ready branch — prefer the oldest base to minimize drift — or conclude that none are ready. Respond with ONLY a JSON status envelope: when a branch is chosen, set preferred_label to "Integrate" and context_updates for context.next.source_ref (the branch name) and context.next.reason (why it is ready and why it is next); when none remain, set preferred_label to "Done" and context_updates for context.next.reason summarizing what was skipped and why.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.selection_criteria
+      writes_context:
+      - context.next.source_ref
+      - context.next.reason
+  merge:
+    kind: subflow
+    label: Merge Branch
+    config:
+      kind: subflow
+      flow_ref: merge-change.yaml
+      input_map:
+        context.request.source_ref: context.next.source_ref
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: pick_next
+- from: pick_next
+  to: merge
+  label: Integrate
+  condition: outcome=success && preferred_label=Integrate
+- from: pick_next
+  to: done
+  label: Done
+  condition: outcome=success && preferred_label=Done
+- from: merge
+  to: pick_next
+  condition: outcome=success

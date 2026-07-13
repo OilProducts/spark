@@ -1,0 +1,139 @@
+schema_version: '1'
+id: run_retrospective
+title: Run Retrospective
+description: Diagnose why a Spark run went wrong from its recorded artifacts, adversarially verify the diagnosis, and on human approval implement the recommended fix.
+goal: Diagnose why a Spark run went wrong from its recorded artifacts, adversarially verify the diagnosis, and on human approval implement the recommended fix.
+inputs:
+- key: context.request.run_id
+  label: Run ID
+  type: string
+  description: The run to analyze.
+  required: true
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  locate_run:
+    kind: tool
+    label: Locate Run
+    config:
+      kind: tool
+      command: |
+        set -eu
+        root="${SPARK_HOME:-$HOME/.spark}/attractor/runs"
+        run_dir=$(find "$root" -mindepth 2 -maxdepth 2 -type d -name "$SPARK_TARGET_RUN_ID" | head -1)
+        if [ -z "$run_dir" ]; then
+          echo "run $SPARK_TARGET_RUN_ID not found under $root" >&2
+          exit 1
+        fi
+        printf '{"run_dir":"%s"}' "$run_dir"
+      env_map:
+        SPARK_TARGET_RUN_ID: context.request.run_id
+      output_map:
+        context.retro.run_dir: run_dir
+    contracts:
+      writes_context:
+      - context.retro.run_dir
+  diagnose:
+    kind: agent_task
+    label: Diagnose Run
+    config:
+      kind: agent_task
+      prompt: 'Diagnose the run recorded at context.retro.run_dir without changing any files. Read its record, events.jsonl, checkpoint, and per-node logs (prompts, status envelopes, tool output) to reconstruct what the run was asked to do, what each node actually did, and where the outcome diverged from intent. Classify the failure honestly: prompt gap (the node was instructed badly), contract violation (the node answered outside its envelope or context contract), flow design (the graph routed or looped wrongly), environment or validation flakiness, or a runtime defect — and distinguish the triggering node from downstream casualties. If context.review.required_changes is present, it lists gaps a verifier found in your previous diagnosis; close them. Cite evidence by artifact file and content, not by summary. Respond with ONLY a JSON status envelope whose context_updates set context.retro.diagnosis (what went wrong and why, with the failure class), and context.retro.evidence (the artifact citations supporting it).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.retro.run_dir
+      - context.review.required_changes
+      writes_context:
+      - context.retro.diagnosis
+      - context.retro.evidence
+  verify_diagnosis:
+    kind: agent_task
+    label: Verify Diagnosis
+    config:
+      kind: agent_task
+      prompt: 'You are the adversarial verifier of a run diagnosis. Treat context.retro.diagnosis and context.retro.evidence as untrusted claims and try to refute them against the artifacts under context.retro.run_dir without changing any files: re-read the cited events and logs, check the claimed triggering node actually precedes the casualties, and look for an earlier cause the diagnosis skipped. Return outcome success only when the diagnosis survives with evidence anchored in the artifacts. On failure, set context_updates for context.review.required_changes describing precisely what is unproven, contradicted, or unexamined. Respond with ONLY a JSON status envelope.'
+    runtime:
+      error_policy: continue
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.retro.run_dir
+      - context.retro.diagnosis
+      - context.retro.evidence
+      writes_context:
+      - context.review.required_changes
+  recommend:
+    kind: agent_task
+    label: Recommend Fixes
+    config:
+      kind: agent_task
+      prompt: 'Turn the verified diagnosis (context.retro.diagnosis, context.retro.evidence) into recommendations, without changing any files. State the smallest change that prevents this failure class from recurring — a flow prompt or graph change, a contract tightening, a validation fix, or a runtime defect repair — and where that change lives. When the fix belongs in the current repository checkout, also produce one bounded, self-contained implementation task (the defect, the fix, acceptance criteria including a check that would have caught this run''s failure); when the fix lives outside this repository (an installed flow, configuration, or operator action), say so and leave the task empty. Respond with ONLY a JSON status envelope whose context_updates set context.retro.recommendations and context.retro.task (the implementable task statement, or an empty string).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.retro.diagnosis
+      - context.retro.evidence
+      writes_context:
+      - context.retro.recommendations
+      - context.retro.task
+  approve_fix:
+    kind: human_gate
+    label: Approve Fix
+    config:
+      kind: human_gate
+      prompt: 'Review the verified diagnosis and recommendations in this run. Approve implementing the repository fix in an isolated worktree, or stop with the retrospective recorded (choose this when the fix lives outside this repository).'
+  implement:
+    kind: subflow
+    label: Implement Fix
+    config:
+      kind: subflow
+      flow_ref: implement-change.yaml
+      input_map:
+        context.request.objective: context.retro.task
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: locate_run
+- from: locate_run
+  to: diagnose
+  condition: outcome=success
+- from: diagnose
+  to: verify_diagnosis
+  condition: outcome=success
+- from: verify_diagnosis
+  to: recommend
+  label: Verified
+  condition: outcome=success
+- from: verify_diagnosis
+  to: diagnose
+  label: Gaps Found
+  condition: outcome=fail
+- from: recommend
+  to: approve_fix
+  condition: outcome=success
+- from: approve_fix
+  to: implement
+  label: Apply Fix
+  condition: preferred_label=Apply Fix
+- from: approve_fix
+  to: done
+  label: Report Only
+  condition: preferred_label=Report Only
+- from: implement
+  to: done
+  condition: outcome=success

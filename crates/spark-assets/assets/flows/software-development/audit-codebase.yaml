@@ -1,0 +1,182 @@
+schema_version: '1'
+id: audit_codebase
+title: Audit Codebase
+description: Sweep the repository through parallel audit lenses, adversarially verify the findings, and on human approval fix the backlog one isolated change at a time.
+goal: Sweep the repository through parallel audit lenses, adversarially verify the findings, and on human approval fix the backlog one isolated change at a time.
+inputs:
+- key: context.request.objective
+  label: Audit Focus
+  type: string
+  description: Optional focus areas or subsystems to weight the audit toward.
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  sweep:
+    kind: parallel
+    label: Audit Lenses
+    config:
+      kind: parallel
+      join_policy: wait_all
+      max_parallel: 4
+  lens_correctness:
+    kind: agent_task
+    label: 'Lens: Correctness'
+    config:
+      kind: agent_task
+      prompt: 'Audit the repository read-only through the correctness lens: defects on real execution paths, unhandled failure modes, race conditions, resource leaks, contract violations between components, and behavior that only works on the happy path. Weight context.request.objective focus areas when present. Do not change any files. For every finding record the file and location, the defect claim, the concrete scenario in which it fails, and an evidence grade: strong (deterministic check, direct inspection), medium (clear code-path reading), weak (suspicion). Report only findings you can anchor to specific code. Respond with ONLY a JSON status envelope; put the findings in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+  lens_safety:
+    kind: agent_task
+    label: 'Lens: Safety & Security'
+    config:
+      kind: agent_task
+      prompt: 'Audit the repository read-only through the safety and security lens: injection and path-traversal surfaces, secrets handling, data-loss hazards, destructive operations without guards, trust boundaries crossed without validation, and unsafe defaults. Weight context.request.objective focus areas when present. Do not change any files. For every finding record the file and location, the defect claim, the concrete scenario in which it fails, and an evidence grade: strong (deterministic check, direct inspection), medium (clear code-path reading), weak (suspicion). Report only findings you can anchor to specific code. Respond with ONLY a JSON status envelope; put the findings in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+  lens_minimality:
+    kind: agent_task
+    label: 'Lens: Minimality'
+    config:
+      kind: agent_task
+      prompt: 'Audit the repository read-only through the minimality lens, lazy like a senior developer but not negligent: dead or uncalled code, reimplemented stdlib or duplicated in-repo logic, speculative abstractions and future-proofing nothing uses, wrappers and config surfaces with one caller, and complexity that a smaller shape would serve. Weight context.request.objective focus areas when present. Do not change any files. Flag a finding only when the excess creates correctness risk, maintenance burden, or significant complexity — include the concrete delete-or-simplify candidate, and never propose cutting necessary validation, error handling, or safety. Record file and location, the claim, and an evidence grade: strong (direct inspection), medium (code-path reading), weak (suspicion). Respond with ONLY a JSON status envelope; put the findings in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+  lens_test_gaps:
+    kind: agent_task
+    label: 'Lens: Test Gaps'
+    config:
+      kind: agent_task
+      prompt: 'Audit the repository read-only through the test-coverage lens: load-bearing behavior with no test exercising its real interface, tests asserting on repository text or mocks instead of observable behavior, validation gates that skip whole surfaces, and regression-prone areas with no regression check. Weight context.request.objective focus areas when present. Do not change any files. For every finding record the untested behavior and its location, the concrete regression that could ship unnoticed, and an evidence grade: strong (deterministic check, direct inspection), medium (clear code-path reading), weak (suspicion). Report only findings you can anchor to specific code. Respond with ONLY a JSON status envelope; put the findings in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+  fan_in:
+    kind: fan_in
+    label: Join Lenses
+    config:
+      kind: fan_in
+  verify_findings:
+    kind: agent_task
+    label: Verify Findings
+    config:
+      kind: agent_task
+      prompt: 'You are the adversarial verifier of a codebase audit. The lens findings are in parallel.results; treat every finding as an untrusted claim. Deduplicate findings that describe one underlying defect, then actively try to refute each against the repository without changing any files: re-derive the failure scenario, check for guards or callers the lens missed, and confirm the cited code behaves as claimed. Drop findings you refute and findings supported only by weak evidence you cannot strengthen. Do not add new findings. Respond with ONLY a JSON status envelope whose context_updates set context.findings.confirmed (surviving findings, most severe first, each with location, verified failure scenario, and final evidence grade) and context.findings.rejected (refuted findings with the refutation, so misses stay auditable).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - parallel.results
+      writes_context:
+      - context.findings.confirmed
+      - context.findings.rejected
+  report:
+    kind: agent_task
+    label: Report & Backlog
+    config:
+      kind: agent_task
+      prompt: 'Produce the audit verdict and fix backlog from context.findings.confirmed and context.findings.rejected, without changing any files. The summary leads with the overall health assessment and presents each confirmed finding with location, failure scenario, and evidence grade; rejected findings form a short auditable appendix. Then turn the confirmed findings into an ordered fix backlog, most severe first: each entry must be one bounded, self-contained task statement an implementer can execute without reading this run (the defect, the fix, acceptance criteria including a check that would have caught it). Merge findings that one change fixes; leave out findings that need a human decision, noting why. Respond with ONLY a JSON status envelope whose context_updates set context.audit.summary and context.audit.backlog (the ordered task list).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.findings.confirmed
+      - context.findings.rejected
+      writes_context:
+      - context.audit.summary
+      - context.audit.backlog
+  approve_fixes:
+    kind: human_gate
+    label: Approve Fixes
+    config:
+      kind: human_gate
+      prompt: 'Review the audit summary and the ordered fix backlog in this run. Approve to implement the backlog one isolated change at a time, or stop with the report recorded.'
+  pick_next_fix:
+    kind: agent_task
+    label: Pick Next Fix
+    config:
+      kind: agent_task
+      prompt: 'Decide the next backlog task to implement, without changing any files. Read the ordered tasks in context.audit.backlog and the already-dispatched entries in context.audit.completed (absent means none). Choose the first backlog task not yet in completed. Respond with ONLY a JSON status envelope: when a task remains, set preferred_label to "Fix" and context_updates for context.next.task (the full self-contained task statement) and context.audit.completed (the previous completed list plus this task); when every task is dispatched, set preferred_label to "Done" and context_updates for context.audit.completed unchanged.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.audit.backlog
+      - context.audit.completed
+      writes_context:
+      - context.next.task
+      - context.audit.completed
+  fix:
+    kind: subflow
+    label: Implement Fix
+    config:
+      kind: subflow
+      flow_ref: implement-change.yaml
+      input_map:
+        context.request.objective: context.next.task
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: sweep
+- from: sweep
+  to: lens_correctness
+- from: sweep
+  to: lens_safety
+- from: sweep
+  to: lens_minimality
+- from: sweep
+  to: lens_test_gaps
+- from: lens_correctness
+  to: fan_in
+- from: lens_safety
+  to: fan_in
+- from: lens_minimality
+  to: fan_in
+- from: lens_test_gaps
+  to: fan_in
+- from: fan_in
+  to: verify_findings
+- from: verify_findings
+  to: report
+  condition: outcome=success
+- from: report
+  to: approve_fixes
+  condition: outcome=success
+- from: approve_fixes
+  to: pick_next_fix
+  label: Fix Findings
+  condition: preferred_label=Fix Findings
+- from: approve_fixes
+  to: done
+  label: Report Only
+  condition: preferred_label=Report Only
+- from: pick_next_fix
+  to: fix
+  label: Fix
+  condition: outcome=success && preferred_label=Fix
+- from: pick_next_fix
+  to: done
+  label: Done
+  condition: outcome=success && preferred_label=Done
+- from: fix
+  to: pick_next_fix
+  condition: outcome=success

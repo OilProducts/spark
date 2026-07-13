@@ -1,0 +1,148 @@
+schema_version: '1'
+id: design_change
+title: Design Change
+description: Propose competing approaches to a goal in parallel, judge them on evidence and minimality, and on human approval implement the winner in an isolated worktree.
+goal: Propose competing approaches to a goal in parallel, judge them on evidence and minimality, and on human approval implement the winner in an isolated worktree.
+inputs:
+- key: context.request.objective
+  label: Objective
+  type: string
+  description: The goal or problem statement whose implementation approach is undecided.
+  required: true
+- key: context.request.target_paths
+  label: Target Paths
+  type: string[]
+  required: false
+- key: context.request.constraints
+  label: Constraints
+  type: string[]
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: true
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  propose:
+    kind: parallel
+    label: Propose Approaches
+    config:
+      kind: parallel
+      join_policy: wait_all
+      max_parallel: 3
+  propose_minimal:
+    kind: agent_task
+    label: 'Proposal: Minimal Diff'
+    config:
+      kind: agent_task
+      prompt: 'Propose an approach to context.request.objective from the minimal-diff stance: the smallest coherent change that truthfully satisfies the goal, reusing existing code, stdlib, and installed dependencies before writing anything new. Inspect the repository read-only; do not change any files. Respect context.request.constraints and weight context.request.target_paths. Your proposal must be decision-complete: the concrete changes by file or surface, what is deliberately not done, acceptance criteria, compatibility risks with evidence from the actual code, and the truthful validation command. State the real costs of staying minimal, not just the benefits. Respond with ONLY a JSON status envelope; put the full proposal in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+      - context.request.target_paths
+      - context.request.constraints
+  propose_refactor:
+    kind: agent_task
+    label: 'Proposal: Refactor First'
+    config:
+      kind: agent_task
+      prompt: 'Propose an approach to context.request.objective from the refactor-first stance: if the goal is fighting the current structure, name the smallest structural change that makes the goal natural, then the goal itself on top of it. Inspect the repository read-only; do not change any files. Respect context.request.constraints and weight context.request.target_paths. Your proposal must be decision-complete: the concrete changes by file or surface, acceptance criteria, migration and compatibility risks with evidence from the actual code, and the truthful validation command. Justify every piece of restructuring against a cost the current shape actually imposes — no speculative architecture. Respond with ONLY a JSON status envelope; put the full proposal in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+      - context.request.target_paths
+      - context.request.constraints
+  propose_compat:
+    kind: agent_task
+    label: 'Proposal: Compatibility First'
+    config:
+      kind: agent_task
+      prompt: 'Propose an approach to context.request.objective from the compatibility-and-operability stance: prioritize preserving existing behavior, interfaces, data, and operational properties (resume, persistence, concurrency, failure recovery), and make risks observable. Inspect the repository read-only; do not change any files. Respect context.request.constraints and weight context.request.target_paths. Your proposal must be decision-complete: the concrete changes by file or surface, acceptance criteria including regression checks for the surfaces you protect, compatibility boundaries with evidence from the actual code, and the truthful validation command. State what this stance costs in added care versus the minimal approach. Respond with ONLY a JSON status envelope; put the full proposal in your response.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+      - context.request.target_paths
+      - context.request.constraints
+  judge:
+    kind: agent_task
+    label: Judge Proposals
+    config:
+      kind: agent_task
+      prompt: 'Judge the competing proposals in parallel.results for context.request.objective. Treat each proposal''s claims as untrusted: spot-check its repository assertions read-only, and weight evidence over rhetoric. Score on: truthfulness to the actual codebase, minimality (does each proposed code path need to exist), risk to existing behavior, and completeness of acceptance criteria. Prefer the smallest proposal whose risks are honestly priced; graft clearly superior ideas from the losers into the winner when they compose without expanding scope. Respond with ONLY a JSON status envelope whose context_updates set context.design.task (one decision-complete, self-contained task statement an implementer can execute without reading this run — objective, concrete changes, acceptance criteria, constraints, validation command) and context.design.rationale (the comparative judgment: why the winner won and what was grafted or rejected, so the human can audit the choice).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - parallel.results
+      - context.request.objective
+      writes_context:
+      - context.design.task
+      - context.design.rationale
+  fan_in:
+    kind: fan_in
+    label: Join Proposals
+    config:
+      kind: fan_in
+  approve_design:
+    kind: human_gate
+    label: Approve Design
+    config:
+      kind: human_gate
+      prompt: 'Review the judged recommendation and its rationale in this run. Approve to implement it in an isolated worktree, send the proposers back for another round, or stop with the design recorded.'
+  implement:
+    kind: subflow
+    label: Implement Design
+    config:
+      kind: subflow
+      flow_ref: implement-change.yaml
+      input_map:
+        context.request.objective: context.design.task
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: propose
+- from: propose
+  to: propose_minimal
+- from: propose
+  to: propose_refactor
+- from: propose
+  to: propose_compat
+- from: propose_minimal
+  to: fan_in
+- from: propose_refactor
+  to: fan_in
+- from: propose_compat
+  to: fan_in
+- from: fan_in
+  to: judge
+- from: judge
+  to: approve_design
+  condition: outcome=success
+- from: approve_design
+  to: implement
+  label: Implement Recommendation
+  condition: preferred_label=Implement Recommendation
+- from: approve_design
+  to: propose
+  label: Revise Proposals
+  condition: preferred_label=Revise Proposals
+- from: approve_design
+  to: done
+  label: Design Only
+  condition: preferred_label=Design Only
+- from: implement
+  to: done
+  condition: outcome=success

@@ -21,10 +21,14 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "examples/simple-linear.yaml",
     "examples/supervision/implementation-worker.yaml",
     "examples/supervision/supervised-implementation.yaml",
+    "software-development/audit-codebase.yaml",
+    "software-development/design-change.yaml",
     "software-development/implement-change.yaml",
+    "software-development/integrate-ready-branches.yaml",
     "software-development/investigate-bug.yaml",
     "software-development/merge-change.yaml",
     "software-development/review-change.yaml",
+    "software-development/run-retrospective.yaml",
     "software-development/spec-implementation/implement-milestone.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
     "software-development/workers/implement-task.yaml",
@@ -121,7 +125,7 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         format!(
-            "Initialized Spark at {}\nSeeded flows: {}\ncreated=14 updated=0 skipped=0\n",
+            "Initialized Spark at {}\nSeeded flows: {}\ncreated=18 updated=0 skipped=0\n",
             data_dir.display(),
             data_dir.join("flows").display()
         )
@@ -188,7 +192,7 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     assert_eq!(
         output.stdout,
         format!(
-            "Initialized Spark at {}\nSeeded flows: {}\ncreated=14 updated=0 skipped=0\n",
+            "Initialized Spark at {}\nSeeded flows: {}\ncreated=18 updated=0 skipped=0\n",
             data_dir.display(),
             flows_dir.display()
         )
@@ -216,7 +220,7 @@ fn init_creates_runtime_layout_flows_and_catalog() {
         catalog
             .matches("launch_policy = \"agent_requestable\"")
             .count(),
-        5
+        9
     );
     assert!(catalog.contains("[flows.\"software-development/merge-change.yaml\".execution_lock]"));
     assert!(catalog.contains("key = \"software-development-integration\""));
@@ -259,7 +263,7 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(second.exit_code, 0);
-    assert!(second.stdout.ends_with("created=0 updated=0 skipped=14\n"));
+    assert!(second.stdout.ends_with("created=0 updated=0 skipped=18\n"));
     assert_eq!(
         fs::read_to_string(&edited_flow).expect("edited flow"),
         "edited: true\n"
@@ -278,7 +282,7 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(forced.exit_code, 0);
-    assert!(forced.stdout.ends_with("created=0 updated=14 skipped=0\n"));
+    assert!(forced.stdout.ends_with("created=0 updated=18 skipped=0\n"));
     assert_ne!(
         fs::read_to_string(&edited_flow).expect("forced flow"),
         "edited: true\n"
