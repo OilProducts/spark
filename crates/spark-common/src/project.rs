@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sha1::{Digest, Sha1};
 
@@ -26,6 +27,31 @@ pub fn build_project_id(project_path: impl AsRef<str>) -> Result<String> {
     hasher.update(normalized_text.as_bytes());
     let digest = format!("{:x}", hasher.finalize());
     Ok(format!("{slug}-{}", &digest[..12]))
+}
+
+/// Resolves the path that identifies the repository containing `path`: the
+/// git common directory, shared by every linked worktree of one repository.
+/// Outside a git repository, falls back to the normalized path itself.
+pub fn repository_scope_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let fallback =
+        || normalize_path(path.to_string_lossy().as_ref()).unwrap_or_else(|_| path.to_path_buf());
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+    else {
+        return fallback();
+    };
+    if !output.status.success() {
+        return fallback();
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return fallback();
+    }
+    std::fs::canonicalize(&text).unwrap_or_else(|_| PathBuf::from(text))
 }
 
 pub fn slugify(value: &str) -> String {

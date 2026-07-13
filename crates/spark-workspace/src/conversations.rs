@@ -2661,11 +2661,21 @@ impl WorkspaceConversationService {
         } else {
             None
         };
+        let execution_lock = spark_storage::load_flow_catalog(&self.settings.config_dir)
+            .ok()
+            .and_then(|catalog| catalog.get(flow_name).cloned())
+            .and_then(|entry| entry.execution_lock)
+            .map(|lock| attractor_api::ExecutionLockSpec {
+                scope: lock.scope,
+                key: lock.key,
+                conflict_policy: lock.conflict_policy,
+            });
         self.runtime_api_service()
             .start_pipeline(PipelineStartRequest {
                 run_id: None,
                 flow_name: Some(flow_name.to_string()),
                 working_directory: project_path.to_string(),
+                execution_lock,
                 model: artifact
                     .get("model")
                     .and_then(Value::as_str)

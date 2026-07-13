@@ -1,3 +1,5 @@
+#[path = "contracts/execution_lock_contracts.rs"]
+mod execution_lock_contracts;
 #[path = "contracts/execution_placement_contracts.rs"]
 mod execution_placement_contracts;
 #[path = "contracts/flow_crud_contracts.rs"]

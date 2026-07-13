@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use attractor_core::{
     ContextMap, FlowDefinition, FlowDiagnostic, LaunchContext, NodeConfig, RawRuntimeEvent,
-    RunRecord,
+    RunExecutionLock, RunRecord,
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
@@ -28,6 +28,162 @@ use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
 pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
+
+const EXECUTION_LOCK_SCOPE_PROJECT: &str = "project";
+const EXECUTION_LOCK_CONFLICT_POLICY_QUEUE: &str = "queue";
+const EXECUTION_LOCK_STATE_QUEUED: &str = "queued";
+const EXECUTION_LOCK_STATE_HOLDING: &str = "holding";
+const EXECUTION_LOCK_STATE_RELEASED: &str = "released";
+const EXECUTION_LOCK_QUEUE_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(200);
+
+/// Process-wide execution-lock table. Runs live as threads in this process,
+/// so lock lifetime matches run lifetime; each identity holds a FIFO queue
+/// of run ids, with the front entry holding the lock.
+struct ExecutionLockRegistry {
+    queues: std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<String>>>,
+    changed: std::sync::Condvar,
+}
+
+fn execution_lock_registry() -> &'static ExecutionLockRegistry {
+    static REGISTRY: std::sync::OnceLock<ExecutionLockRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| ExecutionLockRegistry {
+        queues: std::sync::Mutex::new(std::collections::HashMap::new()),
+        changed: std::sync::Condvar::new(),
+    })
+}
+
+fn resolve_execution_lock(
+    spec: &ExecutionLockSpec,
+    working_directory: &str,
+) -> std::result::Result<RunExecutionLock, String> {
+    let scope = spec.scope.trim().to_lowercase();
+    if scope != EXECUTION_LOCK_SCOPE_PROJECT {
+        return Err(format!("Unsupported execution lock scope: {}", spec.scope));
+    }
+    let key = spec.key.trim().to_string();
+    if key.is_empty() {
+        return Err("Execution lock key must not be empty.".to_string());
+    }
+    let conflict_policy = {
+        let policy = spec.conflict_policy.trim().to_lowercase();
+        if policy.is_empty() {
+            EXECUTION_LOCK_CONFLICT_POLICY_QUEUE.to_string()
+        } else if policy == EXECUTION_LOCK_CONFLICT_POLICY_QUEUE {
+            policy
+        } else {
+            return Err(format!(
+                "Unsupported execution lock conflict policy: {}",
+                spec.conflict_policy
+            ));
+        }
+    };
+    let scope_path = spark_common::project::repository_scope_path(working_directory);
+    let scope_id = spark_common::project::build_project_id(scope_path.to_string_lossy())
+        .map_err(|error| format!("Unable to resolve execution lock identity: {error}"))?;
+    Ok(RunExecutionLock {
+        identity: format!("{scope}:{scope_id}:{key}"),
+        scope,
+        key,
+        conflict_policy,
+        state: EXECUTION_LOCK_STATE_QUEUED.to_string(),
+        queue_position: None,
+    })
+}
+
+/// Blocks until `run_id` holds the lock. Returns false when the run was
+/// canceled while waiting; the caller must skip execution.
+fn acquire_execution_lock(identity: &str, run_id: &str, store: &RunStore) -> bool {
+    let registry = execution_lock_registry();
+    let mut queues = registry.queues.lock().expect("execution lock registry");
+    queues
+        .entry(identity.to_string())
+        .or_default()
+        .push_back(run_id.to_string());
+    let mut recorded_position: Option<u64> = None;
+    loop {
+        let position = queues
+            .get(identity)
+            .and_then(|queue| queue.iter().position(|entry| entry == run_id))
+            .unwrap_or(0) as u64;
+        if position == 0 {
+            let _ = store.update_run_record(run_id, |record| {
+                record.status = "running".to_string();
+                if let Some(lock) = record.execution_lock.as_mut() {
+                    lock.state = EXECUTION_LOCK_STATE_HOLDING.to_string();
+                    lock.queue_position = None;
+                }
+            });
+            return true;
+        }
+        if recorded_position != Some(position) {
+            recorded_position = Some(position);
+            let _ = store.update_run_record(run_id, |record| {
+                record.status = EXECUTION_LOCK_STATE_QUEUED.to_string();
+                if let Some(lock) = record.execution_lock.as_mut() {
+                    lock.state = EXECUTION_LOCK_STATE_QUEUED.to_string();
+                    lock.queue_position = Some(position);
+                }
+            });
+        }
+        let (guard, _) = registry
+            .changed
+            .wait_timeout(queues, EXECUTION_LOCK_QUEUE_POLL_INTERVAL)
+            .expect("execution lock registry");
+        queues = guard;
+        let canceled = store
+            .read_run_bundle(run_id)
+            .ok()
+            .flatten()
+            .and_then(|bundle| bundle.record)
+            .map(|record| {
+                matches!(
+                    attractor_runtime::normalize_run_status(&record.status).as_str(),
+                    "cancel_requested" | "canceled"
+                )
+            })
+            .unwrap_or(false);
+        if canceled {
+            if let Some(queue) = queues.get_mut(identity) {
+                queue.retain(|entry| entry != run_id);
+                if queue.is_empty() {
+                    queues.remove(identity);
+                }
+            }
+            registry.changed.notify_all();
+            drop(queues);
+            let controls = RuntimeControls::new(store.clone());
+            let _ = controls.mark_canceled(run_id, "canceled while queued");
+            let _ = store.update_run_record(run_id, |record| {
+                if let Some(lock) = record.execution_lock.as_mut() {
+                    lock.state = EXECUTION_LOCK_STATE_RELEASED.to_string();
+                    lock.queue_position = None;
+                }
+            });
+            return false;
+        }
+    }
+}
+
+fn release_execution_lock(identity: &str, run_id: &str, store: &RunStore) {
+    let registry = execution_lock_registry();
+    {
+        let mut queues = registry.queues.lock().expect("execution lock registry");
+        if let Some(queue) = queues.get_mut(identity) {
+            queue.retain(|entry| entry != run_id);
+            if queue.is_empty() {
+                queues.remove(identity);
+            }
+        }
+    }
+    registry.changed.notify_all();
+    let _ = store.update_run_record(run_id, |record| {
+        if let Some(lock) = record.execution_lock.as_mut() {
+            lock.state = EXECUTION_LOCK_STATE_RELEASED.to_string();
+            lock.queue_position = None;
+        }
+    });
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreviewRequest {
@@ -177,6 +333,23 @@ pub struct PipelineStartRequest {
     /// state (the pre-detached behavior). Defaults to detached execution.
     #[serde(default)]
     pub wait: Option<bool>,
+    /// Optional execution lock. Conflicting runs (same resolved lock
+    /// identity) queue and execute one at a time.
+    #[serde(default)]
+    pub execution_lock: Option<ExecutionLockSpec>,
+}
+
+/// Caller-declared execution lock, typically sourced from the flow catalog.
+/// Scope "project" resolves identity from the repository containing the
+/// working directory, so linked git worktrees share one lock.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionLockSpec {
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub conflict_policy: String,
 }
 
 impl Default for PipelineStartRequest {
@@ -197,6 +370,7 @@ impl Default for PipelineStartRequest {
             spec_id: None,
             plan_id: None,
             wait: None,
+            execution_lock: None,
         }
     }
 }
@@ -523,6 +697,10 @@ impl AttractorApiService {
         let checkpoint = bundle
             .checkpoint
             .ok_or_else(|| format!("Checkpoint unavailable: {run_id}"))?;
+        let lock_identity = record
+            .execution_lock
+            .as_ref()
+            .map(|lock| lock.identity.clone());
         let execute_request = ExecuteRunRequest {
             store: store.clone(),
             record,
@@ -537,7 +715,7 @@ impl AttractorApiService {
                 checkpoint,
             },
         };
-        self.spawn_detached_execution(bundle.paths, execute_request)
+        self.spawn_detached_execution(bundle.paths, execute_request, lock_identity)
     }
 
     /// If a continue/retry route prepared a run successfully, execute it
@@ -573,6 +751,7 @@ impl AttractorApiService {
         &self,
         paths: attractor_runtime::paths::RunRootPaths,
         execute_request: ExecuteRunRequest,
+        lock_identity: Option<String>,
     ) -> std::result::Result<(), String> {
         let node_executor = self.observed_node_executor();
         let store = execute_request.store.clone();
@@ -580,11 +759,20 @@ impl AttractorApiService {
         std::thread::Builder::new()
             .name(format!("attractor-run-{run_id}"))
             .spawn(move || {
+                if let Some(identity) = lock_identity.as_deref() {
+                    if !acquire_execution_lock(identity, &run_id, &store) {
+                        return;
+                    }
+                }
                 let mut executor = PipelineExecutor::with_control(
                     node_executor,
                     attractor_runtime::disk_execution_control(paths),
                 );
-                if let Err(error) = executor.execute(execute_request) {
+                let result = executor.execute(execute_request);
+                if let Some(identity) = lock_identity.as_deref() {
+                    release_execution_lock(identity, &run_id, &store);
+                }
+                if let Err(error) = result {
                     let message = error.to_string();
                     let _ = store.update_run_record(&run_id, |record| {
                         record.status = "failed".to_string();
@@ -762,6 +950,15 @@ impl AttractorApiService {
             Err(error) => return validation_error_response(error),
         };
         let working_directory = absolutize_path(&request.working_directory);
+        let execution_lock = match request
+            .execution_lock
+            .as_ref()
+            .map(|spec| resolve_execution_lock(spec, &working_directory))
+            .transpose()
+        {
+            Ok(lock) => lock,
+            Err(error) => return validation_error_response(error),
+        };
         let (selected_model, display_model) =
             resolve_launch_model(&flow, request.model.as_deref(), &requested_context);
         let selected_provider =
@@ -821,6 +1018,7 @@ impl AttractorApiService {
         record.plan_id = trimmed_option(request.plan_id.as_deref());
         record.root_run_id = Some(run_id.clone());
         record.launch_context = Some(launch_context.values().clone());
+        record.execution_lock = execution_lock.clone();
         attractor_execution::apply_launch_metadata_to_record(&mut record, &execution_metadata);
 
         let mut runtime_context = requested_context;
@@ -889,19 +1087,34 @@ impl AttractorApiService {
             },
         };
 
+        let lock_identity = execution_lock.map(|lock| lock.identity);
         let terminal_status = if wait_for_terminal {
+            if let Some(identity) = lock_identity.as_deref() {
+                if !acquire_execution_lock(identity, &run_id, &store) {
+                    return RuntimeRouteResponse::json(
+                        200,
+                        json!({"status": "canceled", "run_id": run_id.clone()}),
+                    );
+                }
+            }
             let mut executor = PipelineExecutor::with_control(
                 self.observed_node_executor(),
                 attractor_runtime::disk_execution_control(paths.clone()),
             );
-            match executor.execute(execute_request) {
+            let result = executor.execute(execute_request);
+            if let Some(identity) = lock_identity.as_deref() {
+                release_execution_lock(identity, &run_id, &store);
+            }
+            match result {
                 Ok(result) => result.status,
                 Err(error) => {
                     return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
                 }
             }
         } else {
-            if let Err(error) = self.spawn_detached_execution(paths.clone(), execute_request) {
+            if let Err(error) =
+                self.spawn_detached_execution(paths.clone(), execute_request, lock_identity.clone())
+            {
                 let _ = store.update_run_record(&run_id, |record| {
                     record.status = "failed".to_string();
                     record.last_error = error.clone();
@@ -914,9 +1127,18 @@ impl AttractorApiService {
         let graph_paths = Some(graph_artifact_paths(&paths));
         let execution_metadata_value =
             serde_json::to_value(&execution_metadata).unwrap_or_else(|_| json!({}));
+        let execution_lock_value = store
+            .read_run_bundle(&run_id)
+            .ok()
+            .flatten()
+            .and_then(|bundle| bundle.record)
+            .and_then(|record| record.execution_lock)
+            .and_then(|lock| serde_json::to_value(lock).ok())
+            .unwrap_or(Value::Null);
         RuntimeRouteResponse::json(
             200,
             start_response_payload(
+                execution_lock_value,
                 &run_id,
                 &working_directory,
                 &display_model,
@@ -2103,6 +2325,7 @@ fn trimmed_real_model(value: Option<&str>) -> Option<String> {
 }
 
 fn start_response_payload(
+    execution_lock: Value,
     run_id: &str,
     working_directory: &str,
     display_model: &str,
@@ -2128,7 +2351,7 @@ fn start_response_payload(
         "reasoning_effort".to_string(),
         option_str_json(reasoning_effort),
     );
-    payload.insert("execution_lock".to_string(), Value::Null);
+    payload.insert("execution_lock".to_string(), execution_lock);
     if let Some(object) = execution_metadata.as_object() {
         payload.extend(
             object
