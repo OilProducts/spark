@@ -30,8 +30,18 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CODEX_RUNTIME_ROOT_ENV: &str = "ATTRACTOR_CODEX_RUNTIME_ROOT";
 const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
+static CODEX_SPARK_HOME: OnceLock<PathBuf> = OnceLock::new();
 const COLLABORATION_MODE_DEFAULT: &str = "default";
 const COLLABORATION_MODE_PLAN: &str = "plan";
+
+pub fn configure_codex_spark_home(path: impl Into<PathBuf>) -> Result<(), String> {
+    let path = path.into();
+    match CODEX_SPARK_HOME.set(path.clone()) {
+        Ok(()) => Ok(()),
+        Err(_) if CODEX_SPARK_HOME.get() == Some(&path) => Ok(()),
+        Err(_) => Err("Codex Spark home is already configured to a different path.".to_string()),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodexAppServerError {
@@ -1640,6 +1650,12 @@ impl EventBuilder {
 
 pub fn build_codex_runtime_environment() -> Result<BTreeMap<String, String>, CodexAppServerError> {
     let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+    if let Some(spark_home) = CODEX_SPARK_HOME.get() {
+        env_map.insert(
+            "SPARK_HOME".to_string(),
+            spark_home.to_string_lossy().into_owned(),
+        );
+    }
     let original_home = env_map
         .get("HOME")
         .map(PathBuf::from)

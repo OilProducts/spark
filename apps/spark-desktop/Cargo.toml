@@ -21,6 +21,7 @@ tauri-build = { version = "2" }
 axum = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+spark-agent-adapter = { path = "../../crates/spark-agent-adapter" }
 spark-common = { path = "../../crates/spark-common" }
 spark-http = { path = "../../crates/spark-http" }
 spark-server = { path = "../../crates/spark-server" }

@@ -3625,6 +3625,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "spark-agent-adapter",
  "spark-common",
  "spark-http",
  "spark-server",

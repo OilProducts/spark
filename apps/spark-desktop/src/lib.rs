@@ -65,6 +65,8 @@ pub fn run() {
             let desktop_settings = load_desktop_settings(&paths).map_err(boxed_error)?;
             let bootstrap =
                 bootstrap_desktop_runtime(&paths, &desktop_settings).map_err(boxed_error)?;
+            spark_agent_adapter::configure_codex_spark_home(&bootstrap.settings.data_dir)
+                .map_err(boxed_error)?;
             let server = start_desktop_server(bootstrap.settings, &bootstrap.bind_host)
                 .map_err(boxed_error)?;
             let server_url = server.url().to_string();

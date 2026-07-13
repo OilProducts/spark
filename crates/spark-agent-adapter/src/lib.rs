@@ -34,9 +34,10 @@ pub use codergen::{
     CodergenRuntimeMode, CodergenSessionInterventionBroker,
 };
 pub use codex_app_server::{
-    build_codex_runtime_environment, codex_models_from_list_result, list_available_codex_models,
-    parse_jsonrpc_line, process_codex_app_server_message, CodexAppServerBackend,
-    CodexAppServerClient, CodexAppServerError, CodexAppServerTurnState, CodexModelMetadata,
+    build_codex_runtime_environment, codex_models_from_list_result, configure_codex_spark_home,
+    list_available_codex_models, parse_jsonrpc_line, process_codex_app_server_message,
+    CodexAppServerBackend, CodexAppServerClient, CodexAppServerError, CodexAppServerTurnState,
+    CodexModelMetadata,
 };
 pub use config::SessionConfig;
 pub use context::{
