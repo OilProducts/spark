@@ -861,6 +861,20 @@ impl RuntimeHandlerRunner {
             });
         };
         let cwd = tool_cwd(&runtime);
+        let tool_env = match resolve_tool_env_map(&runtime) {
+            Ok(env) => env,
+            Err(reason) => {
+                write_tool_output_if_available(&runtime, "")?;
+                return Ok(Outcome {
+                    status: OutcomeStatus::Fail,
+                    failure_reason: reason,
+                    retryable: Some(false),
+                    failure_kind: Some(FailureKind::Contract),
+                    context_updates: tool_context_updates("", -1),
+                    ..Outcome::new(OutcomeStatus::Fail)
+                });
+            }
+        };
         let hook_metadata = json!({
             "hook_phase": "",
             "node_id": runtime.node_id,
@@ -882,8 +896,7 @@ impl RuntimeHandlerRunner {
         }
 
         let timeout = timeout_seconds(&runtime.node_attrs).map(Duration::from_secs_f64);
-        let command_output = match run_shell_command(&command, &cwd, timeout, BTreeMap::new(), None)
-        {
+        let command_output = match run_shell_command(&command, &cwd, timeout, tool_env, None) {
             Ok(output) => output,
             Err(error) => ShellOutput {
                 exit_code: -1,
@@ -903,11 +916,25 @@ impl RuntimeHandlerRunner {
             }
         } else if command_output.exit_code == 0 {
             let notes = command_output.stdout.trim().to_string();
-            Outcome {
-                status: OutcomeStatus::Success,
-                notes: notes.clone(),
-                context_updates: tool_context_updates(&notes, 0),
-                ..Outcome::new(OutcomeStatus::Success)
+            let mut context_updates = tool_context_updates(&notes, 0);
+            match resolve_tool_output_updates(&runtime, &command_output.stdout) {
+                Ok(output_updates) => {
+                    context_updates.extend(output_updates);
+                    Outcome {
+                        status: OutcomeStatus::Success,
+                        notes: notes.clone(),
+                        context_updates,
+                        ..Outcome::new(OutcomeStatus::Success)
+                    }
+                }
+                Err(reason) => Outcome {
+                    status: OutcomeStatus::Fail,
+                    failure_reason: reason,
+                    retryable: Some(false),
+                    failure_kind: Some(FailureKind::Contract),
+                    context_updates,
+                    ..Outcome::new(OutcomeStatus::Fail)
+                },
             }
         } else {
             let reason = command_output.stderr.trim();
@@ -1761,6 +1788,87 @@ fn tool_context_updates(output: &str, exit_code: i32) -> ContextMap {
         ("context.tool.output".to_string(), json!(output)),
         ("context.tool.exit_code".to_string(), json!(exit_code)),
     ])
+}
+
+fn tool_attr_string_map(
+    runtime: &HandlerRuntime,
+    attr: &str,
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    let Some(raw) = attr_text(&runtime.node_attrs, attr) else {
+        return Ok(BTreeMap::new());
+    };
+    if raw.trim().is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    serde_json::from_str::<BTreeMap<String, String>>(&raw)
+        .map_err(|error| format!("{attr} must be an object of string pairs: {error}"))
+}
+
+fn resolve_tool_env_map(
+    runtime: &HandlerRuntime,
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    let bindings = tool_attr_string_map(runtime, "tool.env_map")?;
+    let mut env = BTreeMap::new();
+    for (name, context_key) in bindings {
+        if !is_valid_env_var_name(&name) {
+            return Err(format!(
+                "tool.env_map name '{name}' is not a valid environment variable name"
+            ));
+        }
+        let value = crate::manager_loop::context_path_value(&runtime.context, &context_key)
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| {
+                format!("tool.env_map key {context_key} did not resolve to a context value")
+            })?;
+        let text = match value {
+            Value::String(text) => text,
+            Value::Bool(_) | Value::Number(_) => value.to_string(),
+            other => serde_json::to_string(&other).map_err(|error| {
+                format!("tool.env_map key {context_key} could not be serialized: {error}")
+            })?,
+        };
+        env.insert(name, text);
+    }
+    Ok(env)
+}
+
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn resolve_tool_output_updates(
+    runtime: &HandlerRuntime,
+    stdout: &str,
+) -> std::result::Result<ContextMap, String> {
+    let bindings = tool_attr_string_map(runtime, "tool.output_map")?;
+    let mut updates = ContextMap::new();
+    if bindings.is_empty() {
+        return Ok(updates);
+    }
+    let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
+        format!("tool.output_map requires the tool to print a JSON object: {error}")
+    })?;
+    for (context_key, source_path) in bindings {
+        let mut current = &parsed;
+        for segment in source_path.split('.') {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return Err(format!(
+                    "tool.output_map path '{source_path}' contains an empty segment"
+                ));
+            }
+            current = current.get(segment).ok_or_else(|| {
+                format!("tool.output_map path '{source_path}' not found in tool JSON output")
+            })?;
+        }
+        updates.insert(context_key, current.clone());
+    }
+    Ok(updates)
 }
 
 fn tool_cwd(runtime: &HandlerRuntime) -> PathBuf {

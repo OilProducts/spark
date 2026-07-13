@@ -459,11 +459,23 @@
               "default": "",
               "type": "string"
             },
+            "env_map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
             "kind": {
               "enum": [
                 "tool"
               ],
               "type": "string"
+            },
+            "output_map": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
             }
           },
           "required": [

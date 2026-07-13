@@ -153,6 +153,10 @@ pub enum NodeConfig {
     Tool {
         #[serde(default)]
         command: String,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        env_map: BTreeMap<String, String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        output_map: BTreeMap<String, String>,
     },
     Subflow {
         flow_ref: String,
@@ -625,8 +629,15 @@ fn runtime_dot_node(node_id: &str, node: &FlowNode) -> DotNode {
     if let Some(prompt) = node_prompt(node) {
         insert_string_attr(&mut attrs, "prompt", &prompt);
     }
-    if let Some(NodeConfig::Tool { command }) = node.config.as_ref() {
+    if let Some(NodeConfig::Tool {
+        command,
+        env_map,
+        output_map,
+    }) = node.config.as_ref()
+    {
         insert_string_attr(&mut attrs, "tool.command", command);
+        insert_tool_map_attr(&mut attrs, "tool.env_map", env_map);
+        insert_tool_map_attr(&mut attrs, "tool.output_map", output_map);
     }
     if let Some(retry) = node.retry.as_ref() {
         if let Some(policy) = retry.policy.as_deref() {
@@ -756,6 +767,19 @@ fn node_prompt(node: &FlowNode) -> Option<String> {
 fn merge_value_attrs(attrs: &mut BTreeMap<String, DotAttribute>, values: &BTreeMap<String, Value>) {
     for (key, value) in values {
         attrs.insert(key.clone(), json_attr(key, value.clone()));
+    }
+}
+
+fn insert_tool_map_attr(
+    attrs: &mut BTreeMap<String, DotAttribute>,
+    key: &str,
+    map: &BTreeMap<String, String>,
+) {
+    if map.is_empty() {
+        return;
+    }
+    if let Ok(value) = serde_json::to_string(map) {
+        insert_string_attr(attrs, key, &value);
     }
 }
 

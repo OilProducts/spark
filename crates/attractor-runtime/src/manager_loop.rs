@@ -1131,7 +1131,7 @@ fn context_path(context: &ContextMap, key: &str) -> Option<PathBuf> {
     non_empty(context_string(context, key)).map(PathBuf::from)
 }
 
-fn context_path_value(context: &ContextMap, path: &str) -> Option<Value> {
+pub(crate) fn context_path_value(context: &ContextMap, path: &str) -> Option<Value> {
     let path = path.trim();
     if path.is_empty() {
         return None;

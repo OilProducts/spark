@@ -888,3 +888,251 @@ fn subflow_declaring_both_child_workdir_sources_fails() {
     );
     assert!(observed.is_none(), "child must not launch");
 }
+
+fn tool_node(
+    command: &str,
+    env_map: BTreeMap<String, String>,
+    output_map: BTreeMap<String, String>,
+) -> FlowNode {
+    FlowNode {
+        kind: NodeKind::Tool,
+        config: Some(NodeConfig::Tool {
+            command: command.to_string(),
+            env_map,
+            output_map,
+        }),
+        ..FlowNode::default()
+    }
+}
+
+fn execute_tool_node(
+    node: FlowNode,
+    run_workdir: &std::path::Path,
+    context_entries: Vec<(String, serde_json::Value)>,
+) -> Outcome {
+    let flow = FlowDefinition {
+        schema_version: "1".to_string(),
+        id: "tool-bindings".to_string(),
+        title: "Tool Bindings".to_string(),
+        nodes: [("run_tool".to_string(), node)].into_iter().collect(),
+        ..FlowDefinition::default()
+    };
+    let mut context = ContextMap::from([(
+        "internal.run_workdir".to_string(),
+        json!(run_workdir.to_string_lossy().to_string()),
+    )]);
+    context.extend(context_entries);
+    RuntimeHandlerRunner::new()
+        .execute(attractor_runtime::NodeExecutionRequest {
+            node_id: "run_tool".to_string(),
+            stage_index: 0,
+            context,
+            prompt: String::new(),
+            node: flow.nodes["run_tool"].clone(),
+            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler(
+                "run_tool",
+                &flow.nodes["run_tool"],
+            ),
+            flow: flow.clone(),
+            outgoing_edges: Vec::new(),
+            run_paths: None,
+            run_workdir: run_workdir.to_path_buf(),
+            run_id: "tool-run".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("tool outcome")
+}
+
+#[test]
+fn tool_env_map_binds_context_values_as_environment_variables() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let outcome = execute_tool_node(
+        tool_node(
+            r#"printf '%s %s' "$WORKSPACE_PATH" "$RETRY_COUNT""#,
+            [
+                (
+                    "WORKSPACE_PATH".to_string(),
+                    "context.workspace.path".to_string(),
+                ),
+                ("RETRY_COUNT".to_string(), "context.retry_count".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            BTreeMap::new(),
+        ),
+        temp.path(),
+        vec![
+            (
+                "context.workspace.path".to_string(),
+                json!("/workspaces/run-9"),
+            ),
+            ("context.retry_count".to_string(), json!(3)),
+        ],
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(outcome.notes, "/workspaces/run-9 3");
+}
+
+#[test]
+fn tool_env_map_with_missing_context_value_fails_before_execution() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let outcome = execute_tool_node(
+        tool_node(
+            "touch executed-anyway",
+            [(
+                "WORKSPACE_PATH".to_string(),
+                "context.workspace.path".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            BTreeMap::new(),
+        ),
+        temp.path(),
+        Vec::new(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome
+            .failure_reason
+            .contains("context.workspace.path did not resolve"),
+        "{}",
+        outcome.failure_reason
+    );
+    assert!(
+        !temp.path().join("executed-anyway").exists(),
+        "command must not run when env bindings are unresolved"
+    );
+}
+
+#[test]
+fn tool_env_map_rejects_invalid_environment_variable_names() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let outcome = execute_tool_node(
+        tool_node(
+            "touch executed-anyway",
+            [("BAD-NAME".to_string(), "context.value".to_string())]
+                .into_iter()
+                .collect(),
+            BTreeMap::new(),
+        ),
+        temp.path(),
+        vec![("context.value".to_string(), json!("x"))],
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome.failure_reason.contains("BAD-NAME"),
+        "{}",
+        outcome.failure_reason
+    );
+    assert!(!temp.path().join("executed-anyway").exists());
+}
+
+#[test]
+fn tool_output_map_parses_json_stdout_into_context_updates() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let outcome = execute_tool_node(
+        tool_node(
+            r#"printf '{"worktree_path":"/w/run-9","git":{"branch":"spark/run-9"},"created":true}'"#,
+            BTreeMap::new(),
+            [
+                (
+                    "context.workspace.path".to_string(),
+                    "worktree_path".to_string(),
+                ),
+                (
+                    "context.workspace.branch".to_string(),
+                    "git.branch".to_string(),
+                ),
+                (
+                    "context.workspace.created".to_string(),
+                    "created".to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        temp.path(),
+        Vec::new(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+    assert_eq!(
+        outcome.context_updates.get("context.workspace.path"),
+        Some(&json!("/w/run-9"))
+    );
+    assert_eq!(
+        outcome.context_updates.get("context.workspace.branch"),
+        Some(&json!("spark/run-9"))
+    );
+    assert_eq!(
+        outcome.context_updates.get("context.workspace.created"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        outcome.context_updates.get("context.tool.exit_code"),
+        Some(&json!(0))
+    );
+}
+
+#[test]
+fn tool_output_map_with_non_json_stdout_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let outcome = execute_tool_node(
+        tool_node(
+            "printf 'not json'",
+            BTreeMap::new(),
+            [(
+                "context.workspace.path".to_string(),
+                "worktree_path".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        ),
+        temp.path(),
+        Vec::new(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome.failure_reason.contains("JSON"),
+        "{}",
+        outcome.failure_reason
+    );
+    assert_eq!(
+        outcome.context_updates.get("context.tool.output"),
+        Some(&json!("not json")),
+        "raw stdout stays observable on mapping failure"
+    );
+}
+
+#[test]
+fn tool_output_map_with_missing_json_path_fails() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let outcome = execute_tool_node(
+        tool_node(
+            r#"printf '{"other":1}'"#,
+            BTreeMap::new(),
+            [(
+                "context.workspace.path".to_string(),
+                "worktree_path".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+        ),
+        temp.path(),
+        Vec::new(),
+    );
+
+    assert_eq!(outcome.status, OutcomeStatus::Fail);
+    assert!(
+        outcome.failure_reason.contains("worktree_path"),
+        "{}",
+        outcome.failure_reason
+    );
+}

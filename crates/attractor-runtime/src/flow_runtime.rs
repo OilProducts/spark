@@ -185,8 +185,15 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
             insert_string_attr(&mut attrs, "options", &value);
         }
     }
-    if let Some(NodeConfig::Tool { command }) = node.config.as_ref() {
+    if let Some(NodeConfig::Tool {
+        command,
+        env_map,
+        output_map,
+    }) = node.config.as_ref()
+    {
         insert_string_attr(&mut attrs, "tool.command", command);
+        insert_tool_map_attr(&mut attrs, "tool.env_map", env_map);
+        insert_tool_map_attr(&mut attrs, "tool.output_map", output_map);
     }
     if let Some(NodeConfig::Subflow { flow_ref, .. }) = node.config.as_ref() {
         insert_string_attr(&mut attrs, "stack.child_flow_ref", flow_ref);
@@ -499,7 +506,7 @@ fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
         "llm_model" => node.execution.as_ref()?.llm_model.clone(),
         "reasoning_effort" => node.execution.as_ref()?.reasoning_effort.clone(),
         "tool.command" => match node.config.as_ref()? {
-            NodeConfig::Tool { command } => Some(command.clone()),
+            NodeConfig::Tool { command, .. } => Some(command.clone()),
             _ => None,
         },
         "prompt" => match node.config.as_ref()? {
@@ -576,6 +583,19 @@ fn value_to_bool(value: &Value) -> bool {
 fn insert_string_attr(attrs: &mut BTreeMap<String, DotAttribute>, key: &str, value: &str) {
     if !value.trim().is_empty() {
         attrs.insert(key.to_string(), string_attr(key, value));
+    }
+}
+
+fn insert_tool_map_attr(
+    attrs: &mut BTreeMap<String, DotAttribute>,
+    key: &str,
+    map: &BTreeMap<String, String>,
+) {
+    if map.is_empty() {
+        return;
+    }
+    if let Ok(value) = serde_json::to_string(map) {
+        insert_string_attr(attrs, key, &value);
     }
 }
 
