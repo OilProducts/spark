@@ -26,14 +26,6 @@ use attractor_runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
-use spark_common::software_development::{
-    base_divergence, cleanup_read_only, cleanup_success, commits_since,
-    discover_validation_command, finalize_bounded_commit, finish_merge_change,
-    has_uncommitted_changes, normalize_task, prepare_isolated_workspace, prepare_merge_change,
-    prepare_read_only_workspace, record_result, record_result_preserving_authored_output,
-    record_task, run_validation, validate_task_input, ManagedWorkspace, MergeSession,
-    RunResult as SoftwareRunResult, TaskInput,
-};
 
 pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
 
@@ -604,47 +596,6 @@ impl AttractorApiService {
             .map_err(|error| format!("Unable to spawn run execution thread: {error}"))
     }
 
-    fn spawn_detached_execution_with_software_runtime(
-        &self,
-        paths: attractor_runtime::paths::RunRootPaths,
-        execute_request: ExecuteRunRequest,
-        software_runtime: Option<SoftwareDevelopmentRuntime>,
-    ) -> std::result::Result<(), String> {
-        let node_executor = self.observed_node_executor();
-        let store = execute_request.store.clone();
-        let run_id = paths.run_id.clone();
-        std::thread::Builder::new()
-            .name(format!("attractor-run-{run_id}"))
-            .spawn(move || {
-                let mut executor = PipelineExecutor::with_control(
-                    node_executor,
-                    attractor_runtime::disk_execution_control(paths),
-                );
-                match executor.execute(execute_request) {
-                    Ok(result) => {
-                        if let Err(error) =
-                            finish_software_development_runtime(software_runtime, &result.status)
-                        {
-                            let _ = store.update_run_record(&run_id, |record| {
-                                record.status = "failed".into();
-                                record.last_error = error.clone();
-                            });
-                        }
-                    }
-                    Err(error) => {
-                        let _ = finish_software_development_runtime(software_runtime, "failed");
-                        let message = error.to_string();
-                        let _ = store.update_run_record(&run_id, |record| {
-                            record.status = "failed".to_string();
-                            record.last_error = message.clone();
-                        });
-                    }
-                }
-            })
-            .map(|_handle| ())
-            .map_err(|error| format!("Unable to spawn run execution thread: {error}"))
-    }
-
     pub fn get_status(&self) -> RuntimeRouteResponse {
         RuntimeRouteResponse::json(
             200,
@@ -810,24 +761,7 @@ impl AttractorApiService {
             Ok(run_id) => run_id,
             Err(error) => return validation_error_response(error),
         };
-        let source_working_directory = absolutize_path(&request.working_directory);
-        let mut working_directory = source_working_directory.clone();
-        let software_runtime = match prepare_software_development_runtime(
-            &flow,
-            &source_working_directory,
-            &run_id,
-            &requested_context,
-        ) {
-            Ok(runtime) => runtime,
-            Err(error) => return validation_error_response(error),
-        };
-        let software_runtime_warnings = software_runtime
-            .as_ref()
-            .map(|runtime| runtime.workspace.warnings.clone())
-            .unwrap_or_default();
-        if let Some(runtime) = software_runtime.as_ref() {
-            working_directory = runtime.workspace.worktree.to_string_lossy().into_owned();
-        }
+        let working_directory = absolutize_path(&request.working_directory);
         let (selected_model, display_model) =
             resolve_launch_model(&flow, request.model.as_deref(), &requested_context);
         let selected_provider =
@@ -877,7 +811,7 @@ impl AttractorApiService {
                 }
             });
         record.working_directory = working_directory.clone();
-        record.project_path = source_working_directory.clone();
+        record.project_path = working_directory.clone();
         record.model = display_model.clone();
         record.provider = selected_provider.clone();
         record.llm_provider = selected_provider.clone();
@@ -913,33 +847,6 @@ impl AttractorApiService {
             "internal.run_workdir".to_string(),
             json!(working_directory.clone()),
         );
-        if let Some(runtime) = software_runtime.as_ref() {
-            let run_dir = runtime.workspace.run_dir.to_string_lossy().into_owned();
-            runtime_context.insert(
-                "internal.software_development.policy".into(),
-                json!(runtime.policy),
-            );
-            runtime_context.insert(
-                "internal.software_development.source_checkout".into(),
-                json!(runtime.source_checkout),
-            );
-            runtime_context.insert(
-                "internal.software_development.workspace".into(),
-                serde_json::to_value(&runtime.workspace).unwrap_or_default(),
-            );
-            runtime_context.insert(
-                "internal.software_development.run_dir".into(),
-                json!(run_dir),
-            );
-            runtime_context.insert(
-                "internal.software_development.task_path".into(),
-                json!(runtime.workspace.run_dir.join("task.json")),
-            );
-            runtime_context.insert(
-                "internal.software_development.result_path".into(),
-                json!(runtime.workspace.run_dir.join("result.json")),
-            );
-        }
         if let Some(flow_source_dir) = flow_source_dir.as_ref() {
             runtime_context.insert(
                 "internal.flow_source_dir".to_string(),
@@ -988,29 +895,13 @@ impl AttractorApiService {
                 attractor_runtime::disk_execution_control(paths.clone()),
             );
             match executor.execute(execute_request) {
-                Ok(result) => {
-                    match finish_software_development_runtime(software_runtime, &result.status) {
-                        Ok(()) => result.status,
-                        Err(error) => {
-                            let _ = store.update_run_record(&run_id, |record| {
-                                record.status = "failed".into();
-                                record.last_error = error.clone();
-                            });
-                            "failed".into()
-                        }
-                    }
-                }
+                Ok(result) => result.status,
                 Err(error) => {
-                    let _ = finish_software_development_runtime(software_runtime, "failed");
                     return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
                 }
             }
         } else {
-            if let Err(error) = self.spawn_detached_execution_with_software_runtime(
-                paths.clone(),
-                execute_request,
-                software_runtime,
-            ) {
+            if let Err(error) = self.spawn_detached_execution(paths.clone(), execute_request) {
                 let _ = store.update_run_record(&run_id, |record| {
                     record.status = "failed".to_string();
                     record.last_error = error.clone();
@@ -1037,7 +928,6 @@ impl AttractorApiService {
                 error_payloads,
                 graph_paths,
                 terminal_status,
-                software_runtime_warnings,
             ),
         )
     }
@@ -2224,7 +2114,6 @@ fn start_response_payload(
     errors: Vec<Value>,
     graph_paths: Option<Value>,
     terminal_status: String,
-    warnings: Vec<String>,
 ) -> Value {
     let mut payload = serde_json::Map::new();
     payload.insert("status".to_string(), json!("started"));
@@ -2259,7 +2148,6 @@ fn start_response_payload(
         payload.insert("flow_definition_path".to_string(), Value::Null);
     }
     payload.insert("terminal_status".to_string(), json!(terminal_status));
-    payload.insert("warnings".to_string(), json!(warnings));
     Value::Object(payload)
 }
 
@@ -2881,323 +2769,6 @@ fn runtime_error_response(
             RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
         }
     }
-}
-
-#[derive(Debug)]
-struct SoftwareDevelopmentRuntime {
-    policy: String,
-    source_checkout: PathBuf,
-    workspace: ManagedWorkspace,
-    validation_command: Option<String>,
-    merge_session: Option<MergeSession>,
-}
-
-fn prepare_software_development_runtime(
-    flow: &FlowDefinition,
-    checkout: &str,
-    run_id: &str,
-    context: &ContextMap,
-) -> Result<Option<SoftwareDevelopmentRuntime>, String> {
-    let Some(policy) = flow
-        .metadata
-        .get("software_development")
-        .and_then(Value::as_object)
-        .and_then(|metadata| metadata.get("workspace_policy"))
-        .and_then(Value::as_str)
-    else {
-        return Ok(None);
-    };
-    let checkout = PathBuf::from(checkout);
-    let base_ref = context_string(context, "context.request.base_ref");
-    let task = task_input_from_context(flow, context);
-    validate_task_input(&task).map_err(|error| error.to_string())?;
-    let validation_command = task.validation_command.clone();
-
-    if policy == "repository_integration" {
-        let git_result = task.git_result.as_ref().and_then(Value::as_object);
-        let source_ref = git_result
-            .and_then(|value| value.get("source_ref"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                "repository_integration requires context.request.git_result.source_ref".to_string()
-            })?;
-        let session = prepare_merge_change(&checkout, source_ref, run_id)
-            .map_err(|error| error.to_string())?;
-        let validation_command = match validation_command {
-            Some(command) => Some(command),
-            None => Some(
-                discover_validation_command(&session.workspace.worktree)
-                    .map_err(|error| error.to_string())?,
-            ),
-        };
-        let normalized =
-            normalize_task(&session.workspace.worktree, task).map_err(|error| error.to_string())?;
-        record_task(&session.workspace.run_dir, &normalized).map_err(|error| error.to_string())?;
-        return Ok(Some(SoftwareDevelopmentRuntime {
-            policy: policy.to_string(),
-            source_checkout: checkout,
-            workspace: session.workspace.clone(),
-            validation_command,
-            merge_session: Some(session),
-        }));
-    }
-
-    let policy = if flow.id == "review_change"
-        && task
-            .git_result
-            .as_ref()
-            .and_then(|value| value.get("apply_fixes"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        "isolated_branch"
-    } else {
-        policy
-    };
-
-    let workspace = match policy {
-        "read_only" | "repository_integration" => prepare_read_only_workspace(
-            &checkout,
-            &flow.id.replace('_', "-"),
-            run_id,
-            base_ref.as_deref(),
-        ),
-        "isolated_branch" => prepare_isolated_workspace(
-            &checkout,
-            &flow.id.replace('_', "-"),
-            run_id,
-            base_ref.as_deref(),
-        ),
-        other => {
-            return Err(format!(
-                "unsupported software-development workspace policy: {other}"
-            ))
-        }
-    }
-    .map_err(|error| error.to_string())?;
-
-    // Artifact inputs belong to the selected committed revision. Reading from
-    // the source checkout here would leak dirty developer contents.
-    let normalized =
-        normalize_task(&workspace.worktree, task).map_err(|error| error.to_string())?;
-    record_task(&workspace.run_dir, &normalized).map_err(|error| error.to_string())?;
-    Ok(Some(SoftwareDevelopmentRuntime {
-        policy: policy.to_string(),
-        source_checkout: checkout,
-        workspace,
-        validation_command,
-        merge_session: None,
-    }))
-}
-
-fn finish_software_development_runtime(
-    runtime: Option<SoftwareDevelopmentRuntime>,
-    status: &str,
-) -> Result<(), String> {
-    let Some(runtime) = runtime else {
-        return Ok(());
-    };
-    let success = status == "completed" || status == "success";
-    if runtime.policy == "repository_integration" {
-        if !success {
-            let failed = SoftwareRunResult {
-                outcome: "fail".into(),
-                branch: Some(runtime.workspace.branch.clone()),
-                base_commit: runtime.workspace.base_commit.clone(),
-                worktree: Some(runtime.workspace.worktree.clone()),
-                commits: Vec::new(),
-                validation: Vec::new(),
-                summary: format!("flow runtime finished with status {status}"),
-                base_divergence: None,
-            };
-            record_result(&runtime.workspace.run_dir, &failed)
-                .map_err(|error| error.to_string())?;
-            return Ok(());
-        }
-        let validation = runtime.validation_command.as_deref().ok_or_else(|| {
-            "repository integration validation command could not be discovered".to_string()
-        })?;
-        finish_merge_change(runtime.merge_session.expect("merge session"), validation)
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    if runtime.policy == "isolated_branch" {
-        let mut commits = Vec::new();
-        let mut validation = Vec::new();
-        let mut divergence = None;
-        let mut finalization_error = None;
-        if success {
-            let discovered;
-            let command = if let Some(command) = runtime.validation_command.as_deref() {
-                command
-            } else {
-                discovered = discover_validation_command(&runtime.workspace.worktree)
-                    .map_err(|error| error.to_string())?;
-                &discovered
-            };
-            match run_validation(&runtime.workspace.worktree, command) {
-                Ok(evidence) => {
-                    let passed = evidence.exit_code == Some(0);
-                    validation.push(evidence);
-                    if !passed {
-                        finalization_error = Some("validation failed".to_string());
-                    }
-                }
-                Err(error) => finalization_error = Some(error.to_string()),
-            }
-            if finalization_error.is_none() {
-                match (
-                    commits_since(&runtime.workspace.worktree, &runtime.workspace.base_commit),
-                    has_uncommitted_changes(&runtime.workspace.worktree),
-                ) {
-                    (Ok(existing), Ok(false))
-                        if runtime.workspace.flow_id == "implement-spec-program" =>
-                    {
-                        commits = existing
-                    }
-                    (Ok(existing), Ok(false)) if existing.len() == 1 => commits = existing,
-                    (Ok(_), Ok(_)) => match finalize_bounded_commit(
-                        &runtime.workspace.worktree,
-                        &runtime.workspace.base_commit,
-                        &format!("Complete {} run", runtime.workspace.flow_id),
-                    ) {
-                        Ok(commit) => commits = vec![commit],
-                        Err(error) => finalization_error = Some(error.to_string()),
-                    },
-                    (Err(error), _) | (_, Err(error)) => {
-                        finalization_error = Some(error.to_string())
-                    }
-                }
-            }
-            divergence = base_divergence(
-                &runtime.source_checkout,
-                &runtime.workspace.base_ref,
-                &runtime.workspace.base_commit,
-            )
-            .ok();
-        }
-        let succeeded = success && finalization_error.is_none();
-        let result = SoftwareRunResult {
-            outcome: if succeeded { "success" } else { "fail" }.into(),
-            branch: (!runtime.workspace.branch.is_empty())
-                .then(|| runtime.workspace.branch.clone()),
-            base_commit: runtime.workspace.base_commit.clone(),
-            worktree: Some(runtime.workspace.worktree.clone()),
-            commits,
-            validation,
-            summary: finalization_error
-                .clone()
-                .unwrap_or_else(|| format!("flow runtime finished with status {status}")),
-            base_divergence: divergence,
-        };
-        record_result(&runtime.workspace.run_dir, &result).map_err(|error| error.to_string())?;
-        if let Some(error) = finalization_error {
-            return Err(error);
-        }
-    } else {
-        let authored_summary = fs::read(runtime.workspace.run_dir.join("result.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|value| {
-                value
-                    .get("summary")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
-        let result = SoftwareRunResult {
-            outcome: if success { "success" } else { "fail" }.into(),
-            branch: None,
-            base_commit: runtime.workspace.base_commit.clone(),
-            worktree: Some(runtime.workspace.worktree.clone()),
-            commits: Vec::new(),
-            validation: Vec::new(),
-            summary: authored_summary
-                .unwrap_or_else(|| format!("flow runtime finished with status {status}")),
-            base_divergence: base_divergence(
-                &runtime.source_checkout,
-                &runtime.workspace.base_ref,
-                &runtime.workspace.base_commit,
-            )
-            .ok(),
-        };
-        record_result_preserving_authored_output(&runtime.workspace.run_dir, &result)
-            .map_err(|error| error.to_string())?;
-    }
-    if success {
-        let cleanup = if runtime.policy == "read_only" || runtime.policy == "repository_integration"
-        {
-            cleanup_read_only(&runtime.source_checkout, &runtime.workspace)
-                .map_err(|error| error.to_string())
-        } else {
-            cleanup_success(&runtime.source_checkout, &runtime.workspace)
-                .map_err(|error| error.to_string())
-        };
-        if let Err(error) = cleanup {
-            if runtime.policy != "read_only" {
-                let failed = SoftwareRunResult {
-                    outcome: "fail".into(),
-                    branch: (!runtime.workspace.branch.is_empty())
-                        .then(|| runtime.workspace.branch.clone()),
-                    base_commit: runtime.workspace.base_commit.clone(),
-                    worktree: Some(runtime.workspace.worktree.clone()),
-                    commits: Vec::new(),
-                    validation: Vec::new(),
-                    summary: error.clone(),
-                    base_divergence: None,
-                };
-                record_result(&runtime.workspace.run_dir, &failed)
-                    .map_err(|record_error| record_error.to_string())?;
-            }
-            return Err(error);
-        }
-    }
-    Ok(())
-}
-
-fn task_input_from_context(flow: &FlowDefinition, context: &ContextMap) -> TaskInput {
-    let artifact_path = context_string(context, "context.request.artifact_path")
-        .or_else(|| context_string(context, "context.request.change_request_path"))
-        .or_else(|| {
-            (flow.id == "implement_spec_program")
-                .then(|| context_string(context, "context.request.spec_path"))
-                .flatten()
-        });
-    TaskInput {
-        objective: context_string(context, "context.request.objective"),
-        artifact_path: artifact_path.map(PathBuf::from),
-        target_paths: context_strings(context, "context.request.target_paths")
-            .into_iter()
-            .map(PathBuf::from)
-            .collect(),
-        constraints: context_strings(context, "context.request.constraints"),
-        acceptance_criteria: context_strings(context, "context.request.acceptance_criteria"),
-        validation_command: context_string(context, "context.request.validation_command"),
-        base_ref: context_string(context, "context.request.base_ref"),
-        git_result: context.get("context.request.git_result").cloned(),
-    }
-}
-
-fn context_string(context: &ContextMap, key: &str) -> Option<String> {
-    context
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn context_strings(context: &ContextMap, key: &str) -> Vec<String> {
-    context
-        .get(key)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn child_run_summaries(children: &[RunBundle]) -> Vec<Value> {

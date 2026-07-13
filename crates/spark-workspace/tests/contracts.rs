@@ -10,8 +10,6 @@ mod review_artifact_contracts;
 mod run_orchestration_contracts;
 #[path = "contracts/run_segment_envelope_contracts.rs"]
 mod run_segment_envelope_contracts;
-#[path = "contracts/software_development_contracts.rs"]
-mod software_development_contracts;
 #[path = "contracts/trigger_source_activation_contracts.rs"]
 mod trigger_source_activation_contracts;
 #[path = "contracts/workflow_log_contracts.rs"]

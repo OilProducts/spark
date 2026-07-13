@@ -9,7 +9,6 @@ pub mod live;
 pub mod models;
 pub mod projects;
 pub mod settings;
-pub mod software_development;
 pub mod triggers;
 pub mod workflow_log;
 
