@@ -34,10 +34,6 @@ inputs:
   label: Base Ref
   type: string
   required: false
-- key: context.request.git_result
-  label: Git Result Settings
-  type: object
-  required: false
 defaults:
   fidelity: summary:high
   llm_provider: codex
@@ -45,8 +41,6 @@ defaults:
 metadata:
   software_development:
     launcher: true
-    workspace_policy: read_only
-    run_registry: .spark/software-development/runs
 nodes:
   start:
     kind: start
@@ -58,13 +52,10 @@ nodes:
     label: Execute
     config:
       kind: agent_task
-      prompt: 'Inspect the normalized review target and record prioritized evidence-backed findings in result.json under the runtime-managed run directory. When context.request.git_result.apply_fixes is true, the runtime has already supplied a distinct isolated fix branch: apply only accepted high-confidence fixes there. Never create worktrees or branches, commit, perform final validation, or clean up; the launcher runtime owns those operations. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+      prompt: 'Normalize the task, inspect the current checkout without changing any files, review the normalized target and report prioritized, evidence-backed findings. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; reject both or neither, and reject absolute or repository-escaping artifact paths. Incorporate optional target_paths, constraints, acceptance_criteria, validation_command, and base_ref. Never edit repository files, create branches or worktrees, or commit. Deliver the full result in your response and respond with ONLY a JSON status envelope.'
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.request.objective
       - context.request.artifact_path
       - context.request.target_paths
@@ -72,7 +63,6 @@ nodes:
       - context.request.acceptance_criteria
       - context.request.validation_command
       - context.request.base_ref
-      - context.request.git_result
   done:
     kind: exit
     label: Done

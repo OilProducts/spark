@@ -4,39 +4,14 @@ title: Merge Change
 description: Integrate a completed Spark branch into a clean local target using a validated explicit merge commit.
 goal: Integrate a completed Spark branch into a clean local target using a validated explicit merge commit.
 inputs:
-- key: context.request.objective
-  label: Objective
+- key: context.request.source_ref
+  label: Source Ref
   type: string
-  description: Inline task objective. Provide this or artifact_path.
-  required: false
-- key: context.request.artifact_path
-  label: Artifact Path
-  type: string
-  description: Repository-relative task artifact. Provide this or objective.
-  required: false
-- key: context.request.target_paths
-  label: Target Paths
-  type: string[]
-  required: false
-- key: context.request.constraints
-  label: Constraints
-  type: string[]
-  required: false
-- key: context.request.acceptance_criteria
-  label: Acceptance Criteria
-  type: string[]
-  required: false
+  description: Branch or commit to integrate into the current target checkout.
+  required: true
 - key: context.request.validation_command
   label: Validation Command
   type: string
-  required: false
-- key: context.request.base_ref
-  label: Base Ref
-  type: string
-  required: false
-- key: context.request.git_result
-  label: Git Result Settings
-  type: object
   required: false
 defaults:
   fidelity: summary:high
@@ -45,26 +20,130 @@ defaults:
 metadata:
   software_development:
     launcher: true
-    workspace_policy: repository_integration
-    run_registry: .spark/software-development/runs
 nodes:
   start:
     kind: start
     label: Start
     config:
       kind: start
-  integrate:
+  normalize_task:
     kind: agent_task
-    label: Resolve Integration
+    label: Normalize Task
     config:
       kind: agent_task
-      prompt: 'Inspect the runtime-prepared integration worktree. If Git reports conflicts, resolve only conflicts whose behavior-preserving resolution is unambiguous; otherwise return fail and leave the worktree inspectable. Do not commit, validate, move the target branch, release the repository lock, record final results, or clean worktrees; the launcher runtime performs those operations after this node succeeds. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+      prompt: 'Normalize the integration request. context.request.source_ref names the branch or commit to integrate; fail when it is missing or does not resolve in this repository. Resolve the validation command: use context.request.validation_command when provided, otherwise discover the truthful project validation command from the repository (build files, CI configuration, contributor docs) without running it. Do not modify any files. Respond with ONLY a JSON status envelope whose context_updates set context.task.source_ref and context.task.validation_command.'
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
+      writes_context:
+      - context.task.source_ref
+      - context.task.validation_command
+  prepare_integration:
+    kind: tool
+    label: Prepare Integration
+    config:
+      kind: tool
+      command: |
+        set -eu
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "target checkout has uncommitted changes; commit or stash before integrating" >&2
+          exit 1
+        fi
+        target_branch=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$target_branch" = "HEAD" ]; then
+          echo "target checkout is on a detached HEAD; check out the target branch first" >&2
+          exit 1
+        fi
+        target_commit=$(git rev-parse HEAD)
+        source_commit=$(git rev-parse --verify "${SPARK_SOURCE_REF}^{commit}")
+        common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+        worktree="${common_dir}/spark/integrations/${SPARK_RUN_ID}"
+        if [ ! -d "$worktree" ]; then
+          mkdir -p "${common_dir}/spark/integrations"
+          git worktree add --detach "$worktree" "$target_commit" >/dev/null
+        fi
+        cd "$worktree"
+        merge_head=$(git rev-parse --git-path MERGE_HEAD)
+        if [ ! -f "$merge_head" ]; then
+          git merge --no-ff --no-commit "$source_commit" >/dev/null 2>&1 || true
+        fi
+        conflicts=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')
+        printf '{"path":"%s","target_branch":"%s","target_commit":"%s","source_commit":"%s","conflict_count":%s}' \
+          "$worktree" "$target_branch" "$target_commit" "$source_commit" "$conflicts"
+      env_map:
+        SPARK_RUN_ID: internal.run_id
+        SPARK_SOURCE_REF: context.task.source_ref
+      output_map:
+        context.integration.path: path
+        context.integration.target_branch: target_branch
+        context.integration.target_commit: target_commit
+        context.integration.source_commit: source_commit
+        context.integration.conflict_count: conflict_count
+    contracts:
+      writes_context:
+      - context.integration.path
+      - context.integration.target_branch
+      - context.integration.target_commit
+      - context.integration.source_commit
+      - context.integration.conflict_count
+  resolve_conflicts:
+    kind: subflow
+    label: Resolve Conflicts
+    config:
+      kind: subflow
+      flow_ref: workers/resolve-merge-conflicts.yaml
+      input_map:
+        context.integration.source_commit: context.integration.source_commit
+        context.integration.target_commit: context.integration.target_commit
+    manager:
+      child_workdir_from: context.integration.path
+  validate:
+    kind: tool
+    label: Validate
+    config:
+      kind: tool
+      command: |
+        set -eu
+        cd "$SPARK_INTEGRATION_PATH"
+        if [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+          echo "unresolved merge conflicts remain" >&2
+          exit 1
+        fi
+        sh -ec "$SPARK_VALIDATION_COMMAND"
+      env_map:
+        SPARK_INTEGRATION_PATH: context.integration.path
+        SPARK_VALIDATION_COMMAND: context.task.validation_command
+  finish_merge:
+    kind: tool
+    label: Finish Merge
+    config:
+      kind: tool
+      command: |
+        set -eu
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "target checkout became dirty during integration" >&2
+          exit 1
+        fi
+        current_target=$(git rev-parse HEAD)
+        if [ "$current_target" != "$SPARK_TARGET_COMMIT" ]; then
+          echo "target moved during integration: $SPARK_TARGET_COMMIT -> $current_target" >&2
+          exit 1
+        fi
+        git -C "$SPARK_INTEGRATION_PATH" add --all
+        git -C "$SPARK_INTEGRATION_PATH" commit -m "Merge ${SPARK_SOURCE_REF} (spark run ${SPARK_RUN_ID})" >/dev/null
+        merge_commit=$(git -C "$SPARK_INTEGRATION_PATH" rev-parse HEAD)
+        git merge --ff-only "$merge_commit" >/dev/null
+        git worktree remove "$SPARK_INTEGRATION_PATH"
+        printf '{"merge_commit":"%s"}' "$merge_commit"
+      env_map:
+        SPARK_INTEGRATION_PATH: context.integration.path
+        SPARK_TARGET_COMMIT: context.integration.target_commit
+        SPARK_SOURCE_REF: context.task.source_ref
+        SPARK_RUN_ID: internal.run_id
+      output_map:
+        context.integration.merge_commit: merge_commit
+    contracts:
+      writes_context:
+      - context.integration.merge_commit
   done:
     kind: exit
     label: Done
@@ -72,7 +151,19 @@ nodes:
       kind: exit
 edges:
 - from: start
-  to: integrate
-- from: integrate
+  to: normalize_task
+- from: normalize_task
+  to: prepare_integration
+  condition: outcome=success
+- from: prepare_integration
+  to: resolve_conflicts
+  condition: outcome=success
+- from: resolve_conflicts
+  to: validate
+  condition: outcome=success
+- from: validate
+  to: finish_merge
+  condition: outcome=success
+- from: finish_merge
   to: done
   condition: outcome=success

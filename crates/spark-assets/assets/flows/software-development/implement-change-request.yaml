@@ -9,8 +9,6 @@ goal: Implement an approved durable change request in the repository, evaluate w
 metadata:
   software_development:
     launcher: true
-    compatibility_wrapper_for: software-development/implement-change.yaml
-    workspace_policy: isolated_branch
 inputs:
 - key: context.request.change_request_path
   label: Change Request Path
@@ -103,9 +101,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.change_request.id
       - context.change_request.runtime_dir
       - context.change_request.request_path
@@ -116,11 +111,22 @@ nodes:
       - context.review.required_changes
       - context.review.blockers
   implement:
-    kind: subflow
-    label: Delegate to Implement Change
+    kind: agent_task
+    label: Implement
     config:
-      kind: subflow
-      flow_ref: implement-change.yaml
+      kind: agent_task
+      prompt: 'Goal: complete the remaining repository work required by the approved change request. Authoritative inputs:
+        read context.change_request.id, context.change_request.runtime_dir, context.change_request.request_path, context.change_request.state_path,
+        <runtime_dir>/change/request.md, and <runtime_dir>/state.json. Treat <runtime_dir>/change/request.md and <runtime_dir>/state.json
+        as the source of truth for this run; do not use context.request.change_request_path or another duplicate request copy
+        as the authority after runtime preparation. Repository scope: read and edit only files inside the current cwd, the
+        repository root. Implementation criteria: make the smallest coherent repository change that satisfies the durable
+        request and any acceptance criteria in state.json; keep touched docs, exports, manifests, bootstrap paths, and ignore
+        rules coherent when applicable; do not stage or commit. Review feedback: if context.review.summary, context.review.required_changes,
+        or context.review.blockers are present from a prior evaluation pass, address them directly before considering the
+        work complete. Validation: validate touched surfaces truthfully, and use request.validation_command from <runtime_dir>/state.json
+        as the preferred deterministic gate when present unless a stronger deterministic repo-wide gate is available. Output:
+        respond with ONLY a JSON status envelope after implementation and validation are complete.'
     execution:
       llm_model: gpt-5.6-sol
       reasoning_effort: high
@@ -132,9 +138,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.change_request.id
       - context.change_request.runtime_dir
       - context.change_request.request_path
@@ -176,9 +179,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.request.change_request_path
       - context.request.change_request_id
       - context.request.target_paths
@@ -217,9 +217,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.change_request.id
       - context.change_request.runtime_dir
       - context.change_request.request_path

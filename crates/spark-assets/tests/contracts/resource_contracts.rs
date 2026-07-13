@@ -23,16 +23,10 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "software-development/spec-implementation/implement-milestone.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
     "software-development/update-dependencies.yaml",
-    "software-development/workers/cleanup-workspace.yaml",
-    "software-development/workers/finalize-commit.yaml",
     "software-development/workers/implement-task.yaml",
-    "software-development/workers/inspect-repository.yaml",
-    "software-development/workers/normalize-task.yaml",
-    "software-development/workers/plan-task.yaml",
-    "software-development/workers/prepare-isolation.yaml",
-    "software-development/workers/record-result.yaml",
-    "software-development/workers/review-result.yaml",
-    "software-development/workers/validate-task.yaml",
+    "software-development/workers/repair-validation-task.yaml",
+    "software-development/workers/resolve-merge-conflicts.yaml",
+    "software-development/workers/update-dependencies-task.yaml",
 ];
 
 #[test]

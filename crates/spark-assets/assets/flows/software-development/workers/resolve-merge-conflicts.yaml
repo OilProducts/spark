@@ -1,0 +1,38 @@
+schema_version: '1'
+id: software_development_resolve_merge_conflicts
+title: Resolve Merge Conflicts
+description: Hidden reusable software-development worker.
+goal: Resolve only unambiguous merge conflicts inside the current integration worktree.
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  software_development:
+    launcher: false
+    worker: true
+nodes:
+  start:
+    kind: start
+    config:
+      kind: start
+  work:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: 'The current working directory is an integration worktree with an in-progress merge (--no-ff --no-commit). If git reports no conflicted paths, succeed without changing anything. Otherwise resolve only conflicts whose behavior-preserving resolution is unambiguous and stage the resolved files; when any conflict requires judgment about intended behavior, fail and leave the worktree inspectable. Do not commit, validate, move branches, or clean up; the parent flow performs those operations. Respond with ONLY a JSON status envelope.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.integration.source_commit
+      - context.integration.target_commit
+  done:
+    kind: exit
+    config:
+      kind: exit
+edges:
+- from: start
+  to: work
+- from: work
+  to: done
+  condition: outcome=success

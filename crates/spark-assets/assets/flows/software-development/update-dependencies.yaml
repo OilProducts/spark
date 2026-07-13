@@ -1,8 +1,8 @@
 schema_version: '1'
 id: update_dependencies
 title: Update Dependencies
-description: Update selected dependencies and lockfiles in an isolated branch with compatibility and security review.
-goal: Update selected dependencies and lockfiles in an isolated branch with compatibility and security review.
+description: Update selected dependencies coherently in an isolated worktree and commit the validated result.
+goal: Update selected dependencies coherently in an isolated worktree and commit the validated result.
 inputs:
 - key: context.request.objective
   label: Objective
@@ -34,10 +34,6 @@ inputs:
   label: Base Ref
   type: string
   required: false
-- key: context.request.git_result
-  label: Git Result Settings
-  type: object
-  required: false
 defaults:
   fidelity: summary:high
   llm_provider: codex
@@ -45,34 +41,121 @@ defaults:
 metadata:
   software_development:
     launcher: true
-    workspace_policy: isolated_branch
-    run_registry: .spark/software-development/runs
 nodes:
   start:
     kind: start
     label: Start
     config:
       kind: start
-  execute:
+  normalize_task:
     kind: agent_task
-    label: Execute
+    label: Normalize Task
     config:
       kind: agent_task
-      prompt: 'Read the normalized dependency selection and constraints, update manifests and lockfiles coherently in the runtime-prepared workspace, inspect compatibility and security implications, and report the changes and focused test evidence. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+      prompt: 'Normalize the dependency selection and constraints into one bounded update task. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; fail when both or neither are provided, and fail on absolute or repository-escaping artifact paths. Fold optional target_paths, constraints, and acceptance_criteria into a single decision-complete task statement. Resolve the validation command: use context.request.validation_command when provided, otherwise discover the truthful project validation command from the repository (build files, CI configuration, contributor docs) without running it. Resolve the base ref: use context.request.base_ref when provided, otherwise HEAD. Do not modify any files. Respond with ONLY a JSON status envelope whose context_updates set context.task.objective, context.task.validation_command, and context.task.base_ref.'
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
-      - context.request.objective
-      - context.request.artifact_path
-      - context.request.target_paths
-      - context.request.constraints
-      - context.request.acceptance_criteria
-      - context.request.validation_command
-      - context.request.base_ref
-      - context.request.git_result
+      writes_context:
+      - context.task.objective
+      - context.task.validation_command
+      - context.task.base_ref
+  prepare_workspace:
+    kind: tool
+    label: Prepare Workspace
+    config:
+      kind: tool
+      command: |
+        set -eu
+        common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+        base_commit=$(git rev-parse --verify "${SPARK_BASE_REF}^{commit}")
+        branch="spark/update-dependencies/${SPARK_RUN_ID}"
+        worktree="${common_dir}/spark/checkouts/${SPARK_RUN_ID}"
+        if [ -d "$worktree" ] && git -C "$worktree" rev-parse --git-dir >/dev/null 2>&1; then
+          existing=$(git -C "$worktree" rev-parse --abbrev-ref HEAD)
+          if [ "$existing" != "$branch" ]; then
+            echo "existing worktree $worktree is on unexpected branch $existing" >&2
+            exit 1
+          fi
+        else
+          mkdir -p "${common_dir}/spark/checkouts"
+          if git show-ref --verify --quiet "refs/heads/$branch"; then
+            git worktree add "$worktree" "$branch" >/dev/null
+          else
+            git worktree add -b "$branch" "$worktree" "$base_commit" >/dev/null
+          fi
+        fi
+        dirty=false
+        if [ -n "$(git status --porcelain)" ]; then dirty=true; fi
+        printf '{"path":"%s","branch":"%s","base_commit":"%s","source_dirty":%s}' \
+          "$worktree" "$branch" "$base_commit" "$dirty"
+      env_map:
+        SPARK_RUN_ID: internal.run_id
+        SPARK_BASE_REF: context.task.base_ref
+      output_map:
+        context.workspace.path: path
+        context.workspace.branch: branch
+        context.workspace.base_commit: base_commit
+        context.workspace.source_dirty: source_dirty
+    contracts:
+      writes_context:
+      - context.workspace.path
+      - context.workspace.branch
+      - context.workspace.base_commit
+      - context.workspace.source_dirty
+  implement:
+    kind: subflow
+    label: Implement
+    config:
+      kind: subflow
+      flow_ref: workers/update-dependencies-task.yaml
+      input_map:
+        context.task.objective: context.task.objective
+        context.task.validation_command: context.task.validation_command
+    manager:
+      child_workdir_from: context.workspace.path
+  validate:
+    kind: tool
+    label: Validate
+    config:
+      kind: tool
+      command: |
+        set -eu
+        cd "$SPARK_WORKSPACE_PATH"
+        sh -ec "$SPARK_VALIDATION_COMMAND"
+      env_map:
+        SPARK_WORKSPACE_PATH: context.workspace.path
+        SPARK_VALIDATION_COMMAND: context.task.validation_command
+  finalize_commit:
+    kind: tool
+    label: Finalize Commit
+    config:
+      kind: tool
+      command: |
+        set -eu
+        cd "$SPARK_WORKSPACE_PATH"
+        git add --all
+        if ! git diff --cached --quiet; then
+          git commit -m "Complete update-dependencies run ${SPARK_RUN_ID}" >/dev/null
+        fi
+        printf '{"commit":"%s"}' "$(git rev-parse HEAD)"
+      env_map:
+        SPARK_WORKSPACE_PATH: context.workspace.path
+        SPARK_RUN_ID: internal.run_id
+      output_map:
+        context.workspace.commit: commit
+    contracts:
+      writes_context:
+      - context.workspace.commit
+  cleanup_workspace:
+    kind: tool
+    label: Cleanup Workspace
+    config:
+      kind: tool
+      command: |
+        set -eu
+        git worktree remove "$SPARK_WORKSPACE_PATH"
+      env_map:
+        SPARK_WORKSPACE_PATH: context.workspace.path
   done:
     kind: exit
     label: Done
@@ -80,7 +163,22 @@ nodes:
       kind: exit
 edges:
 - from: start
-  to: execute
-- from: execute
+  to: normalize_task
+- from: normalize_task
+  to: prepare_workspace
+  condition: outcome=success
+- from: prepare_workspace
+  to: implement
+  condition: outcome=success
+- from: implement
+  to: validate
+  condition: outcome=success
+- from: validate
+  to: finalize_commit
+  condition: outcome=success
+- from: finalize_commit
+  to: cleanup_workspace
+  condition: outcome=success
+- from: cleanup_workspace
   to: done
   condition: outcome=success

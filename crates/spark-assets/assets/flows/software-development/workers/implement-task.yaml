@@ -2,7 +2,7 @@ schema_version: '1'
 id: software_development_implement_task
 title: Implement Task
 description: Hidden reusable software-development worker.
-goal: Plan, implement, test, and review the bounded task inside the runtime-prepared workspace.
+goal: Implement, test, and self-review the bounded task inside the current isolated worktree.
 defaults:
   fidelity: summary:high
   llm_provider: codex
@@ -20,13 +20,12 @@ nodes:
     kind: agent_task
     config:
       kind: agent_task
-      prompt: 'Read task.json from the runtime-managed run directory, inspect the repository, make the smallest coherent implementation, and test and review the observable behavior. Work only in the already prepared workspace. Do not create worktrees or branches, commit, run final lifecycle validation, record result.json, or clean up; the launcher runtime owns those lifecycle operations. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+      prompt: 'Implement the task described by context.task.objective in the current working directory, which is an isolated git worktree on a dedicated branch. Inspect the repository, make the smallest coherent implementation, and test and review observable behavior; context.task.validation_command names the project validation gate. Do not commit, push, create branches or worktrees, or clean anything up; the parent flow validates, commits, and releases the workspace. Respond with ONLY a JSON status envelope.'
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
+      - context.task.objective
+      - context.task.validation_command
   done:
     kind: exit
     config:

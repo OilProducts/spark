@@ -4,7 +4,6 @@ title: Implement Spec Program
 metadata:
   software_development:
     launcher: true
-    workspace_policy: isolated_branch
 description: A greenfield software-development program flow. It creates committed spec packages under specs/<slug>/, stores
   workflow state under .spark/spec-implementation/<slug>/, refreshes .spark/spec-implementation/current/ as a stable runtime
   alias to the active workspace, surfaces the committed spec package through current/spec/, extracts a requirement ledger,
@@ -97,9 +96,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.milestone.id
       - context.milestone.title
       - context.milestone.objective
@@ -139,10 +135,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       writes_context:
       - context.workflow_outcome
       - context.workflow_outcome_reason_code
@@ -199,10 +191,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   done:
     kind: exit
     label: Done
@@ -243,10 +231,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   extract_requirements:
     kind: agent_task
     label: Extract Requirements
@@ -271,9 +255,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.request.spec_path
       - context.request.scope_hint
       - context.request.constraints
@@ -305,10 +286,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   next_milestone:
     kind: agent_task
     label: Next Milestone
@@ -341,10 +318,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       writes_context:
       - context.milestone.id
       - context.milestone.title
@@ -377,10 +350,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   plan_milestones:
     kind: agent_task
     label: Plan Milestones
@@ -409,10 +378,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   prepare_workspace:
     kind: agent_task
     label: Prepare Workspace
@@ -445,9 +410,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.request.spec_path
       - context.request.spec_slug
       - context.request.scope_hint
@@ -484,10 +446,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   revise_architecture:
     kind: agent_task
     label: Revise Architecture
@@ -510,10 +468,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
   rewrite_milestones:
     kind: agent_task
     label: Rewrite Milestones
@@ -536,9 +490,6 @@ nodes:
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.milestone.id
   run_milestone:
     kind: subflow
@@ -595,10 +546,6 @@ nodes:
       goal_gate: false
     contracts:
       response: status_envelope
-      reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
 edges:
 - from: audit_milestone
   to: blocked_exit

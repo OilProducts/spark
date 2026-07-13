@@ -16,3 +16,5 @@ mod pipeline_lifecycle_contracts;
 mod preview_route_contracts;
 #[path = "contracts/status_route_contracts.rs"]
 mod status_route_contracts;
+#[path = "contracts/worktree_lifecycle_contracts.rs"]
+mod worktree_lifecycle_contracts;

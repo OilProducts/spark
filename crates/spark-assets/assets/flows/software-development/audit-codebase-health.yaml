@@ -34,10 +34,6 @@ inputs:
   label: Base Ref
   type: string
   required: false
-- key: context.request.git_result
-  label: Git Result Settings
-  type: object
-  required: false
 defaults:
   fidelity: summary:high
   llm_provider: codex
@@ -45,8 +41,6 @@ defaults:
 metadata:
   software_development:
     launcher: true
-    workspace_policy: read_only
-    run_registry: .spark/software-development/runs
 nodes:
   start:
     kind: start
@@ -58,13 +52,10 @@ nodes:
     label: Execute
     config:
       kind: agent_task
-      prompt: 'Normalize the objective, inspect the selected checkout or base ref without changing files, verify findings against observable behavior, prioritize them by impact and confidence, and record evidence under .spark/software-development/runs/<run-id>/. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; reject both or neither, reject absolute or escaping artifact paths, and incorporate optional target_paths, constraints, acceptance_criteria, validation_command, base_ref, and git_result settings. Use internal.software_development.task_path to read the normalized task and internal.software_development.result_path to write substantive durable output; internal.software_development.run_dir is the canonical registry directory. Respond with ONLY a JSON status envelope.'
+      prompt: 'Normalize the task, inspect the current checkout without changing any files, verify findings against observable behavior, prioritize them by impact and confidence, and report evidence-backed health findings. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; reject both or neither, and reject absolute or repository-escaping artifact paths. Incorporate optional target_paths, constraints, acceptance_criteria, validation_command, and base_ref. Never edit repository files, create branches or worktrees, or commit. Deliver the full result in your response and respond with ONLY a JSON status envelope.'
     contracts:
       response: status_envelope
       reads_context:
-      - internal.software_development.run_dir
-      - internal.software_development.task_path
-      - internal.software_development.result_path
       - context.request.objective
       - context.request.artifact_path
       - context.request.target_paths
@@ -72,7 +63,6 @@ nodes:
       - context.request.acceptance_criteria
       - context.request.validation_command
       - context.request.base_ref
-      - context.request.git_result
   done:
     kind: exit
     label: Done
