@@ -1,38 +1,18 @@
 schema_version: '1'
 id: review_change
 title: Review Change
-description: Review a diff or branch; optionally apply accepted fixes on a separate isolated branch.
-goal: Review a diff or branch; optionally apply accepted fixes on a separate isolated branch.
+description: Review a branch or diff with evidence-graded findings that survive an adversarial verification pass.
+goal: Review a branch or diff with evidence-graded findings that survive an adversarial verification pass.
 inputs:
+- key: context.request.source_ref
+  label: Source Ref
+  type: string
+  description: Branch or commit to review; the diff is taken against its merge base with the current checkout.
+  required: true
 - key: context.request.objective
-  label: Objective
+  label: Review Focus
   type: string
-  description: Inline task objective. Provide this or artifact_path.
-  required: false
-- key: context.request.artifact_path
-  label: Artifact Path
-  type: string
-  description: Repository-relative task artifact. Provide this or objective.
-  required: false
-- key: context.request.target_paths
-  label: Target Paths
-  type: string[]
-  required: false
-- key: context.request.constraints
-  label: Constraints
-  type: string[]
-  required: false
-- key: context.request.acceptance_criteria
-  label: Acceptance Criteria
-  type: string[]
-  required: false
-- key: context.request.validation_command
-  label: Validation Command
-  type: string
-  required: false
-- key: context.request.base_ref
-  label: Base Ref
-  type: string
+  description: Optional focus areas or concerns to weight the review toward.
   required: false
 defaults:
   fidelity: summary:high
@@ -47,22 +27,49 @@ nodes:
     label: Start
     config:
       kind: start
-  execute:
+  find_issues:
     kind: agent_task
-    label: Execute
+    label: Find Issues
     config:
       kind: agent_task
-      prompt: 'Normalize the task, inspect the current checkout without changing any files, review the normalized target and report prioritized, evidence-backed findings. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; reject both or neither, and reject absolute or repository-escaping artifact paths. Incorporate optional target_paths, constraints, acceptance_criteria, validation_command, and base_ref. Never edit repository files, create branches or worktrees, or commit. Deliver the full result in your response and respond with ONLY a JSON status envelope.'
+      prompt: 'Review the change named by context.request.source_ref without modifying any files. Resolve the diff against the merge base with the current checkout (git merge-base HEAD <ref>), then reconstruct the change''s apparent contract: what it sets out to do, its acceptance criteria, and constraints it must not break. Judge the actual diff and repository state, not commit messages or summaries. Weight context.request.objective focus areas when present. Look for: correctness defects on the real execution path, partial implementations, dead or uncalled code, mocks masquerading as functionality, hardcoded happy paths, regressions in adjacent surfaces, cut validation or safety, and minimality problems (speculative abstraction, reinvented stdlib or existing code, future-proofing beyond the task) — flagging minimality only when it creates risk, behavior change, or significant complexity. For every finding record: the file and location, the defect claim, how it fails concretely, and an evidence grade of strong (deterministic check, direct inspection), medium (clear code-path reading), or weak (suspicion). Respond with ONLY a JSON status envelope whose context_updates set context.findings.list (the findings with locations, claims, and evidence grades) and context.findings.scope (the resolved ref, merge base, and files reviewed).'
     contracts:
       response: status_envelope
       reads_context:
+      - context.request.source_ref
       - context.request.objective
-      - context.request.artifact_path
-      - context.request.target_paths
-      - context.request.constraints
-      - context.request.acceptance_criteria
-      - context.request.validation_command
-      - context.request.base_ref
+      writes_context:
+      - context.findings.list
+      - context.findings.scope
+  verify_findings:
+    kind: agent_task
+    label: Verify Findings
+    config:
+      kind: agent_task
+      prompt: 'You are the adversarial verifier of a code review. Treat every finding in context.findings.list as an untrusted claim and actively try to refute it against the repository without modifying any files: re-derive the failure scenario, check whether guards or callers the reviewer missed make it unreachable, and confirm the cited code actually behaves as claimed. Drop findings you refute and findings supported only by weak evidence you cannot strengthen. Do not add new findings. Respond with ONLY a JSON status envelope whose context_updates set context.findings.confirmed (the surviving findings, most severe first, each with its verified failure scenario and final evidence grade) and context.findings.rejected (refuted findings with the refutation, so the reviewer''s misses are auditable).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.findings.list
+      - context.findings.scope
+      writes_context:
+      - context.findings.confirmed
+      - context.findings.rejected
+  report:
+    kind: agent_task
+    label: Report
+    config:
+      kind: agent_task
+      prompt: 'Write the final review verdict for the change described by context.findings.scope, based only on context.findings.confirmed and context.findings.rejected. Lead with the overall assessment: whether the change is safe to integrate, blocked by specific findings, or acceptable with nonblocking cleanup. Present each confirmed finding with its location, concrete failure scenario, and evidence grade; keep rejected findings as a short auditable appendix. Do not soften confirmed findings or resurrect rejected ones. Respond with ONLY a JSON status envelope whose context_updates set context.review.verdict (integrate, blocked, or cleanup) and context.review.summary (the complete report).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.findings.scope
+      - context.findings.confirmed
+      - context.findings.rejected
+      writes_context:
+      - context.review.verdict
+      - context.review.summary
   done:
     kind: exit
     label: Done
@@ -70,7 +77,13 @@ nodes:
       kind: exit
 edges:
 - from: start
-  to: execute
-- from: execute
+  to: find_issues
+- from: find_issues
+  to: verify_findings
+  condition: outcome=success
+- from: verify_findings
+  to: report
+  condition: outcome=success
+- from: report
   to: done
   condition: outcome=success

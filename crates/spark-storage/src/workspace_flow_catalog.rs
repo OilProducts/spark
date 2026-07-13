@@ -26,17 +26,11 @@ pub const ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES: &[&str] =
     &[EXECUTION_LOCK_CONFLICT_POLICY_QUEUE];
 
 pub const DEFAULT_AGENT_REQUESTABLE_FLOWS: &[&str] = &[
-    "software-development/audit-codebase-health.yaml",
-    "software-development/explore-codebase.yaml",
-    "software-development/implement-change-request.yaml",
     "software-development/implement-change.yaml",
     "software-development/investigate-bug.yaml",
     "software-development/merge-change.yaml",
-    "software-development/plan-change.yaml",
-    "software-development/repair-validation.yaml",
     "software-development/review-change.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
-    "software-development/update-dependencies.yaml",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

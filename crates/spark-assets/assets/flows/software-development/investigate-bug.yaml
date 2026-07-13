@@ -1,37 +1,20 @@
 schema_version: '1'
 id: investigate_bug
 title: Investigate Bug
-description: Reproduce or characterize a failure and produce a repair-ready root-cause diagnosis without editing.
-goal: Reproduce or characterize a failure and produce a repair-ready root-cause diagnosis without editing.
+description: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and on human approval implement it in an isolated worktree.
+goal: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and on human approval implement it in an isolated worktree.
 inputs:
 - key: context.request.objective
-  label: Objective
+  label: Bug Report
   type: string
-  description: Inline task objective. Provide this or artifact_path.
-  required: false
-- key: context.request.artifact_path
-  label: Artifact Path
-  type: string
-  description: Repository-relative task artifact. Provide this or objective.
-  required: false
+  description: The observed defect, including reproduction hints and expected behavior when known.
+  required: true
 - key: context.request.target_paths
   label: Target Paths
   type: string[]
   required: false
-- key: context.request.constraints
-  label: Constraints
-  type: string[]
-  required: false
-- key: context.request.acceptance_criteria
-  label: Acceptance Criteria
-  type: string[]
-  required: false
 - key: context.request.validation_command
   label: Validation Command
-  type: string
-  required: false
-- key: context.request.base_ref
-  label: Base Ref
   type: string
   required: false
 defaults:
@@ -47,22 +30,70 @@ nodes:
     label: Start
     config:
       kind: start
-  execute:
+  investigate:
     kind: agent_task
-    label: Execute
+    label: Investigate
     config:
       kind: agent_task
-      prompt: 'Normalize the task, inspect the current checkout without changing any files, reproduce or characterize the failure through real interfaces, identify the root cause and affected path, and report a repair-ready diagnosis. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; reject both or neither, and reject absolute or repository-escaping artifact paths. Incorporate optional target_paths, constraints, acceptance_criteria, validation_command, and base_ref. Never edit repository files, create branches or worktrees, or commit. Deliver the full result in your response and respond with ONLY a JSON status envelope.'
+      prompt: 'Investigate the defect described by context.request.objective in the current checkout without changing any files. Reproduce or characterize the failure through real interfaces (tests, CLI, API, observable state), trace the failing execution path, and identify the root cause and affected surfaces. If context.review.required_changes is present, it lists gaps a verifier found in your previous investigation; close them. Prefer deterministic evidence: commands you ran, files and line ranges you inspected, observed versus expected behavior. Do not propose or implement fixes yet. Respond with ONLY a JSON status envelope whose context_updates set context.investigation.summary (the diagnosis), context.investigation.root_cause (the specific defective code path), and context.investigation.evidence (the concrete evidence trail: commands, outputs, file references).'
     contracts:
       response: status_envelope
       reads_context:
       - context.request.objective
-      - context.request.artifact_path
       - context.request.target_paths
-      - context.request.constraints
-      - context.request.acceptance_criteria
+      - context.review.required_changes
+      writes_context:
+      - context.investigation.summary
+      - context.investigation.root_cause
+      - context.investigation.evidence
+  verify_investigation:
+    kind: agent_task
+    label: Verify Investigation
+    config:
+      kind: agent_task
+      prompt: 'You are the adversarial verifier of a bug investigation. Treat context.investigation.summary, context.investigation.root_cause, and context.investigation.evidence as untrusted claims and actively try to refute them against the repository without changing any files. Re-run or independently reproduce the cited evidence where practical; check that the claimed root cause is on the real execution path of the reported defect and not merely nearby suspicious code; look for alternative causes the investigation did not rule out. Grade the evidence: strong (deterministic reproduction, direct inspection), medium (clear code-path reading), weak (assertion, absence of failure). Return outcome success only when the diagnosis survives refutation with strong or sufficient medium evidence for the root cause. On failure, set context_updates for context.review.required_changes describing precisely what is unproven, contradicted, or unexamined so the investigator can close the gaps. Respond with ONLY a JSON status envelope.'
+    runtime:
+      error_policy: continue
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+      - context.investigation.summary
+      - context.investigation.root_cause
+      - context.investigation.evidence
+      writes_context:
+      - context.review.required_changes
+  propose_plan:
+    kind: agent_task
+    label: Propose Repair Plan
+    config:
+      kind: agent_task
+      prompt: 'Turn the verified diagnosis (context.investigation.summary, context.investigation.root_cause, context.investigation.evidence) into one decision-complete repair plan without changing any files. The plan must state: the bounded objective of the fix, the target paths, explicit acceptance criteria including a regression check that reproduces the original defect, compatibility constraints, and the truthful validation command (use context.request.validation_command when provided, otherwise discover it from the repository). Prefer the smallest coherent fix over redesign. If the human gate previously routed back here, incorporate any guidance visible in context. Respond with ONLY a JSON status envelope whose context_updates set context.plan.objective (a self-contained task statement an implementer can execute without reading this run) and context.plan.validation_command.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.investigation.summary
+      - context.investigation.root_cause
+      - context.investigation.evidence
       - context.request.validation_command
-      - context.request.base_ref
+      writes_context:
+      - context.plan.objective
+      - context.plan.validation_command
+  approve_plan:
+    kind: human_gate
+    label: Approve Repair Plan
+    config:
+      kind: human_gate
+      prompt: 'Review the verified diagnosis and proposed repair plan in this run. Approve to implement the fix in an isolated worktree, request a revised plan, or stop with the investigation recorded.'
+  implement:
+    kind: subflow
+    label: Implement Fix
+    config:
+      kind: subflow
+      flow_ref: implement-change.yaml
+      input_map:
+        context.request.objective: context.plan.objective
+        context.request.validation_command: context.plan.validation_command
   done:
     kind: exit
     label: Done
@@ -70,7 +101,30 @@ nodes:
       kind: exit
 edges:
 - from: start
-  to: execute
-- from: execute
+  to: investigate
+- from: investigate
+  to: verify_investigation
+  condition: outcome=success
+- from: verify_investigation
+  to: propose_plan
+  label: Verified
+  condition: outcome=success
+- from: verify_investigation
+  to: investigate
+  label: Gaps Found
+  condition: outcome=fail
+- from: propose_plan
+  to: approve_plan
+  condition: outcome=success
+- from: approve_plan
+  to: implement
+  label: Approve & Implement
+- from: approve_plan
+  to: propose_plan
+  label: Revise Plan
+- from: approve_plan
+  to: done
+  label: Investigation Only
+- from: implement
   to: done
   condition: outcome=success

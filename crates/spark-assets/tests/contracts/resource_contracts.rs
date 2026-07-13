@@ -11,22 +11,14 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "examples/simple-linear.yaml",
     "examples/supervision/implementation-worker.yaml",
     "examples/supervision/supervised-implementation.yaml",
-    "software-development/audit-codebase-health.yaml",
-    "software-development/explore-codebase.yaml",
-    "software-development/implement-change-request.yaml",
     "software-development/implement-change.yaml",
     "software-development/investigate-bug.yaml",
     "software-development/merge-change.yaml",
-    "software-development/plan-change.yaml",
-    "software-development/repair-validation.yaml",
     "software-development/review-change.yaml",
     "software-development/spec-implementation/implement-milestone.yaml",
     "software-development/spec-implementation/implement-spec.yaml",
-    "software-development/update-dependencies.yaml",
     "software-development/workers/implement-task.yaml",
-    "software-development/workers/repair-validation-task.yaml",
     "software-development/workers/resolve-merge-conflicts.yaml",
-    "software-development/workers/update-dependencies-task.yaml",
 ];
 
 #[test]

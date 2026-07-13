@@ -261,7 +261,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     fs::create_dir_all(&project_path).expect("project dir");
     write_flow(
         &settings,
-        "software-development/implement-change-request.yaml",
+        "software-development/implement-change.yaml",
         simple_flow(),
     );
     seed_proposed_plan(
@@ -321,7 +321,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     let launch = &approved["flow_launches"][0];
     assert_eq!(
         launch["flow_name"],
-        "software-development/implement-change-request.yaml"
+        "software-development/implement-change.yaml"
     );
     assert_eq!(launch["status"], "launched");
     assert_eq!(launch["run_id"], plan["run_id"]);

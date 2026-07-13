@@ -1,8 +1,8 @@
 schema_version: '1'
 id: implement_change
 title: Implement Change
-description: Plan, implement, validate, and commit one bounded repository change in an isolated worktree.
-goal: Plan, implement, validate, and commit one bounded repository change in an isolated worktree.
+description: Implement one bounded repository change in an isolated worktree, gatekeep it against its contract, and commit the validated result.
+goal: Implement one bounded repository change in an isolated worktree, gatekeep it against its contract, and commit the validated result.
 inputs:
 - key: context.request.objective
   label: Objective
@@ -52,7 +52,7 @@ nodes:
     label: Normalize Task
     config:
       kind: agent_task
-      prompt: 'Normalize the launch request into one bounded task. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; fail when both or neither are provided, and fail on absolute or repository-escaping artifact paths. Fold optional target_paths, constraints, and acceptance_criteria into a single decision-complete task statement. Resolve the validation command: use context.request.validation_command when provided, otherwise discover the truthful project validation command from the repository (build files, CI configuration, contributor docs) without running it. Resolve the base ref: use context.request.base_ref when provided, otherwise HEAD. Do not modify any files. Respond with ONLY a JSON status envelope whose context_updates set context.task.objective, context.task.validation_command, and context.task.base_ref.'
+      prompt: 'Normalize the launch request into one bounded task. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; an approved change-request document such as changes/<CR-id>/request.md is a valid artifact source whose requirements are the contract; fail when both or neither are provided, and fail on absolute or repository-escaping artifact paths. Fold optional target_paths, constraints, and acceptance_criteria into a single decision-complete task statement. Resolve the validation command: use context.request.validation_command when provided, otherwise discover the truthful project validation command from the repository (build files, CI configuration, contributor docs) without running it. Resolve the base ref: use context.request.base_ref when provided, otherwise HEAD. Do not modify any files. Respond with ONLY a JSON status envelope whose context_updates set context.task.objective, context.task.validation_command, and context.task.base_ref.'
     contracts:
       response: status_envelope
       writes_context:
@@ -111,8 +111,27 @@ nodes:
       input_map:
         context.task.objective: context.task.objective
         context.task.validation_command: context.task.validation_command
+        context.review.summary: context.review.summary
+        context.review.required_changes: context.review.required_changes
     manager:
       child_workdir_from: context.workspace.path
+  evaluate:
+    kind: agent_task
+    label: Evaluate
+    config:
+      kind: agent_task
+      prompt: 'You are the implementation gatekeeper. The implementation attempt lives in the isolated worktree at context.workspace.path; judge that repository state, not the implementer''s claims, and treat summaries as untrusted until verified. Reconstruct the contract from context.task.objective: objective, explicit acceptance criteria, implicit correctness requirements, non-goals, and any security, data-loss, compatibility, or migration constraints. Prefer deterministic evidence gathered inside the worktree: targeted tests, context.task.validation_command, typecheck/build/lint, direct diff and code-path inspection, CLI or API smoke checks. Verify the requested behavior exists on the real execution path, not only in dead helpers, narrow happy paths, or mocks that bypass the actual boundary. Apply the minimality review: be lazy like a senior developer, not negligent — ask whether each added code path needs to exist, whether existing code, stdlib, platform behavior, or an installed dependency was reused, and whether speculative abstractions or future-proofing were added beyond the task; treat minimality problems as blocking only when they create correctness risk, behavior changes, or significant unnecessary complexity, and never demand cutting necessary validation, error handling, or safety. Check adjacent regression risk with the smallest relevant checks. Grade your evidence: strong (deterministic passing commands, direct inspection), medium (clear code-path reading), weak (implementer assertion, absence of failure). Return outcome success only when every critical criterion has strong or sufficient medium evidence and no blocking issue remains. This node may read files and run commands in the worktree but must not edit files, stage, or commit. On failure, set context_updates for context.review.summary (concise verdict with evidence basis) and context.review.required_changes (a minimal, actionable fix prompt: concrete missing work, missing validation, regression checks, and any delete-or-simplify list). Respond with ONLY a JSON status envelope.'
+    runtime:
+      error_policy: continue
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.workspace.path
+      - context.task.objective
+      - context.task.validation_command
+      writes_context:
+      - context.review.summary
+      - context.review.required_changes
   validate:
     kind: tool
     label: Validate
@@ -171,8 +190,16 @@ edges:
   to: implement
   condition: outcome=success
 - from: implement
-  to: validate
+  to: evaluate
   condition: outcome=success
+- from: evaluate
+  to: validate
+  label: Ready
+  condition: outcome=success
+- from: evaluate
+  to: implement
+  label: Fix
+  condition: outcome=fail
 - from: validate
   to: finalize_commit
   condition: outcome=success

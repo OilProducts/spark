@@ -196,16 +196,10 @@ fn legacy_dot_catalog_entries_are_skipped_instead_of_failing_load() {
     assert_eq!(
         missing,
         vec![
-            "software-development/audit-codebase-health.yaml".to_string(),
-            "software-development/explore-codebase.yaml".to_string(),
-            "software-development/implement-change-request.yaml".to_string(),
             "software-development/implement-change.yaml".to_string(),
             "software-development/investigate-bug.yaml".to_string(),
             "software-development/merge-change.yaml".to_string(),
-            "software-development/plan-change.yaml".to_string(),
-            "software-development/repair-validation.yaml".to_string(),
             "software-development/review-change.yaml".to_string(),
-            "software-development/update-dependencies.yaml".to_string(),
         ]
     );
     let rewritten = fs::read_to_string(config_dir.join("flow-catalog.toml")).expect("catalog");

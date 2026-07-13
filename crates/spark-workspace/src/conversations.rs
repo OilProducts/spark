@@ -46,7 +46,7 @@ const REQUEST_USER_INPUT_EXPIRED_ERROR: &str =
     "The requested input expired before the answer could be used.";
 const MISSING_FINAL_ANSWER_ERROR: &str =
     "codex app-server completed the turn without a final answer item.";
-const IMPLEMENT_CHANGE_REQUEST_FLOW: &str = "software-development/implement-change-request.yaml";
+const IMPLEMENT_CHANGE_FLOW: &str = "software-development/implement-change.yaml";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationSummary {
@@ -1658,7 +1658,7 @@ impl WorkspaceConversationService {
             return Ok(snapshot);
         }
 
-        ensure_flow_exists(&self.settings, IMPLEMENT_CHANGE_REQUEST_FLOW)?;
+        ensure_flow_exists(&self.settings, IMPLEMENT_CHANGE_FLOW)?;
         let project_root = PathBuf::from(&project_path);
         if !project_root.is_dir() {
             return Err(WorkspaceError::Validation(
@@ -1684,20 +1684,19 @@ impl WorkspaceConversationService {
             .ok_or_else(|| {
                 WorkspaceError::Validation("Proposed plan content is required.".to_string())
             })?;
-        let (change_request_id, request_path) =
+        let (_change_request_id, request_path) =
             write_change_request(&project_root, &title, &content, &now)?;
         let relative_request_path = relative_project_path(&project_root, &request_path);
         let flow_launch_id = random_artifact_id("flow-launch");
         let flow_launch_segment_id = format!("segment-artifact-{flow_launch_id}");
         let launch_context = json!({
-            "context.request.change_request_id": change_request_id.clone(),
-            "context.request.change_request_path": relative_request_path.clone(),
+            "context.request.artifact_path": relative_request_path.clone(),
         });
         let flow_launch = json!({
             "id": flow_launch_id.clone(),
             "created_at": now.clone(),
             "updated_at": now.clone(),
-            "flow_name": IMPLEMENT_CHANGE_REQUEST_FLOW,
+            "flow_name": IMPLEMENT_CHANGE_FLOW,
             "summary": format!("Implement approved change request: {title}"),
             "project_path": project_path.clone(),
             "conversation_id": conversation_id,
@@ -1758,11 +1757,8 @@ impl WorkspaceConversationService {
             })?;
         let launch_artifact =
             artifact_at(&snapshot, "flow_launches", launch_index).unwrap_or_default();
-        let launch_result = self.launch_workspace_flow(
-            &project_path,
-            IMPLEMENT_CHANGE_REQUEST_FLOW,
-            &launch_artifact,
-        );
+        let launch_result =
+            self.launch_workspace_flow(&project_path, IMPLEMENT_CHANGE_FLOW, &launch_artifact);
         let now = iso_now();
         update_artifact_at(&mut snapshot, "proposed_plans", plan_index, |artifact| {
             set_string_value(artifact, "updated_at", &now);
@@ -1781,7 +1777,7 @@ impl WorkspaceConversationService {
         });
         update_artifact_at(&mut snapshot, "flow_launches", launch_index, |artifact| {
             set_string_value(artifact, "updated_at", &now);
-            set_string_value(artifact, "flow_name", IMPLEMENT_CHANGE_REQUEST_FLOW);
+            set_string_value(artifact, "flow_name", IMPLEMENT_CHANGE_FLOW);
             match &launch_result {
                 Ok(run_id) => {
                     set_string_value(artifact, "status", "launched");
@@ -1797,10 +1793,10 @@ impl WorkspaceConversationService {
         });
         let launch_event_message = match &launch_result {
             Ok(run_id) => format!(
-                "Launched proposed plan {plan_id} as run {run_id} using {IMPLEMENT_CHANGE_REQUEST_FLOW}."
+                "Launched proposed plan {plan_id} as run {run_id} using {IMPLEMENT_CHANGE_FLOW}."
             ),
             Err(error) => format!(
-                "Approved proposed plan {plan_id} failed to launch {IMPLEMENT_CHANGE_REQUEST_FLOW}: {error}"
+                "Approved proposed plan {plan_id} failed to launch {IMPLEMENT_CHANGE_FLOW}: {error}"
             ),
         };
         let launched_plan =

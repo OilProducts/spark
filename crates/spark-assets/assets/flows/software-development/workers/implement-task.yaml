@@ -20,12 +20,14 @@ nodes:
     kind: agent_task
     config:
       kind: agent_task
-      prompt: 'Implement the task described by context.task.objective in the current working directory, which is an isolated git worktree on a dedicated branch. Inspect the repository, make the smallest coherent implementation, and test and review observable behavior; context.task.validation_command names the project validation gate. Do not commit, push, create branches or worktrees, or clean anything up; the parent flow validates, commits, and releases the workspace. Respond with ONLY a JSON status envelope.'
+      prompt: 'Implement the task described by context.task.objective in the current working directory, which is an isolated git worktree on a dedicated branch. Inspect the repository, make the smallest coherent implementation, and test and review observable behavior; context.task.validation_command names the project validation gate. If context.review.required_changes is present, it is mandatory feedback from the gatekeeper evaluation of your previous attempt; address it directly before finishing. When the task source is an approved change-request document under changes/<CR-id>/, also write changes/<CR-id>/result.md summarizing the shipped result so it lands in the commit. Do not commit, push, create branches or worktrees, or clean anything up; the parent flow evaluates, validates, commits, and releases the workspace. Respond with ONLY a JSON status envelope.'
     contracts:
       response: status_envelope
       reads_context:
       - context.task.objective
       - context.task.validation_command
+      - context.review.summary
+      - context.review.required_changes
   done:
     kind: exit
     config:
