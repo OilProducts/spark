@@ -49,6 +49,21 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
   return input.url
 }
 
+const availableCodexModelsResponse = () => new Response(JSON.stringify({
+  providers: { codex: { status: 'available', error: null } },
+  models: [{
+    provider: 'codex',
+    id: 'gpt-5.4',
+    display: 'GPT-5.4',
+    is_default: true,
+    supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'],
+    default_reasoning_effort: 'medium',
+  }],
+}), {
+  status: 200,
+  headers: { 'Content-Type': 'application/json' },
+})
+
 const testRevisionFromTimestamp = (value: unknown): number => {
   if (typeof value !== 'string') return 0
   const parsed = Date.parse(value)
@@ -638,6 +653,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -735,6 +751,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -1493,6 +1510,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -2254,6 +2272,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -2501,6 +2520,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -2879,6 +2899,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -3133,6 +3154,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -3344,6 +3366,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -3882,6 +3905,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -4638,6 +4662,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -4961,6 +4986,7 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -5078,6 +5104,7 @@ describe('ProjectsPanel', () => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) {
           return new Response(JSON.stringify({
+            providers: { codex: { status: 'available', error: null } },
             models: [
               {
                 id: 'gpt-5.4-mini',
@@ -5203,6 +5230,7 @@ describe('ProjectsPanel', () => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) {
           return new Response(JSON.stringify({
+            providers: { codex: { status: 'available', error: null } },
             models: [
               {
                 id: 'gpt-5.4',
@@ -5417,6 +5445,7 @@ describe('ProjectsPanel', () => {
         const url = resolveRequestUrl(input)
         if (url.includes('/workspace/api/projects/chat-models')) {
           return new Response(JSON.stringify({
+            providers: { codex: { status: 'available', error: null } },
             models: [
               {
                 id: 'gpt-5.4',
@@ -5484,6 +5513,63 @@ describe('ProjectsPanel', () => {
       expect(screen.getByTestId('project-ai-conversation-model-select')).toHaveValue('gpt-5.4-mini')
       expect(screen.getByTestId('project-ai-conversation-reasoning-effort-select')).toHaveValue('low')
     })
+  })
+
+  it('disables Codex model selection and sending when model discovery fails', async () => {
+    const user = userEvent.setup()
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) {
+          return new Response(JSON.stringify({
+            providers: {
+              codex: {
+                status: 'unavailable',
+                error: 'Codex model discovery failed: app-server exited',
+              },
+            },
+            models: [],
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/metadata')) {
+          return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/workspace/api/projects/conversations')) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify({ detail: 'Unknown conversation' }), { status: 404 })
+      }),
+    )
+
+    act(() => {
+      useStore.getState().registerProject('/tmp/unavailable-model-project')
+      useStore.getState().setActiveProjectPath('/tmp/unavailable-model-project')
+    })
+
+    renderProjectsPanel()
+
+    const availability = await screen.findByTestId('project-chat-model-availability')
+    expect(availability).toHaveTextContent('Codex model discovery failed: app-server exited')
+    const modelSelect = screen.getByTestId('project-ai-conversation-model-select')
+    expect(modelSelect).toBeDisabled()
+    expect(within(modelSelect).getByRole('option')).toHaveTextContent('Models unavailable')
+    expect(within(modelSelect).queryByRole('option', { name: 'gpt-5.5' })).not.toBeInTheDocument()
+    expect(within(modelSelect).queryByRole('option', { name: 'gpt-5.2-codex' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('project-ai-conversation-provider-select')).toBeEnabled()
+
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Keep this draft.')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
   })
 
 })

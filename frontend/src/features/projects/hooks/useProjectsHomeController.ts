@@ -8,6 +8,7 @@ import {
     submitConversationRequestUserInputValidated,
     updateConversationSettingsValidated,
     type ProjectChatModelMetadataResponse,
+    type ProjectChatModelsResponse,
 } from '@/lib/workspaceClient'
 import { useHomeSidebarLayout } from './useHomeSidebarLayout'
 import { useConversationComposer } from './useConversationComposer'
@@ -50,12 +51,14 @@ function buildConversationHistoryRevisionKey(history: ConversationTimelineEntry[
     }
 }
 
-const FALLBACK_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh']
+const FALLBACK_REASONING_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 const REASONING_EFFORT_LABELS: Record<string, string> = {
     low: 'Low',
     medium: 'Medium',
     high: 'High',
     xhigh: 'XHigh',
+    max: 'Max',
+    ultra: 'Ultra',
 }
 
 function dedupeOptions(options: Array<{ value: string; label: string }>) {
@@ -70,18 +73,29 @@ function dedupeOptions(options: Array<{ value: string; label: string }>) {
 }
 
 function buildModelOptions(
-    models: ProjectChatModelMetadataResponse[],
+    response: ProjectChatModelsResponse | undefined,
     selectedModel: string,
     provider: string,
 ) {
     const normalizedProvider = provider || 'codex'
-    const metadataOptions = models
+    const metadataOptions = (response?.models || [])
         .filter((model) => (model.provider || 'codex') === normalizedProvider)
         .map((model) => ({
         value: model.id,
         label: model.display || model.id,
     }))
-    const fallbackOptions = getModelSuggestions(provider).map((model) => ({
+    if (normalizedProvider === 'codex') {
+        if (!response) {
+            return [{ value: '', label: 'Loading models...' }]
+        }
+        if (response.providers.codex.status === 'unavailable') {
+            return [{ value: '', label: 'Models unavailable' }]
+        }
+        return metadataOptions.length > 0
+            ? dedupeOptions(metadataOptions)
+            : [{ value: '', label: 'No models available' }]
+    }
+    const fallbackOptions = getModelSuggestions(normalizedProvider).map((model) => ({
         value: model,
         label: model,
     }))
@@ -170,7 +184,7 @@ export function useProjectsHomeController() {
     })
     const [requestUserInputActionError, setRequestUserInputActionError] = useState<string | null>(null)
     const [submittingRequestUserInputIds, setSubmittingRequestUserInputIds] = useState<Record<string, boolean>>({})
-    const [chatModelMetadataByProjectPath, setChatModelMetadataByProjectPath] = useState<Record<string, ProjectChatModelMetadataResponse[]>>({})
+    const [chatModelsByProjectPath, setChatModelsByProjectPath] = useState<Record<string, ProjectChatModelsResponse>>({})
     const {
         conversationBodyRef,
         homeSidebarRef,
@@ -221,13 +235,32 @@ export function useProjectsHomeController() {
         latestFlowLaunchId,
         latestFlowRunRequestId,
     } = projectsHomeViewModel
-    const activeProjectChatModels = activeProjectPath
-        ? chatModelMetadataByProjectPath[activeProjectPath] || []
-        : []
+    const activeProjectChatModelsResponse = activeProjectPath
+        ? chatModelsByProjectPath[activeProjectPath]
+        : undefined
+    const activeProjectChatModels = activeProjectChatModelsResponse?.models || []
     const chatModelOptions = useMemo(
-        () => buildModelOptions(activeProjectChatModels, activeProjectChatModel, activeProjectChatProvider),
-        [activeProjectChatModel, activeProjectChatModels, activeProjectChatProvider],
+        () => buildModelOptions(activeProjectChatModelsResponse, activeProjectChatModel, activeProjectChatProvider),
+        [activeProjectChatModel, activeProjectChatModelsResponse, activeProjectChatProvider],
     )
+    const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
+    const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')
+    const isCodexDiscoveryUnavailable = isCodexProvider && (
+        activeProjectChatModelsResponse?.providers.codex.status === 'unavailable'
+        || (activeProjectChatModelsResponse?.providers.codex.status === 'available' && codexModels.length === 0)
+    )
+    const isChatModelSelectable = !isCodexProvider || codexModels.some((model) => model.id === activeProjectChatModel)
+    const isChatModelReady = !isCodexProvider || Boolean(activeProjectChatModelsResponse) && isChatModelSelectable
+    const chatModelAvailabilityMessage = isCodexProvider
+        ? activeProjectChatModelsResponse?.providers.codex.status === 'unavailable'
+            ? activeProjectChatModelsResponse.providers.codex.error || 'Codex model discovery failed.'
+            : activeProjectChatModelsResponse?.providers.codex.status === 'available' && codexModels.length === 0
+                ? 'No Codex models are available.'
+                : activeProjectChatModelsResponse && !isChatModelSelectable
+                    ? 'The saved Codex model is no longer available. Select another model.'
+                    : null
+        : null
+    const isChatSubmissionDisabled = isChatInputDisabled || !isChatModelReady
     const chatProviderOptions = useMemo(
         () => LLM_PROVIDER_OPTIONS.map((provider) => ({
             value: provider,
@@ -318,7 +351,7 @@ export function useProjectsHomeController() {
     }, [activeProjectPath, conversationBodyRef, conversationHistoryRevisionKey])
 
     useEffect(() => {
-        if (!activeProjectPath || activeProjectPath in chatModelMetadataByProjectPath) {
+        if (!activeProjectPath || activeProjectPath in chatModelsByProjectPath) {
             return
         }
         let isCancelled = false
@@ -326,16 +359,24 @@ export function useProjectsHomeController() {
             try {
                 const payload = await fetchProjectChatModelsValidated(activeProjectPath)
                 if (!isCancelled) {
-                    setChatModelMetadataByProjectPath((current) => ({
+                    setChatModelsByProjectPath((current) => ({
                         ...current,
-                        [activeProjectPath]: payload.models,
+                        [activeProjectPath]: payload,
                     }))
                 }
-            } catch {
+            } catch (error) {
                 if (!isCancelled) {
-                    setChatModelMetadataByProjectPath((current) => ({
+                    setChatModelsByProjectPath((current) => ({
                         ...current,
-                        [activeProjectPath]: [],
+                        [activeProjectPath]: {
+                            models: [],
+                            providers: {
+                                codex: {
+                                    status: 'unavailable',
+                                    error: extractApiErrorMessage(error, 'Unable to discover Codex models.'),
+                                },
+                            },
+                        },
                     }))
                 }
             }
@@ -344,7 +385,7 @@ export function useProjectsHomeController() {
         return () => {
             isCancelled = true
         }
-    }, [activeProjectPath, chatModelMetadataByProjectPath])
+    }, [activeProjectPath, chatModelsByProjectPath])
 
     const {
         onChatComposerKeyDown,
@@ -353,7 +394,7 @@ export function useProjectsHomeController() {
     } = useConversationComposer({
         activeProjectPath,
         chatDraft,
-        isChatInputDisabled,
+        isChatInputDisabled: isChatSubmissionDisabled,
         model: activeProjectChatModel,
         provider: activeProjectChatProvider,
         reasoningEffort: activeProjectChatReasoningEffort,
@@ -553,12 +594,15 @@ export function useProjectsHomeController() {
             chatModelOptions,
             chatProviderOptions,
             chatReasoningEffortOptions,
+            chatModelAvailabilityMessage,
             hasRenderableConversationHistory,
             isConversationPinnedToBottom,
             isNarrowViewport,
             chatDraft,
             chatSendButtonLabel,
             isChatInputDisabled,
+            isChatModelSelectDisabled: isCodexDiscoveryUnavailable,
+            isChatSendDisabled: isChatSubmissionDisabled,
             panelError,
             conversationBodyRef,
             onSyncConversationPinnedState: syncConversationPinnedState,

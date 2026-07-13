@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
 use spark_workspace::WorkspaceProjectService;
@@ -323,10 +323,49 @@ fn codex_chat_models_map_live_metadata_and_synthesize_a_default() {
     // Missing effort metadata falls back to the full ladder + medium.
     assert_eq!(
         mapped[1].supported_reasoning_efforts,
-        vec!["low", "medium", "high", "xhigh"]
+        vec!["low", "medium", "high", "xhigh", "max", "ultra"]
     );
     assert_eq!(
         mapped[1].default_reasoning_effort.as_deref(),
         Some("medium")
     );
+}
+
+#[test]
+fn chat_models_report_codex_discovery_failure_without_synthesizing_models() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let response = spark_workspace::models::chat_models_with_codex_result(
+        &settings(temp.path()),
+        Err("Codex model discovery failed: app-server exited".to_string()),
+    )
+    .expect("model response");
+
+    assert_eq!(response["providers"]["codex"]["status"], "unavailable");
+    assert_eq!(
+        response["providers"]["codex"]["error"],
+        "Codex model discovery failed: app-server exited"
+    );
+    assert!(response["models"]
+        .as_array()
+        .expect("models")
+        .iter()
+        .all(|model| model["provider"] != "codex"));
+}
+
+#[test]
+fn chat_models_preserve_a_successful_empty_codex_model_list() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let response = spark_workspace::models::chat_models_with_codex_result(
+        &settings(temp.path()),
+        Ok(Vec::new()),
+    )
+    .expect("model response");
+
+    assert_eq!(response["providers"]["codex"]["status"], "available");
+    assert_eq!(response["providers"]["codex"]["error"], Value::Null);
+    assert!(response["models"]
+        .as_array()
+        .expect("models")
+        .iter()
+        .all(|model| model["provider"] != "codex"));
 }

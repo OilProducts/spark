@@ -681,7 +681,7 @@ describe('Editor layout behavior', () => {
       a: { x: 20, y: 30 },
       b: { x: 360, y: 210 },
     })
-    await user.click(screen.getByRole('button', { name: 'Auto Arrange' }))
+    await user.click(screen.getByRole('button', { name: 'Arrange' }))
 
     await waitFor(() => {
       expect(currentNodePosition('a')).toEqual({ x: 20, y: 30 })
@@ -697,7 +697,7 @@ describe('Editor layout behavior', () => {
       a: { x: 140, y: 10 },
       b: { x: 500, y: 10 },
     })
-    await user.click(screen.getByRole('button', { name: 'Reset Saved Layout' }))
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
 
     await waitFor(() => {
       expect(removeItemSpy).toHaveBeenCalledWith(storageKeyFor('flow-a.dot'))
@@ -741,17 +741,17 @@ describe('Editor layout behavior', () => {
 
     await waitFor(() => {
       expect(readSavedLayout('flow-a.dot')).toEqual(parentLayout)
-      expect(screen.getByRole('button', { name: 'Expanded Child Flow' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Expanded' })).toBeInTheDocument()
     })
 
-    await user.click(screen.getByRole('button', { name: 'Expanded Child Flow' }))
+    await user.click(screen.getByRole('button', { name: 'Expanded' }))
 
     await waitFor(() => {
       expect(screen.getByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')).toBeInTheDocument()
       expect(readSavedLayout('flow-a.dot')).toEqual(parentLayout)
     })
 
-    await user.click(screen.getByRole('button', { name: 'Parent Only' }))
+    await user.click(screen.getByRole('button', { name: 'Parent' }))
 
     await waitFor(() => {
       expect(screen.queryByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')).not.toBeInTheDocument()

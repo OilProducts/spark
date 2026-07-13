@@ -33,6 +33,7 @@ const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
 static CODEX_SPARK_HOME: OnceLock<PathBuf> = OnceLock::new();
 const COLLABORATION_MODE_DEFAULT: &str = "default";
 const COLLABORATION_MODE_PLAN: &str = "plan";
+const STDERR_DIAGNOSTIC_MAX_LINES: usize = 50;
 
 pub fn configure_codex_spark_home(path: impl Into<PathBuf>) -> Result<(), String> {
     let path = path.into();
@@ -335,6 +336,8 @@ pub struct CodexAppServerClient {
     pending_responses: BTreeMap<String, VecDeque<Value>>,
     pending_request_user_input: Option<PendingRequestUserInputResponse>,
     trace_sink: Option<CodexJsonrpcTraceSink>,
+    executable: PathBuf,
+    stderr_lines: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl CodexAppServerClient {
@@ -352,19 +355,26 @@ impl CodexAppServerClient {
                 working_dir.display()
             )));
         }
-        let mut command = Command::new(codex_executable());
+        let executable = codex_executable();
+        let mut command = Command::new(&executable);
         command
             .arg("app-server")
             .current_dir(&working_dir)
             .envs(build_codex_runtime_environment()?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
-                CodexAppServerError::configuration("codex app-server not found on PATH")
+                CodexAppServerError::configuration(format!(
+                    "codex app-server executable not found: {}",
+                    executable.display()
+                ))
             } else {
-                CodexAppServerError::runtime(format!("codex app-server launch failed: {error}"))
+                CodexAppServerError::runtime(format!(
+                    "codex app-server launch failed for {}: {error}",
+                    executable.display()
+                ))
             }
         })?;
         let stdin = child
@@ -374,12 +384,28 @@ impl CodexAppServerClient {
         let stdout = child.stdout.take().ok_or_else(|| {
             CodexAppServerError::runtime("codex app-server did not expose stdout")
         })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            CodexAppServerError::runtime("codex app-server did not expose stderr")
+        })?;
         let (stdout_sender, stdout_receiver) = mpsc::channel();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines().map_while(Result::ok) {
                 if stdout_sender.send(line).is_err() {
                     break;
+                }
+            }
+        });
+        let stderr_lines = Arc::new(Mutex::new(VecDeque::new()));
+        let stderr_sink = Arc::clone(&stderr_lines);
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut lines) = stderr_sink.lock() {
+                    if lines.len() == STDERR_DIAGNOSTIC_MAX_LINES {
+                        lines.pop_front();
+                    }
+                    lines.push_back(line);
                 }
             }
         });
@@ -392,18 +418,26 @@ impl CodexAppServerClient {
             pending_responses: BTreeMap::new(),
             pending_request_user_input: None,
             trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
+            executable,
+            stderr_lines,
         };
-        let response = client.send_request(
-            "initialize",
-            Some(json!({
-                "clientInfo": {"name": "spark", "version": "0.1"},
-                "capabilities": {"experimentalApi": true},
-            })),
-        )?;
+        let response = client
+            .send_request(
+                "initialize",
+                Some(json!({
+                    "clientInfo": {"name": "spark", "version": "0.1"},
+                    "capabilities": {"experimentalApi": true},
+                })),
+            )
+            .map_err(|error| client.with_diagnostics(error))?;
         if response.get("error").is_some() {
-            return Err(rpc_error("codex app-server initialize failed", &response));
+            return Err(
+                client.with_diagnostics(rpc_error("codex app-server initialize failed", &response))
+            );
         }
-        client.send_json(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))?;
+        client
+            .send_json(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
+            .map_err(|error| client.with_diagnostics(error))?;
         Ok(client)
     }
 
@@ -471,11 +505,31 @@ impl CodexAppServerClient {
     }
 
     pub fn list_models(&mut self) -> Result<Value, CodexAppServerError> {
-        let response = self.send_request("model/list", Some(json!({ "limit": 100 })))?;
+        let response = self
+            .send_request("model/list", Some(json!({ "limit": 100 })))
+            .map_err(|error| self.with_diagnostics(error))?;
         if response.get("error").is_some() {
-            return Err(rpc_error("codex app-server model/list failed", &response));
+            return Err(
+                self.with_diagnostics(rpc_error("codex app-server model/list failed", &response))
+            );
         }
         Ok(response.get("result").cloned().unwrap_or_else(|| json!({})))
+    }
+
+    fn with_diagnostics(&self, mut error: CodexAppServerError) -> CodexAppServerError {
+        let stderr = self
+            .stderr_lines
+            .lock()
+            .ok()
+            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .filter(|value| !value.trim().is_empty());
+        let cause = error.details.take();
+        error.details = Some(json!({
+            "cause": cause,
+            "executable": self.executable,
+            "stderr": stderr,
+        }));
+        error
     }
 
     fn default_model(&mut self) -> Result<Option<String>, CodexAppServerError> {
@@ -1761,9 +1815,21 @@ pub struct CodexModelMetadata {
 /// lived app-server process; callers cache the result.
 pub fn list_available_codex_models() -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
     let working_dir = env::current_dir().unwrap_or_else(|_| env::temp_dir());
-    let mut client = CodexAppServerClient::connect(working_dir)?;
-    let result = client.list_models()?;
+    let mut client =
+        CodexAppServerClient::connect(working_dir).map_err(log_model_discovery_error)?;
+    let result = client
+        .list_models()
+        .map_err(|error| log_model_discovery_error(error))?;
     Ok(codex_models_from_list_result(&result))
+}
+
+fn log_model_discovery_error(error: CodexAppServerError) -> CodexAppServerError {
+    tracing::warn!(
+        error = %error,
+        details = ?error.details,
+        "Codex model discovery failed"
+    );
+    error
 }
 
 /// Parse a `model/list` result across the payload dialects codex has used:

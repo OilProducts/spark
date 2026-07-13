@@ -51,7 +51,6 @@ import { routeFixedNodeGraphInWorker } from '@/lib/flowLayoutRouterClient';
 import { routeIntersectsRect, type NodeRect, type RouteSide } from '@/lib/edgeRouting';
 import {
     buildHydratedFlowGraph,
-    ChildFlowExpansionToggle,
     edgeTypes,
     EDGE_CLASS,
     EDGE_INTERACTION_WIDTH,
@@ -64,7 +63,6 @@ import {
     nowMs,
 } from '@/features/workflow-canvas';
 import { getReactFlowNodeTypeForShape, getShapeNodeStyle } from '@/lib/workflowNodeShape';
-import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { isAbortError } from '@/lib/abortError';
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug';
@@ -74,6 +72,7 @@ import {
     type EditorPreviewResponse,
 } from './services/editorPreview';
 import { useRegisterEditorGraphBridge } from './EditorGraphBridgeContext';
+import { EditorCanvasToolbar } from './components/EditorCanvasToolbar';
 
 const DEFAULT_PREVIEW_DEBOUNCE_MS = 300;
 const MEDIUM_GRAPH_PREVIEW_DEBOUNCE_MS = 600;
@@ -1487,127 +1486,61 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             )}
 
             {flowName && (
-                <div className="absolute left-4 top-4 z-10 flex gap-2">
-                    <div data-testid="editor-mode-toggle" className="flex rounded-md border border-border bg-background/90 p-1 shadow-sm">
-                        <Button
-                            onClick={() => {
-                                if (editorMode === 'raw') {
-                                    void returnToStructuredMode();
-                                    return;
-                                }
-                                setEditorMode('structured');
-                            }}
-                            disabled={editorMode === 'raw' && isRawHandoffInFlight}
-                            variant={editorMode === 'structured' ? 'default' : 'ghost'}
-                            size="sm"
-                            className={`px-3 ${
-                                editorMode === 'structured'
-                                    ? ''
-                                    : 'text-muted-foreground hover:text-foreground'
-                            }`}
-                        >
-                            Structured
-                        </Button>
-                        <Button
-                            onClick={enterRawYamlMode}
-                            disabled={editorMode === 'raw'}
-                            variant={editorMode === 'raw' ? 'default' : 'ghost'}
-                            size="sm"
-                            className={`px-3 ${
-                                editorMode === 'raw'
-                                    ? ''
-                                    : 'text-muted-foreground hover:text-foreground'
-                            }`}
-                        >
-                            Raw YAML
-                        </Button>
+                <div className="absolute left-4 top-4 z-10">
+                    <EditorCanvasToolbar
+                        mode={editorMode}
+                        childFlowsExpanded={expandChildFlows}
+                        rawHandoffPending={isRawHandoffInFlight}
+                        runDisabledReason={runDisabledReason}
+                        onSelectStructured={() => {
+                            if (editorMode === 'raw') void returnToStructuredMode()
+                        }}
+                        onSelectYaml={enterRawYamlMode}
+                        onSetChildFlowsExpanded={(expanded) => setEditorExpandChildFlows(flowName, expanded)}
+                        onArrange={() => {
+                            void onAutoArrange()
+                        }}
+                        onReset={() => {
+                            void onResetSavedLayout()
+                        }}
+                        onAddNode={onAddNode}
+                        onRun={() => {
+                            flushPendingSave()
+                            setIsRunPanelOpen(true)
+                        }}
+                    />
+                    <div className="mt-2 flex max-w-[calc(100vw-2rem)] flex-wrap gap-2">
+                        {showPerformanceDebug ? (
+                            <>
+                                <div
+                                    data-testid="canvas-interaction-performance-budget"
+                                    data-budget-ms={CANVAS_INTERACTION_BUDGET_MS}
+                                    className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                                >
+                                    Canvas interaction budget: {CANVAS_INTERACTION_BUDGET_MS}ms max per interaction frame.
+                                </div>
+                                <div
+                                    data-testid="canvas-performance-profile"
+                                    data-profile={performanceProfile}
+                                    data-node-count={nodeCount}
+                                    data-only-render-visible-elements={String(onlyRenderVisibleElements)}
+                                    data-preview-debounce-ms={previewDebounceMs}
+                                    data-optimizations={optimizationLabel}
+                                    data-preview-ms={Math.round(lastPreviewMs)}
+                                    data-layout-ms={Math.round(lastLayoutMs)}
+                                    className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                                >
+                                    Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
+                                    {' '}Optimizations: {optimizationLabel}.
+                                </div>
+                            </>
+                        ) : null}
+                        {isExpandedReadOnlyPreview ? (
+                            <div className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+                                Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.
+                            </div>
+                        ) : null}
                     </div>
-                    {editorMode === 'structured' && (
-                        <ChildFlowExpansionToggle
-                            expanded={expandChildFlows}
-                            onChange={(nextExpanded) => {
-                                if (!flowName) {
-                                    return
-                                }
-                                setEditorExpandChildFlows(flowName, nextExpanded)
-                            }}
-                            testId="editor-child-flow-toggle"
-                        />
-                    )}
-                    {editorMode === 'structured' && !expandChildFlows && (
-                        <Button
-                            onClick={() => {
-                                void onAutoArrange()
-                            }}
-                            className="shadow-sm"
-                            variant="outline"
-                        >
-                            Auto Arrange
-                        </Button>
-                    )}
-                    {editorMode === 'structured' && !expandChildFlows && (
-                        <Button
-                            onClick={() => {
-                                void onResetSavedLayout()
-                            }}
-                            className="shadow-sm"
-                            variant="outline"
-                        >
-                            Reset Saved Layout
-                        </Button>
-                    )}
-                    {editorMode === 'structured' && !expandChildFlows && (
-                        <Button
-                            onClick={onAddNode}
-                            className="shadow-sm"
-                        >
-                            Add Node
-                        </Button>
-                    )}
-                    {editorMode === 'structured' && (
-                        <Button
-                            data-testid="editor-run-button"
-                            onClick={() => {
-                                flushPendingSave();
-                                setIsRunPanelOpen(true);
-                            }}
-                            disabled={Boolean(runDisabledReason)}
-                            title={runDisabledReason}
-                            className="shadow-sm"
-                        >
-                            Run
-                        </Button>
-                    )}
-                    {showPerformanceDebug ? (
-                        <>
-                            <div
-                                data-testid="canvas-interaction-performance-budget"
-                                data-budget-ms={CANVAS_INTERACTION_BUDGET_MS}
-                                className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
-                            >
-                                Canvas interaction budget: {CANVAS_INTERACTION_BUDGET_MS}ms max per interaction frame.
-                            </div>
-                            <div
-                                data-testid="canvas-performance-profile"
-                                data-profile={performanceProfile}
-                                data-node-count={nodeCount}
-                                data-only-render-visible-elements={String(onlyRenderVisibleElements)}
-                                data-preview-debounce-ms={previewDebounceMs}
-                                data-optimizations={optimizationLabel}
-                                data-preview-ms={Math.round(lastPreviewMs)}
-                                data-layout-ms={Math.round(lastLayoutMs)}
-                                className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
-                            >
-                                Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
-                                {' '}Optimizations: {optimizationLabel}.
-                            </div>
-                        </>
-                    ) : null}
-                    {isExpandedReadOnlyPreview ? (
-                        <div className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
-                            Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.
-                        </div>
-                    ) : null}
                 </div>
             )}
 

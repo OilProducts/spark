@@ -497,12 +497,12 @@ function yamlScalar(value: unknown): string {
 function yamlBlock(value: unknown, indent = 0): string {
     const pad = ' '.repeat(indent)
     if (Array.isArray(value)) {
-        if (value.length === 0) return '[]'
+        if (value.length === 0) return `${pad}[]`
         return value.map((item) => `${pad}- ${yamlBlock(item, indent + 2).trimStart()}`).join('\n')
     }
     if (value && typeof value === 'object') {
         const entries = Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined)
-        if (entries.length === 0) return '{}'
+        if (entries.length === 0) return `${pad}{}`
         return entries.map(([key, item]) => {
             if (item && typeof item === 'object') {
                 return `${pad}${key}:\n${yamlBlock(item, indent + 2)}`

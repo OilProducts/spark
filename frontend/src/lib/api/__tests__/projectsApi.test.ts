@@ -26,12 +26,15 @@ describe('projectsApi parsing', () => {
 
   it('parses project chat model metadata', () => {
     const payload = parseProjectChatModelsResponse({
+      providers: {
+        codex: { status: 'available', error: null },
+      },
       models: [
         {
           id: 'gpt-5.4',
           display: 'GPT-5.4',
           is_default: true,
-          supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'unknown'],
+          supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'unknown'],
           default_reasoning_effort: 'medium',
         },
       ],
@@ -43,9 +46,10 @@ describe('projectsApi parsing', () => {
         id: 'gpt-5.4',
         display: 'GPT-5.4',
         is_default: true,
-        supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'],
+        supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
         default_reasoning_effort: 'medium',
       },
     ])
+    expect(payload.providers.codex).toEqual({ status: 'available', error: null })
   })
 })

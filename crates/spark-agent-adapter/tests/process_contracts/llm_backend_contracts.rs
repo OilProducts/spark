@@ -20,7 +20,7 @@ use unified_llm_adapter::{
     StreamEventType, StreamEvents, ToolCall, Usage,
 };
 
-static CODEX_APP_SERVER_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+use super::test_support::ENV_LOCK;
 
 fn tool_names(request: &Request) -> Vec<String> {
     request.tools.iter().map(|tool| tool.name.clone()).collect()
@@ -248,7 +248,7 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
 
 #[test]
 fn codergen_backend_routes_codex_selector_through_app_server() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -1504,7 +1504,7 @@ fn agent_turn_backend_answer_preserves_profile_selector_semantics() {
 
 #[test]
 fn agent_turn_backend_starts_codex_workspace_chat_threads_as_durable() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -2111,7 +2111,7 @@ fn codergen_backend_routes_provider_profile_selector_through_openai_compatible()
 
 #[test]
 fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -2190,7 +2190,7 @@ fn codergen_backend_routes_codex_provider_with_profile_through_app_server() {
 
 #[test]
 fn codergen_backend_delivers_child_intervention_to_codex_app_server_turn() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("rpc-log.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());

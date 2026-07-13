@@ -13,7 +13,7 @@ use spark_agent_adapter::{
 use tempfile::tempdir;
 use unified_llm_adapter::ToolCall;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use super::test_support::ENV_LOCK;
 
 #[test]
 fn local_environment_resolves_paths_and_handles_file_directory_lifecycle() {

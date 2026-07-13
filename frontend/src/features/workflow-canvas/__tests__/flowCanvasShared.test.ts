@@ -800,6 +800,24 @@ describe('flowCanvasShared', () => {
         expect(yaml).not.toContain('ui_default_reasoning_effort')
     })
 
+    it('serializes nested empty collections as parseable YAML', () => {
+        const yaml = generateFlowYaml('empty-collections.yaml', [], [], {}, {
+            flow: {
+                schema_version: '1',
+                id: 'empty_collections',
+                title: 'Empty Collections',
+                nodes: {},
+                edges: [],
+            },
+        })
+
+        expect(loadYaml(yaml)).toMatchObject({
+            metadata: {},
+            nodes: {},
+            edges: [],
+        })
+    })
+
     it.each([
         {
             flowName: 'implement-spec.yaml',

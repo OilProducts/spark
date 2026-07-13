@@ -2808,7 +2808,7 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('editor-mode-toggle')).toBeVisible()
     })
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     const rawYamlEditor = await screen.findByTestId('raw-yaml-editor')
     await user.type(rawYamlEditor, '\n# editor draft note')
 

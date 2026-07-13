@@ -35,6 +35,14 @@ test: frontend-deps
   npm --prefix frontend run test:unit
   npm --prefix frontend run build
 
+# Report Cargo target usage without changing cached artifacts.
+rust-cache-size:
+  target_dir="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"; echo "Cargo target: $target_dir"; if [[ -d "$target_dir" ]]; then du -sh "$target_dir"; find "$target_dir" -mindepth 1 -maxdepth 1 -type d -print0 | xargs -0 -r du -sh | sort -hr; else echo "Target directory does not exist."; fi
+
+# Explicitly remove only Cargo's configured target directory.
+clean-rust-cache:
+  target_dir="$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"; echo "Removing Cargo target: $target_dir"; cargo clean
+
 # Build local release binaries and the production frontend.
 deliverable: frontend-deps
   npm --prefix frontend run build

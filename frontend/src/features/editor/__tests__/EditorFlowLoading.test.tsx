@@ -237,9 +237,9 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
 
-    expect(screen.getByRole('button', { name: 'Add Node' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Node' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Expanded Child Flow' }))
+    await user.click(screen.getByRole('button', { name: 'Expanded' }))
 
     await waitFor(() => {
       expect(
@@ -249,7 +249,7 @@ describe('Editor flow loading behavior', () => {
     })
     await screen.findByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')
     expect(screen.getAllByText('Read-only Preview').length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: 'Add Node' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
 
     act(() => {
@@ -267,7 +267,7 @@ describe('Editor flow loading behavior', () => {
         screen.queryByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.'),
       ).not.toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: 'Add Node' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Node' })).toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-b.dot']).toBeUndefined()
 
@@ -282,6 +282,6 @@ describe('Editor flow loading behavior', () => {
       ).toBe(true)
     })
     await screen.findByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')
-    expect(screen.queryByRole('button', { name: 'Add Node' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
   })
 })

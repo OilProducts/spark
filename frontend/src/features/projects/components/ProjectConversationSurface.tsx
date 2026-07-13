@@ -27,12 +27,15 @@ interface ProjectConversationSurfaceProps {
     chatModelOptions: ProjectChatSelectOption[]
     chatProviderOptions: ProjectChatSelectOption[]
     chatReasoningEffortOptions: ProjectChatSelectOption[]
+    chatModelAvailabilityMessage: string | null
     hasRenderableConversationHistory: boolean
     isConversationPinnedToBottom: boolean
     isNarrowViewport: boolean
     chatDraft: string
     chatSendButtonLabel: string
     isChatInputDisabled: boolean
+    isChatModelSelectDisabled: boolean
+    isChatSendDisabled: boolean
     panelError: string | null
     conversationBodyRef: RefObject<HTMLDivElement | null>
     historyContent: ReactNode
@@ -56,12 +59,15 @@ export function ProjectConversationSurface({
     chatModelOptions,
     chatProviderOptions,
     chatReasoningEffortOptions,
+    chatModelAvailabilityMessage,
     hasRenderableConversationHistory,
     isConversationPinnedToBottom,
     isNarrowViewport,
     chatDraft,
     chatSendButtonLabel,
     isChatInputDisabled,
+    isChatModelSelectDisabled,
+    isChatSendDisabled,
     panelError,
     conversationBodyRef,
     historyContent,
@@ -75,6 +81,9 @@ export function ProjectConversationSurface({
     onChatReasoningEffortChange,
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
+    const selectedModelValue = chatModelOptions.some((option) => option.value === activeChatModel)
+        ? activeChatModel
+        : ''
 
     return (
         <HomeWorkspace className={isNarrowViewport ? 'space-y-4' : 'h-full'}>
@@ -142,6 +151,16 @@ export function ProjectConversationSurface({
                             onSubmit={onChatComposerSubmit}
                             className="shrink-0 space-y-2 pt-1"
                         >
+                            {chatModelAvailabilityMessage ? (
+                                <Alert
+                                    data-testid="project-chat-model-availability"
+                                    className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                                >
+                                    <AlertDescription className="text-inherit">
+                                        {chatModelAvailabilityMessage}
+                                    </AlertDescription>
+                                </Alert>
+                            ) : null}
                             <Textarea
                                 id="project-ai-conversation-input"
                                 data-testid="project-ai-conversation-input"
@@ -176,9 +195,9 @@ export function ProjectConversationSurface({
                                     <NativeSelect
                                         aria-label="Project chat model"
                                         data-testid="project-ai-conversation-model-select"
-                                        value={activeChatModel}
+                                        value={selectedModelValue}
                                         onChange={(event) => onChatModelChange(event.target.value)}
-                                        disabled={controlsDisabled}
+                                        disabled={controlsDisabled || isChatModelSelectDisabled}
                                         size="sm"
                                         className="max-w-[13rem] text-xs"
                                     >
@@ -206,7 +225,7 @@ export function ProjectConversationSurface({
                                     <Button
                                         data-testid="project-ai-conversation-send-button"
                                         type="submit"
-                                        disabled={chatDraft.trim().length === 0 || isChatInputDisabled}
+                                        disabled={chatDraft.trim().length === 0 || isChatSendDisabled}
                                         size="sm"
                                         variant="outline"
                                     >

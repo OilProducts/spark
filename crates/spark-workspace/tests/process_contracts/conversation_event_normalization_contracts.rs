@@ -24,6 +24,8 @@ use spark_workspace::{
     ConversationTurnRequest, WorkspaceConversationService, WorkspaceError,
 };
 
+use super::test_support::ENV_LOCK;
+
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
@@ -132,6 +134,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
 
 #[test]
 fn start_turn_passes_codex_jsonrpc_trace_path_only_in_debug_mode() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = WorkspaceConversationService::new(settings.clone());

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -14,7 +14,7 @@ use spark_agent_adapter::{
 use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 
-static CODEX_APP_SERVER_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+use super::test_support::ENV_LOCK;
 
 const TURN_START_PARAMS_SCHEMA: &str = r#"{
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -203,7 +203,7 @@ fn initialize_and_turn_payload_contracts_match_codex_app_server_schema() {
 
 #[test]
 fn model_list_is_supported_and_matches_generated_schema_shape() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "model-list");
@@ -222,7 +222,7 @@ fn model_list_is_supported_and_matches_generated_schema_shape() {
 
 #[test]
 fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -286,7 +286,7 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
 
 #[test]
 fn codex_app_server_trace_file_is_debug_only_and_uses_jsonl_records() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
@@ -361,7 +361,7 @@ fn request_user_input_response_shape_matches_generated_schema() {
 
 #[test]
 fn app_server_request_user_input_blocks_until_backend_answer_is_submitted() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let log_path = temp.path().join("codex-rpc.jsonl");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -464,7 +464,7 @@ fn app_server_request_user_input_blocks_until_backend_answer_is_submitted() {
 
 #[test]
 fn runtime_environment_prepends_first_party_tool_bin_to_path() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let original_path = format!(
         "/usr/local/bin{}{}",
@@ -494,7 +494,7 @@ fn runtime_environment_prepends_first_party_tool_bin_to_path() {
 
 #[test]
 fn runtime_environment_uses_isolated_codex_home_and_seeds_from_host_home() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_root = temp.path().join("runtime-codex");
     let host_codex_home = temp.path().join("host-codex-home");
@@ -661,7 +661,7 @@ fn app_server_tool_approval_requests_emit_normalized_tool_call_payloads() {
 
 #[test]
 fn fake_app_server_tool_trace_emits_normalized_frontend_renderable_tool_events() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let fixture_path = recorded_tool_notification_fixture_path();
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
@@ -906,7 +906,7 @@ fn model_list_parses_across_payload_dialects() {
 
 #[test]
 fn list_available_codex_models_queries_the_local_app_server() {
-    let _lock = CODEX_APP_SERVER_TEST_ENV_LOCK.lock().expect("env lock");
+    let _lock = ENV_LOCK.lock().expect("env lock");
     let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
     let models = spark_agent_adapter::list_available_codex_models().expect("model list");
     assert_eq!(models.len(), 1);

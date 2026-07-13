@@ -7,7 +7,7 @@ use spark_common::settings::SparkSettings;
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
 
-const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];
+const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// The codex model list comes from a spawned app-server process, so it is
 /// cached briefly; the installed model set changes on codex upgrades, not
@@ -25,34 +25,64 @@ pub struct ChatModelMetadata {
     pub default_reasoning_effort: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatModelProviderStatus {
+    pub status: String,
+    pub error: Option<String>,
+}
+
 pub fn chat_models(settings: &SparkSettings) -> WorkspaceResult<Value> {
-    let mut models = codex_chat_models();
+    let codex_result = codex_chat_models();
+    chat_models_with_codex_result(settings, codex_result)
+}
+
+pub fn chat_models_with_codex_result(
+    settings: &SparkSettings,
+    codex_result: Result<Vec<ChatModelMetadata>, String>,
+) -> WorkspaceResult<Value> {
+    let (mut models, codex_status) = match codex_result {
+        Ok(models) => (
+            models,
+            ChatModelProviderStatus {
+                status: "available".to_string(),
+                error: None,
+            },
+        ),
+        Err(error) => (
+            Vec::new(),
+            ChatModelProviderStatus {
+                status: "unavailable".to_string(),
+                error: Some(error),
+            },
+        ),
+    };
     models.extend(public_unified_chat_models());
     models.extend(configured_profile_chat_models(settings)?);
-    Ok(serde_json::json!({ "models": models }))
+    Ok(serde_json::json!({
+        "models": models,
+        "providers": {
+            "codex": codex_status,
+        },
+    }))
 }
 
 /// Codex models come from the local install itself (`model/list`), so the
-/// chooser only offers what codex will actually serve; the static catalog
-/// entry is the fallback when codex is unreachable.
-fn codex_chat_models() -> Vec<ChatModelMetadata> {
+/// chooser only offers what codex will actually serve.
+fn codex_chat_models() -> Result<Vec<ChatModelMetadata>, String> {
     if let Ok(cache) = CODEX_MODELS_CACHE.lock() {
         if let Some((fetched_at, models)) = cache.as_ref() {
             if fetched_at.elapsed() < CODEX_MODELS_CACHE_TTL {
-                return models.clone();
+                return Ok(models.clone());
             }
         }
     }
     let live = spark_agent_adapter::list_available_codex_models()
         .map(codex_chat_models_from_metadata)
-        .unwrap_or_default();
-    if !live.is_empty() {
-        if let Ok(mut cache) = CODEX_MODELS_CACHE.lock() {
-            *cache = Some((Instant::now(), live.clone()));
-        }
-        return live;
+        .map_err(|error| format!("Codex model discovery failed: {error}"))?;
+    if let Ok(mut cache) = CODEX_MODELS_CACHE.lock() {
+        *cache = Some((Instant::now(), live.clone()));
     }
-    fallback_codex_chat_models()
+    Ok(live)
 }
 
 pub fn codex_chat_models_from_metadata(
@@ -80,20 +110,6 @@ pub fn codex_chat_models_from_metadata(
             id: model.id,
         })
         .collect()
-}
-
-fn fallback_codex_chat_models() -> Vec<ChatModelMetadata> {
-    let Some(model) = unified_llm_adapter::get_model_info("codex") else {
-        return Vec::new();
-    };
-    vec![ChatModelMetadata {
-        provider: "codex".to_string(),
-        id: model.id,
-        display: model.display_name,
-        is_default: true,
-        supported_reasoning_efforts: reasoning_efforts(model.supports_reasoning),
-        default_reasoning_effort: default_reasoning_effort(model.supports_reasoning),
-    }]
 }
 
 pub fn public_unified_chat_models() -> Vec<ChatModelMetadata> {

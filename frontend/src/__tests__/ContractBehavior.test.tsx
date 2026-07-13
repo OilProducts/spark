@@ -958,7 +958,7 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     const rawEditor = await screen.findByTestId('raw-yaml-editor')
     fireEvent.change(rawEditor, { target: { value: editedYaml } })
 
@@ -1780,7 +1780,7 @@ describe('Frontend contract behavior', () => {
 
     renderWithFlowProvider(<Editor />)
 
-    await screen.findByRole('button', { name: 'Add Node' })
+    await screen.findByRole('button', { name: '+ Node' })
     expect(screen.queryByTestId('canvas-interaction-performance-budget')).not.toBeInTheDocument()
     expect(screen.queryByTestId('canvas-performance-profile')).not.toBeInTheDocument()
 
@@ -4431,7 +4431,7 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     expect(await screen.findByTestId('raw-yaml-editor')).toBeVisible()
     const previewCallsBeforeHandoff = fetchMock.mock.calls.filter(([input]) => {
       const callUrl = requestUrl(input as RequestInfo | URL)
@@ -4501,7 +4501,7 @@ describe('Frontend contract behavior', () => {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     const rawEditor = await screen.findByTestId('raw-yaml-editor')
     fireEvent.change(rawEditor, { target: { value: editedYaml } })
 
@@ -4616,7 +4616,7 @@ digraph contract_behavior {
 
     await screen.findByTestId('editor-mode-toggle')
     await screen.findByText('Start')
-    await user.click(screen.getByRole('button', { name: 'Add Node' }))
+    await user.click(screen.getByRole('button', { name: '+ Node' }))
 
     await waitFor(() => {
       expect(savedPayloads.length).toBeGreaterThanOrEqual(1)
@@ -4627,7 +4627,7 @@ digraph contract_behavior {
     expect(structuredSave).toContain('x_unsurfaced_node: keep-node')
     expect(structuredSave).toContain('x_unsurfaced_edge: keep-edge')
 
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     const rawEditor = await screen.findByTestId('raw-yaml-editor')
     const rawDraftValue = (rawEditor as HTMLTextAreaElement).value
     expect(rawDraftValue).toContain('x_unsurfaced_graph: keep-graph')
@@ -4641,7 +4641,7 @@ digraph contract_behavior {
 
     expect(savedPayloads).toHaveLength(1)
 
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     const roundTrippedRawEditor = await screen.findByTestId('raw-yaml-editor')
     const roundTrippedRawValue = (roundTrippedRawEditor as HTMLTextAreaElement).value
     expect(roundTrippedRawValue).toContain('x_unsurfaced_graph: keep-graph')
@@ -4734,7 +4734,7 @@ digraph contract_behavior {
     renderWithFlowProvider(<Editor />)
 
     await screen.findByTestId('editor-mode-toggle')
-    await user.click(screen.getByRole('button', { name: 'Raw YAML' }))
+    await user.click(screen.getByRole('button', { name: 'YAML' }))
     const rawEditor = await screen.findByTestId('raw-yaml-editor')
     fireEvent.change(rawEditor, { target: { value: 'digraph contract_behavior { start; start -> missing; }' } })
 

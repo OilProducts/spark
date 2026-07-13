@@ -38,6 +38,14 @@ export interface ProjectChatModelMetadataResponse {
 
 export interface ProjectChatModelsResponse {
     models: ProjectChatModelMetadataResponse[]
+    providers: {
+        codex: ProjectChatModelProviderStatusResponse
+    }
+}
+
+export interface ProjectChatModelProviderStatusResponse {
+    status: 'available' | 'unavailable'
+    error: string | null
 }
 
 export interface ProjectDeleteResponse {
@@ -190,7 +198,7 @@ function parseProjectChatModelMetadataResponse(
         supported_reasoning_efforts: Array.isArray(record.supported_reasoning_efforts)
             ? record.supported_reasoning_efforts
                 .filter((entry): entry is string => typeof entry === 'string')
-                .filter((entry) => ['low', 'medium', 'high', 'xhigh'].includes(entry))
+                .filter((entry) => ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(entry))
             : [],
         default_reasoning_effort: asOptionalNullableString(record.default_reasoning_effort),
     }
@@ -204,10 +212,26 @@ export function parseProjectChatModelsResponse(
     if (!Array.isArray(record.models)) {
         throw new ApiSchemaError(endpoint, 'Expected "models" to be an array.')
     }
+    const providers = expectObjectRecord(record.providers, endpoint)
+    const codex = expectObjectRecord(providers.codex, endpoint)
+    const codexStatus = expectString(codex.status, endpoint, 'providers.codex.status')
+    if (codexStatus !== 'available' && codexStatus !== 'unavailable') {
+        throw new ApiSchemaError(endpoint, 'Expected Codex provider status to be "available" or "unavailable".')
+    }
+    const codexError = codex.error
+    if (codexError !== null && typeof codexError !== 'string') {
+        throw new ApiSchemaError(endpoint, 'Expected Codex provider error to be a string or null.')
+    }
     return {
         models: record.models
             .map((entry) => parseProjectChatModelMetadataResponse(entry, endpoint))
             .filter((entry): entry is ProjectChatModelMetadataResponse => entry !== null),
+        providers: {
+            codex: {
+                status: codexStatus,
+                error: codexError,
+            },
+        },
     }
 }
 
