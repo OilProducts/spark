@@ -736,3 +736,78 @@ fn write_legacy_conversation_files(data_dir: &Path, snapshot: &serde_json::Value
         .expect("sidecar");
     }
 }
+
+#[test]
+fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    write_native_execution_profile(&settings);
+    write_flow(&settings, "ops/review.yaml", simple_flow());
+    seed_conversation(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-attention",
+    );
+    let service = WorkspaceConversationService::new(settings.clone());
+    service
+        .create_flow_run_request_by_handle(
+            "amber-anchor",
+            FlowRunRequestCreateByHandleRequest {
+                flow_name: "ops/review.yaml".to_string(),
+                summary: "Run the review flow.".to_string(),
+                ..FlowRunRequestCreateByHandleRequest::default()
+            },
+        )
+        .expect("created request");
+    seed_proposed_plan(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-attention-plan",
+    );
+
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let mut waiting =
+        attractor_core::RunRecord::new("run-attention-gate", project_path.to_string_lossy());
+    waiting.flow_name = "software-development/run-retrospective.yaml".to_string();
+    waiting.status = "waiting".to_string();
+    let mut completed =
+        attractor_core::RunRecord::new("run-attention-done", project_path.to_string_lossy());
+    completed.status = "completed".to_string();
+    for record in [waiting, completed] {
+        store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..attractor_runtime::CreateRunRequest::default()
+            })
+            .expect("create run");
+    }
+
+    let items = service.pending_attention().expect("attention items");
+    let kinds = items
+        .iter()
+        .map(|item| item["kind"].as_str().unwrap_or("").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(items.len(), 3, "{items:?}");
+    assert!(kinds.contains(&"run_gate".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"flow_run_request".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"proposed_plan".to_string()), "{kinds:?}");
+    let gate = items
+        .iter()
+        .find(|item| item["kind"] == "run_gate")
+        .expect("gate item");
+    assert_eq!(gate["run_id"], "run-attention-gate");
+    assert!(
+        !items
+            .iter()
+            .any(|item| item["run_id"] == "run-attention-done"),
+        "terminal runs are not attention items"
+    );
+    let request = items
+        .iter()
+        .find(|item| item["kind"] == "flow_run_request")
+        .expect("request item");
+    assert_eq!(request["conversation_id"], "conversation-attention");
+    assert_eq!(request["title"], "Run the review flow.");
+}

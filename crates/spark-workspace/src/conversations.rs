@@ -359,6 +359,90 @@ impl WorkspaceConversationService {
         self
     }
 
+    /// Everything currently waiting on a human, across surfaces: runs parked
+    /// at a gate, agent flow-run requests, and proposed plans pending review.
+    /// Derived entirely from state the runtime already records.
+    pub fn pending_attention(&self) -> WorkspaceResult<Vec<Value>> {
+        let mut items = Vec::new();
+        let runs_response = self.runtime_api_service().list_runs();
+        if let Some(runs) = runs_response.body.get("runs").and_then(Value::as_array) {
+            for run in runs {
+                let status = run.get("status").and_then(Value::as_str).unwrap_or("");
+                let has_parent = run
+                    .get("parent_run_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|parent| !parent.trim().is_empty());
+                if status != "waiting" || has_parent {
+                    continue;
+                }
+                items.push(json!({
+                    "kind": "run_gate",
+                    "id": run.get("run_id").cloned().unwrap_or_default(),
+                    "run_id": run.get("run_id").cloned().unwrap_or_default(),
+                    "title": run.get("flow_name").cloned().unwrap_or_default(),
+                    "project_path": run.get("project_path").cloned().unwrap_or_default(),
+                    "updated_at": run.get("started_at").cloned().unwrap_or_default(),
+                }));
+            }
+        }
+        let repository = self.repository();
+        for project in
+            ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
+        {
+            for conversation_id in
+                repository.list_conversation_ids_for_project(&project.project_path)?
+            {
+                let Ok(Some(snapshot)) =
+                    repository.read_snapshot(&conversation_id, Some(&project.project_path))
+                else {
+                    continue;
+                };
+                let handle = snapshot
+                    .get("conversation_handle")
+                    .cloned()
+                    .unwrap_or_default();
+                for (collection, pending_status, kind) in [
+                    ("flow_run_requests", "pending", "flow_run_request"),
+                    ("proposed_plans", "pending_review", "proposed_plan"),
+                ] {
+                    let Some(artifacts) = snapshot.get(collection).and_then(Value::as_array) else {
+                        continue;
+                    };
+                    for artifact in artifacts {
+                        if artifact.get("status").and_then(Value::as_str) != Some(pending_status) {
+                            continue;
+                        }
+                        items.push(json!({
+                            "kind": kind,
+                            "id": artifact.get("id").cloned().unwrap_or_default(),
+                            "title": artifact
+                                .get("summary")
+                                .or_else(|| artifact.get("title"))
+                                .cloned()
+                                .unwrap_or_default(),
+                            "project_path": project.project_path,
+                            "conversation_id": conversation_id,
+                            "conversation_handle": handle,
+                            "updated_at": artifact
+                                .get("updated_at")
+                                .or_else(|| artifact.get("created_at"))
+                                .cloned()
+                                .unwrap_or_default(),
+                        }));
+                    }
+                }
+            }
+        }
+        items.sort_by(|left, right| {
+            right
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(left.get("updated_at").and_then(Value::as_str).unwrap_or(""))
+        });
+        Ok(items)
+    }
+
     pub fn list_project_conversations(
         &self,
         project_path: &str,

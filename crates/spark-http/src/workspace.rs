@@ -81,6 +81,7 @@ pub fn router() -> Router<HttpAppState> {
                 .patch(update_trigger)
                 .delete(delete_trigger),
         )
+        .route("/attention", get(pending_attention))
         .route("/flows", get(list_workspace_flows))
         .route(
             "/flows/{*flow_path}",
@@ -812,6 +813,23 @@ async fn post_trigger_webhook(
     )?;
     publish_trigger_activation_outcomes(&settings, &live_hub, vec![dispatch.activation]);
     Ok(Json(dispatch.response).into_response())
+}
+
+async fn pending_attention(
+    State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
+) -> ApiResult<Value> {
+    conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+        &run_event_observer,
+    )
+    .pending_attention()
+    .map(|items| Json(serde_json::json!({ "items": items })))
+    .map_err(Into::into)
 }
 
 async fn list_workspace_flows(
