@@ -201,3 +201,64 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
         "the branch must start from the committed source state"
     );
 }
+
+const RUNS_ROOT_FLOW: &str = r#"schema_version: "1"
+id: runs_root_probe
+title: Runs Root Probe
+nodes:
+  start:
+    kind: start
+  probe:
+    kind: tool
+    config:
+      kind: tool
+      command: printf '%s' "$SPARK_RUNS_ROOT"
+      env_map:
+        SPARK_RUNS_ROOT: internal.runs_dir
+  done:
+    kind: exit
+edges:
+- from: start
+  to: probe
+- from: probe
+  to: done
+  condition: outcome=success
+"#;
+
+#[test]
+fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).expect("project dir");
+
+    let service = AttractorApiService::new(settings.clone());
+    let response = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-runs-root".to_string()),
+        flow_content: Some(RUNS_ROOT_FLOW.to_string()),
+        working_directory: project.to_string_lossy().to_string(),
+        ..PipelineStartRequest::default()
+    });
+    assert_eq!(response.body["terminal_status"], json!("completed"));
+
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let bundle = store
+        .read_run_bundle("run-runs-root")
+        .expect("read bundle")
+        .expect("bundle exists");
+    let result = store
+        .read_result(&bundle.paths)
+        .expect("read result")
+        .expect("result exists");
+    let probed = std::path::PathBuf::from(result.body_markdown.trim());
+    assert_eq!(
+        probed, settings.runs_dir,
+        "internal.runs_dir must resolve to the runtime's runs root"
+    );
+    assert!(
+        bundle.paths.root.starts_with(&probed),
+        "the probed root must actually contain this run"
+    );
+}

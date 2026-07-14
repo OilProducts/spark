@@ -29,15 +29,15 @@ nodes:
       kind: tool
       command: |
         set -eu
-        root="${SPARK_HOME:-$HOME/.spark}/attractor/runs"
-        run_dir=$(find "$root" -mindepth 2 -maxdepth 2 -type d -name "$SPARK_TARGET_RUN_ID" | head -1)
+        run_dir=$(find "$SPARK_RUNS_ROOT" -mindepth 2 -maxdepth 2 -type d -name "$SPARK_TARGET_RUN_ID" | head -1)
         if [ -z "$run_dir" ]; then
-          echo "run $SPARK_TARGET_RUN_ID not found under $root" >&2
+          echo "run $SPARK_TARGET_RUN_ID not found under $SPARK_RUNS_ROOT" >&2
           exit 1
         fi
         printf '{"run_dir":"%s"}' "$run_dir"
       env_map:
         SPARK_TARGET_RUN_ID: context.request.run_id
+        SPARK_RUNS_ROOT: internal.runs_dir
       output_map:
         context.retro.run_dir: run_dir
     contracts:

@@ -390,6 +390,11 @@ fn launch_default_child_run(
         "internal.run_workdir",
         json!(request.child_workdir.to_string_lossy().to_string()),
     );
+    set_context(
+        &mut child_context,
+        "internal.runs_dir",
+        json!(parent_paths.runs_dir.to_string_lossy().to_string()),
+    );
     if let Some(source_dir) = request.child_flow_path.parent() {
         set_context(
             &mut child_context,

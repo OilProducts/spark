@@ -1045,6 +1045,12 @@ impl AttractorApiService {
             "internal.run_workdir".to_string(),
             json!(working_directory.clone()),
         );
+        // Flows that inspect other runs (e.g. retrospectives) need the runs
+        // root from the runtime, not from ambient environment guesses.
+        runtime_context.insert(
+            "internal.runs_dir".to_string(),
+            json!(self.settings.runs_dir.to_string_lossy().to_string()),
+        );
         if let Some(flow_source_dir) = flow_source_dir.as_ref() {
             runtime_context.insert(
                 "internal.flow_source_dir".to_string(),
