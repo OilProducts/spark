@@ -302,3 +302,59 @@ fn summarizer_failure_falls_back_and_records_the_error() {
         Some("summarizer backend unavailable")
     );
 }
+
+#[test]
+fn summarizer_resolves_through_the_real_codergen_graph_lookup() {
+    // The stubbed-handler tests bypass RuntimeCodergen's node lookup, which
+    // rejected the synthetic summary node in production; the default runner's
+    // simulation backend exercises that lookup for real.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let workdir = temp.path().join("project");
+    std::fs::create_dir_all(&workdir).expect("workdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let flow = flow_with_exit("printf worked", summary_exit(true, None));
+    let mut record = RunRecord::new("run-summary-lookup", workdir.to_string_lossy());
+    record.flow_name = flow.title.clone();
+    let launch_context = LaunchContext::empty();
+    let runtime_context = attractor_core::ContextMap::from([(
+        "internal.run_workdir".to_string(),
+        serde_json::json!(workdir.to_string_lossy().to_string()),
+    )]);
+    let paths = prepare_fresh_run(
+        &store,
+        &record,
+        &flow,
+        None,
+        None,
+        &launch_context,
+        &runtime_context,
+    )
+    .expect("prepare run");
+    let status = PipelineExecutor::new(RuntimeHandlerRunner::new())
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record,
+            flow,
+            flow_source: None,
+            flow_definition_json: None,
+            launch_context,
+            runtime_context,
+            max_steps: None,
+            start: ExecutionStart::Prepared { paths },
+        })
+        .expect("execute run")
+        .status;
+    assert_eq!(status, "completed");
+
+    let result = read_result(&store, "run-summary-lookup");
+    assert_eq!(
+        result.summary_error, None,
+        "the synthetic node must resolve through the flow graph"
+    );
+    assert_eq!(result.display_mode.as_deref(), Some("summary"));
+    assert_eq!(
+        result.body_markdown.trim(),
+        "Stage completed: result_summary",
+        "the simulation backend's summary output becomes the result body"
+    );
+}

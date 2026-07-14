@@ -1338,6 +1338,12 @@ fn run_result_summary<E: NodeExecutor>(
         ..attractor_core::FlowNode::default()
     };
     let node_attrs = crate::flow_runtime::node_attrs_for_handler(RESULT_SUMMARY_NODE_ID, &node);
+    // Agent backends resolve nodes from the flow graph, so the synthetic
+    // summary node must exist in the flow this request carries.
+    let mut summary_flow = flow.clone();
+    summary_flow
+        .nodes
+        .insert(RESULT_SUMMARY_NODE_ID.to_string(), node.clone());
     let mut summary_context = context.snapshot();
     summary_context.insert(
         "internal.run_workdir".to_string(),
@@ -1351,7 +1357,7 @@ fn run_result_summary<E: NodeExecutor>(
         prompt: prompt.to_string(),
         node,
         node_attrs,
-        flow: flow.clone(),
+        flow: summary_flow,
         outgoing_edges: Vec::new(),
         run_paths: Some(paths.clone()),
         run_workdir: paths.root.clone(),
