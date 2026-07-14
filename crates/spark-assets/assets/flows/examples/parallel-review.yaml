@@ -53,6 +53,7 @@ nodes:
     label: exit
     config:
       kind: exit
+      result_summary: true
     execution:
       reasoning_effort: high
     runtime:

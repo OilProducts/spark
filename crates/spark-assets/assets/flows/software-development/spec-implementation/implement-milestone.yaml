@@ -95,6 +95,7 @@ nodes:
     label: Done
     config:
       kind: exit
+      result_summary: true
     execution:
       reasoning_effort: high
     runtime:
