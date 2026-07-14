@@ -14,6 +14,8 @@ mod pipeline_inspection_contracts;
 mod pipeline_lifecycle_contracts;
 #[path = "contracts/preview_route_contracts.rs"]
 mod preview_route_contracts;
+#[path = "contracts/run_recovery_contracts.rs"]
+mod run_recovery_contracts;
 #[path = "contracts/status_route_contracts.rs"]
 mod status_route_contracts;
 #[path = "contracts/worktree_lifecycle_contracts.rs"]

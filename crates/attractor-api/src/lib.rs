@@ -37,6 +37,44 @@ const EXECUTION_LOCK_STATE_RELEASED: &str = "released";
 const EXECUTION_LOCK_QUEUE_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(200);
 
+/// Tracks run ids with a live executor in this process. Runs execute as
+/// threads, so a restart orphans every non-terminal run: its durable state
+/// survives but nothing is advancing it. This registry lets cancellation
+/// finalize orphans immediately and lets startup recovery skip live runs.
+fn live_run_registry() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static REGISTRY: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn run_has_live_executor(run_id: &str) -> bool {
+    live_run_registry()
+        .lock()
+        .map(|live| live.contains(run_id))
+        .unwrap_or(false)
+}
+
+/// RAII registration: present in the registry exactly while the executor
+/// runs, including panics.
+struct LiveRunGuard(String);
+
+impl LiveRunGuard {
+    fn register(run_id: &str) -> Self {
+        if let Ok(mut live) = live_run_registry().lock() {
+            live.insert(run_id.to_string());
+        }
+        Self(run_id.to_string())
+    }
+}
+
+impl Drop for LiveRunGuard {
+    fn drop(&mut self) {
+        if let Ok(mut live) = live_run_registry().lock() {
+            live.remove(&self.0);
+        }
+    }
+}
+
 /// Process-wide execution-lock table. Runs live as threads in this process,
 /// so lock lifetime matches run lifetime; each identity holds a FIFO queue
 /// of run ids, with the front entry holding the lock.
@@ -480,13 +518,34 @@ impl RuntimeControlService {
 
     pub fn cancel_pipeline(&self, pipeline_id: &str) -> RuntimeRouteResponse {
         match self.controls.request_cancel(pipeline_id) {
-            Ok(status) => RuntimeRouteResponse::json(
-                200,
-                json!({
-                    "status": status.status,
-                    "pipeline_id": status.pipeline_id,
-                }),
-            ),
+            Ok(status) => {
+                // Cancellation is cooperative: a live executor observes the
+                // request. An orphaned run (its executor died with a previous
+                // process) has no observer, so finalize it right here — but
+                // only when the request was actually accepted; terminal runs
+                // come back with their status unchanged and stay untouched.
+                if status.status == "cancel_requested" && !run_has_live_executor(pipeline_id) {
+                    if let Ok(final_status) = self.controls.mark_canceled(
+                        pipeline_id,
+                        "canceled with no executor attached (interrupted by an earlier restart)",
+                    ) {
+                        return RuntimeRouteResponse::json(
+                            200,
+                            json!({
+                                "status": final_status.status,
+                                "pipeline_id": final_status.pipeline_id,
+                            }),
+                        );
+                    }
+                }
+                RuntimeRouteResponse::json(
+                    200,
+                    json!({
+                        "status": status.status,
+                        "pipeline_id": status.pipeline_id,
+                    }),
+                )
+            }
             Err(error) => runtime_error_response(error, "Cancel failed"),
         }
     }
@@ -680,6 +739,83 @@ impl AttractorApiService {
     }
 
     /// Resumes an already-prepared run (continue/retry) on a background
+    /// Re-arms runs a previous process left non-terminal. Runs execute as
+    /// threads, so a restart orphans them while their durable state remains
+    /// intact: waiting root runs resume from their checkpoints (re-entering a
+    /// human-gate wait, or completing instantly when the answer was already
+    /// journaled) and unhonored cancel requests finalize. Live runs and child
+    /// runs (driven by their parents) are untouched.
+    pub fn recover_interrupted_runs(&self) -> Value {
+        let store = self.observed_store();
+        let mut resumed: Vec<String> = Vec::new();
+        let mut canceled: Vec<String> = Vec::new();
+        let mut failed: Vec<Value> = Vec::new();
+        let records = match list_run_records(&self.settings, None) {
+            Ok(records) => records,
+            Err(error) => return json!({"error": error}),
+        };
+        for record in records {
+            let Some(run_id) = record.get("run_id").and_then(Value::as_str) else {
+                continue;
+            };
+            if record
+                .get("parent_run_id")
+                .and_then(Value::as_str)
+                .is_some_and(|parent| !parent.trim().is_empty())
+            {
+                continue;
+            }
+            if run_has_live_executor(run_id) {
+                continue;
+            }
+            let status = record
+                .get("status")
+                .and_then(Value::as_str)
+                .map(attractor_runtime::normalize_run_status)
+                .unwrap_or_default();
+            match status.as_str() {
+                "waiting" => match self.resume_orphaned_run(&store, run_id) {
+                    Ok(()) => resumed.push(run_id.to_string()),
+                    Err(error) => {
+                        let _ = store.update_run_record(run_id, |record| {
+                            record.status = "failed".to_string();
+                            record.last_error =
+                                format!("startup recovery could not resume this run: {error}");
+                        });
+                        failed.push(json!({"run_id": run_id, "error": error}));
+                    }
+                },
+                "cancel_requested" => {
+                    let _ = RuntimeControls::new(store.clone()).mark_canceled(
+                        run_id,
+                        "canceled with no executor attached (interrupted by an earlier restart)",
+                    );
+                    canceled.push(run_id.to_string());
+                }
+                _ => {}
+            }
+        }
+        json!({"resumed": resumed, "canceled": canceled, "failed": failed})
+    }
+
+    fn resume_orphaned_run(
+        &self,
+        store: &RunStore,
+        run_id: &str,
+    ) -> std::result::Result<(), String> {
+        let bundle = store
+            .read_run_bundle(run_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Unknown pipeline: {run_id}"))?;
+        let source = store
+            .read_graph_source(&bundle.paths)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "captured flow source unavailable".to_string())?;
+        let flow = parse_flow_definition(&source)
+            .map_err(|error| format!("captured flow source does not parse: {error}"))?;
+        self.spawn_prepared_resume(run_id, flow)
+    }
+
     /// thread from its persisted record and checkpoint.
     fn spawn_prepared_resume(
         &self,
@@ -759,6 +895,7 @@ impl AttractorApiService {
         std::thread::Builder::new()
             .name(format!("attractor-run-{run_id}"))
             .spawn(move || {
+                let _live = LiveRunGuard::register(&run_id);
                 if let Some(identity) = lock_identity.as_deref() {
                     if !acquire_execution_lock(identity, &run_id, &store) {
                         return;
@@ -1103,6 +1240,7 @@ impl AttractorApiService {
                     );
                 }
             }
+            let _live = LiveRunGuard::register(&run_id);
             let mut executor = PipelineExecutor::with_control(
                 self.observed_node_executor(),
                 attractor_runtime::disk_execution_control(paths.clone()),

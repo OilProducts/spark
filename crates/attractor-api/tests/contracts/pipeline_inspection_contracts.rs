@@ -283,6 +283,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
                 "gate",
                 "Flow",
                 "Approve plan?",
+                None,
                 vec![json!({"label": "Approve", "value": "approve"})],
             ),
         )

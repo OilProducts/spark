@@ -93,6 +93,20 @@ pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
         run_event_publisher,
     };
     let state = state.with_trigger_source_loop();
+    // Runs execute as threads, so any previous process's restart orphaned its
+    // non-terminal runs; re-arm them before serving traffic. Resumption is
+    // detached — this does not block startup.
+    {
+        let mut service =
+            attractor_api::AttractorApiService::new_with_runtime_handler_runner_factory(
+                (*state.settings).clone(),
+                state.runtime_handler_runner_factory.clone(),
+            );
+        if let Some(observer) = state.run_event_observer.0.clone() {
+            service = service.with_run_event_observer(observer);
+        }
+        let _ = service.recover_interrupted_runs();
+    }
     Router::new()
         .route("/", get(serve_index))
         .route("/favicon.ico", get(serve_favicon))

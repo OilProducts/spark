@@ -61,8 +61,9 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    // Cancel-request shape, proven against a run that is active on disk but
-    // has no executor attached, so the response is deterministic.
+    // A run that is active on disk with no executor attached is an orphan
+    // (its thread died with a previous process); cancel finalizes it
+    // immediately instead of recording a request nothing will honor.
     store
         .create_run(CreateRunRequest {
             record: running_record("run-control-cancel", &project_path),
@@ -76,7 +77,7 @@ fn control_routes_preserve_retry_cancel_continue_and_metadata_shapes() {
     assert_eq!(cancel.status_code, 200);
     assert_eq!(
         cancel.body,
-        json!({"status": "cancel_requested", "pipeline_id": "run-control-cancel"})
+        json!({"status": "canceled", "pipeline_id": "run-control-cancel"})
     );
 
     let patch = service.patch_pipeline_metadata(
