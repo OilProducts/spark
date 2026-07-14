@@ -98,9 +98,6 @@ nodes:
     config:
       kind: human_gate
       prompt: 'Review the judged recommendation and its rationale in this run. Approve to implement it in an isolated worktree, send the proposers back for another round, or stop with the design recorded.'
-      details_from:
-      - context.design.rationale
-      - context.design.task
   implement:
     kind: subflow
     label: Implement Design

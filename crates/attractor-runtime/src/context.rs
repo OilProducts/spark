@@ -24,6 +24,8 @@ pub const RUNTIME_RETRY_ATTEMPT_KEY: &str = "_attractor.runtime.retry.attempt";
 pub const RUNTIME_RETRY_MAX_ATTEMPTS_KEY: &str = "_attractor.runtime.retry.max_attempts";
 pub const RUNTIME_RETRY_FAILURE_REASON_KEY: &str = "_attractor.runtime.retry.failure_reason";
 pub const RUNTIME_FIDELITY_KEY: &str = "_attractor.runtime.fidelity";
+pub const RUNTIME_LAST_NODE_ID_KEY: &str = "_attractor.runtime.last_node.id";
+pub const RUNTIME_LAST_NODE_UPDATES_KEY: &str = "_attractor.runtime.last_node.context_updates";
 pub const RUNTIME_THREAD_ID_KEY: &str = "_attractor.runtime.thread_id";
 pub const INTERNAL_PIPELINE_RETRY_RUN_ID_KEY: &str = "internal.pipeline_retry_run_id";
 const CODERGEN_CONTEXT_UPDATE_EXEMPT_KEYS: &[&str] = &["last_response", "last_stage"];
@@ -424,6 +426,30 @@ fn apply_runtime_outcome_fields(
     context.set(OUTCOME_KEY, json!(outcome.status.as_str()))?;
     context.set(PREFERRED_LABEL_KEY, json!(outcome.preferred_label.clone()))?;
     remember_node_outcome(context, node_id, outcome.status.as_str())?;
+    remember_last_node_updates(context, node_id, outcome)?;
+    Ok(())
+}
+
+/// Records which node ran last and the user-space context it produced, so
+/// downstream surfaces (human gates, inspectors) can present a node's output
+/// generically without flows declaring anything.
+fn remember_last_node_updates(
+    context: &mut AttractorContext,
+    node_id: &str,
+    outcome: &Outcome,
+) -> Result<()> {
+    let updates: serde_json::Map<String, Value> = outcome
+        .context_updates
+        .iter()
+        .filter(|(key, _)| {
+            key.starts_with("context.")
+                && !key.starts_with("context.tool.")
+                && !key.starts_with("context.stack.")
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    context.set(RUNTIME_LAST_NODE_ID_KEY, json!(node_id))?;
+    context.set(RUNTIME_LAST_NODE_UPDATES_KEY, Value::Object(updates))?;
     Ok(())
 }
 

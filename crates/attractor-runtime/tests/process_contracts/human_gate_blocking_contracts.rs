@@ -2,12 +2,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use attractor_core::{
-    FlowDefinition, FlowEdge, FlowNode, LaunchContext, NodeConfig, NodeKind, RunRecord,
+    FlowDefinition, FlowEdge, FlowNode, LaunchContext, NodeConfig, NodeContracts, NodeKind,
+    Outcome, OutcomeStatus, RunRecord,
 };
 use attractor_runtime::{
     disk_execution_control, human_gate_answered_event, prepare_fresh_run, ExecuteRunRequest,
     ExecutionStart, HumanAnswer, PipelineExecutor, QueueInterviewer, RunStore, RuntimeControls,
-    RuntimeHandlerRunner,
+    RuntimeHandlerRunner, HANDLER_CODERGEN,
 };
 use serde_json::Value;
 
@@ -51,9 +52,18 @@ fn gate_flow() -> FlowDefinition {
                     config: Some(NodeConfig::HumanGate {
                         prompt: "Approve the change?".to_string(),
                         decisions: Vec::new(),
-                        details_from: vec!["context.review.summary".to_string()],
                     }),
                     ..FlowNode::default()
+                },
+            ),
+            (
+                "prep".to_string(),
+                FlowNode {
+                    contracts: Some(NodeContracts {
+                        writes_context: vec!["context.review.summary".to_string()],
+                        ..NodeContracts::default()
+                    }),
+                    ..agent_node("prepare summary")
                 },
             ),
             ("approved".to_string(), agent_node("ship")),
@@ -73,7 +83,8 @@ fn gate_flow() -> FlowDefinition {
         .into_iter()
         .collect(),
         edges: vec![
-            edge("start", "review", ""),
+            edge("start", "prep", ""),
+            edge("prep", "review", ""),
             edge("review", "approved", "Approve"),
             edge("review", "rejected", "Reject"),
             edge("approved", "done", ""),
@@ -137,10 +148,7 @@ fn spawn_gate_run(
             flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
-            runtime_context: attractor_core::ContextMap::from([(
-                "context.review.summary".to_string(),
-                serde_json::json!("The fix removes the stale lock file."),
-            )]),
+            runtime_context: Default::default(),
             max_steps: None,
             start: ExecutionStart::Prepared { paths: start_paths },
         })
@@ -187,12 +195,22 @@ fn wait_for_pending_gate(harness: &GateHarness) -> (String, String) {
 #[test]
 fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let runner = RuntimeHandlerRunner::new().with_blocking_human_gates();
+    let mut runner = RuntimeHandlerRunner::new().with_blocking_human_gates();
+    runner.register_thread_safe_handler_fn(HANDLER_CODERGEN, |runtime| {
+        let mut outcome = Outcome::new(OutcomeStatus::Success);
+        if runtime.node_id == "prep" {
+            outcome.context_updates.insert(
+                "context.review.summary".to_string(),
+                serde_json::json!("The fix removes the stale lock file."),
+            );
+        }
+        Ok(outcome)
+    });
     let harness = spawn_gate_run(&temp, "run-gate-answer", runner);
 
     let (question_id, status) = wait_for_pending_gate(&harness);
     assert_eq!(status, "waiting");
-    assert_eq!(question_id, format!("review-{}", 1));
+    assert_eq!(question_id, format!("review-{}", 2));
 
     // The pending question carries the edge-derived options.
     let events = harness
@@ -209,7 +227,11 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
     let details = pending.payload["details"].as_str().expect("gate details");
     assert!(
         details.contains("The fix removes the stale lock file."),
-        "details must present the declared context value: {details}"
+        "details must present the preceding node's context output: {details}"
+    );
+    assert!(
+        details.contains("### review.summary"),
+        "details use the context key as a heading: {details}"
     );
 
     // Answer exactly like the API route does: journal an InterviewCompleted.

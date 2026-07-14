@@ -145,10 +145,6 @@ pub enum NodeConfig {
         prompt: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         decisions: Vec<HumanDecision>,
-        /// Context keys whose values are presented alongside the question so
-        /// the reviewer sees what they are approving.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        details_from: Vec<String>,
     },
     Conditional {},
     Parallel {

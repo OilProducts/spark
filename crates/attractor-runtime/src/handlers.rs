@@ -1874,46 +1874,31 @@ fn resolve_tool_output_updates(
     Ok(updates)
 }
 
-/// Resolves the human gate's declared details_from context keys into one
-/// markdown document so the reviewer sees what they are approving.
+/// Presents what the reviewer is deciding on: the user-space context the
+/// immediately preceding node produced, recorded by the runtime for every
+/// node. Generic — no flow declarations involved.
 fn human_gate_details(runtime: &HandlerRuntime) -> Option<String> {
-    let details_from = runtime
-        .flow
-        .nodes
-        .get(&runtime.node_id)
-        .and_then(|node| match node.config.as_ref() {
-            Some(attractor_core::NodeConfig::HumanGate { details_from, .. }) => {
-                Some(details_from.clone())
-            }
-            _ => None,
-        })
-        .filter(|keys| !keys.is_empty())?;
-    let sections = details_from
+    let updates = runtime
+        .context
+        .get(crate::context::RUNTIME_LAST_NODE_UPDATES_KEY)
+        .and_then(Value::as_object)?;
+    let sections = updates
         .iter()
-        .filter_map(|key| {
-            let value = crate::manager_loop::context_path_value(&runtime.context, key)?;
+        .filter_map(|(key, value)| {
             let text = match value {
-                Value::String(text) => text,
+                Value::String(text) => text.clone(),
                 Value::Null => return None,
-                other => serde_json::to_string_pretty(&other).ok()?,
+                other => serde_json::to_string_pretty(other).ok()?,
             };
             let text = text.trim().to_string();
-            (!text.is_empty()).then(|| {
-                format!(
-                    "### {key}
-
-{text}"
-                )
-            })
+            if text.is_empty() {
+                return None;
+            }
+            let heading = key.strip_prefix("context.").unwrap_or(key);
+            Some(format!("### {heading}\n\n{text}"))
         })
         .collect::<Vec<_>>();
-    (!sections.is_empty()).then(|| {
-        sections.join(
-            "
-
-",
-        )
-    })
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
 }
 
 fn tool_cwd(runtime: &HandlerRuntime) -> PathBuf {

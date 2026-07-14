@@ -107,9 +107,6 @@ nodes:
     config:
       kind: human_gate
       prompt: 'Review the audit summary and the ordered fix backlog in this run. Approve to implement the backlog one isolated change at a time, or stop with the report recorded.'
-      details_from:
-      - context.audit.summary
-      - context.audit.backlog
   pick_next_fix:
     kind: agent_task
     label: Pick Next Fix

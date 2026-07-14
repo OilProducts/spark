@@ -376,13 +376,6 @@
               },
               "type": "array"
             },
-            "details_from": {
-              "description": "Context keys whose values are presented alongside the question so the reviewer sees what they are approving.",
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
             "kind": {
               "enum": [
                 "human_gate"

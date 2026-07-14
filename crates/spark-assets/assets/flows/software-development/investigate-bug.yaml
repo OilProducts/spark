@@ -85,9 +85,6 @@ nodes:
     config:
       kind: human_gate
       prompt: 'Review the verified diagnosis and proposed repair plan in this run. Approve to implement the fix in an isolated worktree, request a revised plan, or stop with the investigation recorded.'
-      details_from:
-      - context.investigation.summary
-      - context.plan.objective
   implement:
     kind: subflow
     label: Implement Fix
