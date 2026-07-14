@@ -78,7 +78,7 @@ nodes:
     label: Recommend Fixes
     config:
       kind: agent_task
-      prompt: 'Turn the verified diagnosis (context.retro.diagnosis, context.retro.evidence) into recommendations, without changing any files. State the smallest change that prevents this failure class from recurring — a flow prompt or graph change, a contract tightening, a validation fix, or a runtime defect repair — and where that change lives. When the fix belongs in the current repository checkout, also produce one bounded, self-contained implementation task (the defect, the fix, acceptance criteria including a check that would have caught this run''s failure); when the fix lives outside this repository (an installed flow, configuration, or operator action), say so and leave the task empty. Respond with ONLY a JSON status envelope whose context_updates set context.retro.recommendations and context.retro.task (the implementable task statement, or an empty string).'
+      prompt: 'Turn the verified diagnosis (context.retro.diagnosis, context.retro.evidence) into recommendations, without changing any files. State the smallest change that prevents this failure class from recurring — a flow prompt or graph change, a contract tightening, a validation fix, or a runtime defect repair — and where that change lives. When the fix belongs in the current repository checkout, also produce one bounded, self-contained implementation task (the defect, the fix, acceptance criteria including a check that would have caught this run''s failure); when the fix lives outside this repository (an installed flow, configuration, or operator action), say so and leave the task empty. Respond with ONLY a JSON status envelope whose context_updates set context.retro.recommendations, context.retro.task (the implementable task statement, or an empty string), and context.retro.actionable (the string "true" when context.retro.task contains an implementable repository task, otherwise "false").'
     contracts:
       response: status_envelope
       reads_context:
@@ -87,6 +87,7 @@ nodes:
       writes_context:
       - context.retro.recommendations
       - context.retro.task
+      - context.retro.actionable
   approve_fix:
     kind: human_gate
     label: Approve Fix
@@ -126,7 +127,12 @@ edges:
   condition: outcome=fail
 - from: recommend
   to: approve_fix
-  condition: outcome=success
+  label: Actionable
+  condition: outcome=success && context.retro.actionable=true
+- from: recommend
+  to: done
+  label: Report Only
+  condition: outcome=success && context.retro.actionable=false
 - from: approve_fix
   to: implement
   label: Apply Fix
