@@ -643,6 +643,11 @@ impl CodexAppServerClient {
         if let Some(effort) = normalize_reasoning_effort(reasoning_effort)? {
             params["effort"] = json!(effort);
         }
+        // Turns that do not specify a summary level fall back to codex's own
+        // default (auto), bypassing model_reasoning_summary from config.toml;
+        // request detailed reasoning summaries explicitly so summary bodies
+        // come through instead of headline-only entries.
+        params["summary"] = json!(REASONING_SUMMARY_LEVEL);
         if let Some(path) = capture_path {
             let turn_input = params
                 .pointer("/input/0/text")
@@ -1487,6 +1492,18 @@ pub fn process_codex_app_server_message(
                             .item_id(item_id)
                             .build(),
                     );
+                } else if let Some(parts) = reasoning_summary_parts_from_item(item) {
+                    state.reasoning_summary_buffer.clear();
+                    for (summary_index, text) in parts.into_iter().enumerate() {
+                        events.push(
+                            event(TurnStreamEventKind::ContentCompleted, "reasoning_completed")
+                                .channel(TurnStreamChannel::Reasoning)
+                                .content(Some(text))
+                                .item_id(item_id.clone())
+                                .summary_index(Some(summary_index as u64))
+                                .build(),
+                        );
+                    }
                 } else if is_context_compaction_item(item) {
                     events.push(
                         event(
@@ -2434,6 +2451,44 @@ fn extract_plan_text_from_item(item: &Map<String, Value>) -> Option<String> {
             .join("\n\n");
         (!text.is_empty()).then_some(text)
     })
+}
+
+/// The reasoning summary level requested on every turn. Without an explicit
+/// value codex applies its own turn default instead of the configured
+/// model_reasoning_summary.
+const REASONING_SUMMARY_LEVEL: &str = "detailed";
+
+/// Extracts the summary part texts from a completed reasoning item. Returns
+/// None for non-reasoning items; reasoning items whose summary is empty yield
+/// no completion events.
+fn reasoning_summary_parts_from_item(item: &Map<String, Value>) -> Option<Vec<String>> {
+    let item_type = object_text(item, &["type"])?.to_ascii_lowercase();
+    if item_type != "reasoning" {
+        return None;
+    }
+    let mut parts = item
+        .get("summary")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    Value::String(text) => Some(text.clone()),
+                    Value::Object(part) => {
+                        object_text(part, &["text", "summaryText", "summary_text"])
+                    }
+                    _ => None,
+                })
+                .filter(|text| !text.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if parts.is_empty() {
+        if let Some(text) = object_text(item, &["text"]).filter(|text| !text.trim().is_empty()) {
+            parts.push(text);
+        }
+    }
+    (!parts.is_empty()).then_some(parts)
 }
 
 fn is_tool_item(item: &Map<String, Value>) -> bool {

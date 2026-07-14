@@ -493,6 +493,114 @@ mode = "native"
     .expect("execution profile");
 }
 
+#[test]
+fn chat_turn_ingest_persists_streamed_reasoning_segments() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let (prepared, _) = service
+        .start_turn(
+            "conversation-reasoning",
+            ConversationTurnRequest {
+                project_path: project_path.to_string_lossy().into_owned(),
+                message: "Do the thing.".to_string(),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+
+    let reasoning_body =
+        "**Inspecting the repo**\n\nLooked at the build files before choosing a fix.";
+    let snapshot = service
+        .ingest_agent_turn_output(
+            "conversation-reasoning",
+            project_path.to_str().expect("utf-8"),
+            &prepared.assistant_turn_id,
+            "chat",
+            AgentTurnOutput {
+                events: vec![
+                    reasoning_event(TurnStreamEventKind::ContentDelta, "**Inspecting the repo**"),
+                    reasoning_event(TurnStreamEventKind::ContentCompleted, reasoning_body),
+                    assistant_completed("Done."),
+                ],
+                final_assistant_text: Some("Done.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+        )
+        .expect("ingest turn");
+
+    let segments = snapshot["segments"].as_array().expect("segments");
+    let reasoning = segments
+        .iter()
+        .find(|segment| segment["kind"] == "reasoning")
+        .unwrap_or_else(|| panic!("reasoning segment persisted: {segments:?}"));
+    assert_eq!(reasoning["content"], reasoning_body);
+    assert_eq!(reasoning["status"], "complete");
+
+    // The committed snapshot, re-read from disk, retains the segment: this is
+    // what a conversation reload shows.
+    let reloaded = service
+        .get_snapshot(
+            "conversation-reasoning",
+            Some(project_path.to_str().expect("utf-8")),
+        )
+        .expect("reload conversation");
+    let reloaded_segments = reloaded["segments"].as_array().expect("segments");
+    assert!(
+        reloaded_segments
+            .iter()
+            .any(|segment| segment["kind"] == "reasoning" && segment["content"] == reasoning_body),
+        "reasoning segment must survive reload: {reloaded_segments:?}"
+    );
+}
+
+fn reasoning_event(kind: TurnStreamEventKind, content: &str) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind,
+        channel: Some(TurnStreamChannel::Reasoning),
+        source: TurnStreamSource {
+            app_turn_id: Some("app-turn-reasoning".to_string()),
+            item_id: Some("reason-1".to_string()),
+            summary_index: Some(0),
+            ..TurnStreamSource::default()
+        },
+        content_delta: Some(content.to_string()),
+        message: None,
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: None,
+    }
+}
+
+fn assistant_completed(content: &str) -> TurnStreamEvent {
+    TurnStreamEvent {
+        kind: TurnStreamEventKind::ContentCompleted,
+        channel: Some(TurnStreamChannel::Assistant),
+        source: TurnStreamSource {
+            app_turn_id: Some("app-turn-reasoning".to_string()),
+            item_id: Some("msg-1".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: Some(content.to_string()),
+        message: Some(content.to_string()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: None,
+        status: None,
+    }
+}
+
 fn plan_completed(content: &str) -> TurnStreamEvent {
     TurnStreamEvent {
         kind: TurnStreamEventKind::ContentCompleted,

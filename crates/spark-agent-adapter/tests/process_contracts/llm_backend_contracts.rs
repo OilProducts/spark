@@ -341,6 +341,7 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
         .expect("thread/start payload");
     assert_eq!(thread_start["params"]["ephemeral"], json!(true));
     assert_eq!(turn_start["params"]["effort"], json!("high"));
+    assert_eq!(turn_start["params"]["summary"], json!("detailed"));
     assert!(turn_start["params"].get("reasoningEffort").is_none());
     assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
     assert_eq!(

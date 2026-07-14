@@ -581,6 +581,70 @@ fn app_server_notifications_normalize_assistant_plan_reasoning_tool_usage_and_co
 }
 
 #[test]
+fn app_server_completed_reasoning_items_emit_reasoning_completions_per_summary_part() {
+    let mut state = CodexAppServerTurnState::default();
+    let messages = [
+        json!({"method": "item/reasoning/summaryTextDelta", "params": {"turnId": "turn-1", "itemId": "reason-1", "summaryIndex": 0, "delta": "**Inspecting the repo**"}}),
+        json!({"method": "item/completed", "params": {"turnId": "turn-1", "item": {
+            "type": "reasoning",
+            "id": "reason-1",
+            "summary": [
+                {"type": "summary_text", "text": "**Inspecting the repo**\n\nLooked at the build files."},
+                {"type": "summary_text", "text": "**Choosing a fix**\n\nSmallest coherent change wins."}
+            ]
+        }}}),
+        json!({"method": "turn/completed", "params": {"turn": {"id": "turn-1", "status": "completed"}}}),
+    ];
+    let events = messages
+        .iter()
+        .flat_map(|message| process_codex_app_server_message(message, &mut state))
+        .collect::<Vec<_>>();
+
+    let completions = events
+        .iter()
+        .filter(|event| {
+            event.kind == TurnStreamEventKind::ContentCompleted
+                && event.channel == Some(TurnStreamChannel::Reasoning)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        completions.len(),
+        2,
+        "one completion per summary part: {events:?}"
+    );
+    assert_eq!(
+        completions[0].content_delta.as_deref(),
+        Some("**Inspecting the repo**\n\nLooked at the build files.")
+    );
+    assert_eq!(completions[0].source.item_id.as_deref(), Some("reason-1"));
+    assert_eq!(completions[0].source.summary_index, Some(0));
+    assert_eq!(
+        completions[1].content_delta.as_deref(),
+        Some("**Choosing a fix**\n\nSmallest coherent change wins.")
+    );
+    assert_eq!(completions[1].source.summary_index, Some(1));
+}
+
+#[test]
+fn app_server_completed_reasoning_items_without_summary_emit_nothing() {
+    let mut state = CodexAppServerTurnState::default();
+    let message = json!({"method": "item/completed", "params": {"turnId": "turn-1", "item": {
+        "type": "reasoning",
+        "id": "reason-2",
+        "summary": [],
+        "encrypted_content": "opaque"
+    }}});
+    let events = process_codex_app_server_message(&message, &mut state);
+    assert!(
+        events.iter().all(|event| {
+            !(event.kind == TurnStreamEventKind::ContentCompleted
+                && event.channel == Some(TurnStreamChannel::Reasoning))
+        }),
+        "{events:?}"
+    );
+}
+
+#[test]
 fn app_server_tool_items_emit_frontend_renderable_tool_call_payloads() {
     let mut state = CodexAppServerTurnState::default();
     let events = recorded_tool_notification_messages()
