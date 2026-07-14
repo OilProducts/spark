@@ -89,8 +89,8 @@ pub use records::{
     mark_record_retry_started, normalize_run_status, read_run_record, write_run_record,
 };
 pub use results::{
-    materialize_run_result, read_materialized_run_result, write_run_result, ResultSummaryFn,
-    DEFAULT_RESULT_SUMMARY_PROMPT,
+    failed_run_result, materialize_run_result, read_materialized_run_result,
+    result_summary_request, write_run_result, ResultSummaryAttempt, DEFAULT_RESULT_SUMMARY_PROMPT,
 };
 pub use retry::{
     coerce_retry_exhausted_outcome, max_retries_for_node, retry_policy_for_node,

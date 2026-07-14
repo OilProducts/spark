@@ -382,7 +382,7 @@ fn result_materialization_selects_successful_response_artifact_and_overlays_mark
         )
         .expect("write node artifacts");
     let checkpoint = checkpoint("done", &["start", "work"]);
-    let flow = result_flow(None, false);
+    let flow = result_flow(None);
 
     let result = store
         .materialize_result(&paths, "run-result", "completed", &flow, &checkpoint, None)
@@ -629,13 +629,10 @@ fn fixture_derived_python_api_run_roots_read_without_additive_caches() {
         .any(|artifact| artifact.path == "logs/checkpoint.json"));
 }
 
-fn result_flow(explicit_result_node: Option<&str>, summary_enabled: bool) -> FlowDefinition {
+fn result_flow(explicit_result_node: Option<&str>) -> FlowDefinition {
     let mut extensions = BTreeMap::new();
     if let Some(node_id) = explicit_result_node {
         extensions.insert("spark.result_node".to_string(), json!(node_id));
-    }
-    if summary_enabled {
-        extensions.insert("spark.result_summary_enabled".to_string(), json!(true));
     }
     FlowDefinition {
         schema_version: "1.0".to_string(),

@@ -35,7 +35,10 @@ fn linear_flow(task: FlowNode) -> FlowDefinition {
                 "done".to_string(),
                 FlowNode {
                     kind: NodeKind::Exit,
-                    config: Some(NodeConfig::Exit {}),
+                    config: Some(NodeConfig::Exit {
+                        result_summary: false,
+                        result_summary_prompt: None,
+                    }),
                     ..FlowNode::default()
                 },
             ),

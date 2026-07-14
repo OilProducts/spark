@@ -127,7 +127,15 @@ pub struct FlowNode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NodeConfig {
     Start {},
-    Exit {},
+    Exit {
+        /// When true, reaching this exit produces the run result by pointing
+        /// a summarizer agent at the run's recorded transcripts and
+        /// artifacts. Failed runs use any opted-in exit.
+        #[serde(default, skip_serializing_if = "is_false")]
+        result_summary: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_summary_prompt: Option<String>,
+    },
     AgentTask {
         #[serde(default)]
         prompt: String,

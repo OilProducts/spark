@@ -27,7 +27,7 @@ use crate::events::{
     stage_started_event,
 };
 use crate::records::{mark_record_canceled, mark_record_paused, write_run_record};
-use crate::results::write_run_result;
+use crate::results::{failed_run_result, result_summary_request, write_run_result};
 use crate::retry::{coerce_retry_exhausted_outcome, retry_policy_for_node, should_retry_attempt};
 use crate::routing::{
     is_conditional_node, is_exit_node, outgoing_routing_edges, resolve_start_node,
@@ -428,6 +428,7 @@ where
                             &paths,
                             &run_id,
                             &mut record,
+                            &mut self.node_executor,
                             &flow,
                             &current_node,
                             &completed_nodes,
@@ -444,6 +445,7 @@ where
                         &paths,
                         &run_id,
                         &mut record,
+                        &mut self.node_executor,
                         &flow,
                         &current_node,
                         &completed_nodes,
@@ -481,6 +483,7 @@ where
                         &paths,
                         &run_id,
                         &mut record,
+                        &mut self.node_executor,
                         &flow,
                         &current_node,
                         &completed_nodes,
@@ -497,6 +500,7 @@ where
                     &paths,
                     &run_id,
                     &mut record,
+                    &mut self.node_executor,
                     &flow,
                     &current_node,
                     &completed_nodes,
@@ -781,6 +785,7 @@ where
                         &paths,
                         &run_id,
                         &mut record,
+                        &mut self.node_executor,
                         &flow,
                         &current_node,
                         &completed_nodes,
@@ -797,6 +802,7 @@ where
                     &paths,
                     &run_id,
                     &mut record,
+                    &mut self.node_executor,
                     &flow,
                     &current_node,
                     &completed_nodes,
@@ -1308,11 +1314,81 @@ fn save_checkpoint_event(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn finalize_completed(
+const RESULT_SUMMARY_NODE_ID: &str = "result_summary";
+
+/// Runs one synthetic agent execution whose working directory is the run's
+/// artifact root, so the summarizer reads the recorded transcripts directly
+/// instead of a separately maintained digest. Its prompt/response artifacts
+/// land under logs/result_summary/ like any node's.
+fn run_result_summary<E: NodeExecutor>(
+    node_executor: &mut E,
+    prompt: &str,
+    flow: &FlowDefinition,
+    context: &AttractorContext,
+    paths: &crate::paths::RunRootPaths,
+    record: &RunRecord,
+    run_id: &str,
+) -> std::result::Result<String, String> {
+    let node = attractor_core::FlowNode {
+        kind: attractor_core::NodeKind::AgentTask,
+        label: "Result Summary".to_string(),
+        config: Some(attractor_core::NodeConfig::AgentTask {
+            prompt: prompt.to_string(),
+        }),
+        ..attractor_core::FlowNode::default()
+    };
+    let node_attrs = crate::flow_runtime::node_attrs_for_handler(RESULT_SUMMARY_NODE_ID, &node);
+    let mut summary_context = context.snapshot();
+    summary_context.insert(
+        "internal.run_workdir".to_string(),
+        json!(paths.root.to_string_lossy().to_string()),
+    );
+    let llm_fallbacks = llm_fallbacks_for_record(record);
+    let request = NodeExecutionRequest {
+        node_id: RESULT_SUMMARY_NODE_ID.to_string(),
+        stage_index: 0,
+        context: summary_context,
+        prompt: prompt.to_string(),
+        node,
+        node_attrs,
+        flow: flow.clone(),
+        outgoing_edges: Vec::new(),
+        run_paths: Some(paths.clone()),
+        run_workdir: paths.root.clone(),
+        run_id: run_id.to_string(),
+        fallback_model: llm_fallbacks.model,
+        fallback_provider: llm_fallbacks.provider,
+        fallback_profile: llm_fallbacks.profile,
+        fallback_reasoning_effort: llm_fallbacks.reasoning_effort,
+    };
+    let outcome = match catch_unwind(AssertUnwindSafe(|| node_executor.execute(request))) {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => return Err(error.message),
+        Err(payload) => return Err(panic_payload_message(payload)),
+    };
+    if !matches!(
+        outcome.status,
+        OutcomeStatus::Success | OutcomeStatus::PartialSuccess
+    ) {
+        return Err(if outcome.failure_reason.trim().is_empty() {
+            format!("result summary agent returned {}", outcome.status.as_str())
+        } else {
+            outcome.failure_reason
+        });
+    }
+    let text = response_text_for_outcome(&outcome).trim().to_string();
+    if text.is_empty() {
+        return Err("result summary agent returned an empty response".to_string());
+    }
+    Ok(text)
+}
+
+fn finalize_completed<E: NodeExecutor>(
     store: &RunStore,
     paths: &crate::paths::RunRootPaths,
     run_id: &str,
     record: &mut RunRecord,
+    node_executor: &mut E,
     flow: &FlowDefinition,
     current_node: &str,
     completed_nodes: &[String],
@@ -1365,7 +1441,12 @@ fn finalize_completed(
             artifact_count,
         ),
     )?;
-    store.materialize_result(paths, run_id, &record.status, flow, &checkpoint, None)?;
+    let summary = result_summary_request(flow, &checkpoint, &record.status).map(|prompt| {
+        let attempt =
+            run_result_summary(node_executor, &prompt, flow, context, paths, record, run_id);
+        (prompt, attempt)
+    });
+    store.materialize_result(paths, run_id, &record.status, flow, &checkpoint, summary)?;
     Ok(PipelineExecutionResult {
         status: "completed".to_string(),
         current_node: current_node.to_string(),
@@ -1381,11 +1462,12 @@ fn finalize_completed(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn finalize_failed(
+fn finalize_failed<E: NodeExecutor>(
     store: &RunStore,
     paths: &crate::paths::RunRootPaths,
     run_id: &str,
     record: &mut RunRecord,
+    node_executor: &mut E,
     flow: &FlowDefinition,
     current_node: &str,
     completed_nodes: &[String],
@@ -1428,18 +1510,12 @@ fn finalize_failed(
         paths,
         pipeline_failed_event(run_id, current_node, &failure_reason, artifact_count),
     )?;
-    write_run_result(
-        paths,
-        &RunResult {
-            run_id: run_id.to_string(),
-            status: "failed".to_string(),
-            state: "error".to_string(),
-            error: Some(failure_reason.clone()),
-            ..RunResult::default()
-        },
-    )?;
-    let _ = flow;
-    let _ = checkpoint;
+    let summary = result_summary_request(flow, &checkpoint, &record.status).map(|prompt| {
+        let attempt =
+            run_result_summary(node_executor, &prompt, flow, context, paths, record, run_id);
+        (prompt, attempt)
+    });
+    write_run_result(paths, &failed_run_result(run_id, &failure_reason, summary))?;
     Ok(PipelineExecutionResult {
         status: "failed".to_string(),
         current_node: current_node.to_string(),

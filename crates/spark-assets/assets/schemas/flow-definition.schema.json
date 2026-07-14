@@ -333,6 +333,16 @@
                 "exit"
               ],
               "type": "string"
+            },
+            "result_summary": {
+              "description": "When true, reaching this exit produces the run result by pointing a summarizer agent at the run's recorded transcripts and artifacts. Failed runs use any opted-in exit.",
+              "type": "boolean"
+            },
+            "result_summary_prompt": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [

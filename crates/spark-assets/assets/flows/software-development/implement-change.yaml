@@ -180,6 +180,7 @@ nodes:
     label: Done
     config:
       kind: exit
+      result_summary: true
 edges:
 - from: start
   to: normalize_task
