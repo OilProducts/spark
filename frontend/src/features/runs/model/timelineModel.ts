@@ -628,6 +628,10 @@ const toPendingInterviewGateFromEvent = (event: TimelineEventEntry): PendingInte
             : typeof informMessage === 'string' && informMessage.trim().length > 0
                 ? informMessage.trim()
                 : event.summary
+    const detailsValue = event.payload.details
+    const details = typeof detailsValue === 'string' && detailsValue.trim().length > 0
+        ? detailsValue.trim()
+        : null
 
     return {
         eventId: event.id,
@@ -639,6 +643,7 @@ const toPendingInterviewGateFromEvent = (event: TimelineEventEntry): PendingInte
         sourceParentNodeId: event.sourceParentNodeId,
         sourceFlowName: event.sourceFlowName,
         prompt,
+        details,
         questionId,
         questionType,
         options,
@@ -726,6 +731,7 @@ const mergePendingInterviewGatesWithSnapshots = (
             sourceParentNodeId: null,
             sourceFlowName: null,
             prompt: question.prompt,
+            details: null,
             questionId: question.questionId,
             questionType: question.questionType,
             options: question.options,

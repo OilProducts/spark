@@ -93,6 +93,9 @@ nodes:
     config:
       kind: human_gate
       prompt: 'Review the verified diagnosis and recommendations in this run. Approve implementing the repository fix in an isolated worktree, or stop with the retrospective recorded (choose this when the fix lives outside this repository).'
+      details_from:
+      - context.retro.diagnosis
+      - context.retro.recommendations
   implement:
     kind: subflow
     label: Implement Fix

@@ -186,6 +186,7 @@ export interface PendingInterviewGate {
     sourceParentNodeId: string | null
     sourceFlowName: string | null
     prompt: string
+    details: string | null
     questionId: string | null
     questionType: 'MULTIPLE_CHOICE' | 'YES_NO' | 'CONFIRMATION' | 'FREEFORM' | null
     options: PendingQuestionOption[]

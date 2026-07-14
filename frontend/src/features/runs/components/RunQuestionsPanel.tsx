@@ -1,6 +1,7 @@
 import type { PendingInterviewGate, PendingInterviewGateGroup } from '../model/shared'
 import { pendingGateSemanticHint, formatTimestamp } from '../model/shared'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 interface RunQuestionsPanelProps {
@@ -65,6 +66,14 @@ export function RunQuestionsPanel({
                                 return (
                                     <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-xs text-amber-900">
                                         <div>{gate.prompt}</div>
+                                        {gate.details && (
+                                            <div
+                                                data-testid="run-pending-human-gate-details"
+                                                className="mt-1 max-h-72 overflow-y-auto rounded border border-amber-500/30 bg-white/70 px-2 py-1.5 text-[11px] text-amber-950"
+                                            >
+                                                <ProjectConversationMarkdown content={gate.details} />
+                                            </div>
+                                        )}
                                         <div
                                             data-testid="run-pending-human-gate-item-audit"
                                             className="mt-0.5 flex flex-wrap items-center gap-2 text-[10px] text-amber-900/80"

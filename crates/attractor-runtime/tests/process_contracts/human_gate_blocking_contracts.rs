@@ -51,6 +51,7 @@ fn gate_flow() -> FlowDefinition {
                     config: Some(NodeConfig::HumanGate {
                         prompt: "Approve the change?".to_string(),
                         decisions: Vec::new(),
+                        details_from: vec!["context.review.summary".to_string()],
                     }),
                     ..FlowNode::default()
                 },
@@ -136,7 +137,10 @@ fn spawn_gate_run(
             flow_source: None,
             flow_definition_json: None,
             launch_context: LaunchContext::empty(),
-            runtime_context: Default::default(),
+            runtime_context: attractor_core::ContextMap::from([(
+                "context.review.summary".to_string(),
+                serde_json::json!("The fix removes the stale lock file."),
+            )]),
             max_steps: None,
             start: ExecutionStart::Prepared { paths: start_paths },
         })
@@ -202,6 +206,11 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
     assert_eq!(pending.payload["prompt"], "Approve the change?");
     assert_eq!(pending.payload["options"][0]["label"], "Approve");
     assert_eq!(pending.payload["flow_name"], "gate-contract");
+    let details = pending.payload["details"].as_str().expect("gate details");
+    assert!(
+        details.contains("The fix removes the stale lock file."),
+        "details must present the declared context value: {details}"
+    );
 
     // Answer exactly like the API route does: journal an InterviewCompleted.
     harness

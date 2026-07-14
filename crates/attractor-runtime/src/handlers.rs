@@ -1007,6 +1007,7 @@ impl RuntimeHandlerRunner {
         } else {
             runtime.prompt.clone()
         };
+        let details = human_gate_details(&runtime);
         let question = HumanQuestion {
             text: question_text.clone(),
             stage: runtime.node_id.clone(),
@@ -1034,7 +1035,7 @@ impl RuntimeHandlerRunner {
             && self.human_gate_blocking
             && runtime.run_paths.is_some()
         {
-            match self.wait_for_human_gate_answer(&runtime, &question_text, &choices)? {
+            match self.wait_for_human_gate_answer(&runtime, &question_text, details, &choices)? {
                 HumanGateWaitResult::Answered(waited_answer) => {
                     answer = waited_answer;
                 }
@@ -1102,6 +1103,7 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: &HandlerRuntime,
         question_text: &str,
+        details: Option<String>,
         choices: &[Choice],
     ) -> std::result::Result<HumanGateWaitResult, RuntimeNodeError> {
         let paths = runtime
@@ -1132,6 +1134,7 @@ impl RuntimeHandlerRunner {
                 &runtime.node_id,
                 &flow_name,
                 question_text,
+                details,
                 options,
             ),
         )
@@ -1869,6 +1872,48 @@ fn resolve_tool_output_updates(
         updates.insert(context_key, current.clone());
     }
     Ok(updates)
+}
+
+/// Resolves the human gate's declared details_from context keys into one
+/// markdown document so the reviewer sees what they are approving.
+fn human_gate_details(runtime: &HandlerRuntime) -> Option<String> {
+    let details_from = runtime
+        .flow
+        .nodes
+        .get(&runtime.node_id)
+        .and_then(|node| match node.config.as_ref() {
+            Some(attractor_core::NodeConfig::HumanGate { details_from, .. }) => {
+                Some(details_from.clone())
+            }
+            _ => None,
+        })
+        .filter(|keys| !keys.is_empty())?;
+    let sections = details_from
+        .iter()
+        .filter_map(|key| {
+            let value = crate::manager_loop::context_path_value(&runtime.context, key)?;
+            let text = match value {
+                Value::String(text) => text,
+                Value::Null => return None,
+                other => serde_json::to_string_pretty(&other).ok()?,
+            };
+            let text = text.trim().to_string();
+            (!text.is_empty()).then(|| {
+                format!(
+                    "### {key}
+
+{text}"
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    (!sections.is_empty()).then(|| {
+        sections.join(
+            "
+
+",
+        )
+    })
 }
 
 fn tool_cwd(runtime: &HandlerRuntime) -> PathBuf {

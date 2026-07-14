@@ -113,6 +113,7 @@ pub fn human_gate_pending_event(
     node_id: impl Into<String>,
     flow_name: impl Into<String>,
     prompt: impl Into<String>,
+    details: Option<String>,
     options: Vec<Value>,
 ) -> RawRuntimeEvent {
     let run_id = run_id.into();
@@ -125,6 +126,7 @@ pub fn human_gate_pending_event(
             ("node_id", json!(node_id.into())),
             ("flow_name", json!(flow_name.into())),
             ("prompt", json!(prompt.into())),
+            ("details", details.map(Value::String).unwrap_or(Value::Null)),
             ("options", Value::Array(options)),
             ("answer", Value::Null),
         ],
