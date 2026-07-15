@@ -17,6 +17,9 @@ use crate::codergen::{
     CodergenBackendResponse, CodergenError, CodergenEvent, CodergenEventSink,
     CodergenSessionInterventionBroker,
 };
+use crate::claude_code::{
+    usage_from_claude_code_usage_payload, ClaudeCodeBackend, CLAUDE_CODE_BACKEND,
+};
 use crate::codex_app_server::{
     usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
     CODEX_APP_SERVER_BACKEND,
@@ -74,6 +77,9 @@ impl CodergenBackend for RustLlmCodergenBackend {
     ) -> Result<CodergenBackendOutput, CodergenError> {
         if is_codex_provider_selector(&request.provider) {
             return self.run_codex_app_server_codergen(request, event_sink);
+        }
+        if is_claude_code_provider_selector(&request.provider) {
+            return self.run_claude_code_codergen(request, event_sink);
         }
         if request.runtime_mode.requires_agent() {
             return self.run_agent_codergen(request, event_sink);
@@ -218,6 +224,108 @@ impl RustLlmCodergenBackend {
             ]),
         );
         events.push(completed_event);
+        Ok(CodergenBackendOutput {
+            response,
+            events,
+            usage,
+        })
+    }
+
+    fn run_claude_code_codergen(
+        &mut self,
+        request: CodergenBackendRequest,
+        event_sink: Option<CodergenEventSink>,
+    ) -> Result<CodergenBackendOutput, CodergenError> {
+        let agent_request = codergen_agent_turn_request(&request);
+        let capture_event =
+            crate::initial_context::path_from_metadata(&request.metadata).map(|_| {
+                CodergenEvent::new(
+                    "initial_context_captured",
+                    BTreeMap::from([
+                        ("node_id".to_string(), json!(request.node_id.clone())),
+                        (
+                            "context_capture_kind".to_string(),
+                            json!("claude_code_turn_input"),
+                        ),
+                    ]),
+                )
+            });
+        if let (Some(sink), Some(capture_event)) = (event_sink.as_ref(), capture_event.as_ref()) {
+            sink(capture_event.clone());
+        }
+        // Live prefix contract: the sink receives exactly the events the
+        // output batch starts with (same mapping, same order).
+        let sink_request = request.clone();
+        let stream_sink = event_sink;
+        let turn_event_sink: Option<AgentTurnEventSink> = stream_sink.as_ref().map(|sink| {
+            let sink = sink.clone();
+            std::sync::Arc::new(move |turn_event: TurnStreamEvent| {
+                sink(claude_code_codergen_event_from_turn_stream_event(
+                    &sink_request,
+                    &turn_event,
+                ));
+            }) as AgentTurnEventSink
+        });
+        let output = ClaudeCodeBackend::new()
+            .run_agent_turn_with_event_sink(agent_request, turn_event_sink)
+            .map_err(|error| CodergenError::Backend(error.message))?;
+        let usage = output
+            .token_usage
+            .as_ref()
+            .and_then(usage_from_claude_code_usage_payload);
+        let response = if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty)
+        {
+            CodergenBackendResponse::Text(text.to_string())
+        } else {
+            CodergenBackendResponse::Outcome(Outcome {
+                status: OutcomeStatus::Fail,
+                failure_reason: "claude code completed without assistant text".to_string(),
+                retryable: Some(false),
+                failure_kind: Some(FailureKind::Runtime),
+                ..Outcome::new(OutcomeStatus::Fail)
+            })
+        };
+        let mut events = capture_event.into_iter().collect::<Vec<_>>();
+        for event in &output.events {
+            events.push(claude_code_codergen_event_from_turn_stream_event(
+                &request, event,
+            ));
+        }
+        events.push(CodergenEvent::new(
+            "claude_code_request_completed",
+            BTreeMap::from([
+                ("backend".to_string(), json!(CLAUDE_CODE_BACKEND)),
+                ("node_id".to_string(), json!(request.node_id.clone())),
+                (
+                    "provider_selector".to_string(),
+                    json!(request.provider.clone()),
+                ),
+                ("provider".to_string(), json!("claude-code")),
+                ("model_selector".to_string(), json!(request.model.clone())),
+                ("model".to_string(), json!(request.model.clone())),
+                (
+                    "llm_profile".to_string(),
+                    json!(request.llm_profile.clone()),
+                ),
+                (
+                    "reasoning_effort".to_string(),
+                    json!(request.reasoning_effort.clone()),
+                ),
+                (
+                    "response_contract".to_string(),
+                    json!(request.response_contract.clone()),
+                ),
+                (
+                    "runtime_mode".to_string(),
+                    json!(request.runtime_mode.clone()),
+                ),
+                ("token_usage".to_string(), json!(output.token_usage.clone())),
+                (
+                    "context_capture_kind".to_string(),
+                    json!("claude_code_turn_input"),
+                ),
+            ]),
+        ));
         Ok(CodergenBackendOutput {
             response,
             events,
@@ -576,6 +684,42 @@ fn codergen_event_from_turn_stream_event(
         payload.insert("token_usage".to_string(), token_usage.clone());
     }
     CodergenEvent::new("codex_app_server_session_event", payload)
+}
+
+fn claude_code_codergen_event_from_turn_stream_event(
+    request: &CodergenBackendRequest,
+    event: &TurnStreamEvent,
+) -> CodergenEvent {
+    let mut payload = BTreeMap::from([
+        ("node_id".to_string(), json!(request.node_id.clone())),
+        ("backend".to_string(), json!(CLAUDE_CODE_BACKEND.to_string())),
+        (
+            "provider_selector".to_string(),
+            json!(request.provider.clone()),
+        ),
+        ("provider".to_string(), json!("claude-code")),
+        ("model_selector".to_string(), json!(request.model.clone())),
+        (
+            "reasoning_effort".to_string(),
+            json!(request.reasoning_effort.clone()),
+        ),
+        ("kind".to_string(), json!(event.kind.as_str())),
+        (
+            "category".to_string(),
+            json!(codergen_turn_stream_event_category(event)),
+        ),
+        (
+            "turn_stream_event".to_string(),
+            serde_json::to_value(event).unwrap_or_else(|_| json!({})),
+        ),
+    ]);
+    if let Some(tool_call) = event.tool_call.as_ref() {
+        payload.insert("tool_event".to_string(), tool_call.clone());
+    }
+    if let Some(token_usage) = event.token_usage.as_ref() {
+        payload.insert("token_usage".to_string(), token_usage.clone());
+    }
+    CodergenEvent::new("claude_code_session_event", payload)
 }
 
 fn codergen_turn_stream_event_category(event: &TurnStreamEvent) -> &'static str {
@@ -1683,4 +1827,9 @@ fn is_codex_request_provider(provider: Option<&str>, _llm_profile: Option<&str>)
 
 fn is_codex_provider_selector(provider: &str) -> bool {
     provider.trim().eq_ignore_ascii_case("codex")
+}
+
+fn is_claude_code_provider_selector(provider: &str) -> bool {
+    let normalized = provider.trim();
+    normalized.eq_ignore_ascii_case("claude-code") || normalized.eq_ignore_ascii_case("claude_code")
 }

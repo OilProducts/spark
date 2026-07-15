@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod apply_patch;
 pub mod boundary_cli;
+pub mod claude_code;
 pub mod codergen;
 pub mod codex_app_server;
 pub mod config;
@@ -26,6 +27,9 @@ pub mod truncation;
 pub use agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
+};
+pub use claude_code::{
+    usage_from_claude_code_usage_payload, ClaudeCodeBackend, ClaudeCodeError, CLAUDE_CODE_BACKEND,
 };
 pub use codergen::{
     ActiveCodergenSession, ActiveCodergenSessionGuard, CodergenBackend, CodergenBackendOutput,

@@ -153,6 +153,7 @@ pub fn codergen_events_for_journal(
             "rust_llm_adapter_request_completed"
             | "rust_agent_adapter_request_completed"
             | "codex_app_server_request_completed"
+            | "claude_code_request_completed"
             | "simulated_llm_request_completed" => {
                 events.push(llm_request_completed_event(
                     run_id,
@@ -160,7 +161,9 @@ pub fn codergen_events_for_journal(
                     low_volume_llm_payload(&event.payload),
                 ));
             }
-            "rust_agent_session_event" | "codex_app_server_session_event" => {
+            "rust_agent_session_event"
+            | "codex_app_server_session_event"
+            | "claude_code_session_event" => {
                 if let Some(usage) = event
                     .payload
                     .get("token_usage")

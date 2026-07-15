@@ -214,6 +214,7 @@ const REQUEST_COMPLETED_EVENT_TYPES: &[&str] = &[
     "rust_llm_adapter_request_completed",
     "rust_agent_adapter_request_completed",
     "codex_app_server_request_completed",
+    "claude_code_request_completed",
 ];
 
 /// Aggregate a run's token usage from its journal.
