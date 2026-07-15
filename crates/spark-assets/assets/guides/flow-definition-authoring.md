@@ -80,8 +80,12 @@ prepare_workspace:
   config:
     kind: tool
     command: |
-      git worktree add -b "spark/task/${SPARK_RUN_ID}" "../wt-${SPARK_RUN_ID}" >/dev/null
-      printf '{"path":"../wt-%s"}' "$SPARK_RUN_ID"
+      repo_root=$(git rev-parse --show-toplevel)
+      mkdir -p "${repo_root}/.spark/checkouts"
+      printf '*\n' > "${repo_root}/.spark/.gitignore"
+      worktree="${repo_root}/.spark/checkouts/${SPARK_RUN_ID}"
+      git worktree add -b "spark/task/${SPARK_RUN_ID}" "$worktree" >/dev/null
+      printf '{"path":"%s"}' "$worktree"
     env_map:
       SPARK_RUN_ID: internal.run_id
     output_map:

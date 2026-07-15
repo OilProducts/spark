@@ -49,10 +49,12 @@ nodes:
       kind: tool
       command: |
         set -eu
-        common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+        repo_root=$(git rev-parse --show-toplevel)
         branch="spark/lifecycle/${SPARK_RUN_ID}"
-        worktree="${common_dir}/spark/checkouts/${SPARK_RUN_ID}"
-        mkdir -p "${common_dir}/spark/checkouts"
+        checkout_root="${repo_root}/.spark/checkouts"
+        worktree="${checkout_root}/${SPARK_RUN_ID}"
+        mkdir -p "$checkout_root"
+        printf '*\n' > "${repo_root}/.spark/.gitignore"
         git worktree add -b "$branch" "$worktree" HEAD >/dev/null
         printf '{"path":"%s","branch":"%s"}' "$worktree" "$branch"
       env_map:
@@ -184,11 +186,24 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     );
     let subject = git_in(&repo, &["log", "-1", "--format=%s", branch]);
     assert_eq!(subject, "lifecycle change");
+    assert!(
+        !branch_files.contains(".spark"),
+        "the worktree directory must never be committed: {branch_files}"
+    );
 
-    let worktree = repo.join(".git/spark/checkouts/run-lifecycle");
+    let worktree = repo.join(".spark/checkouts/run-lifecycle");
     assert!(
         !worktree.exists(),
         "successful runs must remove their worktree"
+    );
+    assert!(
+        !repo.join(".git/spark").exists(),
+        "worktrees must not be created inside .git"
+    );
+    let status = git_in(&repo, &["status", "--porcelain"]);
+    assert!(
+        !status.contains(".spark"),
+        "the .spark directory must be invisible to git status: {status}"
     );
     assert!(
         repo.join("dirty.txt").exists(),

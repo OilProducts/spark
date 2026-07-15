@@ -74,10 +74,16 @@ nodes:
       kind: tool
       command: |
         set -eu
-        common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+        repo_root=$(git rev-parse --show-toplevel)
         base_commit=$(git rev-parse --verify "${SPARK_BASE_REF}^{commit}")
         branch="spark/implement-change/${SPARK_RUN_ID}"
-        worktree="${common_dir}/spark/checkouts/${SPARK_RUN_ID}"
+        # Worktrees live under <repo>/.spark, never inside .git: tooling such
+        # as Vite refuses to serve or resolve paths matching **/.git/**. The
+        # directory ignores itself so the source checkout stays clean.
+        checkout_root="${repo_root}/.spark/checkouts"
+        worktree="${checkout_root}/${SPARK_RUN_ID}"
+        mkdir -p "$checkout_root"
+        printf '*\n' > "${repo_root}/.spark/.gitignore"
         if [ -d "$worktree" ] && git -C "$worktree" rev-parse --git-dir >/dev/null 2>&1; then
           existing=$(git -C "$worktree" rev-parse --abbrev-ref HEAD)
           if [ "$existing" != "$branch" ]; then
@@ -85,7 +91,6 @@ nodes:
             exit 1
           fi
         else
-          mkdir -p "${common_dir}/spark/checkouts"
           if git show-ref --verify --quiet "refs/heads/$branch"; then
             git worktree add "$worktree" "$branch" >/dev/null
           else

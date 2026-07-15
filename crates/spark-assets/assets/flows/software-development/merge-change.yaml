@@ -55,10 +55,15 @@ nodes:
         fi
         target_commit=$(git rev-parse HEAD)
         source_commit=$(git rev-parse --verify "${SPARK_SOURCE_REF}^{commit}")
-        common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
-        worktree="${common_dir}/spark/integrations/${SPARK_RUN_ID}"
+        repo_root=$(git rev-parse --show-toplevel)
+        # Worktrees live under <repo>/.spark, never inside .git: tooling such
+        # as Vite refuses to serve or resolve paths matching **/.git/**. The
+        # directory ignores itself so the target checkout stays clean.
+        integration_root="${repo_root}/.spark/integrations"
+        worktree="${integration_root}/${SPARK_RUN_ID}"
         if [ ! -d "$worktree" ]; then
-          mkdir -p "${common_dir}/spark/integrations"
+          mkdir -p "$integration_root"
+          printf '*\n' > "${repo_root}/.spark/.gitignore"
           git worktree add --detach "$worktree" "$target_commit" >/dev/null
         fi
         cd "$worktree"
