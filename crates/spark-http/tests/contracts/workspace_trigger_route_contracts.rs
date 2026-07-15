@@ -780,29 +780,38 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
     let project_path = temp.path().join("slow-webhook-project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
+    // The flow's only work node blocks until the test creates the release
+    // file, so the run provably cannot complete before the test allows it —
+    // no wall-clock budget involved. The gate is bounded so a failing test
+    // that never releases it cannot leave the run spinning.
+    let release_path = temp.path().join("release-webhook-run");
+    let release_path_text = release_path.to_string_lossy().to_string();
     let slow_flow_path = settings.flows_dir.join("ops/slow-webhook.yaml");
     fs::create_dir_all(slow_flow_path.parent().expect("flow parent")).expect("flow parent");
     fs::write(
         slow_flow_path,
-        concat!(
-            "schema_version: '1'\n",
-            "id: slow_hook\n",
-            "title: Slow Hook\n",
-            "nodes:\n",
-            "  start:\n",
-            "    kind: start\n",
-            "  work:\n",
-            "    kind: tool\n",
-            "    config:\n",
-            "      kind: tool\n",
-            "      command: sleep 1.5\n",
-            "  done:\n",
-            "    kind: exit\n",
-            "edges:\n",
-            "  - from: start\n",
-            "    to: work\n",
-            "  - from: work\n",
-            "    to: done\n",
+        format!(
+            concat!(
+                "schema_version: '1'\n",
+                "id: slow_hook\n",
+                "title: Slow Hook\n",
+                "nodes:\n",
+                "  start:\n",
+                "    kind: start\n",
+                "  work:\n",
+                "    kind: tool\n",
+                "    config:\n",
+                "      kind: tool\n",
+                "      command: for i in $(seq 1 600); do [ -f \"{release}\" ] && exit 0; sleep 0.1; done; exit 1\n",
+                "  done:\n",
+                "    kind: exit\n",
+                "edges:\n",
+                "  - from: start\n",
+                "    to: work\n",
+                "  - from: work\n",
+                "    to: done\n",
+            ),
+            release = release_path_text,
         ),
     )
     .expect("write slow flow");
@@ -835,27 +844,27 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
         .expect("secret")
         .to_string();
 
-    // The dispatch must return at launch, not at run completion: well under
-    // the ~1.5s the single slow tool node takes.
-    let dispatch_started = std::time::Instant::now();
-    let accepted = request_json_with_headers(
-        app,
-        "POST",
-        "/workspace/api/webhooks",
-        &[
-            ("X-Spark-Webhook-Key", webhook_key.as_str()),
-            ("X-Spark-Webhook-Secret", webhook_secret.as_str()),
-            ("X-Spark-Webhook-Request-Id", "slow-dispatch"),
-        ],
-        Some(json!({"payload": "slow"})),
+    // The dispatch must return at launch, not at run completion. The run
+    // cannot finish until this test creates the release file, so a
+    // synchronous dispatch would deadlock here rather than merely be slow —
+    // any finite timeout catches it, independent of machine load.
+    let accepted = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        request_json_with_headers(
+            app,
+            "POST",
+            "/workspace/api/webhooks",
+            &[
+                ("X-Spark-Webhook-Key", webhook_key.as_str()),
+                ("X-Spark-Webhook-Secret", webhook_secret.as_str()),
+                ("X-Spark-Webhook-Request-Id", "slow-dispatch"),
+            ],
+            Some(json!({"payload": "slow"})),
+        ),
     )
-    .await;
-    let dispatch_elapsed = dispatch_started.elapsed();
+    .await
+    .expect("webhook dispatch blocked on run execution: the run cannot complete until the test releases it");
     assert_eq!(accepted.0, StatusCode::OK);
-    assert!(
-        dispatch_elapsed < std::time::Duration::from_millis(1_000),
-        "webhook dispatch blocked on run execution: {dispatch_elapsed:?}",
-    );
 
     let trigger_id = accepted.1["trigger_id"].as_str().expect("trigger id");
     let state =
@@ -871,16 +880,35 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
         .expect("run id")
         .to_string();
 
-    // The run is still executing at dispatch time and completes on its own.
+    // With the gate still closed the run cannot have completed; waiting for
+    // it to report running is a one-sided wait that only fails if the
+    // detached run never actually executes.
     let store = RunStore::for_settings(&settings);
-    let running_now = store
-        .read_run_bundle(&run_id)
-        .expect("bundle")
-        .and_then(|bundle| bundle.record)
-        .map(|record| record.status);
-    assert_eq!(running_now.as_deref(), Some("running"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let status = store
+            .read_run_bundle(&run_id)
+            .expect("bundle")
+            .and_then(|bundle| bundle.record)
+            .map(|record| record.status);
+        if status.as_deref() == Some("running") {
+            break;
+        }
+        assert!(
+            status.as_deref() != Some("completed") && status.as_deref() != Some("failed"),
+            "run must stay in flight until the test releases it (last: {status:?})",
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached webhook run never started executing (last: {status:?})",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // Release the gate; only now may the run finish.
+    fs::write(&release_path, b"go").expect("release run");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let status = store
             .read_run_bundle(&run_id)
