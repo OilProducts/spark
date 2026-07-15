@@ -45,6 +45,7 @@ const DEFAULT_TIMELINE_SESSION = {
     submittingGateIds: {} as Record<string, boolean>,
     answeredGateIds: {} as Record<string, boolean>,
     freeformAnswersByGateId: {} as Record<string, string>,
+    gateNotesByGateId: {} as Record<string, string>,
 }
 
 const RUN_JOURNAL_PAGE_SIZE = 100
