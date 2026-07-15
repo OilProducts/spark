@@ -140,6 +140,7 @@ pub fn human_gate_answered_event(
     flow_name: Option<String>,
     prompt: Option<String>,
     answer: impl Into<String>,
+    note: Option<String>,
 ) -> RawRuntimeEvent {
     let run_id = run_id.into();
     event_with_payload(
@@ -152,6 +153,7 @@ pub fn human_gate_answered_event(
             ("flow_name", option_json(flow_name)),
             ("question", option_json(prompt)),
             ("answer", json!(answer.into())),
+            ("note", option_json(note)),
             ("outcome_provenance", json!("accepted")),
         ],
     )

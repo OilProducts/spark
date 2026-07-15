@@ -145,6 +145,7 @@ fn startup_recovery_resumes_orphaned_waiting_run_and_consumes_journaled_answer()
                 Some("recovery-gate".to_string()),
                 Some("Ship the report?".to_string()),
                 "Finish",
+                None,
             ),
         )
         .expect("journal answer");
@@ -219,6 +220,7 @@ fn startup_recovery_resumes_unanswered_gate_back_into_waiting() {
                 Some("recovery-gate".to_string()),
                 Some("Ship the report?".to_string()),
                 "Finish",
+                None,
             ),
         )
         .expect("journal answer");

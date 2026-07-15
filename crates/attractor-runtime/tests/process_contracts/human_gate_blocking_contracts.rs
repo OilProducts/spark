@@ -246,6 +246,7 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
                 Some("gate-contract".to_string()),
                 Some("Approve the change?".to_string()),
                 "Approve",
+                Some("Looks right, but double-check the lock cleanup.".to_string()),
             ),
         )
         .expect("append answer");
@@ -268,6 +269,19 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
         .expect("record")
         .expect("record");
     assert_eq!(final_record.status, "completed");
+
+    // The note travels with the selection into the gate's context updates so
+    // downstream nodes can read it as `human.gate.note`.
+    let gate_status_path = harness.paths.logs_dir().join("review").join("status.json");
+    let gate_status: Value = serde_json::from_str(
+        &std::fs::read_to_string(&gate_status_path).expect("gate status artifact"),
+    )
+    .expect("gate status json");
+    assert_eq!(gate_status["context_updates"]["human.gate.label"], "Approve");
+    assert_eq!(
+        gate_status["context_updates"]["human.gate.note"],
+        "Looks right, but double-check the lock cleanup."
+    );
 }
 
 #[test]

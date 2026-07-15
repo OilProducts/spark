@@ -96,6 +96,7 @@ export interface RunDetailSessionState {
     submittingGateIds: Record<string, boolean>
     answeredGateIds: Record<string, boolean>
     freeformAnswersByGateId: Record<string, string>
+    gateNotesByGateId: Record<string, string>
 }
 
 export interface TriggerCreateDraftState {

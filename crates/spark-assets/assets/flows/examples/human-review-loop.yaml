@@ -52,7 +52,11 @@ nodes:
     label: Apply Fixes
     config:
       kind: agent_task
-      prompt: Address the human feedback, update the proposed change, and return it for review.
+      prompt: Address the human feedback (the reviewer's note arrives as the human.gate.note context value; when it is empty, re-inspect the proposed change for whatever a reviewer would most plausibly reject), update the proposed change, and return it for review.
+    contracts:
+      reads_context:
+      - human.gate.label
+      - human.gate.note
     execution:
       llm_model: gpt-5.6-sol
       reasoning_effort: high

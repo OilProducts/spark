@@ -348,7 +348,22 @@ curl -X POST \
   -d '{"selected_value":"approve"}'
 ```
 
-Use the exact option value exposed by the question payload.
+Use the exact option value exposed by the question payload. `selected_value`
+picks the route; it is not a feedback channel — text that matches no option
+fails the gate as skipped.
+
+To send feedback with the selection, add an optional `note`:
+
+```bash
+curl -X POST \
+  http://127.0.0.1:8000/attractor/pipelines/<pipeline_id>/questions/<question_id>/answer \
+  -H 'Content-Type: application/json' \
+  -d '{"selected_value":"Request Fixes","note":"Tighten the error handling in the retry path."}'
+```
+
+The note reaches downstream nodes as the `human.gate.note` context value;
+nodes that should see it declare it in `contracts.reads_context`. Each
+answered gate overwrites `human.gate.note` (empty when no note was given).
 
 ## Manage Triggers
 

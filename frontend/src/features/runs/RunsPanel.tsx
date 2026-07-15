@@ -200,6 +200,7 @@ export function RunsPanel() {
     const {
         filteredTimelineEventCount,
         freeformAnswersByGateId,
+        gateNotesByGateId,
         groupedPendingInterviewGates,
         groupedTimelineEntries,
         hasOlderTimelineEvents,
@@ -208,6 +209,7 @@ export function RunsPanel() {
         loadOlderTimelineEvents,
         pendingGateActionError,
         setFreeformAnswersByGateId,
+        setGateNotesByGateId,
         setTimelineCategoryFilter,
         setTimelineSeverityFilter,
         submittingGateIds,
@@ -557,6 +559,7 @@ export function RunsPanel() {
                             >
                             <RunQuestionsPanel
                                 freeformAnswersByGateId={freeformAnswersByGateId}
+                                gateNotesByGateId={gateNotesByGateId}
                                 groupedPendingInterviewGates={groupedPendingInterviewGates}
                                 onFreeformAnswerChange={(questionId, value) => {
                                     setFreeformAnswersByGateId((previous) => ({
@@ -564,8 +567,14 @@ export function RunsPanel() {
                                         [questionId]: value,
                                     }))
                                 }}
-                                onSubmitPendingGateAnswer={(gate, selectedValue) => {
-                                    void submitPendingGateAnswer(gate, selectedValue)
+                                onGateNoteChange={(questionId, value) => {
+                                    setGateNotesByGateId((previous) => ({
+                                        ...previous,
+                                        [questionId]: value,
+                                    }))
+                                }}
+                                onSubmitPendingGateAnswer={(gate, selectedValue, note) => {
+                                    void submitPendingGateAnswer(gate, selectedValue, note)
                                 }}
                                 pendingGateActionError={pendingGateActionError}
                                 submittingGateIds={submittingGateIds}

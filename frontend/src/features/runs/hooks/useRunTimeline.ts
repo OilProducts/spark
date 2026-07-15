@@ -288,7 +288,7 @@ export function useRunTimeline({
         updateRunDetailSession(selectedRunTimelineId, patch)
     }, [selectedRunTimelineId, updateRunDetailSession])
 
-    const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string) => {
+    const submitPendingGateAnswer = useCallback(async (gate: PendingInterviewGate, selectedValue: string, note?: string) => {
         if (!selectedRunTimelineId || !gate.questionId || !selectedValue.trim()) {
             return
         }
@@ -300,15 +300,18 @@ export function useRunTimeline({
             },
         })
         try {
-            await fetchPipelineAnswerValidated(selectedRunTimelineId, gate.questionId, selectedValue)
+            await fetchPipelineAnswerValidated(selectedRunTimelineId, gate.questionId, selectedValue, note)
             const nextFreeformAnswers = { ...timelineSession.freeformAnswersByGateId }
             delete nextFreeformAnswers[gate.questionId]
+            const nextGateNotes = { ...timelineSession.gateNotesByGateId }
+            delete nextGateNotes[gate.questionId]
             patchTimelineSession({
                 answeredGateIds: {
                     ...timelineSession.answeredGateIds,
                     [gate.questionId]: true,
                 },
                 freeformAnswersByGateId: nextFreeformAnswers,
+                gateNotesByGateId: nextGateNotes,
             })
         } catch (err) {
             logUnexpectedRunError(err)
@@ -324,7 +327,7 @@ export function useRunTimeline({
                 submittingGateIds: nextSubmittingGateIds,
             })
         }
-    }, [patchTimelineSession, selectedRunTimelineId, timelineSession.answeredGateIds, timelineSession.freeformAnswersByGateId, timelineSession.submittingGateIds])
+    }, [patchTimelineSession, selectedRunTimelineId, timelineSession.answeredGateIds, timelineSession.freeformAnswersByGateId, timelineSession.gateNotesByGateId, timelineSession.submittingGateIds])
 
     const loadOlderTimelineEvents = useCallback(async () => {
         if (
@@ -373,6 +376,7 @@ export function useRunTimeline({
     return {
         filteredTimelineEventCount: timelineProjection.filteredCount,
         freeformAnswersByGateId: timelineSession.freeformAnswersByGateId,
+        gateNotesByGateId: timelineSession.gateNotesByGateId,
         groupedPendingInterviewGates,
         groupedTimelineEntries: timelineProjection.groupedEntries,
         hasOlderTimelineEvents: journalState.hasOlder,
@@ -385,6 +389,11 @@ export function useRunTimeline({
         setFreeformAnswersByGateId: (next: SetStateAction<Record<string, string>>) => patchTimelineSession({
             freeformAnswersByGateId: typeof next === 'function'
                 ? next(timelineSession.freeformAnswersByGateId)
+                : next,
+        }),
+        setGateNotesByGateId: (next: SetStateAction<Record<string, string>>) => patchTimelineSession({
+            gateNotesByGateId: typeof next === 'function'
+                ? next(timelineSession.gateNotesByGateId)
                 : next,
         }),
         setTimelineCategoryFilter: (value: 'all' | TimelineEventCategory) => patchTimelineSession({ timelineCategoryFilter: value }),

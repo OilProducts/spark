@@ -68,7 +68,7 @@ nodes:
     label: Propose Repair Plan
     config:
       kind: agent_task
-      prompt: 'Turn the verified diagnosis (context.investigation.summary, context.investigation.root_cause, context.investigation.evidence) into one decision-complete repair plan without changing any files. The plan must state: the bounded objective of the fix, the target paths, explicit acceptance criteria including a regression check that reproduces the original defect, compatibility constraints, and the truthful validation command (use context.request.validation_command when provided, otherwise discover it from the repository). Prefer the smallest coherent fix over redesign. If the human gate previously routed back here, incorporate any guidance visible in context. Respond with ONLY a JSON status envelope whose context_updates set context.plan.objective (a self-contained task statement an implementer can execute without reading this run) and context.plan.validation_command.'
+      prompt: 'Turn the verified diagnosis (context.investigation.summary, context.investigation.root_cause, context.investigation.evidence) into one decision-complete repair plan without changing any files. The plan must state: the bounded objective of the fix, the target paths, explicit acceptance criteria including a regression check that reproduces the original defect, compatibility constraints, and the truthful validation command (use context.request.validation_command when provided, otherwise discover it from the repository). Prefer the smallest coherent fix over redesign. If the human gate previously routed back here, incorporate its guidance: the reviewer''s note arrives as the human.gate.note context value. Respond with ONLY a JSON status envelope whose context_updates set context.plan.objective (a self-contained task statement an implementer can execute without reading this run) and context.plan.validation_command.'
     contracts:
       response: status_envelope
       reads_context:
@@ -76,6 +76,8 @@ nodes:
       - context.investigation.root_cause
       - context.investigation.evidence
       - context.request.validation_command
+      - human.gate.label
+      - human.gate.note
       writes_context:
       - context.plan.objective
       - context.plan.validation_command

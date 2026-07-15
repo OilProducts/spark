@@ -433,6 +433,10 @@ pub struct PipelineMetadataUpdateRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HumanAnswerRequest {
     pub selected_value: String,
+    /// Optional free-text note carried alongside the selected route; surfaced
+    /// to downstream nodes as the `human.gate.note` context value.
+    #[serde(default)]
+    pub note: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1852,6 +1856,7 @@ impl AttractorApiService {
         if answer.is_empty() {
             return validation_error_response("selected_value is required.");
         }
+        let note = Some(request.note.trim().to_string()).filter(|note| !note.is_empty());
         let event = attractor_runtime::human_gate_answered_event(
             pipeline_id,
             question_id,
@@ -1868,6 +1873,7 @@ impl AttractorApiService {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             answer.to_string(),
+            note,
         );
         if let Err(error) = store.append_event(&bundle.paths, event) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));

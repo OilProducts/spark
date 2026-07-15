@@ -165,6 +165,10 @@ pub struct HumanAnswer {
     pub selected_option: Option<HumanOption>,
     #[serde(default)]
     pub text: String,
+    /// Free-text note the human attached to their selection; propagated to
+    /// downstream nodes as `human.gate.note`, never used for route matching.
+    #[serde(default)]
+    pub note: String,
     #[serde(default)]
     pub skipped: bool,
 }
@@ -1083,14 +1087,18 @@ impl RuntimeHandlerRunner {
         let Some(selected) = selected else {
             return Ok(human_skipped_outcome());
         };
+        // Always write the note key so a note from an earlier gate cannot
+        // leak past a later gate answered without one.
+        let context_updates = ContextMap::from([
+            ("human.gate.selected".to_string(), json!(selected.key)),
+            ("human.gate.label".to_string(), json!(selected.label)),
+            ("human.gate.note".to_string(), json!(answer.note.trim())),
+        ]);
         Ok(Outcome {
             status: OutcomeStatus::Success,
             preferred_label: selected.label.clone(),
             suggested_next_ids: vec![selected.target.clone()],
-            context_updates: ContextMap::from([
-                ("human.gate.selected".to_string(), json!(selected.key)),
-                ("human.gate.label".to_string(), json!(selected.label)),
-            ]),
+            context_updates,
             notes: "human selection applied".to_string(),
             ..Outcome::new(OutcomeStatus::Success)
         })
@@ -1142,13 +1150,14 @@ impl RuntimeHandlerRunner {
         self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Waiting)?;
 
         loop {
-            if let Some(answer_value) = journaled_gate_answer(&paths, &question_id) {
+            if let Some((answer_value, note)) = journaled_gate_answer(&paths, &question_id) {
                 self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Running)?;
                 return Ok(HumanGateWaitResult::Answered(HumanAnswer {
                     value: answer_value.clone(),
                     selected_values: vec![answer_value.clone()],
                     selected_option: None,
                     text: answer_value,
+                    note,
                     skipped: false,
                 }));
             }
@@ -2171,7 +2180,7 @@ enum GateRunStatus {
     Running,
 }
 
-fn journaled_gate_answer(paths: &RunRootPaths, question_id: &str) -> Option<String> {
+fn journaled_gate_answer(paths: &RunRootPaths, question_id: &str) -> Option<(String, String)> {
     let events = crate::events::read_raw_events(paths).ok()?;
     events.iter().rev().find_map(|event| {
         if event.event_type != "InterviewCompleted" {
@@ -2180,11 +2189,19 @@ fn journaled_gate_answer(paths: &RunRootPaths, question_id: &str) -> Option<Stri
         if event.payload.get("question_id").and_then(Value::as_str) != Some(question_id) {
             return None;
         }
-        event
+        let answer = event
             .payload
             .get("answer")
             .and_then(Value::as_str)
-            .map(str::to_string)
+            .map(str::to_string)?;
+        let note = event
+            .payload
+            .get("note")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        Some((answer, note))
     })
 }
 

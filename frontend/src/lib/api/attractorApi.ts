@@ -1005,8 +1005,10 @@ export async function fetchPipelineAnswerValidated(
     pipelineId: string,
     questionId: string,
     selectedValue: string,
+    note?: string,
 ): Promise<PipelineAnswerResponse> {
     const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/questions/${encodeURIComponent(questionId)}/answer`)
+    const trimmedNote = note?.trim() ?? ''
     return fetchJsonWithValidation(
         url,
         {
@@ -1015,6 +1017,7 @@ export async function fetchPipelineAnswerValidated(
             body: JSON.stringify({
                 question_id: questionId,
                 selected_value: selectedValue,
+                ...(trimmedNote ? { note: trimmedNote } : {}),
             }),
         },
         '/attractor/pipelines/{id}/questions/{qid}/answer',

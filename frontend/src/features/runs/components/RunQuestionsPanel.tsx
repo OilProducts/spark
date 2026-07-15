@@ -7,9 +7,11 @@ import { Input } from '@/components/ui/input'
 interface RunQuestionsPanelProps {
     className?: string
     freeformAnswersByGateId: Record<string, string>
+    gateNotesByGateId: Record<string, string>
     groupedPendingInterviewGates: PendingInterviewGateGroup[]
     onFreeformAnswerChange: (questionId: string, value: string) => void
-    onSubmitPendingGateAnswer: (gate: PendingInterviewGate, selectedValue: string) => void
+    onGateNoteChange: (questionId: string, value: string) => void
+    onSubmitPendingGateAnswer: (gate: PendingInterviewGate, selectedValue: string, note?: string) => void
     pendingGateActionError: string | null
     submittingGateIds: Record<string, boolean>
 }
@@ -17,8 +19,10 @@ interface RunQuestionsPanelProps {
 export function RunQuestionsPanel({
     className,
     freeformAnswersByGateId,
+    gateNotesByGateId,
     groupedPendingInterviewGates,
     onFreeformAnswerChange,
+    onGateNoteChange,
     onSubmitPendingGateAnswer,
     pendingGateActionError,
     submittingGateIds,
@@ -62,6 +66,9 @@ export function RunQuestionsPanel({
                             {group.gates.map((gate, gateIndex) => {
                                 const freeformAnswer = gate.questionId
                                     ? freeformAnswersByGateId[gate.questionId] ?? ''
+                                    : ''
+                                const gateNote = gate.questionId
+                                    ? gateNotesByGateId[gate.questionId] ?? ''
                                     : ''
                                 return (
                                     <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-xs text-amber-900">
@@ -109,6 +116,16 @@ export function RunQuestionsPanel({
                                             </div>
                                         )}
                                         {gate.questionId && gate.questionType !== 'FREEFORM' && gate.options.length > 0 && (
+                                            <div className="mt-1">
+                                                <Input
+                                                    type="text"
+                                                    data-testid={`run-pending-human-gate-note-input-${gate.questionId}`}
+                                                    value={gateNote}
+                                                    onChange={(event) => onGateNoteChange(gate.questionId!, event.target.value)}
+                                                    disabled={submittingGateIds[gate.questionId] === true}
+                                                    placeholder="Optional note for the next step..."
+                                                    className="h-7 w-full border-amber-500/40 bg-white px-2 text-[11px] text-amber-900 focus-visible:ring-amber-500/40"
+                                                />
                                             <div className="mt-1 flex flex-wrap gap-1.5">
                                                 {gate.options.map((option) => (
                                                     <div key={option.value} className="space-y-1">
@@ -116,7 +133,7 @@ export function RunQuestionsPanel({
                                                             type="button"
                                                             data-testid={`run-pending-human-gate-answer-${option.value}`}
                                                             onClick={() => {
-                                                                onSubmitPendingGateAnswer(gate, option.value)
+                                                                onSubmitPendingGateAnswer(gate, option.value, gateNote)
                                                             }}
                                                             disabled={submittingGateIds[gate.questionId!] === true}
                                                             variant="outline"
@@ -145,6 +162,7 @@ export function RunQuestionsPanel({
                                                         })()}
                                                     </div>
                                                 ))}
+                                            </div>
                                             </div>
                                         )}
                                     </li>

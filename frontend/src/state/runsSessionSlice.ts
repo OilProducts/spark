@@ -56,6 +56,7 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     submittingGateIds: {},
     answeredGateIds: {},
     freeformAnswersByGateId: {},
+    gateNotesByGateId: {},
 }
 
 const resolveRunDetailSession = (

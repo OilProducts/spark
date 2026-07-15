@@ -345,7 +345,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     let answer = handle_attractor_request(
         "POST",
         "/attractor/pipelines/run-journal/questions/question-1/answer",
-        &json!({"selected_value": "yes"}).to_string(),
+        &json!({"selected_value": "yes", "note": " Ship it after the freeze lifts. "}).to_string(),
         settings.clone(),
     );
     assert_eq!(answer.status_code, 200);
@@ -365,6 +365,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
         event.event_type == "InterviewCompleted"
             && event.payload.get("question_id") == Some(&json!("question-1"))
             && event.payload.get("answer") == Some(&json!("yes"))
+            && event.payload.get("note") == Some(&json!("Ship it after the freeze lifts."))
             && event.payload.get("outcome_provenance") == Some(&json!("accepted"))
     }));
     let answered_transcript = handle_attractor_request(
