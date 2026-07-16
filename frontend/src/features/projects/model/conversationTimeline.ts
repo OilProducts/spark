@@ -46,9 +46,16 @@ function buildAssistantTimelineEntries(
     let hadWorkActivity = false
     let insertedFinalSeparator = false
     const sortedSegments = [...turnSegments].sort((left, right) => left.order - right.order)
+    let finalAssistantIndex = -1
+    for (let index = sortedSegments.length - 1; index >= 0; index -= 1) {
+        if (sortedSegments[index].kind === 'assistant_message' || sortedSegments[index].kind === 'plan') {
+            finalAssistantIndex = index
+            break
+        }
+    }
 
-    sortedSegments.forEach((segment) => {
-        if (!insertedFinalSeparator && hadWorkActivity && (segment.kind === 'assistant_message' || segment.kind === 'plan')) {
+    sortedSegments.forEach((segment, index) => {
+        if (!insertedFinalSeparator && hadWorkActivity && index === finalAssistantIndex) {
             const elapsedSeconds = resolveWorkedElapsedSeconds(turn, turnSegments, segment.timestamp)
             const label = elapsedSeconds === null
                 ? 'Worked'

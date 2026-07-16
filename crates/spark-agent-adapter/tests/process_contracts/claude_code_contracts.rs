@@ -114,6 +114,10 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         vec![
             "system_init",
             "content_completed",
+            "content_completed",
+            "tool_call_started",
+            "tool_call_completed",
+            "content_completed",
             "tool_call_started",
             "tool_call_completed",
             "content_completed",
@@ -121,6 +125,26 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
             "turn_completed",
         ],
     );
+    let content_events = output
+        .events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ContentCompleted)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        content_events
+            .iter()
+            .map(|event| event.source.item_id.as_deref())
+            .collect::<Vec<_>>(),
+        vec![
+            Some("block-1"),
+            Some("block-2"),
+            Some("block-3"),
+            Some("block-4")
+        ]
+    );
+    assert!(content_events
+        .iter()
+        .all(|event| event.phase.as_deref() == Some("commentary")));
     let tool_started = output
         .events
         .iter()

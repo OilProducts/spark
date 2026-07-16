@@ -4067,49 +4067,16 @@ fn set_segment_artifact_id(
 
 fn fallback_assistant_segment_id(snapshot: &Value, assistant_turn_id: &str) -> Option<String> {
     let segments = snapshot.get("segments").and_then(Value::as_array)?;
-    let assistant_segments = segments
+    segments
         .iter()
         .filter(|segment| {
             segment.get("turn_id").and_then(Value::as_str) == Some(assistant_turn_id)
                 && segment.get("kind").and_then(Value::as_str) == Some("assistant_message")
         })
-        .collect::<Vec<_>>();
-
-    if let Some(segment) = assistant_segments
-        .iter()
         .find(|segment| is_final_answer_phase(segment.get("phase").and_then(Value::as_str)))
-    {
-        return segment
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-    }
-
-    let source_keyed_segments = assistant_segments
-        .iter()
-        .filter(|segment| {
-            segment
-                .get("source")
-                .and_then(Value::as_object)
-                .map(|source| source.contains_key("app_turn_id") || source.contains_key("item_id"))
-                .unwrap_or(false)
-        })
-        .collect::<Vec<_>>();
-    if source_keyed_segments.len() == 1 {
-        return source_keyed_segments[0]
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-    }
-
-    if assistant_segments.len() == 1 {
-        return assistant_segments[0]
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-    }
-
-    None
+        .and_then(|segment| segment.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn complete_existing_assistant_segment_with_text(

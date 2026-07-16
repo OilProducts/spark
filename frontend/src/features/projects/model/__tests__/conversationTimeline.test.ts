@@ -95,6 +95,45 @@ describe('conversation timeline normalization', () => {
     })
   })
 
+  it('places the worked separator immediately before the last assistant segment', () => {
+    const narration = {
+      ...baseSnapshot.segments[1],
+      id: 'narration-segment',
+      order: 1,
+      content: 'Inspecting.',
+    }
+    const firstTool = { ...baseSnapshot.segments[0], order: 2 }
+    const secondNarration = {
+      ...baseSnapshot.segments[1],
+      id: 'second-narration-segment',
+      order: 3,
+      content: 'Running tests.',
+    }
+    const secondTool = {
+      ...baseSnapshot.segments[0],
+      id: 'second-tool-segment',
+      order: 4,
+      tool_call: { ...baseSnapshot.segments[0].tool_call!, id: 'tool-2' },
+    }
+    const answer = { ...baseSnapshot.segments[1], order: 5, content: 'Done.' }
+
+    const timeline = buildTimeline({
+      ...baseSnapshot,
+      segments: [narration, firstTool, secondNarration, secondTool, answer],
+    })
+
+    expect(timeline.map((entry) => entry.kind)).toEqual([
+      'message',
+      'message',
+      'tool_call',
+      'message',
+      'tool_call',
+      'final_separator',
+      'message',
+    ])
+    expect(timeline[5]).toMatchObject({ kind: 'final_separator' })
+  })
+
   it('keeps mode-change entries in chronological order when hydrated from a snapshot', () => {
     const timeline = buildTimeline({
       ...baseSnapshot,

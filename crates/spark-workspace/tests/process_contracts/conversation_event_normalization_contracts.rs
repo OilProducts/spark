@@ -1138,6 +1138,64 @@ fn final_assistant_text_completes_existing_streamed_assistant_segment() {
 }
 
 #[test]
+fn claude_commentary_materializes_before_tools_and_final_answer_in_chat_and_plan() {
+    for chat_mode in ["chat", "plan"] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let service = WorkspaceConversationService::new(settings(temp.path()));
+        let conversation_id = format!("conversation-claude-order-{chat_mode}");
+        let (prepared, _) = service
+            .start_turn(
+                &conversation_id,
+                ConversationTurnRequest {
+                    project_path: "/projects/claude-order".to_string(),
+                    message: "Do the work".to_string(),
+                    chat_mode: Some(chat_mode.to_string()),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .expect("start turn");
+        let mut narration = content_completed("assistant", "Inspecting.", "", "block-1");
+        narration.source.app_turn_id = None;
+        narration.phase = Some("commentary".to_string());
+
+        let snapshot = service
+            .ingest_agent_turn_output(
+                &conversation_id,
+                "/projects/claude-order",
+                &prepared.assistant_turn_id,
+                chat_mode,
+                AgentTurnOutput {
+                    events: vec![
+                        narration,
+                        tool_event("tool_call_started", "tool-1", "running", ""),
+                        tool_event("tool_call_completed", "tool-1", "completed", "ok"),
+                    ],
+                    final_assistant_text: Some("Done.".to_string()),
+                    ..AgentTurnOutput::default()
+                },
+            )
+            .expect("ingest output");
+        let segments = snapshot["segments"].as_array().expect("segments");
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (
+                    segment["kind"].as_str().unwrap(),
+                    segment["content"].as_str().unwrap_or("")
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("assistant_message", "Inspecting."),
+                ("tool_call", ""),
+                ("assistant_message", "Done."),
+            ]
+        );
+        assert_eq!(segments[0]["phase"], "commentary");
+        assert_eq!(segments[2]["phase"], "final_answer");
+    }
+}
+
+#[test]
 fn stream_error_without_final_answer_remains_failed_and_does_not_write_fallback_content() {
     let temp = tempfile::tempdir().expect("tempdir");
     let service = WorkspaceConversationService::new(settings(temp.path()));
