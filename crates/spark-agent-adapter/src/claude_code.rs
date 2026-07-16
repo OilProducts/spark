@@ -2,7 +2,7 @@
 //! stream-json output. Authentication comes from the Claude Code login on the
 //! host (subscription or API key) — Spark never handles the credential.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -275,6 +275,8 @@ struct ClaudeCodeTurnState {
     is_error: bool,
     block_counter: usize,
     partial_block_ids: BTreeMap<usize, String>,
+    pending_text_block_ids: VecDeque<String>,
+    pending_reasoning_block_ids: VecDeque<String>,
     last_text_item_id: Option<String>,
 }
 
@@ -337,14 +339,14 @@ impl ClaudeCodeTurnState {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        for (index, block) in blocks.into_iter().enumerate() {
+        for block in blocks {
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
                 "text" => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     if text.trim().is_empty() {
                         continue;
                     }
-                    let item_id = self.item_id_for_block(index);
+                    let item_id = self.completed_item_id(TurnStreamChannel::Assistant);
                     self.last_text_item_id = Some(item_id.clone());
                     self.assistant_texts.push(text.to_string());
                     events.push(stream_event(
@@ -365,7 +367,7 @@ impl ClaudeCodeTurnState {
                     if thinking.trim().is_empty() {
                         continue;
                     }
-                    let item_id = self.item_id_for_block(index);
+                    let item_id = self.completed_item_id(TurnStreamChannel::Reasoning);
                     events.push(stream_event(
                         TurnStreamEventKind::ContentCompleted,
                         self.session_id.as_deref(),
@@ -397,12 +399,15 @@ impl ClaudeCodeTurnState {
                 _ => {}
             }
         }
-        self.partial_block_ids.clear();
         events
     }
 
     fn ingest_stream_event(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
         let event = message.get("event").unwrap_or(message);
+        if event.get("type").and_then(Value::as_str) == Some("message_start") {
+            self.partial_block_ids.clear();
+            return Vec::new();
+        }
         if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
             return Vec::new();
         }
@@ -430,7 +435,18 @@ impl ClaudeCodeTurnState {
         let Some(text) = text.filter(|text| !text.is_empty()) else {
             return Vec::new();
         };
-        let item_id = self.item_id_for_block(index);
+        let (item_id, is_new) = self.item_id_for_partial(index);
+        if is_new {
+            match channel {
+                TurnStreamChannel::Assistant => {
+                    self.pending_text_block_ids.push_back(item_id.clone())
+                }
+                TurnStreamChannel::Reasoning => {
+                    self.pending_reasoning_block_ids.push_back(item_id.clone())
+                }
+                _ => {}
+            }
+        }
         vec![stream_event(
             TurnStreamEventKind::ContentDelta,
             self.session_id.as_deref(),
@@ -445,14 +461,26 @@ impl ClaudeCodeTurnState {
         )]
     }
 
-    fn item_id_for_block(&mut self, index: usize) -> String {
+    fn item_id_for_partial(&mut self, index: usize) -> (String, bool) {
         if let Some(item_id) = self.partial_block_ids.get(&index) {
-            return item_id.clone();
+            return (item_id.clone(), false);
         }
         self.block_counter += 1;
         let item_id = format!("block-{}", self.block_counter);
         self.partial_block_ids.insert(index, item_id.clone());
-        item_id
+        (item_id, true)
+    }
+
+    fn completed_item_id(&mut self, channel: TurnStreamChannel) -> String {
+        let pending = match channel {
+            TurnStreamChannel::Assistant => self.pending_text_block_ids.pop_front(),
+            TurnStreamChannel::Reasoning => self.pending_reasoning_block_ids.pop_front(),
+            _ => None,
+        };
+        pending.unwrap_or_else(|| {
+            self.block_counter += 1;
+            format!("block-{}", self.block_counter)
+        })
     }
 
     fn ingest_user(&mut self, message: &Value) -> Vec<TurnStreamEvent> {

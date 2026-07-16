@@ -1533,6 +1533,76 @@ fn execute_turn_streams_transient_events_without_persisting_delta_payloads() {
 }
 
 #[test]
+fn claude_code_live_text_completions_update_delta_segments_in_place() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let mut first_delta = content_delta("assistant", "First", "app-turn", "block-1");
+    first_delta.phase = Some("commentary".to_string());
+    let mut second_delta = content_delta("assistant", "Second", "app-turn", "block-2");
+    second_delta.phase = Some("commentary".to_string());
+    let mut first_completed = content_completed("assistant", "First", "app-turn", "block-1");
+    first_completed.phase = Some("commentary".to_string());
+    let mut second_completed = content_completed("assistant", "Second", "app-turn", "block-2");
+    second_completed.phase = Some("commentary".to_string());
+    let backend = ScriptedAgentTurnBackend::with_stream_events(
+        vec![AgentTurnOutput {
+            events: vec![
+                first_completed,
+                second_completed,
+                content_completed("assistant", "Second", "app-turn", "block-2"),
+            ],
+            final_assistant_text: Some("Second".to_string()),
+            ..AgentTurnOutput::default()
+        }],
+        vec![vec![first_delta, second_delta]],
+    );
+    let service =
+        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(backend));
+    let live_payloads = Arc::new(Mutex::new(Vec::new()));
+    let callback_payloads = Arc::clone(&live_payloads);
+
+    let snapshot = service
+        .execute_turn_with_progress_payloads(
+            "conversation-claude-live",
+            ConversationTurnRequest {
+                project_path: "/projects/claude-live".to_string(),
+                message: "Stream blocks".to_string(),
+                provider: Some("claude-code".to_string()),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+            move |payload| callback_payloads.lock().expect("payloads").push(payload),
+        )
+        .expect("execute turn");
+
+    let assistant_segments = snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .filter(|segment| segment["kind"] == "assistant_message")
+        .collect::<Vec<_>>();
+    assert_eq!(assistant_segments.len(), 2);
+    assert_eq!(assistant_segments[0]["content"], "First");
+    assert_eq!(assistant_segments[1]["content"], "Second");
+    assert_eq!(assistant_segments[1]["phase"], "final_answer");
+
+    let mut live_segment_ids = live_payloads
+        .lock()
+        .expect("payloads")
+        .iter()
+        .filter(|payload| {
+            payload["type"] == "stream_delta"
+                && payload["delta_kind"] == "segment_delta"
+                && payload["segment"]["kind"] == "assistant_message"
+        })
+        .filter_map(|payload| payload["segment"]["id"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    live_segment_ids.sort_unstable();
+    live_segment_ids.dedup();
+    assert_eq!(live_segment_ids.len(), 2);
+}
+
+#[test]
 fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
