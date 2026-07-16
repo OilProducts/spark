@@ -243,11 +243,15 @@ fn autostart_child_pipeline(
         ))));
     }
 
-    let child_flow_name = child_flow_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
+    let child_flow_name = (!child_flow.title.trim().is_empty())
+        .then(|| child_flow.title.trim().to_string())
+        .or_else(|| {
+            child_flow_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_string)
+        })
         .or_else(|| (!child_flow.id.trim().is_empty()).then(|| child_flow.id.clone()))
         .unwrap_or_else(|| "child".to_string());
     let parent_run_id = context_string(context, "internal.run_id")
@@ -412,7 +416,13 @@ fn launch_default_child_run(
     );
     record.flow_name = request.child_flow_name.clone();
     record.working_directory = request.child_workdir.to_string_lossy().to_string();
-    record.project_path = record.working_directory.clone();
+    record.project_path = store
+        .read_run_record(parent_paths)
+        .ok()
+        .flatten()
+        .map(|parent| parent.project_path)
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| record.working_directory.clone());
     record.parent_run_id = Some(request.parent_run_id.clone());
     record.parent_node_id = Some(request.parent_node_id.clone());
     record.root_run_id = Some(request.root_run_id.clone());

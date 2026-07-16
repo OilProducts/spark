@@ -68,4 +68,30 @@ describe('RunList', () => {
         expect(screen.getByText('refreshing.dot')).toBeVisible()
         expect(screen.queryByTestId('runs-refresh-button')).not.toBeInTheDocument()
     })
+
+    it('uses nesting instead of a Child chip and retains child status', () => {
+        const parent = makeRun({ run_id: 'parent', status: 'completed' })
+        const child = makeRun({
+            run_id: 'child-run',
+            flow_name: 'Implement Task',
+            parent_run_id: 'parent',
+            root_run_id: 'parent',
+        })
+        render(
+            <RunList
+                activeProjectPath="/tmp/project-one"
+                error={null}
+                onScopeModeChange={vi.fn()}
+                onSelectRun={vi.fn()}
+                runs={[parent, child]}
+                scopeMode="active"
+                selectedRunId={null}
+                status="ready"
+                summaryLabel="2 total runs · 1 running"
+            />,
+        )
+        expect(screen.queryByText('Child')).not.toBeInTheDocument()
+        expect(screen.getByText('Implement Task')).toBeVisible()
+        expect(screen.getByText('Running')).toBeVisible()
+    })
 })

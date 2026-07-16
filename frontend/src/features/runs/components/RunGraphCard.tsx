@@ -227,7 +227,7 @@ function RunGraphCanvasInner({
                 {decoratedNodes.length > 10 && (paneHeight === 'fill' || paneHeight >= 480) ? (
                     <MiniMap pannable zoomable position="top-right" />
                 ) : null}
-                <Controls showInteractive={false} />
+                <Controls showInteractive={false} style={{ bottom: 12, left: 12 }} />
                 <Background gap={24} size={1} />
             </ReactFlow>
         </div>
@@ -282,7 +282,7 @@ export function RunGraphCard({
                     >
                         Run Graph
                     </h3>
-                    <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                         {onOpenInEditor ? (
                             <Button
                                 onClick={onOpenInEditor}

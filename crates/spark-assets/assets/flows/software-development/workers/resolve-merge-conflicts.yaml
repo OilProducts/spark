@@ -13,10 +13,12 @@ metadata:
     worker: true
 nodes:
   start:
+    label: Start
     kind: start
     config:
       kind: start
   work:
+    label: Resolve Conflicts
     kind: agent_task
     config:
       kind: agent_task
@@ -27,6 +29,7 @@ nodes:
       - context.integration.source_commit
       - context.integration.target_commit
   done:
+    label: Done
     kind: exit
     config:
       kind: exit

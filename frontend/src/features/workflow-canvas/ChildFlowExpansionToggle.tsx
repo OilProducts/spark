@@ -17,23 +17,23 @@ export function ChildFlowExpansionToggle({
         >
             <Button
                 type="button"
-                size="sm"
+                size="xs"
                 variant={expanded ? 'ghost' : 'default'}
                 disabled={disabled}
-                className={`px-3 ${expanded ? 'text-muted-foreground hover:text-foreground' : ''}`}
+                className={expanded ? 'text-muted-foreground hover:text-foreground' : ''}
                 onClick={() => onChange(false)}
             >
-                Parent Only
+                Parent only
             </Button>
             <Button
                 type="button"
-                size="sm"
+                size="xs"
                 variant={expanded ? 'default' : 'ghost'}
                 disabled={disabled}
-                className={`px-3 ${expanded ? '' : 'text-muted-foreground hover:text-foreground'}`}
+                className={expanded ? '' : 'text-muted-foreground hover:text-foreground'}
                 onClick={() => onChange(true)}
             >
-                Expanded Child Flow
+                Child flows
             </Button>
         </div>
     )

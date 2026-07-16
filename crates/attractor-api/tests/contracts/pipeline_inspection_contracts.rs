@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use attractor_api::{handle_attractor_request, AttractorApiService, PipelineStartRequest};
-use attractor_runtime::{human_gate_pending_event, RunStore};
+use attractor_runtime::{human_gate_pending_event, CreateRunRequest, RunStore};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
@@ -476,6 +476,50 @@ fn run_listing_filters_by_project_path_query() {
     let runs = filtered.body["runs"].as_array().expect("runs");
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["run_id"], "run-project-a");
+}
+
+#[test]
+fn run_listing_includes_worktree_child_under_parent_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let parent_project = temp.path().join("parent-project");
+    let worktree = temp.path().join("worktrees/child-run");
+    let mut child =
+        attractor_core::RunRecord::new("child-run", worktree.to_string_lossy().to_string());
+    child.project_path = parent_project.to_string_lossy().to_string();
+    child.parent_run_id = Some("parent-run".to_string());
+    RunStore::for_settings(&settings)
+        .create_run(CreateRunRequest {
+            record: child,
+            checkpoint: None,
+            manifest: None,
+            flow_source: None,
+            flow_definition_json: None,
+        })
+        .expect("create child run");
+
+    let response = handle_attractor_request(
+        "GET",
+        &format!(
+            "/attractor/runs?project_path={}",
+            parent_project.to_string_lossy()
+        ),
+        "",
+        settings,
+    );
+
+    assert_eq!(response.status_code, 200);
+    let runs = response.body["runs"].as_array().expect("runs");
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["run_id"], "child-run");
+    assert_eq!(
+        runs[0]["project_path"],
+        parent_project.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        runs[0]["working_directory"],
+        worktree.to_string_lossy().as_ref()
+    );
 }
 
 fn simple_flow() -> String {
