@@ -12,13 +12,13 @@ use crate::agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
+use crate::claude_code::{
+    usage_from_claude_code_usage_payload, ClaudeCodeBackend, CLAUDE_CODE_BACKEND,
+};
 use crate::codergen::{
     ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
     CodergenBackendResponse, CodergenError, CodergenEvent, CodergenEventSink,
     CodergenSessionInterventionBroker,
-};
-use crate::claude_code::{
-    usage_from_claude_code_usage_payload, ClaudeCodeBackend, CLAUDE_CODE_BACKEND,
 };
 use crate::codex_app_server::{
     usage_from_codex_token_payload, CodexAppServerBackend, CodexAppServerError,
@@ -273,18 +273,18 @@ impl RustLlmCodergenBackend {
             .token_usage
             .as_ref()
             .and_then(usage_from_claude_code_usage_payload);
-        let response = if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty)
-        {
-            CodergenBackendResponse::Text(text.to_string())
-        } else {
-            CodergenBackendResponse::Outcome(Outcome {
-                status: OutcomeStatus::Fail,
-                failure_reason: "claude code completed without assistant text".to_string(),
-                retryable: Some(false),
-                failure_kind: Some(FailureKind::Runtime),
-                ..Outcome::new(OutcomeStatus::Fail)
-            })
-        };
+        let response =
+            if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty) {
+                CodergenBackendResponse::Text(text.to_string())
+            } else {
+                CodergenBackendResponse::Outcome(Outcome {
+                    status: OutcomeStatus::Fail,
+                    failure_reason: "claude code completed without assistant text".to_string(),
+                    retryable: Some(false),
+                    failure_kind: Some(FailureKind::Runtime),
+                    ..Outcome::new(OutcomeStatus::Fail)
+                })
+            };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
         for event in &output.events {
             events.push(claude_code_codergen_event_from_turn_stream_event(
@@ -692,7 +692,10 @@ fn claude_code_codergen_event_from_turn_stream_event(
 ) -> CodergenEvent {
     let mut payload = BTreeMap::from([
         ("node_id".to_string(), json!(request.node_id.clone())),
-        ("backend".to_string(), json!(CLAUDE_CODE_BACKEND.to_string())),
+        (
+            "backend".to_string(),
+            json!(CLAUDE_CODE_BACKEND.to_string()),
+        ),
         (
             "provider_selector".to_string(),
             json!(request.provider.clone()),

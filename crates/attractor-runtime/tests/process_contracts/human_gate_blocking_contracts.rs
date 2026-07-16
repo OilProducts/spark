@@ -277,7 +277,10 @@ fn blocking_gate_waits_for_journaled_answer_and_routes_it() {
         &std::fs::read_to_string(&gate_status_path).expect("gate status artifact"),
     )
     .expect("gate status json");
-    assert_eq!(gate_status["context_updates"]["human.gate.label"], "Approve");
+    assert_eq!(
+        gate_status["context_updates"]["human.gate.label"],
+        "Approve"
+    );
     assert_eq!(
         gate_status["context_updates"]["human.gate.note"],
         "Looks right, but double-check the lock cleanup."

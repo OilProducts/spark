@@ -90,7 +90,10 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         .iter()
         .find(|event| event.kind == TurnStreamEventKind::ToolCallStarted)
         .expect("tool call event");
-    assert_eq!(tool_started.tool_call.as_ref().unwrap()["name"], json!("Bash"));
+    assert_eq!(
+        tool_started.tool_call.as_ref().unwrap()["name"],
+        json!("Bash")
+    );
     assert_eq!(
         output.token_usage.as_ref().unwrap()["input_tokens"],
         json!(12)
@@ -98,7 +101,13 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
 
     // The CLI was invoked headless with stream-json output and the model flag.
     let args = std::fs::read_to_string(&log_path).expect("args log");
-    for expected in ["-p", "stream-json", "--verbose", "--permission-mode", "--model"] {
+    for expected in [
+        "-p",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        "--model",
+    ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }
 }
@@ -156,10 +165,7 @@ fn claude_code_codergen_streams_prefix_and_reports_completed_event_with_usage() 
     );
     let completed = output.events.last().expect("completed event");
     assert_eq!(completed.payload["provider"], json!("claude-code"));
-    assert_eq!(
-        completed.payload["token_usage"]["output_tokens"],
-        json!(34)
-    );
+    assert_eq!(completed.payload["token_usage"]["output_tokens"], json!(34));
 
     // Live prefix contract: the sink saw exactly the leading events of the
     // returned batch, in order.

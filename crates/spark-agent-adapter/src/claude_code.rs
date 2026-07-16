@@ -132,7 +132,9 @@ impl ClaudeCodeBackend {
         drop(stdin);
 
         crate::initial_context::capture_if_configured(&request.metadata, &request.prompt).map_err(
-            |error| ClaudeCodeError::configuration(format!("initial context capture failed: {error}")),
+            |error| {
+                ClaudeCodeError::configuration(format!("initial context capture failed: {error}"))
+            },
         )?;
 
         let stdout = child
@@ -244,7 +246,8 @@ impl ClaudeCodeTurnState {
     fn ingest(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
         let message_type = message.get("type").and_then(Value::as_str).unwrap_or("");
         if let Some(session_id) = message.get("session_id").and_then(Value::as_str) {
-            self.session_id.get_or_insert_with(|| session_id.to_string());
+            self.session_id
+                .get_or_insert_with(|| session_id.to_string());
         }
         match message_type {
             "system" => self.ingest_system(message),
@@ -263,7 +266,10 @@ impl ClaudeCodeTurnState {
     }
 
     fn ingest_system(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
-        let subtype = message.get("subtype").and_then(Value::as_str).unwrap_or("system");
+        let subtype = message
+            .get("subtype")
+            .and_then(Value::as_str)
+            .unwrap_or("system");
         let raw_kind = format!("system_{subtype}");
         vec![stream_event(
             TurnStreamEventKind::Other(raw_kind.clone()),
