@@ -21,7 +21,8 @@ use spark_common::settings::SparkSettings;
 use spark_storage::{ProjectRegistry, CONVERSATION_STATE_SCHEMA_VERSION};
 use spark_workspace::{
     live::conversation_envelopes_after, ConversationRequestUserInputAnswerRequest,
-    ConversationTurnRequest, WorkspaceConversationService, WorkspaceError,
+    ConversationSettingsUpdate, ConversationTurnRequest, WorkspaceConversationService,
+    WorkspaceError,
 };
 
 use super::test_support::ENV_LOCK;
@@ -2737,6 +2738,90 @@ fn runtime_session_records_thread_continuity_and_tombstones_on_resume_failure() 
             .contains_key("spark.runtime.codex_app_server.thread_id"),
         "tombstoned continuity must not resume the failed thread"
     );
+}
+
+#[test]
+fn claude_code_recovery_keeps_fresh_turn_and_replaces_runtime_session() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            app_thread_id: Some("claude-session-old".to_string()),
+            final_assistant_text: Some("First answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            app_thread_id: Some("claude-session-fresh".to_string()),
+            final_assistant_text: Some("Recovered answer".to_string()),
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "discarded stale Claude Code session".to_string(),
+                error_code: Some("thread_resume_failure".to_string()),
+                details: Some(json!({"discarded_session_id": "claude-session-old"})),
+            }),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Continued answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+    let project_path = "/projects/claude-code-continuity";
+
+    service
+        .update_conversation_settings(
+            "conversation-claude-code-continuity",
+            ConversationSettingsUpdate {
+                project_path: project_path.to_string(),
+                provider: Some("claude-code".to_string()),
+                model: Some(String::new()),
+                llm_profile: Some("stale-profile".to_string()),
+                ..ConversationSettingsUpdate::default()
+            },
+        )
+        .expect("claude-code accepts a blank model despite retained profile state");
+
+    for message in ["first", "recover", "continue"] {
+        service
+            .execute_turn(
+                "conversation-claude-code-continuity",
+                ConversationTurnRequest {
+                    project_path: project_path.to_string(),
+                    message: message.to_string(),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .expect("claude-code turn");
+    }
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(
+        requests[1].metadata["spark.runtime.claude_code.session_id"],
+        json!("claude-session-old")
+    );
+    assert_eq!(
+        requests[2].metadata["spark.runtime.claude_code.session_id"],
+        json!("claude-session-fresh")
+    );
+    let snapshot = service
+        .get_snapshot("conversation-claude-code-continuity", Some(project_path))
+        .expect("snapshot");
+    assert!(snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .any(|turn| turn["content"] == "Recovered answer" && turn["status"] == "complete"));
+    let session = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_runtime_session("conversation-claude-code-continuity", Some(project_path))
+        .expect("session read")
+        .expect("session");
+    assert_eq!(session.provider, "claude_code_cli");
+    assert_eq!(session.thread_id.as_deref(), Some("claude-session-fresh"));
+    assert!(!session.resume_failed);
 }
 
 #[test]

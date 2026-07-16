@@ -56,6 +56,7 @@ pub fn chat_models_with_codex_result(
             },
         ),
     };
+    models.extend(claude_code_chat_models());
     models.extend(public_unified_chat_models());
     models.extend(configured_profile_chat_models(settings)?);
     Ok(serde_json::json!({
@@ -64,6 +65,20 @@ pub fn chat_models_with_codex_result(
             "codex": codex_status,
         },
     }))
+}
+
+fn claude_code_chat_models() -> Vec<ChatModelMetadata> {
+    ["opus", "sonnet", "haiku"]
+        .into_iter()
+        .map(|id| ChatModelMetadata {
+            provider: "claude-code".to_string(),
+            id: id.to_string(),
+            display: id.to_string(),
+            is_default: false,
+            supported_reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+        })
+        .collect()
 }
 
 /// Codex models come from the local install itself (`model/list`), so the

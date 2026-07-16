@@ -18,15 +18,29 @@ fn main() {
 
     if let Ok(log_path) = env::var("SPARK_FAKE_CLAUDE_CODE_LOG") {
         if !log_path.trim().is_empty() {
-            let _ = std::fs::write(&log_path, args.join("\n"));
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                let _ = writeln!(log, "{}\n-- invocation --", args.join("\n"));
+            }
         }
     }
 
     let mut prompt = String::new();
     let _ = std::io::stdin().read_to_string(&mut prompt);
 
-    let session_id = "sess-fake-claude-1";
     let mode = env::var("SPARK_FAKE_CLAUDE_CODE_MODE").unwrap_or_default();
+    if mode == "resume-failure" && args.iter().any(|arg| arg == "--resume") {
+        eprintln!("simulated resumed-session failure");
+        std::process::exit(1);
+    }
+    let session_id = if mode == "resume-failure" {
+        "sess-fake-claude-fresh"
+    } else {
+        "sess-fake-claude-1"
+    };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 

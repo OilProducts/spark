@@ -213,7 +213,7 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
         .expect_err("invalid provider");
     assert_eq!(
         invalid.to_string(),
-        "Provider must be blank or one of: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
+        "Provider must be blank or one of: codex, claude-code, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
     );
 }
 
