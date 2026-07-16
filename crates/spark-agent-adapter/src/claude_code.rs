@@ -13,6 +13,7 @@ use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
 use unified_llm_adapter::Usage;
+use uuid::Uuid;
 
 use crate::agent::{
     AgentRawLogLine, AgentThreadResumeFailure, AgentTurnEventSink, AgentTurnOutput,
@@ -119,6 +120,7 @@ impl ClaudeCodeBackend {
             .arg("-p")
             .arg("--output-format")
             .arg("stream-json")
+            .arg("--include-partial-messages")
             .arg("--verbose")
             .arg("--permission-mode")
             .arg(permission_mode())
@@ -189,6 +191,7 @@ impl ClaudeCodeBackend {
                 .collect::<Vec<_>>()
         });
 
+        let app_turn_id = Uuid::new_v4().to_string();
         let mut turn = ClaudeCodeTurnState::default();
         let mut events: Vec<TurnStreamEvent> = Vec::new();
         let mut raw_log_lines: Vec<AgentRawLogLine> = Vec::new();
@@ -203,7 +206,8 @@ impl ClaudeCodeBackend {
             let Ok(message) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
-            for event in turn.ingest(&message) {
+            for mut event in turn.ingest(&message) {
+                event.source.app_turn_id = Some(app_turn_id.clone());
                 if let Some(sink) = &event_sink {
                     sink(event.clone());
                 }
@@ -247,7 +251,7 @@ impl ClaudeCodeBackend {
 
         Ok(AgentTurnOutput {
             app_thread_id: turn.session_id.clone(),
-            app_turn_id: None,
+            app_turn_id: Some(app_turn_id),
             final_assistant_text: non_empty(&turn.resolved_final_text()).map(str::to_string),
             token_usage: turn.usage_payload.clone(),
             token_usage_breakdown: turn.usage_payload.clone(),
@@ -270,6 +274,8 @@ struct ClaudeCodeTurnState {
     usage_payload: Option<Value>,
     is_error: bool,
     block_counter: usize,
+    partial_block_ids: BTreeMap<usize, String>,
+    last_text_item_id: Option<String>,
 }
 
 impl ClaudeCodeTurnState {
@@ -290,6 +296,7 @@ impl ClaudeCodeTurnState {
         match message_type {
             "system" => self.ingest_system(message),
             "assistant" => self.ingest_assistant(message),
+            "stream_event" => self.ingest_stream_event(message),
             "user" => self.ingest_user(message),
             "result" => self.ingest_result(message),
             other => vec![stream_event(
@@ -330,15 +337,15 @@ impl ClaudeCodeTurnState {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        for block in blocks {
+        for (index, block) in blocks.into_iter().enumerate() {
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
                 "text" => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     if text.trim().is_empty() {
                         continue;
                     }
-                    self.block_counter += 1;
-                    let item_id = format!("block-{}", self.block_counter);
+                    let item_id = self.item_id_for_block(index);
+                    self.last_text_item_id = Some(item_id.clone());
                     self.assistant_texts.push(text.to_string());
                     events.push(stream_event(
                         TurnStreamEventKind::ContentCompleted,
@@ -358,8 +365,7 @@ impl ClaudeCodeTurnState {
                     if thinking.trim().is_empty() {
                         continue;
                     }
-                    self.block_counter += 1;
-                    let item_id = format!("block-{}", self.block_counter);
+                    let item_id = self.item_id_for_block(index);
                     events.push(stream_event(
                         TurnStreamEventKind::ContentCompleted,
                         self.session_id.as_deref(),
@@ -391,7 +397,62 @@ impl ClaudeCodeTurnState {
                 _ => {}
             }
         }
+        self.partial_block_ids.clear();
         events
+    }
+
+    fn ingest_stream_event(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
+        let event = message.get("event").unwrap_or(message);
+        if event.get("type").and_then(Value::as_str) != Some("content_block_delta") {
+            return Vec::new();
+        }
+        let Some(index) = event
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|value| value as usize)
+        else {
+            return Vec::new();
+        };
+        let delta = event.get("delta").unwrap_or(&Value::Null);
+        let (channel, text, raw_kind) = match delta.get("type").and_then(Value::as_str) {
+            Some("text_delta") => (
+                TurnStreamChannel::Assistant,
+                delta.get("text").and_then(Value::as_str),
+                "assistant_text_delta",
+            ),
+            Some("thinking_delta") => (
+                TurnStreamChannel::Reasoning,
+                delta.get("thinking").and_then(Value::as_str),
+                "assistant_thinking_delta",
+            ),
+            _ => return Vec::new(),
+        };
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            return Vec::new();
+        };
+        let item_id = self.item_id_for_block(index);
+        vec![stream_event(
+            TurnStreamEventKind::ContentDelta,
+            self.session_id.as_deref(),
+            raw_kind,
+            |stream_event| {
+                stream_event.channel = Some(channel);
+                stream_event.content_delta = Some(text.to_string());
+                stream_event.message = Some(text.to_string());
+                stream_event.source.item_id = Some(item_id);
+                stream_event.phase = Some("commentary".to_string());
+            },
+        )]
+    }
+
+    fn item_id_for_block(&mut self, index: usize) -> String {
+        if let Some(item_id) = self.partial_block_ids.get(&index) {
+            return item_id.clone();
+        }
+        self.block_counter += 1;
+        let item_id = format!("block-{}", self.block_counter);
+        self.partial_block_ids.insert(index, item_id.clone());
+        item_id
     }
 
     fn ingest_user(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
@@ -445,6 +506,24 @@ impl ClaudeCodeTurnState {
             .and_then(Value::as_str)
             .map(str::to_string);
         let mut events = Vec::new();
+        if let Some(text) = self.result_text.as_deref().and_then(non_empty) {
+            let item_id = self.last_text_item_id.clone().unwrap_or_else(|| {
+                self.block_counter += 1;
+                format!("block-{}", self.block_counter)
+            });
+            events.push(stream_event(
+                TurnStreamEventKind::ContentCompleted,
+                self.session_id.as_deref(),
+                "result_text",
+                |event| {
+                    event.channel = Some(TurnStreamChannel::Assistant);
+                    event.content_delta = Some(text.to_string());
+                    event.message = Some(text.to_string());
+                    event.source.item_id = Some(item_id);
+                    event.phase = Some("final_answer".to_string());
+                },
+            ));
+        }
         if let Some(usage) = message.get("usage").filter(|value| !value.is_null()) {
             let mut usage_payload = usage.clone();
             if let Some(object) = usage_payload.as_object_mut() {

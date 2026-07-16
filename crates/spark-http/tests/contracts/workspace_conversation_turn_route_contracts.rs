@@ -1051,9 +1051,15 @@ impl ScriptedAgentTurnBackend {
     }
 
     fn with_answer_outputs(
-        outputs: Vec<AgentTurnOutput>,
-        answer_outputs: Vec<AgentTurnOutput>,
+        mut outputs: Vec<AgentTurnOutput>,
+        mut answer_outputs: Vec<AgentTurnOutput>,
     ) -> Self {
+        for (index, output) in outputs.iter_mut().enumerate() {
+            add_final_answer_event(output, &format!("scripted-turn-{index}"));
+        }
+        for (index, output) in answer_outputs.iter_mut().enumerate() {
+            add_final_answer_event(output, &format!("scripted-answer-{index}"));
+        }
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
@@ -1069,6 +1075,32 @@ impl ScriptedAgentTurnBackend {
     fn answer_requests(&self) -> Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>> {
         Arc::clone(&self.answer_requests)
     }
+}
+
+fn add_final_answer_event(output: &mut AgentTurnOutput, app_turn_id: &str) {
+    if output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error)
+    {
+        return;
+    }
+    let Some(text) = output.final_assistant_text.clone() else {
+        return;
+    };
+    if output.events.iter().any(|event| {
+        event.kind == TurnStreamEventKind::ContentCompleted
+            && event.channel == Some(TurnStreamChannel::Assistant)
+            && event.phase.as_deref() == Some("final_answer")
+    }) {
+        return;
+    }
+    output.events.push(content_completed(
+        TurnStreamChannel::Assistant,
+        &text,
+        app_turn_id,
+        "final",
+    ));
 }
 
 impl AgentTurnBackend for ScriptedAgentTurnBackend {

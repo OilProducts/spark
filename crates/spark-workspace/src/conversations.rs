@@ -15,9 +15,7 @@ use spark_agent_adapter::{
     RustLlmAgentTurnBackend, UserTurn,
 };
 use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
-use spark_common::events::{
-    TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
-};
+use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
 use spark_common::project::normalize_project_path;
 use spark_common::segments::{
     event_text, find_segment, non_empty_string, normalize_assistant_text, remove_key,
@@ -857,7 +855,7 @@ impl WorkspaceConversationService {
         output: AgentTurnOutput,
     ) -> WorkspaceResult<Value> {
         let project_path = normalize_project_path_or_400(project_path)?;
-        let chat_mode = normalize_chat_mode(chat_mode);
+        let _ = chat_mode;
         let repository = self.repository();
 
         let mut snapshot = repository
@@ -908,8 +906,6 @@ impl WorkspaceConversationService {
                 runtime_session_provider,
             );
         }
-        let mut buffered_plan_assistant_event: Option<TurnStreamEvent> = None;
-
         for event in output.events {
             ensure_assistant_streaming(&mut snapshot, assistant_turn_id, &mut emitted_payloads);
             match &event.kind {
@@ -925,32 +921,25 @@ impl WorkspaceConversationService {
                 TurnStreamEventKind::ContentCompleted
                     if event.channel == Some(TurnStreamChannel::Assistant) =>
                 {
-                    if chat_mode == "plan" && is_final_answer_phase(event.phase.as_deref()) {
-                        buffered_plan_assistant_event = Some(event.clone());
-                    } else {
-                        if chat_mode != "plan"
-                            && is_final_answer_phase(event.phase.as_deref())
-                            && event_text(&event).is_some()
-                        {
-                            if let Some(turn) = find_turn_mut(&mut snapshot, assistant_turn_id) {
-                                set_string_value(
-                                    turn,
-                                    "content",
-                                    event_text(&event).as_deref().unwrap_or(""),
-                                );
-                                set_string_value(turn, "status", "streaming");
-                                remove_key(turn, "error");
-                                let turn = turn.clone();
-                                emitted_payloads.push(build_turn_upsert_payload(&snapshot, &turn));
-                            }
+                    if is_final_answer_phase(event.phase.as_deref()) && event_text(&event).is_some()
+                    {
+                        if let Some(turn) = find_turn_mut(&mut snapshot, assistant_turn_id) {
+                            set_string_value(
+                                turn,
+                                "content",
+                                event_text(&event).as_deref().unwrap_or(""),
+                            );
+                            set_string_value(turn, "status", "streaming");
+                            remove_key(turn, "error");
+                            let turn = turn.clone();
+                            emitted_payloads.push(build_turn_upsert_payload(&snapshot, &turn));
                         }
-                        if let Some(segment) =
-                            materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
-                                .filter(|_| should_emit_segment_upsert_for_event(&event))
-                        {
-                            emitted_payloads
-                                .push(build_segment_upsert_payload(&snapshot, &segment));
-                        }
+                    }
+                    if let Some(segment) =
+                        materialize_segment_for_event(&mut snapshot, assistant_turn_id, &event)
+                            .filter(|_| should_emit_segment_upsert_for_event(&event))
+                    {
+                        emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
                     }
                 }
                 TurnStreamEventKind::Error => {
@@ -1002,12 +991,10 @@ impl WorkspaceConversationService {
         finalize_agent_turn_output(
             &mut snapshot,
             assistant_turn_id,
-            &chat_mode,
             output.final_assistant_text.as_deref(),
             output.token_usage,
             output.token_usage_breakdown,
             output.thread_resume_failure.as_ref(),
-            buffered_plan_assistant_event.as_ref(),
             &mut emitted_payloads,
         );
         let mut mutations = mutations_from_emitted_payloads(&emitted_payloads)?;
@@ -3548,30 +3535,23 @@ impl LiveConversationTurnState {
             TurnStreamEventKind::ContentCompleted
                 if event.channel == Some(TurnStreamChannel::Assistant) =>
             {
-                if self.chat_mode == "plan" && is_final_answer_phase(event.phase.as_deref()) {
-                    // Plan-mode final answer is applied by the durable finalizer so the plan
-                    // artifact remains the primary live surface during streaming.
-                } else {
-                    if self.chat_mode != "plan"
-                        && is_final_answer_phase(event.phase.as_deref())
-                        && event_text(&event).is_some()
-                    {
-                        if let Some(turn) =
-                            find_turn_mut(&mut self.snapshot, &self.assistant_turn_id)
-                        {
-                            set_string_value(
-                                turn,
-                                "content",
-                                event_text(&event).as_deref().unwrap_or(""),
-                            );
-                            set_string_value(turn, "status", "streaming");
-                            remove_key(turn, "error");
-                            let turn = turn.clone();
-                            emitted_payloads.push(build_turn_upsert_payload(&self.snapshot, &turn));
-                        }
+                if self.chat_mode != "plan"
+                    && is_final_answer_phase(event.phase.as_deref())
+                    && event_text(&event).is_some()
+                {
+                    if let Some(turn) = find_turn_mut(&mut self.snapshot, &self.assistant_turn_id) {
+                        set_string_value(
+                            turn,
+                            "content",
+                            event_text(&event).as_deref().unwrap_or(""),
+                        );
+                        set_string_value(turn, "status", "streaming");
+                        remove_key(turn, "error");
+                        let turn = turn.clone();
+                        emitted_payloads.push(build_turn_upsert_payload(&self.snapshot, &turn));
                     }
-                    self.emit_materialized_segment(&event, &mut emitted_payloads);
                 }
+                self.emit_materialized_segment(&event, &mut emitted_payloads);
             }
             TurnStreamEventKind::Error => {
                 let message = event
@@ -3698,7 +3678,7 @@ fn is_final_answer_phase(phase: Option<&str>) -> bool {
         .and_then(non_empty_string)
         .map(|value| value.to_lowercase())
     {
-        None => true,
+        None => false,
         Some(value) => value == "final_answer",
     }
 }
@@ -4065,43 +4045,6 @@ fn set_segment_artifact_id(
     Some(segment.clone())
 }
 
-fn fallback_assistant_segment_id(snapshot: &Value, assistant_turn_id: &str) -> Option<String> {
-    let segments = snapshot.get("segments").and_then(Value::as_array)?;
-    segments
-        .iter()
-        .filter(|segment| {
-            segment.get("turn_id").and_then(Value::as_str) == Some(assistant_turn_id)
-                && segment.get("kind").and_then(Value::as_str) == Some("assistant_message")
-        })
-        .find(|segment| is_final_answer_phase(segment.get("phase").and_then(Value::as_str)))
-        .and_then(|segment| segment.get("id"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-}
-
-fn complete_existing_assistant_segment_with_text(
-    snapshot: &mut Value,
-    segment_id: &str,
-    text: &str,
-) -> Option<Value> {
-    let now = iso_now();
-    let segment = snapshot
-        .as_object_mut()
-        .and_then(|object| object.get_mut("segments"))
-        .and_then(Value::as_array_mut)?
-        .iter_mut()
-        .find(|segment| segment.get("id").and_then(Value::as_str) == Some(segment_id))?;
-    set_string_value(segment, "content", text);
-    set_string_value(segment, "status", "complete");
-    set_string_value(segment, "updated_at", &now);
-    set_string_value(segment, "completed_at", &now);
-    set_string_value(segment, "phase", "final_answer");
-    remove_key(segment, "error");
-    remove_key(segment, "error_code");
-    remove_key(segment, "details");
-    Some(segment.clone())
-}
-
 fn failed_assistant_state(
     snapshot: &Value,
     assistant_turn_id: &str,
@@ -4456,12 +4399,10 @@ fn emit_assistant_turn_upsert(
 fn finalize_agent_turn_output(
     snapshot: &mut Value,
     assistant_turn_id: &str,
-    chat_mode: &str,
     final_assistant_text: Option<&str>,
     token_usage: Option<Value>,
     token_usage_breakdown: Option<Value>,
     thread_resume_failure: Option<&AgentThreadResumeFailure>,
-    buffered_plan_assistant_event: Option<&TurnStreamEvent>,
     emitted_payloads: &mut Vec<Value>,
 ) {
     let token_usage_changed = token_usage
@@ -4532,7 +4473,7 @@ fn finalize_agent_turn_output(
             plan_segment = Some(updated_segment);
         }
     }
-    let mut final_answer_segment = finalized_assistant_segment(snapshot, assistant_turn_id);
+    let final_answer_segment = finalized_assistant_segment(snapshot, assistant_turn_id);
     let final_text = final_assistant_text.and_then(non_empty_string);
     if final_answer_segment.is_none()
         && plan_segment.is_none()
@@ -4544,46 +4485,6 @@ fn finalize_agent_turn_output(
         }
         return;
     }
-    if final_answer_segment.is_none() {
-        let fallback_text = if chat_mode == "plan" {
-            final_text
-        } else {
-            final_text.clone()
-        };
-        if let Some(text) = fallback_text {
-            final_answer_segment = fallback_assistant_segment_id(snapshot, assistant_turn_id)
-                .and_then(|segment_id| {
-                    complete_existing_assistant_segment_with_text(snapshot, &segment_id, &text)
-                });
-            if final_answer_segment.is_none() {
-                let mut event =
-                    buffered_plan_assistant_event
-                        .cloned()
-                        .unwrap_or_else(|| TurnStreamEvent {
-                            kind: TurnStreamEventKind::ContentCompleted,
-                            channel: Some(TurnStreamChannel::Assistant),
-                            source: TurnStreamSource::default(),
-                            content_delta: Some(text.clone()),
-                            message: Some(text.clone()),
-                            tool_call: None,
-                            request_user_input: None,
-                            token_usage: None,
-                            error: None,
-                            error_code: None,
-                            details: None,
-                            phase: Some("final_answer".to_string()),
-                            status: None,
-                        });
-                event.content_delta = Some(text);
-                final_answer_segment =
-                    materialize_segment_for_event(snapshot, assistant_turn_id, &event);
-            }
-            if let Some(segment) = final_answer_segment.as_ref() {
-                emitted_payloads.push(build_segment_upsert_payload(snapshot, segment));
-            }
-        }
-    }
-
     if final_answer_segment.is_none() && plan_segment.is_none() {
         let (message, error_code, details) = failed_assistant_state(snapshot, assistant_turn_id)
             .unwrap_or_else(|| (MISSING_FINAL_ANSWER_ERROR.to_string(), None, None));

@@ -733,7 +733,6 @@ pub fn assistant_segment_id(turn_id: &str, event: &TurnStreamEvent) -> String {
         event.source.item_id.as_deref().and_then(non_empty_string),
     ) {
         (Some(app_turn_id), Some(item_id)) => format!("segment-assistant-{app_turn_id}-{item_id}"),
-        (None, Some(item_id)) => format!("segment-assistant-{turn_id}-{item_id}"),
         _ => format!("segment-assistant-{turn_id}"),
     }
 }
@@ -1272,13 +1271,15 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_turn_content_uses_item_ids_and_preserves_stream_order() {
+    fn canonical_turn_content_uses_item_ids_and_preserves_stream_order() {
         let mut container = serde_json::json!({});
-        let events = [
+        let mut events = [
             completed_content(TurnStreamChannel::Assistant, "Inspecting.", "block-1"),
             command_started("tool-1"),
             completed_content(TurnStreamChannel::Assistant, "Testing.", "block-2"),
         ];
+        events[0].source.app_turn_id = Some("app-turn".to_string());
+        events[2].source.app_turn_id = Some("app-turn".to_string());
         for (index, event) in events.iter().enumerate() {
             materialize_segment_for_event(
                 &mut container,
@@ -1298,12 +1299,36 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                ("segment-assistant-turn-1-block-1", 1),
+                ("segment-assistant-app-turn-block-1", 1),
                 ("segment-tool-turn-1-tool-1", 2),
-                ("segment-assistant-turn-1-block-2", 3),
+                ("segment-assistant-app-turn-block-2", 3),
             ]
         );
         assert_eq!(segments[0]["content"], "Inspecting.");
+    }
+
+    #[test]
+    fn completion_is_authoritative_and_final_answer_promotes_in_place() {
+        let mut container = serde_json::json!({});
+        let mut delta = assistant_delta("Dra", Some("block-1"));
+        delta.source.app_turn_id = Some("app-turn".to_string());
+        delta.phase = Some("commentary".to_string());
+        let mut completed = completed_content(TurnStreamChannel::Assistant, "Draft.", "block-1");
+        completed.source.app_turn_id = Some("app-turn".to_string());
+        completed.phase = Some("commentary".to_string());
+        let mut final_answer =
+            completed_content(TurnStreamChannel::Assistant, "Final answer.", "block-1");
+        final_answer.source.app_turn_id = Some("app-turn".to_string());
+        final_answer.phase = Some("final_answer".to_string());
+
+        for event in [delta, completed, final_answer] {
+            materialize_segment_for_event(&mut container, "turn-1", &event, "2026-07-08T10:00:00Z");
+        }
+
+        let segments = container["segments"].as_array().expect("segments");
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0]["content"], "Final answer.");
+        assert_eq!(segments[0]["phase"], "final_answer");
     }
 
     #[test]
