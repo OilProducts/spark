@@ -278,6 +278,7 @@ struct ClaudeCodeTurnState {
     pending_text_block_ids: VecDeque<String>,
     pending_reasoning_block_ids: VecDeque<String>,
     last_text_item_id: Option<String>,
+    tool_calls: BTreeMap<String, Value>,
 }
 
 impl ClaudeCodeTurnState {
@@ -382,16 +383,16 @@ impl ClaudeCodeTurnState {
                     ));
                 }
                 "tool_use" => {
+                    let tool_call = canonical_tool_call(&block);
+                    if let Some(id) = block.get("id").and_then(Value::as_str) {
+                        self.tool_calls.insert(id.to_string(), tool_call.clone());
+                    }
                     events.push(stream_event(
                         TurnStreamEventKind::ToolCallStarted,
                         self.session_id.as_deref(),
                         "tool_use",
                         |event| {
-                            event.tool_call = Some(json!({
-                                "id": block.get("id").cloned().unwrap_or(Value::Null),
-                                "name": block.get("name").cloned().unwrap_or(Value::Null),
-                                "input": block.get("input").cloned().unwrap_or(Value::Null),
-                            }));
+                            event.tool_call = Some(tool_call);
                             event.status = Some("started".to_string());
                         },
                     ));
@@ -498,6 +499,16 @@ impl ClaudeCodeTurnState {
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let id = block.get("tool_use_id").cloned().unwrap_or(Value::Null);
+            let mut tool_call = block
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .and_then(|id| self.tool_calls.get(id).cloned())
+                .unwrap_or_else(|| json!({"id": id}));
+            if let Some(payload) = tool_call.as_object_mut() {
+                payload.insert("output".to_string(), tool_result_preview(&block));
+                payload.insert("is_error".to_string(), Value::Bool(is_error));
+            }
             events.push(stream_event(
                 if is_error {
                     TurnStreamEventKind::ToolCallFailed
@@ -507,11 +518,7 @@ impl ClaudeCodeTurnState {
                 self.session_id.as_deref(),
                 "tool_result",
                 |event| {
-                    event.tool_call = Some(json!({
-                        "id": block.get("tool_use_id").cloned().unwrap_or(Value::Null),
-                        "output": tool_result_preview(&block),
-                        "is_error": is_error,
-                    }));
+                    event.tool_call = Some(tool_call);
                     event.status = Some(if is_error { "failed" } else { "completed" }.to_string());
                 },
             ));
@@ -585,6 +592,56 @@ impl ClaudeCodeTurnState {
         ));
         events
     }
+}
+
+fn canonical_tool_call(block: &Value) -> Value {
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+    let input = block.get("input").cloned().unwrap_or(Value::Null);
+    let mut payload = serde_json::Map::from_iter([
+        (
+            "id".to_string(),
+            block.get("id").cloned().unwrap_or(Value::Null),
+        ),
+        ("name".to_string(), Value::String(name.to_string())),
+        ("input".to_string(), input.clone()),
+    ]);
+    let input_string = |key| input.get(key).and_then(Value::as_str).and_then(non_empty);
+
+    match name {
+        "Bash" => {
+            let command = input_string("command");
+            payload.insert("kind".to_string(), json!("command_execution"));
+            if let Some(command) = command {
+                payload.insert("command".to_string(), json!(command));
+            }
+            let title = input_string("description")
+                .or_else(|| {
+                    command
+                        .and_then(|command| command.lines().next())
+                        .and_then(non_empty)
+                })
+                .unwrap_or(name);
+            payload.insert("title".to_string(), json!(title));
+        }
+        "Read" | "Write" | "Edit" | "NotebookEdit" => {
+            let path = input_string("file_path").or_else(|| input_string("notebook_path"));
+            if let Some(path) = path {
+                payload.insert("file_paths".to_string(), json!([path]));
+            }
+            payload.insert("title".to_string(), json!(name));
+        }
+        "Glob" | "Grep" => {
+            if let Some(path) = input_string("path") {
+                payload.insert("file_paths".to_string(), json!([path]));
+            }
+            payload.insert("title".to_string(), json!(name));
+        }
+        _ => {
+            payload.insert("kind".to_string(), json!("dynamic_tool"));
+            payload.insert("title".to_string(), json!(name));
+        }
+    }
+    Value::Object(payload)
 }
 
 fn stream_event(

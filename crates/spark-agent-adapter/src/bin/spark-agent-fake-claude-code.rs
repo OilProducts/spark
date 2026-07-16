@@ -90,6 +90,57 @@ fn main() {
         return;
     }
 
+    if mode == "tool-payloads" {
+        for (id, name, input, output) in [
+            (
+                "toolu_bash_described",
+                "Bash",
+                serde_json::json!({"command": "cargo test", "description": "Run the tests"}),
+                "tests passed",
+            ),
+            (
+                "toolu_bash_plain",
+                "Bash",
+                serde_json::json!({"command": "printf first\nprintf second"}),
+                "first\nsecond",
+            ),
+            (
+                "toolu_read",
+                "Read",
+                serde_json::json!({"file_path": "/tmp/example.rs"}),
+                "fn main() {}",
+            ),
+            (
+                "toolu_unknown",
+                "McpWidget",
+                serde_json::json!({"value": 1}),
+                "done",
+            ),
+        ] {
+            emit(
+                &mut out,
+                serde_json::json!({"type": "assistant", "session_id": session_id,
+                "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": id, "name": name, "input": input}
+                ]}}),
+            );
+            emit(
+                &mut out,
+                serde_json::json!({"type": "user", "session_id": session_id,
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": id, "content": output}
+                ]}}),
+            );
+        }
+        emit(
+            &mut out,
+            serde_json::json!({"type": "result", "subtype": "success",
+            "is_error": false, "result": "Tools complete.", "session_id": session_id,
+            "usage": {"input_tokens": 1, "output_tokens": 1}}),
+        );
+        return;
+    }
+
     if mode == "multi-block" {
         for line in [
             serde_json::json!({"type": "stream_event", "session_id": session_id,
