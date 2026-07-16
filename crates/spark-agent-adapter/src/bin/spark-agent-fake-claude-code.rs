@@ -90,24 +90,44 @@ fn main() {
         return;
     }
 
-    emit(
-        &mut out,
-        serde_json::json!({
-            "type": "stream_event",
-            "session_id": session_id,
-            "event": {"type": "content_block_delta", "index": 0,
-                "delta": {"type": "thinking_delta", "thinking": "I should inspect before changing anything."}},
-        }),
-    );
-    emit(
-        &mut out,
-        serde_json::json!({
-            "type": "stream_event",
-            "session_id": session_id,
-            "event": {"type": "content_block_delta", "index": 1,
-                "delta": {"type": "text_delta", "text": "Inspecting the repository."}},
-        }),
-    );
+    if mode == "multi-block" {
+        for line in [
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "message_start"}}),
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": "First block."}}}),
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 1,
+                    "delta": {"type": "text_delta", "text": "Second block."}}}),
+            serde_json::json!({"type": "assistant", "session_id": session_id,
+            "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "First block."},
+                {"type": "text", "text": "Second block."}
+            ]}}),
+            serde_json::json!({"type": "result", "subtype": "success", "is_error": false,
+                "result": "Second block.", "session_id": session_id,
+                "usage": {"input_tokens": 1, "output_tokens": 2}}),
+        ] {
+            emit(&mut out, line);
+        }
+        return;
+    }
+
+    let partials = mode != "no-partials";
+    if partials {
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "message_start"}}),
+        );
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "I should inspect before changing anything."}}}),
+        );
+    }
 
     emit(
         &mut out,
@@ -116,13 +136,31 @@ fn main() {
             "session_id": session_id,
             "message": {
                 "role": "assistant",
-                "content": [
-                    {"type": "thinking", "thinking": "I should inspect before changing anything."},
-                    {"type": "text", "text": "Inspecting the repository."},
-                    {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}},
-                ],
+                "content": [{"type": "thinking", "thinking": "I should inspect before changing anything."}],
             },
         }),
+    );
+    if partials {
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 1,
+                    "delta": {"type": "text_delta", "text": "Inspecting the repository."}}}),
+        );
+    }
+    emit(
+        &mut out,
+        serde_json::json!({"type": "assistant", "session_id": session_id,
+        "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Inspecting the repository."}
+        ]}}),
+    );
+    emit(
+        &mut out,
+        serde_json::json!({"type": "assistant", "session_id": session_id,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}}
+        ]}}),
     );
     emit(
         &mut out,
@@ -137,6 +175,19 @@ fn main() {
             },
         }),
     );
+    if partials {
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "message_start"}}),
+        );
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": "The repository looks ready; running tests."}}}),
+        );
+    }
     emit(
         &mut out,
         serde_json::json!({
@@ -144,12 +195,16 @@ fn main() {
             "session_id": session_id,
             "message": {
                 "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "The repository looks ready; running tests."},
-                    {"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "cargo test"}},
-                ],
+                "content": [{"type": "text", "text": "The repository looks ready; running tests."}],
             },
         }),
+    );
+    emit(
+        &mut out,
+        serde_json::json!({"type": "assistant", "session_id": session_id,
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "cargo test"}}
+        ]}}),
     );
     emit(
         &mut out,
@@ -164,6 +219,19 @@ fn main() {
             },
         }),
     );
+    if partials {
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "message_start"}}),
+        );
+        emit(
+            &mut out,
+            serde_json::json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "text_delta", "text": "All set."}}}),
+        );
+    }
     emit(
         &mut out,
         serde_json::json!({

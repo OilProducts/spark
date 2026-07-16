@@ -120,14 +120,16 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         vec![
             "system_init",
             "content_delta",
+            "content_completed",
             "content_delta",
             "content_completed",
+            "tool_call_started",
+            "tool_call_completed",
+            "content_delta",
             "content_completed",
             "tool_call_started",
             "tool_call_completed",
-            "content_completed",
-            "tool_call_started",
-            "tool_call_completed",
+            "content_delta",
             "content_completed",
             "content_completed",
             "token_usage_updated",
@@ -165,8 +167,14 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         .iter()
         .filter(|event| event.kind == TurnStreamEventKind::ContentDelta)
         .collect::<Vec<_>>();
-    assert_eq!(deltas[0].source.item_id, content_events[0].source.item_id);
-    assert_eq!(deltas[1].source.item_id, content_events[1].source.item_id);
+    for (delta, completed) in deltas.iter().zip(&content_events) {
+        assert_eq!(delta.source.item_id, completed.source.item_id);
+    }
+    assert_eq!(deltas.len(), 4);
+    assert_eq!(
+        deltas.last().unwrap().source.item_id,
+        content_events.last().unwrap().source.item_id
+    );
     let tool_started = output
         .events
         .iter()
@@ -193,6 +201,71 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }
+}
+
+#[test]
+fn claude_code_multi_block_completions_consume_partial_ids_in_order() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "multi-block");
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("turn");
+    let ids = output
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted
+            )
+        })
+        .map(|event| event.source.item_id.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            Some("block-1"),
+            Some("block-2"),
+            Some("block-1"),
+            Some("block-2"),
+            Some("block-2")
+        ]
+    );
+}
+
+#[test]
+fn claude_code_completions_mint_ids_without_partial_events() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "no-partials");
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("turn");
+    assert!(output
+        .events
+        .iter()
+        .all(|event| event.kind != TurnStreamEventKind::ContentDelta));
+    let ids = output
+        .events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ContentCompleted)
+        .map(|event| event.source.item_id.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec![
+            Some("block-1"),
+            Some("block-2"),
+            Some("block-3"),
+            Some("block-4"),
+            Some("block-4")
+        ]
+    );
 }
 
 #[test]
