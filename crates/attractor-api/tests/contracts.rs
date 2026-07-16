@@ -18,5 +18,7 @@ mod preview_route_contracts;
 mod run_recovery_contracts;
 #[path = "contracts/status_route_contracts.rs"]
 mod status_route_contracts;
+#[path = "contracts/validation_loop_contracts.rs"]
+mod validation_loop_contracts;
 #[path = "contracts/worktree_lifecycle_contracts.rs"]
 mod worktree_lifecycle_contracts;

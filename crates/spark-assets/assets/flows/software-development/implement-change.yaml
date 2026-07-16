@@ -99,7 +99,7 @@ nodes:
         fi
         dirty=false
         if [ -n "$(git status --porcelain)" ]; then dirty=true; fi
-        printf '{"path":"%s","branch":"%s","base_commit":"%s","source_dirty":%s}' \
+        printf '{"path":"%s","branch":"%s","base_commit":"%s","source_dirty":%s,"validation_attempts":0}' \
           "$worktree" "$branch" "$base_commit" "$dirty"
       env_map:
         SPARK_RUN_ID: internal.run_id
@@ -109,12 +109,14 @@ nodes:
         context.workspace.branch: branch
         context.workspace.base_commit: base_commit
         context.workspace.source_dirty: source_dirty
+        context.validation.attempts: validation_attempts
     contracts:
       writes_context:
       - context.workspace.path
       - context.workspace.branch
       - context.workspace.base_commit
       - context.workspace.source_dirty
+      - context.validation.attempts
   implement:
     kind: subflow
     label: Implement
@@ -150,13 +152,64 @@ nodes:
     label: Validate
     config:
       kind: tool
+      # The deterministic gate: the only path to finalize_commit is this
+      # command exiting 0. LLM judgment on the failure path may interpret a
+      # red gate, never overrule it. Only a bounded log tail reaches
+      # context.tool.output so downstream feedback stays prompt-sized.
       command: |
         set -eu
         cd "$SPARK_WORKSPACE_PATH"
-        sh -ec "$SPARK_VALIDATION_COMMAND"
+        log=$(mktemp)
+        trap 'rm -f "$log"' EXIT
+        if sh -ec "$SPARK_VALIDATION_COMMAND" >"$log" 2>&1; then
+          tail -c 2000 "$log"
+        else
+          tail -c 20000 "$log"
+          exit 1
+        fi
       env_map:
         SPARK_WORKSPACE_PATH: context.workspace.path
         SPARK_VALIDATION_COMMAND: context.task.validation_command
+  count_validate_attempt:
+    kind: tool
+    label: Count Validate Attempt
+    config:
+      kind: tool
+      # Deterministic loop bound: each gate failure increments the counter;
+      # the run fails once the fix budget is spent, preserving the worktree
+      # for diagnosis exactly like a terminal validate failure does today.
+      command: |
+        set -eu
+        attempts=$((SPARK_VALIDATION_ATTEMPTS + 1))
+        if [ "$attempts" -gt 3 ]; then
+          echo "validation gate failed ${attempts} times; fix budget (3 attempts) exhausted" >&2
+          exit 1
+        fi
+        printf '{"attempts":%s}' "$attempts"
+      env_map:
+        SPARK_VALIDATION_ATTEMPTS: context.validation.attempts
+      output_map:
+        context.validation.attempts: attempts
+    contracts:
+      writes_context:
+      - context.validation.attempts
+  diagnose_validation:
+    kind: agent_task
+    label: Diagnose Validation
+    config:
+      kind: agent_task
+      prompt: 'The deterministic validation gate just failed for the implementation in the isolated worktree at context.workspace.path. context.task.validation_command is the gate command, context.tool.output holds the tail of its log, and context.tool.exit_code its exit code. Your job is to translate that failure into the minimal fix guidance the implementer needs; you have no authority to judge the gate green — it reruns deterministically after the next implementation attempt. Diagnose with deterministic evidence: rerun the narrowest failing check inside the worktree to confirm the failure and localize it. Distinguish a failure caused by the implementation from an environmental or flaky failure: for implementation failures, name the concrete defect and the smallest change that fixes it; for failures you can show are environmental or nondeterministic (rerun the failing check in isolation to demonstrate it), say so explicitly and direct the implementer to verify and, when the cause is in the repository, stabilize it rather than change unrelated code. This node may read files and run commands in the worktree but must not edit files, stage, or commit. Set context_updates for context.review.summary (concise diagnosis with evidence basis) and context.review.required_changes (a minimal, actionable fix prompt). Respond with ONLY a JSON status envelope; return outcome success once the diagnosis is recorded.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.workspace.path
+      - context.task.objective
+      - context.task.validation_command
+      - context.tool.output
+      - context.tool.exit_code
+      writes_context:
+      - context.review.summary
+      - context.review.required_changes
   finalize_commit:
     kind: tool
     label: Finalize Commit
@@ -216,6 +269,17 @@ edges:
   condition: outcome=fail
 - from: validate
   to: finalize_commit
+  condition: outcome=success
+- from: validate
+  to: count_validate_attempt
+  label: Fix
+  condition: outcome=fail
+- from: count_validate_attempt
+  to: diagnose_validation
+  condition: outcome=success
+- from: diagnose_validation
+  to: implement
+  label: Fix
   condition: outcome=success
 - from: finalize_commit
   to: cleanup_workspace
