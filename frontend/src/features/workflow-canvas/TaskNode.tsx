@@ -121,7 +121,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const humanGate = isRunCanvas ? executionHumanGate : null
 
     const currentShape = normalizeWorkflowNodeShape((data.shape as string) || defaultShape)
-    const displayLabel = (data.label as string) || 'Task Node'
+    const displayLabel = (typeof data.label === 'string' && data.label.trim()) || id
     const [isEditingLabel, setIsEditingLabel] = useState(false)
     const [draftLabel, setDraftLabel] = useState(displayLabel)
     const [isEditingDetails, setIsEditingDetails] = useState(false)

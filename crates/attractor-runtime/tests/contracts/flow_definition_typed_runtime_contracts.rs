@@ -771,6 +771,88 @@ fn subflow_child_workdir_from_launches_child_in_context_directory() {
 }
 
 #[test]
+fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let worktree = project.join("worktree");
+    fs::create_dir_all(&worktree).expect("create worktree");
+    fs::write(worktree.join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut parent = RunRecord::new("parent-run", project.to_string_lossy());
+    parent.flow_name = "Parent".to_string();
+    let parent_paths = store
+        .create_run(CreateRunRequest {
+            record: parent,
+            ..CreateRunRequest::default()
+        })
+        .expect("create parent");
+    let node = FlowNode {
+        kind: NodeKind::Subflow,
+        config: Some(NodeConfig::Subflow {
+            flow_ref: "child.yaml".to_string(),
+            input_map: BTreeMap::new(),
+        }),
+        manager: Some(ManagerLoopConfig {
+            max_cycles: Some(1),
+            child_autostart: Some(true),
+            child_workdir: Some("worktree".to_string()),
+            ..ManagerLoopConfig::default()
+        }),
+        ..FlowNode::default()
+    };
+    let flow = FlowDefinition {
+        schema_version: "1".to_string(),
+        id: "parent".to_string(),
+        title: "Parent".to_string(),
+        nodes: [("run_child".to_string(), node.clone())]
+            .into_iter()
+            .collect(),
+        ..FlowDefinition::default()
+    };
+    let outcome = RuntimeHandlerRunner::new()
+        .execute(NodeExecutionRequest {
+            node_id: "run_child".to_string(),
+            stage_index: 0,
+            context: ContextMap::from([
+                ("internal.run_id".to_string(), json!("parent-run")),
+                ("internal.root_run_id".to_string(), json!("parent-run")),
+                ("internal.run_workdir".to_string(), json!(project)),
+                ("internal.flow_source_dir".to_string(), json!(project)),
+            ]),
+            prompt: String::new(),
+            node: node.clone(),
+            node_attrs: attractor_runtime::flow_runtime::node_attrs_for_handler("run_child", &node),
+            flow,
+            outgoing_edges: Vec::new(),
+            run_paths: Some(parent_paths),
+            run_workdir: project.clone(),
+            run_id: "parent-run".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("launch child");
+    assert_eq!(outcome.status, OutcomeStatus::Success, "{outcome:?}");
+
+    let child = store
+        .list_run_records()
+        .expect("list runs")
+        .into_iter()
+        .find(|record| record.parent_run_id.as_deref() == Some("parent-run"))
+        .expect("child record");
+    assert_eq!(child.project_path, project.to_string_lossy());
+    assert_eq!(child.working_directory, worktree.to_string_lossy());
+    assert_eq!(child.flow_name, "Child");
+    assert!(store
+        .list_run_records()
+        .expect("list runs")
+        .into_iter()
+        .filter(|record| record.project_path == project.to_string_lossy())
+        .any(|record| record.run_id == child.run_id));
+}
+
+#[test]
 fn subflow_child_workdir_from_accepts_linked_worktree_of_same_repository() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");

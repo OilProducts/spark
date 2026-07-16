@@ -126,23 +126,23 @@ export function RunList({
                 )}
             >
                 <div className="space-y-2">
-                    <div className="flex items-start gap-3">
+                    <div className="flex flex-wrap items-start gap-2">
                         <div className="min-w-0 flex-1 space-y-1">
                             <div className="truncate text-sm font-medium text-foreground" title={run.flow_name || run.run_id}>
                                 {run.flow_name || run.run_id.slice(0, 8)}
                             </div>
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                            <div className="text-[11px] leading-4 text-muted-foreground">
                                 {metaParts.length > 0 ? (
-                                    <span className="truncate">{metaParts.join(' · ')}</span>
+                                    <span>{metaParts.join(' · ')}</span>
                                 ) : null}
                                 {projectLabel ? (
-                                    <span className="truncate" title={run.project_path}>
-                                        {projectLabel}
+                                    <span title={run.project_path}>
+                                        {' · '}{projectLabel}
                                     </span>
                                 ) : null}
                                 {run.root_run_id && run.root_run_id !== run.run_id ? (
-                                    <span className="truncate" title={run.root_run_id}>
-                                        root {run.root_run_id.slice(0, 8)}
+                                    <span title={run.root_run_id}>
+                                        {' · '}root {run.root_run_id.slice(0, 8)}
                                     </span>
                                 ) : null}
                             </div>
@@ -160,11 +160,6 @@ export function RunList({
                             ) : null}
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center gap-2">
-                            {run.parent_run_id ? (
-                                <span className="inline-flex h-6 items-center justify-center rounded-md border border-border/70 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                                    Child
-                                </span>
-                            ) : null}
                             <span
                                 className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-[11px] font-semibold uppercase tracking-wide ${
                                     STATUS_STYLES[run.status] || 'bg-muted text-muted-foreground'

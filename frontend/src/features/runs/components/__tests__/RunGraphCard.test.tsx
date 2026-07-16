@@ -126,7 +126,7 @@ describe('RunGraphCard', () => {
 
         await screen.findByTestId('run-graph-panel')
         await act(async () => {
-            screen.getByRole('button', { name: 'Expanded Child Flow' }).click()
+            screen.getByRole('button', { name: 'Child flows' }).click()
         })
 
         await waitFor(() => {
@@ -137,5 +137,38 @@ describe('RunGraphCard', () => {
             )
         })
         expect(useStore.getState().runDetailSessionsByRunId[run.run_id]?.expandChildFlows).toBe(true)
+    })
+
+    it('insets canvas controls inside the default-height viewport', async () => {
+        const run = makeRun('run-controls')
+        loadRunGraphPreviewMock.mockResolvedValue({
+            status: 'ok',
+            graph: {
+                graph_attrs: {},
+                nodes: [{ id: 'start', label: 'Start', shape: 'Mdiamond' }],
+                edges: [],
+            },
+            diagnostics: [],
+            errors: [],
+        })
+
+        act(() => {
+            useStore.getState().updateRunDetailSession(run.run_id, {
+                isGraphCollapsed: false,
+            })
+        })
+
+        render(
+            <RunGraphCard
+                run={run}
+                nodeStatusesById={{}}
+                selectedNodeId={null}
+                onSelectNode={vi.fn()}
+            />,
+        )
+
+        await screen.findByTestId('rf__node-start')
+        const controls = screen.getByTestId('run-graph-canvas').querySelector('.react-flow__controls')
+        expect(controls).toHaveStyle({ bottom: '12px', left: '12px' })
     })
 })

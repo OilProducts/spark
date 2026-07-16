@@ -111,6 +111,16 @@ const SingleNodeHarness = ({
 }
 
 describe('TaskNode', () => {
+    it('falls back to the node id when no label is authored', () => {
+        renderWithFlowProvider(
+            <SingleNodeHarness
+                mode="runs"
+                node={{ id: 'implement', type: 'task', position: { x: 0, y: 0 }, data: {} }}
+            />,
+        )
+        expect(screen.getByText('implement')).toBeInTheDocument()
+        expect(screen.queryByText('Task Node')).not.toBeInTheDocument()
+    })
     beforeEach(() => {
         cleanup()
         installDomMatrixReadOnlyStub()

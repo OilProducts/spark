@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use attractor_core::{
     FlowDefinition, FlowEdge, FlowNode, JournalEntry, LaunchContext, NodeConfig, NodeKind,
@@ -74,7 +76,7 @@ fn request_completed_events_aggregate_by_model_across_payload_dialects() {
         // Non-usage adapter noise is ignored.
         completed_entry(
             4,
-            "rust_agent_session_event",
+            "rust_agent_raw_log_line",
             json!({
                 "model": "gpt-5.3-codex",
                 "token_usage": {"input_tokens": 999_999},
@@ -115,6 +117,49 @@ fn request_completed_events_aggregate_by_model_across_payload_dialects() {
     let wire = breakdown.to_value();
     assert_eq!(wire["total_tokens"], 5200);
     assert_eq!(wire["by_model"]["gpt-5.3-codex"]["input_tokens"], 4000);
+}
+
+#[test]
+fn in_flight_session_usage_is_latest_per_node_until_completion() {
+    let event = |sequence, node: &str, event_type: &str, usage: Value| {
+        journal_entry(
+            sequence,
+            "CodergenAdapter",
+            json!({
+                "node_id": node,
+                "adapter_event_type": event_type,
+                "payload": {"model": "gpt-5", "token_usage": usage},
+            }),
+        )
+    };
+    let entries = vec![
+        event(
+            1,
+            "work",
+            "codex_app_server_session_event",
+            json!({"total": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12}}),
+        ),
+        event(
+            2,
+            "work",
+            "codex_app_server_session_event",
+            json!({"total": {"inputTokens": 20, "cachedInputTokens": 5, "outputTokens": 4, "totalTokens": 24}}),
+        ),
+        event(
+            3,
+            "other",
+            "rust_agent_session_event",
+            json!({"input_tokens": 3, "output_tokens": 1}),
+        ),
+    ];
+    let live = project_run_usage(&entries, "fallback").expect("live usage");
+    assert_eq!(live.totals.total_tokens, 28);
+    assert_eq!(live.totals.cached_input_tokens, 5);
+
+    let mut completed = entries;
+    completed.push(event(4, "work", "codex_app_server_request_completed", json!({"total": {"inputTokens": 20, "cachedInputTokens": 5, "outputTokens": 4, "totalTokens": 24}})));
+    let final_usage = project_run_usage(&completed, "fallback").expect("completed usage");
+    assert_eq!(final_usage.totals.total_tokens, 28);
 }
 
 #[test]
@@ -220,6 +265,79 @@ impl spark_agent_adapter::CodergenBackend for UsageEmittingBackend {
                     ),
                 ]),
             )],
+            usage: None,
+        })
+    }
+}
+
+struct LiveUsageBackend {
+    store: RunStore,
+    observations: Arc<Mutex<Vec<(Option<u64>, String)>>>,
+    calls: Arc<AtomicUsize>,
+}
+
+impl spark_agent_adapter::CodergenBackend for LiveUsageBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        self.run_with_event_sink(request, None)
+    }
+
+    fn run_with_event_sink(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let run_id = request.metadata["spark.runtime.run_id"]
+            .as_str()
+            .expect("run id");
+        if call > 0 {
+            self.store
+                .update_run_record(run_id, |record| {
+                    record.status = "concurrent-status".to_string()
+                })
+                .expect("concurrent record update");
+        }
+        let event = spark_agent_adapter::CodergenEvent::new(
+            "codex_app_server_session_event",
+            BTreeMap::from([
+                ("node_id".to_string(), json!(request.node_id)),
+                ("model".to_string(), json!("gpt-5")),
+                (
+                    "token_usage".to_string(),
+                    json!({"total": {"inputTokens": 8, "outputTokens": 2, "totalTokens": 10}}),
+                ),
+            ]),
+        );
+        if let Some(sink) = &event_sink {
+            sink(event.clone());
+        }
+        if call == 0 {
+            self.store
+                .update_run_record(run_id, |record| {
+                    record.status = "concurrent-status".to_string()
+                })
+                .expect("concurrent record update");
+        }
+        let record = self
+            .store
+            .read_run_bundle(run_id)
+            .expect("read run")
+            .and_then(|bundle| bundle.record)
+            .expect("record");
+        self.observations
+            .lock()
+            .expect("observations")
+            .push((record.token_usage, record.status));
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response: spark_agent_adapter::CodergenBackendResponse::Text(
+                "{\"outcome\":\"success\"}".to_string(),
+            ),
+            events: vec![event],
             usage: None,
         })
     }
@@ -332,4 +450,69 @@ fn executed_runs_persist_token_usage_and_estimated_cost_on_the_record() {
         (amount - expected).abs() < 1e-9,
         "amount {amount} != {expected}"
     );
+}
+
+#[test]
+fn live_usage_persistence_is_per_run_and_preserves_concurrent_fields() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let project_path = temp.path().join("project");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let backend_store = store.clone();
+    let backend_observations = Arc::clone(&observations);
+    let backend_calls = Arc::clone(&calls);
+    let runner = RuntimeHandlerRunner::new().with_codergen_backend_factory(move || {
+        Box::new(LiveUsageBackend {
+            store: backend_store.clone(),
+            observations: Arc::clone(&backend_observations),
+            calls: Arc::clone(&backend_calls),
+        })
+    });
+    let mut flow = agent_flow();
+    flow.nodes.insert(
+        "verify".to_string(),
+        FlowNode {
+            kind: NodeKind::AgentTask,
+            config: Some(NodeConfig::AgentTask {
+                prompt: "verify".to_string(),
+            }),
+            ..FlowNode::default()
+        },
+    );
+    flow.edges = vec![
+        FlowEdge {
+            from: "start".to_string(),
+            to: "build".to_string(),
+            ..Default::default()
+        },
+        FlowEdge {
+            from: "build".to_string(),
+            to: "verify".to_string(),
+            ..Default::default()
+        },
+        FlowEdge {
+            from: "verify".to_string(),
+            to: "done".to_string(),
+            ..Default::default()
+        },
+    ];
+    PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store,
+            record: record("run-live-usage", &project_path),
+            flow,
+            flow_source: None,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: ExecutionStart::Fresh,
+        })
+        .expect("execute");
+    let observations = observations.lock().expect("observations");
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0], (Some(10), "concurrent-status".to_string()));
+    assert_eq!(observations[1], (Some(10), "concurrent-status".to_string()));
 }

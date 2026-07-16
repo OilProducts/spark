@@ -13,10 +13,12 @@ metadata:
     worker: true
 nodes:
   start:
+    label: Start
     kind: start
     config:
       kind: start
   work:
+    label: Implement
     kind: agent_task
     config:
       kind: agent_task
@@ -29,6 +31,7 @@ nodes:
       - context.review.summary
       - context.review.required_changes
   done:
+    label: Done
     kind: exit
     config:
       kind: exit

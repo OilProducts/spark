@@ -216,6 +216,11 @@ const REQUEST_COMPLETED_EVENT_TYPES: &[&str] = &[
     "codex_app_server_request_completed",
     "claude_code_request_completed",
 ];
+const SESSION_EVENT_TYPES: &[&str] = &[
+    "rust_agent_session_event",
+    "codex_app_server_session_event",
+    "claude_code_session_event",
+];
 
 /// Aggregate a run's token usage from its journal.
 ///
@@ -231,6 +236,7 @@ pub fn project_run_usage(
     fallback_model: &str,
 ) -> Option<TokenUsageBreakdown> {
     let mut breakdown = TokenUsageBreakdown::default();
+    let mut in_flight: BTreeMap<String, (String, TokenUsageBucket)> = BTreeMap::new();
     for entry in entries {
         let payload = match entry.raw_type.as_str() {
             "CodergenAdapter" => {
@@ -239,12 +245,40 @@ pub fn project_run_usage(
                     .get("adapter_event_type")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
+                let node_id = entry
+                    .payload
+                    .get("node_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let payload = entry.payload.get("payload");
+                if SESSION_EVENT_TYPES.contains(&adapter_event_type) {
+                    if let Some((model, bucket)) = payload.and_then(|payload| {
+                        let bucket = payload
+                            .get("token_usage")
+                            .and_then(TokenUsageBucket::from_value)?;
+                        let model = payload
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .filter(|model| !model.trim().is_empty())
+                            .unwrap_or(fallback_model);
+                        Some((model.to_string(), bucket))
+                    }) {
+                        in_flight.insert(node_id.to_string(), (model, bucket));
+                    }
+                    continue;
+                }
                 if !REQUEST_COMPLETED_EVENT_TYPES.contains(&adapter_event_type) {
                     continue;
                 }
+                in_flight.remove(node_id);
+                payload
+            }
+            "LLMRequestCompleted" => {
+                if let Some(node_id) = entry.payload.get("node_id").and_then(Value::as_str) {
+                    in_flight.remove(node_id);
+                }
                 entry.payload.get("payload")
             }
-            "LLMRequestCompleted" => entry.payload.get("payload"),
             _ => continue,
         };
         let Some(payload) = payload else {
@@ -262,6 +296,9 @@ pub fn project_run_usage(
             .filter(|model| !model.trim().is_empty())
             .unwrap_or(fallback_model);
         breakdown.add_for_model(model, &bucket);
+    }
+    for (model, bucket) in in_flight.values() {
+        breakdown.add_for_model(model, bucket);
     }
     if !breakdown.has_any_usage() {
         for entry in entries {
