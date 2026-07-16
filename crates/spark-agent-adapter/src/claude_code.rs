@@ -269,6 +269,7 @@ struct ClaudeCodeTurnState {
     result_payload: Option<Value>,
     usage_payload: Option<Value>,
     is_error: bool,
+    block_counter: usize,
 }
 
 impl ClaudeCodeTurnState {
@@ -336,6 +337,8 @@ impl ClaudeCodeTurnState {
                     if text.trim().is_empty() {
                         continue;
                     }
+                    self.block_counter += 1;
+                    let item_id = format!("block-{}", self.block_counter);
                     self.assistant_texts.push(text.to_string());
                     events.push(stream_event(
                         TurnStreamEventKind::ContentCompleted,
@@ -345,6 +348,8 @@ impl ClaudeCodeTurnState {
                             event.channel = Some(TurnStreamChannel::Assistant);
                             event.content_delta = Some(text.to_string());
                             event.message = Some(text.to_string());
+                            event.source.item_id = Some(item_id);
+                            event.phase = Some("commentary".to_string());
                         },
                     ));
                 }
@@ -353,6 +358,8 @@ impl ClaudeCodeTurnState {
                     if thinking.trim().is_empty() {
                         continue;
                     }
+                    self.block_counter += 1;
+                    let item_id = format!("block-{}", self.block_counter);
                     events.push(stream_event(
                         TurnStreamEventKind::ContentCompleted,
                         self.session_id.as_deref(),
@@ -361,6 +368,8 @@ impl ClaudeCodeTurnState {
                             event.channel = Some(TurnStreamChannel::Reasoning);
                             event.content_delta = Some(thinking.to_string());
                             event.message = Some(thinking.to_string());
+                            event.source.item_id = Some(item_id);
+                            event.phase = Some("commentary".to_string());
                         },
                     ));
                 }

@@ -733,6 +733,7 @@ pub fn assistant_segment_id(turn_id: &str, event: &TurnStreamEvent) -> String {
         event.source.item_id.as_deref().and_then(non_empty_string),
     ) {
         (Some(app_turn_id), Some(item_id)) => format!("segment-assistant-{app_turn_id}-{item_id}"),
+        (None, Some(item_id)) => format!("segment-assistant-{turn_id}-{item_id}"),
         _ => format!("segment-assistant-{turn_id}"),
     }
 }
@@ -1172,6 +1173,13 @@ mod tests {
         event
     }
 
+    fn completed_content(channel: TurnStreamChannel, text: &str, item_id: &str) -> TurnStreamEvent {
+        let mut event = TurnStreamEvent::content_delta(channel, text);
+        event.kind = TurnStreamEventKind::ContentCompleted;
+        event.source.item_id = Some(item_id.to_string());
+        event
+    }
+
     fn command_started(item_id: &str) -> TurnStreamEvent {
         TurnStreamEvent {
             kind: TurnStreamEventKind::ToolCallStarted,
@@ -1261,6 +1269,61 @@ mod tests {
         // Each turn gets its own order counter starting at 1.
         assert_eq!(segments[0]["order"], 1);
         assert_eq!(segments[1]["order"], 1);
+    }
+
+    #[test]
+    fn anonymous_turn_content_uses_item_ids_and_preserves_stream_order() {
+        let mut container = serde_json::json!({});
+        let events = [
+            completed_content(TurnStreamChannel::Assistant, "Inspecting.", "block-1"),
+            command_started("tool-1"),
+            completed_content(TurnStreamChannel::Assistant, "Testing.", "block-2"),
+        ];
+        for (index, event) in events.iter().enumerate() {
+            materialize_segment_for_event(
+                &mut container,
+                "turn-1",
+                event,
+                &format!("2026-07-08T10:00:0{index}Z"),
+            );
+        }
+
+        let segments = container["segments"].as_array().expect("segments");
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (
+                    segment["id"].as_str().unwrap(),
+                    segment["order"].as_u64().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("segment-assistant-turn-1-block-1", 1),
+                ("segment-tool-turn-1-tool-1", 2),
+                ("segment-assistant-turn-1-block-2", 3),
+            ]
+        );
+        assert_eq!(segments[0]["content"], "Inspecting.");
+    }
+
+    #[test]
+    fn distinct_thinking_item_ids_create_distinct_reasoning_segments() {
+        let mut container = serde_json::json!({});
+        for (index, event) in [
+            completed_content(TurnStreamChannel::Reasoning, "First thought", "block-1"),
+            completed_content(TurnStreamChannel::Reasoning, "Second thought", "block-2"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            materialize_segment_for_event(
+                &mut container,
+                "turn-1",
+                event,
+                &format!("2026-07-08T10:00:0{index}Z"),
+            );
+        }
+        assert_eq!(container["segments"].as_array().unwrap().len(), 2);
     }
 
     #[test]

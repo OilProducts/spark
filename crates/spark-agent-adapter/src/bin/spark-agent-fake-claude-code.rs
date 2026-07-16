@@ -83,6 +83,7 @@ fn main() {
             "message": {
                 "role": "assistant",
                 "content": [
+                    {"type": "thinking", "thinking": "I should inspect before changing anything."},
                     {"type": "text", "text": "Inspecting the repository."},
                     {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}},
                 ],
@@ -98,6 +99,33 @@ fn main() {
                 "role": "user",
                 "content": [
                     {"type": "tool_result", "tool_use_id": "toolu_1", "content": "README.md"},
+                ],
+            },
+        }),
+    );
+    emit(
+        &mut out,
+        serde_json::json!({
+            "type": "assistant",
+            "session_id": session_id,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "The repository looks ready; running tests."},
+                    {"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "cargo test"}},
+                ],
+            },
+        }),
+    );
+    emit(
+        &mut out,
+        serde_json::json!({
+            "type": "user",
+            "session_id": session_id,
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_2", "content": "ok"},
                 ],
             },
         }),
