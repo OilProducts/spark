@@ -13,6 +13,7 @@ describe('llm suggestions', () => {
   it('includes OpenRouter and LiteLLM providers without forcing a LiteLLM model default', () => {
     expect(LLM_PROVIDER_OPTIONS).toEqual([
       'codex',
+      'claude-code',
       'openai',
       'anthropic',
       'gemini',
@@ -21,6 +22,7 @@ describe('llm suggestions', () => {
       'openai_compatible',
     ])
     expect(getModelSuggestions('openrouter')[0]).toBe('openai/gpt-5.4')
+    expect(getModelSuggestions('claude-code')).toEqual(['opus', 'sonnet', 'haiku'])
     expect(getModelSuggestions('litellm')).toEqual([])
     expect(getModelSuggestions('openai_compatible')).toEqual([])
   })

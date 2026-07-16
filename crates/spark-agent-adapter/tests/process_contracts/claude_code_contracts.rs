@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use spark_agent_adapter::{
-    AgentTurnRequest, ClaudeCodeBackend, CodergenBackend, CodergenBackendRequest,
-    CodergenBackendResponse, CodergenError, CodergenRuntimeMode, RustLlmCodergenBackend,
+    AgentTurnBackend, AgentTurnRequest, ClaudeCodeBackend, CodergenBackend, CodergenBackendRequest,
+    CodergenBackendResponse, CodergenError, CodergenRuntimeMode, RustLlmAgentTurnBackend,
+    RustLlmCodergenBackend,
 };
 use spark_common::events::TurnStreamEventKind;
 use unified_llm_adapter::Client;
@@ -14,6 +15,41 @@ use super::test_support::ENV_LOCK;
 struct EnvVarGuard {
     key: &'static str,
     previous: Option<String>,
+}
+
+#[test]
+fn claude_code_chat_dispatch_resumes_then_retries_once_fresh() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "resume-failure");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let mut request = agent_request(temp.path());
+    request.metadata.insert(
+        "spark.runtime.claude_code.session_id".to_string(),
+        json!("sess-dead"),
+    );
+
+    let output = RustLlmAgentTurnBackend::new(Client::new())
+        .run_turn(request)
+        .expect("fresh retry succeeds");
+
+    assert_eq!(
+        output.app_thread_id.as_deref(),
+        Some("sess-fake-claude-fresh")
+    );
+    assert_eq!(
+        output
+            .thread_resume_failure
+            .as_ref()
+            .and_then(|failure| failure.error_code.as_deref()),
+        Some("thread_resume_failure")
+    );
+    let log = std::fs::read_to_string(log_path).expect("args log");
+    assert_eq!(log.matches("-- invocation --").count(), 2);
+    assert_eq!(log.matches("--resume").count(), 1);
+    assert!(log.contains("sess-dead"));
 }
 
 impl EnvVarGuard {

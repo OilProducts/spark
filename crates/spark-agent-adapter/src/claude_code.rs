@@ -14,7 +14,10 @@ use spark_common::events::{
 };
 use unified_llm_adapter::Usage;
 
-use crate::agent::{AgentRawLogLine, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest};
+use crate::agent::{
+    AgentRawLogLine, AgentThreadResumeFailure, AgentTurnEventSink, AgentTurnOutput,
+    AgentTurnRequest,
+};
 
 pub const CLAUDE_CODE_BACKEND: &str = "claude_code_cli";
 
@@ -66,8 +69,42 @@ impl ClaudeCodeBackend {
 
     pub fn run_agent_turn_with_event_sink(
         &self,
-        request: AgentTurnRequest,
+        mut request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, ClaudeCodeError> {
+        let resumed_session_id =
+            metadata_string(&request.metadata, "spark.runtime.claude_code.session_id")
+                .or_else(|| metadata_string(&request.metadata, "claude_code.session_id"));
+        match self.run_once(&request, event_sink.clone(), resumed_session_id.as_deref()) {
+            Ok(output) => Ok(output),
+            Err(error)
+                if resumed_session_id.is_some()
+                    && error.message.contains("without a result event") =>
+            {
+                request
+                    .metadata
+                    .remove("spark.runtime.claude_code.session_id");
+                request.metadata.remove("claude_code.session_id");
+                let mut output = self.run_once(&request, event_sink, None)?;
+                let discarded_session_id = resumed_session_id.unwrap();
+                output.thread_resume_failure = Some(AgentThreadResumeFailure {
+                    message: format!(
+                        "claude code could not resume session {discarded_session_id}; started a fresh session"
+                    ),
+                    error_code: Some("thread_resume_failure".to_string()),
+                    details: Some(json!({"discarded_session_id": discarded_session_id})),
+                });
+                Ok(output)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn run_once(
+        &self,
+        request: &AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+        resume_session_id: Option<&str>,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
         let working_dir = PathBuf::from(&request.project_path);
         if !working_dir.exists() {
@@ -92,7 +129,7 @@ impl ClaudeCodeBackend {
         if let Some(model) = request.model.as_deref().and_then(non_empty) {
             command.arg("--model").arg(model);
         }
-        if let Some(session_id) = metadata_string(&request.metadata, "claude_code.session_id") {
+        if let Some(session_id) = resume_session_id {
             command.arg("--resume").arg(session_id);
         }
         if let Some(config_dir) = env::var(CLAUDE_CODE_CONFIG_DIR_ENV)

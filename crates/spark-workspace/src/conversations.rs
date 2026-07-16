@@ -723,7 +723,8 @@ impl WorkspaceConversationService {
             .get("reasoning_effort")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        if ((effective_profile.is_some() && effective_provider != "codex")
+        if ((effective_profile.is_some()
+            && !matches!(effective_provider.as_str(), "codex" | "claude-code"))
             || matches!(
                 effective_provider.as_str(),
                 "openrouter" | "litellm" | "openai_compatible"
@@ -739,8 +740,12 @@ impl WorkspaceConversationService {
                 ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
             ));
         }
-        let previous_app_thread_id =
-            resume_codex_app_thread_id(&repository, conversation_id, &project_path, &snapshot);
+        let previous_app_thread_id = resume_runtime_session_thread_id(
+            &repository,
+            conversation_id,
+            &project_path,
+            &snapshot,
+        );
 
         let user_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
@@ -796,10 +801,12 @@ impl WorkspaceConversationService {
             ),
         ]);
         if let Some(thread_id) = previous_app_thread_id {
-            metadata.insert(
-                "spark.runtime.codex_app_server.thread_id".to_string(),
-                json!(thread_id),
-            );
+            let key = if effective_provider == "claude-code" {
+                "spark.runtime.claude_code.session_id"
+            } else {
+                "spark.runtime.codex_app_server.thread_id"
+            };
+            metadata.insert(key.to_string(), json!(thread_id));
         }
         if codex_jsonrpc_trace_enabled() {
             if let Some(trace_path) = repository
@@ -870,6 +877,12 @@ impl WorkspaceConversationService {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        let runtime_session_provider =
+            if snapshot.get("provider").and_then(Value::as_str) == Some("claude-code") {
+                "claude_code_cli"
+            } else {
+                "codex_app_server"
+            };
         let mut emitted_payloads = Vec::new();
         if apply_assistant_turn_app_server_ids(
             &mut snapshot,
@@ -892,6 +905,7 @@ impl WorkspaceConversationService {
                 &project_path,
                 assistant_turn_id,
                 output.app_thread_id.as_deref(),
+                runtime_session_provider,
             );
         }
         let mut buffered_plan_assistant_event: Option<TurnStreamEvent> = None;
@@ -3493,6 +3507,11 @@ impl LiveConversationTurnState {
                 &self.project_path,
                 &self.assistant_turn_id,
                 event.source.app_thread_id.as_deref(),
+                if self.snapshot.get("provider").and_then(Value::as_str) == Some("claude-code") {
+                    "claude_code_cli"
+                } else {
+                    "codex_app_server"
+                },
             );
         }
         ensure_assistant_streaming(
@@ -4286,15 +4305,21 @@ fn apply_assistant_turn_app_server_ids(
 /// authority; the transcript turn scan remains only as a fallback for
 /// conversations that predate the sidecar. A successful scan materializes the
 /// sidecar so subsequent reads never need the transcript.
-fn resume_codex_app_thread_id(
+fn resume_runtime_session_thread_id(
     repository: &ConversationRepository,
     conversation_id: &str,
     project_path: &str,
     snapshot: &Value,
 ) -> Option<String> {
+    let expected_provider =
+        if snapshot.get("provider").and_then(Value::as_str) == Some("claude-code") {
+            "claude_code_cli"
+        } else {
+            "codex_app_server"
+        };
     match repository.read_runtime_session(conversation_id, Some(project_path)) {
         Ok(Some(session)) => {
-            if session.resume_failed {
+            if session.resume_failed || session.provider != expected_provider {
                 None
             } else {
                 session.thread_id
@@ -4320,6 +4345,7 @@ fn resume_codex_app_thread_id(
                 project_path,
                 &confirming_turn_id,
                 Some(&thread_id),
+                "codex_app_server",
             );
             Some(thread_id)
         }
@@ -4334,6 +4360,7 @@ fn record_runtime_session_thread(
     project_path: &str,
     assistant_turn_id: &str,
     app_thread_id: Option<&str>,
+    provider: &str,
 ) {
     let Some(thread_id) = app_thread_id.and_then(non_empty_string) else {
         return;
@@ -4364,7 +4391,7 @@ fn record_runtime_session_thread(
         project_path,
         &RuntimeSession {
             schema_version: RUNTIME_SESSION_SCHEMA_VERSION,
-            provider: "codex_app_server".to_string(),
+            provider: provider.to_string(),
             thread_id: Some(thread_id),
             established_at,
             last_turn_id: non_empty_string(assistant_turn_id),
@@ -4490,15 +4517,6 @@ fn finalize_agent_turn_output(
 
     if let Some(failure) = thread_resume_failure {
         let now = iso_now();
-        fail_assistant_turn_and_segments(
-            snapshot,
-            assistant_turn_id,
-            &failure.message,
-            failure.error_code.as_deref(),
-            failure.details.as_ref(),
-            usage_changed,
-            emitted_payloads,
-        );
         append_workflow_event(
             snapshot,
             json!({
@@ -4509,7 +4527,18 @@ fn finalize_agent_turn_output(
                 "details": failure.details,
             }),
         );
-        return;
+        if final_assistant_text.and_then(non_empty_string).is_none() {
+            fail_assistant_turn_and_segments(
+                snapshot,
+                assistant_turn_id,
+                &failure.message,
+                failure.error_code.as_deref(),
+                failure.details.as_ref(),
+                usage_changed,
+                emitted_payloads,
+            );
+            return;
+        }
     }
 
     if let Some((message, error_code, details)) =
@@ -5315,10 +5344,10 @@ fn validate_provider(value: &str) -> WorkspaceResult<String> {
         normalized
     };
     match normalized.as_str() {
-        "codex" | "openai" | "anthropic" | "gemini" | "openrouter" | "litellm"
+        "codex" | "claude-code" | "openai" | "anthropic" | "gemini" | "openrouter" | "litellm"
         | "openai_compatible" => Ok(normalized),
         _ => Err(WorkspaceError::Validation(
-            "Provider must be blank or one of: codex, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
+            "Provider must be blank or one of: codex, claude-code, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
                 .to_string(),
         )),
     }

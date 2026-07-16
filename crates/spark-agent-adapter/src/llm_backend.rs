@@ -1016,6 +1016,15 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
                 .run_agent_turn_with_event_sink(request, event_sink)
                 .map_err(codex_app_server_agent_error);
         }
+        if request
+            .provider
+            .as_deref()
+            .is_some_and(is_claude_code_provider_selector)
+        {
+            return ClaudeCodeBackend::new()
+                .run_agent_turn_with_event_sink(request, event_sink)
+                .map_err(claude_code_agent_error);
+        }
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
@@ -1056,6 +1065,19 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             return CodexAppServerBackend::new()
                 .answer_request_user_input(request)
                 .map_err(codex_app_server_agent_error);
+        }
+        if request
+            .provider
+            .as_deref()
+            .is_some_and(is_claude_code_provider_selector)
+        {
+            return Err(AgentError {
+                message:
+                    "Claude Code does not support request-user-input answers in CLI print mode."
+                        .to_string(),
+                retryable: false,
+                raw: None,
+            });
         }
         let continuation = match request_user_input_answer_continuation(&request) {
             Ok(continuation) => continuation,
@@ -1813,6 +1835,14 @@ fn agent_adapter_error(error: AdapterError) -> AgentError {
 }
 
 fn codex_app_server_agent_error(error: CodexAppServerError) -> AgentError {
+    AgentError {
+        message: error.message,
+        retryable: error.retryable,
+        raw: error.details,
+    }
+}
+
+fn claude_code_agent_error(error: crate::claude_code::ClaudeCodeError) -> AgentError {
     AgentError {
         message: error.message,
         retryable: error.retryable,

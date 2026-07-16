@@ -1,6 +1,6 @@
-export type LlmProviderKey = 'codex' | 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'litellm' | 'openai_compatible'
+export type LlmProviderKey = 'codex' | 'claude-code' | 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'litellm' | 'openai_compatible'
 
-export const LLM_PROVIDER_OPTIONS: LlmProviderKey[] = ['codex', 'openai', 'anthropic', 'gemini', 'openrouter', 'litellm', 'openai_compatible']
+export const LLM_PROVIDER_OPTIONS: LlmProviderKey[] = ['codex', 'claude-code', 'openai', 'anthropic', 'gemini', 'openrouter', 'litellm', 'openai_compatible']
 
 export interface LlmProfileMetadata {
     id: string
@@ -13,6 +13,7 @@ export interface LlmProfileMetadata {
 
 export const LLM_MODELS_BY_PROVIDER: Record<LlmProviderKey, string[]> = {
     codex: [],
+    'claude-code': ['opus', 'sonnet', 'haiku'],
     openai: [
         'gpt-5.5',
         'gpt-5.4',

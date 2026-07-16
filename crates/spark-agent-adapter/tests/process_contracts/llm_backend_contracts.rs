@@ -1925,7 +1925,7 @@ fn agent_turn_backend_uses_anthropic_native_profile_at_adapter_boundary() {
             project_path: "/repo".to_string(),
             prompt: "Edit the file".to_string(),
             history: Vec::new(),
-            provider: Some("Claude-Code".to_string()),
+            provider: Some("Claude".to_string()),
             model: Some("claude-sonnet-4-5".to_string()),
             llm_profile: None,
             reasoning_effort: None,

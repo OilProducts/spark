@@ -266,6 +266,8 @@ export function useProjectsHomeController() {
             value: provider,
             label: provider === 'codex'
                 ? 'Codex'
+                : provider === 'claude-code'
+                    ? 'Claude Code'
                 : provider === 'openrouter'
                     ? 'OpenRouter'
                     : provider === 'litellm'
