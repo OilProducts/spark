@@ -284,7 +284,15 @@ impl SessionEvent {
                 )),
                 _ => None,
             },
-            phase: data_string(&self.data, &["phase"]),
+            phase: data_string(&self.data, &["phase"]).or_else(|| match self.kind {
+                EventKind::AssistantTextStart
+                | EventKind::AssistantTextDelta
+                | EventKind::AssistantTextEnd => Some("final_answer".to_string()),
+                EventKind::AssistantReasoningStart
+                | EventKind::AssistantReasoningDelta
+                | EventKind::AssistantReasoningEnd => Some("commentary".to_string()),
+                _ => None,
+            }),
             status: data_string(&self.data, &["status"]),
         })
     }

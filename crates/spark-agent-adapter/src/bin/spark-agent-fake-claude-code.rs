@@ -75,6 +75,40 @@ fn main() {
         return;
     }
 
+    if mode == "result-only" || mode == "empty-result" {
+        emit(
+            &mut out,
+            serde_json::json!({
+                "type": "result",
+                "subtype": "success",
+                "is_error": false,
+                "result": if mode == "empty-result" { "" } else { "Result without blocks." },
+                "session_id": session_id,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }),
+        );
+        return;
+    }
+
+    emit(
+        &mut out,
+        serde_json::json!({
+            "type": "stream_event",
+            "session_id": session_id,
+            "event": {"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "I should inspect before changing anything."}},
+        }),
+    );
+    emit(
+        &mut out,
+        serde_json::json!({
+            "type": "stream_event",
+            "session_id": session_id,
+            "event": {"type": "content_block_delta", "index": 1,
+                "delta": {"type": "text_delta", "text": "Inspecting the repository."}},
+        }),
+    );
+
     emit(
         &mut out,
         serde_json::json!({

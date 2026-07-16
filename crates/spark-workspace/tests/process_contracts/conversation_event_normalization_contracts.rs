@@ -206,6 +206,12 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
             &first_prepared.assistant_turn_id,
             "chat",
             AgentTurnOutput {
+                events: vec![content_completed(
+                    "assistant",
+                    "First answer",
+                    "app-turn-first",
+                    "final",
+                )],
                 final_assistant_text: Some("First answer".to_string()),
                 ..AgentTurnOutput::default()
             },
@@ -1085,7 +1091,7 @@ fn normalized_agent_events_update_segments_raw_logs_usage_and_resume_failures() 
 }
 
 #[test]
-fn final_assistant_text_completes_existing_streamed_assistant_segment() {
+fn missing_final_answer_event_fails_even_when_final_assistant_text_is_present() {
     let temp = tempfile::tempdir().expect("tempdir");
     let service = WorkspaceConversationService::new(settings(temp.path()));
     let (prepared, _snapshot) = service
@@ -1119,8 +1125,7 @@ fn final_assistant_text_completes_existing_streamed_assistant_segment() {
         .iter()
         .find(|turn| turn["id"] == prepared.assistant_turn_id)
         .expect("assistant turn");
-    assert_eq!(assistant_turn["status"], "complete");
-    assert_eq!(assistant_turn["content"], "Complete answer");
+    assert_eq!(assistant_turn["status"], "failed");
 
     let assistant_segments = snapshot["segments"]
         .as_array()
@@ -1130,9 +1135,8 @@ fn final_assistant_text_completes_existing_streamed_assistant_segment() {
         .collect::<Vec<_>>();
     assert_eq!(assistant_segments.len(), 1);
     let segment = assistant_segments[0];
-    assert_eq!(segment["status"], "complete");
-    assert_eq!(segment["content"], "Complete answer");
-    assert_eq!(segment["phase"], "final_answer");
+    assert_eq!(segment["status"], "failed");
+    assert_eq!(segment["content"], "Partial");
     assert_eq!(segment["source"]["app_turn_id"], "app-turn");
     assert_eq!(segment["source"]["item_id"], "final");
 }
@@ -1154,9 +1158,11 @@ fn claude_commentary_materializes_before_tools_and_final_answer_in_chat_and_plan
                 },
             )
             .expect("start turn");
-        let mut narration = content_completed("assistant", "Inspecting.", "", "block-1");
-        narration.source.app_turn_id = None;
+        let mut narration = content_completed("assistant", "Inspecting.", "app-turn", "block-1");
         narration.phase = Some("commentary".to_string());
+        let mut final_block = content_completed("assistant", "Draft.", "app-turn", "block-2");
+        final_block.phase = Some("commentary".to_string());
+        let final_answer = content_completed("assistant", "Done.", "app-turn", "block-2");
 
         let snapshot = service
             .ingest_agent_turn_output(
@@ -1169,6 +1175,8 @@ fn claude_commentary_materializes_before_tools_and_final_answer_in_chat_and_plan
                         narration,
                         tool_event("tool_call_started", "tool-1", "running", ""),
                         tool_event("tool_call_completed", "tool-1", "completed", "ok"),
+                        final_block,
+                        final_answer,
                     ],
                     final_assistant_text: Some("Done.".to_string()),
                     ..AgentTurnOutput::default()
@@ -2279,9 +2287,15 @@ impl ScriptedAgentTurnBackend {
     }
 
     fn with_answer_outputs(
-        outputs: Vec<AgentTurnOutput>,
-        answer_outputs: Vec<AgentTurnOutput>,
+        mut outputs: Vec<AgentTurnOutput>,
+        mut answer_outputs: Vec<AgentTurnOutput>,
     ) -> Self {
+        for (index, output) in outputs.iter_mut().enumerate() {
+            add_final_answer_event(output, &format!("scripted-turn-{index}"));
+        }
+        for (index, output) in answer_outputs.iter_mut().enumerate() {
+            add_final_answer_event(output, &format!("scripted-answer-{index}"));
+        }
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             outputs: Arc::new(Mutex::new(VecDeque::from(outputs))),
@@ -2298,6 +2312,29 @@ impl ScriptedAgentTurnBackend {
     fn answer_requests(&self) -> Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>> {
         Arc::clone(&self.answer_requests)
     }
+}
+
+fn add_final_answer_event(output: &mut AgentTurnOutput, app_turn_id: &str) {
+    if output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error)
+    {
+        return;
+    }
+    let Some(text) = output.final_assistant_text.clone() else {
+        return;
+    };
+    if output.events.iter().any(|event| {
+        event.kind == TurnStreamEventKind::ContentCompleted
+            && event.channel == Some(TurnStreamChannel::Assistant)
+            && event.phase.as_deref() == Some("final_answer")
+    }) {
+        return;
+    }
+    output
+        .events
+        .push(content_completed("assistant", &text, app_turn_id, "final"));
 }
 
 impl AgentTurnBackend for ScriptedAgentTurnBackend {
@@ -2357,6 +2394,14 @@ impl AgentTurnBackend for ScriptedAgentTurnBackend {
 fn content_delta(channel: &str, text: &str, app_turn_id: &str, item_id: &str) -> TurnStreamEvent {
     let mut event = TurnStreamEvent::content_delta(parse_channel(channel), text);
     event.source = source(app_turn_id, item_id);
+    event.phase = Some(
+        if channel == "assistant" {
+            "final_answer"
+        } else {
+            "commentary"
+        }
+        .to_string(),
+    );
     event
 }
 

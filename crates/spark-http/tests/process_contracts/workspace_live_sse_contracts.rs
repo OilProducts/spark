@@ -732,9 +732,36 @@ impl StaticAgentTurnBackend {
         })
     }
 
-    fn from_output(output: AgentTurnOutput) -> Self {
+    fn from_output(mut output: AgentTurnOutput) -> Self {
+        add_final_answer_event(&mut output);
         Self { output }
     }
+}
+
+fn add_final_answer_event(output: &mut AgentTurnOutput) {
+    if output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error)
+    {
+        return;
+    }
+    let Some(text) = output.final_assistant_text.clone() else {
+        return;
+    };
+    if output.events.iter().any(|event| {
+        event.kind == TurnStreamEventKind::ContentCompleted
+            && event.channel == Some(TurnStreamChannel::Assistant)
+            && event.phase.as_deref() == Some("final_answer")
+    }) {
+        return;
+    }
+    output.events.push(content_completed(
+        TurnStreamChannel::Assistant,
+        &text,
+        "app-turn-static",
+        "final-answer",
+    ));
 }
 
 impl AgentTurnBackend for StaticAgentTurnBackend {
@@ -772,6 +799,92 @@ impl AgentTurnBackend for StreamingAgentTurnBackend {
         }
         self.run_turn(request)
     }
+}
+
+#[tokio::test]
+async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    seed_conversation(&settings, &project_path, "conversation-live-plan-claude");
+
+    let mut narration = content_completed(
+        TurnStreamChannel::Assistant,
+        "Inspecting.",
+        "app-turn-claude",
+        "block-1",
+    );
+    narration.phase = Some("commentary".to_string());
+    let mut text_completion = content_completed(
+        TurnStreamChannel::Assistant,
+        "Draft answer.",
+        "app-turn-claude",
+        "block-2",
+    );
+    text_completion.phase = Some("commentary".to_string());
+    let final_answer = content_completed(
+        TurnStreamChannel::Assistant,
+        "Final answer.",
+        "app-turn-claude",
+        "block-2",
+    );
+    let events = vec![narration, text_completion, final_answer];
+    let app = build_app_with_agent_turn_backend(
+        settings,
+        Arc::new(StreamingAgentTurnBackend {
+            stream_events: events.clone(),
+            output: AgentTurnOutput {
+                events,
+                final_assistant_text: Some("Final answer.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+        }),
+    );
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id=conversation-live-plan-claude&conversation_project_path={}&conversation_revision=2",
+            url_encode(&project_path.to_string_lossy())
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app,
+        "POST",
+        "/workspace/api/conversations/conversation-live-plan-claude/turns",
+        Some(json!({
+            "project_path": project_path,
+            "message": "Make a plan.",
+            "chat_mode": "plan"
+        })),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+
+    let mut promoted = None;
+    for _ in 0..20 {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        if envelope["type"] == "conversation.stream_delta"
+            && envelope["payload"]["delta_kind"] == "segment_delta"
+            && envelope["payload"]["segment"]["source"]["item_id"] == "block-2"
+            && envelope["payload"]["segment"]["phase"] == "final_answer"
+        {
+            promoted = Some(envelope);
+            break;
+        }
+    }
+    let segment = &promoted.expect("live final-answer promotion")["payload"]["segment"];
+    assert_eq!(segment["content"], "Final answer.");
+    assert_eq!(segment["status"], "complete");
+    assert_eq!(segment["phase"], "final_answer");
 }
 
 #[tokio::test]

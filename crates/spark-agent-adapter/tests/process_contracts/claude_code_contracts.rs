@@ -104,6 +104,12 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
 
     assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
     assert_eq!(output.app_thread_id.as_deref(), Some("sess-fake-claude-1"));
+    let app_turn_id = output.app_turn_id.as_deref().expect("app turn id");
+    assert!(uuid::Uuid::parse_str(app_turn_id).is_ok());
+    assert!(output
+        .events
+        .iter()
+        .all(|event| { event.source.app_turn_id.as_deref() == Some(app_turn_id) }));
     let kinds = output
         .events
         .iter()
@@ -113,6 +119,8 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         kinds,
         vec![
             "system_init",
+            "content_delta",
+            "content_delta",
             "content_completed",
             "content_completed",
             "tool_call_started",
@@ -120,6 +128,7 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
             "content_completed",
             "tool_call_started",
             "tool_call_completed",
+            "content_completed",
             "content_completed",
             "token_usage_updated",
             "turn_completed",
@@ -139,12 +148,25 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
             Some("block-1"),
             Some("block-2"),
             Some("block-3"),
+            Some("block-4"),
             Some("block-4")
         ]
     );
-    assert!(content_events
+    assert_eq!(
+        content_events.last().unwrap().phase.as_deref(),
+        Some("final_answer")
+    );
+    assert_eq!(
+        content_events.last().unwrap().content_delta.as_deref(),
+        Some("All set.")
+    );
+    let deltas = output
+        .events
         .iter()
-        .all(|event| event.phase.as_deref() == Some("commentary")));
+        .filter(|event| event.kind == TurnStreamEventKind::ContentDelta)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas[0].source.item_id, content_events[0].source.item_id);
+    assert_eq!(deltas[1].source.item_id, content_events[1].source.item_id);
     let tool_started = output
         .events
         .iter()
@@ -164,12 +186,46 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
     for expected in [
         "-p",
         "stream-json",
+        "--include-partial-messages",
         "--verbose",
         "--permission-mode",
         "--model",
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }
+}
+
+#[test]
+fn claude_code_result_only_and_empty_result_contracts() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+
+    let result_mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "result-only");
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("result-only turn");
+    let final_event = output
+        .events
+        .iter()
+        .find(|event| event.phase.as_deref() == Some("final_answer"))
+        .expect("final answer event");
+    assert_eq!(final_event.source.item_id.as_deref(), Some("block-1"));
+    assert_eq!(
+        final_event.content_delta.as_deref(),
+        Some("Result without blocks.")
+    );
+    drop(result_mode);
+
+    let _empty_mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "empty-result");
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("empty-result turn");
+    assert!(output
+        .events
+        .iter()
+        .all(|event| event.phase.as_deref() != Some("final_answer")));
+    assert_eq!(output.final_assistant_text, None);
 }
 
 #[test]
