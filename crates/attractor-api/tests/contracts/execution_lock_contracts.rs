@@ -184,9 +184,11 @@ fn project_scope_lock_queues_conflicting_runs_and_promotes_fifo() {
     assert!(!lock_a.identity.is_empty());
 
     fs::write(project.join("release-a"), "go").expect("release first run");
-    wait_until("both runs complete after release", || {
+    wait_until("both runs complete and release their locks", || {
         read_status(&settings, "run-lock-a") == "completed"
             && read_status(&settings, "run-lock-b") == "completed"
+            && read_lock(&settings, "run-lock-a").is_some_and(|lock| lock.state == "released")
+            && read_lock(&settings, "run-lock-b").is_some_and(|lock| lock.state == "released")
     });
     assert_eq!(
         read_lock(&settings, "run-lock-a").expect("lock a").state,
