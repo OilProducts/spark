@@ -63,4 +63,4 @@ CR daba7b97 added a `claude-code` codergen backend that drives the Claude Code C
 - `--resume` with an unknown session id exits without emitting a `result` event; the retry-once-fresh rule keys off that observable behavior rather than parsing stderr text.
 - Static model aliases (`opus`, `sonnet`, `haiku`) are acceptable suggestions; exact model ids typed free-form pass through to `--model` unchanged.
 - The runtime-session sidecar is conversation-scoped and provider-agnostic enough to store one active session id per conversation; switching a conversation's provider discards resume continuity, which is acceptable.
-- Known baseline flake: `workspace_trigger_route_contracts::webhook_dispatch_returns_while_the_run_still_executes` (spark-http) is timing-sensitive and can fail under parallel test load while passing in isolation; a failure only in that test on an otherwise-green gate is pre-existing, not caused by this change.
+- The test gate has no known baseline flakes (the formerly load-sensitive webhook dispatch contract was rewritten in 978530bf); treat every gate failure as real.

@@ -64,4 +64,4 @@ Child (subflow) runs are second-class citizens in the Runs view. Five defects, a
 - Codex `token_count` session payloads are cumulative per turn (confirmed: the adapter records `last_token_total` from `/total/totalTokens`), so latest-wins per in-flight node is exact, not additive.
 - One in-flight codergen request per node id at a time; parallel branches are distinct node ids, so per-node grouping remains correct.
 - Dropping the "Child" chip is acceptable since nesting is conveyed structurally; if a textual marker is still desired, it belongs in the meta line, not a width-reserving chip.
-- Known baseline flake: `workspace_trigger_route_contracts::webhook_dispatch_returns_while_the_run_still_executes` (spark-http) is timing-sensitive under parallel test load and passes in isolation; a failure only in that test is pre-existing.
+- The test gate has no known baseline flakes (the formerly load-sensitive webhook dispatch contract was rewritten in 978530bf); treat every gate failure as real.
