@@ -1603,6 +1603,43 @@ fn claude_code_live_text_completions_update_delta_segments_in_place() {
 }
 
 #[test]
+fn claude_code_completed_tool_segment_preserves_canonical_command_payload() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![AgentTurnOutput {
+        events: vec![
+            tool_event("tool_call_started", "tool-1", "started", ""),
+            tool_event("tool_call_completed", "tool-1", "completed", "tests passed"),
+            content_completed("assistant", "Done.", "app-turn", "final"),
+        ],
+        final_assistant_text: Some("Done.".to_string()),
+        ..AgentTurnOutput::default()
+    }]);
+    let service =
+        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(backend));
+
+    let snapshot = service
+        .execute_turn(
+            "conversation-claude-tool",
+            ConversationTurnRequest {
+                project_path: "/projects/claude-tool".to_string(),
+                message: "Run tests".to_string(),
+                provider: Some("claude-code".to_string()),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("execute turn");
+    let tool = segment_by_kind(
+        snapshot["segments"].as_array().expect("segments"),
+        "tool_call",
+    );
+    assert_eq!(tool["tool_call"]["command"], "cargo test");
+    assert_eq!(tool["tool_call"]["title"], "Run command");
+    assert_eq!(tool["tool_call"]["output"], "tests passed");
+}
+
+#[test]
 fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

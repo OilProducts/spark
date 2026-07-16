@@ -204,6 +204,65 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
 }
 
 #[test]
+fn claude_code_tool_calls_emit_canonical_payloads_through_completion() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "tool-payloads");
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("turn");
+    let payload = |kind, id| {
+        output
+            .events
+            .iter()
+            .find(|event| {
+                event.kind == kind
+                    && event
+                        .tool_call
+                        .as_ref()
+                        .and_then(|call| call["id"].as_str())
+                        == Some(id)
+            })
+            .and_then(|event| event.tool_call.as_ref())
+            .expect("tool payload")
+    };
+
+    let described = payload(TurnStreamEventKind::ToolCallStarted, "toolu_bash_described");
+    assert_eq!(described["kind"], "command_execution");
+    assert_eq!(described["command"], "cargo test");
+    assert_eq!(described["title"], "Run the tests");
+    let completed = payload(
+        TurnStreamEventKind::ToolCallCompleted,
+        "toolu_bash_described",
+    );
+    assert_eq!(completed["kind"], described["kind"]);
+    assert_eq!(completed["command"], described["command"]);
+    assert_eq!(completed["title"], described["title"]);
+    assert_eq!(completed["output"], "tests passed");
+    assert_eq!(completed["is_error"], false);
+
+    assert_eq!(
+        payload(TurnStreamEventKind::ToolCallStarted, "toolu_bash_plain")["title"],
+        "printf first"
+    );
+    for kind in [
+        TurnStreamEventKind::ToolCallStarted,
+        TurnStreamEventKind::ToolCallCompleted,
+    ] {
+        assert_eq!(
+            payload(kind, "toolu_read")["file_paths"],
+            json!(["/tmp/example.rs"])
+        );
+    }
+    let unknown = payload(TurnStreamEventKind::ToolCallCompleted, "toolu_unknown");
+    assert_eq!(unknown["kind"], "dynamic_tool");
+    assert_eq!(unknown["title"], "McpWidget");
+    assert_eq!(unknown["output"], "done");
+}
+
+#[test]
 fn claude_code_multi_block_completions_consume_partial_ids_in_order() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
