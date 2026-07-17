@@ -105,8 +105,18 @@ fn project_service_metadata_returns_null_git_fields_for_non_repo() {
     assert_eq!(metadata.commit, None);
 }
 
+/// Keeps chat-model tests hermetic: claude-code discovery fails fast and
+/// falls back to the static aliases instead of probing an installed CLI.
+fn pin_claude_code_bin_to_missing() {
+    std::env::set_var(
+        "SPARK_CLAUDE_CODE_BIN",
+        "/nonexistent/claude-code-for-tests",
+    );
+}
+
 #[test]
 fn project_service_chat_models_include_safe_configured_profile_models() {
+    pin_claude_code_bin_to_missing();
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config");
@@ -139,6 +149,13 @@ default_model = "local-model"
     assert!(models
         .iter()
         .any(|model| model["provider"] == "gemini" && model["id"] == "gemini-3.1-pro-preview"));
+    // Discovery is pinned to a missing CLI, so claude-code falls back to the
+    // static aliases rather than offering a blank provider.
+    for alias in ["opus", "sonnet", "haiku"] {
+        assert!(models
+            .iter()
+            .any(|model| model["provider"] == "claude-code" && model["id"] == alias));
+    }
     let configured = models
         .iter()
         .find(|model| model["id"] == "local-model")
@@ -332,7 +349,34 @@ fn codex_chat_models_map_live_metadata_and_synthesize_a_default() {
 }
 
 #[test]
+fn claude_code_chat_models_map_catalog_metadata_without_effort_support() {
+    let mapped = spark_workspace::models::claude_code_chat_models_from_metadata(vec![
+        spark_agent_adapter::ClaudeCodeModelMetadata {
+            id: String::new(),
+            display: "Default (recommended)".to_string(),
+        },
+        spark_agent_adapter::ClaudeCodeModelMetadata {
+            id: "claude-fable-5[1m]".to_string(),
+            display: "Fable".to_string(),
+        },
+    ]);
+    assert_eq!(mapped.len(), 2);
+    assert!(mapped.iter().all(|model| model.provider == "claude-code"));
+    // The blank id is the CLI-default pseudo-entry and leads the chooser.
+    assert!(mapped[0].is_default);
+    assert_eq!(mapped[0].display, "Default (recommended)");
+    assert!(!mapped[1].is_default);
+    assert_eq!(mapped[1].id, "claude-fable-5[1m]");
+    // The CLI backend cannot apply reasoning effort, so none is advertised.
+    assert!(mapped
+        .iter()
+        .all(|model| model.supported_reasoning_efforts.is_empty()
+            && model.default_reasoning_effort.is_none()));
+}
+
+#[test]
 fn chat_models_report_codex_discovery_failure_without_synthesizing_models() {
+    pin_claude_code_bin_to_missing();
     let temp = tempfile::tempdir().expect("tempdir");
     let response = spark_workspace::models::chat_models_with_codex_result(
         &settings(temp.path()),
@@ -354,6 +398,7 @@ fn chat_models_report_codex_discovery_failure_without_synthesizing_models() {
 
 #[test]
 fn chat_models_preserve_a_successful_empty_codex_model_list() {
+    pin_claude_code_bin_to_missing();
     let temp = tempfile::tempdir().expect("tempdir");
     let response = spark_workspace::models::chat_models_with_codex_result(
         &settings(temp.path()),

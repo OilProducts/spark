@@ -28,6 +28,55 @@ fn main() {
         }
     }
 
+    // Control-protocol mode: with stream-json input the caller drives via
+    // control requests (model discovery) instead of a prompt turn, and keeps
+    // stdin open, so answer line by line instead of reading to EOF.
+    if args
+        .windows(2)
+        .any(|pair| pair[0] == "--input-format" && pair[1] == "stream-json")
+    {
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        while stdin
+            .read_line(&mut line)
+            .map(|read| read > 0)
+            .unwrap_or(false)
+        {
+            if let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) {
+                if message["type"] == "control_request"
+                    && message["request"]["subtype"] == "list_models"
+                {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "type": "control_response",
+                            "response": {
+                                "subtype": "success",
+                                "request_id": message["request_id"],
+                                "response": {"models": [
+                                    {
+                                        "value": "default",
+                                        "displayName": "Default (recommended)",
+                                        "resolvedModel": "claude-fable-5[1m]",
+                                    },
+                                    {
+                                        "value": "claude-fable-5[1m]",
+                                        "displayName": "Fable",
+                                        "supportsEffort": true,
+                                    },
+                                    {"value": "sonnet", "displayName": "Sonnet"},
+                                ]},
+                            },
+                        })
+                    );
+                    return;
+                }
+            }
+            line.clear();
+        }
+        return;
+    }
+
     let mut prompt = String::new();
     let _ = std::io::stdin().read_to_string(&mut prompt);
 

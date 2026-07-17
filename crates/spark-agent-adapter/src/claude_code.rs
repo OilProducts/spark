@@ -7,6 +7,8 @@ use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use spark_common::events::{
@@ -260,6 +262,165 @@ impl ClaudeCodeBackend {
             thread_resume_failure: None,
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeCodeModelMetadata {
+    pub id: String,
+    pub display: String,
+}
+
+const MODEL_DISCOVERY_REQUEST_ID: &str = "spark-model-discovery";
+const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Queries the installed CLI's selectable model catalog over its stdio
+/// control protocol (`control_request` subtype `list_models`). The protocol
+/// is what the Agent SDK's `supportedModels()` uses; it is not formally
+/// documented, so failures here are expected to fall back to static aliases
+/// at the caller.
+pub fn list_available_claude_code_models() -> Result<Vec<ClaudeCodeModelMetadata>, ClaudeCodeError>
+{
+    let executable = claude_code_executable();
+    let mut command = Command::new(&executable);
+    command
+        .arg("-p")
+        .arg("--verbose")
+        .arg("--input-format")
+        .arg("stream-json")
+        .arg("--output-format")
+        .arg("stream-json")
+        // Discovery is project-independent; a neutral working directory keeps
+        // project-level hooks and instructions out of the probe.
+        .current_dir(env::temp_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if let Some(config_dir) = env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
+        .ok()
+        .and_then(|value| non_empty(&value).map(str::to_string))
+    {
+        command.env("CLAUDE_CONFIG_DIR", config_dir);
+    }
+
+    let mut child = command.spawn().map_err(|error| {
+        log_model_discovery_error(if error.kind() == std::io::ErrorKind::NotFound {
+            ClaudeCodeError::configuration(format!(
+                "claude code executable not found: {} (install Claude Code and log in, \
+                 or set {CLAUDE_CODE_BIN_ENV})",
+                executable.display()
+            ))
+        } else {
+            ClaudeCodeError::runtime(format!(
+                "claude code launch failed for {}: {error}",
+                executable.display()
+            ))
+        })
+    })?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdin"))?;
+    let request = json!({
+        "type": "control_request",
+        "request_id": MODEL_DISCOVERY_REQUEST_ID,
+        "request": {"subtype": "list_models"},
+    });
+    writeln!(stdin, "{request}")
+        .and_then(|()| stdin.flush())
+        .map_err(|error| {
+            let _ = child.kill();
+            let _ = child.wait();
+            log_model_discovery_error(ClaudeCodeError::runtime(format!(
+                "claude code control request write failed: {error}"
+            )))
+        })?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdout"))?;
+    // The CLI answers on its own schedule (startup hooks run first), so a
+    // reader thread feeds a channel and the timeout bounds the wait; stdin
+    // stays open until then so the CLI does not treat input as finished.
+    let (sender, receiver) = mpsc::channel::<Value>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if message.get("type").and_then(Value::as_str) == Some("control_response") {
+                let _ = sender.send(message);
+                return;
+            }
+        }
+    });
+    let outcome = receiver.recv_timeout(MODEL_DISCOVERY_TIMEOUT);
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+
+    let message = outcome.map_err(|_| {
+        log_model_discovery_error(ClaudeCodeError::runtime(
+            "claude code exited or timed out without answering the list_models control request",
+        ))
+    })?;
+    let response = message.get("response").cloned().unwrap_or(Value::Null);
+    if response.get("request_id").and_then(Value::as_str) != Some(MODEL_DISCOVERY_REQUEST_ID) {
+        return Err(log_model_discovery_error(ClaudeCodeError::runtime(
+            "claude code control response did not match the list_models request",
+        )));
+    }
+    if response.get("subtype").and_then(Value::as_str) != Some("success") {
+        let detail = response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
+        return Err(log_model_discovery_error(ClaudeCodeError::runtime(
+            format!("claude code list_models request failed: {detail}"),
+        )));
+    }
+    Ok(claude_code_models_from_list_result(
+        response.get("response").unwrap_or(&Value::Null),
+    ))
+}
+
+/// Maps a `list_models` result (`{"models": [...]}`) onto the metadata the
+/// chooser needs. The `default` pseudo-entry maps to an empty id: a blank
+/// model means "the CLI's default" on this provider, so the catalog's own
+/// label ends up on the state a fresh conversation is actually in.
+pub fn claude_code_models_from_list_result(result: &Value) -> Vec<ClaudeCodeModelMetadata> {
+    let Some(entries) = result.get("models").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let value = entry
+                .get("value")
+                .and_then(Value::as_str)
+                .and_then(non_empty)?;
+            let id = if value == "default" { "" } else { value };
+            let display = entry
+                .get("displayName")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .unwrap_or(value);
+            Some(ClaudeCodeModelMetadata {
+                id: id.to_string(),
+                display: display.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn log_model_discovery_error(error: ClaudeCodeError) -> ClaudeCodeError {
+    tracing::warn!(
+        error = %error.message,
+        "Claude Code model discovery failed"
+    );
+    error
 }
 
 /// Accumulates one `claude -p` stream-json turn and maps each protocol

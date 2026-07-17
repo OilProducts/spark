@@ -13,7 +13,9 @@ export interface LlmProfileMetadata {
 
 export const LLM_MODELS_BY_PROVIDER: Record<LlmProviderKey, string[]> = {
     codex: [],
-    'claude-code': ['opus', 'sonnet', 'haiku'],
+    // Populated live from the CLI's model catalog via the chat-models
+    // endpoint; no static fallback because a missing CLI cannot run turns.
+    'claude-code': [],
     openai: [
         'gpt-5.5',
         'gpt-5.4',

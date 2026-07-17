@@ -29,7 +29,9 @@ pub use agent::{
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
 pub use claude_code::{
-    usage_from_claude_code_usage_payload, ClaudeCodeBackend, ClaudeCodeError, CLAUDE_CODE_BACKEND,
+    claude_code_models_from_list_result, list_available_claude_code_models,
+    usage_from_claude_code_usage_payload, ClaudeCodeBackend, ClaudeCodeError,
+    ClaudeCodeModelMetadata, CLAUDE_CODE_BACKEND,
 };
 pub use codergen::{
     ActiveCodergenSession, ActiveCodergenSessionGuard, CodergenBackend, CodergenBackendOutput,

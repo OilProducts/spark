@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 use spark_agent_adapter::{
-    AgentTurnBackend, AgentTurnRequest, ClaudeCodeBackend, CodergenBackend, CodergenBackendRequest,
-    CodergenBackendResponse, CodergenError, CodergenRuntimeMode, RustLlmAgentTurnBackend,
-    RustLlmCodergenBackend,
+    list_available_claude_code_models, AgentTurnBackend, AgentTurnRequest, ClaudeCodeBackend,
+    ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest, CodergenBackendResponse,
+    CodergenError, CodergenRuntimeMode, RustLlmAgentTurnBackend, RustLlmCodergenBackend,
 };
 use spark_common::events::TurnStreamEventKind;
 use unified_llm_adapter::Client;
@@ -425,6 +425,39 @@ fn claude_code_codergen_streams_prefix_and_reports_completed_event_with_usage() 
     }
 }
 
+#[test]
+fn claude_code_model_discovery_queries_catalog_over_stdio_and_maps_default_to_blank() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+
+    let models = list_available_claude_code_models().expect("model catalog");
+
+    assert_eq!(
+        models,
+        vec![
+            ClaudeCodeModelMetadata {
+                id: String::new(),
+                display: "Default (recommended)".to_string(),
+            },
+            ClaudeCodeModelMetadata {
+                id: "claude-fable-5[1m]".to_string(),
+                display: "Fable".to_string(),
+            },
+            ClaudeCodeModelMetadata {
+                id: "sonnet".to_string(),
+                display: "Sonnet".to_string(),
+            },
+        ],
+    );
+    let args = std::fs::read_to_string(&log_path).expect("args log");
+    for expected in ["-p", "--input-format", "stream-json"] {
+        assert!(args.contains(expected), "missing {expected} in: {args}");
+    }
+}
+
 /// Opt-in smoke against the real Claude Code CLI and its login. Run with:
 /// `cargo test -p spark-agent-adapter --test process_contracts real_claude_code -- --ignored`
 #[test]
@@ -450,6 +483,16 @@ fn real_claude_code_cli_completes_a_text_only_turn() {
     );
     assert!(output.token_usage.is_some(), "usage payload missing");
     assert!(output.app_thread_id.is_some(), "session id missing");
+}
+
+/// Opt-in smoke: verifies the undocumented `list_models` control request
+/// still answers on the installed CLI. Run with the same command as above.
+#[test]
+#[ignore = "requires an installed, logged-in claude CLI"]
+fn real_claude_code_cli_lists_models_over_control_protocol() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let models = list_available_claude_code_models().expect("real model catalog");
+    assert!(!models.is_empty(), "empty model catalog from real CLI");
 }
 
 #[test]

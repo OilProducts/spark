@@ -22,7 +22,7 @@ describe('llm suggestions', () => {
       'openai_compatible',
     ])
     expect(getModelSuggestions('openrouter')[0]).toBe('openai/gpt-5.4')
-    expect(getModelSuggestions('claude-code')).toEqual(['opus', 'sonnet', 'haiku'])
+    expect(getModelSuggestions('claude-code')).toEqual([])
     expect(getModelSuggestions('litellm')).toEqual([])
     expect(getModelSuggestions('openai_compatible')).toEqual([])
   })
