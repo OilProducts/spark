@@ -185,6 +185,11 @@ export function useProjectsHomeController() {
     const [requestUserInputActionError, setRequestUserInputActionError] = useState<string | null>(null)
     const [submittingRequestUserInputIds, setSubmittingRequestUserInputIds] = useState<Record<string, boolean>>({})
     const [chatModelsByProjectPath, setChatModelsByProjectPath] = useState<Record<string, ProjectChatModelsResponse>>({})
+    // Settings edits round-trip through the server before the conversation
+    // snapshot updates; showing the requested values while the save is in
+    // flight keeps the selects consistent (no stale model from the previous
+    // provider shown under a freshly picked provider).
+    const [pendingChatSettings, setPendingChatSettings] = useState<{ provider: string; model: string; reasoningEffort: string } | null>(null)
     const {
         conversationBodyRef,
         homeSidebarRef,
@@ -221,9 +226,9 @@ export function useProjectsHomeController() {
     const activeConversationHistory = projectsHomeViewModel.activeConversationHistory
     const {
         activeChatMode,
-        activeProjectChatProvider,
-        activeProjectChatModel,
-        activeProjectChatReasoningEffort,
+        activeProjectChatProvider: storedChatProvider,
+        activeProjectChatModel: storedChatModel,
+        activeProjectChatReasoningEffort: storedChatReasoningEffort,
         activeFlowLaunchesById,
         activeFlowRunRequestsById,
         activeProposedPlansById,
@@ -235,6 +240,11 @@ export function useProjectsHomeController() {
         latestFlowLaunchId,
         latestFlowRunRequestId,
     } = projectsHomeViewModel
+    const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.provider : storedChatProvider
+    const activeProjectChatModel = pendingChatSettings ? pendingChatSettings.model : storedChatModel
+    const activeProjectChatReasoningEffort = pendingChatSettings
+        ? pendingChatSettings.reasoningEffort
+        : storedChatReasoningEffort
     const activeProjectChatModelsResponse = activeProjectPath
         ? chatModelsByProjectPath[activeProjectPath]
         : undefined
@@ -427,6 +437,7 @@ export function useProjectsHomeController() {
             return
         }
         setPanelError(null)
+        setPendingChatSettings(values)
         try {
             const snapshot = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
@@ -440,6 +451,10 @@ export function useProjectsHomeController() {
         } catch (error) {
             const message = extractApiErrorMessage(error, 'Unable to update the project chat settings.')
             setPanelError(message)
+        } finally {
+            // Only clear our own pending values; a newer edit may already be
+            // in flight with its own optimistic state.
+            setPendingChatSettings((current) => (current === values ? null : current))
         }
     }, [activeProjectPath, applyConversationSnapshot, ensureConversationId, setPanelError])
 
