@@ -31,6 +31,19 @@ const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const CODEX_RUNTIME_ROOT_ENV: &str = "ATTRACTOR_CODEX_RUNTIME_ROOT";
 const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
 static CODEX_SPARK_HOME: OnceLock<PathBuf> = OnceLock::new();
+static CODEX_API_BASE_URL: OnceLock<String> = OnceLock::new();
+
+/// Records the workspace API base URL exported to codex sessions as
+/// SPARK_API_BASE_URL, so the spark CLI inside agent shells targets this
+/// server instead of requiring --base-url.
+pub fn configure_codex_api_base_url(url: impl Into<String>) -> Result<(), String> {
+    let url = url.into();
+    match CODEX_API_BASE_URL.set(url.clone()) {
+        Ok(()) => Ok(()),
+        Err(_) if CODEX_API_BASE_URL.get() == Some(&url) => Ok(()),
+        Err(_) => Err("codex API base URL is already configured differently".to_string()),
+    }
+}
 const COLLABORATION_MODE_DEFAULT: &str = "default";
 const COLLABORATION_MODE_PLAN: &str = "plan";
 const STDERR_DIAGNOSTIC_MAX_LINES: usize = 50;
@@ -1794,6 +1807,9 @@ pub fn build_codex_runtime_environment() -> Result<BTreeMap<String, String>, Cod
             "SPARK_HOME".to_string(),
             spark_home.to_string_lossy().into_owned(),
         );
+    }
+    if let Some(base_url) = CODEX_API_BASE_URL.get() {
+        env_map.insert("SPARK_API_BASE_URL".to_string(), base_url.clone());
     }
     let original_home = env_map
         .get("HOME")

@@ -70,6 +70,8 @@ pub fn run() {
             let server = start_desktop_server(bootstrap.settings, &bootstrap.bind_host)
                 .map_err(boxed_error)?;
             let server_url = server.url().to_string();
+            spark_agent_adapter::configure_codex_api_base_url(server_url.clone())
+                .map_err(boxed_error)?;
             let webview_url = server_url
                 .parse()
                 .map_err(|error| boxed_error(format!("Invalid desktop server URL: {error}")))?;

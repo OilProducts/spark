@@ -747,6 +747,10 @@ fn run_serve_process(
         let listener = tokio::net::TcpListener::bind(&bind_addr)
             .await
             .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+        let _ = spark_agent_adapter::configure_codex_api_base_url(format!(
+            "http://{}:{}",
+            config.host, config.port
+        ));
         let client = rust_llm_client_from_settings(&config.settings);
         axum_serve(
             listener,

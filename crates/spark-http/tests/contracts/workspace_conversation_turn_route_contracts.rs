@@ -215,7 +215,20 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     let backend_request = &backend_requests[1];
     assert_eq!(backend_request.conversation_id, "conversation-http-turn");
     assert_eq!(backend_request.project_path, "/projects/http-turn");
-    assert_eq!(backend_request.prompt, "Ship it");
+    assert!(
+        backend_request
+            .prompt
+            .starts_with("You are the Spark workspace assistant."),
+        "new-thread turns carry the assistant frame: {}",
+        backend_request.prompt
+    );
+    assert!(
+        backend_request
+            .prompt
+            .ends_with("Latest user message:\nShip it"),
+        "{}",
+        backend_request.prompt
+    );
     assert_eq!(backend_request.provider.as_deref(), Some("openai"));
     assert_eq!(backend_request.model.as_deref(), Some("gpt-5"));
     assert_eq!(backend_request.llm_profile.as_deref(), Some("frontier"));
@@ -410,9 +423,13 @@ async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compati
     let request = &calls[0];
     assert_eq!(request.provider.as_deref(), Some("openai_compatible"));
     assert_eq!(request.model, "gpt-route-agent");
-    assert_eq!(
-        request.messages.last().expect("user message"),
-        &Message::user("Route through the Rust agent backend.")
+    let user_message = request.messages.last().expect("user message");
+    assert!(
+        user_message
+            .text()
+            .ends_with("Latest user message:\nRoute through the Rust agent backend."),
+        "{:?}",
+        user_message
     );
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(
@@ -734,7 +751,13 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
             && turn["error"] == "No scripted agent output available."));
     let backend_requests = backend_requests.lock().expect("backend requests");
     assert_eq!(backend_requests.len(), 1);
-    assert_eq!(backend_requests[0].prompt, "Backend should fail");
+    assert!(
+        backend_requests[0]
+            .prompt
+            .ends_with("Latest user message:\nBackend should fail"),
+        "{}",
+        backend_requests[0].prompt
+    );
 }
 
 #[tokio::test]

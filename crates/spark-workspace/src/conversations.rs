@@ -798,7 +798,7 @@ impl WorkspaceConversationService {
                 json!(assistant_turn_id.clone()),
             ),
         ]);
-        if let Some(thread_id) = previous_app_thread_id {
+        if let Some(thread_id) = previous_app_thread_id.as_deref() {
             let key = if effective_provider == "claude-code" {
                 "spark.runtime.claude_code.session_id"
             } else {
@@ -816,10 +816,23 @@ impl WorkspaceConversationService {
                 );
             }
         }
+        let agent_prompt = if previous_app_thread_id.is_some() {
+            message.clone()
+        } else {
+            let handle = snapshot
+                .get("conversation_handle")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            format!(
+                "{}\n\nLatest user message:\n{}",
+                workspace_assistant_frame(&project_path, handle),
+                message
+            )
+        };
         let agent_turn_request = AgentTurnRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
-            prompt: message.clone(),
+            prompt: agent_prompt,
             history: agent_history_from_snapshot(&snapshot, &[&user_turn_id, &assistant_turn_id]),
             provider: Some(effective_provider.clone()),
             model: effective_model.clone(),
@@ -3101,6 +3114,27 @@ fn active_assistant_turn_id(snapshot: &Value) -> Option<String> {
                 _ => None,
             }
         })
+}
+
+/// The fixed instruction frame for workspace conversation agents. Sent when a
+/// new agent thread starts; resumed threads already carry it. Without this
+/// the agent is a bare coding session that knows nothing about Spark's
+/// control surface and will improvise one from whatever it finds on disk.
+fn workspace_assistant_frame(project_path: &str, conversation_handle: &str) -> String {
+    format!(
+        "You are the Spark workspace assistant.\n\n\
+        Spark is a workspace system that helps a user work on the active software project through conversation. Inspect the relevant project files and workspace-visible state, answer questions about the current work, and use the Spark control surface for workspace actions.\n\n\
+        Treat the active project repository as the source of truth for project questions. Prefer directly observed facts over assumptions, and say plainly when something is inferred. For simple factual questions, answer directly after the minimum required inspection; do not turn them into planning theater or workflow artifacts.\n\n\
+        The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Installed flows are YAML files under $SPARK_HOME/flows; the flow catalog governs which of them are agent-requestable, and only those may be requested. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
+        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --file <path>`\n\
+        - `spark convo run-request --conversation {handle} ...` creates a flow run request that the user approves in this conversation before anything launches. This is the only way you start workflow runs on the user's behalf; do not launch directly even when a launch API is reachable.\n\
+        - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
+        Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.\n\n\
+        Conversation handle: {handle}\n\
+        Project path: {project_path}",
+        handle = conversation_handle,
+        project_path = project_path,
+    )
 }
 
 fn materialize_segment_for_event(

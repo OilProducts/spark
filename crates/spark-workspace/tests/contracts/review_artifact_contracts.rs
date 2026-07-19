@@ -811,3 +811,102 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
     assert_eq!(request["conversation_id"], "conversation-attention");
     assert_eq!(request["title"], "Run the review flow.");
 }
+
+#[test]
+fn new_thread_turn_prepends_the_assistant_frame_but_keeps_the_stored_message() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let service = WorkspaceConversationService::new(settings.clone());
+    let (prepared, snapshot) = service
+        .start_turn(
+            "conversation-frame",
+            ConversationTurnRequest {
+                project_path: project_path.to_string_lossy().into_owned(),
+                message: "Kick off the implement-spec workflow.".to_string(),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+
+    let agent_prompt = &prepared.agent_turn_request.prompt;
+    assert!(
+        agent_prompt.contains("You are the Spark workspace assistant"),
+        "agent prompt must carry the frame: {agent_prompt}"
+    );
+    assert!(
+        agent_prompt.contains("spark convo run-request"),
+        "frame must name the run-request control surface"
+    );
+    assert!(
+        agent_prompt.contains("do not use any other Spark installation"),
+        "frame must warn off stale installations"
+    );
+    assert!(
+        agent_prompt.contains("agent-requestable"),
+        "frame must name the catalog policy"
+    );
+    assert!(
+        agent_prompt.contains("$SPARK_HOME/attractor/runs"),
+        "frame must say where run state lives"
+    );
+    assert!(
+        agent_prompt
+            .trim_end()
+            .ends_with("Kick off the implement-spec workflow."),
+        "the user's message is the last thing the agent reads: {agent_prompt}"
+    );
+
+    // The stored conversation turn keeps the raw user message, not the frame.
+    let stored = snapshot["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "user")
+        .expect("user turn");
+    assert_eq!(stored["content"], "Kick off the implement-spec workflow.");
+}
+
+#[test]
+fn resumed_thread_turn_omits_the_frame() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let project = ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(&project_path.to_string_lossy())
+        .expect("project paths");
+    // A prior confirmed codex thread: the frame already lives in its
+    // server-side context, so a follow-up turn must not resend it.
+    spark_storage::ConversationRepository::new(&settings.data_dir)
+        .write_runtime_session(
+            "conversation-resume",
+            &project_path.to_string_lossy(),
+            &spark_storage::conversation::RuntimeSession {
+                schema_version: 1,
+                provider: "codex_app_server".to_string(),
+                thread_id: Some("thread-existing".to_string()),
+                established_at: "2026-01-01T00:00:00Z".to_string(),
+                last_turn_id: None,
+                resume_failed: false,
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed runtime session");
+    let _ = &project;
+
+    let (prepared, _) = WorkspaceConversationService::new(settings.clone())
+        .start_turn(
+            "conversation-resume",
+            ConversationTurnRequest {
+                project_path: project_path.to_string_lossy().into_owned(),
+                message: "Follow-up question.".to_string(),
+                chat_mode: Some("chat".to_string()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .expect("start turn");
+    assert_eq!(prepared.agent_turn_request.prompt, "Follow-up question.");
+}
