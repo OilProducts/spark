@@ -264,6 +264,13 @@ where
             ExecutionStart::Resume { paths, checkpoint } => {
                 paths.ensure_exists()?;
                 context = context_from_checkpoint(&flow, &checkpoint, &checkpoint.current_node)?;
+                // Continuations resume a checkpoint written by a different
+                // run, so the restored context still names the source run.
+                // Identity keys must always describe the executing run — the
+                // invariant child launches already enforce — or children
+                // started after the resume are stamped with the source run's
+                // id and group under it forever.
+                seed_execution_record_context(&mut context, &record)?;
                 completed_nodes = checkpoint
                     .completed_nodes
                     .iter()
