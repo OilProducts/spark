@@ -72,9 +72,10 @@
   recent-entry ring + incremental segment projection) that contract tests
   hold byte-equal to the cold rebuild, including the out-of-order-append
   rebuild path. Cold paths (transcript, deep page-back, raw events)
-  intentionally still rebuild from disk. Remaining verification: confirm
-  desktop RSS stays flat across a multi-hour streaming run after the next
-  rebuild+restart.
+  intentionally still rebuild from disk. Live verification 2026-07-21:
+  after 4h18m of continuous milestone streaming the desktop held ~3.2 GB
+  RSS at 3.5% CPU, versus 26.6 GB overnight growth on the prior binary —
+  RSS stays flat.
 
 - [x] Build an executable harness for the existing agent-driven acceptance workflow assets under `tests/acceptance/agent-workflows`.
 - [x] Add first-class structured UI authoring for subgraphs and scoped `node[...]` / `edge[...]` defaults so these no longer require raw DOT editing.
