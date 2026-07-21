@@ -13,6 +13,7 @@ pub mod settings_view;
 pub mod worker;
 
 pub use container::{
+    profile_mounts_for_test,
     CommandResult, CommandSpec, ContainerCommandRunner, ContainerizedNodeExecutor,
     SystemCommandRunner,
 };

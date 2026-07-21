@@ -257,14 +257,16 @@ impl ContainerizedNodeExecutor {
             "--label".to_string(),
             format!("spark.project_path={}", request.run_workdir.display()),
         ];
-        for mount in dedupe([
+        let mut mounts = vec![
             mount_arg(&request.run_workdir, &request.run_workdir),
             mount_arg(
                 run_root.parent().unwrap_or(run_root.as_path()),
                 run_root.parent().unwrap_or(run_root.as_path()),
             ),
             mount_arg(&run_root, &run_root),
-        ]) {
+        ];
+        mounts.extend(profile_mounts(&self.selection.profile)?);
+        for mount in dedupe(mounts) {
             args.push("-v".to_string());
             args.push(mount);
         }
@@ -381,6 +383,48 @@ fn container_env() -> BTreeMap<String, String> {
                 .map(|value| ((*key).to_string(), value))
         })
         .collect()
+}
+
+/// Extra bind mounts declared by the execution profile as
+/// `metadata."container.mounts" = ["host:container[:options]", ...]`,
+/// letting profiles provide runtime resources (for example agent
+/// credentials, mounted read-only) without baking them into image layers.
+fn profile_mounts(
+    profile: &crate::profile::ExecutionProfile,
+) -> Result<Vec<String>, RuntimeNodeError> {
+    let Some(declared) = profile.metadata.get("container.mounts") else {
+        return Ok(Vec::new());
+    };
+    let Some(entries) = declared.as_array() else {
+        return Err(RuntimeNodeError::terminal(
+            "container.mounts profile metadata must be an array of strings",
+        ));
+    };
+    let mut mounts = Vec::new();
+    for entry in entries {
+        let Some(spec) = entry.as_str().map(str::trim).filter(|spec| !spec.is_empty()) else {
+            return Err(RuntimeNodeError::terminal(
+                "container.mounts entries must be non-empty strings",
+            ));
+        };
+        let parts: Vec<&str> = spec.split(':').collect();
+        if !(2..=3).contains(&parts.len())
+            || parts.iter().any(|part| part.trim().is_empty())
+        {
+            return Err(RuntimeNodeError::terminal(format!(
+                "container.mounts entry {spec:?} must be host:container or host:container:options",
+            )));
+        }
+        mounts.push(spec.to_string());
+    }
+    Ok(mounts)
+}
+
+/// Test-only re-export of the profile mount parser.
+pub fn profile_mounts_for_test(
+    profile: &crate::profile::ExecutionProfile,
+) -> Result<Vec<String>, RuntimeNodeError> {
+    profile_mounts(profile)
 }
 
 fn mount_arg(source: &Path, target: &Path) -> String {
