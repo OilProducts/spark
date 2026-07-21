@@ -13,6 +13,10 @@
   `crates/spark-workspace/src/conversations.rs` needs to journal the mutations it
   already applies to the snapshot. Pre-existing on `origin/main` (693faacd);
   unrelated to the 2026-07 rewrite reland or the macOS path fixes.
+  2026-07-21: no longer reproduces — 20 consecutive passes of both tests on
+  `spark/live-run-perf-fixes` (which includes the conversation-journaling
+  changes that landed since the note was written). Leaving the entry one more
+  CI cycle in case the flake was environmental; delete it if it stays green.
 
 - [ ] **Human steer endpoint records interventions but never delivers them.**
   `POST /attractor/pipelines/{id}/steer` (`steer_pipeline_route` in
@@ -111,9 +115,16 @@
   out-of-order-append resync path.
 
 - [ ] **Playwright smoke specs** predate the runs-tab overhaul; re-record the runs
-  smoke flows against the Activity stream / inspector layout.
-- [ ] **Manual desktop verification** of blocking human gates and live chat/run
-  streaming (`just dev-desktop`).
+  smoke flows against the Activity stream / inspector layout. Confirmed stale
+  2026-07-21: `runs-observability.spec.ts` asserts `run-advanced-panel` and
+  `run-advanced-toggle-button`, which no longer exist anywhere in
+  `frontend/src`.
+- [ ] **Manual desktop verification of blocking human gates**
+  (`just dev-desktop`). Narrowed 2026-07-21: live chat streaming and live run
+  streaming were verified extensively in production desktop use during the
+  2026-07-19..21 loam build (conversation nimble-stream, multi-hour milestone
+  runs); blocking `human_gate` nodes were never exercised on the desktop in
+  that period and still need a manual pass.
 - [ ] **Parent-run usage rollup**: run token usage/cost is per-record; child-run
   usage does not aggregate into the parent (matches old Python behavior). Roll
   up over the combined journal if parent totals should include children.
