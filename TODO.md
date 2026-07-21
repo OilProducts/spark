@@ -47,23 +47,37 @@
 
 - [ ] **Run event logs are always parsed eagerly and in full; live paths pay
   O(log size) per cycle and memory high-water grows unbounded with run
-  length.** `RunBundle` (`crates/attractor-runtime/src/store.rs`)
-  materializes `raw_events` (every event JSON-parsed into
-  `RawRuntimeEvent`) and a derived `journal` on every
-  `read_run_bundle`/`list_child_run_bundles` call, so every consumer pays a
-  full parse of `events.jsonl` even when it needs only the record or a
-  cursor delta. Measured on a 46 MB / 36k-event log (loam MS-002 child,
-  2026-07-19): ~0.8–4.4 s per combined build, 1.23 TB cumulative page-cache
-  reads and an 88%-pinned core before the first round of fixes; after them
-  (tail-read appends, one build per publish cycle, record-only reads —
-  branch `spark/live-run-perf-fixes`) the steady-state cost is one full
-  combined build per publisher cycle per notifying run, plus one per SSE
-  connect, plus one per paged-journal fetch, plus one per manager
-  observation cycle (`resolve_child_result` in `manager_loop.rs` parses the
-  entire child log to report `event_count`/`latest_event_at`). Allocator
-  high-water from the transient parse trees reached 8.5 GB (2026-07-19),
-  ~10 GB, then 26.6 GB RSS (2026-07-21, overnight MS-004 run) on the
-  desktop process — bounded per run but growing with every longer run.
+  length.**
+
+  *The problem, present tense.* There is no way to read part of a run's
+  event log: `RunBundle` (`crates/attractor-runtime/src/store.rs`) always
+  JSON-parses every line of `events.jsonl` into `raw_events` and derives
+  the full `journal`, on every `read_run_bundle`/`list_child_run_bundles`
+  call. So each of these triggers pays a cost proportional to the whole
+  log, however small the piece it actually needs:
+  - each publisher cycle (`run_event_publisher_loop`, ~120 ms coalesced
+    while a run streams) — needs only the entries appended since the last
+    cycle;
+  - each live-stream (SSE) connect and each paged-journal fetch — needs
+    the window after/around a cursor;
+  - each manager observation of a child (`resolve_child_result` in
+    `manager_loop.rs`, every poll cycle) — needs only a count and a
+    timestamp.
+  On a 46 MB / 36k-event log each such build costs ~0.8–4.4 s and a large
+  transient allocation; the allocator keeps the high-water mark, so
+  desktop RSS grows with the longest run seen (26.6 GB after an overnight
+  streaming run, 2026-07-21). Runs only get longer; per-trigger cost and
+  memory scale with them.
+
+  *What the first round already fixed* (branch
+  `spark/live-run-perf-fixes`, for context — do not re-fix): the same full
+  parse used to be paid per *event append* (quadratic — a streaming agent
+  paid it tens of times per second; 1.23 TB cumulative reads and a pinned
+  core measured 2026-07-19), four times per publish cycle instead of once,
+  and on record-only paths (run upsert, milestones, terminal triggers).
+  Those fixes collapsed the *number* of full builds; the *cost of each*
+  build is untouched and is what remains below.
+
   Remaining fix, two independent layers:
   1. *Lazy bundles.* Split `RunBundle` so `record` (and `checkpoint`) load
      without touching `events.jsonl` — either `raw_events:
