@@ -262,6 +262,42 @@ fn raw_events_append_and_normalize_to_newest_first_journal_entries() {
 }
 
 #[test]
+fn event_append_sequences_survive_blank_and_partial_trailing_lines() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = store(&temp);
+    let project_path = temp.path().join("Project Tail");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let paths = store
+        .create_run(CreateRunRequest {
+            record: record("run-tail", &project_path.to_string_lossy()),
+            checkpoint: Some(checkpoint("start", &[])),
+            ..CreateRunRequest::default()
+        })
+        .expect("create run");
+
+    let appended = store
+        .append_event(&paths, log_event("run-tail", "[work] running"))
+        .expect("append");
+    let last_sequence = appended.sequence.expect("sequence");
+
+    // An interrupted append can leave blank lines or a partial event line at
+    // the end of the log; the next append must skip them and continue the
+    // sequence instead of restarting or failing.
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(paths.events_jsonl())
+        .expect("open events");
+    write!(file, "\n{{\"sequence\": \n").expect("write partial line");
+    drop(file);
+
+    let appended = store
+        .append_event(&paths, log_event("run-tail", "[work] still running"))
+        .expect("append after partial trailing line");
+    assert_eq!(appended.sequence, Some(last_sequence + 1));
+}
+
+#[test]
 fn raw_event_append_does_not_update_render_transcript() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = store(&temp);

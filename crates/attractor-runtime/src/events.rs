@@ -41,12 +41,63 @@ pub fn read_raw_events(paths: &RunRootPaths) -> Result<Vec<RawRuntimeEvent>> {
 }
 
 pub fn next_sequence(paths: &RunRootPaths) -> Result<u64> {
+    if let Some(sequence) = latest_sequence_from_tail(paths)? {
+        return Ok(sequence + 1);
+    }
     Ok(read_raw_events(paths)?
         .into_iter()
         .filter_map(|event| event.sequence)
         .max()
         .unwrap_or(0)
         + 1)
+}
+
+/// Window read from the end of events.jsonl large enough to cover the last
+/// complete event line without rereading the whole log.
+const SEQUENCE_TAIL_WINDOW_BYTES: u64 = 1 << 20;
+
+/// Sequences are assigned in append order, so the last complete event line
+/// holds the maximum. Reading just the file tail keeps appends O(1) instead
+/// of reparsing the entire log, which dominated runtime on long runs. Returns
+/// None when no parseable line with a sequence falls inside the tail window
+/// (caller falls back to the full scan).
+fn latest_sequence_from_tail(paths: &RunRootPaths) -> Result<Option<u64>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let path = paths.events_jsonl();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let io_error = |operation: &'static str, source: std::io::Error| {
+        crate::error::RuntimeStorageError::io(operation, &path, source)
+    };
+    let mut file = std::fs::File::open(&path).map_err(|source| io_error("open events", source))?;
+    let length = file
+        .metadata()
+        .map_err(|source| io_error("stat events", source))?
+        .len();
+    let start = length.saturating_sub(SEQUENCE_TAIL_WINDOW_BYTES);
+    file.seek(SeekFrom::Start(start))
+        .map_err(|source| io_error("seek events", source))?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail)
+        .map_err(|source| io_error("read events", source))?;
+    let tail = String::from_utf8_lossy(&tail);
+    for line in tail.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Unparseable lines are either a partial trailing write or the
+        // truncated first line of the tail window; keep scanning back.
+        let Ok(event) = serde_json::from_str::<RawRuntimeEvent>(line) else {
+            continue;
+        };
+        if let Some(sequence) = event.sequence {
+            return Ok(Some(sequence));
+        }
+    }
+    Ok(None)
 }
 
 pub fn lifecycle_event(run_id: impl Into<String>, phase: impl Into<String>) -> RawRuntimeEvent {
