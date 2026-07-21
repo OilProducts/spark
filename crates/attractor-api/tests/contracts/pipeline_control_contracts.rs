@@ -157,6 +157,90 @@ fn continue_inherits_source_launch_context() {
 }
 
 #[test]
+fn continue_reseeds_identity_context_for_the_new_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("Project Continue Identity");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let store = RunStore::for_settings(&settings);
+    let exit_flow = r#"schema_version: "1"
+id: api_identity
+title: API Identity
+nodes:
+  start:
+    kind: start
+  done:
+    kind: exit
+edges:
+  - from: start
+    to: done
+"#;
+    // The source checkpoint names the source run, exactly as a real
+    // checkpoint does; the continued run must not inherit that identity.
+    let mut source_checkpoint = checkpoint("done");
+    source_checkpoint.completed_nodes = vec!["start".to_string()];
+    source_checkpoint
+        .context
+        .insert("internal.run_id".to_string(), json!("run-identity-src"));
+    source_checkpoint
+        .context
+        .insert("internal.root_run_id".to_string(), json!("run-identity-src"));
+    source_checkpoint
+        .context
+        .insert("internal.run_workdir".to_string(), json!("/stale/workdir"));
+    store
+        .create_run(CreateRunRequest {
+            record: failed_record("run-identity-src", &project_path),
+            checkpoint: Some(source_checkpoint),
+            flow_source: Some(exit_flow.to_string()),
+            flow_definition_json: None,
+            ..CreateRunRequest::default()
+        })
+        .expect("failed run");
+
+    let continued = handle_attractor_request(
+        "POST",
+        "/attractor/pipelines/run-identity-src/continue",
+        &json!({"start_node": "done", "flow_source_mode": "snapshot"}).to_string(),
+        settings.clone(),
+    );
+    assert_eq!(continued.status_code, 200, "{:?}", continued.body);
+    let new_run_id = continued.body["pipeline_id"]
+        .as_str()
+        .expect("pipeline id")
+        .to_string();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let final_bundle = loop {
+        let bundle = store
+            .read_run_bundle(&new_run_id)
+            .expect("read continued run")
+            .expect("continued run exists");
+        let status = bundle
+            .record
+            .as_ref()
+            .map(|record| attractor_runtime::normalize_run_status(&record.status))
+            .unwrap_or_default();
+        if status == "completed" {
+            break bundle;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "continued run never completed; last status {status}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let context = final_bundle.checkpoint.expect("final checkpoint").context;
+    let record = final_bundle.record.expect("final record");
+    assert_eq!(context.get("internal.run_id"), Some(&json!(new_run_id)));
+    assert_eq!(context.get("internal.root_run_id"), Some(&json!(new_run_id)));
+    assert_eq!(
+        context.get("internal.run_workdir"),
+        Some(&json!(record.working_directory)),
+    );
+}
+
+#[test]
 fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

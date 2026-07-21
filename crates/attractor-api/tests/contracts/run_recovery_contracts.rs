@@ -226,3 +226,73 @@ fn startup_recovery_resumes_unanswered_gate_back_into_waiting() {
         .expect("journal answer");
     wait_for_status(&store, "run-orphan-pending", "completed");
 }
+
+#[test]
+fn startup_recovery_marks_orphaned_running_runs_failed() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let workdir = temp.path().join("project");
+    std::fs::create_dir_all(&workdir).expect("workdir");
+    let store = RunStore::for_settings(&settings);
+    let flow = attractor_dsl::parse_flow_definition(GATE_FLOW).expect("gate flow parses");
+    let launch_context = attractor_core::LaunchContext::empty();
+    let runtime_context = attractor_core::ContextMap::default();
+
+    // A root and its child, both left in `running` by a dead process.
+    for (run_id, parent) in [
+        ("run-orphan-running-root", None),
+        ("run-orphan-running-child", Some("run-orphan-running-root")),
+    ] {
+        let mut record = attractor_core::RunRecord::new(run_id, workdir.to_string_lossy());
+        record.flow_name = "recovery-gate".to_string();
+        record.parent_run_id = parent.map(str::to_string);
+        prepare_fresh_run(
+            &store,
+            &record,
+            &flow,
+            Some(GATE_FLOW.to_string()),
+            None,
+            &launch_context,
+            &runtime_context,
+        )
+        .expect("prepare run");
+        store
+            .update_run_record(run_id, |record| {
+                record.status = "running".to_string();
+            })
+            .expect("mark running");
+    }
+
+    let recovery = blocking_gate_service(&settings).recover_interrupted_runs();
+    let mut interrupted: Vec<String> = recovery["interrupted"]
+        .as_array()
+        .expect("interrupted list")
+        .iter()
+        .map(|value| value.as_str().expect("run id").to_string())
+        .collect();
+    interrupted.sort();
+    assert_eq!(
+        interrupted,
+        vec![
+            "run-orphan-running-child".to_string(),
+            "run-orphan-running-root".to_string(),
+        ],
+        "{recovery:?}"
+    );
+
+    for run_id in ["run-orphan-running-root", "run-orphan-running-child"] {
+        let record = store
+            .read_run_bundle(run_id)
+            .expect("read bundle")
+            .expect("bundle exists")
+            .record
+            .expect("record");
+        assert_eq!(record.status, "failed");
+        assert!(
+            record.last_error.contains("interrupted by an earlier restart"),
+            "unexpected last_error: {}",
+            record.last_error
+        );
+    }
+}

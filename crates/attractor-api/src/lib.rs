@@ -747,12 +747,16 @@ impl AttractorApiService {
     /// threads, so a restart orphans them while their durable state remains
     /// intact: waiting root runs resume from their checkpoints (re-entering a
     /// human-gate wait, or completing instantly when the answer was already
-    /// journaled) and unhonored cancel requests finalize. Live runs and child
-    /// runs (driven by their parents) are untouched.
+    /// journaled), unhonored cancel requests finalize, and runs stranded in
+    /// `running` — root or child — are marked failed so they stop presenting
+    /// as live; their checkpoints remain continuable. Runs with a live
+    /// executor and waiting child runs (driven by their parents) are
+    /// untouched.
     pub fn recover_interrupted_runs(&self) -> Value {
         let store = self.observed_store();
         let mut resumed: Vec<String> = Vec::new();
         let mut canceled: Vec<String> = Vec::new();
+        let mut interrupted: Vec<String> = Vec::new();
         let mut failed: Vec<Value> = Vec::new();
         let records = match list_run_records(&self.settings, None) {
             Ok(records) => records,
@@ -762,14 +766,19 @@ impl AttractorApiService {
             let Some(run_id) = record.get("run_id").and_then(Value::as_str) else {
                 continue;
             };
-            if record
-                .get("parent_run_id")
-                .and_then(Value::as_str)
-                .is_some_and(|parent| !parent.trim().is_empty())
-            {
+            if run_has_live_executor(run_id) {
                 continue;
             }
-            if run_has_live_executor(run_id) {
+            let parent_run_id = record
+                .get("parent_run_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|parent| !parent.is_empty());
+            let is_child = parent_run_id.is_some();
+            // Manager-launched children execute inside their parent's thread
+            // and never enter the live-executor registry themselves; a child
+            // whose parent is live is not orphaned.
+            if parent_run_id.is_some_and(run_has_live_executor) {
                 continue;
             }
             let status = record
@@ -778,7 +787,7 @@ impl AttractorApiService {
                 .map(attractor_runtime::normalize_run_status)
                 .unwrap_or_default();
             match status.as_str() {
-                "waiting" => match self.resume_orphaned_run(&store, run_id) {
+                "waiting" if !is_child => match self.resume_orphaned_run(&store, run_id) {
                     Ok(()) => resumed.push(run_id.to_string()),
                     Err(error) => {
                         let _ = store.update_run_record(run_id, |record| {
@@ -796,10 +805,22 @@ impl AttractorApiService {
                     );
                     canceled.push(run_id.to_string());
                 }
+                "running" => {
+                    let _ = store.update_run_record(run_id, |record| {
+                        record.status = "failed".to_string();
+                        record.last_error = "interrupted by an earlier restart; continue this run to resume from its checkpoint".to_string();
+                    });
+                    interrupted.push(run_id.to_string());
+                }
                 _ => {}
             }
         }
-        json!({"resumed": resumed, "canceled": canceled, "failed": failed})
+        json!({
+            "resumed": resumed,
+            "canceled": canceled,
+            "failed": failed,
+            "interrupted": interrupted,
+        })
     }
 
     fn resume_orphaned_run(
