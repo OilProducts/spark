@@ -1471,16 +1471,23 @@ impl AttractorApiService {
             Err(detail) => return RuntimeRouteResponse::json(400, json!({"detail": detail})),
         };
         let store = RunStore::for_settings(&self.settings);
-        let bundle = match store.read_run_bundle(pipeline_id) {
-            Ok(Some(bundle)) => bundle,
-            Ok(None) => {
-                return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
-            }
-            Err(error) => {
-                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
-            }
-        };
-        let mut entries = bundle.journal;
+        // Combined journal, same re-sequenced cursor space as the live
+        // stream and transcript. This page seeds the client's live-stream
+        // cursor: a parent-only page numbers entries in the parent's own
+        // space, leaving the cursor an entire child history behind the
+        // combined numbering, and every live-stream connect then replays
+        // all of it.
+        let mut entries =
+            match attractor_runtime::combined_run_journal_entries(&store, pipeline_id) {
+                Ok(Some(entries)) => entries,
+                Ok(None) => {
+                    return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
+                }
+                Err(error) => {
+                    return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
+                }
+            };
+        entries.reverse();
         if let Some(before_sequence) = before_sequence {
             entries.retain(|entry| entry.sequence < before_sequence);
         }

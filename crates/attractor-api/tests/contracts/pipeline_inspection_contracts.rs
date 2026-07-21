@@ -522,6 +522,67 @@ fn run_listing_includes_worktree_child_under_parent_project() {
     );
 }
 
+#[test]
+fn journal_page_uses_combined_sequence_space_when_children_exist() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("Project Combined");
+    let service = AttractorApiService::new(settings.clone());
+    service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-combined-parent".to_string()),
+        flow_content: Some(simple_flow()),
+        working_directory: project_path.to_string_lossy().to_string(),
+        ..PipelineStartRequest::default()
+    });
+
+    let store = RunStore::for_settings(&settings);
+    let mut child = attractor_core::RunRecord::new(
+        "run-combined-child",
+        project_path.to_string_lossy().to_string(),
+    );
+    child.parent_run_id = Some("run-combined-parent".to_string());
+    let child_paths = store
+        .create_run(CreateRunRequest {
+            record: child,
+            checkpoint: None,
+            manifest: None,
+            flow_source: None,
+            flow_definition_json: None,
+        })
+        .expect("create child run");
+    store
+        .append_event(
+            &child_paths,
+            attractor_runtime::log_event("run-combined-child", "[child] working"),
+        )
+        .expect("child event");
+
+    let journal = handle_attractor_request(
+        "GET",
+        "/attractor/pipelines/run-combined-parent/journal?limit=500",
+        "",
+        settings.clone(),
+    );
+    assert_eq!(journal.status_code, 200);
+    let entries = journal.body["entries"].as_array().expect("entries");
+
+    // The page must number entries in the combined (re-sequenced) journal
+    // space the live stream uses for its cursor: newest first, contiguous
+    // down to 1, with the child's entries interleaved.
+    let total = entries.len() as u64;
+    assert_eq!(journal.body["newest_sequence"], json!(total));
+    assert_eq!(journal.body["oldest_sequence"], json!(1));
+    let sequences = entries
+        .iter()
+        .map(|entry| entry["sequence"].as_u64().expect("sequence"))
+        .collect::<Vec<_>>();
+    assert_eq!(sequences, (1..=total).rev().collect::<Vec<_>>());
+    assert!(entries
+        .iter()
+        .any(|entry| entry["source_scope"] == json!("child")));
+}
+
 fn simple_flow() -> String {
     r#"schema_version: "1"
 id: api_inspect
