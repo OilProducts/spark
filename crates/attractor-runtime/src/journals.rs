@@ -633,51 +633,57 @@ pub fn combined_run_journal_entries(
     let Some(bundle) = store.read_run_bundle(run_id)? else {
         return Ok(None);
     };
-    let mut parent_entries = bundle.journal;
-    parent_entries.sort_by(journal_replay_order);
+    let mut entries = bundle.journal;
+    entries.sort_by(journal_replay_order);
 
-    let child_bundles = store.list_child_run_bundles(run_id)?;
-    if child_bundles.is_empty() {
-        return Ok(Some(parent_entries));
-    }
-
-    let mut entries = parent_entries;
-    for child in child_bundles {
+    for child in store.list_child_run_bundles(run_id)? {
         let record = child.record.as_ref();
-        let child_run_id = record.map(|record| record.run_id.clone());
         for mut entry in child.journal {
-            entry.source_scope = "child".to_string();
-            entry.source_parent_node_id = record.and_then(|record| record.parent_node_id.clone());
-            entry.source_flow_name = record.map(|record| record.flow_name.clone());
-            if let Some(payload) = entry.payload.as_object_mut() {
-                payload.insert("source_scope".to_string(), serde_json::json!("child"));
-                payload.insert(
-                    "source_parent_node_id".to_string(),
-                    entry
-                        .source_parent_node_id
-                        .as_ref()
-                        .map_or(Value::Null, |value| serde_json::json!(value)),
-                );
-                payload.insert(
-                    "source_flow_name".to_string(),
-                    entry
-                        .source_flow_name
-                        .as_ref()
-                        .map_or(Value::Null, |value| serde_json::json!(value)),
-                );
-                payload.insert(
-                    "source_run_id".to_string(),
-                    child_run_id
-                        .as_ref()
-                        .map_or(Value::Null, |value| serde_json::json!(value)),
-                );
-            }
+            decorate_child_journal_entry(&mut entry, record);
             entries.push(entry);
         }
     }
     entries.sort_by(journal_replay_order);
+    // Childless journals resequence too: combined numbering must be dense
+    // and identical whether it is rebuilt cold or extended incrementally by
+    // the journal cache.
     resequence_combined_journal(&mut entries);
     Ok(Some(entries))
+}
+
+/// Marks a child run's journal entry with its source lineage; shared by the
+/// cold rebuild and the incremental cache so the two can never drift.
+pub(crate) fn decorate_child_journal_entry(
+    entry: &mut JournalEntry,
+    record: Option<&attractor_core::RunRecord>,
+) {
+    let child_run_id = record.map(|record| record.run_id.clone());
+    entry.source_scope = "child".to_string();
+    entry.source_parent_node_id = record.and_then(|record| record.parent_node_id.clone());
+    entry.source_flow_name = record.map(|record| record.flow_name.clone());
+    if let Some(payload) = entry.payload.as_object_mut() {
+        payload.insert("source_scope".to_string(), serde_json::json!("child"));
+        payload.insert(
+            "source_parent_node_id".to_string(),
+            entry
+                .source_parent_node_id
+                .as_ref()
+                .map_or(Value::Null, |value| serde_json::json!(value)),
+        );
+        payload.insert(
+            "source_flow_name".to_string(),
+            entry
+                .source_flow_name
+                .as_ref()
+                .map_or(Value::Null, |value| serde_json::json!(value)),
+        );
+        payload.insert(
+            "source_run_id".to_string(),
+            child_run_id
+                .as_ref()
+                .map_or(Value::Null, |value| serde_json::json!(value)),
+        );
+    }
 }
 
 pub fn journal_replay_order(left: &JournalEntry, right: &JournalEntry) -> std::cmp::Ordering {
@@ -698,11 +704,28 @@ fn journal_source_rank(entry: &JournalEntry) -> u8 {
 
 pub fn resequence_combined_journal(entries: &mut [JournalEntry]) {
     for (index, entry) in entries.iter_mut().enumerate() {
-        let sequence = (index as u64).saturating_add(1);
-        entry.sequence = sequence;
-        entry.id = format!("journal-{sequence}");
-        if let Some(payload) = entry.payload.as_object_mut() {
-            payload.insert("sequence".to_string(), serde_json::json!(sequence));
-        }
+        stamp_combined_sequence(entry, (index as u64).saturating_add(1));
     }
+}
+
+/// Assigns an entry its position in the combined journal; shared by the cold
+/// rebuild and the incremental cache.
+pub(crate) fn stamp_combined_sequence(entry: &mut JournalEntry, sequence: u64) {
+    entry.sequence = sequence;
+    entry.id = format!("journal-{sequence}");
+    if let Some(payload) = entry.payload.as_object_mut() {
+        payload.insert("sequence".to_string(), serde_json::json!(sequence));
+    }
+}
+
+/// The pre-stamp ordering key entries are merged by; the incremental cache
+/// keeps the last stamped key to detect out-of-order appends that would
+/// require renumbering history.
+pub(crate) fn replay_key(entry: &JournalEntry) -> (String, u8, u64, String) {
+    (
+        entry.emitted_at.clone(),
+        journal_source_rank(entry),
+        entry.sequence,
+        entry.id.clone(),
+    )
 }

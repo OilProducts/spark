@@ -20,6 +20,7 @@ pub mod records;
 pub mod results;
 pub mod retry;
 pub mod routing;
+pub mod journal_cache;
 pub mod segments;
 pub mod store;
 pub mod terminal;
@@ -101,7 +102,8 @@ pub use routing::{
     routing_outcome_for_node, routing_outcome_for_node_with_prior, select_next_node,
     select_next_node_with_prior, NextNodeSelection,
 };
-pub use segments::{project_run_segments, RunSegmentProjection};
+pub use segments::{project_run_segments, RunSegmentProjection, SegmentProjectionState};
+pub use journal_cache::{combined_journal_window, evict_combined_journal, CombinedJournalWindow};
 pub use store::{CreateRunRequest, RunArtifactFile, RunBundle, RunEventObserver, RunMeta, RunStore};
 pub use terminal::{
     check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,

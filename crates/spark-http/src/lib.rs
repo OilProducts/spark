@@ -540,6 +540,7 @@ pub(crate) fn publish_live_run_after(
         }
     }
     publish_terminal_run_trigger_events(settings, live_hub, run_id);
+    spark_workspace::live::evict_run_live_cache_if_terminal(settings, run_id);
     latest_sequence
 }
 

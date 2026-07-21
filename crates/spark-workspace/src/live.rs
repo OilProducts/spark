@@ -204,6 +204,25 @@ pub fn run_envelopes_after(
     run_envelopes(settings, run_id, Some(run_sequence))
 }
 
+/// Evicts the run's incremental journal cache once it reaches a terminal
+/// status, so finished runs stop holding ring and projection memory.
+pub fn evict_run_live_cache_if_terminal(settings: &SparkSettings, run_id: &str) {
+    let store = RunStore::for_settings(settings);
+    let Ok(Some(meta)) = store.read_run_meta(run_id) else {
+        return;
+    };
+    let Some(record) = meta.record else {
+        return;
+    };
+    let status = attractor_runtime::normalize_run_status(&record.status);
+    if matches!(
+        status.as_str(),
+        "completed" | "failed" | "canceled" | "cancelled" | "aborted"
+    ) {
+        attractor_runtime::evict_combined_journal(run_id);
+    }
+}
+
 pub fn latest_run_sequence(settings: &SparkSettings, run_id: &str) -> WorkspaceResult<Option<u64>> {
     let store = RunStore::for_settings(settings);
     let Some(entries) = run_journal_entries(&store, run_id)? else {
@@ -549,13 +568,35 @@ fn run_envelopes(
     run_sequence: Option<u64>,
 ) -> WorkspaceResult<Vec<LiveEnvelope>> {
     let store = RunStore::for_settings(settings);
+    let after = run_sequence.unwrap_or(0);
+    // Recent cursors are served from the incremental cache; a cursor older
+    // than the retained ring rebuilds cold, exactly as before.
+    if let Some(window) = attractor_runtime::combined_journal_window(&store, run_id, after)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+    {
+        if window.complete {
+            let (mut envelopes, contiguous) =
+                journal_envelopes_from_replay(run_id, window.entries_after, after);
+            if contiguous {
+                envelopes.extend(
+                    window
+                        .segments_after
+                        .into_iter()
+                        .map(|segment| run_segment_upsert_envelope(run_id, segment)),
+                );
+            }
+            return Ok(envelopes);
+        }
+    } else {
+        return Err(WorkspaceError::NotFound("Unknown pipeline".to_string()));
+    }
     let Some(entries) = run_journal_entries(&store, run_id)? else {
         return Err(WorkspaceError::NotFound("Unknown pipeline".to_string()));
     };
     Ok(run_envelopes_from_entries(
         run_id,
         &entries,
-        run_sequence.unwrap_or(0),
+        after,
     ))
 }
 
@@ -639,20 +680,67 @@ pub fn run_live_publication(
     after_sequence: Option<u64>,
 ) -> WorkspaceResult<Option<RunLivePublication>> {
     let store = RunStore::for_settings(settings);
-    let Some(entries) = run_journal_entries(&store, run_id)? else {
+    let after = after_sequence.unwrap_or(0);
+    // Incremental path: the cache parses only bytes appended since the last
+    // publication for this run. `complete: false` (cursor older than the
+    // retained ring) falls through to the publisher's resync behavior below.
+    let Some(window) = attractor_runtime::combined_journal_window(&store, run_id, after)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+    else {
         return Ok(None);
     };
-    let latest_sequence = entries.iter().map(|entry| entry.sequence).max();
-    let after = after_sequence.unwrap_or(0);
-    let (mut envelopes, _contiguous) = journal_envelopes_from_entries(run_id, &entries, after);
+    let latest_sequence = (window.latest_sequence > 0).then_some(window.latest_sequence);
+    let mut envelopes = if window.complete {
+        let (envelopes, _contiguous) =
+            journal_envelopes_from_replay(run_id, window.entries_after, after);
+        envelopes
+    } else {
+        vec![resync_required(
+            "run",
+            Some(run_id.to_string()),
+            None,
+            "run journal no longer contains a contiguous replay from the requested cursor",
+        )]
+    };
     // Unlike cursor replay, the publisher delivers segment upserts even when
     // the journal window resyncs: live subscribers keep converging on the
     // transcript while they refetch journal state.
-    envelopes.extend(segment_envelopes_from_entries(run_id, &entries, after));
+    envelopes.extend(
+        window
+            .segments_after
+            .into_iter()
+            .map(|segment| run_segment_upsert_envelope(run_id, segment)),
+    );
     Ok(Some(RunLivePublication {
         envelopes,
         latest_sequence,
     }))
+}
+
+/// Journal envelopes from an already-windowed replay (entries strictly after
+/// the cursor). Same contiguity contract as `journal_envelopes_from_entries`
+/// without re-filtering the full journal.
+fn journal_envelopes_from_replay(
+    run_id: &str,
+    entries_after: Vec<JournalEntry>,
+    after_sequence: u64,
+) -> (Vec<LiveEnvelope>, bool) {
+    let mut expected_sequence = after_sequence.saturating_add(1);
+    let mut envelopes = Vec::new();
+    for entry in entries_after {
+        if entry.sequence != expected_sequence {
+            envelopes.push(resync_required(
+                "run",
+                Some(run_id.to_string()),
+                None,
+                "run journal no longer contains a contiguous replay from the requested cursor",
+            ));
+            return (envelopes, false);
+        }
+        envelopes.push(run_journal_envelope(run_id, entry));
+        expected_sequence = expected_sequence.saturating_add(1);
+    }
+    (envelopes, true)
 }
 
 fn run_journal_entries(

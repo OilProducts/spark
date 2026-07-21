@@ -483,7 +483,7 @@ impl RunStore {
         read_materialized_run_result(paths)
     }
 
-    fn list_existing_run_roots(&self) -> Result<Vec<RunRootPaths>> {
+    pub(crate) fn list_existing_run_roots(&self) -> Result<Vec<RunRootPaths>> {
         if !self.runs_dir.exists() {
             return Ok(Vec::new());
         }

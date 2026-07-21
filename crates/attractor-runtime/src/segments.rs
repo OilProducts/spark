@@ -48,17 +48,61 @@ fn turn_stream_event_value(entry: &JournalEntry) -> Option<&Value> {
 }
 
 pub fn project_run_segments(entries: &[JournalEntry]) -> RunSegmentProjection {
-    let mut container = json!({});
-    let mut attempts: BTreeMap<(String, String), u64> = BTreeMap::new();
-    let mut order: Vec<String> = Vec::new();
-    let mut stamped: BTreeMap<String, Value> = BTreeMap::new();
-    let mut newest_sequence = 0u64;
-
+    let mut state = SegmentProjectionState::default();
     let mut replay = entries.to_vec();
     replay.sort_by(|left, right| left.sequence.cmp(&right.sequence));
-
     for entry in &replay {
-        newest_sequence = newest_sequence.max(entry.sequence);
+        state.apply(entry);
+    }
+    state.snapshot()
+}
+
+/// Incrementally maintained projection state: `apply` consumes journal
+/// entries in combined-sequence order, so a cached consumer replays only
+/// newly appended entries instead of the whole journal per read.
+#[derive(Debug, Default)]
+pub struct SegmentProjectionState {
+    container: Option<Value>,
+    attempts: BTreeMap<(String, String), u64>,
+    order: Vec<String>,
+    stamped: BTreeMap<String, Value>,
+    newest_sequence: u64,
+}
+
+impl SegmentProjectionState {
+    pub fn snapshot(&self) -> RunSegmentProjection {
+        RunSegmentProjection {
+            segments: self
+                .order
+                .iter()
+                .filter_map(|segment_id| self.stamped.get(segment_id).cloned())
+                .collect(),
+            newest_sequence: self.newest_sequence,
+        }
+    }
+
+    /// Segments whose latest touch is past the cursor, cloned for callers.
+    pub fn segments_touched_after(&self, after: u64) -> Vec<Value> {
+        self.order
+            .iter()
+            .filter_map(|segment_id| self.stamped.get(segment_id))
+            .filter(|segment| {
+                segment
+                    .get("latest_sequence")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|sequence| sequence > after)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn apply(&mut self, entry: &JournalEntry) {
+        let container = self.container.get_or_insert_with(|| json!({}));
+        let attempts = &mut self.attempts;
+        let order = &mut self.order;
+        let stamped = &mut self.stamped;
+        let newest_sequence = &mut self.newest_sequence;
+        *newest_sequence = (*newest_sequence).max(entry.sequence);
 
         if entry.raw_type == "StageRetrying" {
             if let Some(node_id) = entry.node_id.as_deref() {
@@ -70,21 +114,21 @@ pub fn project_run_segments(entries: &[JournalEntry]) -> RunSegmentProjection {
                     .unwrap_or_else(|| attempts.get(&key).copied().unwrap_or(0) + 1);
                 attempts.insert(key, attempt);
             }
-            continue;
+            return;
         }
 
         if !matches!(entry.raw_type.as_str(), "CodergenAdapter" | "LLMContent") {
-            continue;
+            return;
         }
         let Some(stream_event_value) = turn_stream_event_value(entry) else {
-            continue;
+            return;
         };
         let Ok(event) = serde_json::from_value::<TurnStreamEvent>(stream_event_value.clone())
         else {
-            continue;
+            return;
         };
         let Some(node_id) = entry.node_id.clone() else {
-            continue;
+            return;
         };
         let scope = scope_run_id(entry);
         let attempt = attempts
@@ -94,9 +138,9 @@ pub fn project_run_segments(entries: &[JournalEntry]) -> RunSegmentProjection {
         let turn_id = format!("{scope}:{node_id}:attempt-{attempt}");
 
         let Some(mut segment) =
-            materialize_segment_for_event(&mut container, &turn_id, &event, &entry.emitted_at)
+            materialize_segment_for_event(container, &turn_id, &event, &entry.emitted_at)
         else {
-            continue;
+            return;
         };
         set_value(&mut segment, "node_id", json!(node_id));
         set_value(&mut segment, "attempt", json!(attempt));
@@ -129,7 +173,7 @@ pub fn project_run_segments(entries: &[JournalEntry]) -> RunSegmentProjection {
         );
         // Persist the stamped copy so the next touch of this segment starts
         // from stamped state.
-        upsert_segment(&mut container, segment.clone());
+        upsert_segment(container, segment.clone());
 
         let segment_id = segment
             .get("id")
@@ -140,13 +184,5 @@ pub fn project_run_segments(entries: &[JournalEntry]) -> RunSegmentProjection {
             order.push(segment_id.clone());
         }
         stamped.insert(segment_id, segment);
-    }
-
-    RunSegmentProjection {
-        segments: order
-            .into_iter()
-            .filter_map(|segment_id| stamped.remove(&segment_id))
-            .collect(),
-        newest_sequence,
     }
 }
