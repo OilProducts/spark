@@ -62,6 +62,14 @@ const SEQUENCE_TAIL_WINDOW_BYTES: u64 = 1 << 20;
 /// None when no parseable line with a sequence falls inside the tail window
 /// (caller falls back to the full scan).
 fn latest_sequence_from_tail(paths: &RunRootPaths) -> Result<Option<u64>> {
+    Ok(latest_event_from_tail(paths)?.and_then(|event| event.sequence))
+}
+
+/// The last complete event within the tail window, without reading the rest
+/// of the log. Because every appended event carries a dense sequence, its
+/// sequence also equals the event count. Returns None for a missing or
+/// wholly unparseable tail (caller decides whether a full scan is worth it).
+pub fn latest_event_from_tail(paths: &RunRootPaths) -> Result<Option<RawRuntimeEvent>> {
     use std::io::{Read, Seek, SeekFrom};
 
     let path = paths.events_jsonl();
@@ -93,11 +101,66 @@ fn latest_sequence_from_tail(paths: &RunRootPaths) -> Result<Option<u64>> {
         let Ok(event) = serde_json::from_str::<RawRuntimeEvent>(line) else {
             continue;
         };
-        if let Some(sequence) = event.sequence {
-            return Ok(Some(sequence));
-        }
+        return Ok(Some(event));
     }
     Ok(None)
+}
+
+/// Parses events appended after `offset`, returning them with the offset of
+/// the end of the last complete line consumed. Partial trailing writes stay
+/// unconsumed so the next call picks them up once completed. A shrunken file
+/// (offset beyond the current length) returns `None`, signalling the caller
+/// to fall back to a full rebuild.
+pub fn read_raw_events_after(
+    paths: &RunRootPaths,
+    offset: u64,
+) -> Result<Option<(Vec<RawRuntimeEvent>, u64)>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let path = paths.events_jsonl();
+    if !path.exists() {
+        return Ok(if offset == 0 {
+            Some((Vec::new(), 0))
+        } else {
+            None
+        });
+    }
+    let io_error = |operation: &'static str, source: std::io::Error| {
+        crate::error::RuntimeStorageError::io(operation, &path, source)
+    };
+    let mut file = std::fs::File::open(&path).map_err(|source| io_error("open events", source))?;
+    let length = file
+        .metadata()
+        .map_err(|source| io_error("stat events", source))?
+        .len();
+    if offset > length {
+        return Ok(None);
+    }
+    if offset == length {
+        return Ok(Some((Vec::new(), offset)));
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|source| io_error("seek events", source))?;
+    let mut appended = Vec::new();
+    file.read_to_end(&mut appended)
+        .map_err(|source| io_error("read events", source))?;
+    let mut events = Vec::new();
+    let mut consumed = offset;
+    let mut line_start = 0usize;
+    while let Some(newline) = appended[line_start..].iter().position(|byte| *byte == b'\n') {
+        let line_end = line_start + newline;
+        let line = String::from_utf8_lossy(&appended[line_start..line_end]);
+        let line = line.trim();
+        if !line.is_empty() {
+            let event: RawRuntimeEvent = serde_json::from_str(line).map_err(|source| {
+                crate::error::RuntimeStorageError::json(&path, source)
+            })?;
+            events.push(event);
+        }
+        line_start = line_end + 1;
+        consumed = offset + line_start as u64;
+    }
+    Ok(Some((events, consumed)))
 }
 
 pub fn lifecycle_event(run_id: impl Into<String>, phase: impl Into<String>) -> RawRuntimeEvent {

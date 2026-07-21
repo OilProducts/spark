@@ -111,7 +111,7 @@ impl RuntimeControls {
     pub fn get_checkpoint(&self, run_id: &str) -> ControlResult<CheckpointState> {
         let bundle = self
             .store
-            .read_run_bundle(run_id)?
+            .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
         bundle
             .checkpoint
@@ -128,7 +128,7 @@ impl RuntimeControls {
     ) -> ControlResult<ContinueRunStarted> {
         let source = self
             .store
-            .read_run_bundle(&request.source_run_id)?
+            .read_run_meta(&request.source_run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
         let source_record = source.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         let source_checkpoint = source
@@ -323,7 +323,7 @@ impl RuntimeControls {
     pub fn prepare_retry(&self, run_id: &str) -> ControlResult<RetryRunPrepared> {
         let bundle = self
             .store
-            .read_run_bundle(run_id)?
+            .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
         let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         if crate::records::normalize_run_status(&record.status) != "failed" {
@@ -382,7 +382,7 @@ impl RuntimeControls {
     pub fn request_cancel(&self, run_id: &str) -> ControlResult<RuntimeControlStatus> {
         let bundle = self
             .store
-            .read_run_bundle(run_id)?
+            .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
         let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         if !matches!(
@@ -427,7 +427,7 @@ impl RuntimeControls {
     pub fn request_pause(&self, run_id: &str) -> ControlResult<RuntimeControlStatus> {
         let bundle = self
             .store
-            .read_run_bundle(run_id)?
+            .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
         let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         let current_node = bundle
@@ -457,7 +457,7 @@ impl RuntimeControls {
     ) -> ControlResult<RuntimeControlStatus> {
         let bundle = self
             .store
-            .read_run_bundle(run_id)?
+            .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
         let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         mark_record_canceled(&mut record, last_error);

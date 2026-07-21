@@ -102,7 +102,7 @@ pub use routing::{
     select_next_node_with_prior, NextNodeSelection,
 };
 pub use segments::{project_run_segments, RunSegmentProjection};
-pub use store::{CreateRunRequest, RunArtifactFile, RunBundle, RunEventObserver, RunStore};
+pub use store::{CreateRunRequest, RunArtifactFile, RunBundle, RunEventObserver, RunMeta, RunStore};
 pub use terminal::{
     check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,
     resolve_failure_retry_target, resolve_goal_gate_retry_target,

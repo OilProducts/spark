@@ -475,10 +475,10 @@ fn launch_default_child_run(
         .map(pipeline_result_to_child_result)
         .map_err(|error| error.to_string())?;
     Ok(store_for_result
-        .read_run_bundle(&child_run_id)
+        .read_run_meta(&child_run_id)
         .ok()
         .flatten()
-        .and_then(child_result_from_bundle)
+        .and_then(child_result_from_meta)
         .unwrap_or(result))
 }
 
@@ -522,14 +522,17 @@ fn resolve_child_result(
     let run_paths = runtime.run_paths.as_ref()?;
     let store = RunStore::for_runs_dir(run_paths.runs_dir.clone());
     store
-        .read_run_bundle(child_run_id)
+        .read_run_meta(child_run_id)
         .ok()
         .flatten()
-        .and_then(child_result_from_bundle)
+        .and_then(child_result_from_meta)
 }
 
-fn child_result_from_bundle(bundle: crate::store::RunBundle) -> Option<ChildRunResult> {
-    let record = bundle.record?;
+/// Observes a child from its metadata plus a tail-read of its event log:
+/// the last event's dense sequence doubles as the event count, so the
+/// manager never parses the child's full log on an observation cycle.
+fn child_result_from_meta(meta: crate::store::RunMeta) -> Option<ChildRunResult> {
+    let record = meta.record?;
     let (
         current_node,
         completed_nodes,
@@ -537,7 +540,7 @@ fn child_result_from_bundle(bundle: crate::store::RunBundle) -> Option<ChildRunR
         retry_counts,
         retry_count,
         checkpoint_timestamp,
-    ) = if let Some(checkpoint) = bundle.checkpoint {
+    ) = if let Some(checkpoint) = meta.checkpoint {
         let mut route_trace = checkpoint.completed_nodes.clone();
         if !checkpoint.current_node.is_empty()
             && route_trace.last() != Some(&checkpoint.current_node)
@@ -570,15 +573,18 @@ fn child_result_from_bundle(bundle: crate::store::RunBundle) -> Option<ChildRunR
             String::new(),
         )
     };
-    let artifact_count = crate::artifacts::list_artifacts(&bundle.paths)
+    let artifact_count = crate::artifacts::list_artifacts(&meta.paths)
         .ok()
         .map(|artifacts| artifacts.len());
-    let event_count = Some(bundle.raw_events.len());
-    let latest_event_at = bundle
-        .raw_events
-        .iter()
-        .rev()
-        .find_map(|event| non_empty(event.emitted_at.clone()))
+    let latest_event = crate::events::latest_event_from_tail(&meta.paths)
+        .ok()
+        .flatten();
+    let event_count = latest_event
+        .as_ref()
+        .and_then(|event| event.sequence)
+        .map(|sequence| sequence as usize);
+    let latest_event_at = latest_event
+        .and_then(|event| non_empty(event.emitted_at))
         .unwrap_or_default();
     Some(ChildRunResult {
         run_id: record.run_id,

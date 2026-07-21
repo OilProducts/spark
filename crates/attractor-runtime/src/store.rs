@@ -59,6 +59,17 @@ pub struct RunBundle {
     pub journal: Vec<attractor_core::JournalEntry>,
 }
 
+/// Everything about a run except its event log. Reading a `RunMeta` never
+/// touches `events.jsonl`, so it stays cheap no matter how long the run has
+/// been streaming; use it wherever the caller needs only identity, status,
+/// or resume state.
+#[derive(Debug, Clone)]
+pub struct RunMeta {
+    pub paths: RunRootPaths,
+    pub record: Option<RunRecord>,
+    pub checkpoint: Option<CheckpointState>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunArtifactFile {
     pub relative_path: String,
@@ -210,6 +221,23 @@ impl RunStore {
         Ok(Some(self.read_bundle_for_paths(paths)?))
     }
 
+    pub fn read_run_meta(&self, run_id: &str) -> Result<Option<RunMeta>> {
+        let Some(paths) = self.find_run_root(run_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.read_meta_for_paths(paths)?))
+    }
+
+    fn read_meta_for_paths(&self, paths: RunRootPaths) -> Result<RunMeta> {
+        let record = self.read_run_record(&paths)?;
+        let checkpoint = self.read_checkpoint(&paths)?;
+        Ok(RunMeta {
+            paths,
+            record,
+            checkpoint,
+        })
+    }
+
     pub fn list_run_bundles(&self) -> Result<Vec<RunBundle>> {
         let mut bundles = self
             .list_existing_run_roots()?
@@ -226,11 +254,29 @@ impl RunStore {
         Ok(bundles)
     }
 
+    /// Metadata for every run, sorted like `list_run_bundles`, without
+    /// reading any event log.
+    pub fn list_run_metas(&self) -> Result<Vec<RunMeta>> {
+        let mut metas = self
+            .list_existing_run_roots()?
+            .into_iter()
+            .map(|paths| self.read_meta_for_paths(paths))
+            .collect::<Result<Vec<_>>>()?;
+        metas.sort_by(|left, right| {
+            let left_key = record_sort_key(left.record.as_ref());
+            let right_key = record_sort_key(right.record.as_ref());
+            right_key
+                .cmp(&left_key)
+                .then_with(|| left.paths.run_id.cmp(&right.paths.run_id))
+        });
+        Ok(metas)
+    }
+
     pub fn list_run_records(&self) -> Result<Vec<RunRecord>> {
         Ok(self
-            .list_run_bundles()?
+            .list_run_metas()?
             .into_iter()
-            .filter_map(|bundle| bundle.record)
+            .filter_map(|meta| meta.record)
             .collect())
     }
 
@@ -303,14 +349,14 @@ impl RunStore {
     where
         F: FnOnce(&mut RunRecord),
     {
-        let Some(bundle) = self.read_run_bundle(run_id)? else {
+        let Some(meta) = self.read_run_meta(run_id)? else {
             return Ok(None);
         };
-        let Some(mut record) = bundle.record else {
+        let Some(mut record) = meta.record else {
             return Ok(None);
         };
         update(&mut record);
-        self.write_run_record(&bundle.paths, &record)?;
+        self.write_run_record(&meta.paths, &record)?;
         Ok(Some(record))
     }
 
@@ -510,9 +556,11 @@ fn none_if_empty(value: &str) -> Option<String> {
 }
 
 fn bundle_sort_key(bundle: &RunBundle) -> String {
-    bundle
-        .record
-        .as_ref()
+    record_sort_key(bundle.record.as_ref())
+}
+
+fn record_sort_key(record: Option<&RunRecord>) -> String {
+    record
         .and_then(|record| {
             let started_at = record.started_at.trim();
             if !started_at.is_empty() {
