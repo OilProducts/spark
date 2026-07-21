@@ -86,6 +86,52 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
 }
 
 #[test]
+fn by_handle_flow_run_request_attaches_to_in_flight_assistant_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    write_native_execution_profile(&settings);
+    write_flow(&settings, "ops/review.yaml", simple_flow());
+    seed_conversation_with_assistant_status(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-first-turn",
+        "streaming",
+    );
+    let service = WorkspaceConversationService::new(settings.clone());
+
+    let created = service
+        .create_flow_run_request_by_handle(
+            "amber-anchor",
+            FlowRunRequestCreateByHandleRequest {
+                flow_name: "ops/review.yaml".to_string(),
+                summary: "Run the approved review flow.".to_string(),
+                goal: None,
+                launch_context: None,
+                model: None,
+                llm_provider: None,
+                llm_profile: None,
+                reasoning_effort: None,
+                execution_profile_id: Some("native".to_string()),
+            },
+        )
+        .expect("request created during the conversation's first in-flight turn");
+
+    assert!(created.ok);
+    let snapshot = service
+        .get_snapshot(
+            "conversation-first-turn",
+            Some(project_path.to_str().expect("utf-8")),
+        )
+        .expect("snapshot");
+    let request = &snapshot["flow_run_requests"][0];
+    assert_eq!(request["status"], "pending");
+    assert_eq!(request["source_turn_id"], "turn-assistant");
+    assert!(runs_dir_is_empty(&settings));
+}
+
+#[test]
 fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
@@ -328,6 +374,15 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
 }
 
 fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
+    seed_conversation_with_assistant_status(settings, project_path, conversation_id, "complete");
+}
+
+fn seed_conversation_with_assistant_status(
+    settings: &SparkSettings,
+    project_path: &str,
+    conversation_id: &str,
+    assistant_status: &str,
+) {
     let registry = ProjectRegistry::new(&settings.data_dir);
     let project = registry
         .ensure_project_paths(project_path)
@@ -367,7 +422,7 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
                     "role": "assistant",
                     "content": "I can request that flow.",
                     "timestamp": "2026-01-01T00:00:01Z",
-                    "status": "complete",
+                    "status": assistant_status,
                     "kind": "message"
                 }
             ],

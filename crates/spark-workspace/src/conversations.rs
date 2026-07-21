@@ -1395,7 +1395,7 @@ impl WorkspaceConversationService {
                 "Conversation is already bound to a different project path.".to_string(),
             ));
         }
-        let parent_turn_id = latest_assistant_message_turn_id(&snapshot).ok_or_else(|| {
+        let parent_turn_id = artifact_owner_turn_id(&snapshot).ok_or_else(|| {
             WorkspaceError::Validation(
                 "Conversation has no assistant turn that can own a flow run request.".to_string(),
             )
@@ -2443,7 +2443,7 @@ impl WorkspaceConversationService {
                 "Conversation not found for project.".to_string(),
             ));
         }
-        let parent_turn_id = latest_assistant_message_turn_id(&snapshot).ok_or_else(|| {
+        let parent_turn_id = artifact_owner_turn_id(&snapshot).ok_or_else(|| {
             WorkspaceError::Validation(
                 "Conversation has no assistant turn that can own a flow launch.".to_string(),
             )
@@ -2634,7 +2634,7 @@ impl WorkspaceConversationService {
                 "Conversation not found for project.".to_string(),
             ));
         }
-        let parent_turn_id = latest_assistant_message_turn_id(&snapshot).ok_or_else(|| {
+        let parent_turn_id = artifact_owner_turn_id(&snapshot).ok_or_else(|| {
             WorkspaceError::Validation(
                 "Conversation has no assistant turn that can own a run recovery.".to_string(),
             )
@@ -3156,6 +3156,15 @@ fn find_turn<'a>(snapshot: &'a Value, turn_id: &str) -> Option<&'a Value> {
         .and_then(Value::as_array)?
         .iter()
         .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+}
+
+/// The turn that owns a conversation-scoped artifact (flow run request,
+/// flow launch, run recovery). Prefers the in-flight assistant turn:
+/// agent-initiated requests arrive mid-turn, and a fresh conversation has
+/// no completed assistant turn yet, so requiring completion would make a
+/// first-exchange request impossible.
+fn artifact_owner_turn_id(snapshot: &Value) -> Option<String> {
+    active_assistant_turn_id(snapshot).or_else(|| latest_assistant_message_turn_id(snapshot))
 }
 
 fn latest_assistant_message_turn_id(snapshot: &Value) -> Option<String> {
