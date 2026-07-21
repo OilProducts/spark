@@ -1190,8 +1190,31 @@ impl RuntimeHandlerRunner {
         .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
         self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Waiting)?;
 
+        // Incremental answer scan: the first pass reads the whole journal
+        // (a resumed gate may find its answer already recorded); afterwards
+        // each 250 ms poll parses only bytes appended since the last poll,
+        // so an unanswered gate costs nothing while it blocks — and gates
+        // block until answered, by design.
+        let mut scan_offset: Option<u64> = None;
         loop {
-            if let Some((answer_value, note)) = journaled_gate_answer(&paths, &question_id) {
+            let answer = match scan_offset {
+                None => {
+                    scan_offset = Some(events_length(&paths));
+                    journaled_gate_answer(&paths, &question_id)
+                }
+                Some(offset) => match crate::events::read_raw_events_after(&paths, offset) {
+                    Ok(Some((appended, consumed))) => {
+                        scan_offset = Some(consumed);
+                        gate_answer_in(appended.iter(), &question_id)
+                    }
+                    // Shrunk or unreadable log: rescan from scratch next poll.
+                    _ => {
+                        scan_offset = None;
+                        None
+                    }
+                },
+            };
+            if let Some((answer_value, note)) = answer {
                 self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Running)?;
                 return Ok(HumanGateWaitResult::Answered(HumanAnswer {
                     value: answer_value.clone(),
@@ -2221,9 +2244,26 @@ enum GateRunStatus {
     Running,
 }
 
+fn events_length(paths: &RunRootPaths) -> u64 {
+    std::fs::metadata(paths.events_jsonl())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
 fn journaled_gate_answer(paths: &RunRootPaths, question_id: &str) -> Option<(String, String)> {
     let events = crate::events::read_raw_events(paths).ok()?;
-    events.iter().rev().find_map(|event| {
+    gate_answer_in(events.iter().rev(), question_id)
+}
+
+/// Latest-first scan for a completed answer to `question_id`; callers pass
+/// events in the priority order they want (full history newest-first, or an
+/// appended batch in arrival order).
+fn gate_answer_in<'a>(
+    events: impl Iterator<Item = &'a attractor_core::RawRuntimeEvent>,
+    question_id: &str,
+) -> Option<(String, String)> {
+    let mut events = events;
+    events.find_map(|event| {
         if event.event_type != "InterviewCompleted" {
             return None;
         }
