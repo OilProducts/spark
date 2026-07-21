@@ -1,0 +1,9 @@
+name = "mathlab"
+defaultTargets = ["MathLab"]
+
+[[require]]
+name = "mathlib"
+path = "/opt/mathlab/mathlib4"
+
+[[lean_lib]]
+name = "MathLab"

@@ -1,0 +1,184 @@
+schema_version: '1'
+id: formalize_result
+title: Formalize Result
+description: Formalize a stated mathematical result in Lean 4 against the math-lab container's pinned Mathlib, gate on a kernel-checked build with no sorry and no new axioms, and adversarially verify that the formal statement faithfully encodes the requested claim. Launch with execution_profile_id math-lab.
+goal: Produce a kernel-checked Lean formalization of the requested result whose formal statement faithfully encodes the informal claim.
+inputs:
+- key: context.request.statement
+  label: Statement
+  type: string
+  description: The mathematical claim to formalize, stated precisely in informal language.
+  required: true
+- key: context.request.reference
+  label: Reference
+  type: string
+  description: Optional source for the result and its proof (paper, book, URL, or a proof sketch).
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  math_research:
+    launcher: true
+    required_execution_profile: math-lab
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  prepare_workspace:
+    kind: tool
+    label: Prepare Workspace
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        mkdir -p .mathlab
+        if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
+          cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
+        fi
+        if [ ! -d lean ]; then
+          cp -r /opt/mathlab/template lean
+        fi
+        git init -q 2>/dev/null || true
+    extensions:
+      tool.artifacts.stderr: prepare-workspace.stderr.txt
+      tool.artifacts.stdout: prepare-workspace.stdout.txt
+      tool.command: |-
+        set -eu
+        mkdir -p .mathlab
+        if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
+          cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
+        fi
+        if [ ! -d lean ]; then
+          cp -r /opt/mathlab/template lean
+        fi
+        git init -q 2>/dev/null || true
+  formalize:
+    kind: agent_task
+    label: Formalize
+    config:
+      kind: agent_task
+      prompt: 'Formalize the result stated in context.request.statement in Lean 4 inside the lean/ project (its Mathlib is prebuilt; never modify /opt/mathlab/mathlib4). Consult context.request.reference for the intended proof when present. Add the formal statement and its proof under lean/MathLab/, imported from lean/MathLab.lean, and record every theorem name you consider part of the deliverable in .mathlab/theorems.txt, one fully qualified name per line. Follow AGENTS.md proof-integrity rules exactly: no sorry or admit, no new axiom declarations, and if you must weaken or adjust the statement to make it provable, state the deviation explicitly in .mathlab/notes.md. If .mathlab/lean-gate.log exists, it holds the compiler output of a failed previous gate; if context.review.required_changes is present, it lists fidelity gaps a verifier found; close both. Verify locally with (cd lean && lake build) before finishing. Respond with ONLY a JSON status envelope whose context_updates set context.formalization.summary and context.formalization.theorems (the recorded theorem names).'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.statement
+      - context.request.reference
+      - context.review.required_changes
+      writes_context:
+      - context.formalization.summary
+      - context.formalization.theorems
+  lean_gate:
+    kind: tool
+    label: Lean Gate
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        mkdir -p .mathlab
+        {
+          cd lean
+          lake build
+          if grep -rn --include='*.lean' -E '\bsorry\b|\badmit\b' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: sorry/admit present in deliverable sources.'
+            exit 1
+          fi
+          if grep -rn --include='*.lean' -E '^[[:space:]]*axiom[[:space:]]' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: new axiom declared in deliverable sources.'
+            exit 1
+          fi
+        } > ../.mathlab/lean-gate.log 2>&1 || { cat ../.mathlab/lean-gate.log; exit 1; }
+        cat .mathlab/lean-gate.log
+        rm -f .mathlab/lean-gate.log
+    extensions:
+      tool.artifacts.stderr: lean-gate.stderr.txt
+      tool.artifacts.stdout: lean-gate.stdout.txt
+      tool.command: |-
+        set -eu
+        mkdir -p .mathlab
+        {
+          cd lean
+          lake build
+          if grep -rn --include='*.lean' -E '\bsorry\b|\badmit\b' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: sorry/admit present in deliverable sources.'
+            exit 1
+          fi
+          if grep -rn --include='*.lean' -E '^[[:space:]]*axiom[[:space:]]' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: new axiom declared in deliverable sources.'
+            exit 1
+          fi
+        } > ../.mathlab/lean-gate.log 2>&1 || { cat ../.mathlab/lean-gate.log; exit 1; }
+        cat .mathlab/lean-gate.log
+        rm -f .mathlab/lean-gate.log
+  review_fidelity:
+    kind: agent_task
+    label: Review Fidelity
+    config:
+      kind: agent_task
+      prompt: 'You are the adversarial reviewer of a Lean formalization. The build already passed the kernel gate; your job is the part the kernel cannot check: does the formal statement faithfully encode context.request.statement? Read the theorems named in .mathlab/theorems.txt inside lean/, and for each one check quantifier structure, hypotheses, definitional choices, and edge conditions against the informal claim — a proved theorem about the wrong statement is a violation, not a result. Run (cd lean && lake env lean) probes or #check/#print inspections as needed. Verify any stated deviations in .mathlab/notes.md are honest and prominently declared, and that AGENTS.md claim-labeling rules are followed. Return outcome success only when the formalization faithfully captures the claim or transparently declares its deviations. On failure, set context_updates for context.review.required_changes describing each fidelity gap precisely. On success, clear context.review.required_changes to null. Respond with ONLY a JSON status envelope.'
+    runtime:
+      error_policy: continue
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.statement
+      - context.formalization.theorems
+      writes_context:
+      - context.review.required_changes
+  commit_result:
+    kind: tool
+    label: Commit Result
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+          echo "Skipping commit: no repository changes detected."
+          exit 0
+        fi
+        git add -A
+        git commit -m "Formalize: $(head -c 72 .mathlab/theorems.txt 2>/dev/null | head -1 || echo result)"
+    extensions:
+      tool.artifacts.stderr: commit-result.stderr.txt
+      tool.artifacts.stdout: commit-result.stdout.txt
+      tool.command: |-
+        set -eu
+        if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+          echo "Skipping commit: no repository changes detected."
+          exit 0
+        fi
+        git add -A
+        git commit -m "Formalize: $(head -c 72 .mathlab/theorems.txt 2>/dev/null | head -1 || echo result)"
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: prepare_workspace
+- from: prepare_workspace
+  to: formalize
+- from: formalize
+  to: lean_gate
+- from: lean_gate
+  to: formalize
+  label: Fix Proof
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: lean_gate
+  to: review_fidelity
+- from: review_fidelity
+  to: formalize
+  label: Fix Fidelity
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: review_fidelity
+  to: commit_result
+- from: commit_result
+  to: done

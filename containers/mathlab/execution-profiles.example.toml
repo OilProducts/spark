@@ -1,0 +1,22 @@
+# Example SPARK_HOME/config/execution-profiles.toml registering the math
+# lab container. The container.mounts entry provides codex auth at runtime
+# from the host, read-only; nothing secret is baked into the image.
+default_execution_profile_id = "native"
+
+[profiles.native]
+id = "native"
+label = "Native"
+mode = "native"
+enabled = true
+capabilities = []
+
+[profiles.math-lab]
+id = "math-lab"
+label = "Math Lab (Lean, Mathlib, SAT/SMT, CAS)"
+mode = "local_container"
+image = "spark-mathlab:latest"
+enabled = true
+capabilities = []
+
+[profiles.math-lab.metadata]
+"container.mounts" = ["/home/YOU/.codex:/mnt/codex-auth:ro"]

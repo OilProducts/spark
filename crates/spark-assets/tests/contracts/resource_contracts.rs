@@ -11,6 +11,8 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "examples/simple-linear.yaml",
     "examples/supervision/implementation-worker.yaml",
     "examples/supervision/supervised-implementation.yaml",
+        "math-research/explore-conjecture.yaml",
+        "math-research/formalize-result.yaml",
     "software-development/audit-codebase.yaml",
     "software-development/design-change.yaml",
     "software-development/implement-change.yaml",
