@@ -62,7 +62,11 @@
     the window after/around a cursor;
   - each manager observation of a child (`resolve_child_result` in
     `manager_loop.rs`, every poll cycle) — needs only a count and a
-    timestamp.
+    timestamp;
+  - each human-gate answer poll (`journaled_gate_answer` in
+    `handlers.rs`, every 250 ms for as long as a gate blocks — and gates
+    block until answered, by design) — needs only "did an answer event
+    appear since the last poll".
   On a 46 MB / 36k-event log each such build costs ~0.8–4.4 s and a large
   transient allocation; the allocator keeps the high-water mark, so
   desktop RSS grows with the longest run seen (26.6 GB after an overnight
@@ -89,14 +93,23 @@
      caller (e.g. `child_result_from_bundle`) needs only counts — offer a
      metadata-level child summary that stats the file and tail-reads the
      last event instead.
-  2. *Incremental journal tailing.* The publisher
-     (`run_event_publisher_loop` in `crates/spark-http/src/lib.rs`) and the
-     SSE replay re-derive the combined journal from zero every time. Keep a
-     per-run in-memory cache keyed by run id holding the parsed journal
-     plus each source file's byte offset; on notify, seek to the stored
-     offset, parse only appended lines, extend the cache, and re-emit from
-     the cursor. Invalidation: file truncation or a shrunk offset (crash
-     rewrite) falls back to a full rebuild. The combined journal's
+  2. *Incremental journal tailing.* Consumer inventory (2026-07-21): no
+     recurring consumer needs more than "entries appended since an offset"
+     plus projections maintainable from them — publisher, gate poll,
+     pending-questions, and cursor replay all fit; the manager needs less
+     (stat + tail-read); full/raw history is needed only by cold one-shots
+     (transcript view, deep page-back, raw-events routes, artifact
+     capture-kind scan, end-of-run summarizer), where a from-disk rebuild
+     is acceptable. So the cache must NOT retain each run's full parsed
+     journal (that would institutionalize the RSS high-water): per active
+     run keep byte offsets per source file, a bounded recent-entry ring,
+     and small incremental projection state (segments, pending questions,
+     latest sequence), evicted when the run goes terminal; on notify, seek
+     to the stored offset and parse only appended lines; cold deep-history
+     requests rebuild from disk explicitly. Invalidation: file truncation
+     or a shrunk offset (crash rewrite) falls back to a full rebuild. A
+     sidecar index or SQLite would buy durable multi-process cursors the
+     single-server-process design does not need. The combined journal's
      re-sequencing (`resequence_combined_journal` in
      `crates/attractor-runtime/src/journals.rs`) stays stable under this
      because merge order is `(emitted_at, source rank, sequence, id)` and
