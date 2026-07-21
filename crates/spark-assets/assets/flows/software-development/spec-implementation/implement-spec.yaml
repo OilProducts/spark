@@ -144,19 +144,29 @@ nodes:
     label: Commit Milestone
     config:
       kind: tool
-      command: "set -euo pipefail\nif ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then\n  echo \"Skipping milestone\
-        \ commit: current repository is not a git work tree.\"\n  exit 0\nfi\nif git diff --quiet && git diff --cached --quiet\
-        \ && [ -z \"$(git ls-files --others --exclude-standard)\" ]; then\n  echo \"Skipping milestone commit: no repository\
-        \ changes detected.\"\n  exit 0\nfi\ngit add -A\ngit commit -m \"Accepted milestone\""
+      command: |-
+        set -euo pipefail
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          echo "Skipping milestone commit: current repository is not a git work tree."
+          exit 0
+        fi
+        milestone=$(jq -r '.id // empty' .spark/spec-implementation/current/current-milestone.json 2>/dev/null || true)
+        git add -A
+        git commit --allow-empty -m "Accepted ${milestone:-milestone}"
     execution:
       reasoning_effort: high
     extensions:
       tool.artifacts.stderr: commit-node.stderr.txt
       tool.artifacts.stdout: commit-node.stdout.txt
-      tool.command: "set -euo pipefail\nif ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then\n  echo \"Skipping\
-        \ milestone commit: current repository is not a git work tree.\"\n  exit 0\nfi\nif git diff --quiet && git diff --cached\
-        \ --quiet && [ -z \"$(git ls-files --others --exclude-standard)\" ]; then\n  echo \"Skipping milestone commit: no\
-        \ repository changes detected.\"\n  exit 0\nfi\ngit add -A\ngit commit -m \"Accepted milestone\""
+      tool.command: |-
+        set -euo pipefail
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          echo "Skipping milestone commit: current repository is not a git work tree."
+          exit 0
+        fi
+        milestone=$(jq -r '.id // empty' .spark/spec-implementation/current/current-milestone.json 2>/dev/null || true)
+        git add -A
+        git commit --allow-empty -m "Accepted ${milestone:-milestone}"
     runtime:
       allow_partial: false
       auto_status: false
