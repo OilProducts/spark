@@ -1,9 +1,7 @@
 #!/bin/sh
-# Builds the spark-mathlab execution image. Run from the repo root or this
-# directory; stages the release spark-server worker binary into the build
-# context first.
+# Builds spark-mathlab:latest from the repo root context; the worker binary
+# is compiled inside Docker for the image architecture, so this works
+# identically on Linux and macOS (Docker Desktop) hosts.
 set -eu
-cd "$(dirname "$0")"
-cargo build --release -p spark-server --manifest-path ../../Cargo.toml
-cp ../../target/release/spark-server spark-server-bin
-docker build -t spark-mathlab:latest .
+cd "$(dirname "$0")/../.."
+docker build -f containers/mathlab/Dockerfile -t spark-mathlab:latest .

@@ -10,8 +10,10 @@ z3-solver/cypari2/highspy), the codex CLI, and the spark worker entrypoint.
 
     containers/mathlab/build.sh
 
-Stages the release `spark-server` binary into the context and builds
-`spark-mathlab:latest` (~13 GB; the Mathlib cache pull dominates).
+Builds `spark-mathlab:latest` (~13 GB; the Mathlib cache pull dominates)
+from the repo root context. The worker binary compiles inside Docker for
+the image architecture, so the same build works on Linux and macOS
+(Docker Desktop) hosts, including Apple Silicon.
 
 ## Register the profile
 

@@ -1,3 +1,7 @@
+FROM rust:1.90-bookworm AS worker-builder
+COPY . /src
+RUN cargo build --release -p spark-server --manifest-path /src/Cargo.toml
+
 FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -10,11 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent runtime: codex CLI plus the spark worker entrypoint. Codex auth is
-# NOT baked into this image — the math-lab execution profile bind-mounts the
-# host ~/.codex read-only at runtime via container.mounts.
+# Agent runtime: codex CLI. Codex auth is NOT baked into this image — the
+# math-lab execution profile bind-mounts the host ~/.codex read-only at
+# runtime via container.mounts and the entrypoint seeds it into $HOME.
 RUN npm install -g @openai/codex
-COPY spark-server-bin /usr/local/bin/spark-server
 
 RUN git config --system user.name "OilProducts" \
     && git config --system user.email "christopher.l.charland@gmail.com" \
@@ -38,14 +41,18 @@ RUN git clone --depth 1 https://github.com/leanprover-community/mathlib4 /opt/ma
     && lake build
 
 # Workspace seed: flows copy this into empty math project directories.
-COPY workspace-template/ /opt/mathlab/workspace-template/
+COPY containers/mathlab/workspace-template/ /opt/mathlab/workspace-template/
 
 # Prebuilt project template: agents copy this to start proving instantly.
-COPY lean-template/ /opt/mathlab/template/
+COPY containers/mathlab/lean-template/ /opt/mathlab/template/
 RUN cp /opt/mathlab/mathlib4/lean-toolchain /opt/mathlab/template/lean-toolchain \
     && cd /opt/mathlab/template && lake build
 
-COPY mathlab-entry.sh /usr/local/bin/mathlab-entry.sh
+# Spark worker entrypoint, compiled inside Docker for the image's own
+# architecture so the image builds identically on Linux and macOS hosts.
+COPY --from=worker-builder /src/target/release/spark-server /usr/local/bin/spark-server
+
+COPY containers/mathlab/mathlab-entry.sh /usr/local/bin/mathlab-entry.sh
 RUN chmod +x /usr/local/bin/mathlab-entry.sh
 ENTRYPOINT ["/usr/local/bin/mathlab-entry.sh"]
 CMD ["tail", "-f", "/dev/null"]
