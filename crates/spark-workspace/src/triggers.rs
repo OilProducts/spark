@@ -118,13 +118,19 @@ impl WorkspaceTriggerService {
         &self,
         run_id: &str,
     ) -> WorkspaceResult<Vec<TriggerActivationOutcome>> {
-        let Some(bundle) = attractor_runtime::RunStore::for_settings(&self.settings)
-            .read_run_bundle(run_id)
+        // Record-only read: runs on every publish cycle, and a full bundle
+        // read reparses the entire event log.
+        let store = attractor_runtime::RunStore::for_settings(&self.settings);
+        let Some(paths) = store
+            .find_run_root(run_id)
             .map_err(|error| WorkspaceError::Internal(error.to_string()))?
         else {
             return Ok(Vec::new());
         };
-        let Some(record) = bundle.record else {
+        let Some(record) = store
+            .read_run_record(&paths)
+            .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+        else {
             return Ok(Vec::new());
         };
         let status = record.status.trim().to_ascii_lowercase();

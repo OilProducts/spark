@@ -225,8 +225,20 @@ pub fn run_segment_envelopes_after(
     let Some(entries) = run_journal_entries(&store, run_id)? else {
         return Ok(Vec::new());
     };
-    let projection = attractor_runtime::project_run_segments(&entries);
-    Ok(projection
+    Ok(segment_envelopes_from_entries(
+        run_id,
+        &entries,
+        after_sequence,
+    ))
+}
+
+fn segment_envelopes_from_entries(
+    run_id: &str,
+    entries: &[JournalEntry],
+    after_sequence: u64,
+) -> Vec<LiveEnvelope> {
+    let projection = attractor_runtime::project_run_segments(entries);
+    projection
         .segments
         .into_iter()
         .filter(|segment| {
@@ -236,7 +248,7 @@ pub fn run_segment_envelopes_after(
                 .is_some_and(|sequence| sequence > after_sequence)
         })
         .map(|segment| run_segment_upsert_envelope(run_id, segment))
-        .collect())
+        .collect()
 }
 
 fn run_segment_upsert_envelope(run_id: &str, segment: Value) -> LiveEnvelope {
@@ -265,13 +277,18 @@ pub fn run_upsert_envelope(
     run_id: &str,
 ) -> WorkspaceResult<Option<LiveEnvelope>> {
     let store = RunStore::for_settings(settings);
-    let Some(bundle) = store
-        .read_run_bundle(run_id)
+    // Record-only read: the upsert never uses events or checkpoint, and a
+    // full bundle read reparses the entire event log.
+    let Some(paths) = store
+        .find_run_root(run_id)
         .map_err(|error| WorkspaceError::Internal(error.to_string()))?
     else {
         return Ok(None);
     };
-    let Some(record) = bundle.record else {
+    let Some(record) = store
+        .read_run_record(&paths)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+    else {
         return Ok(None);
     };
     let project_path = normalized_record_path(&record.project_path)
@@ -535,8 +552,43 @@ fn run_envelopes(
     let Some(entries) = run_journal_entries(&store, run_id)? else {
         return Err(WorkspaceError::NotFound("Unknown pipeline".to_string()));
     };
+    Ok(run_envelopes_from_entries(
+        run_id,
+        &entries,
+        run_sequence.unwrap_or(0),
+    ))
+}
 
-    let after_sequence = run_sequence.unwrap_or(0);
+/// Journal envelopes after the cursor, plus — only for contiguous replays —
+/// the segment upserts touched in the same window. A gap terminates the list
+/// with a resync envelope and no segments: the resynced client refetches
+/// full state anyway.
+fn run_envelopes_from_entries(
+    run_id: &str,
+    entries: &[JournalEntry],
+    after_sequence: u64,
+) -> Vec<LiveEnvelope> {
+    let (mut envelopes, contiguous) = journal_envelopes_from_entries(run_id, entries, after_sequence);
+    if contiguous {
+        // Segment upserts are otherwise only published live: replay the
+        // projected segments touched after the cursor so a late subscriber
+        // converges to the same transcript without a resync.
+        envelopes.extend(segment_envelopes_from_entries(
+            run_id,
+            entries,
+            after_sequence,
+        ));
+    }
+    envelopes
+}
+
+/// Journal envelopes strictly after the cursor. Returns false when the
+/// replay hit a gap and was terminated with a resync envelope.
+fn journal_envelopes_from_entries(
+    run_id: &str,
+    entries: &[JournalEntry],
+    after_sequence: u64,
+) -> (Vec<LiveEnvelope>, bool) {
     let max_sequence = entries
         .iter()
         .map(|entry| entry.sequence)
@@ -545,7 +597,7 @@ fn run_envelopes(
     let mut expected_sequence = after_sequence.saturating_add(1);
     let mut envelopes = Vec::new();
     for entry in entries
-        .into_iter()
+        .iter()
         .filter(|entry| entry.sequence > after_sequence)
     {
         if entry.sequence != expected_sequence {
@@ -555,9 +607,9 @@ fn run_envelopes(
                 None,
                 "run journal no longer contains a contiguous replay from the requested cursor",
             ));
-            return Ok(envelopes);
+            return (envelopes, false);
         }
-        envelopes.push(run_journal_envelope(run_id, entry));
+        envelopes.push(run_journal_envelope(run_id, entry.clone()));
         expected_sequence = expected_sequence.saturating_add(1);
     }
     if envelopes.is_empty() && max_sequence > after_sequence {
@@ -567,17 +619,40 @@ fn run_envelopes(
             None,
             "run journal no longer contains a contiguous replay from the requested cursor",
         ));
-        return Ok(envelopes);
+        return (envelopes, false);
     }
-    // Segment upserts are otherwise only published live: replay the projected
-    // segments touched after the cursor so a late subscriber converges to the
-    // same transcript without a resync.
-    envelopes.extend(run_segment_envelopes_after(
-        settings,
-        run_id,
-        after_sequence,
-    )?);
-    Ok(envelopes)
+    (envelopes, true)
+}
+
+/// One publish cycle's worth of run envelopes plus the journal's newest
+/// sequence, derived from a single combined-journal build. The publisher
+/// loop uses `latest_sequence` to advance its cursor instead of rebuilding
+/// the journal a second time.
+pub struct RunLivePublication {
+    pub envelopes: Vec<LiveEnvelope>,
+    pub latest_sequence: Option<u64>,
+}
+
+pub fn run_live_publication(
+    settings: &SparkSettings,
+    run_id: &str,
+    after_sequence: Option<u64>,
+) -> WorkspaceResult<Option<RunLivePublication>> {
+    let store = RunStore::for_settings(settings);
+    let Some(entries) = run_journal_entries(&store, run_id)? else {
+        return Ok(None);
+    };
+    let latest_sequence = entries.iter().map(|entry| entry.sequence).max();
+    let after = after_sequence.unwrap_or(0);
+    let (mut envelopes, _contiguous) = journal_envelopes_from_entries(run_id, &entries, after);
+    // Unlike cursor replay, the publisher delivers segment upserts even when
+    // the journal window resyncs: live subscribers keep converging on the
+    // transcript while they refetch journal state.
+    envelopes.extend(segment_envelopes_from_entries(run_id, &entries, after));
+    Ok(Some(RunLivePublication {
+        envelopes,
+        latest_sequence,
+    }))
 }
 
 fn run_journal_entries(

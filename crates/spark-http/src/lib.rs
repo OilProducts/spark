@@ -16,7 +16,7 @@ use serde_json::Value;
 use spark_agent_adapter::{AgentTurnBackend, RustLlmAgentTurnBackend};
 use spark_common::settings::SparkSettings;
 use spark_workspace::live::{
-    latest_run_sequence, run_envelopes_after, run_upsert_envelope, trigger_upsert_envelope,
+    latest_run_sequence, run_live_publication, run_upsert_envelope, trigger_upsert_envelope,
     LiveEnvelope,
 };
 use spark_workspace::{WorkspaceError, WorkspaceTriggerService};
@@ -273,10 +273,7 @@ async fn run_event_publisher_loop(
                     &publish_hub,
                     &publish_run_id,
                     before_sequence,
-                );
-                latest_run_sequence(&publish_settings, &publish_run_id)
-                    .ok()
-                    .flatten()
+                )
             })
             .await
             .ok()
@@ -510,25 +507,26 @@ async fn attractor_dispatch(
     response
 }
 
+/// Publishes journal, segment, upsert, and milestone envelopes for the run.
+/// Returns the journal's newest sequence from the same combined-journal
+/// build (the envelopes already include the cursor window's segment
+/// upserts), so callers advance their cursor without re-deriving the
+/// journal — that rebuild used to double the cost of every publish cycle.
 pub(crate) fn publish_live_run_after(
     settings: &SparkSettings,
     live_hub: &WorkspaceLiveHub,
     run_id: &str,
     before_sequence: Option<u64>,
-) {
-    let after_sequence = before_sequence.unwrap_or(0);
-    let new_run_envelopes =
-        run_envelopes_after(settings, run_id, after_sequence).unwrap_or_default();
+) -> Option<u64> {
+    let publication = run_live_publication(settings, run_id, before_sequence)
+        .ok()
+        .flatten();
+    let (new_run_envelopes, latest_sequence) = match publication {
+        Some(publication) => (publication.envelopes, publication.latest_sequence),
+        None => (Vec::new(), None),
+    };
     for envelope in &new_run_envelopes {
         live_hub.publish(envelope.clone());
-    }
-    // Transcript segments touched by the newly published journal window.
-    if let Ok(segment_envelopes) =
-        spark_workspace::live::run_segment_envelopes_after(settings, run_id, after_sequence)
-    {
-        for envelope in segment_envelopes {
-            live_hub.publish(envelope);
-        }
     }
     if let Ok(Some(envelope)) = run_upsert_envelope(settings, run_id) {
         live_hub.publish(envelope);
@@ -542,6 +540,7 @@ pub(crate) fn publish_live_run_after(
         }
     }
     publish_terminal_run_trigger_events(settings, live_hub, run_id);
+    latest_sequence
 }
 
 async fn run_trigger_source_loop(

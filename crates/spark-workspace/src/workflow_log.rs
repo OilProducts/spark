@@ -118,13 +118,18 @@ pub fn project_run_milestones(
     new_envelopes: &[LiveEnvelope],
 ) -> WorkspaceResult<Vec<WorkflowLogEntry>> {
     let store = RunStore::for_settings(settings);
-    let Some(bundle) = store
-        .read_run_bundle(run_id)
+    // Record-only read: the projection never uses events or checkpoint, and
+    // a full bundle read reparses the entire event log.
+    let Some(paths) = store
+        .find_run_root(run_id)
         .map_err(|error| WorkspaceError::Internal(error.to_string()))?
     else {
         return Ok(Vec::new());
     };
-    let Some(record) = bundle.record else {
+    let Some(record) = store
+        .read_run_record(&paths)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+    else {
         return Ok(Vec::new());
     };
     if record.parent_run_id.is_some() {
