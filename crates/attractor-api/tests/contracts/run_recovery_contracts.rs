@@ -58,6 +58,7 @@ fn manufacture_orphaned_waiting_run(
     let store = RunStore::for_settings(settings);
     let flow = attractor_dsl::parse_flow_definition(GATE_FLOW).expect("gate flow parses");
     let mut record = attractor_core::RunRecord::new(run_id, workdir.to_string_lossy());
+    record.execution_profile_id = Some("native".to_string());
     record.flow_name = "recovery-gate".to_string();
     let launch_context = attractor_core::LaunchContext::empty();
     let runtime_context = attractor_core::ContextMap::from([(
