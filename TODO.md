@@ -45,6 +45,17 @@
   child still journals `rejected` with the current reason; the automatic
   manager path's behavior and rate limits are unchanged.
 
+- [ ] **Agent tool processes share the desktop's process scope; a runaway
+  child can OOM the whole product.** 2026-07-22: a loam validation test
+  (`loam_server-*` integration binary, spawned by a milestone child's
+  `cargo test --workspace`) allocated 116 GB, the kernel OOM killer fired
+  inside the hosting terminal scope, and the scope teardown SIGKILLed
+  spark-desktop along with it — GNOME then blamed "Spark Desktop" for the
+  memory use. The desktop itself was at ~3.2 GB. Fix directions: run
+  node tool/agent commands in their own transient systemd scope with
+  MemoryHigh/MemoryMax (native execution), and/or lean on container
+  execution profiles whose cgroups already provide the boundary; either
+  way a child's death must be a node failure, not a product crash.
 - [ ] **Playwright smoke specs** predate the runs-tab overhaul; re-record the runs
   smoke flows against the Activity stream / inspector layout. Confirmed stale
   2026-07-21: `runs-observability.spec.ts` asserts `run-advanced-panel` and
