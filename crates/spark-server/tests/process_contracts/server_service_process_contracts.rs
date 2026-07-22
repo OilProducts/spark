@@ -9,6 +9,9 @@ use std::process::{Command, Output};
 #[test]
 fn service_install_status_remove_process_uses_systemd_unit_contract() {
     let harness = ServiceHarness::new();
+    let flow_count = spark_assets::flows::starter_flow_names()
+        .expect("packaged starter flow names")
+        .len();
 
     let install = harness
         .spark_server()
@@ -32,14 +35,14 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
     assert_eq!(
         stdout_text(&install),
         format!(
-            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nSeeded flows: {}\ncreated=18 updated=0 skipped=0\n",
+            "Installed Spark user service: {}\nService name: spark.service\nListening on http://127.0.0.1:8123\nInitialized Spark at {}\nSeeded flows: {}\ncreated={flow_count} updated=0 skipped=0\n",
             harness.unit_path.display(),
             harness.data_dir.display(),
             harness.flows_dir.display()
         )
     );
 
-    assert_eq!(count_yaml_files(&harness.flows_dir), 18);
+    assert_eq!(count_yaml_files(&harness.flows_dir), flow_count);
     assert!(harness
         .data_dir
         .join("config")
