@@ -334,11 +334,12 @@ fn parse_worker_output(
         })?;
         match frame {
             WorkerFrame::Result(frame) => {
-                let mut outcome = outcome_from_payload(&frame.outcome);
-                for (key, value) in frame.context {
-                    outcome.context_updates.insert(key, value);
-                }
-                result = Some(outcome);
+                // The outcome payload already carries the node's true
+                // context_updates; frame.context is the worker's full
+                // post-node snapshot. Folding the snapshot into updates
+                // makes every containerized node appear to write the whole
+                // context, which context-update contracts rightly reject.
+                result = Some(outcome_from_payload(&frame.outcome));
             }
             WorkerFrame::Event(frame) => {
                 if let Some(paths) = &request.run_paths {

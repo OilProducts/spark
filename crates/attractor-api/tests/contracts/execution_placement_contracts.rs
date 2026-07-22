@@ -161,7 +161,22 @@ impl ContainerCommandRunner for FakeDocker {
                         "retryable": false,
                         "raw_response_text": "fake worker completed"
                     },
-                    "context": {}
+                    // The real worker echoes its full post-node context
+                    // snapshot here (request context plus runtime builtins),
+                    // not just the node's declared writes. The executor must
+                    // not fold this into context_updates or contract
+                    // enforcement rejects every containerized node.
+                    "context": {
+                        "graph.id": "worker_flow",
+                        "graph.goal": "worker flow goal",
+                        "internal.run_id": "run-fake",
+                        "internal.run_workdir": "/work",
+                        "current_node": "work",
+                        "outcome": "success",
+                        "preferred_label": "",
+                        "_attractor.node_outcomes": {"work": "success"},
+                        "_attractor.runtime.execution_mode": "local_container"
+                    }
                 }))
                 .expect("worker frame")
                     + "\n"
