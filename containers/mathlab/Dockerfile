@@ -19,9 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # runtime via container.mounts and the entrypoint seeds it into $HOME.
 RUN npm install -g @openai/codex
 
-RUN git config --system user.name "OilProducts" \
-    && git config --system user.email "christopher.l.charland@gmail.com" \
-    && git config --system safe.directory "*"
+RUN git config --system safe.directory "*"
 
 # Experimental-math Python stack.
 RUN python3 -m venv /opt/mathlab/venv \
