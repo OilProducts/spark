@@ -16,8 +16,8 @@ use serde_json::Value;
 use spark_agent_adapter::{AgentTurnBackend, RustLlmAgentTurnBackend};
 use spark_common::settings::SparkSettings;
 use spark_workspace::live::{
-    latest_run_sequence, run_live_publication, run_upsert_envelope, trigger_upsert_envelope,
-    LiveEnvelope,
+    full_run_usage_accumulator, latest_run_sequence, run_live_publication,
+    run_upsert_envelope_with_usage, trigger_upsert_envelope, LiveEnvelope, RunUsageAccumulator,
 };
 use spark_workspace::{WorkspaceError, WorkspaceTriggerService};
 use tokio::sync::{broadcast, mpsc};
@@ -244,6 +244,7 @@ async fn run_event_publisher_loop(
     cancellation: CancellationToken,
 ) {
     let mut last_published_sequence: HashMap<String, u64> = HashMap::new();
+    let mut usage_accumulators: HashMap<String, RunUsageAccumulator> = HashMap::new();
     loop {
         let first = tokio::select! {
             _ = cancellation.cancelled() => return,
@@ -267,19 +268,29 @@ async fn run_event_publisher_loop(
             let publish_settings = settings.clone();
             let publish_hub = live_hub.clone();
             let publish_run_id = run_id.clone();
-            let published_through = tokio::task::spawn_blocking(move || {
-                publish_live_run_after(
+            let mut usage = usage_accumulators.remove(&run_id);
+            let published = tokio::task::spawn_blocking(move || {
+                let sequence = publish_live_run_after_incremental(
                     &publish_settings,
                     &publish_hub,
                     &publish_run_id,
                     before_sequence,
-                )
+                    &mut usage,
+                );
+                (sequence, usage)
             })
             .await
-            .ok()
-            .flatten();
-            if let Some(sequence) = published_through {
-                last_published_sequence.insert(run_id, sequence);
+            .ok();
+            let Some((published_through, usage)) = published else {
+                continue;
+            };
+            if let Some(usage) = usage {
+                if let Some(sequence) = published_through {
+                    last_published_sequence.insert(run_id.clone(), sequence);
+                }
+                usage_accumulators.insert(run_id, usage);
+            } else {
+                last_published_sequence.remove(&run_id);
             }
         }
     }
@@ -518,17 +529,64 @@ pub(crate) fn publish_live_run_after(
     run_id: &str,
     before_sequence: Option<u64>,
 ) -> Option<u64> {
+    let mut usage = None;
+    publish_live_run_after_incremental(settings, live_hub, run_id, before_sequence, &mut usage)
+}
+
+fn publish_live_run_after_incremental(
+    settings: &SparkSettings,
+    live_hub: &WorkspaceLiveHub,
+    run_id: &str,
+    before_sequence: Option<u64>,
+    usage: &mut Option<RunUsageAccumulator>,
+) -> Option<u64> {
+    publish_live_run_after_incremental_with(
+        settings,
+        live_hub,
+        run_id,
+        before_sequence,
+        usage,
+        || full_run_usage_accumulator(settings, run_id).ok(),
+    )
+}
+
+fn publish_live_run_after_incremental_with(
+    settings: &SparkSettings,
+    live_hub: &WorkspaceLiveHub,
+    run_id: &str,
+    before_sequence: Option<u64>,
+    usage: &mut Option<RunUsageAccumulator>,
+    mut initialize_full: impl FnMut() -> Option<RunUsageAccumulator>,
+) -> Option<u64> {
     let publication = run_live_publication(settings, run_id, before_sequence)
         .ok()
         .flatten();
     let (new_run_envelopes, latest_sequence) = match publication {
-        Some(publication) => (publication.envelopes, publication.latest_sequence),
+        Some(publication) => {
+            let mut initialized_from_full_projection = false;
+            if usage.is_none() {
+                *usage = if publication.starts_at_sequence_zero {
+                    Some(RunUsageAccumulator::new(&publication.fallback_model))
+                } else {
+                    initialized_from_full_projection = true;
+                    initialize_full()
+                };
+            }
+            if !initialized_from_full_projection {
+                if let Some(usage) = usage.as_mut() {
+                    usage.apply(&publication.newly_read_entries);
+                }
+            }
+            (publication.envelopes, publication.latest_sequence)
+        }
         None => (Vec::new(), None),
     };
     for envelope in &new_run_envelopes {
         live_hub.publish(envelope.clone());
     }
-    if let Ok(Some(envelope)) = run_upsert_envelope(settings, run_id) {
+    let breakdown = usage.as_ref().and_then(|usage| usage.breakdown());
+    if let Ok(Some(envelope)) = run_upsert_envelope_with_usage(settings, run_id, breakdown.as_ref())
+    {
         live_hub.publish(envelope);
     }
     // Best-effort: workflow log projection must never fail the publish path.
@@ -540,8 +598,191 @@ pub(crate) fn publish_live_run_after(
         }
     }
     publish_terminal_run_trigger_events(settings, live_hub, run_id);
-    spark_workspace::live::evict_run_live_cache_if_terminal(settings, run_id);
+    if spark_workspace::live::evict_run_live_cache_if_terminal(settings, run_id) {
+        *usage = None;
+    }
     latest_sequence
+}
+
+#[cfg(test)]
+mod incremental_usage_tests {
+    use super::*;
+    use attractor_core::{RawRuntimeEvent, RunRecord};
+    use attractor_runtime::{CreateRunRequest, RunStore};
+    use serde_json::json;
+    use std::fs;
+
+    fn test_settings(root: &std::path::Path) -> SparkSettings {
+        let data = root.join("data");
+        SparkSettings {
+            project_root: root.to_path_buf(),
+            data_dir: data.clone(),
+            config_dir: data.join("config"),
+            runtime_dir: data.join("runtime"),
+            logs_dir: data.join("logs"),
+            workspace_dir: data.join("workspace"),
+            projects_dir: data.join("workspace/projects"),
+            attractor_dir: data.join("attractor"),
+            runs_dir: data.join("attractor/runs"),
+            flows_dir: data.join("flows"),
+            ui_dir: None,
+            project_roots: vec![root.to_path_buf()],
+        }
+    }
+
+    fn event(run_id: &str, node: &str, event_type: &str, total: u64) -> RawRuntimeEvent {
+        let mut event = RawRuntimeEvent::new("CodergenAdapter", run_id);
+        event.payload = serde_json::from_value(json!({
+            "node_id": node,
+            "adapter_event_type": event_type,
+            "payload": {"model": "gpt-5", "token_usage": {"input_tokens": total - 1, "output_tokens": 1}}
+        })).expect("payload");
+        event
+    }
+
+    fn upsert(receiver: &mut broadcast::Receiver<LiveEnvelope>) -> Value {
+        loop {
+            let envelope = receiver.try_recv().expect("published envelope");
+            if envelope.event_type == "run.upsert" {
+                return envelope.payload["run"].clone();
+            }
+        }
+    }
+
+    #[test]
+    fn real_publisher_overlays_only_new_usage_and_evicts_terminal_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = test_settings(temp.path());
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("project");
+        let store = RunStore::for_settings(&settings);
+        let mut record = RunRecord::new("live-usage", project.to_string_lossy().into_owned());
+        record.model = "gpt-5".into();
+        record.status = "running".into();
+        let paths = store
+            .create_run(CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .expect("run");
+        let hub = WorkspaceLiveHub::new();
+        let mut receiver = hub.subscribe();
+        let mut usage = None;
+
+        store
+            .append_event(
+                &paths,
+                event("live-usage", "work", "codex_app_server_session_event", 10),
+            )
+            .expect("event");
+        let cursor =
+            publish_live_run_after_incremental(&settings, &hub, "live-usage", None, &mut usage);
+        let first = upsert(&mut receiver);
+        assert_eq!(first["token_usage"], 10);
+        assert_eq!(
+            first["token_usage_breakdown"]["by_model"]["gpt-5"]["total_tokens"],
+            10
+        );
+        assert_eq!(first["estimated_model_cost"]["status"], "estimated");
+        assert_eq!(
+            store.read_run_record(&paths).unwrap().unwrap().token_usage,
+            None,
+            "live overlay must not write run.json"
+        );
+
+        // Re-publishing the same cursor applies no entry twice.
+        publish_live_run_after_incremental(&settings, &hub, "live-usage", cursor, &mut usage);
+        assert_eq!(upsert(&mut receiver)["token_usage"], 10);
+        store
+            .append_event(
+                &paths,
+                event("live-usage", "work", "codex_app_server_session_event", 20),
+            )
+            .expect("event");
+        let cursor =
+            publish_live_run_after_incremental(&settings, &hub, "live-usage", cursor, &mut usage);
+        assert_eq!(upsert(&mut receiver)["token_usage"], 20);
+
+        // A fresh publisher (reconnect/restart) reconstructs the same full projection.
+        let mut restarted = None;
+        publish_live_run_after_incremental(&settings, &hub, "live-usage", None, &mut restarted);
+        assert_eq!(upsert(&mut receiver)["token_usage"], 20);
+
+        store
+            .update_run_record("live-usage", |record| {
+                record.status = "completed".into();
+                record.token_usage = Some(20);
+            })
+            .expect("terminal");
+        publish_live_run_after_incremental(&settings, &hub, "live-usage", cursor, &mut usage);
+        assert!(usage.is_none(), "terminal publication evicts accumulator");
+        assert_eq!(
+            store.read_run_record(&paths).unwrap().unwrap().token_usage,
+            Some(20)
+        );
+    }
+
+    #[test]
+    fn incomplete_bounded_history_initializes_full_projection_once() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = test_settings(temp.path());
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).expect("project");
+        let store = RunStore::for_settings(&settings);
+        let mut record = RunRecord::new("bounded-usage", project.to_string_lossy().into_owned());
+        record.model = "gpt-5".into();
+        record.status = "running".into();
+        let paths = store
+            .create_run(CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .expect("run");
+        store
+            .append_event(
+                &paths,
+                event("bounded-usage", "work", "codex_app_server_session_event", 7),
+            )
+            .expect("usage");
+        for _ in 0..4097 {
+            let mut noise = RawRuntimeEvent::new("Log", "bounded-usage");
+            noise.payload.insert("message".into(), json!("noise"));
+            store.append_event(&paths, noise).expect("noise");
+        }
+        let hub = WorkspaceLiveHub::new();
+        let mut usage = None;
+        let mut initializations = 0;
+        let mut initialize = || {
+            initializations += 1;
+            full_run_usage_accumulator(&settings, "bounded-usage").ok()
+        };
+        let cursor = publish_live_run_after_incremental_with(
+            &settings,
+            &hub,
+            "bounded-usage",
+            Some(1),
+            &mut usage,
+            &mut initialize,
+        );
+        publish_live_run_after_incremental_with(
+            &settings,
+            &hub,
+            "bounded-usage",
+            cursor,
+            &mut usage,
+            &mut initialize,
+        );
+        drop(initialize);
+        assert_eq!(initializations, 1);
+        assert_eq!(
+            usage
+                .and_then(|usage| usage.breakdown())
+                .unwrap()
+                .totals
+                .total_tokens,
+            7
+        );
+    }
 }
 
 async fn run_trigger_source_loop(

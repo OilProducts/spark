@@ -7,7 +7,7 @@ use attractor_core::{
     FlowDefinition, FlowEdge, FlowNode, JournalEntry, LaunchContext, NodeConfig, NodeKind,
     RunRecord,
 };
-use attractor_runtime::usage::{estimate_model_cost, project_run_usage};
+use attractor_runtime::usage::{estimate_model_cost, project_run_usage, RunUsageAccumulator};
 use attractor_runtime::{
     ExecuteRunRequest, ExecutionStart, PipelineExecutor, RunStore, RuntimeHandlerRunner,
 };
@@ -216,6 +216,50 @@ fn legacy_token_usage_events_only_count_when_no_completed_event_carried_usage() 
     assert_eq!(breakdown.by_model.keys().collect::<Vec<_>>(), vec!["gpt-5"]);
 
     assert!(project_run_usage(&[], "compat-model").is_none());
+}
+
+#[test]
+fn incremental_usage_matches_full_projection_at_every_cursor() {
+    let event = |sequence, node: &str, event_type: &str, model: &str, total| {
+        journal_entry(
+            sequence,
+            "CodergenAdapter",
+            json!({
+                "node_id": node,
+                "adapter_event_type": event_type,
+                "payload": {"model": model, "token_usage": {"input_tokens": total - 1, "output_tokens": 1}}
+            }),
+        )
+    };
+    let entries = vec![
+        event(1, "build", "codex_app_server_session_event", "gpt-5", 10),
+        event(2, "build", "codex_app_server_session_event", "gpt-5", 20),
+        event(3, "verify", "rust_agent_session_event", "gpt-5.4", 7),
+        event(
+            4,
+            "build",
+            "codex_app_server_request_completed",
+            "gpt-5",
+            20,
+        ),
+        event(5, "build", "codex_app_server_request_completed", "gpt-5", 3),
+        event(
+            6,
+            "verify",
+            "rust_agent_adapter_request_completed",
+            "gpt-5.4",
+            7,
+        ),
+    ];
+    let mut incremental = RunUsageAccumulator::new("fallback");
+    for end in 1..=entries.len() {
+        incremental.apply(&entries[end - 1..end]);
+        assert_eq!(
+            incremental.breakdown(),
+            project_run_usage(&entries[..end], "fallback"),
+            "cursor {end}"
+        );
+    }
 }
 
 #[test]
@@ -453,7 +497,7 @@ fn executed_runs_persist_token_usage_and_estimated_cost_on_the_record() {
 }
 
 #[test]
-fn live_usage_persistence_is_per_run_and_preserves_concurrent_fields() {
+fn live_usage_does_not_write_run_record_mid_stage() {
     let temp = tempfile::tempdir().expect("tempdir");
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let project_path = temp.path().join("project");
@@ -513,6 +557,6 @@ fn live_usage_persistence_is_per_run_and_preserves_concurrent_fields() {
         .expect("execute");
     let observations = observations.lock().expect("observations");
     assert_eq!(observations.len(), 2);
-    assert_eq!(observations[0], (Some(10), "concurrent-status".to_string()));
+    assert_eq!(observations[0], (None, "concurrent-status".to_string()));
     assert_eq!(observations[1], (Some(10), "concurrent-status".to_string()));
 }
