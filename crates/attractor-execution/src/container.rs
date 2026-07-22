@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use attractor_core::{FailureKind, Outcome, OutcomeStatus, RawRuntimeEvent};
+use attractor_core::{FailureKind, Outcome, OutcomeStatus};
 use attractor_runtime::{
-    append_event, NodeExecutionRequest, NodeExecutor, RuntimeHandlerRunner, RuntimeNodeError,
+    NodeExecutionRequest, NodeExecutor, RuntimeHandlerRunner, RuntimeNodeError,
 };
 use serde_json::Value;
 
 use crate::modes::ExecutionMode;
 use crate::profile::ExecutionProfileSelection;
-use crate::protocol::{outcome_from_payload, WorkerFrame, WorkerNodeRequest};
+use crate::protocol::{outcome_from_payload, RunRootMetadata, WorkerFrame, WorkerNodeRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -46,6 +46,17 @@ pub struct CommandResult {
 pub trait ContainerCommandRunner: Send {
     fn command_exists(&self, program: &str) -> bool;
     fn run(&mut self, spec: CommandSpec) -> std::io::Result<CommandResult>;
+    fn run_streaming(
+        &mut self,
+        spec: CommandSpec,
+        on_stdout_line: &mut dyn FnMut(&str),
+    ) -> std::io::Result<CommandResult> {
+        let result = self.run(spec)?;
+        for line in result.stdout.lines() {
+            on_stdout_line(line);
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -81,6 +92,45 @@ impl ContainerCommandRunner for SystemCommandRunner {
             exit_code: output.status.code().unwrap_or(1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    fn run_streaming(
+        &mut self,
+        spec: CommandSpec,
+        on_stdout_line: &mut dyn FnMut(&str),
+    ) -> std::io::Result<CommandResult> {
+        let mut command = Command::new(&spec.program);
+        command
+            .args(&spec.args)
+            .envs(&spec.env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(spec.stdin.as_bytes())?;
+        }
+        let stderr = child.stderr.take().expect("piped stderr");
+        let stderr_thread = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = BufReader::new(stderr).read_to_end(&mut bytes);
+            bytes
+        });
+        let mut stdout_text = String::new();
+        let stdout = child.stdout.take().expect("piped stdout");
+        for line in BufReader::new(stdout).lines() {
+            let line = line?;
+            stdout_text.push_str(&line);
+            stdout_text.push('\n');
+            on_stdout_line(&line);
+        }
+        let status = child.wait()?;
+        let stderr = stderr_thread.join().unwrap_or_default();
+        Ok(CommandResult {
+            exit_code: status.code().unwrap_or(1),
+            stdout: stdout_text,
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
         })
     }
 }
@@ -198,6 +248,11 @@ impl ContainerizedNodeExecutor {
                 .and_then(Value::as_str)
                 .map(str::to_string),
             config_dir: std::env::var_os("SPARK_CONFIG_DIR").map(PathBuf::from),
+            run_root: request.run_paths.as_ref().map(|paths| RunRootMetadata {
+                runs_dir: paths.runs_dir.clone(),
+                project_id: paths.project_id.clone(),
+                root: paths.root.clone(),
+            }),
         };
         let stdin = serde_json::to_string(&worker_request)
             .map_err(|error| RuntimeNodeError::terminal(error.to_string()))?
@@ -215,10 +270,53 @@ impl ContainerizedNodeExecutor {
             ],
         );
         spec.stdin = stdin;
-        let result = self.command_runner.run(spec).map_err(|error| {
-            RuntimeNodeError::terminal(format!("Container node worker failed: {error}"))
-        })?;
-        let parsed = parse_worker_output(&result.stdout, &request)?;
+        let mut outcome = None;
+        let mut protocol_error = None;
+        let inner = self.inner.clone();
+        let run_paths = request.run_paths.clone();
+        let mut saw_result = false;
+        let result = self
+            .command_runner
+            .run_streaming(spec, &mut |line| {
+                if line.trim().is_empty() || protocol_error.is_some() {
+                    return;
+                }
+                let frame = match serde_json::from_str::<WorkerFrame>(line) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        protocol_error = Some(format!("invalid worker protocol frame: {error}"));
+                        return;
+                    }
+                };
+                if saw_result {
+                    protocol_error = Some("worker emitted a frame after its result".to_string());
+                    return;
+                }
+                match frame {
+                    WorkerFrame::Event(frame) => {
+                        let Some(paths) = &run_paths else {
+                            return;
+                        };
+                        if let Err(error) = inner.append_and_notify(paths, frame.event) {
+                            protocol_error =
+                                Some(format!("worker event ingestion failed: {error}"));
+                        }
+                    }
+                    WorkerFrame::Result(frame) => {
+                        saw_result = true;
+                        outcome = Some(outcome_from_payload(&frame.outcome));
+                    }
+                    _ => protocol_error = Some("unexpected worker protocol frame".to_string()),
+                }
+            })
+            .map_err(|error| {
+                RuntimeNodeError::terminal(format!("Container node worker failed: {error}"))
+            })?;
+        if let Some(error) = protocol_error {
+            return Err(RuntimeNodeError::terminal(format_diagnostic(
+                &error, &result,
+            )));
+        }
         if result.exit_code != 0 {
             return Err(RuntimeNodeError::terminal(format!(
                 "Container node worker failed with exit code {}: {}",
@@ -226,7 +324,7 @@ impl ContainerizedNodeExecutor {
                 result.stderr.trim()
             )));
         }
-        let Some(outcome) = parsed else {
+        let Some(outcome) = outcome else {
             return Err(RuntimeNodeError::terminal(
                 "Container node worker exited without a result payload.",
             ));
@@ -323,36 +421,16 @@ impl Drop for ContainerizedNodeExecutor {
     }
 }
 
-fn parse_worker_output(
-    stdout: &str,
-    request: &NodeExecutionRequest,
-) -> Result<Option<Outcome>, RuntimeNodeError> {
-    let mut result = None;
-    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
-        let frame = serde_json::from_str::<WorkerFrame>(line).map_err(|error| {
-            RuntimeNodeError::terminal(format!("invalid worker protocol frame: {error}"))
-        })?;
-        match frame {
-            WorkerFrame::Result(frame) => {
-                // The outcome payload already carries the node's true
-                // context_updates; frame.context is the worker's full
-                // post-node snapshot. Folding the snapshot into updates
-                // makes every containerized node appear to write the whole
-                // context, which context-update contracts rightly reject.
-                result = Some(outcome_from_payload(&frame.outcome));
-            }
-            WorkerFrame::Event(frame) => {
-                if let Some(paths) = &request.run_paths {
-                    let mut event = RawRuntimeEvent::new(frame.event_type, request.run_id.clone());
-                    event.payload = frame.payload;
-                    append_event(paths, event)
-                        .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
-                }
-            }
-            _ => {}
-        }
+fn format_diagnostic(message: &str, result: &CommandResult) -> String {
+    if result.stderr.trim().is_empty() {
+        format!("{message} (exit code {})", result.exit_code)
+    } else {
+        format!(
+            "{message} (exit code {}): {}",
+            result.exit_code,
+            result.stderr.trim()
+        )
     }
-    Ok(result)
 }
 
 fn container_env() -> BTreeMap<String, String> {

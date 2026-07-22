@@ -501,7 +501,22 @@ fn worker_run_node_process_accepts_json_line_request() {
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    let frame: Value = serde_json::from_slice(&output.stdout).expect("worker frame");
+    let frames: Vec<Value> = String::from_utf8(output.stdout)
+        .expect("utf8 worker frames")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("worker frame"))
+        .collect();
+    assert!(frames[..frames.len() - 1]
+        .iter()
+        .all(|frame| frame["type"] == json!("event")));
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == json!("result"))
+            .count(),
+        1
+    );
+    let frame = frames.last().expect("terminal result");
     assert_eq!(frame["type"], json!("result"));
     assert_eq!(frame["outcome"]["status"], json!("success"));
 }
@@ -562,7 +577,22 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
-    let frame: Value = serde_json::from_slice(&output.stdout).expect("worker frame");
+    let frames: Vec<Value> = String::from_utf8(output.stdout)
+        .expect("utf8 worker frames")
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("worker frame"))
+        .collect();
+    assert!(frames[..frames.len() - 1]
+        .iter()
+        .all(|frame| frame["type"] == json!("event")));
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == json!("result"))
+            .count(),
+        1
+    );
+    let frame = frames.last().expect("terminal result");
     assert_eq!(frame["type"], json!("result"));
     assert_eq!(frame["outcome"]["status"], json!("fail"));
     let reason = frame["outcome"]["failure_reason"]

@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 
 use attractor_core::ContextMap;
 use attractor_core::FlowDefinition;
-use attractor_runtime::{codergen_events_for_journal, RuntimeCodergen};
+use attractor_runtime::{
+    codergen_events_for_journal, flow_runtime::node_attrs_for_handler, outgoing_routing_edges,
+    NodeExecutionRequest, NodeExecutor, RunRootPaths, RuntimeCodergen, RuntimeHandlerRunner,
+};
 use serde_json::json;
 use spark_agent_adapter::RustLlmCodergenBackend;
 use tempfile::tempdir;
@@ -512,4 +515,62 @@ nodes:
         ],
     );
     assert_eq!(streamed.len(), execution.events.len());
+}
+
+#[test]
+fn codergen_external_sink_wins_over_reconstructed_run_paths() {
+    let flow = FlowDefinition::from_yaml_str(
+        r#"
+schema_version: '1'
+id: g
+nodes:
+  task:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: Ship it
+"#,
+    )
+    .expect("flow parses");
+    let node = flow.nodes.get("task").expect("task").clone();
+    let temp = tempdir().unwrap();
+    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    std::fs::create_dir_all(paths.logs_dir()).unwrap();
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&streamed);
+    let mut runner = RuntimeHandlerRunner::new()
+        .with_codergen_backend_factory(|| Box::new(StreamingFakeBackend))
+        .with_external_event_sink(move |event| {
+            sink_events.lock().unwrap().push(event);
+            Ok(())
+        });
+
+    runner
+        .execute(NodeExecutionRequest {
+            node_id: "task".to_string(),
+            stage_index: 0,
+            context: ContextMap::new(),
+            prompt: "Ship it".to_string(),
+            node_attrs: node_attrs_for_handler("task", &node),
+            node,
+            flow: flow.clone(),
+            outgoing_edges: outgoing_routing_edges(&flow, "task").unwrap(),
+            run_paths: Some(paths.clone()),
+            run_workdir: temp.path().to_path_buf(),
+            run_id: "run-1".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("codergen executes");
+
+    let events = streamed.lock().unwrap();
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|event| event.run_id == "run-1"));
+    assert!(events
+        .iter()
+        .all(|event| event.payload["node_id"] == json!("task")));
+    assert!(!paths.events_jsonl().exists(), "worker must not journal");
+    assert!(paths.logs_dir().join("task/response.md").exists());
 }
