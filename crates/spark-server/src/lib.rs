@@ -139,7 +139,7 @@ pub fn run() -> i32 {
     {
         return attractor_execution::run_worker_node_from_reader_writer(
             std::io::stdin().lock(),
-            std::io::stdout().lock(),
+            std::io::stdout(),
             attractor_runtime_handler_runner(),
         );
     }
@@ -266,19 +266,33 @@ fn run_worker_shell(args: &[String]) -> CommandOutput {
             if args.iter().skip(2).any(|arg| is_help_arg(arg)) {
                 return CommandOutput::stdout(0, WORKER_RUN_NODE_HELP);
             }
-            let mut stdout = Vec::new();
+            let stdout = SharedOutput::default();
             let exit_code = attractor_execution::run_worker_node_from_reader_writer(
                 std::io::Cursor::new(Vec::<u8>::new()),
-                &mut stdout,
+                stdout.clone(),
                 attractor_runtime_handler_runner(),
             );
+            let stdout_text = String::from_utf8_lossy(&stdout.0.lock().unwrap()).into_owned();
             CommandOutput {
                 exit_code,
-                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stdout: stdout_text,
                 stderr: String::new(),
             }
         }
         _ => usage_error("worker requires a subcommand"),
+    }
+}
+
+#[derive(Clone, Default)]
+struct SharedOutput(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedOutput {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 

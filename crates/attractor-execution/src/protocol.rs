@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use attractor_core::{ContextMap, FailureKind, FlowDefinition, Outcome, OutcomeStatus};
+use attractor_core::{
+    ContextMap, FailureKind, FlowDefinition, Outcome, OutcomeStatus, RawRuntimeEvent,
+};
 use attractor_runtime::{
     ChildInterventionRequest, ChildInterventionResult, ChildRunRequest, ChildRunResult,
     HumanAnswer, HumanQuestion,
@@ -30,6 +31,15 @@ pub struct WorkerNodeRequest {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_root: Option<RunRootMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunRootMetadata {
+    pub runs_dir: PathBuf,
+    pub project_id: String,
+    pub root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,9 +76,7 @@ pub struct ResultFrame {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventFrame {
-    pub event_type: String,
-    #[serde(default)]
-    pub payload: BTreeMap<String, Value>,
+    pub event: RawRuntimeEvent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -186,6 +186,30 @@ impl ContainerCommandRunner for FakeDocker {
             stderr: String::new(),
         })
     }
+
+    fn run_streaming(
+        &mut self,
+        spec: CommandSpec,
+        on_stdout_line: &mut dyn FnMut(&str),
+    ) -> std::io::Result<CommandResult> {
+        on_stdout_line(
+            &serde_json::to_string(&json!({
+                "type": "event",
+                "event": {
+                    "type": "container_live",
+                    "run_id": "run-fake",
+                    "emitted_at": "2026-07-22T12:00:00Z",
+                    "node_id": "work"
+                }
+            }))
+            .expect("event frame"),
+        );
+        let result = self.run(spec)?;
+        for line in result.stdout.lines() {
+            on_stdout_line(line);
+        }
+        Ok(result)
+    }
 }
 
 fn service_with_fake_docker(
@@ -330,6 +354,16 @@ fn waited_and_detached_container_launches_dispatch_through_docker_and_record_pla
         assert_eq!(
             record.execution_container_image.as_deref(),
             Some("spark-worker:test")
+        );
+        let store = RunStore::for_settings(&settings);
+        let paths = store.find_run_root(run_id).expect("run root").expect("run");
+        let events = store.read_raw_events(&paths).expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "container_live")
+                .count(),
+            2
         );
     }
 }
