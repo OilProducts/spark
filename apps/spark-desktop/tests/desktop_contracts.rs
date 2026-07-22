@@ -38,7 +38,10 @@ fn first_launch_seeds_packaged_flows_into_desktop_runtime() {
     let bootstrap =
         bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).expect("bootstrap");
 
-    assert_eq!(bootstrap.seeded_flows.created.len(), 18);
+    assert_eq!(
+        bootstrap.seeded_flows.created,
+        spark_assets::flows::starter_flow_names().expect("packaged starter flow names")
+    );
     assert!(bootstrap
         .settings
         .flows_dir

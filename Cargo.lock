@@ -3657,6 +3657,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spark-agent-adapter",
+ "spark-assets",
  "spark-common",
  "spark-http",
  "spark-server",
