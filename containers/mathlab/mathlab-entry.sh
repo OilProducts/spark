@@ -11,10 +11,4 @@ if [ -d /mnt/codex-auth ]; then
         fi
     done
 fi
-# Flow commit nodes need a git identity; seed a neutral container-local
-# one unless the session already provides it.
-if ! git config --global user.email >/dev/null 2>&1; then
-    git config --global user.name "MathLab Agent"
-    git config --global user.email "mathlab-agent@localhost"
-fi
 exec "$@"
