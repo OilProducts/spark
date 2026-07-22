@@ -28,6 +28,8 @@ use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
 pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
+pub type ContainerCommandRunnerFactory =
+    Arc<dyn Fn() -> Box<dyn attractor_execution::ContainerCommandRunner> + Send + Sync>;
 
 const EXECUTION_LOCK_SCOPE_PROJECT: &str = "project";
 const EXECUTION_LOCK_CONFLICT_POLICY_QUEUE: &str = "queue";
@@ -696,6 +698,7 @@ pub fn execution_placement_settings(settings: &SparkSettings) -> RuntimeRouteRes
 pub struct AttractorApiService {
     settings: SparkSettings,
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
+    container_command_runner_factory: Option<ContainerCommandRunnerFactory>,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
 }
 
@@ -714,8 +717,17 @@ impl AttractorApiService {
         Self {
             settings,
             runtime_handler_runner_factory,
+            container_command_runner_factory: None,
             run_event_observer: None,
         }
+    }
+
+    pub fn with_container_command_runner_factory(
+        mut self,
+        factory: ContainerCommandRunnerFactory,
+    ) -> Self {
+        self.container_command_runner_factory = Some(factory);
+        self
     }
 
     pub fn with_run_event_observer(
@@ -734,12 +746,60 @@ impl AttractorApiService {
         }
     }
 
-    fn observed_node_executor(&self) -> attractor_runtime::RuntimeHandlerRunner {
+    fn observed_node_executor(
+        &self,
+        selection: attractor_execution::ExecutionProfileSelection,
+    ) -> attractor_execution::ContainerizedNodeExecutor {
         let runner = (self.runtime_handler_runner_factory.as_ref())();
-        match &self.run_event_observer {
+        let runner = match &self.run_event_observer {
             Some(observer) => runner.with_run_event_observer(observer.clone()),
             None => runner,
+        };
+        let executor = attractor_execution::ContainerizedNodeExecutor::new(selection, runner);
+        match &self.container_command_runner_factory {
+            Some(factory) => executor.with_boxed_command_runner(factory()),
+            None => executor,
         }
+    }
+
+    fn recorded_execution_profile(
+        &self,
+        record: &RunRecord,
+    ) -> std::result::Result<attractor_execution::ExecutionProfileSelection, String> {
+        let profile_id = record
+            .execution_profile_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| "Run record has no execution profile id.".to_string())?;
+        let config_exists = self
+            .settings
+            .config_dir
+            .join(attractor_execution::EXECUTION_PROFILES_FILENAME)
+            .exists();
+        let selection = attractor_execution::resolve_execution_profile_by_id(
+            &self.settings,
+            config_exists.then_some(profile_id),
+            None,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+        if selection.selected_profile_id != profile_id {
+            return Err(format!(
+                "Recorded execution profile '{profile_id}' does not exist."
+            ));
+        }
+        if selection.profile.mode.as_str() != record.execution_mode
+            || selection.profile.image != record.execution_container_image
+        {
+            return Err(format!(
+                "Execution profile '{profile_id}' no longer matches the run record (recorded mode '{}', image {:?}; configured mode '{}', image {:?}).",
+                record.execution_mode,
+                record.execution_container_image,
+                selection.profile.mode.as_str(),
+                selection.profile.image,
+            ));
+        }
+        Ok(selection)
     }
 
     /// Resumes an already-prepared run (continue/retry) on a background
@@ -855,6 +915,7 @@ impl AttractorApiService {
         let record = bundle
             .record
             .ok_or_else(|| format!("Run record unavailable: {run_id}"))?;
+        let execution_selection = self.recorded_execution_profile(&record)?;
         let checkpoint = bundle
             .checkpoint
             .ok_or_else(|| format!("Checkpoint unavailable: {run_id}"))?;
@@ -876,7 +937,12 @@ impl AttractorApiService {
                 checkpoint,
             },
         };
-        self.spawn_detached_execution(bundle.paths, execute_request, lock_identity)
+        self.spawn_detached_execution(
+            bundle.paths,
+            execute_request,
+            lock_identity,
+            execution_selection,
+        )
     }
 
     /// If a continue/retry route prepared a run successfully, execute it
@@ -913,8 +979,9 @@ impl AttractorApiService {
         paths: attractor_runtime::paths::RunRootPaths,
         execute_request: ExecuteRunRequest,
         lock_identity: Option<String>,
+        execution_selection: attractor_execution::ExecutionProfileSelection,
     ) -> std::result::Result<(), String> {
-        let node_executor = self.observed_node_executor();
+        let node_executor = self.observed_node_executor(execution_selection);
         let store = execute_request.store.clone();
         let run_id = paths.run_id.clone();
         std::thread::Builder::new()
@@ -1267,7 +1334,7 @@ impl AttractorApiService {
             }
             let _live = LiveRunGuard::register(&run_id);
             let mut executor = PipelineExecutor::with_control(
-                self.observed_node_executor(),
+                self.observed_node_executor(execution_selection.clone()),
                 attractor_runtime::disk_execution_control(paths.clone()),
             );
             let result = executor.execute(execute_request);
@@ -1281,9 +1348,12 @@ impl AttractorApiService {
                 }
             }
         } else {
-            if let Err(error) =
-                self.spawn_detached_execution(paths.clone(), execute_request, lock_identity.clone())
-            {
+            if let Err(error) = self.spawn_detached_execution(
+                paths.clone(),
+                execute_request,
+                lock_identity.clone(),
+                execution_selection.clone(),
+            ) {
                 let _ = store.update_run_record(&run_id, |record| {
                     record.status = "failed".to_string();
                     record.last_error = error.clone();

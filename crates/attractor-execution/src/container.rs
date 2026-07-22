@@ -123,6 +123,14 @@ impl ContainerizedNodeExecutor {
         self
     }
 
+    pub fn with_boxed_command_runner(
+        mut self,
+        command_runner: Box<dyn ContainerCommandRunner>,
+    ) -> Self {
+        self.command_runner = command_runner;
+        self
+    }
+
     pub fn keep_container_open(mut self) -> Self {
         self.cleanup_after_execute = false;
         self
@@ -218,16 +226,13 @@ impl ContainerizedNodeExecutor {
                 result.stderr.trim()
             )));
         }
-        let Some(mut outcome) = parsed else {
+        let Some(outcome) = parsed else {
             return Err(RuntimeNodeError::terminal(
                 "Container node worker exited without a result payload.",
             ));
         };
         if self.cleanup_after_execute {
             let _ = self.close();
-        }
-        for (key, value) in request.context {
-            outcome.context_updates.entry(key).or_insert(value);
         }
         Ok(outcome)
     }

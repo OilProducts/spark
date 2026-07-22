@@ -454,6 +454,7 @@ fn retry_route_executes_the_prepared_run() {
         "run-retry-exec",
         project_path.to_string_lossy().to_string(),
     );
+    record.execution_profile_id = Some("native".to_string());
     record.flow_name = "retry-exec.yaml".to_string();
     record.status = "failed".to_string();
     let flow = attractor_dsl::parse_flow_definition(&simple_flow()).expect("flow");

@@ -331,6 +331,7 @@ fn reset_clears_only_runs_directory() {
 
 fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
+    record.execution_profile_id = Some("native".to_string());
     record.flow_name = "control.yaml".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
@@ -340,6 +341,7 @@ fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {
 
 fn running_record(run_id: &str, project_path: &Path) -> RunRecord {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
+    record.execution_profile_id = Some("native".to_string());
     record.flow_name = "control.yaml".to_string();
     record.status = "running".to_string();
     record.started_at = "2026-06-23T10:00:00Z".to_string();
