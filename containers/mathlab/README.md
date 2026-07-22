@@ -29,6 +29,11 @@ layers.
 Launch a flow with `execution_profile_id: "math-lab"`. The flows under
 `flows/math-research/` are designed for this profile and seed empty
 project directories from `/opt/mathlab/workspace-template` (integrity
-rules in its AGENTS.md) and `/opt/mathlab/template` (a Lean project
-wired to the image's prebuilt Mathlib; pinned commit recorded in
-`/opt/mathlab/MATHLIB_COMMIT`).
+rules in its AGENTS.md; cross-session memory template in its DOSSIER.md)
+and `/opt/mathlab/template` (a Lean project wired to the image's prebuilt
+Mathlib; pinned commit recorded in `/opt/mathlab/MATHLIB_COMMIT`).
+
+Sessions on the same problem should reuse one project directory: every
+math-research flow reads the workspace's `DOSSIER.md` before working and
+appends a session entry before committing, so results, failed attacks,
+and repaired statements accumulate across runs.

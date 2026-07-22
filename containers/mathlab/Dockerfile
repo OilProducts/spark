@@ -8,7 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git jq unzip zstd \
     build-essential cmake pkg-config \
-    python3 python3-pip python3-venv \
+    python3 python3-dev python3-pip python3-venv \
     pari-gp nauty z3 cadical kissat drat-trim cvc5 \
     coinor-cbc coinor-csdp glpk-utils \
     nodejs npm \

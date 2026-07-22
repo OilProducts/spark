@@ -1,0 +1,408 @@
+schema_version: '1'
+id: prove_refute
+title: Prove or Refute
+description: Attack a conjecture from both sides at once — a prover branch attempts a kernel-checked Lean proof while a refuter branch searches for machine-verified counterexamples — exchanging stuck lemmas and near-misses each round, with an arbiter that settles, repairs the statement, or continues, and honest budget-bounded synthesis into the dossier. Launch with execution_profile_id math-lab.
+goal: Settle the stated conjecture — prove it, refute it, or repair it — with every claim backed by a machine-checked artifact, and record what the session learned in the dossier.
+inputs:
+- key: context.request.conjecture
+  label: Conjecture
+  type: string
+  description: The conjecture to attack, stated precisely enough that a proof attempt and a counterexample search target the same claim.
+  required: true
+- key: context.request.notes
+  label: Notes
+  type: string
+  description: Optional known results, definitions, constraints, or prior-session pointers worth starting from.
+  required: false
+- key: context.request.max_rounds
+  label: Max Rounds
+  type: string
+  description: Maximum number of prove/refute rounds before the session synthesizes what it has (default 3).
+  required: false
+defaults:
+  fidelity: summary:high
+  llm_provider: codex
+  llm_model: gpt-5.6-sol
+metadata:
+  math_research:
+    launcher: true
+    required_execution_profile: math-lab
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  prepare_workspace:
+    kind: tool
+    label: Prepare Workspace
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        mkdir -p .mathlab shared prover refuter
+        if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
+          cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
+        fi
+        if [ ! -f DOSSIER.md ] && [ -f /opt/mathlab/workspace-template/DOSSIER.md ]; then
+          cp /opt/mathlab/workspace-template/DOSSIER.md DOSSIER.md
+        fi
+        git init -q 2>/dev/null || true
+    extensions:
+      tool.artifacts.stderr: prepare-workspace.stderr.txt
+      tool.artifacts.stdout: prepare-workspace.stdout.txt
+      tool.command: |-
+        set -eu
+        mkdir -p .mathlab shared prover refuter
+        if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
+          cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
+        fi
+        if [ ! -f DOSSIER.md ] && [ -f /opt/mathlab/workspace-template/DOSSIER.md ]; then
+          cp /opt/mathlab/workspace-template/DOSSIER.md DOSSIER.md
+        fi
+        git init -q 2>/dev/null || true
+  frame_problem:
+    kind: agent_task
+    label: Frame Problem
+    config:
+      kind: agent_task
+      prompt: 'Read DOSSIER.md first per AGENTS.md dossier discipline: it records prior sessions'' results, failed attacks, and the current statement version. Frame this session without attempting proofs or experiments yet. Write shared/statement.md containing Statement v1: the conjecture from context.request.conjecture restated precisely, with every definition, quantifier, and range pinned so that a proof attempt and a counterexample search attack the same claim; fold in context.request.notes when present, and if the dossier already carries a repaired statement version for this problem, adopt that as the starting statement and say so. Initialize shared/exchange.md with a Round 0 section: what is known, the most promising proof avenues, the most promising counterexample families, and any dossier-recorded failed attacks that must not be repeated blind. Write the round budget to .mathlab/max-rounds: the integer value of context.request.max_rounds, or 3 when it is unset. Respond with ONLY a JSON status envelope whose context_updates set context.statement.current.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.conjecture
+      - context.request.notes
+      - context.request.max_rounds
+      writes_context:
+      - context.statement.current
+  fan_out:
+    kind: parallel
+    label: Prove And Refute
+    config:
+      kind: parallel
+      join_policy: wait_all
+      max_parallel: 2
+  prove:
+    kind: agent_task
+    label: Prove
+    config:
+      kind: agent_task
+      prompt: 'You are the prover branch of an adversarial prove/refute session, running in parallel with a counterexample search. Work ONLY inside prover/ — never write outside it and never run git commands; the refuter branch shares this repository. Read shared/statement.md and attack its latest statement version; read shared/exchange.md — the refuter''s near-misses from earlier rounds are your case analysis (they show where the obstruction lives), and your own earlier stuck points are recorded there. Attempt a proof: informal argument first, then formalize what you can in Lean 4 under prover/lean (copy /opt/mathlab/template to prover/lean if it does not exist; Mathlib is prebuilt; never modify /opt/mathlab/mathlib4). Follow AGENTS.md proof-integrity rules exactly. Create the marker file prover/PROVED if and only if you hold a complete kernel-checked proof of the full latest statement — (cd prover/lean && lake build) succeeds with no sorry, no admit, and no new axioms; delete any stale prover/PROVED marker whose claim you no longer stand behind. Either way write prover/report.md: status, method, lemmas actually proved with their Lean names, and — most importantly when stuck — the precise statement of the smallest lemma you cannot prove, stated so the refuter can attack it directly next round. If .mathlab/prover-gate.log exists it holds the output of a failed previous gate; fix the proof honestly or withdraw the marker rather than weakening the statement silently. Respond with ONLY a JSON status envelope whose context_updates set context.prover.summary.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.statement.current
+      writes_context:
+      - context.prover.summary
+  prover_gate:
+    kind: tool
+    label: Prover Gate
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        mkdir -p .mathlab
+        if [ ! -f prover/PROVED ]; then
+          echo 'No complete proof claimed this round; gate passes.'
+          rm -f .mathlab/prover-gate.log
+          exit 0
+        fi
+        if (
+          cd prover/lean
+          lake build
+          if grep -rn --include='*.lean' -E '\bsorry\b|\badmit\b' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: sorry/admit present in claimed proof.'
+            exit 1
+          fi
+          if grep -rn --include='*.lean' -E '^[[:space:]]*axiom[[:space:]]' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: new axiom declared in claimed proof.'
+            exit 1
+          fi
+        ) > .mathlab/prover-gate.log 2>&1; then
+          cat .mathlab/prover-gate.log
+          rm -f .mathlab/prover-gate.log
+        else
+          cat .mathlab/prover-gate.log
+          exit 1
+        fi
+    extensions:
+      tool.artifacts.stderr: prover-gate.stderr.txt
+      tool.artifacts.stdout: prover-gate.stdout.txt
+      tool.command: |-
+        set -eu
+        mkdir -p .mathlab
+        if [ ! -f prover/PROVED ]; then
+          echo 'No complete proof claimed this round; gate passes.'
+          rm -f .mathlab/prover-gate.log
+          exit 0
+        fi
+        if (
+          cd prover/lean
+          lake build
+          if grep -rn --include='*.lean' -E '\bsorry\b|\badmit\b' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: sorry/admit present in claimed proof.'
+            exit 1
+          fi
+          if grep -rn --include='*.lean' -E '^[[:space:]]*axiom[[:space:]]' MathLab MathLab.lean; then
+            echo 'GATE FAILURE: new axiom declared in claimed proof.'
+            exit 1
+          fi
+        ) > .mathlab/prover-gate.log 2>&1; then
+          cat .mathlab/prover-gate.log
+          rm -f .mathlab/prover-gate.log
+        else
+          cat .mathlab/prover-gate.log
+          exit 1
+        fi
+  refute:
+    kind: agent_task
+    label: Refute
+    config:
+      kind: agent_task
+      prompt: 'You are the refuter branch of an adversarial prove/refute session, running in parallel with a proof attempt. Work ONLY inside refuter/ — never write outside it and never run git commands; the prover branch shares this repository. Read shared/statement.md and attack its latest statement version; read shared/exchange.md — the prover''s stuck lemma from earlier rounds is your highest-value target, since a counterexample to it redirects the whole proof, and your own earlier near-misses are recorded there. Search for counterexamples with the installed engines (nauty-geng enumeration, cadical/kissat with DRAT certificates, z3/cvc5, PARI/GP, bespoke Python or C programs) implemented as fixed-seed runnable programs under refuter/ with raw outputs kept. Write refuter/verify.sh: a deterministic script that re-checks every machine-checkable claim this branch makes — counterexample property checks, drat-trim on each certificate, digest comparison of exhaustive-search outputs — and exits nonzero on any mismatch; the branch gate runs it, and evidence it cannot re-verify does not exist. If you find a genuine counterexample, shrink it before reporting: repeatedly reduce its size or parameters while re-verifying it still violates the statement, and record the shrink trajectory; then create the marker file refuter/REFUTED and write refuter/counterexample.md with the minimal witness and its verification. Delete any stale refuter/REFUTED marker whose claim you no longer stand behind. If you find no counterexample, write refuter/report.md reporting near-misses honestly: the extremal objects that came closest, exactly which hypothesis blocked each one, and the exhausted scope stated only as large as the programs actually cover. If .mathlab/refuter-gate.log exists it holds the output of a failed previous gate; fix the evidence or the script honestly rather than weakening checks. Respond with ONLY a JSON status envelope whose context_updates set context.refuter.summary.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.statement.current
+      writes_context:
+      - context.refuter.summary
+  refuter_gate:
+    kind: tool
+    label: Refuter Gate
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        mkdir -p .mathlab
+        if [ ! -f refuter/verify.sh ]; then
+          echo 'GATE FAILURE: refuter/verify.sh is missing.' | tee .mathlab/refuter-gate.log
+          exit 1
+        fi
+        if bash refuter/verify.sh > .mathlab/refuter-gate.log 2>&1; then
+          if [ -f refuter/REFUTED ] && [ ! -f refuter/counterexample.md ]; then
+            echo 'GATE FAILURE: REFUTED claimed without refuter/counterexample.md.' | tee -a .mathlab/refuter-gate.log
+            exit 1
+          fi
+          cat .mathlab/refuter-gate.log
+          rm -f .mathlab/refuter-gate.log
+        else
+          cat .mathlab/refuter-gate.log
+          exit 1
+        fi
+    extensions:
+      tool.artifacts.stderr: refuter-gate.stderr.txt
+      tool.artifacts.stdout: refuter-gate.stdout.txt
+      tool.command: |-
+        set -eu
+        mkdir -p .mathlab
+        if [ ! -f refuter/verify.sh ]; then
+          echo 'GATE FAILURE: refuter/verify.sh is missing.' | tee .mathlab/refuter-gate.log
+          exit 1
+        fi
+        if bash refuter/verify.sh > .mathlab/refuter-gate.log 2>&1; then
+          if [ -f refuter/REFUTED ] && [ ! -f refuter/counterexample.md ]; then
+            echo 'GATE FAILURE: REFUTED claimed without refuter/counterexample.md.' | tee -a .mathlab/refuter-gate.log
+            exit 1
+          fi
+          cat .mathlab/refuter-gate.log
+          rm -f .mathlab/refuter-gate.log
+        else
+          cat .mathlab/refuter-gate.log
+          exit 1
+        fi
+  join:
+    kind: fan_in
+    label: Join
+    config:
+      kind: fan_in
+  arbiter:
+    kind: agent_task
+    label: Arbiter
+    config:
+      kind: agent_task
+      prompt: 'You are the arbiter of an adversarial prove/refute session; a round of parallel prover and refuter work just finished. Read shared/statement.md, shared/exchange.md, prover/report.md, refuter/report.md, refuter/counterexample.md when present, and .mathlab/round. Markers carry mechanical weight: prover/PROVED means the Lean build passed the kernel gate, refuter/REFUTED means the counterexample re-verified — but if .mathlab/prover-gate.log or .mathlab/refuter-gate.log exists, that branch''s claim failed its gate this round and must be treated as unverified. Check fidelity yourself before trusting a marker: PROVED settles the session only if the Lean statement faithfully encodes the latest statement version (check quantifier structure, hypotheses, and definitional choices against shared/statement.md); REFUTED settles it only if the witness violates that statement as written, not a strawman. Then decide the round. Respond with ONLY a JSON status envelope whose outcome is success, whose context_updates set context.arbiter.decision to a short justification, and whose preferred_label is exactly one of: Findings — the statement is settled (faithfully proved, or faithfully refuted with no repair worth pursuing) or further rounds are clearly not worth their budget, so proceed to synthesis; Repair — the statement needs surgery: a verified counterexample kills the current version but the near-miss pattern points to a natural weakening, the proof went through only for a materially different statement worth adopting, or PROVED and REFUTED both stand — which means the branches encoded different claims and the definitions must be re-pinned; Continue — the statement stands unsettled and another round is warranted. Before responding, append a round section to shared/exchange.md: on Continue, record what each side established, the prover''s stuck lemma as the refuter''s next target, the refuter''s near-misses as the prover''s case hints, and any claim that failed its gate, named as unverified; on Repair or Findings, record the verdict evidence instead.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - parallel.results
+      - context.statement.current
+      writes_context:
+      - context.arbiter.decision
+  repair_statement:
+    kind: agent_task
+    label: Repair Statement
+    config:
+      kind: agent_task
+      prompt: 'You are the statement surgeon of the prove/refute session. The arbiter routed here because the current statement version needs surgery; read context.arbiter.decision, shared/statement.md, shared/exchange.md, and both branch reports. Append a new numbered statement version to shared/statement.md — never rewrite earlier versions — stating the revised claim with every definition, quantifier, and range pinned, the exact edit relative to the previous version, and the evidence that forced it. A repair may weaken (exclude a counterexample family by an honest structural hypothesis, never by enumerating away the known witnesses) or strengthen (adopt the stronger or corrected claim the proof attempt actually established). The revision must be checked, not guessed: verify computationally that it survives every verified counterexample and near-miss recorded so far — a small script or direct evaluation under shared/ is fine — and record the check you ran in the new version''s section. Delete any prover/PROVED or refuter/REFUTED markers, since they refer to the previous statement version. Respond with ONLY a JSON status envelope whose context_updates set context.statement.current.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.arbiter.decision
+      writes_context:
+      - context.statement.current
+  round_gate:
+    kind: tool
+    label: Round Gate
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        mkdir -p .mathlab
+        ROUND="$(cat .mathlab/round 2>/dev/null || echo 0)"
+        ROUND=$((ROUND + 1))
+        printf '%s\n' "$ROUND" > .mathlab/round
+        MAX="$(cat .mathlab/max-rounds 2>/dev/null || echo 3)"
+        if [ "$ROUND" -ge "$MAX" ]; then
+          echo "BUDGET EXHAUSTED: round $ROUND of $MAX complete; proceeding to synthesis."
+          exit 1
+        fi
+        echo "Round $ROUND of $MAX complete; starting next round."
+    extensions:
+      tool.artifacts.stderr: round-gate.stderr.txt
+      tool.artifacts.stdout: round-gate.stdout.txt
+      tool.command: |-
+        set -eu
+        mkdir -p .mathlab
+        ROUND="$(cat .mathlab/round 2>/dev/null || echo 0)"
+        ROUND=$((ROUND + 1))
+        printf '%s\n' "$ROUND" > .mathlab/round
+        MAX="$(cat .mathlab/max-rounds 2>/dev/null || echo 3)"
+        if [ "$ROUND" -ge "$MAX" ]; then
+          echo "BUDGET EXHAUSTED: round $ROUND of $MAX complete; proceeding to synthesis."
+          exit 1
+        fi
+        echo "Round $ROUND of $MAX complete; starting next round."
+  synthesize:
+    kind: agent_task
+    label: Synthesize
+    config:
+      kind: agent_task
+      prompt: 'Synthesize the session into findings.md: the statement history (every version in shared/statement.md with what forced each revision), the verdict — proved, refuted, or open — with the verified evidence behind it, the prover''s progress (lemmas proved with Lean names, the final stuck point), the refuter''s coverage (verified counterexamples, or exact exhausted scopes and near-misses), and the smallest open case. Read .mathlab/round and .mathlab/max-rounds and note plainly when the session ended on budget rather than resolution. Label every claim per AGENTS.md and state the exact scope of every computation: a proof counts only if its marker passed the kernel gate, a counterexample only if it re-verified. Then append a session entry to DOSSIER.md per its structure and update its status board: statement version attacked, verdict, established results, failed attacks with what they taught, verified data locations, and open subproblems with the stuck lemma first. Dossier entries are append-only. If context.review.required_changes is present, close those gaps. Propose the natural next session in a closing section of findings.md. Respond with ONLY a JSON status envelope whose context_updates set context.findings.summary.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.arbiter.decision
+      - context.review.required_changes
+      writes_context:
+      - context.findings.summary
+  review_findings:
+    kind: agent_task
+    label: Review Findings
+    config:
+      kind: agent_task
+      prompt: 'You are the adversarial reviewer of a prove/refute session. Treat findings.md, DOSSIER.md, and both branch directories as untrusted claims. Check that the verdict matches the mechanically verified artifacts: a proved verdict requires the kernel-checked Lean build in prover/lean whose formal statement faithfully encodes the final statement version in shared/statement.md, and a refuted verdict requires the counterexample to re-verify — run refuter/verify.sh yourself — against that statement as written. Check that every claim is labeled per AGENTS.md and the label is truthful, that computational scopes match what the programs actually cover (read the programs, not the prose), that the statement history in findings.md matches shared/statement.md, and that the DOSSIER.md session entry is honest and append-only — failed attacks recorded, nothing inflated, no prior entries rewritten. Spot-check by re-running at least one verification. Return outcome success only when the findings and the dossier entry are honest, scoped, and verified. On failure, set context_updates for context.review.required_changes listing each violation precisely. On success, clear context.review.required_changes to null. Respond with ONLY a JSON status envelope.'
+    runtime:
+      error_policy: continue
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.findings.summary
+      writes_context:
+      - context.review.required_changes
+  commit_findings:
+    kind: tool
+    label: Commit Findings
+    config:
+      kind: tool
+      command: |-
+        set -eu
+        if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+          echo "Skipping commit: no repository changes detected."
+          exit 0
+        fi
+        git add -A
+        git commit -m "ProveRefute: $(head -c 72 shared/statement.md 2>/dev/null | head -1 || echo session)"
+    extensions:
+      tool.artifacts.stderr: commit-findings.stderr.txt
+      tool.artifacts.stdout: commit-findings.stdout.txt
+      tool.command: |-
+        set -eu
+        if git diff --quiet && git diff --cached --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+          echo "Skipping commit: no repository changes detected."
+          exit 0
+        fi
+        git add -A
+        git commit -m "ProveRefute: $(head -c 72 shared/statement.md 2>/dev/null | head -1 || echo session)"
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: prepare_workspace
+- from: prepare_workspace
+  to: frame_problem
+- from: frame_problem
+  to: fan_out
+# The weighted fan_out -> join edge does double duty: inside the parallel
+# handler it is a trivially-succeeding branch (it starts at the fan-in and
+# returns immediately), and after the fan-out completes the main traversal
+# prefers it by weight, so neither real branch is re-executed sequentially.
+- from: fan_out
+  to: join
+  weight: 1
+- from: fan_out
+  to: prove
+- from: fan_out
+  to: refute
+- from: prove
+  to: prover_gate
+- from: prover_gate
+  to: prove
+  label: Fix Proof
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: prover_gate
+  to: join
+- from: refute
+  to: refuter_gate
+- from: refuter_gate
+  to: refute
+  label: Fix Evidence
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: refuter_gate
+  to: join
+- from: join
+  to: arbiter
+- from: arbiter
+  to: repair_statement
+  label: Repair
+  condition: preferred_label=Repair
+  extensions:
+    loop_restart: false
+- from: arbiter
+  to: round_gate
+  label: Continue
+  condition: preferred_label=Continue
+  extensions:
+    loop_restart: false
+- from: arbiter
+  to: synthesize
+  label: Findings
+- from: repair_statement
+  to: round_gate
+- from: round_gate
+  to: synthesize
+  label: Budget Exhausted
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: round_gate
+  to: fan_out
+  label: Next Round
+- from: synthesize
+  to: review_findings
+- from: review_findings
+  to: synthesize
+  label: Fix Findings
+  condition: outcome=fail
+  extensions:
+    loop_restart: false
+- from: review_findings
+  to: commit_findings
+- from: commit_findings
+  to: done

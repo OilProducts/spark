@@ -39,6 +39,9 @@ nodes:
         if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
           cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
         fi
+        if [ ! -f DOSSIER.md ] && [ -f /opt/mathlab/workspace-template/DOSSIER.md ]; then
+          cp /opt/mathlab/workspace-template/DOSSIER.md DOSSIER.md
+        fi
         git init -q 2>/dev/null || true
     extensions:
       tool.artifacts.stderr: prepare-workspace.stderr.txt
@@ -49,13 +52,16 @@ nodes:
         if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
           cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
         fi
+        if [ ! -f DOSSIER.md ] && [ -f /opt/mathlab/workspace-template/DOSSIER.md ]; then
+          cp /opt/mathlab/workspace-template/DOSSIER.md DOSSIER.md
+        fi
         git init -q 2>/dev/null || true
   survey:
     kind: agent_task
     label: Survey
     config:
       kind: agent_task
-      prompt: 'Survey the problem stated in context.request.problem (narrowed by context.request.focus when present) without running experiments yet. Restate the problem precisely, record what is known — including whether the problem or nearby cases are already resolved in the literature, labeled per AGENTS.md rules — and design a small set of concrete computational experiments the installed engines can run (SAT via cadical/kissat with DRAT certificates, SMT via z3/cvc5, graph enumeration via nauty-geng, number theory via PARI/GP, optimization via CBC/CSDP, bespoke programs in Python or C). Write the survey and the experiment plan to survey.md. Respond with ONLY a JSON status envelope whose context_updates set context.survey.summary and context.survey.plan.'
+      prompt: 'Read DOSSIER.md first per AGENTS.md dossier discipline: do not re-derive results it records, and do not re-run attacks it records as failed without a new reason. Then survey the problem stated in context.request.problem (narrowed by context.request.focus when present) without running experiments yet. Restate the problem precisely, record what is known — including whether the problem or nearby cases are already resolved in the literature, labeled per AGENTS.md rules — and design a small set of concrete computational experiments the installed engines can run (SAT via cadical/kissat with DRAT certificates, SMT via z3/cvc5, graph enumeration via nauty-geng, number theory via PARI/GP, optimization via CBC/CSDP, bespoke programs in Python or C). Write the survey and the experiment plan to survey.md. Respond with ONLY a JSON status envelope whose context_updates set context.survey.summary and context.survey.plan.'
     contracts:
       response: status_envelope
       reads_context:
@@ -118,7 +124,7 @@ nodes:
     label: Synthesize
     config:
       kind: agent_task
-      prompt: 'Synthesize the verified experimental results into findings.md: what was computed, what it suggests, and what it rules out. Label every claim per AGENTS.md — new proof, formalization of a known result, located in literature, or computational evidence — and state the exact scope of each computation (parameters covered, cases exhausted, certificates checked). Conjectures must be stated as conjectures with the evidence that motivates them and the smallest open case. Propose the natural next session in a closing section. Respond with ONLY a JSON status envelope whose context_updates set context.findings.summary.'
+      prompt: 'Synthesize the verified experimental results into findings.md: what was computed, what it suggests, and what it rules out. Label every claim per AGENTS.md — new proof, formalization of a known result, located in literature, or computational evidence — and state the exact scope of each computation (parameters covered, cases exhausted, certificates checked). Conjectures must be stated as conjectures with the evidence that motivates them and the smallest open case. Then append a session entry to DOSSIER.md per its structure and update its status board: outcome, established results, failed attacks with what they taught, verified data locations, and open subproblems; dossier entries are append-only. Propose the natural next session in a closing section. Respond with ONLY a JSON status envelope whose context_updates set context.findings.summary.'
     contracts:
       response: status_envelope
       reads_context:
@@ -131,7 +137,7 @@ nodes:
     label: Review Findings
     config:
       kind: agent_task
-      prompt: 'You are the adversarial reviewer of experimental mathematics. Treat findings.md and experiments/ as untrusted claims. Check that every claim is labeled per AGENTS.md and the label is truthful; that computational scopes are stated exactly and match what the programs actually cover (read the programs, not the prose); that certificates exist and experiments/verify.sh genuinely re-checks them rather than rubber-stamping; and that nothing presented as evidence is unreproducible. Spot-check by re-running at least one experiment. Return outcome success only when the findings are honest, scoped, and verified. On failure, set context_updates for context.review.required_changes listing each violation precisely, and route your outcome preferred_label to the node that owns the fix: Experiment for evidence problems, Synthesize for labeling or scope problems. On success, clear context.review.required_changes to null. Respond with ONLY a JSON status envelope.'
+      prompt: 'You are the adversarial reviewer of experimental mathematics. Treat findings.md, DOSSIER.md, and experiments/ as untrusted claims. Check that every claim is labeled per AGENTS.md and the label is truthful; that computational scopes are stated exactly and match what the programs actually cover (read the programs, not the prose); that certificates exist and experiments/verify.sh genuinely re-checks them rather than rubber-stamping; and that nothing presented as evidence is unreproducible. Check the DOSSIER.md session entry: it must be present, honest, and append-only — failed attacks recorded, nothing inflated, no prior entries rewritten. Spot-check by re-running at least one experiment. Return outcome success only when the findings are honest, scoped, and verified. On failure, set context_updates for context.review.required_changes listing each violation precisely, and route your outcome preferred_label to the node that owns the fix: Experiment for evidence problems, Synthesize for labeling or scope problems. On success, clear context.review.required_changes to null. Respond with ONLY a JSON status envelope.'
     runtime:
       error_policy: continue
     contracts:

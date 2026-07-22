@@ -20,6 +20,16 @@ are not negotiable and may not be redefined:
   known proof, and (c) a result located in existing literature. All three
   are valuable; mislabeling one as another is a violation.
 
+## Dossier discipline
+
+DOSSIER.md is the problem's memory across sessions. Read it before doing
+anything else; do not re-derive results it records or re-run attacks it
+records as failed without a new reason to believe they will fare better.
+Before the session commits, append an honest session entry — including
+failed attempts and what they taught. Dossier entries are append-only;
+rewriting or deleting history is a violation on par with mislabeling a
+claim.
+
 ## Working style
 
 - Compute before conjecturing: use the installed engines (PARI/GP, nauty —
