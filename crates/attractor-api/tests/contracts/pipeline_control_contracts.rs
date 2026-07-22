@@ -182,9 +182,10 @@ edges:
     source_checkpoint
         .context
         .insert("internal.run_id".to_string(), json!("run-identity-src"));
-    source_checkpoint
-        .context
-        .insert("internal.root_run_id".to_string(), json!("run-identity-src"));
+    source_checkpoint.context.insert(
+        "internal.root_run_id".to_string(),
+        json!("run-identity-src"),
+    );
     source_checkpoint
         .context
         .insert("internal.run_workdir".to_string(), json!("/stale/workdir"));
@@ -233,7 +234,10 @@ edges:
     let context = final_bundle.checkpoint.expect("final checkpoint").context;
     let record = final_bundle.record.expect("final record");
     assert_eq!(context.get("internal.run_id"), Some(&json!(new_run_id)));
-    assert_eq!(context.get("internal.root_run_id"), Some(&json!(new_run_id)));
+    assert_eq!(
+        context.get("internal.root_run_id"),
+        Some(&json!(new_run_id))
+    );
     assert_eq!(
         context.get("internal.run_workdir"),
         Some(&json!(record.working_directory)),

@@ -1498,16 +1498,16 @@ impl AttractorApiService {
         // space, leaving the cursor an entire child history behind the
         // combined numbering, and every live-stream connect then replays
         // all of it.
-        let mut entries =
-            match attractor_runtime::combined_run_journal_entries(&store, pipeline_id) {
-                Ok(Some(entries)) => entries,
-                Ok(None) => {
-                    return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
-                }
-                Err(error) => {
-                    return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
-                }
-            };
+        let mut entries = match attractor_runtime::combined_run_journal_entries(&store, pipeline_id)
+        {
+            Ok(Some(entries)) => entries,
+            Ok(None) => {
+                return RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"}))
+            }
+            Err(error) => {
+                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
+            }
+        };
         entries.reverse();
         if let Some(before_sequence) = before_sequence {
             entries.retain(|entry| entry.sequence < before_sequence);

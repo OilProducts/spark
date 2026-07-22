@@ -402,15 +402,17 @@ fn profile_mounts(
     };
     let mut mounts = Vec::new();
     for entry in entries {
-        let Some(spec) = entry.as_str().map(str::trim).filter(|spec| !spec.is_empty()) else {
+        let Some(spec) = entry
+            .as_str()
+            .map(str::trim)
+            .filter(|spec| !spec.is_empty())
+        else {
             return Err(RuntimeNodeError::terminal(
                 "container.mounts entries must be non-empty strings",
             ));
         };
         let parts: Vec<&str> = spec.split(':').collect();
-        if !(2..=3).contains(&parts.len())
-            || parts.iter().any(|part| part.trim().is_empty())
-        {
+        if !(2..=3).contains(&parts.len()) || parts.iter().any(|part| part.trim().is_empty()) {
             return Err(RuntimeNodeError::terminal(format!(
                 "container.mounts entry {spec:?} must be host:container or host:container:options",
             )));

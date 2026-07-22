@@ -593,11 +593,7 @@ fn run_envelopes(
     let Some(entries) = run_journal_entries(&store, run_id)? else {
         return Err(WorkspaceError::NotFound("Unknown pipeline".to_string()));
     };
-    Ok(run_envelopes_from_entries(
-        run_id,
-        &entries,
-        after,
-    ))
+    Ok(run_envelopes_from_entries(run_id, &entries, after))
 }
 
 /// Journal envelopes after the cursor, plus — only for contiguous replays —
@@ -609,7 +605,8 @@ fn run_envelopes_from_entries(
     entries: &[JournalEntry],
     after_sequence: u64,
 ) -> Vec<LiveEnvelope> {
-    let (mut envelopes, contiguous) = journal_envelopes_from_entries(run_id, entries, after_sequence);
+    let (mut envelopes, contiguous) =
+        journal_envelopes_from_entries(run_id, entries, after_sequence);
     if contiguous {
         // Segment upserts are otherwise only published live: replay the
         // projected segments touched after the cursor so a late subscriber
