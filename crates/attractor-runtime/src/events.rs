@@ -147,14 +147,16 @@ pub fn read_raw_events_after(
     let mut events = Vec::new();
     let mut consumed = offset;
     let mut line_start = 0usize;
-    while let Some(newline) = appended[line_start..].iter().position(|byte| *byte == b'\n') {
+    while let Some(newline) = appended[line_start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+    {
         let line_end = line_start + newline;
         let line = String::from_utf8_lossy(&appended[line_start..line_end]);
         let line = line.trim();
         if !line.is_empty() {
-            let event: RawRuntimeEvent = serde_json::from_str(line).map_err(|source| {
-                crate::error::RuntimeStorageError::json(&path, source)
-            })?;
+            let event: RawRuntimeEvent = serde_json::from_str(line)
+                .map_err(|source| crate::error::RuntimeStorageError::json(&path, source))?;
             events.push(event);
         }
         line_start = line_end + 1;

@@ -13,9 +13,8 @@ pub mod settings_view;
 pub mod worker;
 
 pub use container::{
-    profile_mounts_for_test,
-    CommandResult, CommandSpec, ContainerCommandRunner, ContainerizedNodeExecutor,
-    SystemCommandRunner,
+    profile_mounts_for_test, CommandResult, CommandSpec, ContainerCommandRunner,
+    ContainerizedNodeExecutor, SystemCommandRunner,
 };
 pub use context::{
     seed_execution_profile_context, EXECUTION_CONTAINER_IMAGE_CONTEXT_KEY,

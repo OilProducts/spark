@@ -184,7 +184,11 @@ fn combined_journal_window_cold(
     let Some(entries) = crate::journals::combined_run_journal_entries(store, run_id)? else {
         return Ok(None);
     };
-    let latest_sequence = entries.iter().map(|entry| entry.sequence).max().unwrap_or(0);
+    let latest_sequence = entries
+        .iter()
+        .map(|entry| entry.sequence)
+        .max()
+        .unwrap_or(0);
     let projection = crate::segments::project_run_segments(&entries);
     let segments_after = projection
         .segments

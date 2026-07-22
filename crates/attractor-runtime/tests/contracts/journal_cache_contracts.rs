@@ -2,8 +2,7 @@ use std::collections::BTreeMap;
 
 use attractor_core::{CheckpointState, RawRuntimeEvent, RunRecord};
 use attractor_runtime::{
-    combined_journal_window, combined_run_journal_entries, log_event, CreateRunRequest,
-    RunStore,
+    combined_journal_window, combined_run_journal_entries, log_event, CreateRunRequest, RunStore,
 };
 
 fn store(temp: &tempfile::TempDir) -> RunStore {
@@ -79,7 +78,11 @@ fn cached_windows_match_cold_rebuilds_across_incremental_appends() {
     store
         .append_event(
             &parent_paths,
-            stamped_log("run-cache-parent", "[work] step one", "2026-07-21T10:00:05Z"),
+            stamped_log(
+                "run-cache-parent",
+                "[work] step one",
+                "2026-07-21T10:00:05Z",
+            ),
         )
         .expect("append");
     assert_window_matches_cold(&store, "run-cache-parent");
@@ -108,7 +111,11 @@ fn cached_windows_match_cold_rebuilds_across_incremental_appends() {
     store
         .append_event(
             &parent_paths,
-            stamped_log("run-cache-parent", "[work] step two", "2026-07-21T10:00:15Z"),
+            stamped_log(
+                "run-cache-parent",
+                "[work] step two",
+                "2026-07-21T10:00:15Z",
+            ),
         )
         .expect("append");
     store
@@ -149,7 +156,11 @@ fn out_of_order_child_append_rebuilds_instead_of_renumbering_silently() {
     store
         .append_event(
             &parent_paths,
-            stamped_log("run-cache-ooo", "[work] late parent", "2026-07-21T11:00:00Z"),
+            stamped_log(
+                "run-cache-ooo",
+                "[work] late parent",
+                "2026-07-21T11:00:00Z",
+            ),
         )
         .expect("append");
     // Prime the cache.

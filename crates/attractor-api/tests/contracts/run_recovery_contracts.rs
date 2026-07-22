@@ -291,7 +291,9 @@ fn startup_recovery_marks_orphaned_running_runs_failed() {
             .expect("record");
         assert_eq!(record.status, "failed");
         assert!(
-            record.last_error.contains("interrupted by an earlier restart"),
+            record
+                .last_error
+                .contains("interrupted by an earlier restart"),
             "unexpected last_error: {}",
             record.last_error
         );
