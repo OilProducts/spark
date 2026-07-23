@@ -126,12 +126,12 @@ export function RunList({
                 )}
             >
                 <div className="space-y-2">
-                    <div className="flex flex-wrap items-start gap-2">
+                    <div className="flex items-start gap-2">
                         <div className="min-w-0 flex-1 space-y-1">
                             <div className="truncate text-sm font-medium text-foreground" title={run.flow_name || run.run_id}>
                                 {run.flow_name || run.run_id.slice(0, 8)}
                             </div>
-                            <div className="text-[11px] leading-4 text-muted-foreground">
+                            <div className="truncate text-[11px] leading-4 text-muted-foreground">
                                 {metaParts.length > 0 ? (
                                     <span>{metaParts.join(' · ')}</span>
                                 ) : null}

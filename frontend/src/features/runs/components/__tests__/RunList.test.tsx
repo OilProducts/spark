@@ -91,7 +91,11 @@ describe('RunList', () => {
             />,
         )
         expect(screen.queryByText('Child')).not.toBeInTheDocument()
-        expect(screen.getByText('Implement Task')).toBeVisible()
+        const childTitle = screen.getByText('Implement Task')
+        expect(childTitle).toBeVisible()
+        expect(childTitle.parentElement?.parentElement).toHaveClass('flex')
+        expect(childTitle.parentElement?.parentElement).not.toHaveClass('flex-wrap')
+        expect(childTitle.nextElementSibling).toHaveClass('truncate')
         expect(screen.getByText('Running')).toBeVisible()
     })
 })
