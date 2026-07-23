@@ -1,7 +1,7 @@
 #!/bin/sh
 # Seed codex auth from the read-only staging mount into a writable
 # container-local home, mirroring spark's packaged-docker auth seeding.
-codex_home="${HOME:-/home/chris}/.codex"
+codex_home="${HOME:-/root}/.codex"
 mkdir -p "$codex_home"
 if [ -d /mnt/codex-auth ]; then
     for file in auth.json config.toml; do
