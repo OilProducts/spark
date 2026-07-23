@@ -99,6 +99,122 @@ pub struct TokenUsageBreakdown {
     pub by_model: BTreeMap<String, TokenUsageBucket>,
 }
 
+/// Incremental run-usage projection. Completed requests are durable totals;
+/// session events are cumulative snapshots replaced per node.
+#[derive(Debug, Clone, Default)]
+pub struct RunUsageAccumulator {
+    fallback_model: String,
+    completed: TokenUsageBreakdown,
+    legacy: TokenUsageBreakdown,
+    in_flight: BTreeMap<String, (String, TokenUsageBucket)>,
+    completed_has_usage: bool,
+}
+
+impl RunUsageAccumulator {
+    pub fn new(fallback_model: impl Into<String>) -> Self {
+        Self {
+            fallback_model: fallback_model.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn from_entries(entries: &[JournalEntry], fallback_model: &str) -> Self {
+        let mut accumulator = Self::new(fallback_model);
+        accumulator.apply(entries);
+        accumulator
+    }
+
+    pub fn apply(&mut self, entries: &[JournalEntry]) {
+        for entry in entries {
+            self.apply_entry(entry);
+        }
+    }
+
+    pub fn breakdown(&self) -> Option<TokenUsageBreakdown> {
+        let mut breakdown = if self.completed_has_usage {
+            self.completed.clone()
+        } else {
+            self.legacy.clone()
+        };
+        for (model, bucket) in self.in_flight.values() {
+            breakdown.add_for_model(model, bucket);
+        }
+        breakdown.has_any_usage().then_some(breakdown)
+    }
+
+    fn apply_entry(&mut self, entry: &JournalEntry) {
+        if entry.raw_type == "LLMTokenUsage" {
+            if let Some(bucket) = entry
+                .payload
+                .get("token_usage")
+                .and_then(TokenUsageBucket::from_value)
+            {
+                self.legacy.add_for_model(&self.fallback_model, &bucket);
+            }
+            return;
+        }
+        let (payload, node_id, completed) = match entry.raw_type.as_str() {
+            "CodergenAdapter" => {
+                let event_type = entry
+                    .payload
+                    .get("adapter_event_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let node_id = entry
+                    .payload
+                    .get("node_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if SESSION_EVENT_TYPES.contains(&event_type) {
+                    if let Some((model, bucket)) =
+                        usage_from_payload(entry.payload.get("payload"), &self.fallback_model)
+                    {
+                        self.in_flight.insert(node_id.to_string(), (model, bucket));
+                    }
+                    return;
+                }
+                if !REQUEST_COMPLETED_EVENT_TYPES.contains(&event_type) {
+                    return;
+                }
+                (entry.payload.get("payload"), node_id, true)
+            }
+            "LLMRequestCompleted" => (
+                entry.payload.get("payload"),
+                entry
+                    .payload
+                    .get("node_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                true,
+            ),
+            _ => return,
+        };
+        if completed {
+            self.in_flight.remove(node_id);
+        }
+        if let Some((model, bucket)) = usage_from_payload(payload, &self.fallback_model) {
+            self.completed.add_for_model(&model, &bucket);
+            self.completed_has_usage = true;
+        }
+    }
+}
+
+fn usage_from_payload(
+    payload: Option<&Value>,
+    fallback_model: &str,
+) -> Option<(String, TokenUsageBucket)> {
+    let payload = payload?;
+    let bucket = payload
+        .get("token_usage")
+        .and_then(TokenUsageBucket::from_value)?;
+    let model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(fallback_model);
+    Some((model.to_string(), bucket))
+}
+
 impl TokenUsageBreakdown {
     pub fn add_for_model(&mut self, model: &str, delta: &TokenUsageBucket) {
         let model = model.trim();
@@ -235,85 +351,5 @@ pub fn project_run_usage(
     entries: &[JournalEntry],
     fallback_model: &str,
 ) -> Option<TokenUsageBreakdown> {
-    let mut breakdown = TokenUsageBreakdown::default();
-    let mut in_flight: BTreeMap<String, (String, TokenUsageBucket)> = BTreeMap::new();
-    for entry in entries {
-        let payload = match entry.raw_type.as_str() {
-            "CodergenAdapter" => {
-                let adapter_event_type = entry
-                    .payload
-                    .get("adapter_event_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let node_id = entry
-                    .payload
-                    .get("node_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let payload = entry.payload.get("payload");
-                if SESSION_EVENT_TYPES.contains(&adapter_event_type) {
-                    if let Some((model, bucket)) = payload.and_then(|payload| {
-                        let bucket = payload
-                            .get("token_usage")
-                            .and_then(TokenUsageBucket::from_value)?;
-                        let model = payload
-                            .get("model")
-                            .and_then(Value::as_str)
-                            .filter(|model| !model.trim().is_empty())
-                            .unwrap_or(fallback_model);
-                        Some((model.to_string(), bucket))
-                    }) {
-                        in_flight.insert(node_id.to_string(), (model, bucket));
-                    }
-                    continue;
-                }
-                if !REQUEST_COMPLETED_EVENT_TYPES.contains(&adapter_event_type) {
-                    continue;
-                }
-                in_flight.remove(node_id);
-                payload
-            }
-            "LLMRequestCompleted" => {
-                if let Some(node_id) = entry.payload.get("node_id").and_then(Value::as_str) {
-                    in_flight.remove(node_id);
-                }
-                entry.payload.get("payload")
-            }
-            _ => continue,
-        };
-        let Some(payload) = payload else {
-            continue;
-        };
-        let Some(bucket) = payload
-            .get("token_usage")
-            .and_then(TokenUsageBucket::from_value)
-        else {
-            continue;
-        };
-        let model = payload
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or(fallback_model);
-        breakdown.add_for_model(model, &bucket);
-    }
-    for (model, bucket) in in_flight.values() {
-        breakdown.add_for_model(model, bucket);
-    }
-    if !breakdown.has_any_usage() {
-        for entry in entries {
-            if entry.raw_type != "LLMTokenUsage" {
-                continue;
-            }
-            let Some(bucket) = entry
-                .payload
-                .get("token_usage")
-                .and_then(TokenUsageBucket::from_value)
-            else {
-                continue;
-            };
-            breakdown.add_for_model(fallback_model, &bucket);
-        }
-    }
-    breakdown.has_any_usage().then_some(breakdown)
+    RunUsageAccumulator::from_entries(entries, fallback_model).breakdown()
 }

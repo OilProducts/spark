@@ -404,7 +404,6 @@ pub struct RuntimeHandlerRunner {
     codergen_backend_factory: Option<CodergenBackendFactory>,
     codergen_intervention_broker: Option<spark_agent_adapter::CodergenSessionInterventionBroker>,
     event_append_lock: Arc<Mutex<()>>,
-    usage_record_writes: Arc<Mutex<BTreeMap<String, Instant>>>,
     child_run_launcher: Option<ChildRunLauncher>,
     child_status_resolver: Option<ChildStatusResolver>,
     child_intervention_requester: Option<ChildInterventionRequester>,
@@ -433,7 +432,6 @@ impl RuntimeHandlerRunner {
             codergen_backend_factory: None,
             codergen_intervention_broker: None,
             event_append_lock: Arc::new(Mutex::new(())),
-            usage_record_writes: Arc::new(Mutex::new(BTreeMap::new())),
             child_run_launcher: None,
             child_status_resolver: None,
             child_intervention_requester: None,
@@ -794,17 +792,14 @@ impl RuntimeHandlerRunner {
         let has_event_destination =
             self.external_event_sink.is_some() || runtime.run_paths.is_some();
         let live_sink = has_event_destination.then(|| {
-            let paths = runtime.run_paths.clone();
             let run_id = runtime.run_id.clone();
             let node_id = runtime.node_id.clone();
             let runner = self.clone();
             let sink_error = Arc::clone(&live_sink_error);
-            let usage_record_writes = Arc::clone(&self.usage_record_writes);
             let trace_path = trace_path.clone();
             let sink_runtime = runtime.clone();
             Arc::new(move |event: spark_agent_adapter::CodergenEvent| {
                 write_agent_trace_event(trace_path.as_deref(), &event);
-                let has_usage = event.payload.get("token_usage").is_some();
                 let raw_event = crate::events::codergen_adapter_event(
                     &run_id,
                     &node_id,
@@ -813,46 +808,7 @@ impl RuntimeHandlerRunner {
                 );
                 let append_result = runner.emit(&sink_runtime, raw_event);
                 match append_result {
-                    Ok(()) => {
-                        if has_usage && runner.external_event_sink.is_none() {
-                            let Some(paths) = paths.as_ref() else { return };
-                            let mut writes = usage_record_writes
-                                .lock()
-                                .unwrap_or_else(|poison| poison.into_inner());
-                            if writes
-                                .get(&run_id)
-                                .map(|instant| instant.elapsed() >= Duration::from_secs(5))
-                                .unwrap_or(true)
-                            {
-                                let store = crate::store::RunStore::for_runs_dir(&paths.runs_dir);
-                                if let Ok(entries) = store.read_journal(&paths) {
-                                    let model = store
-                                        .read_run_record(&paths)
-                                        .ok()
-                                        .flatten()
-                                        .map(|record| record.model)
-                                        .unwrap_or_default();
-                                    if let Some(breakdown) =
-                                        crate::usage::project_run_usage(&entries, &model)
-                                    {
-                                        let cost = crate::usage::estimate_model_cost(&breakdown);
-                                        let value = breakdown.to_value();
-                                        if store
-                                            .update_run_record(&run_id, |record| {
-                                                record.token_usage =
-                                                    Some(breakdown.totals.total_tokens);
-                                                record.estimated_model_cost = cost;
-                                                record.token_usage_breakdown = Some(value);
-                                            })
-                                            .is_ok()
-                                        {
-                                            writes.insert(run_id.clone(), Instant::now());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    Ok(()) => {}
                     Err(error) => {
                         let mut slot = sink_error
                             .lock()

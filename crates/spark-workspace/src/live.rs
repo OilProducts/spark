@@ -1,4 +1,5 @@
 use attractor_core::JournalEntry;
+pub use attractor_runtime::usage::RunUsageAccumulator;
 use attractor_runtime::RunStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -206,13 +207,13 @@ pub fn run_envelopes_after(
 
 /// Evicts the run's incremental journal cache once it reaches a terminal
 /// status, so finished runs stop holding ring and projection memory.
-pub fn evict_run_live_cache_if_terminal(settings: &SparkSettings, run_id: &str) {
+pub fn evict_run_live_cache_if_terminal(settings: &SparkSettings, run_id: &str) -> bool {
     let store = RunStore::for_settings(settings);
     let Ok(Some(meta)) = store.read_run_meta(run_id) else {
-        return;
+        return false;
     };
     let Some(record) = meta.record else {
-        return;
+        return false;
     };
     let status = attractor_runtime::normalize_run_status(&record.status);
     if matches!(
@@ -220,7 +221,9 @@ pub fn evict_run_live_cache_if_terminal(settings: &SparkSettings, run_id: &str) 
         "completed" | "failed" | "canceled" | "cancelled" | "aborted"
     ) {
         attractor_runtime::evict_combined_journal(run_id);
+        return true;
     }
+    false
 }
 
 pub fn latest_run_sequence(settings: &SparkSettings, run_id: &str) -> WorkspaceResult<Option<u64>> {
@@ -669,6 +672,10 @@ fn journal_envelopes_from_entries(
 pub struct RunLivePublication {
     pub envelopes: Vec<LiveEnvelope>,
     pub latest_sequence: Option<u64>,
+    /// Journal entries read for this cursor, for incremental projections.
+    pub newly_read_entries: Vec<JournalEntry>,
+    pub starts_at_sequence_zero: bool,
+    pub fallback_model: String,
 }
 
 pub fn run_live_publication(
@@ -677,6 +684,12 @@ pub fn run_live_publication(
     after_sequence: Option<u64>,
 ) -> WorkspaceResult<Option<RunLivePublication>> {
     let store = RunStore::for_settings(settings);
+    let fallback_model = store
+        .read_run_meta(run_id)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+        .and_then(|meta| meta.record)
+        .map(|record| record.model)
+        .unwrap_or_default();
     let after = after_sequence.unwrap_or(0);
     // Incremental path: the cache parses only bytes appended since the last
     // publication for this run. `complete: false` (cursor older than the
@@ -687,6 +700,11 @@ pub fn run_live_publication(
         return Ok(None);
     };
     let latest_sequence = (window.latest_sequence > 0).then_some(window.latest_sequence);
+    let newly_read_entries = if window.complete {
+        window.entries_after.clone()
+    } else {
+        Vec::new()
+    };
     let mut envelopes = if window.complete {
         let (envelopes, _contiguous) =
             journal_envelopes_from_replay(run_id, window.entries_after, after);
@@ -711,7 +729,25 @@ pub fn run_live_publication(
     Ok(Some(RunLivePublication {
         envelopes,
         latest_sequence,
+        newly_read_entries,
+        starts_at_sequence_zero: after == 0 && window.complete,
+        fallback_model,
     }))
+}
+
+pub fn full_run_usage_accumulator(
+    settings: &SparkSettings,
+    run_id: &str,
+) -> WorkspaceResult<RunUsageAccumulator> {
+    let store = RunStore::for_settings(settings);
+    let fallback_model = store
+        .read_run_meta(run_id)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+        .and_then(|meta| meta.record)
+        .map(|record| record.model)
+        .unwrap_or_default();
+    let entries = run_journal_entries(&store, run_id)?.unwrap_or_default();
+    Ok(RunUsageAccumulator::from_entries(&entries, &fallback_model))
 }
 
 /// Journal envelopes from an already-windowed replay (entries strictly after
@@ -802,6 +838,46 @@ fn run_upsert_envelope_from_record(
     record: attractor_core::RunRecord,
     project_path: Option<String>,
 ) -> LiveEnvelope {
+    run_upsert_envelope_from_record_with_usage(record, project_path, None)
+}
+
+pub fn run_upsert_envelope_with_usage(
+    settings: &SparkSettings,
+    run_id: &str,
+    usage: Option<&attractor_runtime::usage::TokenUsageBreakdown>,
+) -> WorkspaceResult<Option<LiveEnvelope>> {
+    let store = RunStore::for_settings(settings);
+    let Some(paths) = store
+        .find_run_root(run_id)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let Some(record) = store
+        .read_run_record(&paths)
+        .map_err(|error| WorkspaceError::Internal(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let project_path = normalized_record_path(&record.project_path)
+        .or_else(|| normalized_record_path(&record.working_directory));
+    Ok(Some(run_upsert_envelope_from_record_with_usage(
+        record,
+        project_path,
+        usage,
+    )))
+}
+
+fn run_upsert_envelope_from_record_with_usage(
+    mut record: attractor_core::RunRecord,
+    project_path: Option<String>,
+    usage: Option<&attractor_runtime::usage::TokenUsageBreakdown>,
+) -> LiveEnvelope {
+    if let Some(usage) = usage {
+        record.token_usage = Some(usage.totals.total_tokens);
+        record.token_usage_breakdown = Some(usage.to_value());
+        record.estimated_model_cost = attractor_runtime::usage::estimate_model_cost(usage);
+    }
     LiveEnvelope {
         event_type: "run.upsert".to_string(),
         project_path,
