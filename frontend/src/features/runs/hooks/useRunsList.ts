@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type SetStateAction } from 'react'
 
 import { fetchRunsListValidated, parseRunRecordPayload } from '@/lib/attractorClient'
 import { useStore } from '@/store'
@@ -88,39 +88,8 @@ export function useRunsList({
         || runsListSession.runs.length > 0
         || runsListSession.scopeMode !== 'active'
 
-    const fetchRuns = useCallback(async () => {
-        if (!hasRunsSession) {
-            return
-        }
-        if (usesActiveProjectScope && !activeProjectPath) {
-            updateRunsListSession({
-                runs: [],
-                error: null,
-                status: 'ready',
-                streamStatus: 'idle',
-                streamError: null,
-            })
-            return
-        }
-        updateRunsListSession({
-            status: 'loading',
-            error: null,
-        })
-        try {
-            const data = await fetchRunsListValidated(usesActiveProjectScope ? activeProjectPath : null)
-            updateRunsListSession({
-                runs: data.runs,
-                status: 'ready',
-                error: null,
-            })
-        } catch (err) {
-            logUnexpectedRunError(err)
-            updateRunsListSession({
-                error: 'Unable to load runs',
-                status: 'error',
-            })
-        }
-    }, [activeProjectPath, hasRunsSession, updateRunsListSession, usesActiveProjectScope])
+    const requestRefresh = useRef<() => Promise<void>>(async () => {})
+    const fetchRuns = useCallback(() => requestRefresh.current(), [])
 
     useEffect(() => {
         if (!manageSync || !hasRunsSession) {
@@ -138,6 +107,8 @@ export function useRunsList({
             return
         }
 
+        let activeRequest: AbortController | null = null
+        let pendingRefresh = false
         let closed = false
 
         const handleLiveRunUpsert = (event: Event) => {
@@ -159,18 +130,27 @@ export function useRunsList({
             })
         }
 
-        const startScopedSync = async () => {
+        const refresh = async (): Promise<void> => {
+            if (closed) return
+            if (activeRequest) {
+                pendingRefresh = true
+                return
+            }
+            const request = new AbortController()
+            activeRequest = request
             updateRunsListSession({
                 status: 'loading',
                 error: null,
                 streamStatus: 'loading',
                 streamError: null,
             })
+            let succeeded = false
             try {
-                const data = await fetchRunsListValidated(usesActiveProjectScope ? activeProjectPath : null)
-                if (closed) {
-                    return
-                }
+                const data = await fetchRunsListValidated(
+                    usesActiveProjectScope ? activeProjectPath : null,
+                    request.signal,
+                )
+                if (activeRequest !== request || request.signal.aborted) return
                 updateRunsListSession({
                     runs: data.runs,
                     status: 'ready',
@@ -178,10 +158,9 @@ export function useRunsList({
                     streamStatus: 'ready',
                     streamError: null,
                 })
+                succeeded = true
             } catch (err) {
-                if (closed) {
-                    return
-                }
+                if (activeRequest !== request || request.signal.aborted) return
                 logUnexpectedRunError(err)
                 updateRunsListSession({
                     error: 'Unable to load runs',
@@ -189,26 +168,45 @@ export function useRunsList({
                     streamStatus: 'degraded',
                     streamError: 'Run history transport is unavailable. Reconnect to retry.',
                 })
+            } finally {
+                if (activeRequest === request) {
+                    activeRequest = null
+                    const trailingRefresh = succeeded && pendingRefresh
+                    pendingRefresh = false
+                    if (trailingRefresh) void refresh()
+                }
             }
         }
+        requestRefresh.current = refresh
+        const handleRecovery = (event: Event) => {
+            const projectPath = event instanceof CustomEvent ? event.detail?.projectPath : null
+            if (usesActiveProjectScope && projectPath && projectPath !== activeProjectPath) return
+            void refresh()
+        }
 
-        void startScopedSync()
         window.addEventListener('spark:run-upsert', handleLiveRunUpsert)
-        window.addEventListener('spark:runs-overview-resync-required', fetchRuns)
+        window.addEventListener('spark:runs-overview-resync-required', handleRecovery)
 
         return () => {
             closed = true
+            requestRefresh.current = async () => {}
+            activeRequest?.abort()
+            activeRequest = null
+            pendingRefresh = false
             window.removeEventListener('spark:run-upsert', handleLiveRunUpsert)
-            window.removeEventListener('spark:runs-overview-resync-required', fetchRuns)
+            window.removeEventListener('spark:runs-overview-resync-required', handleRecovery)
         }
     }, [
         activeProjectPath,
         hasRunsSession,
         manageSync,
-        reconnectSignal,
         updateRunsListSession,
         usesActiveProjectScope,
     ])
+
+    useEffect(() => {
+        void fetchRuns()
+    }, [fetchRuns, reconnectSignal, activeProjectPath, usesActiveProjectScope, manageSync, hasRunsSession])
 
     const summary = useMemo(() => {
         const total = runsListSession.runs.length

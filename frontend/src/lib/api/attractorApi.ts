@@ -1046,11 +1046,11 @@ export async function fetchPipelineGraphPreviewValidated(
     )
 }
 
-export async function fetchRunsListValidated(projectPath?: string | null): Promise<RunsListResponse> {
+export async function fetchRunsListValidated(projectPath?: string | null, signal?: AbortSignal): Promise<RunsListResponse> {
     const url = projectPath
         ? `${attractorUrl('/runs')}?project_path=${encodeURIComponent(projectPath)}`
         : attractorUrl('/runs')
-    return fetchJsonWithValidation(url, undefined, '/attractor/runs', parseRunsListResponse)
+    return fetchJsonWithValidation(url, { signal }, '/attractor/runs', parseRunsListResponse)
 }
 
 export async function fetchRuntimeStatusValidated(): Promise<RuntimeStatusResponse> {
