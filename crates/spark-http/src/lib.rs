@@ -305,13 +305,12 @@ async fn run_event_publisher_loop(
             let Some((published_through, usage)) = published else {
                 continue;
             };
+            // ponytail: retain one cursor per observed run until publisher shutdown.
+            if let Some(sequence) = published_through {
+                last_published_sequence.insert(run_id.clone(), sequence);
+            }
             if let Some(usage) = usage {
-                if let Some(sequence) = published_through {
-                    last_published_sequence.insert(run_id.clone(), sequence);
-                }
                 usage_accumulators.insert(run_id, usage);
-            } else {
-                last_published_sequence.remove(&run_id);
             }
         }
     }
@@ -708,6 +707,96 @@ mod incremental_usage_tests {
         spark_storage::ActivityRepository::new(root)
             .append_event(json!({"event_type": event_type, "payload": payload}), "now")
             .expect("execution usage");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_run_notifications_do_not_replay_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(test_settings(temp.path()));
+        let store = RunStore::for_settings(&settings);
+        let mut record = RunRecord::new("failed-live", temp.path().to_string_lossy().into_owned());
+        record.status = "failed".into();
+        let paths = store
+            .create_run(CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap();
+        for _ in 0..300 {
+            store
+                .append_event(&paths, RawRuntimeEvent::new("Log", "failed-live"))
+                .unwrap();
+        }
+        let hub = Arc::new(WorkspaceLiveHub::new());
+        let mut receiver = hub.subscribe();
+        let (sender, notifications) = mpsc::unbounded_channel();
+        let cancellation = CancellationToken::new();
+        let task = tokio::spawn(run_event_publisher_loop(
+            settings.clone(),
+            hub,
+            notifications,
+            cancellation.clone(),
+            Arc::new(|_| {}),
+        ));
+        // Count dropped broadcast entries too: the initial history exceeds the live buffer.
+        async fn batch(receiver: &mut broadcast::Receiver<LiveEnvelope>) -> u64 {
+            let mut count = 0;
+            loop {
+                match time::timeout(Duration::from_secs(5), receiver.recv())
+                    .await
+                    .unwrap()
+                {
+                    Ok(envelope) if envelope.event_type == "run.upsert" => return count,
+                    Ok(envelope) if envelope.event_type == "run.journal_entry" => count += 1,
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(n)) => count += n,
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        }
+        sender.send("failed-live".into()).unwrap();
+        assert_eq!(
+            batch(&mut receiver).await,
+            latest_run_sequence(&settings, "failed-live")
+                .unwrap()
+                .unwrap()
+        );
+        for _ in 0..3 {
+            sender.send("failed-live".into()).unwrap();
+            assert_eq!(
+                batch(&mut receiver).await,
+                0,
+                "terminal usage eviction must retain publication progress"
+            );
+        }
+        let history = fs::read(paths.events_jsonl()).unwrap();
+        // Publication errors and empty journals must not erase the previous cursor.
+        for contents in [b"invalid json\n".as_slice(), b"".as_slice()] {
+            fs::write(paths.events_jsonl(), contents).unwrap();
+            assert!(run_live_publication(&settings, "failed-live", None)
+                .ok()
+                .flatten()
+                .and_then(|publication| publication.latest_sequence)
+                .is_none());
+            sender.send("failed-live".into()).unwrap();
+            assert_eq!(batch(&mut receiver).await, 0);
+            fs::write(paths.events_jsonl(), &history).unwrap();
+            sender.send("failed-live".into()).unwrap();
+            assert_eq!(
+                batch(&mut receiver).await,
+                0,
+                "publication failure must preserve cursor"
+            );
+        }
+        store
+            .append_event(&paths, RawRuntimeEvent::new("Log", "failed-live"))
+            .unwrap();
+        sender.send("failed-live".into()).unwrap();
+        assert_eq!(batch(&mut receiver).await, 1);
+        sender.send("failed-live".into()).unwrap();
+        assert_eq!(batch(&mut receiver).await, 0);
+        cancellation.cancel();
+        task.await.unwrap();
     }
 
     #[test]
