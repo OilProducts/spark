@@ -35,6 +35,8 @@ type UseRunDetailResourcesArgs = {
     manageSync?: boolean
 }
 
+let nextArtifactPreviewRequestId = 0
+
 const DEFAULT_RUN_DETAIL_SESSION = {
     checkpointData: null as CheckpointResponse | null,
     checkpointStatus: 'idle' as const,
@@ -234,8 +236,13 @@ export function useRunDetailResources({
         if (!selectedRunId) {
             return
         }
+        const requestId = ++nextArtifactPreviewRequestId
+        const isCurrentRequest = () => (
+            useStore.getState().runDetailSessionsByRunId[selectedRunId]?.artifactViewerRequestId === requestId
+        )
         updateRunDetailSession(selectedRunId, {
             selectedArtifactPath: entry.path,
+            artifactViewerRequestId: requestId,
             artifactViewerPayload: '',
             artifactViewerError: null,
         })
@@ -251,12 +258,14 @@ export function useRunDetailResources({
         })
         try {
             const payload = await fetchPipelineArtifactPreviewValidated(selectedRunId, entry.path)
+            if (!isCurrentRequest()) return
             updateRunDetailSession(selectedRunId, {
                 artifactViewerPayload: payload,
                 artifactViewerError: null,
                 artifactViewerStatus: 'ready',
             })
         } catch (error) {
+            if (!isCurrentRequest()) return
             logUnexpectedRunError(error)
             updateRunDetailSession(selectedRunId, {
                 artifactViewerStatus: 'error',

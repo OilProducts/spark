@@ -85,6 +85,7 @@ export interface RunDetailSessionState {
     artifactStatus: ResourceStatus
     artifactError: ArtifactErrorState | null
     selectedArtifactPath: string | null
+    artifactViewerRequestId: number | null
     artifactViewerStatus: ResourceStatus
     artifactViewerPayload: string
     artifactViewerError: string | null

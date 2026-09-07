@@ -45,6 +45,7 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     artifactStatus: 'idle',
     artifactError: null,
     selectedArtifactPath: null,
+    artifactViewerRequestId: null,
     artifactViewerStatus: 'idle',
     artifactViewerPayload: '',
     artifactViewerError: null,
