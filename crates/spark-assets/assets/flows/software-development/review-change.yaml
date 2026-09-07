@@ -17,7 +17,7 @@ inputs:
 defaults:
   fidelity: summary:high
   llm_provider: codex
-  llm_model: gpt-5.6-sol
+  llm_model: gpt-6-astra
 metadata:
   software_development:
     launcher: true

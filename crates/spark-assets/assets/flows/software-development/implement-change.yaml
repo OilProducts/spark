@@ -37,7 +37,7 @@ inputs:
 defaults:
   fidelity: summary:high
   llm_provider: codex
-  llm_model: gpt-5.6-sol
+  llm_model: gpt-6-astra
 metadata:
   software_development:
     launcher: true
@@ -52,7 +52,7 @@ nodes:
     label: Normalize Task
     config:
       kind: agent_task
-      prompt: 'Normalize the launch request into one bounded task. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; an approved change-request document such as changes/<CR-id>/request.md is a valid artifact source whose requirements are the contract; fail when both or neither are provided, and fail on absolute or repository-escaping artifact paths. Fold optional target_paths, constraints, and acceptance_criteria into a single decision-complete task statement. Resolve the validation command: use context.request.validation_command when provided, otherwise discover the truthful project validation command from the repository (build files, CI configuration, contributor docs) without running it. Resolve the base ref: use context.request.base_ref when provided, otherwise HEAD. Do not modify any files. Respond with ONLY a JSON status envelope whose context_updates set context.task.objective, context.task.validation_command, and context.task.base_ref.'
+      prompt: 'Normalize the launch request into one bounded task. Treat exactly one of context.request.objective or context.request.artifact_path as the task source; an approved change-request document such as changes/<CR-id>/request.md is a valid artifact source whose requirements are the contract; fail when both or neither are provided, and fail on absolute or repository-escaping artifact paths. Set context.task.artifact_path to the exact repository-relative artifact path for artifact requests, or an empty string for inline objectives; workspace preparation carries that file into the isolated checkout. Fold optional target_paths, constraints, and acceptance_criteria into a single decision-complete task statement. Resolve the validation command: use context.request.validation_command when provided, otherwise discover the truthful project validation command from the repository (build files, CI configuration, contributor docs) without running it. Resolve the base ref: use context.request.base_ref when provided, otherwise HEAD. Do not modify any files. Respond with ONLY a JSON status envelope whose context_updates set context.task.objective, context.task.artifact_path, context.task.validation_command, and context.task.base_ref.'
     contracts:
       response: status_envelope
       reads_context:
@@ -65,6 +65,7 @@ nodes:
       - context.request.base_ref
       writes_context:
       - context.task.objective
+      - context.task.artifact_path
       - context.task.validation_command
       - context.task.base_ref
   prepare_workspace:
@@ -75,6 +76,33 @@ nodes:
       command: |
         set -eu
         repo_root=$(git rev-parse --show-toplevel)
+        artifact=$SPARK_TASK_ARTIFACT
+        fail_artifact() { echo "task artifact: $*" >&2; exit 1; }
+        # Reject symlinks in every component, including dangling destination links.
+        check_artifact_path() {
+          path=$1
+          remaining=$artifact
+          while [ -n "$remaining" ]; do
+            component=${remaining%%/*}
+            case "$component" in
+              ''|.|..|.git) fail_artifact "unsafe path: $artifact" ;;
+            esac
+            path="$path/$component"
+            [ ! -L "$path" ] || fail_artifact "symlink in path: $path"
+            case "$remaining" in
+              */*) remaining=${remaining#*/} ;;
+              *) remaining='' ;;
+            esac
+          done
+        }
+        if [ -n "$artifact" ]; then
+          case "$artifact" in
+            /*|*/) fail_artifact "expected a repository-relative file: $artifact" ;;
+          esac
+          check_artifact_path "$repo_root"
+          [ -f "$repo_root/$artifact" ] && [ -r "$repo_root/$artifact" ] ||
+            fail_artifact "missing or unreadable source: $artifact"
+        fi
         base_commit=$(git rev-parse --verify "${SPARK_BASE_REF}^{commit}")
         branch="spark/implement-change/${SPARK_RUN_ID}"
         # Worktrees live under <repo>/.spark, never inside .git: tooling such
@@ -97,6 +125,17 @@ nodes:
             git worktree add -b "$branch" "$worktree" "$base_commit" >/dev/null
           fi
         fi
+        if [ -n "$artifact" ]; then
+          check_artifact_path "$worktree"
+          destination="$worktree/$artifact"
+          if [ -e "$destination" ]; then
+            [ -f "$destination" ] && cmp -s "$repo_root/$artifact" "$destination" ||
+              fail_artifact "checkout content conflicts with source: $artifact"
+          else
+            mkdir -p "$(dirname "$destination")"
+            cp "$repo_root/$artifact" "$destination"
+          fi
+        fi
         dirty=false
         if [ -n "$(git status --porcelain)" ]; then dirty=true; fi
         printf '{"path":"%s","branch":"%s","base_commit":"%s","source_dirty":%s,"validation_attempts":0}' \
@@ -104,6 +143,7 @@ nodes:
       env_map:
         SPARK_RUN_ID: internal.run_id
         SPARK_BASE_REF: context.task.base_ref
+        SPARK_TASK_ARTIFACT: context.task.artifact_path
       output_map:
         context.workspace.path: path
         context.workspace.branch: branch

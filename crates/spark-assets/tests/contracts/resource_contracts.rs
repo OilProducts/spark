@@ -368,6 +368,166 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
     }
 }
 
+fn prepare_change_workspace(repo: &Path, run: &str, artifact: &str) -> std::process::Output {
+    let asset = flows::load_starter_flow("software-development/implement-change.yaml")
+        .expect("implement change flow");
+    let flow =
+        attractor_dsl::parse_flow_definition(asset.text().expect("flow text")).expect("valid flow");
+    let normalize = serde_json::to_value(&flow.nodes["normalize_task"]).unwrap();
+    assert!(normalize["contracts"]["writes_context"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("context.task.artifact_path")));
+    let config = serde_json::to_value(&flow.nodes["prepare_workspace"].config).unwrap();
+    let context = serde_json::json!({
+        "internal.run_id": run,
+        "context.task.base_ref": "HEAD",
+        "context.task.artifact_path": artifact,
+    });
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(config["command"].as_str().unwrap())
+        .current_dir(repo);
+    for (name, key) in config["env_map"].as_object().unwrap() {
+        command.env(
+            name,
+            context[key.as_str().unwrap()]
+                .as_str()
+                .expect("mapped value"),
+        );
+    }
+    command.output().expect("prepare workspace")
+}
+
+fn seed_change_repository(repo: &Path) {
+    run_git(repo, &["init"]);
+    fs::write(repo.join("seed.txt"), "seed").unwrap();
+    run_git(repo, &["add", "seed.txt"]);
+    run_git(repo, &["commit", "-m", "initial"]);
+}
+
+#[test]
+fn change_workspace_carries_only_the_request_and_preserves_retry_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    seed_change_repository(repo);
+    let artifact = "changes/request with spaces.md";
+    fs::create_dir(repo.join("changes")).unwrap();
+    fs::write(repo.join(artifact), "approved request\n").unwrap();
+    fs::write(repo.join("unrelated.txt"), "unrelated").unwrap();
+    let prepare = || prepare_change_workspace(repo, "request-handoff", artifact);
+    let output = prepare();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["source_dirty"], true);
+    let checkout = Path::new(result["path"].as_str().unwrap());
+    assert_eq!(
+        fs::read(checkout.join(artifact)).unwrap(),
+        b"approved request\n"
+    );
+    assert!(!checkout.join("unrelated.txt").exists());
+    assert!(prepare().status.success());
+    fs::write(checkout.join(artifact), "retained checkout request").unwrap();
+    let conflict = prepare();
+    assert!(!conflict.status.success());
+    assert!(String::from_utf8_lossy(&conflict.stderr).contains("conflicts"));
+    assert_eq!(
+        fs::read(checkout.join(artifact)).unwrap(),
+        b"retained checkout request"
+    );
+    assert_eq!(
+        fs::read(repo.join(artifact)).unwrap(),
+        b"approved request\n"
+    );
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(status.stdout).unwrap(),
+        "?? changes/\n?? unrelated.txt\n"
+    );
+
+    run_git(repo, &["add", artifact]);
+    run_git(repo, &["commit", "-m", "approved request"]);
+    assert!(
+        prepare_change_workspace(repo, "committed-request", artifact)
+            .status
+            .success()
+    );
+    assert!(prepare_change_workspace(repo, "inline-objective", "")
+        .status
+        .success());
+}
+
+#[test]
+fn change_workspace_rejects_missing_and_escaping_request_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("project");
+    fs::create_dir(&repo).unwrap();
+    seed_change_repository(&repo);
+    for artifact in [
+        "missing.md",
+        "../outside.md",
+        "/tmp/outside.md",
+        "changes/../../outside.md",
+        ".git/config",
+    ] {
+        let output = prepare_change_workspace(&repo, "invalid-request", artifact);
+        assert!(!output.status.success(), "{artifact}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("task artifact:"));
+        assert!(!repo.join(".spark/checkouts/invalid-request").exists());
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(temp.path(), repo.join("linked")).unwrap();
+        fs::write(temp.path().join("outside.md"), "outside").unwrap();
+        assert!(
+            !prepare_change_workspace(&repo, "source-link", "linked/outside.md")
+                .status
+                .success()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn change_workspace_rejects_destination_symlinks_without_writing_outside() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("project");
+    fs::create_dir(&repo).unwrap();
+    seed_change_repository(&repo);
+    assert!(prepare_change_workspace(&repo, "destination-link", "")
+        .status
+        .success());
+    fs::create_dir(repo.join("changes")).unwrap();
+    fs::write(repo.join("changes/request.md"), "approved request").unwrap();
+    let checkout = repo.join(".spark/checkouts/destination-link");
+    std::os::unix::fs::symlink(temp.path(), checkout.join("changes")).unwrap();
+    let output = prepare_change_workspace(&repo, "destination-link", "changes/request.md");
+    assert!(!output.status.success());
+    assert!(!temp.path().join("request.md").exists());
+    fs::remove_file(checkout.join("changes")).unwrap();
+    fs::create_dir(checkout.join("changes")).unwrap();
+    std::os::unix::fs::symlink(
+        temp.path().join("absent.md"),
+        checkout.join("changes/request.md"),
+    )
+    .unwrap();
+    assert!(
+        !prepare_change_workspace(&repo, "destination-link", "changes/request.md")
+            .status
+            .success()
+    );
+    assert!(!temp.path().join("absent.md").exists());
+}
+
 fn run_git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")

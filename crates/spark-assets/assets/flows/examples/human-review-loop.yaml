@@ -5,7 +5,7 @@ description: Draft a change, route it through explicit human approval, and loop 
 goal: Prepare a proposed change, pause for human review, and either ship it or iterate on fixes.
 defaults:
   llm_provider: codex
-  llm_model: gpt-5.6-sol
+  llm_model: gpt-6-astra
 nodes:
   exit:
     kind: exit
@@ -27,7 +27,7 @@ nodes:
       kind: agent_task
       prompt: Inspect the repository, prepare the proposed change for the stated goal, and summarize what is ready for review.
     execution:
-      llm_model: gpt-5.6-sol
+      llm_model: gpt-6-astra
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -58,7 +58,7 @@ nodes:
       - human.gate.label
       - human.gate.note
     execution:
-      llm_model: gpt-5.6-sol
+      llm_model: gpt-6-astra
       reasoning_effort: high
     runtime:
       allow_partial: false
@@ -72,7 +72,7 @@ nodes:
       kind: agent_task
       prompt: Finalize the approved change and summarize what is ready to land.
     execution:
-      llm_model: gpt-5.6-sol
+      llm_model: gpt-6-astra
       reasoning_effort: high
     runtime:
       allow_partial: false
