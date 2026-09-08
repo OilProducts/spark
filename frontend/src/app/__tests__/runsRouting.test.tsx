@@ -1,3 +1,5 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -34,11 +36,11 @@ describe('runsRouting helpers', () => {
 describe('RunsHashRoutingController', () => {
     beforeEach(() => {
         resetHash()
-        useStore.setState({
-            viewMode: 'home',
-            selectedRunId: null,
-            runDetailSessionsByRunId: {},
-        })
+        {
+useStore.setState({viewMode: 'home',
+runDetailSessionsByRunId: {}});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
     })
 
     afterEach(() => {
@@ -53,7 +55,7 @@ describe('RunsHashRoutingController', () => {
         await waitFor(() => {
             expect(useStore.getState().viewMode).toBe('runs')
         })
-        expect(useStore.getState().selectedRunId).toBe('run-deep-link')
+        expect(selectSelectedRunId(useStore.getState())).toBe('run-deep-link')
         expect(
             useStore.getState().runDetailSessionsByRunId['run-deep-link']?.selectedNodeId,
         ).toBe('deploy')
@@ -68,7 +70,7 @@ describe('RunsHashRoutingController', () => {
         })
 
         await waitFor(() => {
-            expect(useStore.getState().selectedRunId).toBe('run-live')
+            expect(selectSelectedRunId(useStore.getState())).toBe('run-live')
         })
         expect(useStore.getState().viewMode).toBe('runs')
         expect(
@@ -82,7 +84,7 @@ describe('RunsHashRoutingController', () => {
         act(() => {
             const state = useStore.getState()
             state.setViewMode('runs')
-            state.setSelectedRunId('run-store')
+            state.setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-store')
             state.updateRunDetailSession('run-store', { selectedNodeId: 'lint' })
         })
 
@@ -97,7 +99,7 @@ describe('RunsHashRoutingController', () => {
         act(() => {
             const state = useStore.getState()
             state.setViewMode('runs')
-            state.setSelectedRunId('run-leaving')
+            state.setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-leaving')
         })
         await waitFor(() => {
             expect(isRunsHash(window.location.hash)).toBe(true)

@@ -1,3 +1,5 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
 import { nodeTypes } from '@/features/workflow-canvas/flowCanvasShared'
 import { TaskNode } from '@/features/workflow-canvas/TaskNode'
@@ -44,22 +46,14 @@ const installDomMatrixReadOnlyStub = () => {
 }
 
 const resetTaskNodeState = () => {
-    useStore.setState({
-        activeFlow: 'shape-test.dot',
-        flowMetadata: {},
-        graphAttrs: {},
-        runGraphAttrs: {},
-        nodeDiagnostics: {},
-        runNodeDiagnostics: {},
-        humanGate: null,
-        selectedRunId: null,
-        selectedRunRecord: null,
-        selectedRunCompletedNodes: [],
-        selectedRunStatusSync: 'idle',
-        selectedRunStatusError: null,
-        selectedRunStatusFetchedAtMs: null,
-        editorExpandChildFlowsByFlow: {},
-    })
+    {
+useStore.setState({activeFlow: 'shape-test.dot',
+flowMetadata: {},
+graphAttrs: {},
+nodeDiagnostics: {},
+editorExpandChildFlowsByFlow: {}});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 const MixedShapeHarness = ({ nodes }: { nodes: Node[] }) => {
@@ -95,7 +89,7 @@ const SingleNodeHarness = ({
     const [canvasEdges, , onEdgesChange] = useEdgesState(edges)
 
     return (
-        <CanvasSessionModeProvider mode={mode}>
+        <CanvasSessionModeProvider mode={mode} runId="run-1">
             <div style={{ width: 900, height: 600 }}>
                 <ReactFlow
                     nodes={canvasNodes}
@@ -306,8 +300,11 @@ describe('TaskNode', () => {
     })
 
     it('renders run waiting and diagnostics overlays on non-rectangular nodes', () => {
-        useStore.setState({
-            humanGate: {
+        {
+useStore.setState({});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-1');
+const inspectedRunId = selectSelectedRunId(useStore.getState());
+if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {humanGate: {
                 id: 'gate-1',
                 runId: 'run-1',
                 nodeId: 'human',
@@ -316,8 +313,7 @@ describe('TaskNode', () => {
                     { label: 'Continue', value: 'continue' },
                 ],
             },
-            selectedRunId: 'run-1',
-            runNodeDiagnostics: {
+nodeDiagnostics: {
                 human: [
                     {
                         rule_id: 'human_gate_warning',
@@ -325,8 +321,8 @@ describe('TaskNode', () => {
                         message: 'Human review is pending.',
                     },
                 ],
-            },
-        })
+            }});
+}
 
         const { container } = renderWithFlowProvider(
             <SingleNodeHarness

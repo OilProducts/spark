@@ -1,7 +1,10 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Bell, Plus, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react"
+// ponytail: retain the existing attention poll here; extracting it is outside the run-session migration.
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { fetchPendingAttention, type AttentionItem } from "@/lib/api/attentionApi"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -57,7 +60,7 @@ const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
 
 function AttentionBell() {
     const setViewMode = useStore((state) => state.setViewMode)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const updateProjectSessionState = useStore((state) => state.updateProjectSessionState)
     const [items, setItems] = useState<AttentionItem[]>([])
@@ -107,7 +110,7 @@ function AttentionBell() {
             setActiveProjectPath(item.project_path)
         }
         if (item.kind === 'run_gate' && item.run_id) {
-            setSelectedRunId(item.run_id)
+            setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), item.run_id)
             setViewMode('runs')
             return
         }

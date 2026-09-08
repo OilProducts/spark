@@ -5,7 +5,8 @@ import { type PipelineStatusResponse } from '@/lib/attractorClient'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore, type NodeStatus, type RuntimeStatus } from '@/store'
 import { Button } from '@/components/ui/button'
-import type { RunRecord } from './model/shared'
+import { toRunRecord } from '@/state/runRecordReconciliation'
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { toTimelineEvent } from './model/timelineModel'
 import {
     ApiHttpError,
@@ -65,79 +66,15 @@ function isNodeStatus(value: string): value is NodeStatus {
     return NODE_STATUS_SET.has(value as NodeStatus)
 }
 
-function toRunRecord(status: PipelineStatusResponse): RunRecord {
-    return {
-        run_id: status.run_id,
-        flow_name: status.flow_name || '',
-        status: status.status,
-        outcome: status.outcome ?? null,
-        outcome_reason_code: status.outcome_reason_code ?? null,
-        outcome_reason_message: status.outcome_reason_message ?? null,
-        working_directory: status.working_directory || '',
-        project_path: status.project_path,
-        git_branch: status.git_branch ?? null,
-        git_commit: status.git_commit ?? null,
-        spec_id: status.spec_id ?? null,
-        plan_id: status.plan_id ?? null,
-        model: status.model || '',
-        started_at: status.started_at || '',
-        ended_at: status.ended_at ?? null,
-        last_error: status.last_error || '',
-        token_usage: typeof status.token_usage === 'number' || status.token_usage === null
-            ? status.token_usage
-            : undefined,
-        token_usage_breakdown: status.token_usage_breakdown ?? undefined,
-        estimated_model_cost: status.estimated_model_cost ?? undefined,
-        current_node: status.current_node ?? null,
-        continued_from_run_id: status.continued_from_run_id ?? null,
-        continued_from_node: status.continued_from_node ?? null,
-        continued_from_flow_mode: status.continued_from_flow_mode ?? null,
-        continued_from_flow_name: status.continued_from_flow_name ?? null,
-        parent_run_id: status.parent_run_id ?? null,
-        parent_node_id: status.parent_node_id ?? null,
-        root_run_id: status.root_run_id ?? null,
-        child_invocation_index: status.child_invocation_index ?? null,
-        execution_mode: status.execution_mode,
-        execution_profile_id: status.execution_profile_id,
-        execution_container_image: status.execution_container_image,
-        execution_profile_capabilities: status.execution_profile_capabilities,
-        execution_lock: status.execution_lock ?? undefined,
-        cleanup_error: status.cleanup_error,
-    }
-}
-
-function patchRunRecordFromRuntime(record: RunRecord, runtime: {
-    status: RuntimeStatus
-    outcome: 'success' | 'failure' | null
-    outcomeReasonCode: string | null
-    outcomeReasonMessage: string | null
-    lastError?: string | null
-}): RunRecord {
-    return {
-        ...record,
-        status: runtime.status,
-        outcome: runtime.outcome,
-        outcome_reason_code: runtime.outcomeReasonCode,
-        outcome_reason_message: runtime.outcomeReasonMessage,
-        last_error: runtime.lastError ?? record.last_error,
-    }
-}
-
 const SELECTED_RUN_JOURNAL_DEGRADED_MESSAGE =
     'Run journal history is unavailable. Reconnect to restore durable browsing for the selected run.'
 const RUN_JOURNAL_PAGE_SIZE = 100
 
 export function RunStream() {
-    const setNodeStatus = useStore((state) => state.setNodeStatus)
-    const setHumanGate = useStore((state) => state.setHumanGate)
-    const clearHumanGate = useStore((state) => state.clearHumanGate)
-    const resetNodeStatuses = useStore((state) => state.resetNodeStatuses)
-    const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
-    const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
-    const selectedRunId = useStore((state) => state.selectedRunId)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
-    const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
-    const setSelectedRunStatusSync = useStore((state) => state.setSelectedRunStatusSync)
+    const selectedRunId = useStore(selectSelectedRunId)
+    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const reconcileRunRecord = useStore((state) => state.reconcileRunRecord)
+    const clearRunDetailSession = useStore((state) => state.clearRunDetailSession)
     const saveState = useStore((state) => state.saveState)
     const saveStateVersion = useStore((state) => state.saveStateVersion)
     const saveErrorMessage = useStore((state) => state.saveErrorMessage)
@@ -146,9 +83,6 @@ export function RunStream() {
     const reconnectSignal = useRunsTransportReconnectSignal(true)
     const [showSavedToast, setShowSavedToast] = useState(false)
     const [fadeSavedToast, setFadeSavedToast] = useState(false)
-    const stageCursorsRef = useRef<Record<string, RuntimeStageCursor>>({})
-    const lastLiveSequenceRef = useRef<number | null>(null)
-    const resyncInFlightRef = useRef(false)
     const savedToastFadeTimerRef = useRef<number | null>(null)
     const savedToastDismissTimerRef = useRef<number | null>(null)
     const saveStateLabel =
@@ -165,35 +99,6 @@ export function RunStream() {
     const shouldShowPersistentSaveIndicator = saveState === 'saving' || saveState === 'error' || saveState === 'conflict'
     const showSaveStateIndicator = saveState === 'saved' || showSavedToast || shouldShowPersistentSaveIndicator
     const shouldFadeSaveCard = showSavedToast && !shouldShowPersistentSaveIndicator
-
-    useEffect(() => {
-        stageCursorsRef.current = {}
-        lastLiveSequenceRef.current = null
-        resetNodeStatuses()
-        clearHumanGate()
-        if (!selectedRunId) {
-            setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
-            setSelectedRunStatusSync('idle', null)
-            setRuntimeStatus('idle')
-            setRuntimeOutcome(null)
-            return
-        }
-        setSelectedRunStatusSync('loading', null)
-        setRuntimeStatus('idle')
-        setRuntimeOutcome(null)
-        useRunJournalStore.getState().patchRun(selectedRunId, {
-            liveStatus: 'idle',
-            liveError: null,
-        })
-    }, [
-        clearHumanGate,
-        resetNodeStatuses,
-        selectedRunId,
-        setRuntimeOutcome,
-        setRuntimeStatus,
-        setSelectedRunSnapshot,
-        setSelectedRunStatusSync,
-    ])
 
     useEffect(() => {
         if (savedToastFadeTimerRef.current) {
@@ -240,53 +145,43 @@ export function RunStream() {
         }
 
         let closed = false
+        const stageCursorsRef: { current: Record<string, RuntimeStageCursor> } = { current: {} }
+        const lastLiveSequenceRef: { current: number | null } = { current: null }
+        const resyncInFlightRef = { current: false }
+        let terminalRefreshRequested = false
+        let pendingTerminalRefresh = false
+        let statusRequestId = 0
+        let needsOverlayHydration = true
+        const liveNodeIds = new Set<string>()
+        let liveGateReceived = false
+        const lifetime = useStore.getState().runDetailSessionsByRunId[selectedRunId]?.lifetime
+        const isCurrent = () => !closed && lifetime !== undefined && useStore.getState().runDetailSessionsByRunId[selectedRunId]?.lifetime === lifetime
+        const setSelectedRunStatusSync = (statusSync: import('@/store').SelectedRunStatusSync, statusError: string | null = null) => {
+            if (isCurrent()) updateRunDetailSession(selectedRunId, { statusSync, statusError })
+        }
+        const setNodeStatus = (nodeId: string, status: NodeStatus) => {
+            liveNodeIds.add(nodeId)
+            if (isCurrent()) updateRunDetailSession(selectedRunId, { nodeStatuses: {
+                ...useStore.getState().runDetailSessionsByRunId[selectedRunId]?.nodeStatuses, [nodeId]: status,
+            } })
+        }
+        const setHumanGate = (humanGate: import('@/store').HumanGateState | null) => {
+            liveGateReceived = true
+            if (isCurrent()) updateRunDetailSession(selectedRunId, { humanGate })
+        }
+        const clearHumanGate = () => setHumanGate(null)
+        const resetNodeStatuses = () => {
+            if (isCurrent()) updateRunDetailSession(selectedRunId, { nodeStatuses: {} })
+        }
 
         const patchRunJournal = (patch: Partial<RunJournalStateEntry>) => {
             useRunJournalStore.getState().patchRun(selectedRunId, patch)
         }
 
-        const hasCachedSelectedRunSnapshot = () => {
-            const state = useStore.getState()
-            if (state.selectedRunRecord?.run_id === selectedRunId) {
-                return true
-            }
-            return state.runDetailSessionsByRunId[selectedRunId]?.summaryRecord?.run_id === selectedRunId
-        }
-
-        const applyStatusSnapshot = (statusPayload: PipelineStatusResponse) => {
-            const record = toRunRecord(statusPayload)
-            setSelectedRunSnapshot({
-                record,
-                completedNodes: statusPayload.completed_nodes ?? [],
-                fetchedAtMs: Date.now(),
-            })
-            setSelectedRunStatusSync('ready', null)
-            if (isRuntimeStatus(record.status)) {
-                setRuntimeStatus(record.status)
-            }
-            setRuntimeOutcome(
-                record.outcome ?? null,
-                record.outcome_reason_code ?? null,
-                record.outcome_reason_message ?? null,
-            )
-        }
+        const hasCachedSelectedRunSnapshot = () => Boolean(useStore.getState().runDetailSessionsByRunId[selectedRunId]?.record)
 
         const patchCurrentNode = (currentNode: string | null) => {
-            const currentRecord = useStore.getState().selectedRunRecord
-            if (currentRecord?.run_id !== selectedRunId) {
-                return
-            }
-            if ((currentRecord.current_node ?? null) === currentNode) {
-                return
-            }
-            setSelectedRunSnapshot({
-                record: {
-                    ...currentRecord,
-                    current_node: currentNode,
-                },
-                completedNodes: useStore.getState().selectedRunCompletedNodes,
-                fetchedAtMs: useStore.getState().selectedRunStatusFetchedAtMs,
-            })
+            reconcileRunRecord(selectedRunId, 'journal', { current_node: currentNode })
         }
 
         const refreshSelectedRunJournal = async (): Promise<number | null> => {
@@ -298,7 +193,7 @@ export function RunStream() {
             })
             try {
                 const page = await loadSelectedRunJournal(selectedRunId, { limit: RUN_JOURNAL_PAGE_SIZE })
-                if (closed) {
+                if (!isCurrent()) {
                     return null
                 }
                 useRunJournalStore.getState().mergeLatestPage(selectedRunId, {
@@ -311,7 +206,7 @@ export function RunStream() {
                 })
                 return page.newest_sequence ?? useRunJournalStore.getState().byRunId[selectedRunId]?.newestSequence ?? null
             } catch (error) {
-                if (closed) {
+                if (!isCurrent()) {
                     return null
                 }
                 patchRunJournal({
@@ -328,32 +223,41 @@ export function RunStream() {
             payload: PipelineStatusResponse | null
             shouldOpenStream: boolean
         }> => {
+            const requestId = ++statusRequestId
+            const requestUpdates = useStore.getState().runDetailSessionsByRunId[selectedRunId]?.recordUpdates
             try {
                 const data = await loadSelectedRunStatus(selectedRunId)
-                if (closed) {
+                if (!isCurrent() || requestId !== statusRequestId) {
                     return {
                         payload: null,
                         shouldOpenStream: false,
                     }
                 }
-                applyStatusSnapshot(data)
+                // Keep cached overlays during loading/failure, but only overlays
+                // received in this stream lifetime can outlive fresh hydration.
+                if (needsOverlayHydration) {
+                    const session = useStore.getState().runDetailSessionsByRunId[selectedRunId]
+                    updateRunDetailSession(selectedRunId, {
+                        nodeStatuses: Object.fromEntries(Object.entries(session.nodeStatuses).filter(([nodeId]) => liveNodeIds.has(nodeId))),
+                        humanGate: liveGateReceived ? session.humanGate : null,
+                    })
+                    needsOverlayHydration = false
+                }
+                reconcileRunRecord(selectedRunId, 'status', toRunRecord(data), data.completed_nodes ?? [], requestUpdates)
                 return {
                     payload: data,
                     shouldOpenStream: true,
                 }
             } catch (error) {
-                if (closed) {
+                if (!isCurrent() || requestId !== statusRequestId) {
                     return {
                         payload: null,
                         shouldOpenStream: false,
                     }
                 }
                 if (error instanceof ApiHttpError && error.status === 404) {
-                    setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
-                    setSelectedRunStatusSync('idle', null)
-                    setSelectedRunId(null)
-                    setRuntimeStatus('idle')
-                    setRuntimeOutcome(null)
+                    clearRunDetailSession(selectedRunId)
+                    closed = true
                     patchRunJournal({
                         liveStatus: 'idle',
                         liveError: null,
@@ -364,9 +268,7 @@ export function RunStream() {
                     }
                 }
                 const shouldOpenStream = hasCachedSelectedRunSnapshot()
-                if (!shouldOpenStream) {
-                    setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
-                }
+                setSelectedRunStatusSync('degraded', SELECTED_RUN_STATUS_DEGRADED_MESSAGE)
                 patchRunJournal({
                     liveStatus: 'degraded',
                     liveError: SELECTED_RUN_STATUS_DEGRADED_MESSAGE,
@@ -380,40 +282,35 @@ export function RunStream() {
 
         const TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'canceled', 'aborted'])
 
+        const reconcileTerminalStatus = (status: string) => {
+            if (!TERMINAL_RUN_STATUSES.has(status)) {
+                terminalRefreshRequested = false
+            } else if (!terminalRefreshRequested) {
+                terminalRefreshRequested = true
+                resyncFromDurableState(true)
+            }
+        }
+
         const applyRuntimePatch = (runtimeStatus: RuntimeStatus, runtime: {
             outcome: 'success' | 'failure' | null
             outcomeReasonCode: string | null
             outcomeReasonMessage: string | null
             lastError?: string | null
         }) => {
-            setRuntimeStatus(runtimeStatus)
-            setRuntimeOutcome(runtime.outcome, runtime.outcomeReasonCode, runtime.outcomeReasonMessage)
-            const currentRecord = useStore.getState().selectedRunRecord
-            if (currentRecord?.run_id !== selectedRunId) {
-                return
-            }
-            const wasTerminal = TERMINAL_RUN_STATUSES.has(currentRecord.status)
-            setSelectedRunSnapshot({
-                record: patchRunRecordFromRuntime(currentRecord, {
-                    status: runtimeStatus,
-                    outcome: runtime.outcome,
-                    outcomeReasonCode: runtime.outcomeReasonCode,
-                    outcomeReasonMessage: runtime.outcomeReasonMessage,
-                    lastError: runtime.lastError,
-                }),
-                completedNodes: useStore.getState().selectedRunCompletedNodes,
-                fetchedAtMs: useStore.getState().selectedRunStatusFetchedAtMs,
+            reconcileRunRecord(selectedRunId, 'journal', {
+                status: runtimeStatus,
+                outcome: runtime.outcome,
+                outcome_reason_code: runtime.outcomeReasonCode,
+                outcome_reason_message: runtime.outcomeReasonMessage,
+                ...(runtime.lastError != null ? { last_error: runtime.lastError } : {}),
             })
-            // A terminal transition is the authoritative end of the story:
-            // refetch durable state once so the final view (completed nodes,
-            // outcomes, transcript) cannot be left on whatever the live
-            // stream happened to deliver.
-            if (!wasTerminal && TERMINAL_RUN_STATUSES.has(runtimeStatus)) {
-                resyncFromDurableState()
-            }
+            // Coalesce both terminal event sources per execution attempt,
+            // independently of other listeners' record writes.
+            reconcileTerminalStatus(runtimeStatus)
         }
 
         const handleMessage = (event: { data: string }) => {
+            if (!isCurrent()) return
             try {
                 const data = JSON.parse(event.data)
                 const rawRecord = (
@@ -494,7 +391,7 @@ export function RunStream() {
                                 pendingRetry,
                             }
                         }
-                        const currentGate = useStore.getState().humanGate
+                        const currentGate = useStore.getState().runDetailSessionsByRunId[selectedRunId]?.humanGate
                         if (currentGate?.nodeId === runtimeNodeId) {
                             clearHumanGate()
                         }
@@ -529,7 +426,7 @@ export function RunStream() {
                                     pendingRetry: stateNodeStatus === 'running' ? previousCursor.pendingRetry : false,
                                 }
                             }
-                            const currentGate = useStore.getState().humanGate
+                            const currentGate = useStore.getState().runDetailSessionsByRunId[selectedRunId]?.humanGate
                             if (stateNodeStatus !== 'waiting' && currentGate?.nodeId === stateNodeId) {
                                 clearHumanGate()
                             }
@@ -579,15 +476,15 @@ export function RunStream() {
                 liveError: null,
             })
             const { shouldOpenStream } = await refreshSelectedRunStatus()
-            if (closed || !shouldOpenStream) {
+            if (!isCurrent() || !shouldOpenStream) {
                 return
             }
             await refreshSelectedRunJournal()
-            if (closed) {
+            if (!isCurrent()) {
                 return
             }
 
-            setSelectedRunStatusSync('ready', null)
+            if (useStore.getState().runDetailSessionsByRunId[selectedRunId]?.statusSync !== 'degraded') setSelectedRunStatusSync('ready', null)
             patchRunJournal({
                 liveStatus: 'live',
                 liveError: null,
@@ -609,7 +506,7 @@ export function RunStream() {
             }
             try {
                 const response = await loadRunTranscript(selectedRunId)
-                if (closed) {
+                if (!isCurrent()) {
                     return
                 }
                 useRunTranscriptStore.getState().setSegments(
@@ -618,7 +515,7 @@ export function RunStream() {
                     response.newest_sequence,
                 )
             } catch (error) {
-                if (closed) {
+                if (!isCurrent()) {
                     return
                 }
                 useRunTranscriptStore.getState().patchRun(selectedRunId, {
@@ -630,7 +527,7 @@ export function RunStream() {
 
         const handleRunSegmentUpsert = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null
-            if (detail?.runId !== selectedRunId || !detail.segment) {
+            if (!isCurrent() || detail?.runId !== selectedRunId || !detail.segment) {
                 return
             }
             const segment = parseLiveRunTranscriptSegment(detail.segment)
@@ -642,20 +539,27 @@ export function RunStream() {
         // Live-derived node state may be built on dropped frames: clear the
         // overlay and rebuild everything from durable state. Deduped so a
         // burst of gap signals triggers one refetch cycle.
-        const resyncFromDurableState = () => {
+        const resyncFromDurableState = (terminal = false) => {
+            if (!isCurrent()) return
             if (resyncInFlightRef.current) {
+                pendingTerminalRefresh ||= terminal
                 return
             }
             resyncInFlightRef.current = true
             stageCursorsRef.current = {}
             lastLiveSequenceRef.current = null
             resetNodeStatuses()
+            clearHumanGate()
             void Promise.allSettled([
                 refreshSelectedRunStatus(),
                 refreshSelectedRunJournal(),
                 refreshRunTranscript(),
             ]).finally(() => {
                 resyncInFlightRef.current = false
+                if (pendingTerminalRefresh && isCurrent()) {
+                    pendingTerminalRefresh = false
+                    resyncFromDurableState()
+                }
             })
         }
 
@@ -677,14 +581,8 @@ export function RunStream() {
             if (!run || run.run_id !== selectedRunId || typeof run.status !== 'string') {
                 return
             }
-            if (!TERMINAL_RUN_STATUSES.has(run.status)) {
-                return
-            }
-            const currentRecord = useStore.getState().selectedRunRecord
-            if (currentRecord?.run_id === selectedRunId && TERMINAL_RUN_STATUSES.has(currentRecord.status)) {
-                return
-            }
-            resyncFromDurableState()
+            if (!isCurrent()) return
+            reconcileTerminalStatus(run.status)
         }
 
         void startScopedStream()
@@ -705,17 +603,11 @@ export function RunStream() {
             })
         }
     }, [
-        clearHumanGate,
         reconnectSignal,
-        resetNodeStatuses,
         selectedRunId,
-        setHumanGate,
-        setNodeStatus,
-        setRuntimeOutcome,
-        setRuntimeStatus,
-        setSelectedRunId,
-        setSelectedRunSnapshot,
-        setSelectedRunStatusSync,
+        updateRunDetailSession,
+        reconcileRunRecord,
+        clearRunDetailSession,
     ])
 
     const handleRetrySave = () => {

@@ -5,6 +5,7 @@ import { ProjectConversationMarkdown } from '@/features/projects/components/Proj
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 interface RunQuestionsPanelProps {
+    confirmedQuestionIds: string[]
     className?: string
     freeformAnswersByGateId: Record<string, string>
     gateNotesByGateId: Record<string, string>
@@ -17,6 +18,7 @@ interface RunQuestionsPanelProps {
 }
 
 export function RunQuestionsPanel({
+    confirmedQuestionIds,
     className,
     freeformAnswersByGateId,
     gateNotesByGateId,
@@ -96,7 +98,7 @@ export function RunQuestionsPanel({
                                                     data-testid={`run-pending-human-gate-freeform-input-${gate.questionId}`}
                                                     value={freeformAnswer}
                                                     onChange={(event) => onFreeformAnswerChange(gate.questionId!, event.target.value)}
-                                                    disabled={submittingGateIds[gate.questionId] === true}
+                                                    disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     placeholder="Type answer..."
                                                     className="h-7 min-w-[18rem] border-amber-500/40 bg-white px-2 text-[11px] text-amber-900 focus-visible:ring-amber-500/40"
                                                 />
@@ -106,7 +108,7 @@ export function RunQuestionsPanel({
                                                     onClick={() => {
                                                         onSubmitPendingGateAnswer(gate, freeformAnswer)
                                                     }}
-                                                    disabled={submittingGateIds[gate.questionId] === true || freeformAnswer.trim().length === 0}
+                                                    disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true || freeformAnswer.trim().length === 0}
                                                     variant="outline"
                                                     size="xs"
                                                     className="h-7 border-amber-500/50 bg-white text-[11px] font-medium text-amber-900 hover:bg-amber-100"
@@ -122,7 +124,7 @@ export function RunQuestionsPanel({
                                                     data-testid={`run-pending-human-gate-note-input-${gate.questionId}`}
                                                     value={gateNote}
                                                     onChange={(event) => onGateNoteChange(gate.questionId!, event.target.value)}
-                                                    disabled={submittingGateIds[gate.questionId] === true}
+                                                    disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     placeholder="Optional note for the next step..."
                                                     className="h-7 w-full border-amber-500/40 bg-white px-2 text-[11px] text-amber-900 focus-visible:ring-amber-500/40"
                                                 />
@@ -135,7 +137,7 @@ export function RunQuestionsPanel({
                                                             onClick={() => {
                                                                 onSubmitPendingGateAnswer(gate, option.value, gateNote)
                                                             }}
-                                                            disabled={submittingGateIds[gate.questionId!] === true}
+                                                            disabled={!confirmedQuestionIds.includes(gate.questionId!) || submittingGateIds[gate.questionId!] === true}
                                                             variant="outline"
                                                             size="xs"
                                                             className="h-6 border-amber-500/50 bg-white text-[11px] font-medium text-amber-900 hover:bg-amber-100"

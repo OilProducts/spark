@@ -128,7 +128,6 @@ export function useProjectSwitcherControls() {
                     projectSessionsByPath: nextProjectSessionStates,
                     activeProjectPath: nextActiveProjectPath,
                     activeFlow: state.activeFlow,
-                    selectedRunId: nextActiveProjectPath ? state.selectedRunId : null,
                     workingDir: nextActiveProjectPath ? state.workingDir : DEFAULT_WORKING_DIRECTORY,
                 }
             })

@@ -1,3 +1,4 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
@@ -13,27 +14,21 @@ const DEFAULT_WORKING_DIRECTORY = './test-app'
 const TEST_GRAPH_FLOW = 'test-graph.yaml'
 
 const resetGraphSettingsState = () => {
-  useStore.setState((state) => ({
-    ...state,
-    viewMode: 'editor',
-    activeProjectPath: '/tmp/project-graph-settings',
-    activeFlow: TEST_GRAPH_FLOW,
-    executionFlow: null,
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    workingDir: DEFAULT_WORKING_DIRECTORY,
-    projectRegistry: {
+  {
+useStore.setState({...useStore.getState(),
+viewMode: 'editor',
+activeProjectPath: '/tmp/project-graph-settings',
+activeFlow: TEST_GRAPH_FLOW,
+executionFlow: null,
+workingDir: DEFAULT_WORKING_DIRECTORY,
+projectRegistry: {
       '/tmp/project-graph-settings': {
         directoryPath: '/tmp/project-graph-settings',
         isFavorite: false,
         lastAccessedAt: null,
       },
     },
-    projectSessionsByPath: {
+projectSessionsByPath: {
       '/tmp/project-graph-settings': {
         workingDir: DEFAULT_WORKING_DIRECTORY,
         conversationId: null,
@@ -43,34 +38,35 @@ const resetGraphSettingsState = () => {
 
       },
     },
-    projectRegistrationError: null,
-    recentProjectPaths: ['/tmp/project-graph-settings'],
-    flowMetadata: {},
-    flowMetadataErrors: {},
-    flowMetadataUserEditVersion: 0,
-    graphAttrs: {},
-    graphAttrErrors: {},
-    graphAttrsUserEditVersion: 0,
-    editorGraphSettingsPanelOpenByFlow: {},
-    editorShowAdvancedFlowMetadataByFlow: {},
-    editorShowAdvancedGraphAttrsByFlow: {},
-    editorLaunchInputDraftsByFlow: {},
-    editorLaunchInputDraftErrorByFlow: {},
-    editorNodeInspectorSessionsByNodeId: {},
-    saveState: 'idle',
-    saveStateVersion: 0,
-    saveErrorMessage: null,
-    saveErrorKind: null,
-    diagnostics: [],
-    nodeDiagnostics: {},
-    edgeDiagnostics: {},
-    hasValidationErrors: false,
-    uiDefaults: {
+projectRegistrationError: null,
+recentProjectPaths: ['/tmp/project-graph-settings'],
+flowMetadata: {},
+flowMetadataErrors: {},
+flowMetadataUserEditVersion: 0,
+graphAttrs: {},
+graphAttrErrors: {},
+graphAttrsUserEditVersion: 0,
+editorGraphSettingsPanelOpenByFlow: {},
+editorShowAdvancedFlowMetadataByFlow: {},
+editorShowAdvancedGraphAttrsByFlow: {},
+editorLaunchInputDraftsByFlow: {},
+editorLaunchInputDraftErrorByFlow: {},
+editorNodeInspectorSessionsByNodeId: {},
+saveState: 'idle',
+saveStateVersion: 0,
+saveErrorMessage: null,
+saveErrorKind: null,
+diagnostics: [],
+nodeDiagnostics: {},
+edgeDiagnostics: {},
+hasValidationErrors: false,
+uiDefaults: {
       llm_provider: 'openai',
       llm_model: 'gpt-5.3',
       reasoning_effort: 'high',
-    },
-  }))
+    }});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 const wrapWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)

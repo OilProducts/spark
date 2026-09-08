@@ -92,7 +92,7 @@ export function RunResultCard({
                         </AlertDescription>
                     </Alert>
                 ) : null}
-                {!resultError && result?.state === 'ready' ? (
+                {result?.state === 'ready' ? (
                     <div data-testid="run-result-body" className="rounded-md border border-border/80 bg-muted/20 p-3">
                         <ProjectConversationMarkdown content={result.body_markdown || ''} />
                         {result.summary_error ? (

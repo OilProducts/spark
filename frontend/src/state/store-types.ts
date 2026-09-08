@@ -1,4 +1,3 @@
-import type { RunRecord } from '@/features/runs/model/shared'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import type {
     HomeSessionSlice,
@@ -150,46 +149,6 @@ export interface WorkspaceSlice {
     updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
 }
 
-export interface RunInspectorSlice {
-    selectedRunId: string | null
-    setSelectedRunId: (id: string | null) => void
-    selectedRunRecord: RunRecord | null
-    selectedRunCompletedNodes: string[]
-    selectedRunStatusSync: SelectedRunStatusSync
-    selectedRunStatusError: string | null
-    selectedRunStatusFetchedAtMs: number | null
-    setSelectedRunSnapshot: (snapshot: {
-        record: RunRecord | null
-        completedNodes?: string[]
-        fetchedAtMs?: number | null
-    }) => void
-    setSelectedRunStatusSync: (status: SelectedRunStatusSync, error?: string | null) => void
-    runGraphAttrs: FlowDefinitionMetadata
-    replaceRunGraphAttrs: (attrs: FlowDefinitionMetadata) => void
-    runDiagnostics: DiagnosticEntry[]
-    setRunDiagnostics: (diagnostics: DiagnosticEntry[]) => void
-    clearRunDiagnostics: () => void
-    runNodeDiagnostics: Record<string, DiagnosticEntry[]>
-    runEdgeDiagnostics: Record<string, DiagnosticEntry[]>
-    runHasValidationErrors: boolean
-    runtimeStatus: RuntimeStatus
-    setRuntimeStatus: (status: RuntimeStatus) => void
-    runtimeOutcome: RunOutcome | null
-    runtimeOutcomeReasonCode: string | null
-    runtimeOutcomeReasonMessage: string | null
-    setRuntimeOutcome: (
-        outcome: RunOutcome | null,
-        outcomeReasonCode?: string | null,
-        outcomeReasonMessage?: string | null,
-    ) => void
-    nodeStatuses: Record<string, NodeStatus>
-    setNodeStatus: (nodeId: string, status: NodeStatus) => void
-    resetNodeStatuses: () => void
-    humanGate: HumanGateState | null
-    setHumanGate: (gate: HumanGateState | null) => void
-    clearHumanGate: () => void
-}
-
 export interface EditorNodeInspectorSessionState {
     showAdvanced: boolean
     readsContextDraft: string
@@ -271,7 +230,6 @@ export interface EditorSlice {
 export type AppState =
     & WorkspaceSlice
     & WorkflowEventLogSlice
-    & RunInspectorSlice
     & RunsSessionSlice
     & TriggersSessionSlice
     & HomeSessionSlice

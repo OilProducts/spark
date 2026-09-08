@@ -1,3 +1,4 @@
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { usePersistProjectState } from '@/features/projects/hooks/usePersistProjectState'
@@ -7,7 +8,6 @@ import { useProjectGitMetadata } from '@/features/projects/hooks/useProjectGitMe
 import { extractApiErrorMessage } from '@/features/projects/model/projectsHomeState'
 import { useRunDetailResources } from '@/features/runs/hooks/useRunDetailResources'
 import { useRunsList } from '@/features/runs/hooks/useRunsList'
-import type { RunRecord } from '@/features/runs/model/shared'
 import { useTriggersList } from '@/features/triggers/hooks/useTriggersList'
 import { buildWorkspaceLiveEventsUrl } from '@/features/workspace/services/liveEvents'
 import type {
@@ -18,55 +18,11 @@ import type {
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationStreamDeltaEventResponse } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
-import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
 import type { WorkflowLogEntry } from '@/state/workflowEventLogSlice'
-
-const completedNodesMatch = (left: string[], right: string[]) => (
-    left.length === right.length && left.every((value, index) => value === right[index])
-)
-
-const runRecordsMatch = (
-    left: RunRecord | null,
-    right: RunRecord | null,
-) => {
-    if (left === right) {
-        return true
-    }
-    if (!left || !right) {
-        return false
-    }
-    return [
-        'run_id',
-        'flow_name',
-        'status',
-        'outcome',
-        'outcome_reason_code',
-        'outcome_reason_message',
-        'working_directory',
-        'project_path',
-        'git_branch',
-        'git_commit',
-        'spec_id',
-        'plan_id',
-        'model',
-        'started_at',
-        'ended_at',
-        'last_error',
-        'token_usage',
-        'current_node',
-        'continued_from_run_id',
-        'continued_from_node',
-        'continued_from_flow_mode',
-        'continued_from_flow_name',
-        'parent_run_id',
-        'parent_node_id',
-        'root_run_id',
-        'child_invocation_index',
-    ].every((key) => left[key as keyof RunRecord] === right[key as keyof RunRecord])
-}
 
 type HomeConversationSyncControllerProps = {
     projectPath: string
@@ -317,151 +273,10 @@ export function HomeSessionController() {
 
 export function RunsSessionController() {
     const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const runsListSession = useStore((state) => state.runsListSession)
-    const scopeMode = runsListSession.scopeMode
-    const globalSelectedRunId = useStore((state) => state.selectedRunId)
-    const selectedRunRecord = useStore((state) => state.selectedRunRecord)
-    const selectedRunCompletedNodes = useStore((state) => state.selectedRunCompletedNodes)
-    const selectedRunStatusFetchedAtMs = useStore((state) => state.selectedRunStatusFetchedAtMs)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
-    const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
-    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
-    const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
-    const scopedSelectedRunId = getRunsSelectedRunIdForScope(runsListSession, activeProjectPath)
-    const selectedRunId = scopedSelectedRunId ?? globalSelectedRunId
-    const scopeKey = buildRunsScopeKey(scopeMode, activeProjectPath)
-    const scopedSelectedRunSession = useStore((state) => (
-        scopedSelectedRunId ? state.runDetailSessionsByRunId[scopedSelectedRunId] ?? null : null
-    ))
-
-    useEffect(() => {
-        const restoreScopedSnapshot = () => {
-            setSelectedRunSnapshot({
-                record: scopedSelectedRunSession?.summaryRecord ?? null,
-                completedNodes: scopedSelectedRunSession?.completedNodesSnapshot ?? [],
-                fetchedAtMs: scopedSelectedRunSession?.statusFetchedAtMs ?? null,
-            })
-        }
-
-        if (selectedRunId && !scopedSelectedRunId) {
-            setRunsSelectedRunIdForScope(scopeKey, selectedRunId)
-            return
-        }
-        if (globalSelectedRunId !== scopedSelectedRunId) {
-            setSelectedRunId(scopedSelectedRunId)
-            restoreScopedSnapshot()
-            return
-        }
-        if (!globalSelectedRunId) {
-            if (selectedRunRecord || selectedRunCompletedNodes.length > 0 || selectedRunStatusFetchedAtMs !== null) {
-                setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
-            }
-            return
-        }
-        if (!scopedSelectedRunSession) {
-            if (selectedRunRecord && selectedRunRecord.run_id !== selectedRunId) {
-                setSelectedRunSnapshot({ record: null, completedNodes: [], fetchedAtMs: null })
-            }
-            return
-        }
-        if (!selectedRunRecord || selectedRunRecord.run_id !== selectedRunId) {
-            restoreScopedSnapshot()
-        }
-    }, [
-        globalSelectedRunId,
-        scopeKey,
-        scopedSelectedRunId,
-        scopedSelectedRunSession?.completedNodesSnapshot,
-        scopedSelectedRunSession?.statusFetchedAtMs,
-        scopedSelectedRunSession?.summaryRecord,
-        selectedRunCompletedNodes,
-        selectedRunId,
-        selectedRunRecord,
-        selectedRunStatusFetchedAtMs,
-        setRunsSelectedRunIdForScope,
-        setSelectedRunId,
-        setSelectedRunSnapshot,
-    ])
-
-    useEffect(() => {
-        if (
-            !selectedRunId
-            || selectedRunId !== scopedSelectedRunId
-            || !selectedRunRecord
-            || selectedRunRecord.run_id !== selectedRunId
-        ) {
-            return
-        }
-
-        const sessionCompletedNodes = scopedSelectedRunSession?.completedNodesSnapshot ?? []
-        const sessionFetchedAtMs = scopedSelectedRunSession?.statusFetchedAtMs ?? null
-        if (
-            runRecordsMatch(scopedSelectedRunSession?.summaryRecord ?? null, selectedRunRecord)
-            && completedNodesMatch(sessionCompletedNodes, selectedRunCompletedNodes)
-            && sessionFetchedAtMs === selectedRunStatusFetchedAtMs
-        ) {
-            return
-        }
-
-        updateRunDetailSession(selectedRunId, {
-            summaryRecord: selectedRunRecord,
-            completedNodesSnapshot: selectedRunCompletedNodes,
-            statusFetchedAtMs: selectedRunStatusFetchedAtMs,
-        })
-    }, [
-        scopedSelectedRunId,
-        scopedSelectedRunSession?.completedNodesSnapshot,
-        scopedSelectedRunSession?.statusFetchedAtMs,
-        scopedSelectedRunSession?.summaryRecord,
-        selectedRunCompletedNodes,
-        selectedRunId,
-        selectedRunRecord,
-        selectedRunStatusFetchedAtMs,
-        updateRunDetailSession,
-    ])
-
-    const {
-        error,
-        isLoading,
-        scopedRuns,
-        selectedRunSummary,
-    } = useRunsList({
-        activeProjectPath,
-        scopeMode,
-        selectedRunId,
-        manageSync: true,
-    })
-
-    const hasScopedSelectedRun = scopedSelectedRunId
-        ? scopedRuns.some((run) => run.run_id === scopedSelectedRunId)
-        : false
-    const authoritativeSelectedRunRecord = selectedRunRecord?.run_id === selectedRunId
-        ? selectedRunRecord
-        : null
-    const selectedRunSessionRecord = scopedSelectedRunSession?.summaryRecord ?? null
-    const selectedRun =
-        authoritativeSelectedRunRecord
-        ?? (
-            selectedRunSessionRecord
-            && selectedRunSessionRecord.run_id === scopedSelectedRunId
-                ? selectedRunSessionRecord
-                : (
-                    selectedRunSummary
-                    ?? (
-                        selectedRunSessionRecord
-                        && selectedRunSessionRecord.run_id === scopedSelectedRunId
-                        && (isLoading || Boolean(error) || hasScopedSelectedRun || scopedRuns.length === 0)
-                            ? selectedRunSessionRecord
-                            : null
-                    )
-                )
-        )
-
-    useRunDetailResources({
-        selectedRunId: selectedRun?.run_id ?? null,
-        manageSync: true,
-    })
-
+    const scopeMode = useStore((state) => state.runsListSession.scopeMode)
+    const selectedRunId = useStore(selectSelectedRunId)
+    useRunsList({ activeProjectPath, scopeMode, selectedRunId, manageSync: true })
+    useRunDetailResources({ selectedRunId, manageSync: true })
     return null
 }
 
@@ -477,7 +292,10 @@ export function WorkspaceLiveEventsController() {
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
     const homeConversationCache = useStore((state) => state.homeConversationCache)
     const runsListSession = useStore((state) => state.runsListSession)
-    const selectedRunId = useStore((state) => state.selectedRunId)
+    const selectedRunId = useStore(selectSelectedRunId)
+    const selectedRunLifetime = useStore((state) => (
+        selectedRunId ? state.runDetailSessionsByRunId[selectedRunId]?.lifetime : undefined
+    ))
     const selectedRunLiveCursor = useRunJournalStore((state) => (
         selectedRunId ? resolveRunJournalLiveCursor(state.byRunId[selectedRunId]) : null
     ))
@@ -585,7 +403,12 @@ export function WorkspaceLiveEventsController() {
             return `${url.pathname}${url.search}`
         }
 
-        const handleMessage = (event: MessageEvent<string>) => {
+        const isCurrent = (source: EventSource) => !closed && eventSource === source && (
+            !selectedRunId || useStore.getState().runDetailSessionsByRunId[selectedRunId]?.lifetime === selectedRunLifetime
+        )
+
+        const handleMessage = (event: MessageEvent<string>, source: EventSource) => {
+            if (!isCurrent(source)) return
             try {
                 const envelope = JSON.parse(event.data) as {
                     type?: string
@@ -723,13 +546,15 @@ export function WorkspaceLiveEventsController() {
                 return
             }
             eventSource?.close()
-            eventSource = new EventSource(buildUrlWithCursors())
-            eventSource.onmessage = handleMessage
-            eventSource.onerror = () => {
-                if (closed) {
+            const source = new EventSource(buildUrlWithCursors())
+            eventSource = source
+            source.onmessage = (event) => handleMessage(event, source)
+            source.onerror = () => {
+                if (!isCurrent(source)) {
                     return
                 }
-                eventSource?.close()
+                source.close()
+                eventSource = null
                 if (reconnectTimer !== null) {
                     window.clearTimeout(reconnectTimer)
                 }
@@ -745,17 +570,17 @@ export function WorkspaceLiveEventsController() {
             }
             eventSource?.close()
         }
-    }, [activeConversationId, activeProjectPath, liveEventsUrl, reconnectSignal, selectedRunId])
+    }, [activeConversationId, activeProjectPath, liveEventsUrl, reconnectSignal, selectedRunId, selectedRunLifetime])
 
     return null
 }
 
 export function RunsHashRoutingController() {
     const viewMode = useStore((state) => state.viewMode)
-    const selectedRunId = useStore((state) => state.selectedRunId)
+    const selectedRunId = useStore(selectSelectedRunId)
     const selectedNodeId = useStore((state) => (
-        state.selectedRunId
-            ? state.runDetailSessionsByRunId[state.selectedRunId]?.selectedNodeId ?? null
+        selectSelectedRunId(state)
+            ? state.runDetailSessionsByRunId[selectSelectedRunId(state)!]?.selectedNodeId ?? null
             : null
     ))
 
@@ -772,8 +597,8 @@ export function RunsHashRoutingController() {
             if (state.viewMode !== 'runs') {
                 state.setViewMode('runs')
             }
-            if (state.selectedRunId !== route.runId) {
-                state.setSelectedRunId(route.runId)
+            if (selectSelectedRunId(state) !== route.runId) {
+                state.setRunsSelectedRunIdForScope(buildRunsScopeKey(state.runsListSession.scopeMode, state.activeProjectPath), route.runId)
             }
             const currentNodeId = state.runDetailSessionsByRunId[route.runId]?.selectedNodeId ?? null
             if (currentNodeId !== route.nodeId) {

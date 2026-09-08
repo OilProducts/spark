@@ -1,3 +1,5 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import App from '@/App'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useStore } from '@/store'
@@ -78,56 +80,47 @@ const mockSidebarStackRect = (node: HTMLDivElement, initialHeight: number) => {
 
 const resetAppShellState = () => {
   useRunJournalStore.setState({ byRunId: {} })
-  useStore.setState((state) => ({
-    ...state,
-    viewMode: 'projects',
-    activeProjectPath: null,
-    activeFlow: null,
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    workingDir: DEFAULT_WORKING_DIRECTORY,
-    runtimeStatus: 'idle',
-    diagnostics: [],
-    nodeDiagnostics: {},
-    edgeDiagnostics: {},
-    hasValidationErrors: false,
-    humanGate: null,
-    nodeStatuses: {},
-    selectedNodeId: null,
-    selectedEdgeId: null,
-    projectRegistry: {},
-    projectSessionsByPath: {},
-    projectRegistrationError: null,
-    recentProjectPaths: [],
-    homeConversationCache: {
+  {
+useStore.setState({...useStore.getState(),
+viewMode: 'projects',
+activeProjectPath: null,
+activeFlow: null,
+workingDir: DEFAULT_WORKING_DIRECTORY,
+diagnostics: [],
+nodeDiagnostics: {},
+edgeDiagnostics: {},
+hasValidationErrors: false,
+selectedNodeId: null,
+selectedEdgeId: null,
+projectRegistry: {},
+projectSessionsByPath: {},
+projectRegistrationError: null,
+recentProjectPaths: [],
+homeConversationCache: {
       conversationsById: {},
       summariesByProjectPath: {},
     },
-    homeThreadSummariesStatusByProjectPath: {},
-    homeThreadSummariesErrorByProjectPath: {},
-    homeProjectSessionsByPath: {},
-    homeConversationSessionsById: {},
-    homeProjectGitMetadataByPath: {},
-    graphAttrs: {},
-    graphAttrErrors: {},
-    editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
-    editorMode: 'structured',
-    rawDotDraft: '',
-    rawHandoffError: null,
-    editorGraphSettingsPanelOpenByFlow: {},
-    editorShowAdvancedGraphAttrsByFlow: {},
-    editorLaunchInputDraftsByFlow: {},
-    editorLaunchInputDraftErrorByFlow: {},
-    editorNodeInspectorSessionsByNodeId: {},
-    saveState: 'idle',
-    saveStateVersion: 0,
-    saveErrorMessage: null,
-    saveErrorKind: null,
-    runsListSession: {
+homeThreadSummariesStatusByProjectPath: {},
+homeThreadSummariesErrorByProjectPath: {},
+homeProjectSessionsByPath: {},
+homeConversationSessionsById: {},
+homeProjectGitMetadataByPath: {},
+graphAttrs: {},
+graphAttrErrors: {},
+editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
+editorMode: 'structured',
+rawDotDraft: '',
+rawHandoffError: null,
+editorGraphSettingsPanelOpenByFlow: {},
+editorShowAdvancedGraphAttrsByFlow: {},
+editorLaunchInputDraftsByFlow: {},
+editorLaunchInputDraftErrorByFlow: {},
+editorNodeInspectorSessionsByNodeId: {},
+saveState: 'idle',
+saveStateVersion: 0,
+saveErrorMessage: null,
+saveErrorKind: null,
+runsListSession: {
       scopeMode: 'active',
       selectedRunIdByScopeKey: {},
       status: 'idle',
@@ -136,8 +129,8 @@ const resetAppShellState = () => {
       streamStatus: 'idle',
       streamError: null,
     },
-    runDetailSessionsByRunId: {},
-    triggersSession: {
+runDetailSessionsByRunId: {},
+triggersSession: {
       status: 'idle',
       error: null,
       triggers: [],
@@ -149,8 +142,9 @@ const resetAppShellState = () => {
         targetBehavior: 'default',
       },
       editTriggerDraftsByTriggerId: {},
-    },
-  }))
+    }});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 const resolveRequestUrl = (input: RequestInfo | URL): string => {
@@ -2010,7 +2004,7 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(useStore.getState().viewMode).toBe('runs')
     })
-    expect(useStore.getState().selectedRunId).toBe('run-two')
+    expect(selectSelectedRunId(useStore.getState())).toBe('run-two')
 
     await user.click(screen.getByTestId('nav-mode-projects'))
     await user.click(screen.getByTestId('nav-mode-runs'))
@@ -2019,7 +2013,7 @@ describe('App shell behavior', () => {
     })
     expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history across all projects.')
     expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
-    expect(useStore.getState().selectedRunId).toBe('run-two')
+    expect(selectSelectedRunId(useStore.getState())).toBe('run-two')
   })
 
   it('preserves run-local inspection session state across tab switches', async () => {

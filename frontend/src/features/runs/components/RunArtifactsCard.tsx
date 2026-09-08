@@ -140,7 +140,7 @@ export function RunArtifactsCard({
                         </AlertDescription>
                     </Alert>
                 ) : null}
-                {!artifactError && status === 'ready' && (
+                {(status === 'ready' || artifactEntries.length > 0) && (
                     <div className="space-y-3">
                         {showPartialRunArtifactNote && (
                             <div

@@ -1,3 +1,4 @@
+import { buildDiagnosticMaps, normalizeGraphAttrs } from '@/state/store-helpers'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
     Background,
@@ -40,6 +41,7 @@ const clampGraphPaneHeight = (height: number) => (
     Math.min(MAX_GRAPH_PANE_HEIGHT, Math.max(MIN_GRAPH_PANE_HEIGHT, Math.round(height)))
 )
 
+const EMPTY_DIAGNOSTICS: import('@/store').DiagnosticEntry[] = []
 const EMPTY_GRAPH_NODES: Node[] = []
 
 type RunGraphCanvasInnerProps = {
@@ -59,14 +61,12 @@ function RunGraphCanvasInner({
     onSelectNode,
     paneHeight,
 }: RunGraphCanvasInnerProps) {
-    const replaceRunGraphAttrs = useStore((state) => state.replaceRunGraphAttrs)
-    const setRunDiagnostics = useStore((state) => state.setRunDiagnostics)
-    const clearRunDiagnostics = useStore((state) => state.clearRunDiagnostics)
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
     const activeLoadRef = useRef(0)
-    const nodes = runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES
-    const edges = runDetailSession?.graphEdges ?? []
+    const matchingVariant = runDetailSession?.graphExpanded === (runDetailSession?.expandChildFlows ?? false)
+    const nodes = matchingVariant ? runDetailSession?.graphNodes ?? EMPTY_GRAPH_NODES : EMPTY_GRAPH_NODES
+    const edges = matchingVariant ? runDetailSession?.graphEdges ?? [] : []
 
     const decoratedNodes = useMemo(() => (
         nodes.map((node) => {
@@ -91,16 +91,13 @@ function RunGraphCanvasInner({
         activeLoadRef.current = loadId
         const controller = new AbortController()
         let cancelled = false
-        const isCurrentLoad = () => !cancelled && activeLoadRef.current === loadId
+        const lifetime = useStore.getState().runDetailSessionsByRunId[run.run_id]?.lifetime
+        const isCurrentLoad = () => !cancelled && activeLoadRef.current === loadId && lifetime !== undefined
+            && useStore.getState().runDetailSessionsByRunId[run.run_id]?.lifetime === lifetime
 
-        replaceRunGraphAttrs({})
-        clearRunDiagnostics()
         updateRunDetailSession(run.run_id, {
             graphStatus: 'loading',
             graphError: null,
-            graphNodes: [],
-            graphEdges: [],
-            graphLastLayoutMs: 0,
         })
 
         const startLoad = async () => {
@@ -112,12 +109,6 @@ function RunGraphCanvasInner({
                 )
                 if (!isCurrentLoad()) {
                     return
-                }
-
-                if (preview.diagnostics) {
-                    setRunDiagnostics(preview.diagnostics)
-                } else {
-                    clearRunDiagnostics()
                 }
 
                 const hydratedGraph = buildHydratedFlowGraph(
@@ -146,8 +137,11 @@ function RunGraphCanvasInner({
                     return
                 }
 
-                replaceRunGraphAttrs(hydratedGraph.graphAttrs)
                 updateRunDetailSession(run.run_id, {
+                    graphAttrs: normalizeGraphAttrs(hydratedGraph.graphAttrs),
+                    diagnostics: preview.diagnostics ?? [],
+                    ...buildDiagnosticMaps(preview.diagnostics ?? []),
+                    graphExpanded: runDetailSession?.expandChildFlows ?? false,
                     graphStatus: 'ready',
                     graphError: null,
                     graphNodes: laidOutGraph.nodes,
@@ -165,9 +159,6 @@ function RunGraphCanvasInner({
                 updateRunDetailSession(run.run_id, {
                     graphStatus: 'error',
                     graphError: error instanceof Error ? error.message : 'Unable to load the run graph preview.',
-                    graphNodes: [],
-                    graphEdges: [],
-                    graphLastLayoutMs: 0,
                 })
             }
         }
@@ -179,13 +170,10 @@ function RunGraphCanvasInner({
             controller.abort()
         }
     }, [
-        clearRunDiagnostics,
         refreshToken,
-        replaceRunGraphAttrs,
         run.flow_name,
         run.run_id,
         runDetailSession?.expandChildFlows,
-        setRunDiagnostics,
         updateRunDetailSession,
     ])
 
@@ -254,7 +242,10 @@ export function RunGraphCard({
     openInEditorDisabledReason,
     fillHeight = false,
 }: RunGraphCardProps) {
-    const diagnostics = useStore((state) => state.runDiagnostics)
+    const diagnostics = useStore((state) => {
+        const session = state.runDetailSessionsByRunId[run.run_id]
+        return session?.graphExpanded === session?.expandChildFlows ? session?.diagnostics ?? EMPTY_DIAGNOSTICS : EMPTY_DIAGNOSTICS
+    })
     const [refreshToken, setRefreshToken] = useState(0)
     const runDetailSession = useStore((state) => state.runDetailSessionsByRunId[run.run_id] ?? null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
@@ -362,8 +353,8 @@ export function RunGraphCard({
                         </Empty>
                     </div>
                 ) : null}
-                {!graphError && (graphStatus !== 'ready' || hasRenderableGraph) ? (
-                    <CanvasSessionModeProvider mode="runs">
+                <div className={!hasRenderableGraph && (graphError || graphStatus === 'ready') ? 'hidden' : 'contents'}>
+                    <CanvasSessionModeProvider mode="runs" runId={run.run_id}>
                         <ReactFlowProvider>
                             <RunGraphCanvasInner
                                 run={run}
@@ -375,7 +366,7 @@ export function RunGraphCard({
                             />
                         </ReactFlowProvider>
                     </CanvasSessionModeProvider>
-                ) : null}
+                </div>
                 {fillHeight ? null : (
                 <div
                     data-testid="run-graph-resize-handle"
