@@ -110,15 +110,24 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
                     .map(([key, update]) => [key, update.value]),
             )
             next = { ...record, ...newerFields } as NonNullable<typeof current>
+            recordUpdates = trackRecordUpdates(session, Object.fromEntries(
+                Object.entries(record).filter(([key]) => !(key in newerFields)),
+            ))
         } else if (source === 'list' && session.statusFetchedAtMs === null) {
             next = record as NonNullable<typeof current>
         } else {
+            // Unselected runs have no detail stream; refreshed summaries must
+            // update their cached status as well as their telemetry.
+            const refreshInactiveRun = source === 'list'
+                && runId !== getRunsSelectedRunIdForScope(state.runsListSession, state.activeProjectPath)
+            const fields = refreshInactiveRun ? [...LIVE_FIELDS, 'current_node'] as const
+                : source === 'live' ? LIVE_FIELDS : TELEMETRY_FIELDS
             const patch = source === 'journal' ? record : Object.fromEntries(
-                (source === 'live' ? LIVE_FIELDS : TELEMETRY_FIELDS)
-                    .filter((key) => source === 'live' ? record[key] !== undefined : record[key] != null)
+                fields
+                    .filter((key) => source === 'live' || refreshInactiveRun ? record[key] !== undefined : record[key] != null)
                     .map((key) => [key, record[key]]),
             )
-            if (source === 'live' || source === 'journal') recordUpdates = trackRecordUpdates(session, patch)
+            if (source === 'live' || source === 'journal' || refreshInactiveRun) recordUpdates = trackRecordUpdates(session, patch)
             if (current) next = { ...current, ...patch }
         }
         return { runDetailSessionsByRunId: { ...state.runDetailSessionsByRunId, [runId]: {
@@ -130,6 +139,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
         const before = get()
         const oldSession = before.runDetailSessionsByRunId[runId]
         const oldSummary = before.runsListSession.runs.find((run) => run.run_id === runId)
+        let optimisticUpdates: RunDetailSessionState['recordUpdates'] = {}
+        let optimisticSummary = oldSummary
         const apply = (rollback: boolean) => set((state) => {
             const appliedPatch = (record: import('@/features/runs/model/shared').RunRecord, previous: typeof record | null | undefined) => {
                 if (!rollback) return patch
@@ -141,10 +152,13 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             }
             const session = state.runDetailSessionsByRunId[runId]
             if (oldSession && session?.lifetime !== oldSession.lifetime) return state
-            const recordPatch = session?.record ? appliedPatch(session.record, oldSession?.record ?? oldSummary) : {}
+            const recordPatch = session?.record ? Object.fromEntries(
+                Object.entries(appliedPatch(session.record, oldSession?.record ?? oldSummary))
+                    .filter(([key]) => !rollback || session.recordUpdates[key as keyof typeof optimisticUpdates] === optimisticUpdates[key as keyof typeof optimisticUpdates]),
+            ) : {}
             const nextRecord = session?.record ? { ...session.record, ...recordPatch } : null
             return {
-                runsListSession: { ...state.runsListSession, runs: state.runsListSession.runs.map((run) => run.run_id === runId ? { ...run, ...appliedPatch(run, oldSummary) } : run) },
+                runsListSession: { ...state.runsListSession, runs: state.runsListSession.runs.map((run) => run.run_id === runId && (!rollback || run === optimisticSummary) ? { ...run, ...appliedPatch(run, oldSummary) } : run) },
                 ...(session ? { runDetailSessionsByRunId: { ...state.runDetailSessionsByRunId, [runId]: {
                     ...session, record: nextRecord,
                     recordUpdates: nextRecord ? trackRecordUpdates(session, recordPatch) : session.recordUpdates,
@@ -152,6 +166,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             }
         })
         apply(false)
+        optimisticUpdates = get().runDetailSessionsByRunId[runId]?.recordUpdates ?? {}
+        optimisticSummary = get().runsListSession.runs.find((run) => run.run_id === runId)
         return () => apply(true)
     },
     updateRunsListSession: (patch, source = 'list') => {

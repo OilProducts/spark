@@ -170,3 +170,45 @@ it('gives only applied optimistic and rollback fields authority during hydration
     state.reconcileRunRecord('a', 'status', record('a', { flow_name: 'durable', last_error: 'old error' }), [], requestUpdates)
     expect(selectSelectedRunSession(useStore.getState())?.record).toMatchObject({ status: 'completed', flow_name: 'durable', last_error: '' })
 })
+
+it('refreshes an unselected cached run from list status without losing detailed data', () => {
+    const state = useStore.getState()
+    state.updateRunsListSession({ runs: [record()] })
+    state.reconcileRunRecord('a', 'status', record('a', { execution_profile_id: 'native' }), ['start'])
+    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.updateRunsListSession({ runs: [record('a', { status: 'completed', outcome: 'success', current_node: 'done' })] })
+    const session = useStore.getState().runDetailSessionsByRunId.a
+    expect(session.record).toMatchObject({ status: 'completed', outcome: 'success', current_node: 'done', execution_profile_id: 'native' })
+    expect(session.completedNodesSnapshot).toEqual(['start'])
+})
+
+it.each(['live', 'journal', 'status'] as const)('does not roll back a newer %s confirmation of the optimistic value', (source) => {
+    const state = useStore.getState()
+    state.updateRunsListSession({ runs: [record('a', { status: 'failed' })] })
+    state.reconcileRunRecord('a', 'status', record('a', { status: 'failed' }))
+    const rollback = state.optimisticallyPatchRun('a', { status: 'running' })
+    state.reconcileRunRecord('a', source, source === 'journal' ? { status: 'running' } : record('a'))
+    rollback()
+    expect(useStore.getState().runDetailSessionsByRunId.a.record?.status).toBe('running')
+})
+
+it('preserves a newer list confirmation when rolling back an uninspected run', () => {
+    const state = useStore.getState()
+    state.updateRunsListSession({ runs: [record('b', { status: 'failed' })] })
+    const rollback = state.optimisticallyPatchRun('b', { status: 'running' })
+    state.updateRunsListSession({ runs: [record('b')] })
+    rollback()
+    expect(useStore.getState().runsListSession.runs[0].status).toBe('running')
+})
+
+it('preserves a fresh list confirmation for a cached run after switching away', () => {
+    const state = useStore.getState()
+    state.updateRunsListSession({ runs: [record('a', { status: 'failed' })] })
+    state.reconcileRunRecord('a', 'status', record('a', { status: 'failed' }))
+    const rollback = state.optimisticallyPatchRun('a', { status: 'running' })
+    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.updateRunsListSession({ runs: [record('a')] })
+    rollback()
+    expect(useStore.getState().runDetailSessionsByRunId.a.record?.status).toBe('running')
+    expect(useStore.getState().runsListSession.runs[0].status).toBe('running')
+})
