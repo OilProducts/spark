@@ -1,3 +1,4 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -141,7 +142,8 @@ export function useProjectsHomeController() {
     const projectGitMetadata = useStore((state) => state.homeProjectGitMetadataByPath)
     const model = useStore((state) => state.model)
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
+    const scopeKey = useStore((state) => buildRunsScopeKey(state.runsListSession.scopeMode, state.activeProjectPath))
+    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
     const setViewMode = useStore((state) => state.setViewMode)
 
     const resetComposerRef = useRef<() => void>(() => {})
@@ -520,9 +522,9 @@ export function useProjectsHomeController() {
         if (!request.run_id) {
             return
         }
-        setSelectedRunId(request.run_id)
+        setRunsSelectedRunIdForScope(scopeKey, request.run_id)
         setViewMode('runs')
-    }, [setSelectedRunId, setViewMode])
+    }, [scopeKey, setRunsSelectedRunIdForScope, setViewMode])
 
     const onSubmitRequestUserInput = useCallback(async (requestId: string, answers: Record<string, string>) => {
         if (!activeConversationId || !activeProjectPath) {

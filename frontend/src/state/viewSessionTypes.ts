@@ -54,7 +54,19 @@ export interface RunsListSessionState {
 }
 
 export interface RunDetailSessionState {
-    summaryRecord: RunRecord | null
+    lifetime: number
+    resourceRequestIds: Record<string, number>
+    nodeStatuses: Record<string, import('./store-types').NodeStatus>
+    humanGate: import('./store-types').HumanGateState | null
+    graphAttrs: import('./store-types').GraphAttrs
+    diagnostics: import('./store-types').DiagnosticEntry[]
+    nodeDiagnostics: Record<string, import('./store-types').DiagnosticEntry[]>
+    edgeDiagnostics: Record<string, import('./store-types').DiagnosticEntry[]>
+    graphExpanded: boolean | null
+    record: RunRecord | null
+    recordUpdates: Partial<{ [K in keyof RunRecord]: { value: RunRecord[K] } }>
+    statusSync: import("./store-types").SelectedRunStatusSync
+    statusError: string | null
     completedNodesSnapshot: string[]
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
@@ -157,11 +169,12 @@ export interface HomeSessionSlice {
 export interface RunsSessionSlice {
     runsListSession: RunsListSessionState
     runDetailSessionsByRunId: Record<string, RunDetailSessionState>
-    updateRunsListSession: (patch: Partial<RunsListSessionState>) => void
+    reconcileRunRecord: (runId: string, source: 'status' | 'list' | 'live' | 'journal', record: Partial<RunRecord>, completedNodes?: string[], requestUpdates?: RunDetailSessionState['recordUpdates']) => void
+    optimisticallyPatchRun: (runId: string, patch: Partial<RunRecord>) => () => void
+    updateRunsListSession: (patch: Partial<RunsListSessionState>, source?: 'list' | 'live') => void
     setRunsSelectedRunIdForScope: (scopeKey: string, runId: string | null) => void
     updateRunDetailSession: (runId: string, patch: Partial<RunDetailSessionState>) => void
     clearRunDetailSession: (runId: string) => void
-    pruneRunDetailSessions: (runIds: string[]) => void
 }
 
 export interface TriggersSessionSlice {

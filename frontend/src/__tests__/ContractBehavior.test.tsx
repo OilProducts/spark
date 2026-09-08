@@ -1,3 +1,5 @@
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import App from '@/App'
 import { HomeSessionController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
@@ -133,19 +135,13 @@ const buildPipelineStatusPayload = (
 
 const resetContractState = () => {
   useRunJournalStore.setState({ byRunId: {} })
-  useStore.setState((state) => ({
-    ...state,
-    viewMode: 'editor',
-    activeProjectPath: '/tmp/project-contract-behavior',
-    activeFlow: 'contract-behavior.yaml',
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    runsListSession: {
-      ...state.runsListSession,
+  {
+useStore.setState({...useStore.getState(),
+viewMode: 'editor',
+activeProjectPath: '/tmp/project-contract-behavior',
+activeFlow: 'contract-behavior.yaml',
+runsListSession: {
+      ...useStore.getState().runsListSession,
       scopeMode: 'active',
       selectedRunIdByScopeKey: {},
       status: 'idle',
@@ -154,16 +150,16 @@ const resetContractState = () => {
       streamStatus: 'idle',
       streamError: null,
     },
-    runDetailSessionsByRunId: {},
-    workingDir: DEFAULT_WORKING_DIRECTORY,
-    projectRegistry: {
+runDetailSessionsByRunId: {},
+workingDir: DEFAULT_WORKING_DIRECTORY,
+projectRegistry: {
       '/tmp/project-contract-behavior': {
         directoryPath: '/tmp/project-contract-behavior',
         isFavorite: false,
         lastAccessedAt: null,
       },
     },
-    projectSessionsByPath: {
+projectSessionsByPath: {
       '/tmp/project-contract-behavior': {
         workingDir: DEFAULT_WORKING_DIRECTORY,
         conversationId: null,
@@ -173,31 +169,32 @@ const resetContractState = () => {
 
       },
     },
-    projectRegistrationError: null,
-    recentProjectPaths: ['/tmp/project-contract-behavior'],
-    graphAttrs: {},
-    graphAttrErrors: {},
-    diagnostics: [],
-    nodeDiagnostics: {},
-    edgeDiagnostics: {},
-    hasValidationErrors: false,
-    editorGraphSettingsPanelOpenByFlow: {},
-    editorShowAdvancedGraphAttrsByFlow: {},
-    editorLaunchInputDraftsByFlow: {},
-    editorLaunchInputDraftErrorByFlow: {},
-    editorNodeInspectorSessionsByNodeId: {},
-    saveState: 'idle',
-    saveStateVersion: 0,
-    saveErrorMessage: null,
-    saveErrorKind: null,
-    selectedNodeId: null,
-    selectedEdgeId: null,
-    uiDefaults: {
+projectRegistrationError: null,
+recentProjectPaths: ['/tmp/project-contract-behavior'],
+graphAttrs: {},
+graphAttrErrors: {},
+diagnostics: [],
+nodeDiagnostics: {},
+edgeDiagnostics: {},
+hasValidationErrors: false,
+editorGraphSettingsPanelOpenByFlow: {},
+editorShowAdvancedGraphAttrsByFlow: {},
+editorLaunchInputDraftsByFlow: {},
+editorLaunchInputDraftErrorByFlow: {},
+editorNodeInspectorSessionsByNodeId: {},
+saveState: 'idle',
+saveStateVersion: 0,
+saveErrorMessage: null,
+saveErrorKind: null,
+selectedNodeId: null,
+selectedEdgeId: null,
+uiDefaults: {
       llm_provider: 'openai',
       llm_model: 'gpt-5.3',
       reasoning_effort: 'high',
-    },
-  }))
+    }});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 const renderProjectsPanelWithController = () =>
@@ -754,7 +751,7 @@ describe('Frontend contract behavior', () => {
     )
 
     act(() => {
-      useStore.getState().setSelectedRunId(runId)
+      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId)
     })
 
     renderRunsPanelWithController()
@@ -875,7 +872,7 @@ describe('Frontend contract behavior', () => {
 
     act(() => {
       useStore.getState().setViewMode('runs')
-      useStore.getState().setSelectedRunId(runId)
+      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId)
     })
 
     const user = userEvent.setup()
@@ -1343,12 +1340,11 @@ describe('Frontend contract behavior', () => {
 
     cleanup()
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        activeProjectPath: '/tmp/project-contract-behavior',
-        selectedRunId: 'run-focus-audit',
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+activeProjectPath: '/tmp/project-contract-behavior'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-focus-audit');
+}
     })
 
     renderLaunchPanelWithDialogs()
@@ -1513,7 +1509,7 @@ describe('Frontend contract behavior', () => {
 
       act(() => {
         useStore.getState().setViewMode('runs')
-        useStore.getState().setSelectedRunId(runId)
+        useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId)
       })
       renderRunsPanelWithController()
 
@@ -1549,12 +1545,11 @@ describe('Frontend contract behavior', () => {
       cleanup()
       act(() => {
         resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'runs',
-          selectedRunId: 'run-mobile-ops',
-          runtimeStatus: 'running',
-        }))
+        {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-mobile-ops');
+}
       })
       render(<RunsPanel />)
 
@@ -1649,12 +1644,11 @@ describe('Frontend contract behavior', () => {
       setViewportWidth(1280)
       act(() => {
         resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'runs',
-          selectedRunId: 'run-viewport-regression-desktop',
-          runtimeStatus: 'running',
-        }))
+        {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-viewport-regression-desktop');
+}
       })
       render(<RunsPanel />)
       expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
@@ -1663,12 +1657,11 @@ describe('Frontend contract behavior', () => {
       setViewportWidth(760)
       act(() => {
         resetContractState()
-        useStore.setState((state) => ({
-          ...state,
-          viewMode: 'runs',
-          selectedRunId: 'run-viewport-regression-mobile',
-          runtimeStatus: 'running',
-        }))
+        {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-viewport-regression-mobile');
+}
       })
       render(<RunsPanel />)
       expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
@@ -1797,11 +1790,11 @@ describe('Frontend contract behavior', () => {
 
     act(() => {
       resetContractState()
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -1818,11 +1811,11 @@ describe('Frontend contract behavior', () => {
 
     act(() => {
       resetContractState()
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -2002,12 +1995,11 @@ describe('Frontend contract behavior', () => {
     localStorage.setItem('spark.debug.performance', '1')
     act(() => {
       resetContractState()
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -2762,12 +2754,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -2779,19 +2770,19 @@ describe('Frontend contract behavior', () => {
 
     cleanup()
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-        humanGate: {
+      {
+useStore.setState({...useStore.getState()});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+const inspectedRunId = selectSelectedRunId(useStore.getState());
+if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {humanGate: {
           id: gateId,
           runId,
           nodeId: 'review_gate',
           prompt: pendingPrompt,
           options: [{ label: 'Approve', value: 'approve' }],
           flowName: 'contract-behavior.dot',
-        },
-      }))
+        }});
+}
     })
     renderLaunchPanelWithDialogs()
 
@@ -2861,6 +2852,9 @@ describe('Frontend contract behavior', () => {
           headers: { 'Content-Type': 'image/svg+xml' },
         })
       }
+      if (url.endsWith(`${runApiPath}/questions`)) {
+        return jsonResponse({ pipeline_id: runId, questions: [{ question_id: gateId, node_id: 'review_gate', prompt: pendingPrompt, options: [] }] })
+      }
       if (url.endsWith(answerPath)) {
         return jsonResponse({ status: 'accepted', pipeline_id: runId, question_id: gateId })
       }
@@ -2914,12 +2908,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -3009,6 +3002,9 @@ describe('Frontend contract behavior', () => {
           headers: { 'Content-Type': 'image/svg+xml' },
         })
       }
+      if (url.endsWith(`${runApiPath}/questions`)) {
+        return jsonResponse({ pipeline_id: runId, questions: [{ question_id: gateId, node_id: 'review_gate', prompt: pendingPrompt, options: [] }] })
+      }
       if (url.endsWith(answerPath)) {
         return jsonResponse({ status: 'accepted', pipeline_id: runId, question_id: gateId })
       }
@@ -3062,12 +3058,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -3223,12 +3218,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -3364,12 +3358,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -3460,6 +3453,9 @@ describe('Frontend contract behavior', () => {
           headers: { 'Content-Type': 'image/svg+xml' },
         })
       }
+      if (url.endsWith(`${runApiPath}/questions`)) {
+        return jsonResponse({ pipeline_id: runId, questions: [{ question_id: gateId, node_id: 'review_gate', prompt: pendingPrompt, options: [] }] })
+      }
       if (url.endsWith(answerPath)) {
         return jsonResponse({ status: 'accepted', pipeline_id: runId, question_id: gateId })
       }
@@ -3510,12 +3506,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -3702,12 +3697,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -3890,12 +3884,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -4039,12 +4032,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -4212,12 +4204,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -4377,12 +4368,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()
@@ -4517,12 +4507,11 @@ describe('Frontend contract behavior', () => {
     vi.stubGlobal('EventSource', MockEventSource as unknown as typeof EventSource)
 
     act(() => {
-      useStore.setState((state) => ({
-        ...state,
-        viewMode: 'runs',
-        selectedRunId: runId,
-        runtimeStatus: 'running',
-      }))
+      {
+useStore.setState({...useStore.getState(),
+viewMode: 'runs'});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+}
     })
 
     renderRunsPanelWithController()

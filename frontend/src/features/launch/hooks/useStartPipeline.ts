@@ -42,11 +42,9 @@ export function launchErrorMessage(error: unknown): string {
 export function useStartPipeline() {
     const { confirm } = useDialogController()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
+    const projectWasRegistered = useStore((state) => Boolean(activeProjectPath && state.projectRegistry[activeProjectPath]))
     const runsScopeMode = useStore((state) => state.runsListSession.scopeMode)
     const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
-    const setRuntimeStatus = useStore((state) => state.setRuntimeStatus)
-    const setRuntimeOutcome = useStore((state) => state.setRuntimeOutcome)
 
     const confirmGitPolicyGate = async (projectPath: string): Promise<GitPolicyGateResult> => {
         if (!projectPath) {
@@ -78,17 +76,12 @@ export function useStartPipeline() {
         }
         const runId = typeof runData.pipeline_id === 'string' ? runData.pipeline_id : null
         const queued = runData.status === 'queued'
-        if (runId) {
+        if (runId && (!projectWasRegistered || !activeProjectPath || useStore.getState().projectRegistry[activeProjectPath])) {
             setRunsSelectedRunIdForScope(
                 buildRunsScopeKey(runsScopeMode, activeProjectPath),
                 runId,
             )
-            setSelectedRunId(runId)
         }
-        if (!queued) {
-            setRuntimeStatus('running')
-        }
-        setRuntimeOutcome(null)
         return { runId, queued }
     }
 

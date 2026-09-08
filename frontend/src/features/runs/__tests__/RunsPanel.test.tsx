@@ -1,3 +1,7 @@
+import { RunInspectorPanel } from '../components/RunInspectorPanel'
+import { RunGraphCard } from '../components/RunGraphCard'
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
 import { RunStream } from '@/features/runs/RunStream'
@@ -10,6 +14,9 @@ import { DialogProvider } from '@/components/app/dialog-controller'
 import { act, render, screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('../components/RunInspectorPanel', { spy: true })
+vi.mock('../components/RunGraphCard', { spy: true })
 
 const jsonResponse = (payload: unknown) =>
   new Response(JSON.stringify(payload), {
@@ -25,23 +32,17 @@ const resolveRequestUrl = (input: RequestInfo | URL): string => {
 
 const resetRunsState = () => {
   useRunJournalStore.setState({ byRunId: {} })
-  useStore.setState({
-    viewMode: 'runs',
-    activeProjectPath: null,
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    executionFlow: null,
-    executionContinuation: null,
-    workingDir: '',
-    model: '',
-    projectRegistry: {},
-    projectSessionsByPath: {},
-    recentProjectPaths: [],
-    runsListSession: {
+  {
+useStore.setState({viewMode: 'runs',
+activeProjectPath: null,
+executionFlow: null,
+executionContinuation: null,
+workingDir: '',
+model: '',
+projectRegistry: {},
+projectSessionsByPath: {},
+recentProjectPaths: [],
+runsListSession: {
       scopeMode: 'active',
       selectedRunIdByScopeKey: {},
       status: 'idle',
@@ -50,8 +51,9 @@ const resetRunsState = () => {
       streamStatus: 'idle',
       streamError: null,
     },
-    runDetailSessionsByRunId: {},
-  })
+runDetailSessionsByRunId: {}});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 const renderRunsWorkspace = () =>
@@ -248,6 +250,90 @@ const openDetailsTab = async () => {
 }
 
 describe('RunsPanel', () => {
+  it('updates unrelated listed rows without rendering the selected inspector or graph', () => {
+    vi.mocked(global.fetch).mockImplementation(() => new Promise<Response>(() => {}))
+    const state = useStore.getState()
+    const a = makeRun({ run_id: 'a', flow_name: 'a.dot' })
+    const b = makeRun({ run_id: 'b', flow_name: 'b.dot' })
+    state.updateRunsListSession({ scopeMode: 'all', status: 'ready', runs: [a, b] })
+    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.setRunsSelectedRunIdForScope('all', 'a')
+    state.updateRunDetailSession('a', { inspectorTab: 'details' })
+    render(<DialogProvider><RunsPanel /></DialogProvider>)
+    const row = (name: string) => screen.getAllByText(name)
+      .map((element) => element.closest('[data-testid="run-history-row"]'))
+      .find((element) => element !== null)!
+    vi.mocked(RunInspectorPanel).mockClear()
+    vi.mocked(RunGraphCard).mockClear()
+
+    act(() => state.reconcileRunRecord('b', 'live', { ...b, status: 'running' }))
+    expect(row('b.dot')).toHaveTextContent(/running/i)
+    expect(RunInspectorPanel).not.toHaveBeenCalled()
+    expect(RunGraphCard).not.toHaveBeenCalled()
+
+    // Updating the list snapshot for the same live upsert also stays in the sidebar.
+    act(() => state.updateRunsListSession({ runs: [a, { ...b, status: 'running' }] }, 'live'))
+    expect(row('b.dot')).toHaveTextContent(/running/i)
+    expect(RunInspectorPanel).not.toHaveBeenCalled()
+    expect(RunGraphCard).not.toHaveBeenCalled()
+
+    act(() => state.reconcileRunRecord('a', 'live', { ...a, status: 'running' }))
+    expect(row('a.dot')).toHaveTextContent(/running/i)
+    expect(RunInspectorPanel).toHaveBeenCalled()
+    expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
+      run: expect.objectContaining({ run_id: 'a', status: 'running' }),
+    }), undefined)
+
+    vi.mocked(RunInspectorPanel).mockClear()
+    fireEvent.click(row('b.dot'))
+    expect(row('b.dot')).toHaveAttribute('aria-pressed', 'true')
+    expect(RunInspectorPanel).toHaveBeenCalled()
+    expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
+      run: expect.objectContaining({ run_id: 'b', status: 'running' }),
+    }), undefined)
+    fireEvent.click(row('a.dot'))
+    expect(screen.getByTestId('run-inspector-tab-details')).toHaveAttribute('aria-selected', 'true')
+    expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
+      run: expect.objectContaining({ run_id: 'a', status: 'running' }),
+    }), undefined)
+  })
+
+  it.each(['context', 'artifacts', 'result'] as const)('renders cached %s on revisit, pending refresh, and refresh failure', async (tab) => {
+    const requests: { url: string; resolve: (response: Response) => void }[] = []
+    vi.mocked(global.fetch).mockImplementation((input) => new Promise<Response>((resolve) => {
+      requests.push({ url: resolveRequestUrl(input), resolve })
+    }))
+    const state = useStore.getState()
+    state.updateRunsListSession({ scopeMode: 'all' })
+    state.setRunsSelectedRunIdForScope('all', 'cached')
+    state.reconcileRunRecord('cached', 'list', makeRun({ run_id: 'cached', last_error: '' }))
+    state.updateRunDetailSession('cached', {
+      inspectorTab: tab,
+      contextStatus: 'ready', contextData: { pipeline_id: 'cached', context: { cached_key: 'cached value' } },
+      artifactStatus: 'ready', artifactData: { pipeline_id: 'cached', artifacts: [{ path: 'cached.txt', size_bytes: 12 }] },
+      resultStatus: 'ready', resultData: {
+        run_id: 'cached', status: 'completed', state: 'ready', source_node_id: 'answer',
+        source_artifact_path: 'cached.txt', display_mode: 'raw', body_markdown: 'cached result',
+        summary_enabled: false, summary_prompt: null, summary_error: null, error: null,
+      },
+    })
+    state.setRunsSelectedRunIdForScope('all', 'other')
+    render(<DialogProvider><RunsPanel /></DialogProvider>)
+    act(() => state.setRunsSelectedRunIdForScope('all', 'cached'))
+    const contentId = { context: 'run-context-table', artifacts: 'run-artifact-table', result: 'run-result-body' }[tab]
+    const prefix = tab === 'artifacts' ? 'artifact' : tab
+    const cachedText = { context: 'cached value', artifacts: 'cached.txt', result: 'cached result' }[tab]
+    expect(screen.getByTestId(contentId)).toHaveTextContent(cachedText)
+    fireEvent.click(screen.getByTestId(`run-${prefix}-refresh-button`))
+    expect(screen.getByTestId(contentId)).toHaveTextContent(cachedText)
+    expect(screen.getByTestId(`run-${prefix}-refresh-button`)).toHaveTextContent('Refreshing')
+    const request = requests.filter(({ url }) => url.endsWith(`/${tab}`)).at(-1)!
+    expect(request).toBeDefined()
+    await act(async () => request.resolve(new Response('{}', { status: 503 })))
+    expect(screen.getByTestId(`run-${prefix}-error`)).toBeVisible()
+    expect(screen.getByTestId(contentId)).toHaveTextContent(cachedText)
+  })
+
   beforeEach(() => {
     resetRunsState()
     vi.stubGlobal('fetch', vi.fn())
@@ -962,7 +1048,7 @@ describe('RunsPanel', () => {
     })
 
     expect(useStore.getState().viewMode).toBe('runs')
-    expect(useStore.getState().selectedRunId).toBe('run-selected')
+    expect(selectSelectedRunId(useStore.getState())).toBe('run-selected')
   })
 
   it('continues the selected run in place with graph-based restart node selection', async () => {
@@ -1132,7 +1218,7 @@ describe('RunsPanel', () => {
       expect(screen.queryByTestId('run-continuation-panel')).not.toBeInTheDocument()
     })
     expect(useStore.getState().viewMode).toBe('runs')
-    expect(useStore.getState().selectedRunId).toBe('run-derived')
+    expect(selectSelectedRunId(useStore.getState())).toBe('run-derived')
   })
 
   const installRerunFetchMock = (selectedRun: ReturnType<typeof makeRun>) => {
@@ -1284,7 +1370,7 @@ describe('RunsPanel', () => {
       working_directory: '/tmp/project-one/worktree',
       launch_context: { 'context.topic': 'original topic' },
     })
-    expect(useStore.getState().selectedRunId).toBe('run-rerun-new')
+    expect(selectSelectedRunId(useStore.getState())).toBe('run-rerun-new')
     expect(useStore.getState().viewMode).toBe('runs')
   })
 
@@ -1885,6 +1971,7 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-header-status')).toHaveTextContent('running')
     })
 
+    Object.assign(selectedRun, { status: 'completed', outcome: 'failure', outcome_reason_code: 'live_failure', outcome_reason_message: 'Live gate failed', ended_at: '2026-03-22T00:06:00Z', last_error: 'Live gate failed' })
     act(() => {
       latestSourceMatching('/workspace/api/live/events')?.emit({
         type: 'run.upsert',
@@ -2420,7 +2507,7 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(useStore.getState().selectedRunRecord?.current_node).toBe('done')
+      expect(selectSelectedRunSession(useStore.getState())?.record?.current_node).toBe('done')
     })
 
     expect(latestSourceMatching('/workspace/api/live/events')).toBe(selectedRunSource)
@@ -2435,7 +2522,7 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(latestSourceMatching('/workspace/api/live/events')?.url).toContain(`run_id=${otherRun.run_id}`)
-      expect(useStore.getState().selectedRunId).toBe(otherRun.run_id)
+      expect(selectSelectedRunId(useStore.getState())).toBe(otherRun.run_id)
     })
 
     detailResources.forEach((resource) => {
@@ -3404,7 +3491,7 @@ describe('RunsPanel', () => {
 
     act(() => {
       useStore.getState().setViewMode('runs')
-      useStore.getState().setSelectedRunId('run-live-gap')
+      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-live-gap')
     })
     renderRunsWorkspace()
 
@@ -3434,7 +3521,7 @@ describe('RunsPanel', () => {
     act(() => {
       emitEntry(5, 'evaluate', 'StageStarted')
     })
-    expect(useStore.getState().nodeStatuses.evaluate).toBe('running')
+    expect(selectSelectedRunSession(useStore.getState())?.nodeStatuses.evaluate).toBe('running')
     expect(statusFetchCount).toBe(statusFetchesBeforeGap)
 
     // A sequence jump means frames were dropped: the stale live overlay is
@@ -3446,7 +3533,7 @@ describe('RunsPanel', () => {
       expect(statusFetchCount).toBeGreaterThan(statusFetchesBeforeGap)
       expect(journalFetchCount).toBeGreaterThan(journalFetchesBeforeGap)
     })
-    expect(useStore.getState().nodeStatuses.evaluate).toBeUndefined()
+    expect(selectSelectedRunSession(useStore.getState())?.nodeStatuses.evaluate).toBeUndefined()
 
     // A terminal run.upsert is the endgame backstop: even if every journal
     // frame around completion was dropped, the finalize record write forces

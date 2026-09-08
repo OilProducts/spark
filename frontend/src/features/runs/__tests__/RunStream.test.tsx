@@ -1,3 +1,5 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { RunStream } from '@/features/runs/RunStream'
 import {
   flattenRunJournalSegments,
@@ -9,22 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const resetRunStreamState = () => {
   useRunJournalStore.setState({ byRunId: {} })
-  useStore.setState((state) => ({
-    ...state,
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    saveState: 'idle',
-    saveStateVersion: 0,
-    saveErrorMessage: null,
-    saveErrorKind: null,
-    humanGate: null,
-    nodeStatuses: {},
-    runtimeStatus: 'idle',
-  }))
+  {
+useStore.setState({...useStore.getState(),
+saveState: 'idle',
+saveStateVersion: 0,
+saveErrorMessage: null,
+saveErrorKind: null});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 describe('RunStream save indicator', () => {
@@ -121,8 +115,8 @@ describe('RunStream save indicator', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     act(() => {
-      useStore.getState().setSelectedRunId('run-reconcile')
-      useStore.getState().setSelectedRunSnapshot({
+      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-reconcile')
+      useStore.getState().updateRunDetailSession(selectSelectedRunId(useStore.getState())!, {
         record: {
           run_id: 'run-reconcile',
           flow_name: 'selected.dot',
@@ -146,20 +140,20 @@ describe('RunStream save indicator', () => {
           continued_from_flow_mode: null,
           continued_from_flow_name: null,
         },
-        completedNodes: ['start'],
+        completedNodesSnapshot: ['start'],
       })
     })
 
     render(<RunStream />)
 
-    expect(useStore.getState().runtimeStatus).toBe('idle')
+    expect(selectSelectedRunSession(useStore.getState())?.record?.status).toBe('running')
 
     await act(async () => {
       await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(useStore.getState().runtimeStatus).toBe('running')
+    expect((selectSelectedRunSession(useStore.getState())?.record?.status ?? 'idle')).toBe('running')
 
     runCompleted = true
     await act(async () => {
@@ -179,9 +173,9 @@ describe('RunStream save indicator', () => {
       await Promise.resolve()
     })
 
-    expect(useStore.getState().runtimeStatus).toBe('completed')
-    expect(useStore.getState().selectedRunRecord?.status).toBe('completed')
-    expect(useStore.getState().selectedRunRecord?.outcome).toBe('success')
+    expect((selectSelectedRunSession(useStore.getState())?.record?.status ?? 'idle')).toBe('completed')
+    expect(selectSelectedRunSession(useStore.getState())?.record?.status).toBe('completed')
+    expect(selectSelectedRunSession(useStore.getState())?.record?.outcome).toBe('success')
   })
 
   it('keeps the selected run stream open from cached state when the status refresh is unavailable', async () => {
@@ -210,8 +204,8 @@ describe('RunStream save indicator', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     act(() => {
-      useStore.getState().setSelectedRunId('run-cached-fallback')
-      useStore.getState().setSelectedRunSnapshot({
+      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-cached-fallback')
+      useStore.getState().updateRunDetailSession(selectSelectedRunId(useStore.getState())!, {
         record: {
           run_id: 'run-cached-fallback',
           flow_name: 'cached.dot',
@@ -235,7 +229,7 @@ describe('RunStream save indicator', () => {
           continued_from_flow_mode: null,
           continued_from_flow_name: null,
         },
-        completedNodes: ['start'],
+        completedNodesSnapshot: ['start'],
       })
     })
 
@@ -265,7 +259,7 @@ describe('RunStream save indicator', () => {
       await Promise.resolve()
     })
 
-    expect(useStore.getState().selectedRunRecord?.current_node).toBe('review')
+    expect(selectSelectedRunSession(useStore.getState())?.record?.current_node).toBe('review')
     expect(
       flattenRunJournalSegments(useRunJournalStore.getState().byRunId['run-cached-fallback']?.segments ?? []),
     ).toHaveLength(1)

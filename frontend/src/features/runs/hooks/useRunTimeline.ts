@@ -1,3 +1,4 @@
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { useCallback, useMemo, useRef, type SetStateAction } from 'react'
 import { ApiHttpError, fetchPipelineAnswerValidated } from '@/lib/attractorClient'
 import { useStore } from '@/store'
@@ -188,14 +189,9 @@ export function useRunTimeline({
     selectedRunCurrentNode,
     selectedRunTimelineId,
 }: UseRunTimelineArgs) {
-    const runDetailSessionsByRunId = useStore((state) => state.runDetailSessionsByRunId)
+    const runSession = useStore((state) => selectedRunTimelineId ? state.runDetailSessionsByRunId[selectedRunTimelineId] ?? null : null)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
-    const timelineSession = selectedRunTimelineId
-        ? {
-            ...DEFAULT_TIMELINE_SESSION,
-            ...(runDetailSessionsByRunId[selectedRunTimelineId] ?? {}),
-        }
-        : DEFAULT_TIMELINE_SESSION
+    const timelineSession = runSession ?? DEFAULT_TIMELINE_SESSION
     const journalStateFromStore = useRunJournalStore((state) => (
         selectedRunTimelineId ? state.byRunId[selectedRunTimelineId] : undefined
     ))
@@ -293,28 +289,37 @@ export function useRunTimeline({
         if (!selectedRunTimelineId || !gate.questionId || !selectedValue.trim()) {
             return
         }
+        const session = useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]
+        if (selectSelectedRunId(useStore.getState()) !== selectedRunTimelineId || session?.questionsStatus !== 'ready'
+            || !session.pendingQuestionSnapshots.some((question) => question.questionId === gate.questionId)
+            || session.submittingGateIds[gate.questionId] || session.answeredGateIds[gate.questionId]) return
+        const lifetime = session.lifetime
+        const isCurrent = () => useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]?.lifetime === lifetime
         patchTimelineSession({
             pendingGateActionError: null,
             submittingGateIds: {
-                ...timelineSession.submittingGateIds,
+                ...session.submittingGateIds,
                 [gate.questionId]: true,
             },
         })
         try {
             await fetchPipelineAnswerValidated(selectedRunTimelineId, gate.questionId, selectedValue, note)
-            const nextFreeformAnswers = { ...timelineSession.freeformAnswersByGateId }
+            if (!isCurrent()) return
+            const current = useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]
+            const nextFreeformAnswers = { ...current.freeformAnswersByGateId }
             delete nextFreeformAnswers[gate.questionId]
-            const nextGateNotes = { ...timelineSession.gateNotesByGateId }
+            const nextGateNotes = { ...current.gateNotesByGateId }
             delete nextGateNotes[gate.questionId]
             patchTimelineSession({
                 answeredGateIds: {
-                    ...timelineSession.answeredGateIds,
+                    ...current.answeredGateIds,
                     [gate.questionId]: true,
                 },
                 freeformAnswersByGateId: nextFreeformAnswers,
                 gateNotesByGateId: nextGateNotes,
             })
         } catch (err) {
+            if (!isCurrent()) return
             logUnexpectedRunError(err)
             patchTimelineSession({
                 pendingGateActionError: err instanceof ApiHttpError
@@ -322,13 +327,13 @@ export function useRunTimeline({
                     : 'Unable to submit answer. Check connection/backend and retry.',
             })
         } finally {
-            const nextSubmittingGateIds = { ...timelineSession.submittingGateIds }
-            delete nextSubmittingGateIds[gate.questionId]
-            patchTimelineSession({
-                submittingGateIds: nextSubmittingGateIds,
-            })
+            if (isCurrent()) {
+                const nextSubmittingGateIds = { ...useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId].submittingGateIds }
+                delete nextSubmittingGateIds[gate.questionId]
+                patchTimelineSession({ submittingGateIds: nextSubmittingGateIds })
+            }
         }
-    }, [patchTimelineSession, selectedRunTimelineId, timelineSession.answeredGateIds, timelineSession.freeformAnswersByGateId, timelineSession.gateNotesByGateId, timelineSession.submittingGateIds])
+    }, [patchTimelineSession, selectedRunTimelineId])
 
     const loadOlderTimelineEvents = useCallback(async () => {
         if (
@@ -375,6 +380,7 @@ export function useRunTimeline({
     ])
 
     return {
+        confirmedQuestionIds: runSession?.questionsStatus === 'ready' ? runSession.pendingQuestionSnapshots.map((question) => question.questionId) : [],
         filteredTimelineEventCount: timelineProjection.filteredCount,
         freeformAnswersByGateId: timelineSession.freeformAnswersByGateId,
         gateNotesByGateId: timelineSession.gateNotesByGateId,

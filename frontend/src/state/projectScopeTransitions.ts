@@ -1,5 +1,5 @@
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
-import { buildRunsScopeKey } from './runsSessionScope'
+import { buildRunsScopeKey, getRunsSelectedRunIdForScope, unconfirmRunQuestions } from './runsSessionScope'
 import {
     DEFAULT_WORKING_DIRECTORY,
     pushRecentProjectPath,
@@ -11,7 +11,6 @@ import type {
     HydratedProjectRecord,
     ProjectSessionState,
     RegisteredProject,
-    RuntimeStatus,
     ViewMode,
 } from './store-types'
 
@@ -24,18 +23,6 @@ type ProjectScopeTransitionState = Pick<
     | 'viewMode'
     | 'workingDir'
     | 'activeFlow'
-    | 'selectedRunId'
-    | 'selectedRunRecord'
-    | 'selectedRunCompletedNodes'
-    | 'selectedRunStatusSync'
-    | 'selectedRunStatusError'
-    | 'selectedRunStatusFetchedAtMs'
-    | 'runtimeStatus'
-    | 'runtimeOutcome'
-    | 'runtimeOutcomeReasonCode'
-    | 'runtimeOutcomeReasonMessage'
-    | 'nodeStatuses'
-    | 'humanGate'
     | 'selectedNodeId'
     | 'selectedEdgeId'
     | 'flowMetadata'
@@ -93,7 +80,8 @@ const pruneRunsSessionsForProject = (
     projectPath: string,
 ) => {
     const removedScopeKey = buildRunsScopeKey('active', projectPath)
-    const removedRunIds = new Set<string>()
+    const selectedId = state.runsListSession.selectedRunIdByScopeKey[removedScopeKey]
+    const removedRunIds = new Set<string>(selectedId ? [selectedId] : [])
 
     state.runsListSession.runs.forEach((run) => {
         if (runBelongsToProject(run, projectPath)) {
@@ -102,7 +90,7 @@ const pruneRunsSessionsForProject = (
     })
 
     Object.entries(state.runDetailSessionsByRunId).forEach(([runId, session]) => {
-        if (runBelongsToProject(session.summaryRecord, projectPath)) {
+        if (runBelongsToProject(session.record, projectPath)) {
             removedRunIds.add(runId)
         }
     })
@@ -110,6 +98,7 @@ const pruneRunsSessionsForProject = (
     return {
         runsListSession: {
             ...state.runsListSession,
+            runs: state.runsListSession.runs.filter((run) => !removedRunIds.has(run.run_id)),
             selectedRunIdByScopeKey: Object.fromEntries(
                 Object.entries(state.runsListSession.selectedRunIdByScopeKey).filter(([scopeKey, runId]) => (
                     scopeKey !== removedScopeKey && !removedRunIds.has(runId ?? '')
@@ -120,6 +109,14 @@ const pruneRunsSessionsForProject = (
             Object.entries(state.runDetailSessionsByRunId).filter(([runId]) => !removedRunIds.has(runId)),
         ),
     }
+}
+
+const invalidateChangedSelection = (state: AppState, projectPath: string | null) => {
+    const runId = getRunsSelectedRunIdForScope(state.runsListSession, projectPath)
+    const session = runId ? state.runDetailSessionsByRunId[runId] : null
+    return runId && session && runId !== getRunsSelectedRunIdForScope(state.runsListSession, state.activeProjectPath)
+        ? { ...state.runDetailSessionsByRunId, [runId]: unconfirmRunQuestions(session) }
+        : state.runDetailSessionsByRunId
 }
 
 const preserveEditorSession = (state: AppState) => ({
@@ -141,52 +138,6 @@ const preserveEditorSession = (state: AppState) => ({
     saveErrorMessage: state.saveErrorMessage,
     saveErrorKind: state.saveErrorKind,
 })
-
-const preserveRunInspectionState = (state: AppState) => ({
-    selectedRunId: state.selectedRunId,
-    selectedRunRecord: state.selectedRunRecord,
-    selectedRunCompletedNodes: state.selectedRunCompletedNodes,
-    selectedRunStatusSync: state.selectedRunStatusSync,
-    selectedRunStatusError: state.selectedRunStatusError,
-    selectedRunStatusFetchedAtMs: state.selectedRunStatusFetchedAtMs,
-    runtimeStatus: state.runtimeStatus,
-    runtimeOutcome: state.runtimeOutcome,
-    runtimeOutcomeReasonCode: state.runtimeOutcomeReasonCode,
-    runtimeOutcomeReasonMessage: state.runtimeOutcomeReasonMessage,
-    nodeStatuses: state.nodeStatuses,
-    humanGate: state.humanGate,
-})
-
-const resetRunInspectionState = (runtimeStatus: RuntimeStatus = 'idle') => ({
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle' as const,
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    runtimeStatus,
-    runtimeOutcome: null,
-    runtimeOutcomeReasonCode: null,
-    runtimeOutcomeReasonMessage: null,
-    nodeStatuses: {},
-    humanGate: null,
-})
-
-const resolveForegroundRunInspectionState = (
-    state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId'>,
-    activeProjectPath: string | null,
-) => {
-    const scopeKey = buildRunsScopeKey(state.runsListSession.scopeMode, activeProjectPath)
-    const selectedRunId = state.runsListSession.selectedRunIdByScopeKey[scopeKey] ?? null
-    const selectedRunSession = selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
-
-    return {
-        selectedRunId,
-        selectedRunRecord: selectedRunSession?.summaryRecord ?? null,
-        selectedRunCompletedNodes: selectedRunSession?.completedNodesSnapshot ?? [],
-        selectedRunStatusFetchedAtMs: selectedRunSession?.statusFetchedAtMs ?? null,
-    }
-}
 
 const buildRegisteredProject = (project: HydratedProjectRecord): RegisteredProject | null => {
     const normalizedPath = normalizeProjectPath(project.directoryPath)
@@ -245,20 +196,12 @@ export const buildHydrateProjectRegistryTransition = (
         ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPath], nextActiveProjectPath)
         : null
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
-    const nextForegroundRunState = nextActiveProjectPath === state.activeProjectPath
-        ? preserveRunInspectionState(state)
-        : {
-            ...resetRunInspectionState(state.runtimeStatus),
-            ...resolveForegroundRunInspectionState(state, nextActiveProjectPath),
-        }
-
     return {
         ...preserveEditorSession(state),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         activeProjectPath: nextActiveProjectPath,
         viewMode: nextViewMode,
-        ...nextForegroundRunState,
         workingDir: nextActiveProjectPath
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
             : DEFAULT_WORKING_DIRECTORY,
@@ -266,7 +209,7 @@ export const buildHydrateProjectRegistryTransition = (
             ? pushRecentProjectPath(state.recentProjectPaths, nextActiveProjectPath)
             : state.recentProjectPaths,
         runsListSession: state.runsListSession,
-        runDetailSessionsByRunId: state.runDetailSessionsByRunId,
+        runDetailSessionsByRunId: invalidateChangedSelection(state, nextActiveProjectPath),
     }
 }
 
@@ -332,15 +275,7 @@ export const buildRemoveProjectTransition = (
         )
         : null
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
-    const removedActiveProject = state.activeProjectPath === normalizedPath
-    const nextRunsSessions = pruneRunsSessionsForProject(state, normalizedPath)
-    const nextForegroundRunState = removedActiveProject
-        ? {
-            ...resetRunInspectionState(),
-            ...resolveForegroundRunInspectionState(state, nextResolvedActiveProjectPath),
-        }
-        : preserveRunInspectionState(state)
-
+    const nextRunsSessions = pruneRunsSessionsForProject({ ...state, runDetailSessionsByRunId: invalidateChangedSelection(state, nextResolvedActiveProjectPath) }, normalizedPath)
     return {
         ...preserveEditorSession(state),
         projectRegistry: nextProjectRegistry,
@@ -348,7 +283,6 @@ export const buildRemoveProjectTransition = (
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
         activeProjectPath: nextResolvedActiveProjectPath,
         viewMode: nextViewMode,
-        ...nextForegroundRunState,
         ...nextRunsSessions,
         workingDir: nextResolvedActiveProjectPath
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
@@ -375,7 +309,6 @@ export const buildSetActiveProjectTransition = (
     }
 
     const nextProjectPath = normalizedProjectPath
-    const isProjectSwitch = nextProjectPath !== state.activeProjectPath
     const nextProjectSessionStates = { ...state.projectSessionsByPath }
     const nextProjectRegistry = { ...state.projectRegistry }
     const nextProjectScope = nextProjectPath
@@ -394,13 +327,6 @@ export const buildSetActiveProjectTransition = (
     }
 
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
-    const nextForegroundRunState = isProjectSwitch
-        ? {
-            ...resetRunInspectionState(),
-            ...resolveForegroundRunInspectionState(state, nextProjectPath),
-        }
-        : preserveRunInspectionState(state)
-
     return {
         ...preserveEditorSession(state),
         projectRegistry: nextProjectRegistry,
@@ -409,9 +335,8 @@ export const buildSetActiveProjectTransition = (
         activeProjectPath: nextProjectPath,
         viewMode: nextViewMode,
         workingDir: nextProjectPath && nextProjectScope ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
-        ...nextForegroundRunState,
         runsListSession: state.runsListSession,
-        runDetailSessionsByRunId: state.runDetailSessionsByRunId,
+        runDetailSessionsByRunId: invalidateChangedSelection(state, nextProjectPath),
     }
 }
 
@@ -449,12 +374,6 @@ export const buildRegisterProjectTransition = (
         activeProjectPath: nextActiveProjectPath,
         projectSessionsByPath: nextProjectSessionStates,
         activeFlow: state.activeFlow,
-        selectedRunId: state.activeProjectPath ? state.selectedRunId : null,
-        selectedRunRecord: state.activeProjectPath ? state.selectedRunRecord : null,
-        selectedRunCompletedNodes: state.activeProjectPath ? state.selectedRunCompletedNodes : [],
-        selectedRunStatusSync: state.activeProjectPath ? state.selectedRunStatusSync : 'idle',
-        selectedRunStatusError: state.activeProjectPath ? state.selectedRunStatusError : null,
-        selectedRunStatusFetchedAtMs: state.activeProjectPath ? state.selectedRunStatusFetchedAtMs : null,
         workingDir: state.activeProjectPath ? state.workingDir : nextActiveProjectScope.workingDir,
     }
 }

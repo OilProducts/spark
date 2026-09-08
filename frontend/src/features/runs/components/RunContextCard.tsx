@@ -144,7 +144,7 @@ export function RunContextCard({
                         </AlertDescription>
                     </Alert>
                 ) : null}
-                {!contextError && status === 'ready' && (
+                {(status === 'ready' || filteredContextRows.length > 0) && (
                     <div className="space-y-3">
                         <div className="overflow-hidden rounded-md border border-border/80">
                             <table data-testid="run-context-table" className="w-full table-fixed border-collapse text-sm">

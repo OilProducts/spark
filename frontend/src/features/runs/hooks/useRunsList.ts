@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, type SetStateAction } from 'react'
+import { useShallow } from 'zustand/react/shallow'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { fetchRunsListValidated, parseRunRecordPayload } from '@/lib/attractorClient'
 import { useStore } from '@/store'
@@ -29,40 +30,6 @@ const mergeRunUpsert = (currentRuns: RunRecord[], nextRun: RunRecord) => {
     const nextRuns = [...currentRuns]
     nextRuns[existingIndex] = nextRun
     return sortRuns(nextRuns)
-}
-
-const mergeSelectedRunLiveUpsert = (currentRun: RunRecord, nextRun: RunRecord): RunRecord => ({
-    ...currentRun,
-    status: nextRun.status,
-    outcome: nextRun.outcome !== undefined ? nextRun.outcome : currentRun.outcome,
-    outcome_reason_code: nextRun.outcome_reason_code !== undefined
-        ? nextRun.outcome_reason_code
-        : currentRun.outcome_reason_code,
-    outcome_reason_message: nextRun.outcome_reason_message !== undefined
-        ? nextRun.outcome_reason_message
-        : currentRun.outcome_reason_message,
-    ended_at: nextRun.ended_at !== undefined ? nextRun.ended_at : currentRun.ended_at,
-    last_error: nextRun.last_error !== undefined ? nextRun.last_error : currentRun.last_error,
-    token_usage: nextRun.token_usage !== undefined ? nextRun.token_usage : currentRun.token_usage,
-    token_usage_breakdown: nextRun.token_usage_breakdown !== undefined
-        ? nextRun.token_usage_breakdown
-        : currentRun.token_usage_breakdown,
-    estimated_model_cost: nextRun.estimated_model_cost !== undefined
-        ? nextRun.estimated_model_cost
-        : currentRun.estimated_model_cost,
-})
-
-const applySelectedRunLiveUpsert = (nextRun: RunRecord) => {
-    const state = useStore.getState()
-    const currentRun = state.selectedRunRecord
-    if (state.selectedRunId !== nextRun.run_id || currentRun?.run_id !== nextRun.run_id) {
-        return
-    }
-    state.setSelectedRunSnapshot({
-        record: mergeSelectedRunLiveUpsert(currentRun, nextRun),
-        completedNodes: state.selectedRunCompletedNodes,
-        fetchedAtMs: state.selectedRunStatusFetchedAtMs,
-    })
 }
 
 export function useRunsList({
@@ -120,14 +87,14 @@ export function useRunsList({
             if (usesActiveProjectScope && activeProjectPath && nextRun.project_path !== activeProjectPath) {
                 return
             }
-            applySelectedRunLiveUpsert(nextRun)
+            useStore.getState().reconcileRunRecord(nextRun.run_id, 'live', nextRun)
             updateRunsListSession({
                 runs: mergeRunUpsert(useStore.getState().runsListSession.runs, nextRun),
                 status: 'ready',
                 error: null,
                 streamStatus: 'ready',
                 streamError: null,
-            })
+            }, 'live')
         }
 
         const refresh = async (): Promise<void> => {
@@ -208,14 +175,15 @@ export function useRunsList({
         void fetchRuns()
     }, [fetchRuns, reconnectSignal, activeProjectPath, usesActiveProjectScope, manageSync, hasRunsSession])
 
+    const displayedRuns = useStore(useShallow((state) => state.runsListSession.runs.map((run) => state.runDetailSessionsByRunId[run.run_id]?.record ?? run)))
     const summary = useMemo(() => {
-        const total = runsListSession.runs.length
-        const running = runsListSession.runs.filter(
+        const total = displayedRuns.length
+        const running = displayedRuns.filter(
             (run) => run.status === 'running' || run.status === 'cancel_requested' || run.status === 'abort_requested',
         ).length
-        const queued = runsListSession.runs.filter((run) => run.status === 'queued').length
+        const queued = displayedRuns.filter((run) => run.status === 'queued').length
         return { total, running, queued }
-    }, [runsListSession.runs])
+    }, [displayedRuns])
 
     const selectedRunSummary = useMemo(() => {
         if (!selectedRunId) {
@@ -228,13 +196,8 @@ export function useRunsList({
         error: runsListSession.error,
         fetchRuns,
         isLoading: runsListSession.status === 'loading',
-        scopedRuns: runsListSession.runs,
+        scopedRuns: displayedRuns,
         selectedRunSummary,
-        setRuns: (next: SetStateAction<typeof runsListSession.runs>) => {
-            updateRunsListSession({
-                runs: typeof next === 'function' ? next(useStore.getState().runsListSession.runs) : next,
-            })
-        },
         status: runsListSession.status,
         streamError: runsListSession.streamError,
         streamStatus: runsListSession.streamStatus,

@@ -2,7 +2,7 @@ import { useCallback } from 'react'
 
 import { ApiHttpError, fetchPipelineCancelValidated, fetchPipelineRetryValidated } from '@/lib/attractorClient'
 import { useDialogController } from '@/components/app/dialog-controller'
-import type { RunRecord } from '../model/shared'
+import { useStore } from '@/store'
 
 const logUnexpectedRunError = (error: unknown) => {
     if (error instanceof ApiHttpError) {
@@ -11,11 +11,7 @@ const logUnexpectedRunError = (error: unknown) => {
     console.error(error)
 }
 
-type UseRunActionsArgs = {
-    setRuns: React.Dispatch<React.SetStateAction<RunRecord[]>>
-}
-
-export function useRunActions({ setRuns }: UseRunActionsArgs) {
+export function useRunActions() {
     const { alert, confirm } = useDialogController()
 
     const requestCancel = useCallback(async (runId: string, currentStatus: string) => {
@@ -32,30 +28,18 @@ export function useRunActions({ setRuns }: UseRunActionsArgs) {
         if (!confirmed) {
             return
         }
-        setRuns((current) =>
-            current.map((run) => (
-                run.run_id === runId
-                    ? { ...run, status: 'cancel_requested' }
-                    : run
-            )),
-        )
+        const rollback = useStore.getState().optimisticallyPatchRun(runId, { status: 'cancel_requested' })
         try {
             await fetchPipelineCancelValidated(runId)
         } catch (err) {
             logUnexpectedRunError(err)
-            setRuns((current) =>
-                current.map((run) => (
-                    run.run_id === runId
-                        ? { ...run, status: currentStatus }
-                        : run
-                )),
-            )
+            rollback()
             await alert({
                 title: 'Cancel failed',
                 description: 'Failed to cancel run.',
             })
         }
-    }, [alert, confirm, setRuns])
+    }, [alert, confirm])
 
     const requestRetry = useCallback(async (runId: string, currentStatus: string) => {
         if (currentStatus !== 'failed') {
@@ -70,30 +54,18 @@ export function useRunActions({ setRuns }: UseRunActionsArgs) {
         if (!confirmed) {
             return
         }
-        setRuns((current) =>
-            current.map((run) => (
-                run.run_id === runId
-                    ? { ...run, status: 'running', last_error: '' }
-                    : run
-            )),
-        )
+        const rollback = useStore.getState().optimisticallyPatchRun(runId, { status: 'running', last_error: '' })
         try {
             await fetchPipelineRetryValidated(runId)
         } catch (err) {
             logUnexpectedRunError(err)
-            setRuns((current) =>
-                current.map((run) => (
-                    run.run_id === runId
-                        ? { ...run, status: currentStatus }
-                        : run
-                )),
-            )
+            rollback()
             await alert({
                 title: 'Retry failed',
                 description: 'Failed to retry run.',
             })
         }
-    }, [alert, confirm, setRuns])
+    }, [alert, confirm])
 
     return {
         requestCancel,

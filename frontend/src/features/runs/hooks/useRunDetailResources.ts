@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import {
     ApiHttpError,
@@ -36,6 +36,16 @@ type UseRunDetailResourcesArgs = {
 }
 
 let nextArtifactPreviewRequestId = 0
+let nextResourceRequestId = 0
+
+function beginResourceRequest(runId: string, resource: string) {
+    const state = useStore.getState()
+    const session = state.runDetailSessionsByRunId[runId]
+    if (!session) return null
+    const requestId = ++nextResourceRequestId
+    state.updateRunDetailSession(runId, { resourceRequestIds: { ...session.resourceRequestIds, [resource]: requestId } })
+    return () => useStore.getState().runDetailSessionsByRunId[runId]?.resourceRequestIds[resource] === requestId
+}
 
 const DEFAULT_RUN_DETAIL_SESSION = {
     checkpointData: null as CheckpointResponse | null,
@@ -64,37 +74,31 @@ export function useRunDetailResources({
     selectedRunId,
     manageSync = true,
 }: UseRunDetailResourcesArgs) {
-    const runDetailSessionsByRunId = useStore((state) => state.runDetailSessionsByRunId)
+    const session = useStore((state) => selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? DEFAULT_RUN_DETAIL_SESSION : DEFAULT_RUN_DETAIL_SESSION)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
-    const session = useMemo(() => {
-        if (!selectedRunId) {
-            return DEFAULT_RUN_DETAIL_SESSION
-        }
-        return {
-            ...DEFAULT_RUN_DETAIL_SESSION,
-            ...(runDetailSessionsByRunId[selectedRunId] ?? {}),
-        }
-    }, [runDetailSessionsByRunId, selectedRunId])
 
     const fetchCheckpoint = useCallback(async () => {
         if (!selectedRunId) {
             return
         }
+        const isCurrentRequest = beginResourceRequest(selectedRunId, 'checkpoint')
+        if (!isCurrentRequest) return
         updateRunDetailSession(selectedRunId, {
             checkpointStatus: 'loading',
             checkpointError: null,
         })
         try {
             const payload = await fetchPipelineCheckpointValidated(selectedRunId) as CheckpointResponse
+            if (!isCurrentRequest()) return
             updateRunDetailSession(selectedRunId, {
                 checkpointData: payload,
                 checkpointStatus: 'ready',
                 checkpointError: null,
             })
         } catch (err) {
+            if (!isCurrentRequest()) return
             logUnexpectedRunError(err)
             updateRunDetailSession(selectedRunId, {
-                checkpointData: null,
                 checkpointStatus: 'error',
                 checkpointError: err instanceof ApiHttpError
                     ? checkpointErrorFromResponse(err.status, err.detail)
@@ -110,21 +114,24 @@ export function useRunDetailResources({
         if (!selectedRunId) {
             return
         }
+        const isCurrentRequest = beginResourceRequest(selectedRunId, 'context')
+        if (!isCurrentRequest) return
         updateRunDetailSession(selectedRunId, {
             contextStatus: 'loading',
             contextError: null,
         })
         try {
             const payload = await fetchPipelineContextValidated(selectedRunId) as ContextResponse
+            if (!isCurrentRequest()) return
             updateRunDetailSession(selectedRunId, {
                 contextData: payload,
                 contextStatus: 'ready',
                 contextError: null,
             })
         } catch (err) {
+            if (!isCurrentRequest()) return
             logUnexpectedRunError(err)
             updateRunDetailSession(selectedRunId, {
-                contextData: null,
                 contextStatus: 'error',
                 contextError: err instanceof ApiHttpError
                     ? contextErrorFromResponse(err.status, err.detail)
@@ -140,21 +147,24 @@ export function useRunDetailResources({
         if (!selectedRunId) {
             return
         }
+        const isCurrentRequest = beginResourceRequest(selectedRunId, 'artifact')
+        if (!isCurrentRequest) return
         updateRunDetailSession(selectedRunId, {
             artifactStatus: 'loading',
             artifactError: null,
         })
         try {
             const payload = await fetchPipelineArtifactsValidated(selectedRunId)
+            if (!isCurrentRequest()) return
             updateRunDetailSession(selectedRunId, {
                 artifactData: payload,
                 artifactStatus: 'ready',
                 artifactError: null,
             })
         } catch (err) {
+            if (!isCurrentRequest()) return
             logUnexpectedRunError(err)
             updateRunDetailSession(selectedRunId, {
-                artifactData: null,
                 artifactStatus: 'error',
                 artifactError: err instanceof ApiHttpError
                     ? artifactErrorFromResponse(err.status, err.detail)
@@ -170,21 +180,24 @@ export function useRunDetailResources({
         if (!selectedRunId) {
             return
         }
+        const isCurrentRequest = beginResourceRequest(selectedRunId, 'result')
+        if (!isCurrentRequest) return
         updateRunDetailSession(selectedRunId, {
             resultStatus: 'loading',
             resultError: null,
         })
         try {
             const payload = await fetchPipelineResultValidated(selectedRunId)
+            if (!isCurrentRequest()) return
             updateRunDetailSession(selectedRunId, {
                 resultData: payload,
                 resultStatus: 'ready',
                 resultError: null,
             })
         } catch (err) {
+            if (!isCurrentRequest()) return
             logUnexpectedRunError(err)
             updateRunDetailSession(selectedRunId, {
-                resultData: null,
                 resultStatus: 'error',
                 resultError: err instanceof ApiHttpError
                     ? String(err.detail || 'Unable to load result.')
@@ -197,11 +210,14 @@ export function useRunDetailResources({
         if (!selectedRunId) {
             return
         }
+        const isCurrentRequest = beginResourceRequest(selectedRunId, 'questions')
+        if (!isCurrentRequest) return
         updateRunDetailSession(selectedRunId, {
             questionsStatus: 'loading',
         })
         try {
             const payload = await fetchPipelineQuestionsValidated(selectedRunId)
+            if (!isCurrentRequest()) return
             const rawQuestions = payload.questions
             const parsedQuestions = Array.isArray(rawQuestions)
                 ? rawQuestions
@@ -213,9 +229,9 @@ export function useRunDetailResources({
                 questionsStatus: 'ready',
             })
         } catch (error) {
+            if (!isCurrentRequest()) return
             logUnexpectedRunError(error)
             updateRunDetailSession(selectedRunId, {
-                pendingQuestionSnapshots: [],
                 questionsStatus: 'error',
             })
         }
@@ -230,6 +246,13 @@ export function useRunDetailResources({
         void fetchResult()
         void fetchArtifacts()
         void fetchPendingQuestions()
+        const refreshQuestions = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            const type = detail?.entry?.raw_type ?? detail?.entry?.type
+            if (detail?.runId === selectedRunId && (type === 'human_gate' || type === 'InterviewStarted')) void fetchPendingQuestions()
+        }
+        window.addEventListener('spark:run-journal-entry', refreshQuestions)
+        return () => window.removeEventListener('spark:run-journal-entry', refreshQuestions)
     }, [fetchArtifacts, fetchCheckpoint, fetchContext, fetchPendingQuestions, fetchResult, manageSync, selectedRunId])
 
     const viewArtifact = useCallback(async (entry: { path: string; viewable: boolean }) => {

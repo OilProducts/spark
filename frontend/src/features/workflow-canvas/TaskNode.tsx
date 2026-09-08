@@ -1,3 +1,5 @@
+const EMPTY_GRAPH_ATTRS = {}
+const EMPTY_DIAGNOSTICS: Record<string, import('@/store').DiagnosticEntry[]> = {}
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow } from '@xyflow/react'
 
@@ -25,7 +27,7 @@ import {
     getWorkflowNodeFramePalette,
     getWorkflowNodeOverlayOffsetClassName,
 } from './workflowNodeFrames'
-import { useCanvasSessionMode } from './canvasSessionContext'
+import { useCanvasSessionMode, useCanvasRunId } from './canvasSessionContext'
 import { getDerivedPreviewMeta } from './derivedPreview'
 
 const FLOW_PORT_HANDLES = [
@@ -97,6 +99,7 @@ function nextDefaultEnabledBooleanValue(currentValue: unknown, draftValue: boole
 
 function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNodeProps) {
     const canvasMode = useCanvasSessionMode()
+    const runId = useCanvasRunId()
     const isEditorCanvas = canvasMode === 'editor'
     const isRunCanvas = canvasMode === 'runs'
     const flowName = useStore((state) => (isEditorCanvas ? state.activeFlow : null))
@@ -105,12 +108,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? false)
             : false
     ))
-    const executionHumanGate = useStore((state) => state.humanGate)
+    const executionHumanGate = useStore((state) => (runId ? state.runDetailSessionsByRunId[runId]?.humanGate ?? null : null))
     const flowMetadata = useStore((state) => (
-        isEditorCanvas ? state.flowMetadata : state.runGraphAttrs
+        isEditorCanvas ? state.flowMetadata : (runId ? state.runDetailSessionsByRunId[runId]?.graphAttrs ?? EMPTY_GRAPH_ATTRS : EMPTY_GRAPH_ATTRS)
     ))
     const nodeDiagnostics = useStore((state) => (
-        isEditorCanvas ? state.nodeDiagnostics : state.runNodeDiagnostics
+        isEditorCanvas ? state.nodeDiagnostics : (runId ? state.runDetailSessionsByRunId[runId]?.nodeDiagnostics ?? EMPTY_DIAGNOSTICS : EMPTY_DIAGNOSTICS)
     ))
     const editorGraphBridgeRef = useEditorGraphBridgeRef()
     const { setNodes, getEdges } = useReactFlow()

@@ -1,3 +1,4 @@
+const EMPTY_DIAGNOSTICS: Record<string, import('@/store').DiagnosticEntry[]> = {}
 import { useCallback, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react'
 import { BaseEdge, EdgeLabelRenderer, useReactFlow, type EdgeProps } from '@xyflow/react'
 
@@ -10,7 +11,7 @@ import {
 import { EDGE_RENDER_ROUTE_KEY } from '@/lib/flowLayout'
 import { useStore as useAppStore } from '@/store'
 
-import { useCanvasSessionMode } from './canvasSessionContext'
+import { useCanvasSessionMode, useCanvasRunId } from './canvasSessionContext'
 import { getDerivedPreviewMeta } from './derivedPreview'
 
 const WARNING_STROKE = 'hsl(38 92% 50%)'
@@ -63,11 +64,12 @@ export function ValidationEdge({
     targetY,
 }: EdgeProps) {
     const canvasMode = useCanvasSessionMode()
+    const runId = useCanvasRunId()
     const { setEdges, setNodes } = useReactFlow()
     const edgeDiagnostics = useAppStore((state) =>
         canvasMode === 'editor'
             ? state.edgeDiagnostics
-            : state.runEdgeDiagnostics,
+            : (runId ? state.runDetailSessionsByRunId[runId]?.edgeDiagnostics ?? EMPTY_DIAGNOSTICS : EMPTY_DIAGNOSTICS),
     )
     const setSelectedNodeId = useAppStore((state) => state.setSelectedNodeId)
     const setSelectedEdgeId = useAppStore((state) => state.setSelectedEdgeId)

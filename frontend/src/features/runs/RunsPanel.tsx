@@ -1,3 +1,5 @@
+import { useShallow } from 'zustand/react/shallow'
+import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { LaunchPanel, loadRunSnapshotFlowContent, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
@@ -20,87 +22,58 @@ import { type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
-import { buildRunsScopeKey, getRunsSelectedRunIdForScope } from '@/state/runsSessionScope'
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 
+const EMPTY_NODE_STATUSES = {}
 const EMPTY_TRANSCRIPT_SEGMENTS: RunTranscriptSegment[] = []
-
-const runRecordsMatch = (left: RunRecord | null, right: RunRecord | null) => {
-    if (left === right) {
-        return true
-    }
-    if (!left || !right) {
-        return false
-    }
-    return [
-        'run_id',
-        'flow_name',
-        'status',
-        'outcome',
-        'outcome_reason_code',
-        'outcome_reason_message',
-        'working_directory',
-        'project_path',
-        'git_branch',
-        'git_commit',
-        'spec_id',
-        'plan_id',
-        'model',
-        'started_at',
-        'ended_at',
-        'last_error',
-        'token_usage',
-        'token_usage_breakdown',
-        'estimated_model_cost',
-        'current_node',
-        'continued_from_run_id',
-        'continued_from_node',
-        'continued_from_flow_mode',
-        'continued_from_flow_name',
-        'parent_run_id',
-        'parent_node_id',
-        'root_run_id',
-        'child_invocation_index',
-        'execution_lock',
-        'launch_context',
-    ].every((key) => {
-        const leftValue = left[key as keyof RunRecord]
-        const rightValue = right[key as keyof RunRecord]
-        if (key === 'token_usage_breakdown' || key === 'estimated_model_cost' || key === 'execution_lock' || key === 'launch_context') {
-            return JSON.stringify(leftValue ?? null) === JSON.stringify(rightValue ?? null)
-        }
-        return leftValue === rightValue
-    })
-}
-
-const mergeSelectedRunTelemetry = (currentRecord: RunRecord, summaryRecord: RunRecord): RunRecord => ({
-    ...currentRecord,
-    token_usage: summaryRecord.token_usage ?? currentRecord.token_usage,
-    token_usage_breakdown: summaryRecord.token_usage_breakdown ?? currentRecord.token_usage_breakdown,
-    estimated_model_cost: summaryRecord.estimated_model_cost ?? currentRecord.estimated_model_cost,
-})
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
 
+function RunsSidebar({ activeProjectPath, scopeMode, selectedRunId }: {
+    activeProjectPath: string | null
+    scopeMode: 'active' | 'all'
+    selectedRunId: string | null
+}) {
+    const { error, scopedRuns, status, summary } = useRunsList({
+        activeProjectPath, scopeMode, selectedRunId, manageSync: false,
+    })
+    return (
+        <RunList
+            activeProjectPath={activeProjectPath}
+            error={error}
+            scopeMode={scopeMode}
+            onScopeModeChange={(mode) => useStore.getState().updateRunsListSession({ scopeMode: mode })}
+            status={status}
+            onSelectRun={(run) => {
+                const state = useStore.getState()
+                state.setRunsSelectedRunIdForScope(buildRunsScopeKey(scopeMode, activeProjectPath), run.run_id)
+                state.reconcileRunRecord(run.run_id, 'list', run)
+            }}
+            runs={scopedRuns}
+            selectedRunId={selectedRunId}
+            summaryLabel={`${summary.total} runs · ${summary.running} running${summary.queued > 0 ? ` · ${summary.queued} queued` : ''}`}
+        />
+    )
+}
+
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
     const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const runsListSession = useStore((state) => state.runsListSession)
-    const scopeMode = runsListSession.scopeMode
-    const updateRunsListSession = useStore((state) => state.updateRunsListSession)
-    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
+    const { scopeMode, status, streamError, streamStatus, hasRuns } = useStore(useShallow((state) => ({
+        scopeMode: state.runsListSession.scopeMode,
+        status: state.runsListSession.status,
+        streamError: state.runsListSession.streamError,
+        streamStatus: state.runsListSession.streamStatus,
+        hasRuns: state.runsListSession.runs.length > 0,
+    })))
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
-    const globalSelectedRunId = useStore((state) => state.selectedRunId)
-    const selectedRunId = getRunsSelectedRunIdForScope(runsListSession, activeProjectPath) ?? globalSelectedRunId
-    const selectedRunRecord = useStore((state) => state.selectedRunRecord)
-    const selectedRunStatusFetchedAtMs = useStore((state) => state.selectedRunStatusFetchedAtMs)
-    const selectedRunStatusSync = useStore((state) => state.selectedRunStatusSync)
-    const selectedRunStatusError = useStore((state) => state.selectedRunStatusError)
-    const setSelectedRunId = useStore((state) => state.setSelectedRunId)
-    const setSelectedRunSnapshot = useStore((state) => state.setSelectedRunSnapshot)
+    const selectedRunId = useStore(selectSelectedRunId)
+    const selectedRunStatusSync = useStore((state) => selectSelectedRunSession(state)?.statusSync ?? 'idle')
+    const selectedRunStatusError = useStore((state) => selectSelectedRunSession(state)?.statusError ?? null)
     const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const setViewMode = useStore((state) => state.setViewMode)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
@@ -108,50 +81,14 @@ export function RunsPanel() {
     const flowCatalog = useFlowCatalog(Boolean(selectedRunId))
     const [continuationDraft, setContinuationDraft] = useState<ContinuationDraft | null>(null)
     const [rerunRun, setRerunRun] = useState<RunRecord | null>(null)
-    const {
-        error,
-        isLoading,
-        scopedRuns,
-        selectedRunSummary,
-        setRuns,
-        status,
-        streamError,
-        streamStatus,
-        summary,
-    } = useRunsList({
-        activeProjectPath,
-        scopeMode,
-        selectedRunId,
-        manageSync: false,
-    })
-    const { requestCancel, requestRetry } = useRunActions({ setRuns })
+    const selectedRunSummary = useStore((state) => (
+        state.runsListSession.runs.find((run) => run.run_id === selectedRunId) ?? null
+    ))
+    const { requestCancel, requestRetry } = useRunActions()
     const selectedRunDetailSession = useStore((state) => (
         selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? null : null
     ))
-    const hasScopedSelectedRun = selectedRunId
-        ? scopedRuns.some((run) => run.run_id === selectedRunId)
-        : false
-    const authoritativeSelectedRunRecord = selectedRunRecord?.run_id === selectedRunId
-        ? selectedRunRecord
-        : null
-    const selectedRunSessionRecord = selectedRunDetailSession?.summaryRecord ?? null
-    const selectedRun =
-        authoritativeSelectedRunRecord
-        ?? (
-            selectedRunSessionRecord
-            && selectedRunSessionRecord.run_id === selectedRunId
-                ? selectedRunSessionRecord
-                : (
-                    selectedRunSummary
-                    ?? (
-                        selectedRunSessionRecord
-                        && selectedRunSessionRecord.run_id === selectedRunId
-                        && (isLoading || Boolean(error) || hasScopedSelectedRun || scopedRuns.length === 0)
-                            ? selectedRunSessionRecord
-                            : null
-                    )
-                )
-        )
+    const selectedRun = selectedRunDetailSession?.record ?? selectedRunSummary
     const selectedRunTimelineId = selectedRun?.run_id ?? null
     const {
         artifactDownloadHref,
@@ -198,6 +135,7 @@ export function RunsPanel() {
     const transcriptSegments = transcriptState?.segments ?? EMPTY_TRANSCRIPT_SEGMENTS
     const transcriptError = transcriptState?.status === 'error' ? transcriptState.error : null
     const {
+        confirmedQuestionIds,
         filteredTimelineEventCount,
         freeformAnswersByGateId,
         gateNotesByGateId,
@@ -249,7 +187,7 @@ export function RunsPanel() {
         status === 'ready'
         && !selectedRunId
         && (((scopeMode === 'active' && activeProjectPath) || scopeMode === 'all'))
-        && scopedRuns.length > 0
+        && hasRuns
         && !selectedRun
     const showRunDetailsRestoringState =
         Boolean(selectedRunId)
@@ -272,8 +210,8 @@ export function RunsPanel() {
     // Activity-first: the live transcript stream is the default work surface;
     // an explicit tab choice sticks per run.
     const inspectorTab = storedInspectorTab ?? 'activity'
-    const liveNodeStatuses = useStore((state) => state.nodeStatuses)
-    const humanGateNodeId = useStore((state) => state.humanGate?.nodeId ?? null)
+    const liveNodeStatuses = useStore((state) => selectSelectedRunSession(state)?.nodeStatuses ?? EMPTY_NODE_STATUSES)
+    const humanGateNodeId = useStore((state) => selectSelectedRunSession(state)?.humanGate?.nodeId ?? null)
     const gateNodeId = visiblePendingInterviewGates[0]?.nodeId ?? humanGateNodeId
     const isSelectedRunActive = selectedRun ? ACTIVE_RUN_STATUSES.has(selectedRun.status) : false
     const completedNodesSnapshot = selectedRunSessionState?.completedNodesSnapshot
@@ -350,63 +288,6 @@ export function RunsPanel() {
         }
     }, [gateNodeId, selectedRun?.run_id, updateRunDetailSession])
 
-    const selectRun = (run: RunRecord) => {
-        setRunsSelectedRunIdForScope(
-            buildRunsScopeKey(scopeMode, activeProjectPath),
-            run.run_id,
-        )
-        setSelectedRunId(run.run_id)
-        setSelectedRunSnapshot({ record: run, completedNodes: [] })
-    }
-
-    useEffect(() => {
-        if (!selectedRunId || !selectedRunSummary) {
-            return
-        }
-        const hasFetchedStatus =
-            selectedRunStatusFetchedAtMs !== null
-            || (selectedRunSessionState?.statusFetchedAtMs ?? null) !== null
-        if (hasFetchedStatus) {
-            const currentDetailRecord = selectedRunRecord?.run_id === selectedRunId
-                ? selectedRunRecord
-                : selectedRunSessionRecord?.run_id === selectedRunId
-                    ? selectedRunSessionRecord
-                    : null
-            if (!currentDetailRecord) {
-                return
-            }
-            const mergedRecord = mergeSelectedRunTelemetry(currentDetailRecord, selectedRunSummary)
-            if (runRecordsMatch(currentDetailRecord, mergedRecord)) {
-                return
-            }
-            setSelectedRunSnapshot({
-                record: mergedRecord,
-                completedNodes: selectedRunSessionState?.completedNodesSnapshot ?? [],
-                fetchedAtMs: selectedRunSessionState?.statusFetchedAtMs ?? selectedRunStatusFetchedAtMs,
-            })
-            return
-        }
-        if (
-            !runRecordsMatch(selectedRunSessionRecord, selectedRunSummary)
-            || !runRecordsMatch(selectedRunRecord, selectedRunSummary)
-        ) {
-            setSelectedRunSnapshot({
-                record: selectedRunSummary,
-                completedNodes: selectedRunSessionState?.completedNodesSnapshot ?? [],
-                fetchedAtMs: selectedRunSessionState?.statusFetchedAtMs ?? null,
-            })
-        }
-    }, [
-        selectedRunId,
-        selectedRunRecord,
-        selectedRunSessionRecord,
-        selectedRunSessionState?.completedNodesSnapshot,
-        selectedRunSessionState?.statusFetchedAtMs,
-        selectedRunStatusFetchedAtMs,
-        selectedRunSummary,
-        setSelectedRunSnapshot,
-    ])
-
     const beginContinuation = (run: RunRecord) => {
         const projectPath = run.project_path || run.working_directory || null
         const normalizedModel = run.model === 'codex default (config/profile)' ? '' : run.model || ''
@@ -467,18 +348,10 @@ export function RunsPanel() {
                 </div>
             ) : null}
             <div className={`w-full ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 overflow-hidden'}`}>
-                <RunList
+                <RunsSidebar
                     activeProjectPath={activeProjectPath}
-                    error={error}
                     scopeMode={scopeMode}
-                    onScopeModeChange={(mode) => {
-                        updateRunsListSession({ scopeMode: mode })
-                    }}
-                    status={status}
-                    onSelectRun={selectRun}
-                    runs={scopedRuns}
                     selectedRunId={selectedRunId}
-                    summaryLabel={`${summary.total} runs · ${summary.running} running${summary.queued > 0 ? ` · ${summary.queued} queued` : ''}`}
                 />
                 <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden pl-6'}`}>
                     <div
@@ -545,7 +418,7 @@ export function RunsPanel() {
                                 </span>
                             </div>
                         )}
-                        {!selectedRun && scopeMode === 'all' && scopedRuns.length === 0 && (
+                        {!selectedRun && scopeMode === 'all' && !hasRuns && (
                             <Alert className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
                                 <AlertDescription className="text-inherit">
                                     No runs have been recorded yet.
@@ -557,7 +430,7 @@ export function RunsPanel() {
                                 ref={questionsPanelRef}
                                 className={isNarrowViewport ? undefined : 'max-h-[38vh] shrink-0 overflow-y-auto'}
                             >
-                            <RunQuestionsPanel
+                            <RunQuestionsPanel confirmedQuestionIds={confirmedQuestionIds}
                                 freeformAnswersByGateId={freeformAnswersByGateId}
                                 gateNotesByGateId={gateNotesByGateId}
                                 groupedPendingInterviewGates={groupedPendingInterviewGates}

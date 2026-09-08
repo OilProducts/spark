@@ -236,11 +236,6 @@ async function openRunsForSmokeTest(page: Page, projectPath: string) {
   await expect(page.getByTestId('run-summary-panel')).toBeVisible()
 }
 
-async function openRunsAdvancedEvidence(page: Page) {
-  await expect(page.getByTestId('run-advanced-panel')).toBeVisible()
-  await page.getByTestId('run-advanced-toggle-button').click()
-}
-
 test('run summary panel renders populated metadata for items 9.1-01 and 9.6-02', async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-summary-${Date.now()}`
   const run = buildSmokeRun(projectPath, {
@@ -254,10 +249,10 @@ test('run summary panel renders populated metadata for items 9.1-01 and 9.6-02',
   await openRunsForSmokeTest(page, projectPath)
 
   await expect(page.getByTestId('run-summary-panel')).toContainText(run.run_id)
+  await page.getByTestId('run-inspector-tab-details').click()
   await expect(page.getByTestId('run-summary-status')).toContainText('Completed')
   await expect(page.getByTestId('run-summary-outcome')).toContainText('Success')
   await expect(page.getByTestId('run-summary-flow-name')).toContainText('SmokeFlow')
-  await expect(page.getByTestId('run-summary-section-now')).toContainText('Now')
   await expect(page.getByTestId('run-summary-section-outcome')).toContainText('Outcome')
   await expect(page.getByTestId('run-summary-section-scope')).toContainText('Scope')
   await expect(page.getByTestId('run-summary-section-usage')).toContainText('Usage')
@@ -366,12 +361,13 @@ test('run journal inspector hydrates durable history, pages older entries, and a
   await openRunsForSmokeTest(page, projectPath)
 
   const pendingQuestionsPanel = page.getByTestId('run-pending-human-gates-panel')
-  const journalPanel = page.getByTestId('run-event-timeline-panel')
+  const journalPanel = page.getByTestId('run-activity-stream-panel')
 
   await expect(pendingQuestionsPanel).toBeVisible()
   await expect(pendingQuestionsPanel).toContainText('Approve production deploy?')
-  await expect(page.getByTestId('run-summary-now-pending-questions')).toContainText('1')
-  await expect(page.getByTestId('run-summary-now-latest-journal')).toContainText('Human gate pending: Approve production deploy?')
+  await page.getByTestId('run-inspector-tab-activity').click()
+  await page.getByTestId('run-activity-mode-events').click()
+  await page.getByTestId('run-activity-node-scope-clear').click()
   await expect(journalPanel).toBeVisible()
   await expect(journalPanel).toContainText('Deploy package uploaded to staging.')
 
@@ -393,13 +389,13 @@ test('run journal inspector hydrates durable history, pages older entries, and a
         }).__runEventSourceController?.latestUrl('/workspace/api/live/events') ?? ''
       })
     })
-    .toContain(`run_sequence=${latestEntries[0]!.sequence}`)
+    .toContain(`run_id=${run.run_id}`)
 
   await expect(page.getByTestId('run-journal-load-older')).toBeVisible()
   await page.getByTestId('run-journal-load-older').click()
 
-  await expect(page.getByTestId('run-event-timeline-list')).toContainText('Stage build completed')
-  await expect(page.getByTestId('run-event-timeline-list')).toContainText('Stage build started')
+  await expect(page.getByTestId('run-activity-list')).toContainText('Stage build completed')
+  await expect(page.getByTestId('run-activity-list')).toContainText('Stage build started')
   await expect(page.getByTestId('run-journal-load-older')).toHaveCount(0)
   expect(journalRequestUrls.some((url) => url.includes('before_sequence=4'))).toBe(true)
 
@@ -422,12 +418,11 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     })
   }, { runId: run.run_id })
 
-  await expect(page.getByTestId('run-summary-now-latest-journal')).toContainText('Stage deploy completed (success)')
-  await expect(page.getByTestId('run-event-timeline-list')).toContainText('Stage deploy completed (success)')
+  await expect(page.getByTestId('run-activity-list')).toContainText('Stage deploy completed (success)')
   await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 })
 
-test('run checkpoint viewer fetches checkpoint payload for item 9.2-01', async ({ page }) => {
+test('run checkpoint hydrates the resume node and refreshes on revisit for item 9.2-01', async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-checkpoint-${Date.now()}`
   const run = buildSmokeRun(projectPath, {
     run_id: `run-checkpoint-${Date.now()}`,
@@ -455,14 +450,13 @@ test('run checkpoint viewer fetches checkpoint payload for item 9.2-01', async (
   })
 
   await openRunsForSmokeTest(page, projectPath)
-  await openRunsAdvancedEvidence(page)
+  await page.getByTestId('run-inspector-tab-details').click()
 
-  await expect(page.getByTestId('run-checkpoint-panel')).toBeVisible()
-  await expect(page.getByTestId('run-checkpoint-payload')).toContainText('"current_node": "implement"')
-  await expect(page.getByTestId('run-checkpoint-payload')).toContainText('"retry_counts":')
+  await expect(page.getByTestId('run-summary-resume-node')).toContainText('implement')
   await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(1)
 
-  await page.getByTestId('run-checkpoint-refresh-button').click()
+  await page.getByRole('button', { name: 'All projects', exact: true }).click()
+  await page.getByRole('button', { name: 'Active project', exact: true }).click()
   await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(2)
   await page.screenshot({ path: screenshotPath('08d-runs-panel-checkpoint-viewer.png'), fullPage: true })
 })
@@ -491,7 +485,7 @@ test('run context viewer supports search, copy, and export actions for items 9.3
   })
 
   await openRunsForSmokeTest(page, projectPath)
-  await openRunsAdvancedEvidence(page)
+  await page.getByTestId('run-inspector-tab-context').click()
   await page.evaluate(() => {
     Object.defineProperty(window.navigator, 'clipboard', {
       configurable: true,
@@ -550,11 +544,9 @@ test('run graph panel renders /pipelines/{id}/graph-preview output for item 9.5-
   })
 
   await openRunsForSmokeTest(page, projectPath)
-  await openRunsAdvancedEvidence(page)
 
   const graphPanel = page.getByTestId('run-graph-panel')
   await expect(graphPanel).toBeVisible()
-  await page.getByTestId('run-graph-toggle-button').click()
   await expect(page.getByTestId('run-graph-canvas')).toBeVisible()
   await expect(page.locator('[data-testid="run-graph-canvas"] .react-flow__node')).toHaveCount(3)
   await graphPanel.scrollIntoViewIfNeeded()
@@ -605,7 +597,7 @@ test('run artifact browser handles missing files and partial run states for item
   })
 
   await openRunsForSmokeTest(page, projectPath)
-  await openRunsAdvancedEvidence(page)
+  await page.getByTestId('run-inspector-tab-artifacts').click()
 
   const artifactPanel = page.getByTestId('run-artifact-panel')
   await expect(artifactPanel).toBeVisible()

@@ -1,3 +1,5 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { HomeSessionController } from '@/app/AppSessionControllers'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
@@ -241,37 +243,32 @@ const buildPendingSendSnapshot = ({
 })
 
 const resetProjectScopeState = () => {
-  useStore.setState((state) => ({
-    ...state,
-    viewMode: 'projects',
-    activeProjectPath: null,
-    activeFlow: null,
-    selectedRunId: null,
-    selectedRunRecord: null,
-    selectedRunCompletedNodes: [],
-    selectedRunStatusSync: 'idle',
-    selectedRunStatusError: null,
-    selectedRunStatusFetchedAtMs: null,
-    workingDir: DEFAULT_WORKING_DIRECTORY,
-    projectRegistry: {},
-    projectSessionsByPath: {},
-    projectRegistrationError: null,
-    recentProjectPaths: [],
-    homeConversationCache: {
+  {
+useStore.setState({...useStore.getState(),
+viewMode: 'projects',
+activeProjectPath: null,
+activeFlow: null,
+workingDir: DEFAULT_WORKING_DIRECTORY,
+projectRegistry: {},
+projectSessionsByPath: {},
+projectRegistrationError: null,
+recentProjectPaths: [],
+homeConversationCache: {
       conversationsById: {},
       summariesByProjectPath: {},
     },
-    homeThreadSummariesStatusByProjectPath: {},
-    homeThreadSummariesErrorByProjectPath: {},
-    homeProjectSessionsByPath: {},
-    homeConversationSessionsById: {},
-    homeProjectGitMetadataByPath: {},
-    uiDefaults: {
+homeThreadSummariesStatusByProjectPath: {},
+homeThreadSummariesErrorByProjectPath: {},
+homeProjectSessionsByPath: {},
+homeConversationSessionsById: {},
+homeProjectGitMetadataByPath: {},
+uiDefaults: {
       llm_model: 'gpt-5.4',
       llm_provider: '',
       reasoning_effort: '',
-    },
-  }))
+    }});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
 }
 
 const renderProjectsPanel = () =>
@@ -1859,7 +1856,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-flow-run-request-open-run-button'))
 
     await waitFor(() => {
-      expect(useStore.getState().selectedRunId).toBe('run-flow-123')
+      expect(selectSelectedRunId(useStore.getState())).toBe('run-flow-123')
       expect(useStore.getState().viewMode).toBe('runs')
     })
   })
@@ -2075,7 +2072,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-proposed-plan-open-run-button-proposed-plan-inline'))
 
     await waitFor(() => {
-      expect(useStore.getState().selectedRunId).toBe('run-plan-123')
+      expect(selectSelectedRunId(useStore.getState())).toBe('run-plan-123')
       expect(useStore.getState().viewMode).toBe('runs')
     })
   })

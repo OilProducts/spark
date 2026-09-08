@@ -1,3 +1,5 @@
+import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -133,14 +135,12 @@ const startedPipelinePayload = (fetchMock: ReturnType<typeof vi.fn>) => {
 
 describe('LaunchPanel', () => {
   beforeEach(() => {
-    useStore.setState((state) => ({
-      ...state,
-      activeProjectPath: TEST_PROJECT,
-      projectRegistry: {},
-      runtimeStatus: 'idle',
-      runtimeOutcome: null,
-      selectedRunId: null,
-    }))
+    {
+useStore.setState({...useStore.getState(),
+activeProjectPath: TEST_PROJECT,
+projectRegistry: {}});
+useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+}
   })
 
   afterEach(() => {
@@ -170,8 +170,8 @@ describe('LaunchPanel', () => {
       working_directory: TEST_PROJECT,
       launch_context: { 'context.topic': 'quarterly report' },
     })
-    expect(useStore.getState().selectedRunId).toBe('run-123')
-    expect(useStore.getState().runtimeStatus).toBe('running')
+    expect(selectSelectedRunId(useStore.getState())).toBe('run-123')
+    expect(selectSelectedRunSession(useStore.getState())?.record).toBeNull()
   })
 
   it('blocks launching when a required input is missing', async () => {
