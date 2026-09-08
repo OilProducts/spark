@@ -157,6 +157,13 @@ impl RuntimeControls {
 
         let mut context = source_checkpoint.context.clone();
         for key in [
+            crate::retry::EXECUTION_BASES_KEY,
+            crate::retry::RETRY_REQUEST_KEY,
+            INTERNAL_PIPELINE_RETRY_RUN_ID_KEY,
+        ] {
+            context.remove(key);
+        }
+        for key in [
             WORKFLOW_OUTCOME_KEY,
             WORKFLOW_OUTCOME_REASON_CODE_KEY,
             WORKFLOW_OUTCOME_REASON_MESSAGE_KEY,
@@ -333,50 +340,263 @@ impl RuntimeControls {
         })
     }
 
+    /// Validate the entire linked invocation before durably accepting any retry.
+    pub fn retry_target(&self, run_id: &str) -> ControlResult<crate::retry::RetryTarget> {
+        let mut id = run_id.to_string();
+        let mut ancestors = std::collections::BTreeSet::new();
+        loop {
+            if !ancestors.insert(id.clone()) {
+                return Err(RuntimeControlError::Conflict(
+                    "retry_invalid_lineage: ancestor cycle".into(),
+                ));
+            }
+            let record = self
+                .store
+                .read_run_meta(&id)?
+                .and_then(|b| b.record)
+                .ok_or(RuntimeControlError::UnknownPipeline)?;
+            if matches!(record.status.as_str(), "canceled" | "cancel_requested") {
+                return Err(RuntimeControlError::Conflict(
+                    "retry_canceled_ancestor".into(),
+                ));
+            }
+            let Some(parent_id) = &record.parent_run_id else {
+                if record.parent_node_id.is_some()
+                    || record.root_run_id.as_deref().is_some_and(|root| root != id)
+                {
+                    return Err(RuntimeControlError::Conflict(
+                        "retry_invalid_lineage: root mismatch".into(),
+                    ));
+                }
+                break;
+            };
+            let parent = self
+                .store
+                .read_run_bundle(parent_id)?
+                .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_parent".into()))?;
+            let parent_record = parent
+                .record
+                .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_parent".into()))?;
+            let source = self
+                .store
+                .read_graph_source(&parent.paths)?
+                .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_saved_flow".into()))?;
+            let flow = FlowDefinition::from_yaml_str(&source)
+                .map_err(|e| {
+                    RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}"))
+                })?
+                .normalize();
+            flow.validate().map_err(|e| {
+                RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}"))
+            })?;
+            if record.root_run_id.as_deref()
+                != Some(parent_record.root_run_id.as_deref().unwrap_or(parent_id))
+                || !record.parent_node_id.as_ref().is_some_and(|node| {
+                    flow.nodes.get(node).is_some_and(|node| {
+                        matches!(
+                            node.config,
+                            Some(attractor_core::NodeConfig::Subflow { .. })
+                        )
+                    })
+                })
+            {
+                return Err(RuntimeControlError::Conflict(
+                    "retry_invalid_lineage: parent/node/root mismatch".into(),
+                ));
+            }
+            if self
+                .store
+                .list_child_run_bundles(parent_id)?
+                .iter()
+                .filter(|bundle| {
+                    bundle.record.as_ref().is_some_and(|sibling| {
+                        sibling.parent_node_id == record.parent_node_id
+                            && sibling.child_invocation_index == record.child_invocation_index
+                    })
+                })
+                .count()
+                > 1
+            {
+                return Err(RuntimeControlError::Conflict(
+                    "retry_ambiguous_child_invocation".into(),
+                ));
+            }
+            id = parent_id.clone();
+        }
+        self.validate_retry_target(run_id, &mut std::collections::BTreeSet::new())
+    }
+
+    fn validate_retry_target(
+        &self,
+        run_id: &str,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> ControlResult<crate::retry::RetryTarget> {
+        if !seen.insert(run_id.to_string()) {
+            return Err(RuntimeControlError::Conflict(
+                "retry_invalid_lineage: cycle".to_string(),
+            ));
+        }
+        let bundle = self
+            .store
+            .read_run_bundle(run_id)?
+            .ok_or(RuntimeControlError::UnknownPipeline)?;
+        let record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
+        if matches!(record.status.as_str(), "canceled" | "cancel_requested") {
+            return Err(RuntimeControlError::Conflict(
+                "retry_canceled_child: cancellation cannot be overridden".to_string(),
+            ));
+        }
+        let checkpoint = bundle
+            .checkpoint
+            .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_checkpoint".to_string()))?;
+        crate::retry::execution_attempt(
+            &checkpoint.context,
+            &checkpoint.current_node,
+            checkpoint
+                .retry_counts
+                .get(&checkpoint.current_node)
+                .copied()
+                .unwrap_or(0),
+        )?
+        .checked_add(1)
+        .ok_or_else(|| RuntimeControlError::Conflict("Execution attempt overflow".to_string()))?;
+        crate::retry::saved_retry_request(&checkpoint.context)?;
+        let source = self
+            .store
+            .read_graph_source(&bundle.paths)?
+            .ok_or_else(|| RuntimeControlError::Conflict("retry_missing_saved_flow".to_string()))?;
+        let flow = FlowDefinition::from_yaml_str(&source)
+            .map_err(|e| RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}")))?
+            .normalize();
+        flow.validate()
+            .map_err(|e| RuntimeControlError::Conflict(format!("retry_invalid_saved_flow: {e}")))?;
+        if checkpoint
+            .completed_nodes
+            .iter()
+            .any(|id| !flow.nodes.contains_key(id))
+        {
+            return Err(RuntimeControlError::Conflict(
+                "retry_invalid_checkpoint_node".to_string(),
+            ));
+        }
+        let node = flow.nodes.get(&checkpoint.current_node).ok_or_else(|| {
+            RuntimeControlError::Conflict("retry_invalid_checkpoint_node".to_string())
+        })?;
+        let mut target = crate::retry::RetryTarget {
+            run_id: run_id.to_string(),
+            node_id: checkpoint.current_node.clone(),
+            stage_index: checkpoint.completed_nodes.len().saturating_sub(usize::from(
+                checkpoint.completed_nodes.last() == Some(&checkpoint.current_node),
+            )) as u64,
+            child: None,
+        };
+        if matches!(
+            node.config,
+            Some(attractor_core::NodeConfig::Subflow { .. })
+        ) {
+            let children = self.store.list_child_run_bundles(run_id)?;
+            let linked = checkpoint
+                .context
+                .get("context.stack.child.run_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty());
+            let candidates = children
+                .iter()
+                .filter(|child| {
+                    child.record.as_ref().is_some_and(|r| {
+                        r.parent_node_id.as_deref() == Some(&checkpoint.current_node)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let child_id = match linked {
+                Some(id) => Some(id.to_string()),
+                None if candidates.len() == 1 => Some(candidates[0].paths.run_id.clone()),
+                None if candidates.is_empty() => None,
+                None => {
+                    return Err(RuntimeControlError::Conflict(
+                        "retry_ambiguous_child: missing invocation link".to_string(),
+                    ))
+                }
+            };
+            if let Some(child_id) = child_id {
+                let child = self
+                    .store
+                    .read_run_meta(&child_id)?
+                    .and_then(|b| b.record)
+                    .ok_or_else(|| {
+                        RuntimeControlError::Conflict("retry_missing_child".to_string())
+                    })?;
+                let root = record.root_run_id.as_deref().unwrap_or(run_id);
+                if child.parent_run_id.as_deref() != Some(run_id)
+                    || child.parent_node_id.as_deref() != Some(&checkpoint.current_node)
+                    || child.root_run_id.as_deref() != Some(root)
+                {
+                    return Err(RuntimeControlError::Conflict(
+                        "retry_invalid_lineage: child parent/node/root mismatch".to_string(),
+                    ));
+                }
+                if candidates
+                    .iter()
+                    .filter(|bundle| {
+                        bundle.record.as_ref().is_some_and(|r| {
+                            r.child_invocation_index == child.child_invocation_index
+                        })
+                    })
+                    .count()
+                    > 1
+                {
+                    return Err(RuntimeControlError::Conflict(
+                        "retry_ambiguous_child_invocation".to_string(),
+                    ));
+                }
+                target.child = Some(Box::new(self.validate_retry_target(&child_id, seen)?));
+            }
+        }
+        Ok(target)
+    }
+
     pub fn prepare_retry(&self, run_id: &str) -> ControlResult<RetryRunPrepared> {
         let bundle = self
             .store
             .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
-        let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
+        let record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
         let status = crate::records::normalize_run_status(&record.status);
-        let recovery_paused = status == "waiting"
-            && record.outcome_reason_code.as_deref() == Some("recovery_decision_required");
-        if status != "failed" && !recovery_paused {
+        if status != "failed"
+            && !(status == "waiting"
+                && record.outcome_reason_code.as_deref() == Some("recovery_decision_required"))
+        {
             return Err(RuntimeControlError::Conflict(
                 "Retry requires a failed pipeline".to_string(),
             ));
         }
-        let mut checkpoint = bundle.checkpoint.ok_or(RuntimeControlError::Conflict(
-            "Retry requires an available checkpoint".to_string(),
-        ))?;
-        checkpoint.context.insert(
-            INTERNAL_PIPELINE_RETRY_RUN_ID_KEY.to_string(),
-            json!(run_id),
-        );
-        let current_outcome = checkpoint
-            .context
-            .get("_attractor.node_outcomes")
-            .and_then(Value::as_object)
-            .and_then(|outcomes| outcomes.get(&checkpoint.current_node))
-            .and_then(Value::as_str);
-        if current_outcome == Some("fail") {
-            checkpoint
-                .completed_nodes
-                .retain(|node_id| node_id != &checkpoint.current_node);
-        }
-
-        mark_record_retry_started(&mut record);
-        if recovery_paused {
-            // Durable one-shot authorization consumed by startup recovery.
-            record.outcome_reason_code = Some("recovery_retry_approved".to_string());
-        }
-        self.store.write_run_record(&bundle.paths, &record)?;
-        self.store.save_checkpoint(
-            &bundle.paths,
-            &checkpoint,
-            CheckpointWriteOptions::default(),
-        )?;
+        let target = self.retry_target(run_id)?;
+        let saved = bundle
+            .checkpoint
+            .as_ref()
+            .map(|c| crate::retry::saved_retry_request(&c.context))
+            .transpose()?
+            .flatten();
+        let request = match saved.filter(|r| r.preparing) {
+            Some(request) => {
+                if request.target.run_id != run_id
+                    || request.target.node_id != target.node_id
+                    || request.target.stage_index != target.stage_index
+                {
+                    return Err(RuntimeControlError::Conflict(
+                        "retry_request_target_mismatch".into(),
+                    ));
+                }
+                request
+            }
+            None => crate::retry::RetryRequest {
+                id: format!("retry-{:032x}", rand::random::<u128>()),
+                target,
+                preparing: true,
+            },
+        };
+        self.apply_retry_request(&request)?;
+        let checkpoint = self.get_checkpoint(run_id)?;
         self.store.append_event(
             &bundle.paths,
             pipeline_retry_started_event(
@@ -389,7 +609,6 @@ impl RuntimeControls {
             &bundle.paths,
             runtime_status_event(run_id, "running", None, None, None, None),
         )?;
-
         Ok(RetryRunPrepared {
             status: "started".to_string(),
             pipeline_id: run_id.to_string(),
@@ -397,6 +616,103 @@ impl RuntimeControls {
             current_node: checkpoint.current_node,
             completed_nodes: checkpoint.completed_nodes,
         })
+    }
+
+    /// The checkpoint is the write-ahead record. Reapplying a request never resets
+    /// its allowance again, including when its newly executed child has failed.
+    pub fn apply_retry_request(&self, request: &crate::retry::RetryRequest) -> ControlResult<()> {
+        let bundle = self
+            .store
+            .read_run_meta(&request.target.run_id)?
+            .ok_or(RuntimeControlError::UnknownPipeline)?;
+        let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
+        let mut checkpoint = bundle
+            .checkpoint
+            .ok_or(RuntimeControlError::CheckpointUnavailable)?;
+        let prior = crate::retry::saved_retry_request(&checkpoint.context)?;
+        let applied = prior.as_ref().is_some_and(|r| r.id == request.id);
+        if applied && prior.as_ref().is_some_and(|r| r.target != request.target) {
+            return Err(RuntimeControlError::Conflict(
+                "retry_request_target_mismatch".to_string(),
+            ));
+        }
+        if applied && prior.as_ref().is_some_and(|r| !r.preparing) {
+            return Ok(());
+        }
+        if checkpoint.current_node != request.target.node_id {
+            return Err(RuntimeControlError::Conflict(
+                "retry_target_changed".to_string(),
+            ));
+        }
+        if matches!(record.status.as_str(), "canceled" | "cancel_requested") {
+            return Err(RuntimeControlError::Conflict(
+                "retry_canceled_child".to_string(),
+            ));
+        }
+        let recovery_paused = record.status == "waiting"
+            && record.outcome_reason_code.as_deref() == Some("recovery_decision_required");
+        if !applied {
+            // Successful children and live human gates are consumed/resumed as they are.
+            if record.status != "failed" && !recovery_paused {
+                return Ok(());
+            }
+            let base = crate::retry::execution_attempt(
+                &checkpoint.context,
+                &checkpoint.current_node,
+                checkpoint
+                    .retry_counts
+                    .get(&checkpoint.current_node)
+                    .copied()
+                    .unwrap_or(0),
+            )?
+            .checked_add(1)
+            .ok_or_else(|| {
+                RuntimeControlError::Conflict("Execution attempt overflow".to_string())
+            })?;
+            let bases = checkpoint
+                .context
+                .entry(crate::retry::EXECUTION_BASES_KEY.to_string())
+                .or_insert_with(|| json!({}));
+            bases
+                .as_object_mut()
+                .expect("validated attempt bases")
+                .insert(checkpoint.current_node.clone(), json!(base));
+            checkpoint.retry_counts.remove(&checkpoint.current_node);
+            if checkpoint.completed_nodes.last() == Some(&checkpoint.current_node) {
+                checkpoint.completed_nodes.pop();
+            }
+            checkpoint
+                .context
+                .remove(INTERNAL_PIPELINE_RETRY_RUN_ID_KEY);
+            checkpoint
+                .context
+                .insert(crate::retry::RETRY_REQUEST_KEY.to_string(), json!(request));
+            self.store.save_checkpoint(
+                &bundle.paths,
+                &checkpoint,
+                CheckpointWriteOptions::default(),
+            )?;
+        }
+        if let Some(child) = &request.target.child {
+            self.apply_retry_request(&crate::retry::RetryRequest {
+                id: request.id.clone(),
+                target: *child.clone(),
+                preparing: true,
+            })?;
+        }
+        mark_record_retry_started(&mut record);
+        self.store.write_run_record(&bundle.paths, &record)?;
+        let mut ready = request.clone();
+        ready.preparing = false;
+        checkpoint
+            .context
+            .insert(crate::retry::RETRY_REQUEST_KEY.to_string(), json!(ready));
+        self.store.save_checkpoint(
+            &bundle.paths,
+            &checkpoint,
+            CheckpointWriteOptions::default(),
+        )?;
+        Ok(())
     }
 
     pub fn request_cancel(&self, run_id: &str) -> ControlResult<RuntimeControlStatus> {

@@ -226,3 +226,92 @@ pub fn coerce_retry_exhausted_outcome(
         ..Outcome::new(OutcomeStatus::PartialSuccess)
     }
 }
+
+pub const EXECUTION_BASES_KEY: &str = "internal.execution_attempt_bases";
+pub const RETRY_REQUEST_KEY: &str = "internal.retry_request";
+
+/// Artifact identity is independent of the configured automatic-retry allowance.
+pub fn execution_attempt(
+    context: &attractor_core::ContextMap,
+    node: &str,
+    automatic_retries: u64,
+) -> crate::error::Result<u64> {
+    let bases: std::collections::BTreeMap<String, u64> = context
+        .get(EXECUTION_BASES_KEY)
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(
+            |error| crate::error::RuntimeStorageError::InvalidRuntimeGraph {
+                reason: format!("Invalid execution attempt bases: {error}"),
+            },
+        )?
+        .unwrap_or_default();
+    bases
+        .get(node)
+        .copied()
+        .unwrap_or(0)
+        .checked_add(automatic_retries)
+        .ok_or_else(|| crate::error::RuntimeStorageError::InvalidRuntimeGraph {
+            reason: "Execution attempt overflow".to_string(),
+        })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RetryTarget {
+    pub run_id: String,
+    pub node_id: String,
+    pub stage_index: u64,
+    pub child: Option<Box<RetryTarget>>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RetryRequest {
+    pub id: String,
+    pub target: RetryTarget,
+    pub preparing: bool,
+}
+
+pub fn saved_retry_request(
+    context: &attractor_core::ContextMap,
+) -> crate::error::Result<Option<RetryRequest>> {
+    context
+        .get(RETRY_REQUEST_KEY)
+        .map(|value| {
+            let request: RetryRequest = serde_json::from_value(value.clone()).map_err(|error| {
+                crate::error::RuntimeStorageError::InvalidRuntimeGraph {
+                    reason: format!("Invalid retry request: {error}"),
+                }
+            })?;
+            let mut target = Some(&request.target);
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(current) = target {
+                if request.id.is_empty()
+                    || current.run_id.is_empty()
+                    || current.node_id.is_empty()
+                    || !seen.insert(&current.run_id)
+                {
+                    return Err(crate::error::RuntimeStorageError::InvalidRuntimeGraph {
+                        reason: "Invalid empty or repeated retry request target".to_string(),
+                    });
+                }
+                target = current.child.as_deref();
+            }
+            Ok(request)
+        })
+        .transpose()
+}
+
+/// Authorization is restricted to the prepared node invocation, never later work.
+pub fn retry_authorizes_checkpoint(
+    context: &attractor_core::ContextMap,
+    run_id: &str,
+    node: &str,
+    stage: u64,
+) -> bool {
+    saved_retry_request(context)
+        .ok()
+        .flatten()
+        .is_some_and(|r| {
+            r.target.run_id == run_id && r.target.node_id == node && r.target.stage_index == stage
+        })
+}

@@ -264,8 +264,29 @@ where
                 route_trace = vec![current_node.clone()];
                 (paths, false)
             }
-            ExecutionStart::Resume { paths, checkpoint } => {
+            ExecutionStart::Resume {
+                paths,
+                mut checkpoint,
+            } => {
                 paths.ensure_exists()?;
+                if let Some(request) =
+                    crate::retry::saved_retry_request(&checkpoint.context)?.filter(|r| r.preparing)
+                {
+                    if request.target.run_id != run_id {
+                        return Err(RuntimeStorageError::InvalidRuntimeGraph {
+                            reason: "retry_request_target_mismatch".into(),
+                        });
+                    }
+                    let controls = crate::controls::RuntimeControls::new(store.clone());
+                    controls.apply_retry_request(&request).map_err(|e| {
+                        RuntimeStorageError::InvalidRuntimeGraph {
+                            reason: e.to_string(),
+                        }
+                    })?;
+                    let bundle = store.read_run_meta(&run_id)?.expect("prepared run exists");
+                    checkpoint = bundle.checkpoint.expect("prepared checkpoint exists");
+                    record = bundle.record.expect("prepared record exists");
+                }
                 context = context_from_checkpoint(&flow, &checkpoint, &checkpoint.current_node)?;
                 // Continuations resume a checkpoint written by a different
                 // run, so the restored context still names the source run.
@@ -292,9 +313,17 @@ where
                     start_node.clone()
                 };
                 route_trace = vec![current_node.clone()];
+                // Earlier visits remain in completion history. A prepared retry
+                // names this exact invocation and still needs execution/recovery.
                 if completed_nodes
                     .iter()
                     .any(|node_id| node_id == &current_node)
+                    && !crate::retry::retry_authorizes_checkpoint(
+                        &checkpoint.context,
+                        &run_id,
+                        &current_node,
+                        completed_nodes.len() as u64,
+                    )
                 {
                     let resume_outcome = resume_outcome_for_node(&current_node, &context);
                     let selection = select_next_node_with_prior(
@@ -594,7 +623,11 @@ where
                 forced_fidelity,
             )?;
             let stage_index = completed_nodes.len() as u64;
-            let attempt = retry_counts.get(&current_node).copied().unwrap_or(0);
+            let attempt = crate::retry::execution_attempt(
+                &context.snapshot(),
+                &current_node,
+                retry_counts.get(&current_node).copied().unwrap_or(0),
+            )?;
             let prompt = crate::flow_runtime::node_prompt(node);
             let prior_status = context
                 .get(OUTCOME_KEY)
@@ -931,6 +964,9 @@ fn context_from_checkpoint(
         values.insert(key, value);
     }
     let mut context = AttractorContext::from_map(values)?;
+    for log in &checkpoint.logs {
+        context.append_log(log.clone());
+    }
     seed_builtin_context(&mut context, current_node)?;
     Ok(context)
 }

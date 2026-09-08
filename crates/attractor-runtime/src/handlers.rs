@@ -756,7 +756,7 @@ impl RuntimeHandlerRunner {
         self.child_intervention_requester = Some(Arc::new(requester));
     }
 
-    pub(crate) fn child_run_launcher(&self) -> Option<ChildRunLauncher> {
+    pub fn child_run_launcher(&self) -> Option<ChildRunLauncher> {
         self.child_run_launcher.clone()
     }
 
@@ -1854,7 +1854,8 @@ impl RuntimeHandlerRunner {
             let request = NodeExecutionRequest {
                 node_id: current_node.clone(),
                 stage_index: completed_nodes.len() as u64,
-                attempt: 0,
+                // Branch artifacts belong to the owning parallel execution attempt.
+                attempt: runtime.attempt,
                 context: context.snapshot(),
                 prompt,
                 node: node.clone(),

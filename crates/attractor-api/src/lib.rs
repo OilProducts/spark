@@ -517,6 +517,37 @@ impl RuntimeControlService {
     }
 
     pub fn retry_pipeline(&self, pipeline_id: &str) -> RuntimeRouteResponse {
+        // Serialize acceptance with executor registration across the affected tree.
+        let live = live_run_registry().lock().expect("live run registry");
+        self.retry_pipeline_locked(pipeline_id, &live)
+    }
+
+    fn retry_pipeline_locked(
+        &self,
+        pipeline_id: &str,
+        live: &std::collections::HashSet<String>,
+    ) -> RuntimeRouteResponse {
+        let records = match self.controls.store().list_run_records() {
+            Ok(records) => records,
+            Err(error) => {
+                return runtime_error_response(error.into(), "Retry ownership check failed")
+            }
+        };
+        {
+            let root = records
+                .iter()
+                .find(|r| r.run_id == pipeline_id)
+                .map(|r| r.root_run_id.as_deref().unwrap_or(&r.run_id));
+            if records.iter().any(|r| {
+                Some(r.root_run_id.as_deref().unwrap_or(&r.run_id)) == root
+                    && live.contains(&r.run_id)
+            }) {
+                return RuntimeRouteResponse::json(
+                    409,
+                    json!({"detail": "Retry conflicts with an active executor in the run tree"}),
+                );
+            }
+        }
         match self.controls.prepare_retry(pipeline_id) {
             Ok(prepared) => RuntimeRouteResponse::json(200, json!(prepared)),
             Err(error) => runtime_error_response(error, "Retry failed"),
@@ -803,16 +834,10 @@ impl AttractorApiService {
         Ok(selection)
     }
 
-    /// Resumes an already-prepared run (continue/retry) on a background
-    /// Re-arms runs a previous process left non-terminal. Runs execute as
-    /// threads, so a restart orphans them while their durable state remains
-    /// intact: waiting root runs resume from their checkpoints (re-entering a
-    /// human-gate wait, or completing instantly when the answer was already
-    /// journaled), unhonored cancel requests finalize, and runs stranded in
-    /// `running` — root or child — are marked failed so they stop presenting
-    /// as live; their checkpoints remain continuable. Runs with a live
-    /// executor and waiting child runs (driven by their parents) are
-    /// untouched.
+    /// Re-arms orphaned run trees from validated durable checkpoints. Pending
+    /// explicit retry preparation is completed idempotently before resuming;
+    /// ordinary recovery reuses valid outcomes and preserves gates and pauses.
+    /// Live executors retain ownership, and cancellation remains authoritative.
     pub fn recover_interrupted_runs(&self) -> Value {
         let store = self.observed_store();
         let mut resumed: Vec<String> = Vec::new();
@@ -1059,27 +1084,111 @@ impl AttractorApiService {
             if parent_run_id.is_some_and(run_has_live_executor) {
                 continue;
             }
-            let status = attractor_runtime::normalize_run_status(&record.status);
+            let saved_retry = store
+                .read_run_meta(run_id)
+                .ok()
+                .flatten()
+                .and_then(|b| b.checkpoint)
+                .and_then(|c| {
+                    attractor_runtime::retry::saved_retry_request(&c.context)
+                        .ok()
+                        .flatten()
+                });
+            // Inherited requests remain owned by the manager. A distinct request
+            // on a child is a direct Retry and must survive a failed parent.
+            let direct_child_retry = is_child
+                && !matches!(
+                    record.status.as_str(),
+                    "canceled" | "cancel_requested" | "completed"
+                )
+                && saved_retry.as_ref().is_some_and(|request| {
+                    store
+                        .read_run_meta(parent_run_id.unwrap())
+                        .ok()
+                        .flatten()
+                        .and_then(|b| b.checkpoint)
+                        .and_then(|c| {
+                            attractor_runtime::retry::saved_retry_request(&c.context)
+                                .ok()
+                                .flatten()
+                        })
+                        .is_none_or(|parent_request| parent_request.id != request.id)
+                });
+            let mut recovery_live = None;
+            if direct_child_retry {
+                if (self.runtime_handler_runner_factory.as_ref())()
+                    .child_run_launcher()
+                    .is_some()
+                {
+                    continue;
+                }
+                // Reserve the tree before preparation, and transfer ownership to
+                // the ordinary resume thread just as the Retry route does.
+                let mut live = live_run_registry().lock().expect("live run registry");
+                let tree = match store.list_run_records() {
+                    Ok(tree) => tree,
+                    Err(error) => {
+                        failed.push(json!({"run_id": run_id, "error": error.to_string()}));
+                        continue;
+                    }
+                };
+                let root = record.root_run_id.as_deref().unwrap_or(run_id);
+                if tree.iter().any(|r| {
+                    r.root_run_id.as_deref().unwrap_or(&r.run_id) == root
+                        && live.contains(&r.run_id)
+                }) {
+                    continue;
+                }
+                if let Err(error) = RuntimeControls::new(store.clone()).retry_target(run_id) {
+                    failed.push(json!({"run_id": run_id, "error": error.to_string()}));
+                    continue;
+                }
+                live.insert(run_id.to_string());
+                recovery_live = Some(LiveRunGuard(run_id.to_string()));
+            }
+            if let Some(request) = saved_retry.filter(|r| r.preparing) {
+                if request.target.run_id != run_id {
+                    failed.push(json!({"run_id":run_id, "error":"retry_request_target_mismatch"}));
+                    continue;
+                }
+                if !matches!(record.status.as_str(), "canceled" | "cancel_requested") {
+                    if let Err(error) = attractor_runtime::RuntimeControls::new(store.clone())
+                        .apply_retry_request(&request)
+                    {
+                        failed.push(json!({"run_id": run_id, "error": error.to_string()}));
+                        continue;
+                    }
+                }
+            }
+            let status = store
+                .read_run_meta(run_id)
+                .ok()
+                .flatten()
+                .and_then(|b| b.record)
+                .map(|r| attractor_runtime::normalize_run_status(&r.status))
+                .unwrap_or_else(|| attractor_runtime::normalize_run_status(&record.status));
             let restart_marked = status == "failed"
                 && record.outcome.is_none()
                 && record.ended_at.is_none()
                 && record.last_error.to_ascii_lowercase().contains("restart");
             match status.as_str() {
-                "waiting" | "running" if !is_child => match self.recover_root(&store, run_id) {
-                    Ok(()) => resumed.push(run_id.to_string()),
-                    Err(error) => {
-                        self.fail_recovery(
-                            &store,
-                            run_id,
-                            "recovery_unrecoverable_placement",
-                            &error,
-                        );
-                        failed.push(json!({"run_id": run_id, "error": error}));
-                        interrupted.push(run_id.to_string());
+                "waiting" | "running" if !is_child || direct_child_retry => {
+                    match self.recover_root(&store, run_id, recovery_live) {
+                        Ok(()) => resumed.push(run_id.to_string()),
+                        Err(error) => {
+                            self.fail_recovery(
+                                &store,
+                                run_id,
+                                "recovery_unrecoverable_placement",
+                                &error,
+                            );
+                            failed.push(json!({"run_id": run_id, "error": error}));
+                            interrupted.push(run_id.to_string());
+                        }
                     }
-                },
+                }
                 "failed" if !is_child && restart_marked => {
-                    match self.recover_root(&store, run_id) {
+                    match self.recover_root(&store, run_id, None) {
                         Ok(()) => resumed.push(run_id.to_string()),
                         Err(error) => failed.push(json!({"run_id": run_id, "error": error})),
                     }
@@ -1102,7 +1211,12 @@ impl AttractorApiService {
         })
     }
 
-    fn recover_root(&self, store: &RunStore, run_id: &str) -> std::result::Result<(), String> {
+    fn recover_root(
+        &self,
+        store: &RunStore,
+        run_id: &str,
+        live: Option<LiveRunGuard>,
+    ) -> std::result::Result<(), String> {
         let bundle = store
             .read_run_bundle(run_id)
             .map_err(|e| e.to_string())?
@@ -1130,15 +1244,26 @@ impl AttractorApiService {
                 .get(&checkpoint.current_node)
                 .ok_or_else(|| "checkpoint node unavailable".to_string())?,
             checkpoint.completed_nodes.len() as u64,
-            checkpoint
-                .retry_counts
-                .get(&checkpoint.current_node)
-                .copied()
-                .unwrap_or(0),
+            attractor_runtime::retry::execution_attempt(
+                &checkpoint.context,
+                &checkpoint.current_node,
+                checkpoint
+                    .retry_counts
+                    .get(&checkpoint.current_node)
+                    .copied()
+                    .unwrap_or(0),
+            )
+            .map_err(|e| e.to_string())?,
         )
         .is_some();
         if pause
             && !durable_response
+            && !attractor_runtime::retry::retry_authorizes_checkpoint(
+                &checkpoint.context,
+                run_id,
+                &checkpoint.current_node,
+                checkpoint.completed_nodes.len() as u64,
+            )
             && bundle
                 .record
                 .as_ref()
@@ -1180,7 +1305,7 @@ impl AttractorApiService {
                 })
                 .map_err(|error| error.to_string())?;
         }
-        self.spawn_prepared_resume(run_id, flow)
+        self.spawn_prepared_resume(run_id, flow, live)
     }
 
     fn fail_recovery(&self, store: &RunStore, run_id: &str, code: &str, message: &str) {
@@ -1208,11 +1333,12 @@ impl AttractorApiService {
         });
     }
 
-    /// thread from its persisted record and checkpoint.
+    /// Resume a run in a detached thread from its persisted record and checkpoint.
     fn spawn_prepared_resume(
         &self,
         run_id: &str,
         flow: FlowDefinition,
+        live: Option<LiveRunGuard>,
     ) -> std::result::Result<(), String> {
         let store = self.observed_store();
         let bundle = store
@@ -1249,6 +1375,7 @@ impl AttractorApiService {
             execute_request,
             lock_identity,
             execution_selection,
+            live,
         )
     }
 
@@ -1269,7 +1396,7 @@ impl AttractorApiService {
         let Some(run_id) = response.body.get("run_id").and_then(Value::as_str) else {
             return;
         };
-        if let Err(error) = self.spawn_prepared_resume(run_id, flow) {
+        if let Err(error) = self.spawn_prepared_resume(run_id, flow, None) {
             Self::finish_launch_failure(&self.observed_store(), run_id, &error);
         }
     }
@@ -1320,14 +1447,16 @@ impl AttractorApiService {
         execute_request: ExecuteRunRequest,
         lock_identity: Option<String>,
         execution_selection: attractor_execution::ExecutionProfileSelection,
+        live: Option<LiveRunGuard>,
     ) -> std::result::Result<(), String> {
         let node_executor = self.observed_node_executor(execution_selection);
         let store = execute_request.store.clone();
         let run_id = paths.run_id.clone();
+        let live = live.unwrap_or_else(|| LiveRunGuard::register(&run_id));
         std::thread::Builder::new()
             .name(format!("attractor-run-{run_id}"))
             .spawn(move || {
-                let _live = LiveRunGuard::register(&run_id);
+                let _live = live;
                 if let Some(identity) = lock_identity.as_deref() {
                     if !acquire_execution_lock(identity, &run_id, &store) {
                         return;
@@ -1711,6 +1840,7 @@ impl AttractorApiService {
                 execute_request,
                 lock_identity.clone(),
                 execution_selection.clone(),
+                None,
             ) {
                 if math_chain_claim {
                     let mathlab = Path::new(&working_directory).join(".mathlab");
@@ -2159,7 +2289,54 @@ impl AttractorApiService {
 
     pub fn retry_pipeline_route(&self, pipeline_id: &str) -> RuntimeRouteResponse {
         let store = self.observed_store();
-        let response = RuntimeControlService::new(store.clone()).retry_pipeline(pipeline_id);
+        if (self.runtime_handler_runner_factory.as_ref())()
+            .child_run_launcher()
+            .is_some()
+        {
+            if attractor_runtime::RuntimeControls::new(store.clone())
+                .retry_target(pipeline_id)
+                .ok()
+                .is_some_and(|target| {
+                    let direct_child = store
+                        .read_run_meta(pipeline_id)
+                        .ok()
+                        .flatten()
+                        .and_then(|b| b.record)
+                        .is_some_and(|r| r.parent_run_id.is_some());
+                    let mut child = target.child.as_deref();
+                    let mut failed_child = false;
+                    while let Some(target) = child {
+                        failed_child |= store
+                            .read_run_meta(&target.run_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|b| b.record)
+                            .is_some_and(|r| {
+                                r.status == "failed"
+                                    || r.outcome_reason_code.as_deref()
+                                        == Some("recovery_decision_required")
+                            });
+                        child = target.child.as_deref();
+                    }
+                    direct_child || failed_child
+                })
+            {
+                return RuntimeRouteResponse::json(
+                    409,
+                    json!({"detail": "retry_custom_child_launcher: the custom launcher is responsible for linked child execution"}),
+                );
+            }
+        }
+        let (response, live) = {
+            let mut live = live_run_registry().lock().expect("live run registry");
+            let response =
+                RuntimeControlService::new(store.clone()).retry_pipeline_locked(pipeline_id, &live);
+            let reservation = (response.status_code < 400).then(|| {
+                live.insert(pipeline_id.to_string());
+                LiveRunGuard(pipeline_id.to_string())
+            });
+            (response, reservation)
+        };
         if response.status_code < 400
             && response.body.get("status").and_then(Value::as_str) == Some("started")
         {
@@ -2172,7 +2349,11 @@ impl AttractorApiService {
                 .and_then(|bundle| store.read_graph_source(&bundle.paths).ok().flatten())
                 .and_then(|source| parse_flow_definition(&source).ok());
             match flow {
-                Some(flow) => self.execute_prepared_route_response(&response, flow),
+                Some(flow) => {
+                    if let Err(error) = self.spawn_prepared_resume(pipeline_id, flow, live) {
+                        Self::finish_launch_failure(&store, pipeline_id, &error);
+                    }
+                }
                 None => {
                     Self::finish_launch_failure(
                         &store,

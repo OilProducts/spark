@@ -818,3 +818,632 @@ fn ambiguous_child_invocations_leave_parent_terminal_and_never_resume_it() {
         );
     }
 }
+
+static RETRY_TREE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
+    let store = RunStore::for_settings(settings);
+    std::fs::create_dir_all(&settings.project_root).unwrap();
+    for (id, parent, child, source, node) in [
+        (
+            "retry-root",
+            None,
+            Some("retry-child"),
+            TREE_ROOT_FLOW,
+            "branch",
+        ),
+        (
+            "retry-child",
+            Some("retry-root"),
+            Some("retry-leaf"),
+            TREE_ROOT_FLOW,
+            "branch",
+        ),
+        (
+            "retry-leaf",
+            Some("retry-child"),
+            None,
+            TREE_CHILD_FLOW,
+            "start",
+        ),
+    ] {
+        let mut record =
+            attractor_core::RunRecord::new(id, settings.project_root.to_string_lossy());
+        record.status = "failed".into();
+        record.parent_run_id = parent.map(str::to_string);
+        record.parent_node_id = parent.map(|_| "branch".into());
+        record.root_run_id = Some("retry-root".into());
+        record.child_invocation_index = parent.map(|_| 1);
+        record.execution_profile_id = Some("native".into());
+        let mut context = attractor_core::ContextMap::from([
+            ("internal.run_id".into(), json!(id)),
+            ("internal.root_run_id".into(), json!("retry-root")),
+            ("_attractor.node_outcomes".into(), json!({node: "fail"})),
+        ]);
+        if let Some(child) = child {
+            context.insert("context.stack.child.run_id".into(), json!(child));
+            context.insert("context.stack.child.status".into(), json!("failed"));
+        }
+        let completed = if node == "branch" {
+            vec!["start".into(), node.into()]
+        } else {
+            vec![node.into()]
+        };
+        let paths = store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                checkpoint: Some(CheckpointState {
+                    timestamp: "2026-09-01T00:00:00Z".into(),
+                    current_node: node.into(),
+                    completed_nodes: completed,
+                    context,
+                    retry_counts: Default::default(),
+                    logs: vec!["prior log".into()],
+                }),
+                manifest: None,
+                flow_source: Some(source.into()),
+                flow_definition_json: None,
+            })
+            .unwrap();
+        store.write_node_artifacts(&paths, node, u64::from(node == "branch"), 0, &NodeArtifacts {
+            response: Some("prior failed attempt".into()),
+            status: Some(json!({"outcome":"fail", "preferred_label":"", "suggested_next_ids":[], "context_updates":{}, "notes":"", "retryable":false})),
+            under_logs: true, ..Default::default()
+        }).unwrap();
+        if let Some(child) = child {
+            let mut event = attractor_runtime::child_run_completed_event(
+                id,
+                child,
+                node,
+                "retry-root",
+                "child",
+                "failed",
+                Some("fail".into()),
+                None,
+                None,
+                Some("prior failure".into()),
+            );
+            event.emitted_at = "2026-08-31T00:00:00Z".into();
+            store.append_event(&paths, event).unwrap();
+        }
+    }
+    store
+}
+
+#[test]
+fn explicit_parent_retry_recovers_nested_failed_children_without_siblings() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = seed_failed_retry_tree(&settings);
+    let response = blocking_gate_service(&settings).retry_pipeline_route("retry-root");
+    assert_eq!(response.status_code, 200, "{:?}", response.body);
+    wait_for_status(&store, "retry-root", "completed");
+    for (id, node, stage) in [
+        ("retry-root", "branch", 1),
+        ("retry-child", "branch", 1),
+        ("retry-leaf", "start", 0),
+    ] {
+        let bundle = store.read_run_bundle(id).unwrap().unwrap();
+        assert_eq!(bundle.record.unwrap().status, "completed");
+        assert!(store
+            .node_execution_root(&bundle.paths, node, stage, 0)
+            .unwrap()
+            .join("response.md")
+            .is_file());
+        assert!(store
+            .node_execution_root(&bundle.paths, node, stage, 1)
+            .unwrap()
+            .join("response.md")
+            .is_file());
+    }
+    assert_eq!(store.list_run_records().unwrap().len(), 3);
+}
+
+#[test]
+fn restart_finishes_partial_tree_preparation_once_and_consumes_successful_children() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = seed_failed_retry_tree(&settings);
+    let child_before = store.read_run_bundle("retry-child").unwrap().unwrap();
+    let leaf_before = store.read_run_bundle("retry-leaf").unwrap().unwrap();
+    let controls = attractor_runtime::RuntimeControls::new(store.clone());
+    controls.prepare_retry("retry-root").unwrap();
+    // Reconstruct a crash immediately after the parent's write-ahead checkpoint.
+    for bundle in [child_before, leaf_before] {
+        store
+            .write_run_record(&bundle.paths, &bundle.record.unwrap())
+            .unwrap();
+        store
+            .save_checkpoint(
+                &bundle.paths,
+                &bundle.checkpoint.unwrap(),
+                Default::default(),
+            )
+            .unwrap();
+    }
+    let root = store.read_run_bundle("retry-root").unwrap().unwrap();
+    let mut checkpoint = root.checkpoint.unwrap();
+    checkpoint
+        .context
+        .get_mut(attractor_runtime::retry::RETRY_REQUEST_KEY)
+        .unwrap()["preparing"] = json!(true);
+    store
+        .save_checkpoint(&root.paths, &checkpoint, Default::default())
+        .unwrap();
+    store
+        .update_run_record("retry-root", |r| r.status = "failed".into())
+        .unwrap();
+    let recovery = blocking_gate_service(&settings).recover_interrupted_runs();
+    assert_eq!(recovery["resumed"], json!(["retry-root"]), "{recovery}");
+    wait_for_status(&store, "retry-root", "completed");
+    for id in ["retry-root", "retry-child", "retry-leaf"] {
+        let checkpoint = controls.get_checkpoint(id).unwrap();
+        let request = attractor_runtime::retry::saved_retry_request(&checkpoint.context)
+            .unwrap()
+            .unwrap();
+        controls.apply_retry_request(&request).unwrap();
+        assert_eq!(
+            checkpoint.context[attractor_runtime::retry::EXECUTION_BASES_KEY]
+                [&request.target.node_id],
+            json!(1)
+        );
+    }
+    // Another explicit parent retry must consume its now-successful child.
+    store
+        .update_run_record("retry-root", |r| r.status = "failed".into())
+        .unwrap();
+    let mut checkpoint = controls.get_checkpoint("retry-root").unwrap();
+    checkpoint.current_node = "branch".into();
+    checkpoint.completed_nodes = vec!["start".into(), "branch".into()];
+    checkpoint
+        .context
+        .insert("_attractor.node_outcomes".into(), json!({"branch":"fail"}));
+    store
+        .save_checkpoint(&root.paths, &checkpoint, Default::default())
+        .unwrap();
+    let child_checkpoint = controls.get_checkpoint("retry-child").unwrap();
+    let response = blocking_gate_service(&settings).retry_pipeline_route("retry-root");
+    assert_eq!(response.status_code, 200, "{:?}", response.body);
+    wait_for_status(&store, "retry-root", "completed");
+    assert_eq!(
+        controls.get_checkpoint("retry-child").unwrap(),
+        child_checkpoint
+    );
+    assert_eq!(store.list_run_records().unwrap().len(), 3);
+}
+
+#[test]
+fn explicit_retry_rejects_invalid_lineage_and_cancellation_before_preparation() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    for case in ["parent", "node", "root", "canceled", "checkpoint", "flow"] {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
+        let store = seed_failed_retry_tree(&settings);
+        let before = attractor_runtime::RuntimeControls::new(store.clone())
+            .get_checkpoint("retry-root")
+            .unwrap();
+        store
+            .update_run_record("retry-leaf", |r| match case {
+                "parent" => r.parent_run_id = Some("wrong".into()),
+                "node" => r.parent_node_id = Some("wrong".into()),
+                "root" => r.root_run_id = Some("wrong".into()),
+                "canceled" => r.status = "canceled".into(),
+                _ => (),
+            })
+            .unwrap();
+        if case == "checkpoint" {
+            let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
+            let mut checkpoint = bundle.checkpoint.unwrap();
+            checkpoint.current_node = "missing".into();
+            store
+                .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
+                .unwrap();
+        }
+        if case == "flow" {
+            let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
+            std::fs::write(
+                bundle.paths.root.join("artifacts/flow/flow-source.yaml"),
+                "invalid: [",
+            )
+            .unwrap();
+        }
+        let response = blocking_gate_service(&settings).retry_pipeline_route("retry-root");
+        assert_eq!(response.status_code, 409, "{case}: {:?}", response.body);
+        assert_eq!(
+            attractor_runtime::RuntimeControls::new(store.clone())
+                .get_checkpoint("retry-root")
+                .unwrap(),
+            before
+        );
+    }
+}
+
+fn replace_retry_leaf(store: &RunStore, source: &str, node: &str) {
+    let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
+    std::fs::write(
+        bundle.paths.root.join("artifacts/flow/flow-source.yaml"),
+        source,
+    )
+    .unwrap();
+    let mut checkpoint = bundle.checkpoint.unwrap();
+    checkpoint.current_node = node.into();
+    checkpoint.completed_nodes = vec!["start".into(), node.into()];
+    checkpoint
+        .context
+        .insert("_attractor.node_outcomes".into(), json!({node:"fail"}));
+    store
+        .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
+        .unwrap();
+}
+
+#[test]
+fn retry_preserves_human_wait_and_rejects_execution_overlap_across_ancestors() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = seed_failed_retry_tree(&settings);
+    replace_retry_leaf(&store, GATE_FLOW, "review");
+    let service = blocking_gate_service(&settings);
+    assert_eq!(service.retry_pipeline_route("retry-root").status_code, 200);
+    wait_for_status(&store, "retry-leaf", "waiting");
+    let paths = store.read_run_bundle("retry-leaf").unwrap().unwrap().paths;
+    assert!(!store
+        .read_raw_events(&paths)
+        .unwrap()
+        .iter()
+        .any(|e| e.event_type == "InterviewCompleted"));
+    for id in ["retry-root", "retry-child", "retry-leaf"] {
+        let response = service.retry_pipeline_route(id);
+        assert_eq!(response.status_code, 409, "{id}: {:?}", response.body);
+        assert!(response.body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("active executor"));
+    }
+    store
+        .append_event(
+            &paths,
+            human_gate_answered_event(
+                "retry-leaf",
+                "review-1",
+                Some("review".into()),
+                None,
+                None,
+                "Finish",
+                None,
+            ),
+        )
+        .unwrap();
+    wait_for_status(&store, "retry-root", "completed");
+    assert_eq!(store.list_run_records().unwrap().len(), 3);
+}
+
+#[test]
+fn new_child_failure_propagates_once_and_direct_child_retry_gets_a_new_request() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = seed_failed_retry_tree(&settings);
+    let source = GATE_FLOW
+        .replace("kind: human_gate", "kind: tool")
+        .replace("prompt: Ship the report?", "command: exit 1");
+    replace_retry_leaf(&store, &source, "review");
+    let service = blocking_gate_service(&settings);
+    assert_eq!(service.retry_pipeline_route("retry-root").status_code, 200);
+    wait_for_status(&store, "retry-root", "failed");
+    let controls = attractor_runtime::RuntimeControls::new(store.clone());
+    let leaf = controls.get_checkpoint("retry-leaf").unwrap();
+    let request = attractor_runtime::retry::saved_retry_request(&leaf.context)
+        .unwrap()
+        .unwrap();
+    controls.apply_retry_request(&request).unwrap();
+    assert_eq!(controls.get_checkpoint("retry-leaf").unwrap(), leaf);
+    assert_eq!(
+        leaf.context[attractor_runtime::retry::EXECUTION_BASES_KEY]["review"],
+        json!(1)
+    );
+    // Direct child preparation is synchronous here, after the parent has failed.
+    controls.prepare_retry("retry-leaf").unwrap();
+    let fresh = controls.get_checkpoint("retry-leaf").unwrap();
+    assert_ne!(
+        attractor_runtime::retry::saved_retry_request(&fresh.context)
+            .unwrap()
+            .unwrap()
+            .id,
+        request.id
+    );
+    assert_eq!(
+        fresh.context[attractor_runtime::retry::EXECUTION_BASES_KEY]["review"],
+        json!(2)
+    );
+    assert_eq!(store.list_run_records().unwrap().len(), 3);
+}
+
+#[test]
+fn parent_retry_keeps_custom_child_execution_with_its_launcher() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = seed_failed_retry_tree(&settings);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings,
+        Arc::new(|| {
+            RuntimeHandlerRunner::new()
+                .with_child_run_launcher(|_| panic!("must not replace a custom child"))
+        }),
+    );
+    let before = attractor_runtime::RuntimeControls::new(store.clone())
+        .get_checkpoint("retry-root")
+        .unwrap();
+    let response = service.retry_pipeline_route("retry-root");
+    assert_eq!(response.status_code, 409);
+    assert!(response.body["detail"]
+        .as_str()
+        .unwrap()
+        .contains("retry_custom_child_launcher"));
+    assert_eq!(
+        attractor_runtime::RuntimeControls::new(store)
+            .get_checkpoint("retry-root")
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn accepted_child_retry_owns_the_tree_before_executor_spawn() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let store = seed_failed_retry_tree(&settings);
+    let constructing = Arc::new(std::sync::Barrier::new(2));
+    let release = Arc::new(std::sync::Barrier::new(2));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let service = Arc::new(
+        AttractorApiService::new_with_runtime_handler_runner_factory(settings, {
+            let constructing = constructing.clone();
+            let release = release.clone();
+            Arc::new(move || {
+                if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    // Acceptance finished; executor construction has not completed.
+                    constructing.wait();
+                    release.wait();
+                }
+                RuntimeHandlerRunner::new()
+            })
+        }),
+    );
+    let child = {
+        let service = service.clone();
+        std::thread::spawn(move || service.retry_pipeline_route("retry-leaf"))
+    };
+    constructing.wait();
+    let parent = service.retry_pipeline_route("retry-root");
+    release.wait();
+    assert_eq!(child.join().unwrap().status_code, 200);
+    assert_eq!(parent.status_code, 409, "{:?}", parent.body);
+    wait_for_status(&store, "retry-leaf", "completed");
+}
+
+#[test]
+fn direct_child_retry_recovers_all_crash_windows_with_failed_parent() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    for window in ["preparing", "prepared", "response"] {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
+        let store = seed_failed_retry_tree(&settings);
+        replace_retry_leaf(&store, GATE_FLOW, "review");
+        let controls = attractor_runtime::RuntimeControls::new(store.clone());
+        controls.prepare_retry("retry-leaf").unwrap();
+        let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
+        let mut checkpoint = bundle.checkpoint.unwrap();
+        let request = attractor_runtime::retry::saved_retry_request(&checkpoint.context)
+            .unwrap()
+            .unwrap();
+        if window == "preparing" {
+            checkpoint
+                .context
+                .get_mut(attractor_runtime::retry::RETRY_REQUEST_KEY)
+                .unwrap()["preparing"] = json!(true);
+            store
+                .save_checkpoint(&bundle.paths, &checkpoint, Default::default())
+                .unwrap();
+            store
+                .update_run_record("retry-leaf", |r| r.status = "failed".into())
+                .unwrap();
+        }
+        if window == "response" {
+            store.write_node_artifacts(&bundle.paths, "review", 1, 1, &NodeArtifacts {
+                response: Some("durable new answer".into()),
+                status: Some(json!({"outcome":"success", "preferred_label":"Finish", "suggested_next_ids":[], "context_updates":{}, "notes":""})),
+                under_logs: true, ..Default::default()
+            }).unwrap();
+        }
+        let service = blocking_gate_service(&settings);
+        let recovery = service.recover_interrupted_runs();
+        assert_eq!(
+            recovery["resumed"],
+            json!(["retry-leaf"]),
+            "{window}: {recovery}"
+        );
+        if window != "response" {
+            wait_for_status(&store, "retry-leaf", "waiting");
+            assert_eq!(service.recover_interrupted_runs()["resumed"], json!([]));
+            for id in ["retry-root", "retry-child", "retry-leaf"] {
+                assert_eq!(service.retry_pipeline_route(id).status_code, 409);
+            }
+            store
+                .append_event(
+                    &bundle.paths,
+                    human_gate_answered_event(
+                        "retry-leaf",
+                        "review-1",
+                        Some("review".into()),
+                        None,
+                        None,
+                        "Finish",
+                        None,
+                    ),
+                )
+                .unwrap();
+        }
+        wait_for_status(&store, "retry-leaf", "completed");
+        let saved = controls.get_checkpoint("retry-leaf").unwrap();
+        assert_eq!(
+            saved.context[attractor_runtime::retry::EXECUTION_BASES_KEY]["review"],
+            json!(1)
+        );
+        assert_eq!(
+            attractor_runtime::retry::saved_retry_request(&saved.context)
+                .unwrap()
+                .unwrap()
+                .id,
+            request.id
+        );
+        assert_eq!(store.list_run_records().unwrap().len(), 3);
+        for id in ["retry-root", "retry-child"] {
+            assert_eq!(
+                store
+                    .read_run_bundle(id)
+                    .unwrap()
+                    .unwrap()
+                    .record
+                    .unwrap()
+                    .status,
+                "failed"
+            );
+        }
+        let interviews = store
+            .read_raw_events(&bundle.paths)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == "InterviewStarted")
+            .count();
+        assert_eq!(interviews, usize::from(window != "response"));
+    }
+}
+
+#[test]
+fn direct_child_retry_recovery_preserves_cancellation_validation_and_custom_launcher() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    for case in [
+        "canceled",
+        "cancel_requested",
+        "ancestor_canceled",
+        "source",
+        "lineage",
+        "custom",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
+        let store = seed_failed_retry_tree(&settings);
+        let controls = attractor_runtime::RuntimeControls::new(store.clone());
+        controls.prepare_retry("retry-leaf").unwrap();
+        let before = controls.get_checkpoint("retry-leaf").unwrap();
+        match case {
+            "canceled" | "cancel_requested" => {
+                store
+                    .update_run_record("retry-leaf", |r| r.status = case.into())
+                    .unwrap();
+            }
+            "ancestor_canceled" => {
+                store
+                    .update_run_record("retry-root", |r| r.status = "canceled".into())
+                    .unwrap();
+            }
+            "source" => {
+                let bundle = store.read_run_bundle("retry-leaf").unwrap().unwrap();
+                std::fs::write(
+                    bundle.paths.root.join("artifacts/flow/flow-source.yaml"),
+                    "invalid",
+                )
+                .unwrap();
+            }
+            "lineage" => {
+                store
+                    .update_run_record("retry-leaf", |r| r.root_run_id = Some("wrong-root".into()))
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+            settings,
+            Arc::new(move || {
+                if case == "custom" {
+                    RuntimeHandlerRunner::new()
+                        .with_child_run_launcher(|_| panic!("custom launcher owns child"))
+                } else {
+                    RuntimeHandlerRunner::new()
+                }
+            }),
+        );
+        let recovery = service.recover_interrupted_runs();
+        assert_eq!(recovery["resumed"], json!([]), "{case}: {recovery}");
+        assert_eq!(controls.get_checkpoint("retry-leaf").unwrap(), before);
+        if matches!(case, "canceled" | "cancel_requested") {
+            assert_eq!(
+                store
+                    .read_run_bundle("retry-leaf")
+                    .unwrap()
+                    .unwrap()
+                    .record
+                    .unwrap()
+                    .status,
+                "canceled"
+            );
+        }
+        assert_eq!(store.list_run_records().unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn direct_child_retry_rejects_ambiguous_ancestor_invocations_without_mutation() {
+    let _serial = RETRY_TREE_TEST.lock().unwrap_or_else(|e| e.into_inner());
+    for duplicate in ["retry-leaf", "retry-child"] {
+        for invocation in [Some(1), None] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings = settings(temp.path());
+            let store = seed_failed_retry_tree(&settings);
+            store
+                .update_run_record(duplicate, |r| r.child_invocation_index = invocation)
+                .unwrap();
+            // A unique legacy child without an invocation index remains supported.
+            assert!(attractor_runtime::RuntimeControls::new(store.clone())
+                .retry_target("retry-leaf")
+                .is_ok());
+            let source = store.read_run_bundle(duplicate).unwrap().unwrap();
+            let mut record = source.record.unwrap();
+            record.run_id = "duplicate".into();
+            store
+                .create_run(attractor_runtime::CreateRunRequest {
+                    record,
+                    checkpoint: source.checkpoint,
+                    manifest: None,
+                    flow_source: store.read_graph_source(&source.paths).unwrap(),
+                    flow_definition_json: None,
+                })
+                .unwrap();
+            let ids = ["retry-root", "retry-child", "retry-leaf", "duplicate"];
+            let before = ids.map(|id| {
+                let bundle = store.read_run_bundle(id).unwrap().unwrap();
+                (bundle.record, bundle.checkpoint, bundle.raw_events)
+            });
+            let response = blocking_gate_service(&settings).retry_pipeline_route("retry-leaf");
+            assert_eq!(
+                response.status_code, 409,
+                "{duplicate}/{invocation:?}: {:?}",
+                response.body
+            );
+            assert_eq!(response.body["detail"], "retry_ambiguous_child_invocation");
+            for (id, expected) in ids.into_iter().zip(before) {
+                let bundle = store.read_run_bundle(id).unwrap().unwrap();
+                assert_eq!(
+                    (bundle.record, bundle.checkpoint, bundle.raw_events),
+                    expected,
+                    "{id}"
+                );
+            }
+        }
+    }
+}

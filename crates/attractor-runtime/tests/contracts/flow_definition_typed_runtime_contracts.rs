@@ -170,7 +170,13 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
         ..FlowDefinition::default()
     };
     let mut runner = RuntimeHandlerRunner::new();
-    runner.register_static_handler(HANDLER_CODERGEN, Outcome::new(OutcomeStatus::Success));
+    runner.register_handler_fn(HANDLER_CODERGEN, |runtime| {
+        assert_eq!(
+            runtime.attempt, 3,
+            "branches inherit the prepared parallel attempt"
+        );
+        Ok(Outcome::new(OutcomeStatus::Success))
+    });
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = RunStore::for_runs_dir(temp.path().join("runs"))
         .create_run(CreateRunRequest {
@@ -186,7 +192,7 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
         .execute(attractor_runtime::NodeExecutionRequest {
             node_id: "fan".to_string(),
             stage_index: 0,
-            attempt: 0,
+            attempt: 3,
             context: ContextMap::new(),
             prompt: String::new(),
             node: flow.nodes["fan"].clone(),

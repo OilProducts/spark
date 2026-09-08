@@ -466,7 +466,7 @@ fn retry_route_executes_the_prepared_run() {
         retry_counts: Default::default(),
         logs: Vec::new(),
     };
-    store
+    let paths = store
         .create_run(attractor_runtime::CreateRunRequest {
             record,
             checkpoint: Some(checkpoint),
@@ -475,6 +475,13 @@ fn retry_route_executes_the_prepared_run() {
             flow_definition_json: Some(flow.to_canonical_json_string()),
         })
         .expect("seed failed run");
+
+    store.write_node_artifacts(&paths, "start", 0, 0, &attractor_runtime::NodeArtifacts {
+        response: Some("persisted failure".to_string()),
+        status: Some(json!({"outcome": "fail", "preferred_label": "", "suggested_next_ids": [], "context_updates": {}, "notes": "", "failure_reason": "old failure", "retryable": false})),
+        under_logs: true,
+        ..Default::default()
+    }).expect("old failure artifacts");
 
     let response = service.retry_pipeline_route("run-retry-exec");
     assert_eq!(response.status_code, 200);

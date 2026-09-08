@@ -195,6 +195,12 @@ Notes:
 
 Use the workspace recovery commands instead of calling Attractor recovery endpoints directly. They preserve conversation and project scoping and return stable JSON payloads for agents.
 
+Retry executes a fresh attempt under the same run ID with a restored automatic-retry
+allowance. Retrying a parent recovers its linked failed children and nested
+descendants in place; successful children are consumed without rerunning. Existing
+working directories, snapshots, lineage, and prior attempt artifacts are preserved.
+`started` reports execution acceptance, not success. Continue creates a new run.
+
 Retry a run inside the active conversation:
 
 ```bash

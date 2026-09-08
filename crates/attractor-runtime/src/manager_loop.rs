@@ -173,7 +173,19 @@ fn autostart_child_pipeline(
         return Ok(None);
     }
 
-    let linked_child_run_id = context_string(context, "context.stack.child.run_id");
+    let retry = crate::retry::saved_retry_request(context)
+        .map_err(|e| RuntimeNodeError::runtime(e.to_string()))?;
+    let retry_child = retry
+        .as_ref()
+        .filter(|request| {
+            request.target.run_id == runtime.run_id
+                && request.target.node_id == runtime.node_id
+                && request.target.stage_index == runtime.stage_index
+        })
+        .and_then(|request| request.target.child.as_ref());
+    let linked_child_run_id = retry_child
+        .map(|target| target.run_id.clone())
+        .unwrap_or_else(|| context_string(context, "context.stack.child.run_id"));
     let mut invocation_reset: Option<String> = None;
     if !linked_child_run_id.is_empty() {
         if let Some(mut child_result) = resolve_child_result(runner, runtime, &linked_child_run_id)
@@ -194,7 +206,7 @@ fn autostart_child_pipeline(
             // by a continuation (a fresh invocation must launch, or the retry
             // edge loops on stale work forever). Acknowledgement of the
             // child's completion before the checkpoint tells them apart.
-            if !live_child {
+            if !live_child && retry_child.is_none() {
                 if let Some(reason) = linked_child_is_history(runtime, &linked_child_run_id) {
                     invocation_reset = Some(reason);
                 }
@@ -592,15 +604,26 @@ fn resume_existing_child(
             .get(&checkpoint.current_node)
             .ok_or_else(|| "recovery_missing_lineage: checkpoint node unavailable".to_string())?,
         checkpoint.completed_nodes.len() as u64,
-        checkpoint
-            .retry_counts
-            .get(&checkpoint.current_node)
-            .copied()
-            .unwrap_or(0),
+        crate::retry::execution_attempt(
+            &checkpoint.context,
+            &checkpoint.current_node,
+            checkpoint
+                .retry_counts
+                .get(&checkpoint.current_node)
+                .copied()
+                .unwrap_or(0),
+        )
+        .map_err(|e| e.to_string())?,
     )
     .is_some();
     if pause
         && !durable_response
+        && !crate::retry::retry_authorizes_checkpoint(
+            &checkpoint.context,
+            &child_id,
+            &checkpoint.current_node,
+            checkpoint.completed_nodes.len() as u64,
+        )
         && record.outcome_reason_code.as_deref() != Some("recovery_retry_approved")
     {
         store
@@ -1327,6 +1350,13 @@ fn mapped_child_context(
 ) -> ContextMap {
     let mut child_context = parent_context.clone();
     apply_child_input_map(&mut child_context, parent_context, input_map);
+    for key in [
+        crate::retry::EXECUTION_BASES_KEY,
+        crate::retry::RETRY_REQUEST_KEY,
+        crate::context::INTERNAL_PIPELINE_RETRY_RUN_ID_KEY,
+    ] {
+        child_context.remove(key);
+    }
     child_context
 }
 
