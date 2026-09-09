@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react"
+import { fetchProjectChatModelsValidated, type ProjectChatModelsResponse } from "@/lib/api/projectsApi"
 import { useStore } from "@/store"
 import { useLlmProfiles } from "@/lib/useLlmProfiles"
 import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from "@/lib/llmSuggestions"
@@ -37,12 +38,52 @@ function getTauriInvoke(): TauriInvoke | null {
 export function SettingsPanel() {
     const uiDefaults = useStore((state) => state.uiDefaults)
     const setUiDefault = useStore((state) => state.setUiDefault)
+    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const { confirm } = useDialogController()
     const llmProfiles = useLlmProfiles()
     const { workspaceSettings, settingsError } = useWorkspaceSettings()
     const [desktopSettings, setDesktopSettings] = useState<DesktopServerSettings | null>(null)
     const [desktopSettingsError, setDesktopSettingsError] = useState<string | null>(null)
     const [isSavingDesktopSettings, setIsSavingDesktopSettings] = useState(false)
+
+    const [discovery, setDiscovery] = useState<{
+        projectPath: string
+        payload?: ProjectChatModelsResponse
+        failed?: boolean
+    } | null>(null)
+    const [customModel, setCustomModel] = useState(false)
+    const provider = uiDefaults.llm_profile || uiDefaults.llm_provider
+    const providerOptions = [...new Set([...getLlmSelectionOptions(llmProfiles), provider])].filter(Boolean)
+    const profile = llmProfiles.find((entry) => entry.id === provider)
+    const currentDiscovery = discovery?.projectPath === activeProjectPath ? discovery : null
+    const discoveredModels = currentDiscovery?.payload?.models.filter((model) => model.provider === provider)
+    const discoveryUnavailable = provider === 'codex'
+        && currentDiscovery?.payload?.providers.codex.status === 'unavailable'
+    const modelOptions = [...new Set(profile ? profile.models : (
+        discoveredModels?.length && !discoveryUnavailable
+            ? discoveredModels.map((model) => model.id)
+            : getModelSuggestions(provider, llmProfiles)
+    ))].filter(Boolean)
+    const unlistedModel = !!uiDefaults.llm_model && !modelOptions.includes(uiDefaults.llm_model)
+    const discoveryMessage = !profile && activeProjectPath
+        ? (!currentDiscovery ? 'Loading models…'
+            : currentDiscovery.failed || discoveryUnavailable ? 'Model discovery unavailable. Using suggestions.' : null)
+        : null
+
+    useEffect(() => {
+        if (!activeProjectPath) return
+        let cancelled = false
+        setDiscovery(null)
+        void fetchProjectChatModelsValidated(activeProjectPath).then(
+            (payload) => {
+                if (!cancelled) setDiscovery({ projectPath: activeProjectPath, payload })
+            },
+            () => {
+                if (!cancelled) setDiscovery({ projectPath: activeProjectPath, failed: true })
+            },
+        )
+        return () => { cancelled = true }
+    }, [activeProjectPath])
 
     useEffect(() => {
         const invoke = getTauriInvoke()
@@ -105,45 +146,65 @@ export function SettingsPanel() {
                         <CardTitle className="text-sm">LLM Defaults (Global)</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
-                        <Field>
+                        <Field className="[&>[data-slot=native-select-wrapper]]:w-full">
                             <FieldLabel htmlFor="settings-default-llm-provider">
                                 Default LLM Provider
                             </FieldLabel>
-                            <Input
+                            <NativeSelect
                                 id="settings-default-llm-provider"
-                                value={uiDefaults.llm_profile || uiDefaults.llm_provider}
+                                value={provider}
                                 onChange={(event) => {
                                     const selection = splitLlmSelection(event.target.value, llmProfiles)
                                     setUiDefault('llm_provider', selection.llm_provider)
                                     setUiDefault('llm_profile', selection.llm_profile)
+                                    setCustomModel(false)
                                 }}
-                                list="settings-llm-provider-options"
                                 className="text-xs"
-                                placeholder="openai"
-                            />
-                            <datalist id="settings-llm-provider-options">
-                                {getLlmSelectionOptions(llmProfiles).map((provider) => (
-                                    <option key={provider} value={provider} />
+                            >
+                                <option value="">Use handler default</option>
+                                {providerOptions.map((option) => (
+                                    <option key={option} value={option}>{option}</option>
                                 ))}
-                            </datalist>
+                            </NativeSelect>
                         </Field>
-                        <Field>
+                        <Field className="[&>[data-slot=native-select-wrapper]]:w-full">
                             <FieldLabel htmlFor="settings-default-llm-model">
                                 Default LLM Model
                             </FieldLabel>
-                            <Input
+                            <NativeSelect
                                 id="settings-default-llm-model"
-                                value={uiDefaults.llm_model}
-                                onChange={(event) => setUiDefault('llm_model', event.target.value)}
-                                list="settings-llm-model-options"
+                                value={customModel ? 'custom' : uiDefaults.llm_model ? `model:${uiDefaults.llm_model}` : ''}
+                                onChange={(event) => {
+                                    const value = event.target.value
+                                    setCustomModel(value === 'custom')
+                                    if (value !== 'custom') setUiDefault('llm_model', value.replace(/^model:/, ''))
+                                }}
                                 className="text-xs"
-                                placeholder="gpt-5.5"
-                            />
-                            <datalist id="settings-llm-model-options">
-                                {getModelSuggestions(uiDefaults.llm_profile || uiDefaults.llm_provider, llmProfiles).map((modelOption) => (
-                                    <option key={modelOption} value={modelOption} />
+                            >
+                                <option value="">Use handler default</option>
+                                {modelOptions.map((option) => (
+                                    <option key={option} value={`model:${option}`}>{option}</option>
                                 ))}
-                            </datalist>
+                                {unlistedModel && (
+                                    <option value={`model:${uiDefaults.llm_model}`}>{uiDefaults.llm_model} (custom)</option>
+                                )}
+                                <option value="custom">Custom model…</option>
+                            </NativeSelect>
+                            {(customModel || unlistedModel) && (
+                                <>
+                                    <FieldLabel htmlFor="settings-custom-llm-model">Custom model</FieldLabel>
+                                    <Input
+                                        id="settings-custom-llm-model"
+                                        value={uiDefaults.llm_model}
+                                        onChange={(event) => {
+                                            setCustomModel(true)
+                                            setUiDefault('llm_model', event.target.value)
+                                        }}
+                                        className="text-xs"
+                                    />
+                                </>
+                            )}
+                            {discoveryMessage && <p role="status" className="text-xs text-muted-foreground">{discoveryMessage}</p>}
                         </Field>
                         <Field>
                             <FieldLabel htmlFor="settings-default-reasoning-effort">

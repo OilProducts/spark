@@ -5,7 +5,7 @@ import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
 import { generateFlowYaml } from '@/lib/flowYamlUtils'
 import { useStore } from '@/store'
 import { ReactFlowProvider } from '@xyflow/react'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -130,27 +130,142 @@ describe('Graph and settings behavior', () => {
     vi.unstubAllGlobals()
   })
 
-  it('persists global LLM defaults from settings panel inputs', async () => {
+  it('persists global dropdown selections and reasoning effort immediately', async () => {
     const user = userEvent.setup()
+    useStore.setState({ activeProjectPath: null })
     render(<SettingsPanel />)
 
-    expect(document.querySelector('#settings-llm-model-options option[value="gpt-5.4"]')).toBeTruthy()
-    await user.clear(screen.getByPlaceholderText('openai'))
-    await user.type(screen.getByPlaceholderText('openai'), 'anthropic')
-    await user.clear(screen.getByLabelText('Default LLM Model'))
-    await user.type(screen.getByLabelText('Default LLM Model'), 'claude-3.7-sonnet')
-    const reasoningSelect = screen
-      .getAllByRole('combobox')
-      .find((element) => element.tagName === 'SELECT')
-    expect(reasoningSelect).toBeDefined()
-    await user.selectOptions(reasoningSelect as HTMLSelectElement, 'xhigh')
+    const provider = screen.getByLabelText('Default LLM Provider')
+    const model = screen.getByLabelText('Default LLM Model')
+    expect(within(model).getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
+    await user.selectOptions(provider, 'anthropic')
+    expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
+    expect(screen.getByLabelText('Custom model')).toHaveValue('gpt-5.3')
+    expect(within(model).queryByRole('option', { name: 'gpt-5.4' })).toBeNull()
+    await user.selectOptions(model, 'model:claude-sonnet-4-6')
+    await user.selectOptions(screen.getByLabelText('Default Reasoning Effort'), 'xhigh')
 
     expect(useStore.getState().uiDefaults).toEqual({
       llm_provider: 'anthropic',
-      llm_model: 'claude-3.7-sonnet',
+      llm_model: 'claude-sonnet-4-6',
       llm_profile: '',
       reasoning_effort: 'xhigh',
     })
+    expect(JSON.parse(localStorage.getItem('spark.ui_defaults')!)).toEqual(useStore.getState().uiDefaults)
+    await user.selectOptions(model, '')
+    expect(useStore.getState().uiDefaults.llm_model).toBe('')
+    await user.selectOptions(provider, '')
+    expect(useStore.getState().uiDefaults.llm_provider).toBe('')
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('chat-models'))).toBe(false)
+  })
+
+  it('keeps saved unlisted providers and models editable and supports custom entry', async () => {
+    const user = userEvent.setup()
+    useStore.setState({ activeProjectPath: null, uiDefaults: {
+      llm_provider: 'private-provider', llm_profile: '', llm_model: 'private-model', reasoning_effort: 'high',
+    } })
+    const rendered = render(<SettingsPanel />)
+    expect(screen.getByLabelText('Default LLM Provider')).toHaveValue('private-provider')
+    expect(screen.getByLabelText('Default LLM Model')).toHaveDisplayValue('private-model (custom)')
+    await user.clear(screen.getByLabelText('Custom model'))
+    await user.type(screen.getByLabelText('Custom model'), 'custom:next')
+    expect(useStore.getState().uiDefaults.llm_model).toBe('custom:next')
+    rendered.unmount()
+    render(<SettingsPanel />)
+    expect(screen.getByLabelText('Custom model')).toHaveValue('custom:next')
+    await user.selectOptions(screen.getByLabelText('Default LLM Model'), '')
+    expect(screen.queryByLabelText('Custom model')).toBeNull()
+    await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'custom')
+    expect(useStore.getState().uiDefaults.llm_model).toBe('')
+    await user.type(screen.getByLabelText('Custom model'), 'gpt-5.4-extra')
+    expect(screen.getByLabelText('Custom model')).toHaveValue('gpt-5.4-extra')
+    expect(JSON.parse(localStorage.getItem('spark.ui_defaults')!).llm_model).toBe('gpt-5.4-extra')
+  })
+
+  it('uses configured profile models and preserves provider/profile mapping and saved missing profiles', async () => {
+    const user = userEvent.setup()
+    const originalFetch = fetch
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('/llm-profiles')) return Promise.resolve(Response.json({ profiles: [{
+        id: 'team', provider: 'openai', models: ['team-model'], default_model: 'team-model', configured: true,
+      }] }))
+      return originalFetch(input, init)
+    }))
+    useStore.setState({ uiDefaults: { llm_provider: '', llm_profile: 'missing-profile', llm_model: 'saved', reasoning_effort: 'high' } })
+    render(<SettingsPanel />)
+    expect(screen.getByLabelText('Default LLM Provider')).toHaveValue('missing-profile')
+    await screen.findByRole('option', { name: 'team' })
+    await user.selectOptions(screen.getByLabelText('Default LLM Provider'), 'team')
+    expect(useStore.getState().uiDefaults).toMatchObject({ llm_provider: '', llm_profile: 'team', llm_model: 'saved' })
+    expect(within(screen.getByLabelText('Default LLM Model')).queryByRole('option', { name: 'gpt-5.4' })).toBeNull()
+    await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'model:team-model')
+    expect(useStore.getState().uiDefaults.llm_model).toBe('team-model')
+    await user.selectOptions(screen.getByLabelText('Default LLM Provider'), 'openai')
+    expect(useStore.getState().uiDefaults).toMatchObject({ llm_provider: 'openai', llm_profile: '', llm_model: 'team-model' })
+    expect(screen.getByLabelText('Custom model')).toHaveValue('team-model')
+  })
+
+  it('loads provider-dependent discovery without changing saved defaults', async () => {
+    const user = userEvent.setup()
+    let resolve!: (response: Response) => void
+    const originalFetch = fetch
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).includes('/chat-models')
+      ? new Promise<Response>((done) => { resolve = done }) : originalFetch(input, init)))
+    const saved = useStore.getState().uiDefaults
+    render(<SettingsPanel />)
+    expect(screen.getByRole('status')).toHaveTextContent('Loading models')
+    await act(async () => resolve(Response.json({ models: [
+      { provider: 'openai', id: 'discovered-openai', display: 'OpenAI' },
+      { provider: 'anthropic', id: 'discovered-anthropic', display: 'Anthropic' },
+    ], providers: { codex: { status: 'available', error: null } } })))
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(useStore.getState().uiDefaults).toEqual(saved)
+    expect(screen.getByRole('option', { name: 'discovered-openai' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: 'discovered-anthropic' })).toBeNull()
+    await user.selectOptions(screen.getByLabelText('Default LLM Provider'), 'anthropic')
+    expect(screen.queryByRole('option', { name: 'discovered-openai' })).toBeNull()
+    await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'model:discovered-anthropic')
+    expect(JSON.parse(localStorage.getItem('spark.ui_defaults')!).llm_model).toBe('discovered-anthropic')
+  })
+
+  it.each(['rejected', 'unavailable'] as const)('shows %s discovery feedback without overwriting defaults', async (failure) => {
+    const originalFetch = fetch
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input).includes('/chat-models')) return originalFetch(input, init)
+      return failure === 'rejected' ? Promise.reject(new Error('offline')) : Promise.resolve(Response.json({
+        models: [], providers: { codex: { status: 'unavailable', error: 'CLI unavailable' } },
+      }))
+    }))
+    if (failure === 'unavailable') useStore.setState({ uiDefaults: { ...useStore.getState().uiDefaults, llm_provider: 'codex' } })
+    const saved = useStore.getState().uiDefaults
+    render(<SettingsPanel />)
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Model discovery unavailable. Using suggestions.'))
+    expect(useStore.getState().uiDefaults).toEqual(saved)
+    expect(screen.getByLabelText('Custom model')).toHaveValue(saved.llm_model)
+    if (failure === 'rejected') expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
+  })
+
+  it.each([false, true])('ignores stale discovery responses (rejected: %s)', async (rejectOld) => {
+    const requests: { resolve: (response: Response) => void; reject: (error: Error) => void }[] = []
+    const originalFetch = fetch
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).includes('/chat-models')
+      ? new Promise<Response>((resolve, reject) => { requests.push({ resolve, reject }) }) : originalFetch(input, init)))
+    render(<SettingsPanel />)
+    act(() => useStore.setState({ activeProjectPath: '/tmp/next-project' }))
+    expect(requests).toHaveLength(2)
+    const payload = (id: string) => Response.json({ models: [{ provider: 'openai', id, display: id }], providers: { codex: { status: 'available', error: null } } })
+    await act(async () => requests[1].resolve(payload('current-model')))
+    await act(async () => {
+      if (rejectOld) requests[0].reject(new Error('old failure'))
+      else requests[0].resolve(payload('stale-model'))
+    })
+    expect(screen.getByRole('option', { name: 'current-model' })).toBeVisible()
+    expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
+    act(() => useStore.setState({ activeProjectPath: null }))
+    expect(screen.queryByRole('option', { name: 'current-model' })).toBeNull()
+    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
+    expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
   })
 
   it('highlights stylesheet tokens and emits changes through textarea editing', async () => {
