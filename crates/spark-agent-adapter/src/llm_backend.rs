@@ -40,6 +40,7 @@ const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
 #[derive(Clone)]
 pub struct RustLlmCodergenBackend {
     client: Client,
+    clarification_handler: Option<crate::codergen::ClarificationHandler>,
     intervention_broker: Option<CodergenSessionInterventionBroker>,
 }
 
@@ -47,6 +48,7 @@ impl RustLlmCodergenBackend {
     pub fn new(client: Client) -> Self {
         Self {
             client,
+            clarification_handler: None,
             intervention_broker: None,
         }
     }
@@ -57,12 +59,17 @@ impl RustLlmCodergenBackend {
     ) -> Self {
         Self {
             client,
+            clarification_handler: None,
             intervention_broker: Some(intervention_broker),
         }
     }
 }
 
 impl CodergenBackend for RustLlmCodergenBackend {
+    fn set_clarification_handler(&mut self, handler: crate::codergen::ClarificationHandler) {
+        self.clarification_handler = Some(handler);
+    }
+
     fn run(
         &mut self,
         request: CodergenBackendRequest,
@@ -95,7 +102,10 @@ impl RustLlmCodergenBackend {
         request: CodergenBackendRequest,
         event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
-        let agent_request = codergen_agent_turn_request(&request);
+        let mut agent_request = codergen_agent_turn_request(&request);
+        if self.clarification_handler.is_some() {
+            agent_request.prompt.push_str("\n\nInspect available evidence before asking for clarification. Use request_user_input for unresolved questions about the user’s intent that affect the outcome, then continue the same task after the answer.");
+        }
         // Live prefix contract: the stream sink receives exactly the events
         // the output batch starts with (same mapping, same order). The same
         // mapped event also feeds the thread-local transcript sink.
@@ -152,6 +162,7 @@ impl RustLlmCodergenBackend {
                 Some(steering),
                 turn_event_sink,
                 capture_sink,
+                self.clarification_handler.clone(),
             )
             .map_err(|error| {
                 if error.artifact {

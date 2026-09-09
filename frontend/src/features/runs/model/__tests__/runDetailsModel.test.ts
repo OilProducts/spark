@@ -88,3 +88,14 @@ describe('runDetailsModel', () => {
     })
   })
 })
+
+it('restores clarification routing and suggested choices alongside custom answers', () => {
+  expect(asPendingQuestionSnapshot({
+    question_id: 'clarification-1', run_id: 'child', origin: 'agent_clarification',
+    node_id: 'work', prompt: 'Which audience?', question_type: 'FREEFORM',
+    options: [{ label: 'Developers', value: 'Developers', description: 'Technical readers' }],
+  })).toMatchObject({
+    questionId: 'clarification-1', runId: 'child', origin: 'agent_clarification',
+    questionType: 'FREEFORM', options: [{ label: 'Developers', value: 'Developers', description: 'Technical readers' }],
+  })
+})

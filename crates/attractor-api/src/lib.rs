@@ -2459,11 +2459,33 @@ impl AttractorApiService {
     }
 
     pub fn list_pipeline_questions(&self, pipeline_id: &str) -> RuntimeRouteResponse {
-        match RunStore::for_settings(&self.settings).read_run_bundle(pipeline_id) {
-            Ok(Some(bundle)) => RuntimeRouteResponse::json(
-                200,
-                json!({"questions": pending_pipeline_questions(&bundle)}),
-            ),
+        let store = RunStore::for_settings(&self.settings);
+        match store.read_run_bundle(pipeline_id) {
+            Ok(Some(bundle)) => {
+                let mut questions = pending_pipeline_questions(&bundle);
+                let mut parents = vec![pipeline_id.to_string()];
+                let mut visited = std::collections::BTreeSet::new();
+                while let Some(parent) = parents.pop() {
+                    if !visited.insert(parent.clone()) {
+                        continue;
+                    }
+                    match store.list_child_run_bundles(&parent) {
+                        Ok(children) => {
+                            for child in children {
+                                questions.extend(pending_pipeline_questions(&child));
+                                parents.push(child.paths.run_id.clone());
+                            }
+                        }
+                        Err(error) => {
+                            return RuntimeRouteResponse::json(
+                                500,
+                                json!({"detail": error.to_string()}),
+                            )
+                        }
+                    }
+                }
+                RuntimeRouteResponse::json(200, json!({"questions": questions}))
+            }
             Ok(None) => RuntimeRouteResponse::json(404, json!({"detail": "Unknown pipeline"})),
             Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
         }
@@ -2503,7 +2525,7 @@ impl AttractorApiService {
             return validation_error_response("selected_value is required.");
         }
         let note = Some(request.note.trim().to_string()).filter(|note| !note.is_empty());
-        let event = attractor_runtime::human_gate_answered_event(
+        let mut event = attractor_runtime::human_gate_answered_event(
             pipeline_id,
             question_id,
             question
@@ -2521,8 +2543,32 @@ impl AttractorApiService {
             answer.to_string(),
             note,
         );
-        if let Err(error) = store.append_event(&bundle.paths, event) {
-            return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+        if question.get("origin").and_then(Value::as_str) == Some("agent_clarification") {
+            for key in [
+                "origin",
+                "clarification_id",
+                "agent_request_id",
+                "agent_question_id",
+                "stage_index",
+                "attempt",
+            ] {
+                if let Some(value) = question.get(key) {
+                    event.payload.insert(key.to_string(), value.clone());
+                }
+            }
+        }
+        let result = if question.get("origin").and_then(Value::as_str)
+            == Some("agent_clarification")
+        {
+            attractor_runtime::clarification::accept_answer(&store, &bundle.paths, &question, event)
+        } else {
+            store
+                .append_event(&bundle.paths, event)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        if let Err(error) = result {
+            return RuntimeRouteResponse::json(409, json!({"detail": error}));
         }
         RuntimeRouteResponse::json(
             200,
@@ -3468,6 +3514,14 @@ fn pending_pipeline_questions(bundle: &RunBundle) -> Vec<Value> {
         .filter(|event| matches!(event.payload.get("answer"), None | Some(Value::Null)))
         .filter_map(|event| pending_question_payload(event, &bundle.paths.run_id))
         .filter(|question| {
+            question.get("origin").and_then(Value::as_str) != Some("agent_clarification")
+                || (bundle
+                    .record
+                    .as_ref()
+                    .is_some_and(|r| matches!(r.status.as_str(), "waiting" | "running"))
+                    && attractor_runtime::clarification::is_active(&bundle.paths, question))
+        })
+        .filter(|question| {
             question
                 .get("question_id")
                 .and_then(Value::as_str)
@@ -3512,14 +3566,28 @@ fn pending_question_payload(event: &RawRuntimeEvent, pipeline_id: &str) -> Optio
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    Some(json!({
+    let mut payload = json!({
         "question_id": question_id,
         "run_id": run_id,
         "node_id": node_id,
         "flow_name": flow_name,
         "prompt": prompt,
         "options": options,
-    }))
+    });
+    for key in [
+        "origin",
+        "clarification_id",
+        "question_type",
+        "agent_request_id",
+        "agent_question_id",
+        "stage_index",
+        "attempt",
+    ] {
+        if let Some(value) = event.payload.get(key) {
+            payload[key] = value.clone();
+        }
+    }
+    Some(payload)
 }
 
 fn event_payload_string(event: &RawRuntimeEvent, key: &str) -> Option<String> {

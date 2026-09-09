@@ -53,7 +53,7 @@ const NAV_MODE_ITEMS: Array<{
 const ATTENTION_POLL_MS = 30_000
 
 const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
-    run_gate: 'Run waiting at gate',
+    run_gate: 'Run waiting for input',
     flow_run_request: 'Flow run request',
     proposed_plan: 'Plan pending review',
 }

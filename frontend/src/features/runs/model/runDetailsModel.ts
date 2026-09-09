@@ -127,6 +127,8 @@ const asPendingQuestionSnapshot = (value: unknown): PendingQuestionSnapshot | nu
         : pendingGateSemanticFallbackOptions(questionType)
     return {
         questionId,
+        runId: typeof payload.run_id === 'string' ? payload.run_id : undefined,
+        origin: typeof payload.origin === 'string' ? payload.origin : undefined,
         nodeId,
         prompt,
         questionType,

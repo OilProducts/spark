@@ -940,11 +940,35 @@ impl RuntimeHandlerRunner {
             .filter(|value| !value.is_empty())
             .unwrap_or(runtime.run_id.as_str())
             .to_string();
+        let clarification_interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut codergen = if let Some(factory) = self.codergen_backend_factory.as_ref() {
             RuntimeCodergen::with_boxed_backend(
                 runtime.handler_graph.clone(),
                 runtime.logs_root.clone(),
-                factory(),
+                {
+                    let mut backend = factory();
+                    let text_only = runtime
+                        .node
+                        .contracts
+                        .as_ref()
+                        .and_then(|contracts| contracts.runtime_mode.as_deref())
+                        .is_some_and(|mode| {
+                            mode.trim().to_ascii_lowercase().replace('-', "_") == "text_only"
+                        });
+                    if runtime.run_paths.is_some() && !text_only {
+                        let runner = self.clone();
+                        let question_runtime = runtime.clone();
+                        let interrupted = clarification_interrupted.clone();
+                        backend.set_clarification_handler(Arc::new(move |params| {
+                            runner.start_agent_clarification(
+                                &question_runtime,
+                                params,
+                                interrupted.clone(),
+                            )
+                        }));
+                    }
+                    backend
+                },
             )
         } else {
             RuntimeCodergen::simulation(runtime.handler_graph.clone(), runtime.logs_root.clone())
@@ -1054,7 +1078,13 @@ impl RuntimeHandlerRunner {
         });
         let execution = codergen
             .execute_with_event_sink(&runtime.node_id, runtime.context.clone(), live_sink)
-            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
+            .map_err(|error| {
+                if clarification_interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+                    RuntimeNodeError::terminal(error.to_string())
+                } else {
+                    RuntimeNodeError::runtime(error.to_string())
+                }
+            })?;
         if let Some(error) = live_sink_error
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -1239,6 +1269,114 @@ impl RuntimeHandlerRunner {
 
         let _ = hook_metadata;
         Ok(outcome)
+    }
+
+    fn start_agent_clarification(
+        &self,
+        runtime: &HandlerRuntime,
+        params: Value,
+        interrupted: Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::result::Result<spark_agent_adapter::codergen::ClarificationPoll, String> {
+        let paths = runtime
+            .run_paths
+            .clone()
+            .ok_or("Clarification requires run storage")?;
+        let questions = params
+            .get("questions")
+            .and_then(Value::as_array)
+            .filter(|questions| !questions.is_empty())
+            .ok_or("Clarification requires questions")?;
+        let mut ids = std::collections::BTreeSet::new();
+        for question in questions {
+            let id = question
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .ok_or("Question requires an ID")?;
+            if !ids.insert(id) {
+                return Err("Duplicate question ID".into());
+            }
+            if question
+                .get("question")
+                .and_then(Value::as_str)
+                .is_none_or(|s| s.trim().is_empty())
+            {
+                return Err("Question requires a prompt".into());
+            }
+        }
+        let active = crate::clarification::ActiveClarification::new(&paths)?;
+        let mut question_ids = Vec::new();
+        self.write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Waiting)
+            .map_err(|e| e.message)?;
+        for (index, question) in questions.iter().enumerate() {
+            let original_id = question["id"].as_str().unwrap().to_string();
+            let question_id = format!("clarification-{}-{index}", active.id);
+            let options = question.get("options").and_then(Value::as_array).into_iter().flatten()
+                .map(|option| json!({"label": option["label"], "value": option["label"], "description": option["description"]})).collect();
+            let mut event = crate::events::human_gate_pending_event(
+                &runtime.run_id,
+                &question_id,
+                &runtime.node_id,
+                "",
+                question["question"].as_str().unwrap(),
+                None,
+                options,
+            );
+            event.payload.extend(BTreeMap::from([
+                ("origin".into(), json!("agent_clarification")),
+                ("clarification_id".into(), json!(active.id)),
+                (
+                    "agent_request_id".into(),
+                    params["agent_request_id"].clone(),
+                ),
+                ("agent_question_id".into(), json!(original_id)),
+                ("stage_index".into(), json!(runtime.stage_index)),
+                ("attempt".into(), json!(runtime.attempt)),
+                ("question_type".into(), json!("FREEFORM")),
+            ]));
+            self.emit(runtime, event).map_err(|e| e.to_string())?;
+            question_ids.push((question_id, original_id));
+        }
+        let runner = self.clone();
+        let runtime = runtime.clone();
+        Ok(Box::new(move || {
+            let _keep_alive = &active;
+            let status = crate::records::read_run_record(&paths)
+                .map_err(|e| e.to_string())?
+                .map(|r| crate::records::normalize_run_status(&r.status))
+                .unwrap_or_default();
+            if !matches!(status.as_str(), "waiting" | "running") {
+                interrupted.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Err(format!("Run {status} while waiting for clarification"));
+            }
+            let events = crate::events::read_raw_events(&paths).map_err(|e| e.to_string())?;
+            let answers: BTreeMap<String, String> = question_ids
+                .iter()
+                .filter_map(|(id, original)| {
+                    gate_answer_in(events.iter(), id).map(|(answer, _)| (original.clone(), answer))
+                })
+                .collect();
+            if answers.len() != question_ids.len() {
+                return Ok(None);
+            }
+            let still_waiting = events.iter().any(|event| {
+                event.event_type == "human_gate"
+                    && event.payload.get("origin").and_then(Value::as_str)
+                        == Some("agent_clarification")
+                    && event
+                        .payload
+                        .get("question_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| gate_answer_in(events.iter(), id).is_none())
+                    && crate::clarification::is_active(&paths, &json!(event.payload))
+            });
+            if !still_waiting {
+                runner
+                    .write_gate_run_status(&paths, &runtime.run_id, GateRunStatus::Running)
+                    .map_err(|e| e.message)?;
+            }
+            Ok(Some(answers))
+        }))
     }
 
     fn execute_human(

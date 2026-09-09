@@ -195,7 +195,7 @@ impl CodexAppServerBackend {
         steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        self.run_agent_turn_with_capture_observer(request, steering, event_sink, None)
+        self.run_agent_turn_with_capture_observer(request, steering, event_sink, None, None)
     }
 
     pub(crate) fn run_agent_turn_with_capture_observer(
@@ -204,6 +204,7 @@ impl CodexAppServerBackend {
         steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
         capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
+        clarification_handler: Option<crate::codergen::ClarificationHandler>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
         let trace_path = codex_jsonrpc_trace_enabled()
             .then(|| {
@@ -215,6 +216,7 @@ impl CodexAppServerBackend {
             PathBuf::from(&request.project_path),
             trace_path,
         )?;
+        client.clarification_handler = clarification_handler;
         let model = request
             .model
             .as_deref()
@@ -376,6 +378,8 @@ pub struct CodexAppServerClient {
     next_request_id: u64,
     pending_messages: VecDeque<Value>,
     pending_responses: BTreeMap<String, VecDeque<Value>>,
+    clarification_handler: Option<crate::codergen::ClarificationHandler>,
+    workflow_questions: Vec<(Value, crate::codergen::ClarificationPoll)>,
     pending_request_user_input: Option<PendingRequestUserInputResponse>,
     trace_sink: Option<CodexJsonrpcTraceSink>,
     executable: PathBuf,
@@ -458,6 +462,8 @@ impl CodexAppServerClient {
             next_request_id: 0,
             pending_messages: VecDeque::new(),
             pending_responses: BTreeMap::new(),
+            clarification_handler: None,
+            workflow_questions: Vec::new(),
             pending_request_user_input: None,
             trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
             executable,
@@ -497,6 +503,9 @@ impl CodexAppServerClient {
         });
         if let Some(model) = model.and_then(non_empty) {
             params["model"] = json!(model);
+        }
+        if self.clarification_handler.is_some() {
+            params["config"] = json!({"features.default_mode_request_user_input": true});
         }
         let response = self.send_request("thread/start", Some(params))?;
         if response.get("error").is_some() {
@@ -744,6 +753,20 @@ impl CodexAppServerClient {
             if let Some(handle) = steering.as_ref() {
                 self.drain_steering(handle, thread_id, expected_turn_id, &mut events)?;
             }
+            if !self.workflow_questions.is_empty() {
+                last_activity = Instant::now();
+                let mut index = 0;
+                while index < self.workflow_questions.len() {
+                    let answers = (self.workflow_questions[index].1)()
+                        .map_err(CodexAppServerError::runtime)?;
+                    if let Some(answers) = answers {
+                        let (id, _poll) = self.workflow_questions.remove(index);
+                        self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
+                    } else {
+                        index += 1;
+                    }
+                }
+            }
             if last_activity.elapsed() >= TURN_IDLE_TIMEOUT {
                 return Err(CodexAppServerError::runtime(
                     "codex app-server turn timed out waiting for activity",
@@ -921,7 +944,15 @@ impl CodexAppServerClient {
         ) {
             json!({"decision": "acceptForSession"})
         } else if method == "item/tool/requestUserInput" {
-            self.pending_request_user_input = Some(register_request_user_input_response(&message));
+            if let Some(handler) = self.clarification_handler.as_ref() {
+                let mut params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+                params["agent_request_id"] = request_id.clone();
+                let poll = handler(params).map_err(CodexAppServerError::runtime)?;
+                self.workflow_questions.push((request_id.clone(), poll));
+            } else {
+                self.pending_request_user_input =
+                    Some(register_request_user_input_response(&message));
+            }
             Value::Null
         } else {
             Value::Null
@@ -1398,6 +1429,7 @@ struct CodexJsonrpcTraceLine<'a> {
 
 impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
+        self.workflow_questions.clear();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

@@ -372,6 +372,9 @@ const toTimelineEvent = (value: unknown): TimelineEventEntry | null => {
 }
 
 const timelineEntityKey = (event: TimelineEventEntry): string | null => {
+    if (event.payload.origin === 'agent_clarification' && event.questionId) {
+        return `clarification:${event.questionId}`
+    }
     if (!event.nodeId && event.stageIndex === null) {
         return null
     }
@@ -635,6 +638,8 @@ const toPendingInterviewGateFromEvent = (event: TimelineEventEntry): PendingInte
 
     return {
         eventId: event.id,
+        runId: typeof event.payload.run_id === 'string' ? event.payload.run_id : undefined,
+        origin: typeof event.payload.origin === 'string' ? event.payload.origin : undefined,
         sequence: event.sequence,
         receivedAt: event.receivedAt,
         nodeId: event.nodeId,
@@ -681,7 +686,7 @@ const buildJournalPendingInterviewGates = (
             gate.nodeId,
             gate.prompt,
         )
-        if (pendingGateKeys.has(dedupeKey)) {
+        if (gate.origin !== 'agent_clarification' && pendingGateKeys.has(dedupeKey)) {
             continue
         }
         pendingGateKeys.add(dedupeKey)
@@ -699,7 +704,8 @@ const mergePendingInterviewGatesWithSnapshots = (
     journalPendingGates: PendingInterviewGate[],
     pendingQuestionSnapshots: PendingQuestionSnapshot[],
 ) => {
-    const pendingGates = [...journalPendingGates]
+    const pendingGates = journalPendingGates.map((gate) => ({ ...gate })).filter((gate) => gate.origin !== 'agent_clarification'
+        || pendingQuestionSnapshots.some((question) => question.questionId === gate.questionId))
     const pendingGateKeys = new Set(
         journalPendingGates.map((gate) => pendingInterviewGateDedupeKey(
             gate.sourceScope,
@@ -712,17 +718,20 @@ const mergePendingInterviewGatesWithSnapshots = (
 
     let nextSequence = pendingGates.reduce((maxSequence, gate) => Math.max(maxSequence, gate.sequence), 0) + 1
     for (const question of pendingQuestionSnapshots) {
-        const questionIdMatch = pendingGates.some((gate) => gate.questionId === question.questionId)
+        const questionIdMatch = pendingGates.find((gate) => gate.questionId === question.questionId)
         if (questionIdMatch) {
+            questionIdMatch.runId = question.runId
             continue
         }
         const dedupeKey = pendingInterviewGateDedupeKey('root', null, null, question.nodeId, question.prompt)
-        if (pendingGateKeys.has(dedupeKey)) {
+        if (question.origin !== 'agent_clarification' && pendingGateKeys.has(dedupeKey)) {
             continue
         }
         pendingGateKeys.add(dedupeKey)
         pendingGates.push({
             eventId: `question:${question.questionId}`,
+            runId: question.runId,
+            origin: question.origin,
             sequence: nextSequence,
             receivedAt: PENDING_GATE_FALLBACK_RECEIVED_AT,
             nodeId: question.nodeId,
@@ -761,6 +770,7 @@ const buildGroupedPendingInterviewGates = (
     const grouped = new Map<string, PendingInterviewGateGroup>()
     for (const gate of visiblePendingInterviewGates) {
         const key = [
+            ...(gate.origin === 'agent_clarification' ? [gate.runId] : []),
             gate.sourceScope,
             gate.sourceParentNodeId ?? 'root',
             gate.sourceFlowName ?? '',
@@ -770,7 +780,9 @@ const buildGroupedPendingInterviewGates = (
         if (!grouped.has(key)) {
             const headingNode = gate.nodeId ?? 'human gate'
             const headingStage = gate.stageIndex !== null ? ` (index ${gate.stageIndex})` : ''
-            const sourceLabel = timelineSourceLabel(gate.sourceScope, gate.sourceParentNodeId, gate.sourceFlowName)
+            const sourceLabel = gate.origin === 'agent_clarification' && gate.runId
+                ? `Run ${gate.runId}`
+                : timelineSourceLabel(gate.sourceScope, gate.sourceParentNodeId, gate.sourceFlowName)
             grouped.set(key, {
                 key,
                 heading: sourceLabel

@@ -303,7 +303,7 @@ export function useRunTimeline({
             },
         })
         try {
-            await fetchPipelineAnswerValidated(selectedRunTimelineId, gate.questionId, selectedValue, note)
+            await fetchPipelineAnswerValidated(gate.runId ?? selectedRunTimelineId, gate.questionId, selectedValue, note)
             if (!isCurrent()) return
             const current = useStore.getState().runDetailSessionsByRunId[selectedRunTimelineId]
             const nextFreeformAnswers = { ...current.freeformAnswersByGateId }

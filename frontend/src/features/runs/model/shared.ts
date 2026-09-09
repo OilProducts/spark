@@ -177,6 +177,9 @@ export interface PendingQuestionOption {
 }
 
 export interface PendingInterviewGate {
+    runId?: string
+    origin?: string
+
     eventId: string
     sequence: number
     receivedAt: string
@@ -193,6 +196,9 @@ export interface PendingInterviewGate {
 }
 
 export interface PendingQuestionSnapshot {
+    runId?: string
+    origin?: string
+
     questionId: string
     nodeId: string | null
     prompt: string

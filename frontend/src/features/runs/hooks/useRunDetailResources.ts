@@ -12,6 +12,8 @@ import {
 } from '@/lib/attractorClient'
 import { useStore } from '@/store'
 
+import { useRunsTransportReconnectSignal } from '../services/runsTransportReconnect'
+
 import type {
     ArtifactErrorState,
     ArtifactListResponse,
@@ -76,6 +78,7 @@ export function useRunDetailResources({
 }: UseRunDetailResourcesArgs) {
     const session = useStore((state) => selectedRunId ? state.runDetailSessionsByRunId[selectedRunId] ?? DEFAULT_RUN_DETAIL_SESSION : DEFAULT_RUN_DETAIL_SESSION)
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const reconnectSignal = useRunsTransportReconnectSignal(manageSync)
 
     const fetchCheckpoint = useCallback(async () => {
         if (!selectedRunId) {
@@ -245,15 +248,34 @@ export function useRunDetailResources({
         void fetchContext()
         void fetchResult()
         void fetchArtifacts()
+    }, [fetchArtifacts, fetchCheckpoint, fetchContext, fetchResult, manageSync, selectedRunId])
+
+    useEffect(() => {
+        if (!manageSync || !selectedRunId) return
         void fetchPendingQuestions()
         const refreshQuestions = (event: Event) => {
             const detail = event instanceof CustomEvent ? event.detail : null
             const type = detail?.entry?.raw_type ?? detail?.entry?.type
-            if (detail?.runId === selectedRunId && (type === 'human_gate' || type === 'InterviewStarted')) void fetchPendingQuestions()
+            // The endpoint includes descendants, whose journal events carry their own run ID.
+            if (type === 'runtime' || type === 'human_gate' || type === 'InterviewStarted' || type === 'InterviewCompleted' || type === 'PipelineFailed' || type === 'PipelinePaused' || type === 'PipelineCompleted') void fetchPendingQuestions()
         }
+        const reconcileQuestions = () => { void fetchPendingQuestions() }
+        const reconcileTerminalQuestions = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            if (['completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(detail?.run?.status)) {
+                void fetchPendingQuestions()
+            }
+        }
+        // Resync and terminal signals may belong to descendants included in this snapshot.
+        window.addEventListener('spark:run-resync-required', reconcileQuestions)
+        window.addEventListener('spark:run-upsert', reconcileTerminalQuestions)
         window.addEventListener('spark:run-journal-entry', refreshQuestions)
-        return () => window.removeEventListener('spark:run-journal-entry', refreshQuestions)
-    }, [fetchArtifacts, fetchCheckpoint, fetchContext, fetchPendingQuestions, fetchResult, manageSync, selectedRunId])
+        return () => {
+            window.removeEventListener('spark:run-resync-required', reconcileQuestions)
+            window.removeEventListener('spark:run-upsert', reconcileTerminalQuestions)
+            window.removeEventListener('spark:run-journal-entry', refreshQuestions)
+        }
+    }, [fetchPendingQuestions, manageSync, reconnectSignal, selectedRunId])
 
     const viewArtifact = useCallback(async (entry: { path: string; viewable: boolean }) => {
         if (!selectedRunId) {

@@ -607,7 +607,14 @@ impl CodergenEvent {
 /// transcripts stream while a node is still executing.
 pub type CodergenEventSink = std::sync::Arc<dyn Fn(CodergenEvent) + Send + Sync>;
 
+pub type ClarificationPoll =
+    Box<dyn FnMut() -> Result<Option<BTreeMap<String, String>>, String> + Send>;
+pub type ClarificationHandler =
+    std::sync::Arc<dyn Fn(Value) -> Result<ClarificationPoll, String> + Send + Sync>;
+
 pub trait CodergenBackend {
+    fn set_clarification_handler(&mut self, _handler: ClarificationHandler) {}
+
     fn run(
         &mut self,
         request: CodergenBackendRequest,

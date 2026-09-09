@@ -335,3 +335,24 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
         }
     },
 )
+
+it('broadcasts detected journal gaps so question snapshots also reconcile', async () => {
+    select('a')
+    render(<RunStream />)
+    await act(async () => pending[0].resolve(snapshot('a')))
+    const resync = vi.fn()
+    window.addEventListener('spark:run-resync-required', resync)
+    try {
+        for (const sequence of [1, 3]) {
+            dispatch('spark:run-journal-entry', {
+                runId: 'a', entry: { type: 'StageStarted', node_id: 'work', sequence, emitted_at: '2026-09-08T00:00:00Z' },
+            })
+        }
+        expect(resync).toHaveBeenCalledTimes(1)
+        expect(resync.mock.calls[0][0].detail).toEqual({ runId: 'a', reason: 'gap' })
+        expect(pending).toHaveLength(2)
+        await act(async () => pending[1].resolve(snapshot('a')))
+    } finally {
+        window.removeEventListener('spark:run-resync-required', resync)
+    }
+})

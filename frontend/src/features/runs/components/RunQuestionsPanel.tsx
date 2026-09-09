@@ -99,6 +99,7 @@ export function RunQuestionsPanel({
                                                     value={freeformAnswer}
                                                     onChange={(event) => onFreeformAnswerChange(gate.questionId!, event.target.value)}
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
+                                                    aria-label="Answer"
                                                     placeholder="Type answer..."
                                                     className="h-7 min-w-[18rem] border-amber-500/40 bg-white px-2 text-[11px] text-amber-900 focus-visible:ring-amber-500/40"
                                                 />
@@ -117,9 +118,9 @@ export function RunQuestionsPanel({
                                                 </Button>
                                             </div>
                                         )}
-                                        {gate.questionId && gate.questionType !== 'FREEFORM' && gate.options.length > 0 && (
+                                        {gate.questionId && (gate.questionType !== 'FREEFORM' || gate.origin === 'agent_clarification') && gate.options.length > 0 && (
                                             <div className="mt-1">
-                                                <Input
+                                                {gate.origin !== 'agent_clarification' && <Input
                                                     type="text"
                                                     data-testid={`run-pending-human-gate-note-input-${gate.questionId}`}
                                                     value={gateNote}
@@ -127,7 +128,7 @@ export function RunQuestionsPanel({
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     placeholder="Optional note for the next step..."
                                                     className="h-7 w-full border-amber-500/40 bg-white px-2 text-[11px] text-amber-900 focus-visible:ring-amber-500/40"
-                                                />
+                                                />}
                                             <div className="mt-1 flex flex-wrap gap-1.5">
                                                 {gate.options.map((option) => (
                                                     <div key={option.value} className="space-y-1">
@@ -146,7 +147,7 @@ export function RunQuestionsPanel({
                                                         </Button>
                                                         {(() => {
                                                             const semanticHint = pendingGateSemanticHint(gate.questionType, option.value)
-                                                            const showMultipleChoiceMetadata = gate.questionType === 'MULTIPLE_CHOICE'
+                                                            const showMultipleChoiceMetadata = (gate.questionType === 'MULTIPLE_CHOICE' || gate.origin === 'agent_clarification')
                                                                 && (option.key || option.description)
                                                             if (!showMultipleChoiceMetadata && !semanticHint) {
                                                                 return null

@@ -5,6 +5,7 @@
 
 pub mod artifacts;
 pub mod checkpoints;
+pub mod clarification;
 pub mod codergen;
 pub mod context;
 pub mod controls;

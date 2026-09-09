@@ -195,3 +195,22 @@ describe('humanizeTimelineType', () => {
     expect(humanizeTimelineType('another_raw_kind')).toBe('Another raw kind')
   })
 })
+
+it('keeps clarification identities distinct, routes child answers, and hides orphaned prompts', () => {
+  const question = (id: string) => toTimelineEvent({
+    type: 'human_gate', sequence: 1, emitted_at: '2026-09-08T00:00:00Z', question_id: id, node_id: 'work',
+    run_id: 'child', origin: 'agent_clarification', prompt: 'Which audience?',
+    question_type: 'FREEFORM', options: [{ label: 'Developers', value: 'Developers' }],
+  })!
+  const snapshot = (id: string) => ({
+    questionId: id, runId: 'child', origin: 'agent_clarification', nodeId: 'work',
+    prompt: 'Which audience?', questionType: 'FREEFORM' as const,
+    options: [{ label: 'Developers', value: 'Developers', key: null, description: null }],
+  })
+  const events = [question('first'), question('second')]
+  const pending = buildPendingInterviewGates(events, [snapshot('first'), snapshot('second')])
+  expect(pending.map((q) => q.questionId)).toEqual(['first', 'second'])
+  expect(pending.every((q) => q.runId === 'child')).toBe(true)
+  expect(buildPendingInterviewGates(events, [snapshot('second')]).map((q) => q.questionId)).toEqual(['second'])
+  expect(buildPendingInterviewGates(events, [])).toEqual([])
+})

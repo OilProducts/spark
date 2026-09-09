@@ -338,7 +338,9 @@ export function RunStream() {
                 if (typeof liveSequence === 'number' && Number.isFinite(liveSequence)) {
                     const lastLiveSequence = lastLiveSequenceRef.current
                     if (lastLiveSequence !== null && liveSequence > lastLiveSequence + 1) {
-                        resyncFromDurableState()
+                        window.dispatchEvent(new CustomEvent('spark:run-resync-required', {
+                            detail: { runId: selectedRunId, reason: 'gap' },
+                        }))
                     }
                     if (lastLiveSequence === null || liveSequence > lastLiveSequence) {
                         lastLiveSequenceRef.current = liveSequence

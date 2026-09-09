@@ -366,11 +366,29 @@ impl WorkspaceConversationService {
         if let Some(runs) = runs_response.body.get("runs").and_then(Value::as_array) {
             for run in runs {
                 let status = run.get("status").and_then(Value::as_str).unwrap_or("");
-                let has_parent = run
-                    .get("parent_run_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|parent| !parent.trim().is_empty());
-                if status != "waiting" || has_parent {
+                if status != "waiting" {
+                    continue;
+                }
+                let run_id = run.get("run_id").and_then(Value::as_str).unwrap_or("");
+                let questions = self.runtime_api_service().list_pipeline_questions(run_id);
+                let clarifications: Vec<_> = questions
+                    .body
+                    .get("questions")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|question| {
+                        question["origin"] == "agent_clarification" && question["run_id"] == run_id
+                    })
+                    .collect();
+                if !clarifications.is_empty() {
+                    for question in clarifications {
+                        items.push(json!({
+                            "kind": "run_gate", "id": question["question_id"], "run_id": run_id,
+                            "title": question["prompt"], "project_path": run["project_path"],
+                            "updated_at": run["started_at"],
+                        }));
+                    }
                     continue;
                 }
                 items.push(json!({
