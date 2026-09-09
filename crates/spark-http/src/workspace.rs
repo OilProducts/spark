@@ -65,6 +65,8 @@ fn conversation_service(
 
 pub fn router() -> Router<HttpAppState> {
     Router::new()
+        .route("/tasks", get(list_tasks).post(create_task))
+        .route("/tasks/{task_id}", get(get_task).patch(update_task))
         .route("/projects", get(list_projects).delete(delete_project))
         .route("/projects/register", post(register_project))
         .route("/projects/state", patch(update_project_state))
@@ -1233,4 +1235,52 @@ fn raw_flow_response(
         .headers_mut()
         .insert(X_SPARK_FLOW_NAME.clone(), flow_name);
     Ok(response)
+}
+
+async fn list_tasks(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let query = query_payload(payload)?;
+    Ok(Json(
+        spark_workspace::tasks::WorkspaceTaskService::new((*settings).clone())
+            .board(&query.project_path)?,
+    ))
+}
+async fn get_task(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath(id): AxumPath<String>,
+    payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+) -> ApiResult<spark_workspace::tasks::TaskRecord> {
+    let query = query_payload(payload)?;
+    Ok(Json(
+        spark_workspace::tasks::WorkspaceTaskService::new((*settings).clone())
+            .get(&query.project_path, &id)?,
+    ))
+}
+async fn create_task(
+    State(settings): State<Arc<SparkSettings>>,
+    query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    payload: Result<Json<spark_workspace::tasks::TaskMutation>, JsonRejection>,
+) -> ApiResult<spark_workspace::tasks::TaskRecord> {
+    let query = query_payload(query)?;
+    Ok(Json(
+        spark_workspace::tasks::WorkspaceTaskService::new((*settings).clone())
+            .create(&query.project_path, json_payload(payload)?)?,
+    ))
+}
+async fn update_task(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath(id): AxumPath<String>,
+    query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    payload: Result<Json<spark_workspace::tasks::TaskMutation>, JsonRejection>,
+) -> ApiResult<spark_workspace::tasks::TaskRecord> {
+    let query = query_payload(query)?;
+    Ok(Json(
+        spark_workspace::tasks::WorkspaceTaskService::new((*settings).clone()).update(
+            &query.project_path,
+            &id,
+            json_payload(payload)?,
+        )?,
+    ))
 }

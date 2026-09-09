@@ -8,6 +8,8 @@ mod project_registry_contracts;
 mod review_artifact_contracts;
 #[path = "contracts/run_orchestration_contracts.rs"]
 mod run_orchestration_contracts;
+#[path = "contracts/task_contracts.rs"]
+mod task_contracts;
 #[path = "contracts/trigger_source_activation_contracts.rs"]
 mod trigger_source_activation_contracts;
 #[path = "contracts/workflow_log_contracts.rs"]

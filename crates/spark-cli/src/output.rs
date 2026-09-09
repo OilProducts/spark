@@ -55,7 +55,7 @@ pub(crate) fn usage_error(message: impl AsRef<str>) -> CommandOutput {
     CommandOutput::stderr(
         crate::EXIT_USAGE_ERROR,
         format!(
-            "usage: spark [-h] {{convo,run,flow,trigger}} ...\n\
+            "usage: spark [-h] {{convo,run,flow,trigger,task}} ...\n\
 spark: error: {}\n",
             message.as_ref()
         ),

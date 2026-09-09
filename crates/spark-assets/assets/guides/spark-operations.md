@@ -458,3 +458,32 @@ Operational rules:
 - The service loads provider secrets from `$SPARK_HOME/config/provider.env` when that file exists.
 - Source checkouts should use `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- init` and `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- serve --port 8010` instead of mutating a stable packaged runtime.
 - Packaged container workflows use `compose.package.yaml` and keep host-visible runtime state under the configured Spark home volume.
+
+## Project tasks
+
+Tasks track intended outcomes across conversations and runs. Inspect the project's queue before work and keep decisions, next actions, blockers, and completion evidence current. Do not infer or import tasks from change requests automatically.
+
+```sh
+spark task list --project /absolute/project
+spark task get --project /absolute/project --id task-ID
+spark task create --project /absolute/project --json task.json
+spark task update --project /absolute/project --id task-ID --json - < update.json
+```
+
+`--json` reads a file or `-` for stdin; output is JSON. Create payload example:
+
+```json
+{"fields":{"title":"Deliver search","description":"Outcome and decisions","acceptance_criteria":"Search returns matching documents","priority":2,"next_action":"Agree on scope"},"note":"Initial scope","actor":"assistant","conversation_id":"conversation-ID"}
+```
+
+Updates require the revision from get/list, with only changed fields:
+
+```json
+{"revision":1,"fields":{"stage":"planning","needs_input":"Which document types are in scope?"},"note":"Recorded the open scope question","actor":"assistant"}
+```
+
+Stages are `backlog`, `planning`, `ready`, `in_progress`, `review`, and `done`; moving to Done requires a nonempty `note` with completion evidence. Reopen by selecting an earlier stage. `priority` is 0 urgent, 1 high, 2 normal, 3 low. `blocked` and `needs_input` are independent explanatory strings; clear with an empty string. Archive with `fields.archived: true`. Add notes without changing fields. On a revision conflict, reread and reconcile; never blindly retry stale edits.
+
+`fields.conversations` contains conversation IDs, `fields.artifacts` contains existing relative project file paths, and `fields.runs` contains objects like `{"run_id":"run-ID","stage":"planning"}` (stage may be null). Arrays replace the current links, so preserve links you intend to retain. All links must belong to the project. Documents remain the source of truth; keep instructions in descriptions and linked documents, following existing project instructions.
+
+Associate approved work with `spark convo run-request ... --task-id task-ID --task-stage in_progress`. The task association survives approval, launch, and recovery. A task may have zero or many runs per stage, and conversations may support multiple tasks. Run outcomes never move tasks automatically. Ready means prepared for execution; changing stages neither launches work nor bypasses existing approvals. Answer run questions in Spark's existing run question UI.

@@ -7,7 +7,7 @@ import type {
 } from './viewSessionTypes'
 import type { WorkflowEventLogSlice } from './workflowEventLogSlice'
 
-export type ViewMode = 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs'
+export type ViewMode = 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs' | 'tasks'
 export type EditorMode = 'structured' | 'raw'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'

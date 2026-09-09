@@ -335,3 +335,107 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_str().unwrap();
+    let server = spawn_server(settings.clone()).await;
+    let payload_file = temp.path().join("task.json");
+    fs::write(
+        &payload_file,
+        json!({"fields":{"title":"Task from CLI","description":"First line\nSecond line"}})
+            .to_string(),
+    )
+    .unwrap();
+    let output = run_spark(
+        temp.path(),
+        [
+            "task",
+            "create",
+            "--project",
+            project,
+            "--json",
+            payload_file.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let id = created["id"].as_str().unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("{}/workspace/api/tasks/{id}", server.base_url);
+    let response = client.patch(&url).query(&[("project_path", project)]).json(&json!({"revision":created["revision"],"fields":{"stage":"done"},"note":"Verified in UI","actor":"human"})).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    let output = run_spark(
+        temp.path(),
+        [
+            "task",
+            "get",
+            "--project",
+            project,
+            "--id",
+            id,
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let task: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(task["fields"]["stage"], "done");
+    assert_eq!(task["activity"][0]["actor"], "assistant");
+    assert_eq!(task["activity"][1]["actor"], "human");
+    fs::write(
+        &payload_file,
+        json!({"revision":1,"fields":{"title":"Stale overwrite"}}).to_string(),
+    )
+    .unwrap();
+    let output = run_spark(
+        temp.path(),
+        [
+            "task",
+            "update",
+            "--project",
+            project,
+            "--id",
+            id,
+            "--json",
+            payload_file.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_ne!(output.status.code(), Some(0));
+    let output = run_spark(
+        temp.path(),
+        [
+            "task",
+            "list",
+            "--project",
+            project,
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    let listed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed["tasks"][0]["revision"], 2);
+    assert_eq!(listed["tasks"][0]["fields"]["title"], "Task from CLI");
+    let root = spark_storage::ProjectRegistry::new(settings.data_dir)
+        .ensure_project_paths(project)
+        .unwrap()
+        .root;
+    assert_eq!(
+        spark_storage::workspace_tasks::TaskRepository::new(&root)
+            .read(id)
+            .unwrap()
+            .unwrap()["activity"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

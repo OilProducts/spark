@@ -1,3 +1,6 @@
+use fs2::FileExt;
+use std::fs::{self, OpenOptions};
+
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -46,6 +49,23 @@ impl ConversationRepository {
         if mutations.is_empty() {
             return Err(commit_rejected(conversation_id, "No mutations to commit."));
         }
+        let root = self
+            .project_paths(project_path)?
+            .conversations_dir
+            .join(conversation_id);
+        fs::create_dir_all(&root).map_err(|e| StorageError::io("create conversation", &root, e))?;
+        let lock_path = root.join(".commit.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| StorageError::io("open conversation lock", &lock_path, e))?;
+        // Readers can replay provider events while a live writer commits. Hold
+        // the lock through revision allocation and publication, across instances/processes.
+        lock.lock_exclusive()
+            .map_err(|e| StorageError::io("lock conversation", &lock_path, e))?;
         let latest_snapshot =
             self.read_snapshot_without_recovery(conversation_id, Some(project_path))?;
         if latest_snapshot.is_none() && base_revision != 0 {

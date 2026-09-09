@@ -1286,12 +1286,17 @@ describe('Frontend contract behavior', () => {
     render(<Navbar />)
 
     const projectsTab = screen.getByTestId('nav-mode-projects')
+    const tasksTab = screen.getByTestId('nav-mode-tasks')
     const editorTab = screen.getByTestId('nav-mode-editor')
     const triggersTab = screen.getByTestId('nav-mode-triggers')
 
     projectsTab.focus()
     expect(projectsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
+
+    await user.keyboard('{ArrowRight}')
+    expect(tasksTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('tasks')
 
     await user.keyboard('{ArrowRight}')
     expect(editorTab).toHaveFocus()

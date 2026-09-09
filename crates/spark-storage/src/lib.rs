@@ -86,3 +86,4 @@ pub use workspace_triggers::{
     TriggerDefinitionRepository, TriggerRepositories, TriggerRuntimeStateRepository, TriggerState,
     TriggerStateHistoryEntry,
 };
+pub mod workspace_tasks;

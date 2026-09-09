@@ -15,16 +15,17 @@ use spark_cli::{
 };
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,task} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger}\n",
+    "  {convo,run,flow,trigger,task}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
+    "    task                Project task management\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -74,7 +75,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
 spark: error: unrecognized arguments: --image direct-selection\n"
     );
 }
@@ -893,7 +894,7 @@ fn flow_format_file_rejects_missing_value_before_option() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
 spark: error: argument --file: expected one argument\n"
     );
 }
@@ -1048,7 +1049,7 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
 spark: error: argument --file: not allowed with argument --flow\n"
     );
 }
@@ -1395,7 +1396,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
 spark: error: argument --goal-file: not allowed with argument --goal\n"
     );
 }
@@ -1560,4 +1561,55 @@ fn valid_flow_source() -> &'static str {
 
 fn validation_error_flow_source() -> &'static str {
     "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: No start or done\nedges: []\n"
+}
+
+#[test]
+fn task_stdin_and_run_request_association_use_structured_json() {
+    let env = BTreeMap::new();
+    let plan = request_plan_with_args_env_and_stdin(
+        [
+            "spark",
+            "task",
+            "update",
+            "--project",
+            "/project",
+            "--id",
+            "task-123",
+            "--json",
+            "-",
+            "--base-url",
+            "http://localhost:8000",
+        ],
+        &env,
+        r#"{"revision":4,"fields":{"description":"One\nTwo"},"note":"Evidence"}"#,
+    )
+    .unwrap();
+    assert_eq!(plan.method, HttpMethod::Patch);
+    assert_eq!(plan.body.unwrap()["fields"]["description"], "One\nTwo");
+    let plan = request_plan_with_args_env_and_stdin(
+        [
+            "spark",
+            "convo",
+            "run-request",
+            "--conversation",
+            "amber-anchor",
+            "--flow",
+            "ops/test.yaml",
+            "--summary",
+            "Work",
+            "--task-id",
+            "task-123",
+            "--task-stage",
+            "planning",
+            "--base-url",
+            "http://localhost:8000",
+        ],
+        &env,
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        plan.body.unwrap()["task"],
+        serde_json::json!({"task_id":"task-123","stage":"planning"})
+    );
 }

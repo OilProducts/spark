@@ -13,7 +13,7 @@ import { ProjectSettingsDialog } from './ProjectSettingsDialog'
 import { useProjectSwitcherControls } from './useProjectSwitcherControls'
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
 
-const NAV_MODE_ORDER: ViewMode[] = ['home', 'editor', 'triggers', 'settings', 'runs']
+const NAV_MODE_ORDER: ViewMode[] = ['home', 'tasks', 'editor', 'triggers', 'settings', 'runs']
 const NAV_MODE_BUTTON_CLASS = 'flex-1 rounded-sm px-3 py-1.5 text-sm'
 
 const NAV_MODE_ITEMS: Array<{
@@ -28,6 +28,7 @@ const NAV_MODE_ITEMS: Array<{
         labelTestId: 'nav-mode-home',
         mode: 'home',
     },
+    { buttonTestId: 'nav-mode-tasks', label: 'Tasks', mode: 'tasks' },
     {
         buttonTestId: 'nav-mode-editor',
         label: 'Editor',

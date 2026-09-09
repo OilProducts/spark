@@ -630,3 +630,59 @@ fn transient_stream_events_are_never_appended_to_the_journal() {
     .expect("events");
     assert_eq!(events.len(), 1);
 }
+
+#[test]
+fn concurrent_repository_instances_serialize_revision_allocation_and_keep_all_turns() {
+    let (temp, repository) = setup("/projects/concurrent-commit");
+    repository
+        .commit_conversation(
+            "conversation-concurrent",
+            "/projects/concurrent-commit",
+            0,
+            vec![ConversationMutation::TurnUpserted {
+                turn: user_turn("initial", "Initial"),
+            }],
+        )
+        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let home = temp.path().join("spark-home");
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    ConversationRepository::new(home)
+                        .commit_conversation(
+                            "conversation-concurrent",
+                            "/projects/concurrent-commit",
+                            1,
+                            vec![ConversationMutation::TurnUpserted {
+                                turn: user_turn(&format!("turn-{i}"), "Concurrent turn"),
+                            }],
+                        )
+                        .unwrap()
+                })
+            })
+            .collect();
+        let revisions: std::collections::BTreeSet<_> = workers
+            .into_iter()
+            .map(|w| w.join().unwrap().revision)
+            .collect();
+        assert_eq!(revisions.len(), 8);
+    });
+    let snapshot = repository
+        .read_snapshot(
+            "conversation-concurrent",
+            Some("/projects/concurrent-commit"),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot["turns"].as_array().unwrap().len(), 9);
+    let activity = spark_storage::ActivityRepository::new(conversation_dir(
+        &temp,
+        "/projects/concurrent-commit",
+        "conversation-concurrent",
+    ));
+    assert_eq!(activity.read_transcript_records().unwrap().len(), 9);
+}

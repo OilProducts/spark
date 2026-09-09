@@ -32,6 +32,7 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
@@ -70,6 +71,7 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
@@ -105,6 +107,7 @@ fn by_handle_flow_run_request_attaches_to_in_flight_assistant_turn() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: None,
@@ -150,6 +153,7 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Reject me.".to_string(),
                 ..FlowRunRequestCreateByHandleRequest::default()
@@ -177,6 +181,7 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Launch me.".to_string(),
                 goal: Some("Run the tiny flow.".to_string()),
@@ -230,6 +235,7 @@ fn launch_failure_is_persisted_on_approved_flow_run_request() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/broken.yaml".to_string(),
                 summary: "This launch should fail validation.".to_string(),
                 execution_profile_id: Some("missing-profile".to_string()),
@@ -373,7 +379,11 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     assert_eq!(launch["run_id"], plan["run_id"]);
 }
 
-fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_id: &str) {
+pub(super) fn seed_conversation(
+    settings: &SparkSettings,
+    project_path: &str,
+    conversation_id: &str,
+) {
     seed_conversation_with_assistant_status(settings, project_path, conversation_id, "complete");
 }
 
@@ -522,13 +532,13 @@ fn request_by_id<'a>(snapshot: &'a Value, request_id: &str) -> &'a Value {
         .expect("request")
 }
 
-fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
+pub(super) fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     let path = settings.flows_dir.join(name);
     fs::create_dir_all(path.parent().expect("flow parent")).expect("flow dir");
     fs::write(path, content).expect("flow");
 }
 
-fn write_native_execution_profile(settings: &SparkSettings) {
+pub(super) fn write_native_execution_profile(settings: &SparkSettings) {
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     fs::write(
         settings.config_dir.join("execution-profiles.toml"),
@@ -672,7 +682,7 @@ fn plan_completed(content: &str) -> TurnStreamEvent {
     }
 }
 
-fn simple_flow() -> &'static str {
+pub(super) fn simple_flow() -> &'static str {
     r#"
 schema_version: "1"
 id: review
@@ -695,7 +705,7 @@ fn runs_dir_is_empty(settings: &SparkSettings) -> bool {
     }
 }
 
-fn settings(root: &Path) -> SparkSettings {
+pub(super) fn settings(root: &Path) -> SparkSettings {
     settings_for_project(&root.join("project"), root)
 }
 
@@ -808,6 +818,7 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
+                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the review flow.".to_string(),
                 ..FlowRunRequestCreateByHandleRequest::default()
