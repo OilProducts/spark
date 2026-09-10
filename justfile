@@ -26,6 +26,7 @@ dev-desktop: frontend-deps
 # Build and launch the desktop app with production frontend assets and release optimizations.
 run-release: frontend-deps
   npm --prefix frontend run build
+  cargo build --release -p spark-cli --bin spark
   cargo run --release -p spark-desktop --bin spark-desktop --all-features
 
 # Repository validation gate for the Rust cutover.
