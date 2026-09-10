@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import { Button } from '@/components/ui/button'
@@ -26,6 +26,7 @@ export function AdvancedKeyValueEditor({
     title = 'Extension Attributes',
     description = 'Edit non-core attributes as generic key/value pairs.',
 }: AdvancedKeyValueEditorProps) {
+    const id = useId()
     const [newKey, setNewKey] = useState('')
     const [newValue, setNewValue] = useState('')
     const normalizedNewKey = newKey.trim()
@@ -72,11 +73,11 @@ export function AdvancedKeyValueEditor({
                     {entries.map((entry, index) => (
                         <div key={entry.key} className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
                             <Field className="gap-1">
-                                <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-key-input-${index}`}>
+                                <FieldLabel htmlFor={`${id}-extension-attr-key-input-${index}`}>
                                     Key
                                 </FieldLabel>
                                 <Input
-                                    id={`${testIdPrefix}-extension-attr-key-input-${index}`}
+                                    id={`${id}-extension-attr-key-input-${index}`}
                                     data-testid={`${testIdPrefix}-extension-attr-key-${index}`}
                                     value={entry.key}
                                     readOnly
@@ -84,11 +85,11 @@ export function AdvancedKeyValueEditor({
                                 />
                             </Field>
                             <Field className="gap-1">
-                                <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-value-input-${index}`}>
+                                <FieldLabel htmlFor={`${id}-extension-attr-value-input-${index}`}>
                                     Value
                                 </FieldLabel>
                                 <Input
-                                    id={`${testIdPrefix}-extension-attr-value-input-${index}`}
+                                    id={`${id}-extension-attr-value-input-${index}`}
                                     data-testid={`${testIdPrefix}-extension-attr-value-${index}`}
                                     value={entry.value}
                                     onChange={(event) => onValueChange(entry.key, event.target.value)}
@@ -112,11 +113,12 @@ export function AdvancedKeyValueEditor({
 
             <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-2">
                 <Field className="gap-1">
-                    <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-new-key-input`}>
+                    <FieldLabel htmlFor={`${id}-extension-attr-new-key-input`}>
                         New Key
                     </FieldLabel>
                     <Input
-                        id={`${testIdPrefix}-extension-attr-new-key-input`}
+                        id={`${id}-extension-attr-new-key-input`}
+                        aria-describedby={[hasDuplicateKey && `${id}-duplicate-warning`, hasReservedKey && `${id}-reserved-warning`].filter(Boolean).join(' ') || undefined}
                         data-testid={`${testIdPrefix}-extension-attr-new-key`}
                         value={newKey}
                         onChange={(event) => setNewKey(event.target.value)}
@@ -125,11 +127,11 @@ export function AdvancedKeyValueEditor({
                     />
                 </Field>
                 <Field className="gap-1">
-                    <FieldLabel htmlFor={`${testIdPrefix}-extension-attr-new-value-input`}>
+                    <FieldLabel htmlFor={`${id}-extension-attr-new-value-input`}>
                         New Value
                     </FieldLabel>
                     <Input
-                        id={`${testIdPrefix}-extension-attr-new-value-input`}
+                        id={`${id}-extension-attr-new-value-input`}
                         data-testid={`${testIdPrefix}-extension-attr-new-value`}
                         value={newValue}
                         onChange={(event) => setNewValue(event.target.value)}
@@ -149,12 +151,12 @@ export function AdvancedKeyValueEditor({
                 </Button>
             </div>
             {hasDuplicateKey ? (
-                <p className="text-[11px] text-amber-800">
+                <p id={`${id}-duplicate-warning`} className="text-[11px] text-amber-800">
                     Key already exists.
                 </p>
             ) : null}
             {hasReservedKey ? (
-                <p className="text-[11px] text-amber-800">
+                <p id={`${id}-reserved-warning`} className="text-[11px] text-amber-800">
                     Core attributes belong in dedicated controls.
                 </p>
             ) : null}

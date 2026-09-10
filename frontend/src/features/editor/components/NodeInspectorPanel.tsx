@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
@@ -95,6 +95,7 @@ export function NodeInspectorPanel({
     onNodeExtensionAdd,
     renderFieldDiagnostics,
 }: NodeInspectorPanelProps) {
+    const id = useId()
     const llmProfiles = useLlmProfiles()
     const selectedProfile = (selectedNode?.data?.llm_profile as string) || ''
     const selectedProvider = (selectedNode?.data?.llm_provider as string) || ''
@@ -113,16 +114,18 @@ export function NodeInspectorPanel({
                 ) : (
                     <div data-testid="node-structured-form" className="space-y-4">
                         <div className="space-y-1.5">
-                            <Label>Label</Label>
+                            <Label htmlFor={`${id}-label`}>Label</Label>
                             <Input
+                                id={`${id}-label`}
                                 value={(selectedNode?.data?.label as string) || ''}
                                 onChange={(event) => onPropertyChange('label', event.target.value)}
                             />
                         </div>
 
                         <div className="space-y-1.5">
-                            <Label>Node Kind</Label>
+                            <Label htmlFor={`${id}-node-kind`}>Node Kind</Label>
                             <NativeSelect
+                                id={`${id}-node-kind`}
                                 value={(selectedNode?.data?.kind as string) || 'agent_task'}
                                 onChange={(event) => onPropertyChange('kind', event.target.value)}
                             >
@@ -136,14 +139,21 @@ export function NodeInspectorPanel({
 
                         {visibility.showPrompt ? (
                             <div className="flex h-48 flex-col space-y-1.5">
-                                <Label>Prompt Instruction</Label>
+                                <Label htmlFor={`${id}-prompt-instruction`}>Prompt Instruction</Label>
                                 <Textarea
+                                    id={`${id}-prompt-instruction`}
+                                    aria-describedby={nodeFieldDiagnostics.prompt?.length ? `${id}-prompt-diagnostics` : undefined}
+                                    aria-invalid={nodeFieldDiagnostics.prompt?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
                                     value={(selectedNode?.data?.prompt as string) || ''}
                                     onChange={(event) => onPropertyChange('prompt', event.target.value)}
                                     className="flex-1 resize-none font-mono text-xs"
                                     placeholder="Enter system prompt instructions..."
                                 />
-                                {renderFieldDiagnostics('node', 'prompt', nodeFieldDiagnostics, 'node-field-diagnostics-prompt')}
+                                {nodeFieldDiagnostics.prompt?.length ? (
+                                    <div id={`${id}-prompt-diagnostics`}>
+                                        {renderFieldDiagnostics('node', 'prompt', nodeFieldDiagnostics, 'node-field-diagnostics-prompt')}
+                                    </div>
+                                ) : null}
                             </div>
                         ) : null}
 
@@ -170,8 +180,9 @@ export function NodeInspectorPanel({
 
                         {visibility.showToolCommand ? (
                             <div className="space-y-1.5">
-                                <Label>Tool Command</Label>
+                                <Label htmlFor={`${id}-tool-command`}>Tool Command</Label>
                                 <Input
+                                    id={`${id}-tool-command`}
                                     value={(selectedNode?.data?.['tool.command'] as string) || ''}
                                     onChange={(event) => onPropertyChange('tool.command', event.target.value)}
                                     className="font-mono text-xs"
@@ -183,8 +194,9 @@ export function NodeInspectorPanel({
                         {visibility.showParallelOptions ? (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label>Join Policy</Label>
+                                    <Label htmlFor={`${id}-join-policy`}>Join Policy</Label>
                                     <NativeSelect
+                                        id={`${id}-join-policy`}
                                         value={selectedJoinPolicy}
                                         onChange={(event) => onPropertyChange('join_policy', event.target.value)}
                                     >
@@ -196,8 +208,9 @@ export function NodeInspectorPanel({
                                 </div>
                                 {selectedJoinPolicy === 'k_of_n' ? (
                                     <div className="space-y-1.5">
-                                        <Label>K Threshold</Label>
+                                        <Label htmlFor={`${id}-k-threshold`}>K Threshold</Label>
                                         <Input
+                                            id={`${id}-k-threshold`}
                                             data-testid="node-attr-input-join_k"
                                             value={(selectedNode?.data?.join_k as number | string | undefined) ?? ''}
                                             onChange={(event) => onPropertyChange('join_k', event.target.value)}
@@ -207,8 +220,9 @@ export function NodeInspectorPanel({
                                 ) : null}
                                 {selectedJoinPolicy === 'quorum' ? (
                                     <div className="space-y-1.5">
-                                        <Label>Quorum Threshold</Label>
+                                        <Label htmlFor={`${id}-quorum-threshold`}>Quorum Threshold</Label>
                                         <Input
+                                            id={`${id}-quorum-threshold`}
                                             data-testid="node-attr-input-join_quorum"
                                             value={(selectedNode?.data?.join_quorum as number | string | undefined) ?? ''}
                                             onChange={(event) => onPropertyChange('join_quorum', event.target.value)}
@@ -217,8 +231,9 @@ export function NodeInspectorPanel({
                                     </div>
                                 ) : null}
                                 <div className="space-y-1.5">
-                                    <Label>Error Policy</Label>
+                                    <Label htmlFor={`${id}-error-policy`}>Error Policy</Label>
                                     <NativeSelect
+                                        id={`${id}-error-policy`}
                                         value={(selectedNode?.data?.error_policy as string) || 'continue'}
                                         onChange={(event) => onPropertyChange('error_policy', event.target.value)}
                                     >
@@ -228,8 +243,9 @@ export function NodeInspectorPanel({
                                     </NativeSelect>
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>Max Parallel</Label>
+                                    <Label htmlFor={`${id}-max-parallel`}>Max Parallel</Label>
                                     <Input
+                                        id={`${id}-max-parallel`}
                                         value={(selectedNode?.data?.max_parallel as number | string | undefined) ?? 4}
                                         onChange={(event) => onPropertyChange('max_parallel', event.target.value)}
                                     />
@@ -240,48 +256,55 @@ export function NodeInspectorPanel({
                         {visibility.showManagerOptions ? (
                             <>
                                 <div className="space-y-1.5">
-                                    <Label>Child Flow Reference</Label>
+                                    <Label htmlFor={`${id}-child-flow-reference`}>Child Flow Reference</Label>
                                     <Input
+                                        id={`${id}-child-flow-reference`}
+                                        aria-describedby={`${id}-child-flow-help`}
                                         value={((selectedNode?.data?.flow_ref as string) || (selectedNode?.data?.['stack.child_flow_ref'] as string)) || ''}
                                         onChange={(event) => onPropertyChange('flow_ref', event.target.value)}
                                         placeholder="child.yaml"
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>Manager Poll Interval</Label>
+                                    <Label htmlFor={`${id}-manager-poll-interval`}>Manager Poll Interval</Label>
                                     <Input
+                                        id={`${id}-manager-poll-interval`}
                                         value={(selectedNode?.data?.['manager.poll_interval'] as string) || ''}
                                         onChange={(event) => onPropertyChange('manager.poll_interval', event.target.value)}
                                         placeholder="25ms"
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>Manager Max Cycles</Label>
+                                    <Label htmlFor={`${id}-manager-max-cycles`}>Manager Max Cycles</Label>
                                     <Input
+                                        id={`${id}-manager-max-cycles`}
                                         value={(selectedNode?.data?.['manager.max_cycles'] as number | string | undefined) ?? ''}
                                         onChange={(event) => onPropertyChange('manager.max_cycles', event.target.value)}
                                         placeholder="3"
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>Manager Stop Condition</Label>
+                                    <Label htmlFor={`${id}-manager-stop-condition`}>Manager Stop Condition</Label>
                                     <Input
+                                        id={`${id}-manager-stop-condition`}
                                         value={(selectedNode?.data?.['manager.stop_condition'] as string) || ''}
                                         onChange={(event) => onPropertyChange('manager.stop_condition', event.target.value)}
                                         placeholder='child.outcome == "success"'
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>Manager Actions</Label>
+                                    <Label htmlFor={`${id}-manager-actions`}>Manager Actions</Label>
                                     <Input
+                                        id={`${id}-manager-actions`}
                                         value={(selectedNode?.data?.['manager.actions'] as string) || ''}
                                         onChange={(event) => onPropertyChange('manager.actions', event.target.value)}
                                         placeholder="observe,steer"
                                     />
                                 </div>
                                 <div className="space-y-1.5">
-                                    <Label>Manager Steer Cooldown</Label>
+                                    <Label htmlFor={`${id}-manager-steer-cooldown`}>Manager Steer Cooldown</Label>
                                     <Input
+                                        id={`${id}-manager-steer-cooldown`}
                                         data-testid="node-attr-input-manager.steer_cooldown"
                                         value={(selectedNode?.data?.['manager.steer_cooldown'] as string) || ''}
                                         onChange={(event) => onPropertyChange('manager.steer_cooldown', event.target.value)}
@@ -290,12 +313,12 @@ export function NodeInspectorPanel({
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <Checkbox
-                                        id={`stack-child-autostart-${selectedNodeId}`}
+                                        id={`${id}-stack-child-autostart`}
                                         data-testid="node-attr-checkbox-stack.child_autostart"
                                         checked={isDefaultEnabledBoolean(selectedNode?.data?.['stack.child_autostart'])}
                                         onCheckedChange={(checked) => onPropertyChange('stack.child_autostart', checked === true)}
                                     />
-                                    <Label htmlFor={`stack-child-autostart-${selectedNodeId}`} className="text-sm font-medium">
+                                    <Label htmlFor={`${id}-stack-child-autostart`} className="text-sm font-medium">
                                         Start Child Automatically
                                     </Label>
                                 </div>
@@ -307,7 +330,7 @@ export function NodeInspectorPanel({
                                         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                                             Child Flow Linkage
                                         </p>
-                                        <p className="mt-1 text-[11px] text-muted-foreground">
+                                        <p id={`${id}-child-flow-help`} className="mt-1 text-[11px] text-muted-foreground">
                                             Subflow nodes use this node's <code>flow_ref</code> config and optional input map.
                                         </p>
                                     </div>
@@ -345,15 +368,17 @@ export function NodeInspectorPanel({
                                     <>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1.5">
-                                                <Label>Max Retries</Label>
+                                                <Label htmlFor={`${id}-max-retries`}>Max Retries</Label>
                                                 <Input
+                                                    id={`${id}-max-retries`}
                                                     value={(selectedNode?.data?.max_retries as number | string | undefined) ?? ''}
                                                     onChange={(event) => onPropertyChange('max_retries', event.target.value)}
                                                 />
                                             </div>
                                             <div className="space-y-1.5">
-                                                <Label>Timeout</Label>
+                                                <Label htmlFor={`${id}-timeout`}>Timeout</Label>
                                                 <Input
+                                                    id={`${id}-timeout`}
                                                     value={(selectedNode?.data?.timeout as string) || ''}
                                                     onChange={(event) => onPropertyChange('timeout', event.target.value)}
                                                     placeholder="900s"
@@ -362,36 +387,58 @@ export function NodeInspectorPanel({
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Checkbox
-                                                id={`goal-gate-${selectedNodeId}`}
+                                                id={`${id}-goal-gate`}
+                                                aria-describedby={nodeFieldDiagnostics.goal_gate?.length ? `${id}-goal_gate-diagnostics` : undefined}
+                                                aria-invalid={nodeFieldDiagnostics.goal_gate?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
                                                 checked={isTrue(selectedNode?.data?.goal_gate)}
                                                 onCheckedChange={(checked) => onPropertyChange('goal_gate', checked === true)}
                                             />
-                                            <Label htmlFor={`goal-gate-${selectedNodeId}`} className="text-sm font-medium">
+                                            <Label htmlFor={`${id}-goal-gate`} className="text-sm font-medium">
                                                 Goal Gate
                                             </Label>
                                         </div>
-                                        {renderFieldDiagnostics('node', 'goal_gate', nodeFieldDiagnostics, 'node-field-diagnostics-goal_gate')}
+                                        {nodeFieldDiagnostics.goal_gate?.length ? (
+                                            <div id={`${id}-goal_gate-diagnostics`}>
+                                                {renderFieldDiagnostics('node', 'goal_gate', nodeFieldDiagnostics, 'node-field-diagnostics-goal_gate')}
+                                            </div>
+                                        ) : null}
                                         <div className="space-y-1.5">
-                                            <Label>Retry Target</Label>
+                                            <Label htmlFor={`${id}-retry-target`}>Retry Target</Label>
                                             <Input
+                                                id={`${id}-retry-target`}
+                                                aria-describedby={nodeFieldDiagnostics.retry_target?.length ? `${id}-retry_target-diagnostics` : undefined}
+                                                aria-invalid={nodeFieldDiagnostics.retry_target?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
                                                 value={(selectedNode?.data?.retry_target as string) || ''}
                                                 onChange={(event) => onPropertyChange('retry_target', event.target.value)}
                                             />
-                                            {renderFieldDiagnostics('node', 'retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-retry_target')}
+                                            {nodeFieldDiagnostics.retry_target?.length ? (
+                                                <div id={`${id}-retry_target-diagnostics`}>
+                                                    {renderFieldDiagnostics('node', 'retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-retry_target')}
+                                                </div>
+                                            ) : null}
                                         </div>
                                         <div className="space-y-1.5">
-                                            <Label>Fallback Retry Target</Label>
+                                            <Label htmlFor={`${id}-fallback-retry-target`}>Fallback Retry Target</Label>
                                             <Input
+                                                id={`${id}-fallback-retry-target`}
+                                                aria-describedby={nodeFieldDiagnostics.fallback_retry_target?.length ? `${id}-fallback_retry_target-diagnostics` : undefined}
+                                                aria-invalid={nodeFieldDiagnostics.fallback_retry_target?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
                                                 value={(selectedNode?.data?.fallback_retry_target as string) || ''}
                                                 onChange={(event) => onPropertyChange('fallback_retry_target', event.target.value)}
                                             />
-                                            {renderFieldDiagnostics('node', 'fallback_retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-fallback_retry_target')}
+                                            {nodeFieldDiagnostics.fallback_retry_target?.length ? (
+                                                <div id={`${id}-fallback_retry_target-diagnostics`}>
+                                                    {renderFieldDiagnostics('node', 'fallback_retry_target', nodeFieldDiagnostics, 'node-field-diagnostics-fallback_retry_target')}
+                                                </div>
+                                            ) : null}
                                         </div>
                                         {visibility.showToolCommand ? (
                                             <>
                                                 <div className="space-y-1.5">
-                                                    <Label>Pre Hook Override</Label>
+                                                    <Label htmlFor={`${id}-pre-hook-override`}>Pre Hook Override</Label>
                                                     <Input
+                                                        id={`${id}-pre-hook-override`}
+                                                        aria-describedby={selectedNodeToolHookPreWarning ? `${id}-pre-hook-warning` : undefined}
                                                         data-testid="node-attr-input-tool.hooks.pre"
                                                         value={(selectedNode?.data?.['tool.hooks.pre'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.hooks.pre', event.target.value)}
@@ -399,14 +446,16 @@ export function NodeInspectorPanel({
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {selectedNodeToolHookPreWarning ? (
-                                                        <p data-testid="node-attr-warning-tool.hooks.pre" className="text-xs text-amber-800">
+                                                        <p id={`${id}-pre-hook-warning`} data-testid="node-attr-warning-tool.hooks.pre" className="text-xs text-amber-800">
                                                             {selectedNodeToolHookPreWarning}
                                                         </p>
                                                     ) : null}
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label>Post Hook Override</Label>
+                                                    <Label htmlFor={`${id}-post-hook-override`}>Post Hook Override</Label>
                                                     <Input
+                                                        id={`${id}-post-hook-override`}
+                                                        aria-describedby={selectedNodeToolHookPostWarning ? `${id}-post-hook-warning` : undefined}
                                                         data-testid="node-attr-input-tool.hooks.post"
                                                         value={(selectedNode?.data?.['tool.hooks.post'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.hooks.post', event.target.value)}
@@ -414,14 +463,15 @@ export function NodeInspectorPanel({
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {selectedNodeToolHookPostWarning ? (
-                                                        <p data-testid="node-attr-warning-tool.hooks.post" className="text-xs text-amber-800">
+                                                        <p id={`${id}-post-hook-warning`} data-testid="node-attr-warning-tool.hooks.post" className="text-xs text-amber-800">
                                                             {selectedNodeToolHookPostWarning}
                                                         </p>
                                                     ) : null}
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label>Artifact Paths</Label>
+                                                    <Label htmlFor={`${id}-artifact-paths`}>Artifact Paths</Label>
                                                     <Input
+                                                        id={`${id}-artifact-paths`}
                                                         data-testid="node-attr-input-tool.artifacts.paths"
                                                         value={(selectedNode?.data?.['tool.artifacts.paths'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.artifacts.paths', event.target.value)}
@@ -430,8 +480,9 @@ export function NodeInspectorPanel({
                                                     />
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label>Stdout Artifact</Label>
+                                                    <Label htmlFor={`${id}-stdout-artifact`}>Stdout Artifact</Label>
                                                     <Input
+                                                        id={`${id}-stdout-artifact`}
                                                         data-testid="node-attr-input-tool.artifacts.stdout"
                                                         value={(selectedNode?.data?.['tool.artifacts.stdout'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.artifacts.stdout', event.target.value)}
@@ -440,8 +491,9 @@ export function NodeInspectorPanel({
                                                     />
                                                 </div>
                                                 <div className="space-y-1.5">
-                                                    <Label>Stderr Artifact</Label>
+                                                    <Label htmlFor={`${id}-stderr-artifact`}>Stderr Artifact</Label>
                                                     <Input
+                                                        id={`${id}-stderr-artifact`}
                                                         data-testid="node-attr-input-tool.artifacts.stderr"
                                                         value={(selectedNode?.data?.['tool.artifacts.stderr'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.artifacts.stderr', event.target.value)}
@@ -453,25 +505,34 @@ export function NodeInspectorPanel({
                                         ) : null}
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1.5">
-                                                <Label>Fidelity</Label>
+                                                <Label htmlFor={`${id}-fidelity`}>Fidelity</Label>
                                                 <Input
+                                                    id={`${id}-fidelity`}
+                                                    aria-describedby={nodeFieldDiagnostics.fidelity?.length ? `${id}-fidelity-diagnostics` : undefined}
+                                                    aria-invalid={nodeFieldDiagnostics.fidelity?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
                                                     value={(selectedNode?.data?.fidelity as string) || ''}
                                                     onChange={(event) => onPropertyChange('fidelity', event.target.value)}
                                                     placeholder="full"
                                                 />
-                                                {renderFieldDiagnostics('node', 'fidelity', nodeFieldDiagnostics, 'node-field-diagnostics-fidelity')}
+                                                {nodeFieldDiagnostics.fidelity?.length ? (
+                                                    <div id={`${id}-fidelity-diagnostics`}>
+                                                        {renderFieldDiagnostics('node', 'fidelity', nodeFieldDiagnostics, 'node-field-diagnostics-fidelity')}
+                                                    </div>
+                                                ) : null}
                                             </div>
                                             <div className="space-y-1.5">
-                                                <Label>Thread ID</Label>
+                                                <Label htmlFor={`${id}-thread-id`}>Thread ID</Label>
                                                 <Input
+                                                    id={`${id}-thread-id`}
                                                     value={(selectedNode?.data?.thread_id as string) || ''}
                                                     onChange={(event) => onPropertyChange('thread_id', event.target.value)}
                                                 />
                                             </div>
                                         </div>
                                         <div className="space-y-1.5">
-                                            <Label>Class</Label>
+                                            <Label htmlFor={`${id}-class`}>Class</Label>
                                             <Input
+                                                id={`${id}-class`}
                                                 value={(selectedNode?.data?.class as string) || ''}
                                                 onChange={(event) => onPropertyChange('class', event.target.value)}
                                             />
@@ -483,30 +544,32 @@ export function NodeInspectorPanel({
                                     <>
                                         <div className="grid grid-cols-2 gap-3">
                                             <div className="space-y-1.5">
-                                                <Label>LLM Model</Label>
+                                                <Label htmlFor={`${id}-llm-model`}>LLM Model</Label>
                                                 <Input
+                                                    id={`${id}-llm-model`}
                                                     value={(selectedNode?.data?.llm_model as string) || ''}
                                                     onChange={(event) => onPropertyChange('llm_model', event.target.value)}
-                                                    list="llm-model-options-panel"
+                                                    list={`${id}-llm-model-options`}
                                                 />
-                                                <datalist id="llm-model-options-panel">
+                                                <datalist id={`${id}-llm-model-options`}>
                                                     {getModelSuggestions(selectedProfile || selectedProvider, llmProfiles).map((model) => (
                                                         <option key={model} value={model} />
                                                     ))}
                                                 </datalist>
                                             </div>
                                             <div className="space-y-1.5">
-                                                <Label>LLM Provider</Label>
+                                                <Label htmlFor={`${id}-llm-provider`}>LLM Provider</Label>
                                                 <Input
+                                                    id={`${id}-llm-provider`}
                                                     value={((selectedNode?.data?.llm_profile as string) || (selectedNode?.data?.llm_provider as string)) || ''}
                                                     onChange={(event) => {
                                                         const selection = splitLlmSelection(event.target.value, llmProfiles)
                                                         onPropertyChange('llm_provider', selection.llm_provider)
                                                         onPropertyChange('llm_profile', selection.llm_profile)
                                                     }}
-                                                    list="llm-provider-options-panel"
+                                                    list={`${id}-llm-provider-options`}
                                                 />
-                                                <datalist id="llm-provider-options-panel">
+                                                <datalist id={`${id}-llm-provider-options`}>
                                                     {getLlmSelectionOptions(llmProfiles).map((provider) => (
                                                         <option key={provider} value={provider} />
                                                     ))}
@@ -514,8 +577,9 @@ export function NodeInspectorPanel({
                                             </div>
                                         </div>
                                         <div className="space-y-1.5">
-                                            <Label>Reasoning Effort</Label>
+                                            <Label htmlFor={`${id}-reasoning-effort`}>Reasoning Effort</Label>
                                             <Input
+                                                id={`${id}-reasoning-effort`}
                                                 value={(selectedNode?.data?.reasoning_effort as string) || ''}
                                                 onChange={(event) => onPropertyChange('reasoning_effort', event.target.value)}
                                                 placeholder="high"
@@ -528,21 +592,21 @@ export function NodeInspectorPanel({
                                     <div className="flex items-center gap-4">
                                         <div className="flex items-center gap-2">
                                             <Checkbox
-                                                id={`node-auto-status-${selectedNodeId}`}
+                                                id={`${id}-node-auto-status`}
                                                 checked={isTrue(selectedNode?.data?.auto_status)}
                                                 onCheckedChange={(checked) => onPropertyChange('auto_status', checked === true)}
                                             />
-                                            <Label htmlFor={`node-auto-status-${selectedNodeId}`} className="text-sm font-medium">
+                                            <Label htmlFor={`${id}-node-auto-status`} className="text-sm font-medium">
                                                 Auto Status
                                             </Label>
                                         </div>
                                         <div className="flex items-center gap-2">
                                             <Checkbox
-                                                id={`node-allow-partial-${selectedNodeId}`}
+                                                id={`${id}-node-allow-partial`}
                                                 checked={isTrue(selectedNode?.data?.allow_partial)}
                                                 onCheckedChange={(checked) => onPropertyChange('allow_partial', checked === true)}
                                             />
-                                            <Label htmlFor={`node-allow-partial-${selectedNodeId}`} className="text-sm font-medium">
+                                            <Label htmlFor={`${id}-node-allow-partial`} className="text-sm font-medium">
                                                 Allow Partial
                                             </Label>
                                         </div>
