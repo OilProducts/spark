@@ -369,7 +369,13 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
     let id = created["id"].as_str().unwrap();
     let client = reqwest::Client::new();
     let url = format!("{}/workspace/api/tasks/{id}", server.base_url);
-    let response = client.patch(&url).query(&[("project_path", project)]).json(&json!({"revision":created["revision"],"fields":{"stage":"done"},"note":"Verified in UI","actor":"human"})).send().await.unwrap();
+    let response = client
+        .patch(&url)
+        .query(&[("project_path", project)])
+        .json(&json!({"revision":created["revision"],"fields":{"stage":"done"},"actor":"human"}))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), 200);
     let output = run_spark(
         temp.path(),
@@ -424,6 +430,39 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
     let listed: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(listed["tasks"][0]["revision"], 2);
     assert_eq!(listed["tasks"][0]["fields"]["title"], "Task from CLI");
+    assert_eq!(listed.as_object().unwrap().len(), 1);
+    for key in [
+        "priority",
+        "acceptance_criteria",
+        "next_action",
+        "blocked",
+        "needs_input",
+        "conversations",
+        "artifacts",
+        "runs",
+    ] {
+        fs::write(
+            &payload_file,
+            json!({"revision":2,"fields":{key:null}}).to_string(),
+        )
+        .unwrap();
+        let output = run_spark(
+            temp.path(),
+            [
+                "task",
+                "update",
+                "--project",
+                project,
+                "--id",
+                id,
+                "--json",
+                payload_file.to_str().unwrap(),
+                "--base-url",
+                &server.base_url,
+            ],
+        );
+        assert_ne!(output.status.code(), Some(0), "{key}");
+    }
     let root = spark_storage::ProjectRegistry::new(settings.data_dir)
         .ensure_project_paths(project)
         .unwrap()

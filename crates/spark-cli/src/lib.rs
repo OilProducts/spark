@@ -286,8 +286,6 @@ fn build_convo_plan(
             let options = parse_api_options(
                 &args[2..],
                 &[
-                    "--task-id",
-                    "--task-stage",
                     "--conversation",
                     "--flow",
                     "--summary",
@@ -312,12 +310,7 @@ fn build_convo_plan(
                 &["--launch-context-json", "--launch-context-file"],
             )?;
             let base_url = resolve_base_url(&options, "spark convo run-request", env)?;
-            let mut body = build_flow_payload(&options, "spark convo run-request", stdin)?;
-            if let Some(id) = options.value("--task-id") {
-                body["task"] = json!({"task_id": id, "stage": options.value("--task-stage")});
-            } else if options.value("--task-stage").is_some() {
-                return Err(usage_error("--task-stage requires --task-id"));
-            }
+            let body = build_flow_payload(&options, "spark convo run-request", stdin)?;
             let conversation = non_empty_value(
                 &options,
                 "--conversation",

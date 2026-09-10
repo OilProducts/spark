@@ -3,7 +3,7 @@ use super::review_artifact_contracts::{
 };
 use serde_json::{json, Value};
 use spark_workspace::{
-    tasks::{Stage, TaskMutation, TaskReference, WorkspaceTaskService},
+    tasks::{Stage, TaskMutation, WorkspaceTaskService},
     FlowRunRequestCreateByHandleRequest, FlowRunRequestReviewRequest, WorkspaceConversationService,
     WorkspaceError,
 };
@@ -30,20 +30,31 @@ fn tasks_persist_atomically_reject_stale_writers_and_support_manual_lifecycle() 
     assert_eq!(task.fields.stage, Stage::Backlog);
     assert!(registry.read_project_record(project).unwrap().is_some());
     for stage in ["planning", "ready", "in_progress", "review"] {
-        task = service.update(project, &task.id, mutation(json!({"revision":task.revision,"fields":{"stage":stage,"blocked":"Review constraint","needs_input":"Which version?"}}))).unwrap();
+        task = service
+            .update(
+                project,
+                &task.id,
+                mutation(json!({"revision":task.revision,"fields":{"stage":stage}})),
+            )
+            .unwrap();
     }
     let revision = task.revision;
-    assert!(service
+    task = service
         .update(
             project,
             &task.id,
-            mutation(json!({"revision":revision,"fields":{"stage":"done"}}))
+            mutation(json!({"revision":revision,"fields":{"stage":"done"}})),
         )
-        .is_err());
-    assert_eq!(service.get(project, &task.id).unwrap().revision, revision);
-    task = service.update(project, &task.id, mutation(json!({"revision":revision,"fields":{"stage":"done"},"note":"Manually reviewed acceptance criteria"}))).unwrap();
-    assert!(task.fields.runs.is_empty());
-    task = service.update(project, &task.id, mutation(json!({"revision":task.revision,"fields":{"stage":"planning","blocked":"","needs_input":"","archived":true}}))).unwrap();
+        .unwrap();
+    task = service
+        .update(
+            project,
+            &task.id,
+            mutation(
+                json!({"revision":task.revision,"fields":{"stage":"planning","archived":true}}),
+            ),
+        )
+        .unwrap();
     assert_eq!(task.fields.stage, Stage::Planning);
     assert!(task.fields.archived);
     assert_eq!(task.activity.len() as u64, task.revision);
@@ -97,107 +108,75 @@ fn tasks_persist_atomically_reject_stale_writers_and_support_manual_lifecycle() 
 }
 
 #[test]
-fn task_links_are_validated_project_scoped_and_many_to_many() {
+fn tasks_reject_removed_fields_and_preserve_scope_and_attribution() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.project_root).unwrap();
     let project = settings.project_root.to_str().unwrap();
-    std::fs::write(settings.project_root.join("decision.md"), "Decision").unwrap();
-    seed_conversation(&settings, project, "conversation-task");
-    seed_conversation(&settings, project, "conversation-task-two");
     let service = WorkspaceTaskService::new(settings.clone());
-    let first = service.create(project, mutation(json!({"fields":{"title":"One","conversations":["conversation-task","conversation-task-two"],"artifacts":["decision.md"]},"actor":"assistant","conversation_id":"conversation-task"}))).unwrap();
-    let second = service
-        .create(
-            project,
-            mutation(json!({"fields":{"title":"Two","conversations":["conversation-task","conversation-task-two"]}})),
-        )
-        .unwrap();
-    assert_eq!(first.fields.conversations, second.fields.conversations);
+    let task = service.create(project, mutation(json!({"fields":{"title":"One","stage":"done"},"actor":"assistant","note":"Useful detail"}))).unwrap();
+    assert_eq!(task.fields.stage, Stage::Done);
+    assert_eq!(task.activity[0]["actor"], "assistant");
+    assert_eq!(task.activity[0]["note"], "Useful detail");
+    assert!(task.activity[0].get("conversation_id").is_none());
+    assert_eq!(
+        serde_json::to_value(&task.fields).unwrap(),
+        json!({"title":"One","description":"","stage":"done","archived":false})
+    );
     let other = temp.path().join("other");
     std::fs::create_dir(&other).unwrap();
     let other = other.to_str().unwrap();
-    assert!(service.get(other, &first.id).is_err());
+    assert!(service.get(other, &task.id).is_err());
     assert!(service.get(project, "../outside").is_err());
     assert!(service.list(other).unwrap().is_empty());
     assert!(service
         .update(
             other,
-            &first.id,
-            mutation(json!({"revision":1,"note":"Wrong project"}))
+            &task.id,
+            mutation(json!({"revision":1,"fields":{"title":"Wrong"}}))
         )
         .is_err());
-    for fields in [
-        json!({"runs":[{"run_id":"unknown"}]}),
-        json!({"conversations":["unknown"]}),
-        json!({"artifacts":["../outside"]}),
-        json!({"artifacts":["absent.md"]}),
-        json!({"stage":"blocked"}),
-        json!({"priority":4}),
-        json!({"unknown":true}),
+    for key in [
+        "priority",
+        "acceptance_criteria",
+        "next_action",
+        "blocked",
+        "needs_input",
+        "conversations",
+        "artifacts",
+        "runs",
     ] {
+        assert!(
+            service
+                .update(
+                    project,
+                    &task.id,
+                    mutation(json!({"revision":1,"fields":{key:null}}))
+                )
+                .is_err(),
+            "{key}"
+        );
+    }
+    for fields in [json!({"title":"  "}), json!({"stage":"unknown"})] {
         assert!(service
-            .update(
-                project,
-                &first.id,
-                mutation(json!({"revision":1,"fields":fields}))
-            )
+            .create(project, mutation(json!({"fields":fields})))
             .is_err());
     }
-    assert!(service
-        .create(
-            other,
-            mutation(
-                json!({"fields":{"title":"Wrong scope","conversations":["conversation-task","conversation-task-two"]}})
-            )
-        )
-        .is_err());
-    assert_eq!(service.get(project, &first.id).unwrap().revision, 1);
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(
-            temp.path().join("outside.md"),
-            settings.project_root.join("escape.md"),
-        )
+    assert!(serde_json::from_value::<TaskMutation>(
+        json!({"fields":{"title":"No provenance"},"conversation_id":"old"})
+    )
+    .is_err());
+    let second = service
+        .create(project, mutation(json!({"fields":{"title":"Two"}})))
         .unwrap();
-        std::fs::write(temp.path().join("outside.md"), "outside").unwrap();
-        assert!(service
-            .update(
-                project,
-                &first.id,
-                mutation(json!({"revision":1,"fields":{"artifacts":["escape.md"]}}))
-            )
-            .is_err());
-    }
-    let store = attractor_runtime::RunStore::for_settings(&settings);
-    for (id, status) in [("run-success", "completed"), ("run-failed", "failed")] {
-        let mut record = attractor_core::RunRecord::new(id, project);
-        record.status = status.into();
-        store
-            .create_run(attractor_runtime::CreateRunRequest {
-                record,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    let linked = service.update(project, &first.id, mutation(json!({"revision":1,"fields":{"stage":"ready","runs":[{"run_id":"run-success","stage":"planning"},{"run_id":"run-failed","stage":"planning"}]}}))).unwrap();
-    assert_eq!(linked.fields.runs.len(), 2);
     assert_eq!(
-        service.get(project, &first.id).unwrap().fields.stage,
-        Stage::Ready
+        service.board(project).unwrap(),
+        json!({"tasks":[task, second]})
     );
-    assert!(service
-        .create(
-            other,
-            mutation(
-                json!({"fields":{"title":"Wrong run scope","runs":[{"run_id":"run-success"}]}})
-            )
-        )
-        .is_err());
 }
 
 #[test]
-fn task_run_request_survives_approval_launch_and_recovery_without_duplicate_links() {
+fn ordinary_run_request_requires_approval_and_launches_without_task_integration() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.project_root).unwrap();
@@ -213,28 +192,16 @@ fn task_run_request_survives_approval_launch_and_recovery_without_duplicate_link
         )
         .unwrap();
     let conversations = WorkspaceConversationService::new(settings.clone());
-    assert!(conversations
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                task: Some(TaskReference {
-                    task_id: "task-missing".into(),
-                    stage: None
-                }),
-                flow_name: "ops/review.yaml".into(),
-                summary: "Invalid association".into(),
-                ..Default::default()
-            }
+    assert!(
+        serde_json::from_value::<FlowRunRequestCreateByHandleRequest>(
+            json!({"task":{"task_id":"removed"},"flow_name":"ops/review.yaml","summary":"Invalid"})
         )
-        .is_err());
+        .is_err()
+    );
     let created = conversations
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: Some(TaskReference {
-                    task_id: task.id.clone(),
-                    stage: Some(Stage::InProgress),
-                }),
                 flow_name: "ops/review.yaml".into(),
                 summary: "Execute approved work".into(),
                 execution_profile_id: Some("native".into()),
@@ -242,7 +209,7 @@ fn task_run_request_survives_approval_launch_and_recovery_without_duplicate_link
             },
         )
         .unwrap();
-    assert!(tasks.get(project, &task.id).unwrap().fields.runs.is_empty());
+    assert_eq!(tasks.get(project, &task.id).unwrap().revision, 1);
     let snapshot = conversations
         .review_flow_run_request(
             "conversation-task",
@@ -257,97 +224,55 @@ fn task_run_request_survives_approval_launch_and_recovery_without_duplicate_link
         .unwrap();
     let artifact = &snapshot["flow_run_requests"][0];
     assert_eq!(artifact["status"], "launched", "{artifact}");
-    assert_eq!(artifact["task"]["task_id"], task.id);
-    let linked = tasks.get(project, &task.id).unwrap();
-    assert_eq!(linked.fields.runs.len(), 1);
+    assert!(artifact.get("task").is_none());
+    assert!(artifact["run_id"].as_str().is_some());
+    assert_eq!(tasks.get(project, &task.id).unwrap().revision, 1);
     assert_eq!(
-        linked.fields.runs[0].run_id,
-        artifact["run_id"].as_str().unwrap()
+        tasks.get(project, &task.id).unwrap().fields.stage,
+        Stage::Ready
     );
-    assert_eq!(linked.fields.runs[0].stage, Some(Stage::InProgress));
-    assert_eq!(linked.fields.stage, Stage::Ready);
-    assert_eq!(linked.fields.conversations, vec!["conversation-task"]);
-    // Simulate loss of the task-side association after durable run creation.
-    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths(project)
-        .unwrap()
-        .root;
-    spark_storage::workspace_tasks::TaskRepository::new(&root)
-        .transact::<WorkspaceError>(&task.id, |_| Ok(serde_json::to_value(&task).unwrap()))
-        .unwrap();
-    let restarted = WorkspaceTaskService::new(settings.clone());
-    let recovered = restarted.get(project, &task.id).unwrap();
-    assert_eq!(recovered.fields.runs.len(), 1);
-    assert_eq!(recovered.activity.len(), 2);
-    assert_eq!(
-        restarted.get(project, &task.id).unwrap().revision,
-        recovered.revision
-    );
-    let unlinked = restarted
-        .update(
-            project,
-            &task.id,
-            mutation(json!({"revision":recovered.revision,"fields":{"runs":[]}})),
-        )
-        .unwrap();
-    assert!(restarted
-        .get(project, &task.id)
-        .unwrap()
-        .fields
-        .runs
-        .is_empty());
-    assert_eq!(unlinked.revision, recovered.revision + 1);
 }
 
 #[test]
-fn task_attention_uses_descendant_questions_and_existing_answers() {
+fn task_listing_orders_creation_then_id_without_consulting_run_storage() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     std::fs::create_dir_all(&settings.project_root).unwrap();
     let project = settings.project_root.to_str().unwrap();
-    let store = attractor_runtime::RunStore::for_settings(&settings);
-    let parent = attractor_core::RunRecord::new("run-parent", project);
-    store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record: parent,
-            ..Default::default()
-        })
+    let service = WorkspaceTaskService::new(settings.clone());
+    let mut task = service
+        .create(project, mutation(json!({"fields":{"title":"Seed"}})))
         .unwrap();
-    let mut child = attractor_core::RunRecord::new("run-child", project);
-    child.parent_run_id = Some("run-parent".into());
-    child.status = "waiting".into();
+    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project)
+        .unwrap()
+        .root;
+    let repo = spark_storage::workspace_tasks::TaskRepository::new(&root);
+    for (id, at) in [
+        ("task-z", "2026-01-01"),
+        ("task-b", "2026-01-02"),
+        ("task-a", "2026-01-02"),
+    ] {
+        task.id = id.into();
+        task.created_at = at.into();
+        repo.transact::<WorkspaceError>(id, |_| Ok(serde_json::to_value(&task).unwrap()))
+            .unwrap();
+    }
+    let store = attractor_runtime::RunStore::for_settings(&settings);
     let paths = store
         .create_run(attractor_runtime::CreateRunRequest {
-            record: child,
+            record: attractor_core::RunRecord::new("run-unreadable", project),
             ..Default::default()
         })
         .unwrap();
-    let mut question = attractor_core::RawRuntimeEvent::new("human_gate", "run-child");
-    question
-        .payload
-        .insert("question_id".into(), json!("question-task"));
-    question
-        .payload
-        .insert("prompt".into(), json!("Approve evidence?"));
-    store.append_event(&paths, question).unwrap();
-    let service = WorkspaceTaskService::new(settings.clone());
-    let task = service
-        .create(
-            project,
-            mutation(json!({"fields":{"title":"Needs review","runs":[{"run_id":"run-parent"}]}})),
-        )
-        .unwrap();
-    let board = service.board(project).unwrap();
-    assert_eq!(
-        board["attention"],
-        json!([{"task_id":task.id,"run_id":"run-child"}])
-    );
-    let mut answer = attractor_core::RawRuntimeEvent::new("InterviewCompleted", "run-child");
-    answer
-        .payload
-        .insert("question_id".into(), json!("question-task"));
-    answer.payload.insert("answer".into(), json!("Approved"));
-    store.append_event(&paths, answer).unwrap();
-    assert_eq!(service.board(project).unwrap()["attention"], json!([]));
-    assert_eq!(service.get(project, &task.id).unwrap().revision, 1);
+    // Corrupt run metadata must have no bearing on task reads.
+    std::fs::write(paths.run_json(), "invalid json").unwrap();
+    assert!(store.read_run_meta("run-unreadable").is_err());
+    let ids: Vec<_> = service
+        .list(project)
+        .unwrap()
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(&ids[..3], &["task-z", "task-a", "task-b"]);
 }

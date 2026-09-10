@@ -100,7 +100,6 @@ pub struct ConversationRequestUserInputAnswerRequest {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FlowRunRequestCreateByHandleRequest {
-    pub task: Option<crate::tasks::TaskReference>,
     pub flow_name: String,
     pub summary: String,
     #[serde(default)]
@@ -1449,10 +1448,6 @@ impl WorkspaceConversationService {
                 ))
             })?;
         let payload = normalize_flow_run_request_payload(request, "spark convo run-request")?;
-        if let Some(task) = &payload.task {
-            crate::tasks::WorkspaceTaskService::new(self.settings.clone())
-                .get(&handle_match.project_path, &task.task_id)?;
-        }
         ensure_flow_exists(&self.settings, &payload.flow_name)?;
 
         let mut snapshot = repository
@@ -1508,9 +1503,6 @@ impl WorkspaceConversationService {
             "status": "pending",
             "source_segment_id": segment_id,
         });
-        if let Some(task) = &payload.task {
-            request_record["task"] = json!(task);
-        }
         set_optional_artifact_string(&mut request_record, "goal", payload.goal.as_deref());
         if let Some(launch_context) = payload.launch_context.as_ref() {
             set_value(
@@ -2853,17 +2845,11 @@ impl WorkspaceConversationService {
         flow_name: &str,
         artifact: &Value,
     ) -> RuntimeRouteResponse {
-        let mut task_launch_context = artifact
+        let launch_context = artifact
             .get("launch_context")
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        if let Some(task) = artifact.get("task") {
-            task_launch_context.insert("context.spark_task".into(), task.clone());
-            if let Some(id) = artifact.get("conversation_id") {
-                task_launch_context.insert("context.spark_task_conversation".into(), id.clone());
-            }
-        }
         let execution_profile_id = artifact
             .get("execution_profile_id")
             .and_then(Value::as_str)
@@ -2914,7 +2900,7 @@ impl WorkspaceConversationService {
                     .get("goal")
                     .and_then(Value::as_str)
                     .and_then(non_empty_string),
-                launch_context: Some(task_launch_context.into_iter().collect()),
+                launch_context: Some(launch_context.into_iter().collect()),
                 ..PipelineStartRequest::default()
             })
     }
@@ -2926,16 +2912,9 @@ impl WorkspaceConversationService {
         artifact: &Value,
     ) -> Result<String, String> {
         let response = self.start_workspace_flow_route_response(project_path, flow_name, artifact);
-        let result = flow_start_outcome_from_response(&response)
+        flow_start_outcome_from_response(&response)
             .map(|outcome| outcome.run_id)
-            .map_err(|failure| failure.detail);
-        if artifact.get("task").is_some() {
-            // The run already owns the durable association. Projection failures must
-            // not turn a launched run into a retryable launch failure; task reads replay it.
-            let _ = crate::tasks::WorkspaceTaskService::new(self.settings.clone())
-                .reconcile_runs(project_path);
-        }
-        result
+            .map_err(|failure| failure.detail)
     }
 
     fn repository(&self) -> ConversationRepository {
@@ -2956,7 +2935,6 @@ impl WorkspaceConversationService {
 
 #[derive(Debug, Clone, PartialEq)]
 struct NormalizedFlowRunRequestPayload {
-    task: Option<crate::tasks::TaskReference>,
     flow_name: String,
     summary: String,
     goal: Option<String>,
@@ -3008,7 +2986,7 @@ fn normalize_flow_run_request_payload(
     request: FlowRunRequestCreateByHandleRequest,
     source_name: &str,
 ) -> WorkspaceResult<NormalizedFlowRunRequestPayload> {
-    let mut payload = normalize_flow_run_payload_fields(
+    let payload = normalize_flow_run_payload_fields(
         &request.flow_name,
         &request.summary,
         request.goal.as_deref(),
@@ -3020,7 +2998,6 @@ fn normalize_flow_run_request_payload(
         request.execution_profile_id.as_deref(),
         source_name,
     )?;
-    payload.task = request.task;
     Ok(payload)
 }
 
@@ -3060,7 +3037,6 @@ fn normalize_flow_run_payload_fields(
         WorkspaceError::Validation(format!("{source_name} requires a non-empty summary."))
     })?;
     Ok(NormalizedFlowRunRequestPayload {
-        task: None,
         flow_name,
         summary,
         goal: goal.and_then(non_empty_string),
@@ -3410,11 +3386,6 @@ fn flow_run_request_matches_payload(
     request: &Value,
     payload: &NormalizedFlowRunRequestPayload,
 ) -> bool {
-    if request.get("task").cloned().unwrap_or(Value::Null)
-        != serde_json::to_value(&payload.task).unwrap()
-    {
-        return false;
-    }
     request.get("flow_name").and_then(Value::as_str) == Some(payload.flow_name.as_str())
         && request.get("summary").and_then(Value::as_str) == Some(payload.summary.as_str())
         && optional_artifact_string(request, "goal") == payload.goal
@@ -3434,10 +3405,6 @@ fn optional_artifact_string(request: &Value, key: &str) -> Option<String> {
 }
 
 fn copy_payload_options_to_artifact(target: &mut Value, payload: &NormalizedFlowRunRequestPayload) {
-    if let Some(task) = &payload.task {
-        target["task"] = json!(task);
-    }
-
     set_optional_artifact_string(target, "goal", payload.goal.as_deref());
     if let Some(launch_context) = payload.launch_context.as_ref() {
         set_value(
