@@ -18,6 +18,9 @@ fn tasks_persist_atomically_reject_stale_writers_and_support_manual_lifecycle() 
     std::fs::create_dir_all(&settings.project_root).unwrap();
     let project = settings.project_root.to_str().unwrap();
     let service = WorkspaceTaskService::new(settings.clone());
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    assert_eq!(registry.read_project_record(project).unwrap(), None);
+    assert!(!registry.projects_root().exists());
     let mut task = service
         .create(
             project,
@@ -25,6 +28,7 @@ fn tasks_persist_atomically_reject_stale_writers_and_support_manual_lifecycle() 
         )
         .unwrap();
     assert_eq!(task.fields.stage, Stage::Backlog);
+    assert!(registry.read_project_record(project).unwrap().is_some());
     for stage in ["planning", "ready", "in_progress", "review"] {
         task = service.update(project, &task.id, mutation(json!({"revision":task.revision,"fields":{"stage":stage,"blocked":"Review constraint","needs_input":"Which version?"}}))).unwrap();
     }

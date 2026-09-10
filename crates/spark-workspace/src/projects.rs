@@ -75,9 +75,7 @@ impl WorkspaceProjectService {
     ) -> WorkspaceResult<ProjectRecord> {
         let project_path = normalize_project_path_or_400(&request.project_path)?;
         let registry = self.registry();
-        let mut record = registry
-            .read_project_record(&project_path)?
-            .ok_or_else(|| WorkspaceError::Validation("Unable to register project.".to_string()))?;
+        let mut record = registry.register_project(&project_path)?;
         if request.execution_profile_id.is_some() {
             let execution_profile_id = self
                 .validate_project_execution_profile_id(request.execution_profile_id.as_deref())?;

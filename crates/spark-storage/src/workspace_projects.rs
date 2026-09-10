@@ -90,15 +90,40 @@ impl ProjectRegistry {
         }
 
         let payload = read_project_payload_lossy(&project_paths.project_file);
+        let valid = payload.get("project_id").and_then(toml::Value::as_str)
+            == Some(project_paths.project_id.as_str())
+            && payload.get("project_path").and_then(toml::Value::as_str)
+                == Some(project_paths.project_path.as_str())
+            && ["display_name", "created_at", "last_opened_at"]
+                .iter()
+                .all(|key| {
+                    payload
+                        .get(*key)
+                        .and_then(toml::Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+            && [
+                "last_accessed_at",
+                "active_conversation_id",
+                "execution_profile_id",
+            ]
+            .iter()
+            .all(|key| payload.get(*key).is_none_or(toml::Value::is_str))
+            && payload.get("is_favorite").is_none_or(toml::Value::is_bool);
+        if valid {
+            return Ok(project_paths);
+        }
         let now = iso_now();
         let created_at =
-            read_required_string(&payload, "created_at").unwrap_or_else(|| now.clone());
+            read_optional_string(&payload, "created_at").unwrap_or_else(|| now.clone());
         let record = ProjectRecord {
             project_id: project_paths.project_id.clone(),
             project_path: project_paths.project_path.clone(),
-            display_name: project_paths.display_name.clone(),
+            display_name: read_required_string(&payload, "display_name")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| project_paths.display_name.clone()),
             created_at,
-            last_opened_at: now,
+            last_opened_at: read_optional_string(&payload, "last_opened_at").unwrap_or(now),
             last_accessed_at: read_optional_string(&payload, "last_accessed_at"),
             is_favorite: read_optional_bool(&payload, "is_favorite", false),
             active_conversation_id: read_optional_string(&payload, "active_conversation_id"),
@@ -108,8 +133,18 @@ impl ProjectRegistry {
         Ok(project_paths)
     }
 
-    pub fn read_project_record(&self, project_path: &str) -> Result<Option<ProjectRecord>> {
+    pub fn register_project(&self, project_path: &str) -> Result<ProjectRecord> {
         let project_paths = self.ensure_project_paths(project_path)?;
+        let mut record = self
+            .read_project_record_by_id(&project_paths.project_id)?
+            .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))?;
+        record.last_opened_at = iso_now();
+        write_project_record(&project_paths.project_file, &record)?;
+        Ok(record)
+    }
+
+    pub fn read_project_record(&self, project_path: &str) -> Result<Option<ProjectRecord>> {
+        let project_paths = self.project_paths(project_path)?;
         self.read_project_record_by_id(&project_paths.project_id)
     }
 

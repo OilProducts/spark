@@ -26,7 +26,7 @@ enabled = false
         .trim(),
     )
     .expect("profiles");
-    let service = WorkspaceProjectService::new(settings);
+    let service = WorkspaceProjectService::new(settings.clone());
     let project_dir = temp.path().join("project");
     fs::create_dir_all(&project_dir).expect("project");
 
@@ -37,6 +37,34 @@ enabled = false
         })
         .expect("register");
     assert_eq!(record.execution_profile_id.as_deref(), Some("native-dev"));
+
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let paths = registry.ensure_project_paths(&record.project_path).unwrap();
+    let text = fs::read_to_string(&paths.project_file).unwrap().replace(
+        &format!("last_opened_at = \"{}\"", record.last_opened_at),
+        "last_opened_at = \"2001-01-01T00:00:00Z\"",
+    );
+    fs::write(&paths.project_file, text).unwrap();
+    let updated = service
+        .update_project_state(ProjectStateUpdate {
+            project_path: record.project_path.clone(),
+            last_accessed_at: Some(Some("2002-01-01T00:00:00Z".into())),
+            is_favorite: Some(true),
+            ..ProjectStateUpdate::default()
+        })
+        .unwrap();
+    assert_eq!(updated.last_opened_at, "2001-01-01T00:00:00Z");
+    let reopened = service
+        .register_project(ProjectRegistrationRequest {
+            project_path: record.project_path.clone(),
+            execution_profile_id: None,
+        })
+        .unwrap();
+    assert!(reopened.last_opened_at > updated.last_opened_at);
+    assert_eq!(reopened.created_at, record.created_at);
+    assert_eq!(reopened.execution_profile_id, record.execution_profile_id);
+    assert_eq!(reopened.last_accessed_at, updated.last_accessed_at);
+    assert!(reopened.is_favorite);
 
     let missing = service
         .update_project_state(ProjectStateUpdate {
@@ -414,4 +442,29 @@ fn chat_models_preserve_a_successful_empty_codex_model_list() {
         .expect("models")
         .iter()
         .all(|model| model["provider"] != "codex"));
+}
+
+#[test]
+fn missing_project_profile_lookup_keeps_native_fallback_without_registration() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
+    let default_profile = registry
+        .read_project_record("/projects/unregistered-flow")
+        .unwrap()
+        .and_then(|record| record.execution_profile_id);
+    assert_eq!(default_profile, None);
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let response = attractor_api::AttractorApiService::new(settings.clone()).start_pipeline(
+        attractor_api::PipelineStartRequest {
+            flow_content: Some(super::review_artifact_contracts::simple_flow().into()),
+            working_directory: settings.project_root.to_string_lossy().into_owned(),
+            project_default_execution_profile_id: default_profile,
+            wait: Some(true),
+            ..attractor_api::PipelineStartRequest::default()
+        },
+    );
+    assert_eq!(response.body["status"], "started", "{:?}", response.body);
+    assert_eq!(response.body["execution_profile_id"], "native");
+    assert!(!registry.projects_root().exists());
 }

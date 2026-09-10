@@ -80,7 +80,10 @@ fn segment(id: &str, turn_id: &str, order: i64) -> TranscriptSegment {
 #[test]
 fn commit_conversation_creates_conversations_and_allocates_strictly_increasing_revisions() {
     let project_path = "/projects/commit-basics";
-    let (_temp, repo) = setup(project_path);
+    let _temp = tempfile::tempdir().expect("tempdir");
+    let home = _temp.path().join("spark-home");
+    let repo = ConversationRepository::new(&home);
+    assert!(!home.exists());
 
     let commit = repo
         .commit_conversation(
