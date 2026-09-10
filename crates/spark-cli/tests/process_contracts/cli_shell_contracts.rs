@@ -1564,7 +1564,7 @@ fn validation_error_flow_source() -> &'static str {
 }
 
 #[test]
-fn task_stdin_and_run_request_association_use_structured_json() {
+fn task_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
     let env = BTreeMap::new();
     let plan = request_plan_with_args_env_and_stdin(
         [
@@ -1586,30 +1586,67 @@ fn task_stdin_and_run_request_association_use_structured_json() {
     .unwrap();
     assert_eq!(plan.method, HttpMethod::Patch);
     assert_eq!(plan.body.unwrap()["fields"]["description"], "One\nTwo");
-    let plan = request_plan_with_args_env_and_stdin(
-        [
+    for flag in ["--task-id", "--task-stage"] {
+        assert!(request_plan_with_args_env_and_stdin(
+            [
+                "spark",
+                "convo",
+                "run-request",
+                "--conversation",
+                "amber-anchor",
+                "--flow",
+                "ops/test.yaml",
+                "--summary",
+                "Work",
+                flag,
+                "removed",
+                "--base-url",
+                "http://localhost:8000"
+            ],
+            &env,
+            ""
+        )
+        .is_err());
+    }
+}
+
+#[test]
+fn task_commands_use_project_scope_and_minimal_payloads() {
+    let env = BTreeMap::new();
+    for command in ["list", "get", "create", "update"] {
+        let mut args = vec![
             "spark",
-            "convo",
-            "run-request",
-            "--conversation",
-            "amber-anchor",
-            "--flow",
-            "ops/test.yaml",
-            "--summary",
-            "Work",
-            "--task-id",
-            "task-123",
-            "--task-stage",
-            "planning",
+            "task",
+            command,
+            "--project",
+            "/my project",
             "--base-url",
             "http://localhost:8000",
-        ],
-        &env,
-        "",
-    )
-    .unwrap();
-    assert_eq!(
-        plan.body.unwrap()["task"],
-        serde_json::json!({"task_id":"task-123","stage":"planning"})
-    );
+        ];
+        if matches!(command, "get" | "update") {
+            args.extend(["--id", "task-123"]);
+        }
+        if matches!(command, "create" | "update") {
+            args.extend(["--json", "-"]);
+        }
+        let payload = if command == "update" {
+            r#"{"revision":2,"fields":{"stage":"done","archived":true}}"#
+        } else {
+            r#"{"fields":{"title":"Title only"}}"#
+        };
+        let plan = request_plan_with_args_env_and_stdin(args, &env, payload).unwrap();
+        assert!(plan.path.ends_with("?project_path=%2Fmy%20project"));
+        if matches!(command, "get" | "list") {
+            assert_eq!(plan.method, HttpMethod::Get);
+            assert!(plan.body.is_none());
+        } else {
+            let body = plan.body.unwrap();
+            assert_eq!(body["actor"], "assistant");
+            assert!(body.get("conversation_id").is_none());
+            assert!(body.get("note").is_none());
+            if command == "create" {
+                assert_eq!(body["fields"], serde_json::json!({"title":"Title only"}));
+            }
+        }
+    }
 }

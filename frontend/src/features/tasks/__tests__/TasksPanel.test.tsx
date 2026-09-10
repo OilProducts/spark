@@ -2,16 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { TasksPanel } from '../TasksPanel'
 import { useStore } from '@/store'
-import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 
-const fields = { title: 'Deliver search', description: '', acceptance_criteria: '', next_action: '', stage: 'ready', priority: 2, blocked: '', needs_input: '', archived: false, conversations: [] as string[], artifacts: [] as string[], runs: [{ run_id: 'run-1', stage: 'planning' }] }
+const fields = { title: 'Deliver search', description: '', stage: 'ready', archived: false }
 let task: { id: string; revision: number; fields: typeof fields; activity: unknown[] }
-let attention: { task_id: string; run_id: string }[]
 let calls: { url: string; body: Record<string, unknown> }[]
 beforeEach(() => {
     window.innerWidth = 1440
     task = { id: 'task-1', revision: 1, fields: { ...fields }, activity: [] }
-    attention = []; calls = []
+    calls = []
     useStore.setState({ activeProjectPath: '/project', viewMode: 'tasks' })
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
         if (init?.body) {
@@ -20,83 +18,54 @@ beforeEach(() => {
             task = { ...task, id: init.method === 'POST' ? 'task-new' : task.id, revision: init.method === 'POST' ? 1 : task.revision + 1, fields: { ...task.fields, ...body.fields } }
             return { ok: true, json: async () => task }
         }
-        return { ok: true, json: async () => ({ tasks: [task], runs: [{ run_id: 'run-1', status: 'completed' }], attention }) }
+        return { ok: true, json: async () => ({ tasks: [task] }) }
     }))
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
-it('supports labelled editing, completion evidence, and actual run status without advancing stage', async () => {
+it('supports every manual stage, Done without a note, and reopening', async () => {
     render(<TasksPanel active />)
-    fireEvent.click(await screen.findByRole('button', { name: /Deliver search.*Normal/ }))
-    expect(screen.getByLabelText('Stage')).toHaveValue('ready')
-    expect(screen.getByRole('button', { name: 'Open run run-1 — completed' })).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Stage'), { target: { value: 'done' } })
-    expect(screen.getByLabelText('Note / completion evidence')).toBeRequired()
-    fireEvent.click(screen.getByRole('button', { name: 'Save task' }))
-    expect(calls).toHaveLength(0)
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Manual acceptance review passed' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save task' }))
-    await waitFor(() => expect(task.fields.stage).toBe('done'))
-    expect(calls[0].body.note).toBe('Manual acceptance review passed')
-    expect(calls[0].url).toContain('project_path=%2Fproject')
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    for (const stage of ['backlog', 'planning', 'ready', 'in_progress', 'review', 'done', 'backlog']) {
+        fireEvent.change(screen.getByLabelText('Stage'), { target: { value: stage } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+        await waitFor(() => expect(task.fields.stage).toBe(stage))
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
+    }
+    expect(screen.getByText('Activity').closest('details')).not.toHaveAttribute('open')
+    expect(screen.queryByLabelText('Priority')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Note / completion evidence')).not.toBeInTheDocument()
 })
 
 it('preserves drafts across refresh and tab activation, and reconciles concurrent changes', async () => {
     const view = render(<TasksPanel active />)
-    fireEvent.click(await screen.findByRole('button', { name: /Deliver search.*Normal/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'My draft' } })
-    task = { ...task, revision: 2, fields: { ...task.fields, next_action: 'Server next action' } }
-    fireEvent.click(screen.getByRole('button', { name: 'Save task' }))
+    task = { ...task, revision: 2, fields: { ...task.fields, description: 'Server next action' } }
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Your edits are preserved')
     view.rerender(<TasksPanel active={false} />)
     view.rerender(<TasksPanel active />)
     expect(await screen.findByRole('status')).toHaveTextContent('newer revision')
     expect(screen.getByLabelText('Title')).toHaveValue('My draft')
-    expect(screen.getByRole('button', { name: 'Save task' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Reconcile with latest revision' }))
-    expect(screen.getByLabelText('Next action')).toHaveValue('Server next action')
+    expect(screen.getByLabelText('Description')).toHaveValue('Server next action')
     expect(screen.getByLabelText('Title')).toHaveValue('My draft')
-    fireEvent.click(screen.getByRole('button', { name: 'Save task' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(task.revision).toBe(3))
-    expect(task.fields.next_action).toBe('Server next action')
-})
-
-it.each(['active', 'all'] as const)('opens a linked run in the effective Runs selection with %s scope', async (scopeMode) => {
-    useStore.getState().updateRunsListSession({ scopeMode, selectedRunIdByScopeKey: { all: 'previous-all-run', 'project:/project': 'previous-project-run' } })
-    render(<TasksPanel active />)
-    fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
-    fireEvent.click(screen.getByRole('button', { name: 'Open run run-1 — completed' }))
-    expect(useStore.getState().viewMode).toBe('runs')
-    expect(selectSelectedRunId(useStore.getState())).toBe('run-1')
-})
-
-it.each(['active', 'all'] as const)('filters attention and selects the descendant question run with %s scope', async (scopeMode) => {
-    useStore.getState().updateRunsListSession({ scopeMode, selectedRunIdByScopeKey: { all: 'previous-all-run', 'project:/project': 'previous-project-run' } })
-    attention = [{ task_id: 'task-1', run_id: 'run-child' }]
-    render(<TasksPanel active />)
-    fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
-    fireEvent.click(screen.getByLabelText('Needs attention'))
-    expect(within(screen.getByRole('region', { name: 'Ready' })).getByRole('button', { name: /Deliver search/ })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Answer questions in run run-child' }))
-    expect(useStore.getState().viewMode).toBe('runs')
-    expect(selectSelectedRunId(useStore.getState())).toBe('run-child')
-    attention = []
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-    await waitFor(() => expect(within(screen.getByRole('region', { name: 'Ready' })).queryByRole('button')).not.toBeInTheDocument())
-    task = { ...task, fields: { ...task.fields, blocked: 'Waiting for review' } }
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-    expect(await screen.findByRole('button', { name: /Blocked: Waiting for review/ })).toBeInTheDocument()
+    expect(task.fields.description).toBe('Server next action')
 })
 
 it('polls only while visible and preserves drafts when opening other cards', async () => {
     const view = render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unfinished edit' } })
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Unfinished note' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Unfinished note' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
     fireEvent.click(screen.getByRole('button', { name: /Deliver search/ }))
     expect(screen.getByLabelText('Title')).toHaveValue('Unfinished edit')
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('Unfinished note')
+    expect(screen.getByLabelText('Description')).toHaveValue('Unfinished note')
     view.rerender(<TasksPanel active={false} />)
     vi.useFakeTimers()
     view.rerender(<TasksPanel active />)
@@ -112,12 +81,12 @@ it('keeps unsaved edits scoped to their project when switching projects', async 
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Project A draft' } })
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Project A note' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Project A note' } })
     await act(async () => { useStore.setState({ activeProjectPath: '/other' }) })
     expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
     await act(async () => { useStore.setState({ activeProjectPath: '/project' }) })
     expect(screen.getByLabelText('Title')).toHaveValue('Project A draft')
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('Project A note')
+    expect(screen.getByLabelText('Description')).toHaveValue('Project A note')
 })
 
 it('creates a manual task and supports archival through accessible controls', async () => {
@@ -125,17 +94,17 @@ it('creates a manual task and supports archival through accessible controls', as
     await screen.findByRole('button', { name: /Deliver search/ })
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Manual outcome' } })
-    fireEvent.change(screen.getByLabelText('Priority'), { target: { value: '1' } })
     fireEvent.click(within(screen.getByRole('region', { name: 'Task details' })).getByRole('button', { name: 'Create task' }))
-    expect(await screen.findByRole('button', { name: /Manual outcome.*High/ })).toBeInTheDocument()
-    expect(task.fields.runs).toEqual([])
+    expect(await screen.findByRole('button', { name: /Manual outcome/ })).toBeInTheDocument()
+    expect(task.fields.stage).toBe('backlog')
     expect(calls[0].body.revision).toBeUndefined()
-    fireEvent.click(screen.getByText('Archival'))
-    fireEvent.click(screen.getByLabelText('Archived'))
-    fireEvent.click(screen.getByRole('button', { name: 'Save task' }))
-    await waitFor(() => expect(screen.queryByRole('button', { name: /Manual outcome.*High/ })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'Archive task' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Manual outcome/ })).not.toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('Show archived'))
-    expect(screen.getByRole('button', { name: /Manual outcome.*High.*Archived/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Manual outcome/ })).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Restore task' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Restore task' }))
+    await waitFor(() => expect(task.fields.archived).toBe(false))
 })
 
 const editor = () => within(screen.getByRole('region', { name: 'Task details' }))
@@ -146,7 +115,7 @@ it('creates with only a title, keeps the saved task open and resets its baseline
     expect(screen.getByLabelText('Title').tagName).toBe('INPUT')
     expect(screen.getByLabelText('Title')).toHaveAttribute('data-slot', 'input')
     expect(screen.getByLabelText('Stage')).toHaveAttribute('data-slot', 'native-select')
-    expect(screen.getByLabelText('Outcome and decisions')).toHaveAttribute('data-slot', 'textarea')
+    expect(screen.getByLabelText('Description')).toHaveAttribute('data-slot', 'textarea')
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
     expect(screen.queryByText('Related resources')).not.toBeInTheDocument()
     expect(screen.queryByText('Activity')).not.toBeInTheDocument()
@@ -159,23 +128,13 @@ it('creates with only a title, keeps the saved task open and resets its baseline
     expect(calls).toHaveLength(1)
 })
 
-it('preserves new fields and notes on close and explicitly discards the new draft', async () => {
+it('preserves a new draft on Cancel', async () => {
     render(<TasksPanel active />)
-    await screen.findByRole('button', { name: /Deliver search/ })
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
-    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Draft capture' } })
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Draft note' } })
-    fireEvent.click(editor().getByRole('button', { name: 'Close' }))
-    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Draft title' } })
+    fireEvent.click(editor().getByRole('button', { name: 'Cancel' }))
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
-    expect(screen.getByLabelText('Title')).toHaveValue('Draft capture')
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('Draft note')
-    fireEvent.click(editor().getByRole('button', { name: 'Discard changes' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
-    expect(screen.getByLabelText('Title')).toHaveValue('')
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('')
-    expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
-    expect(calls).toHaveLength(0)
+    expect(screen.getByLabelText('Title')).toHaveValue('Draft title')
 })
 
 it('tracks reverted fields and note-only changes and discards to the latest revision', async () => {
@@ -186,17 +145,17 @@ it('tracks reverted fields and note-only changes and discards to the latest revi
     expect(editor().getByRole('heading', { name: 'Deliver search' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Deliver search' } })
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Note only' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Note only' } })
     expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
     fireEvent.keyDown(screen.getByLabelText('Title'), { key: 'Escape' })
     fireEvent.click(screen.getByRole('button', { name: /Deliver search/ }))
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('Note only')
+    expect(screen.getByLabelText('Description')).toHaveValue('Note only')
     task = { ...task, revision: 2, fields: { ...task.fields, title: 'Server title' } }
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     await screen.findByRole('status')
     fireEvent.click(editor().getByRole('button', { name: 'Discard changes' }))
     expect(screen.getByLabelText('Title')).toHaveValue('Server title')
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('')
+    expect(screen.getByLabelText('Description')).toHaveValue('')
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
 })
 
@@ -204,10 +163,10 @@ it('locks editing and dismissal during saving and preserves input after failure'
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Keep this' } })
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Keep note' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Keep note' } })
     let reject!: (error: Error) => void
     vi.mocked(fetch).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
-    fireEvent.click(editor().getByRole('button', { name: 'Save task' }))
+    fireEvent.click(editor().getByRole('button', { name: 'Save' }))
     expect(screen.getByLabelText('Title')).toBeDisabled()
     expect(editor().getByRole('button', { name: 'Close' })).toBeDisabled()
     expect(editor().getByRole('button', { name: 'Discard changes' })).toBeDisabled()
@@ -216,7 +175,7 @@ it('locks editing and dismissal during saving and preserves input after failure'
     await act(async () => { reject(new Error('Save unavailable')) })
     expect(await screen.findByRole('alert')).toHaveTextContent('Save unavailable')
     expect(screen.getByLabelText('Title')).toHaveValue('Keep this')
-    expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('Keep note')
+    expect(screen.getByLabelText('Description')).toHaveValue('Keep note')
     expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
 })
 
@@ -241,34 +200,19 @@ it('keeps conflicts blocked after dismissal when the latest revision cannot be l
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Conflicting edit' } })
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({}) } as Response)
     vi.mocked(fetch).mockRejectedValueOnce(new Error('Refresh unavailable'))
-    fireEvent.click(editor().getByRole('button', { name: 'Save task' }))
+    fireEvent.click(editor().getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(editor().getByRole('button', { name: 'Close' })).toBeEnabled())
     fireEvent.click(editor().getByRole('button', { name: 'Close' }))
     fireEvent.click(screen.getByRole('button', { name: /Deliver search/ }))
     expect(screen.getByLabelText('Title')).toHaveValue('Conflicting edit')
     expect(screen.getByRole('status')).toHaveTextContent('reconcile before saving')
-    expect(editor().getByRole('button', { name: 'Save task' })).toBeDisabled()
+    expect(editor().getByRole('button', { name: 'Save' })).toBeDisabled()
     fireEvent.click(editor().getByRole('button', { name: 'Discard changes' }))
-    expect(editor().getByRole('button', { name: 'Save task' })).toBeDisabled()
+    expect(editor().getByRole('button', { name: 'Save' })).toBeDisabled()
     task = { ...task, revision: 2 }
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Reconcile with latest revision' }))
-    expect(editor().getByRole('button', { name: 'Save task' })).toBeEnabled()
-})
-
-it('retains raw relationships and conversation navigation', async () => {
-    task.fields = { ...task.fields, conversations: ['conversation-1'], artifacts: ['README.md'] }
-    render(<TasksPanel active />)
-    fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
-    fireEvent.click(screen.getByText('Relationships'))
-    expect(screen.getByLabelText('Stage supported by run-1')).toHaveValue('planning')
-    fireEvent.change(screen.getByLabelText('Run IDs (one per line)'), { target: { value: 'run-1\nrun-2' } })
-    fireEvent.change(screen.getByLabelText('Stage supported by run-2'), { target: { value: 'review' } })
-    fireEvent.click(editor().getByRole('button', { name: 'Save task' }))
-    await waitFor(() => expect(task.fields.runs).toEqual([{ run_id: 'run-1', stage: 'planning' }, { run_id: 'run-2', stage: 'review' }]))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Open conversation conversation-1' })).toBeEnabled())
-    fireEvent.click(screen.getByRole('button', { name: 'Open conversation conversation-1' }))
-    expect(useStore.getState().viewMode).toBe('home')
+    expect(editor().getByRole('button', { name: 'Save' })).toBeEnabled()
 })
 
 it.each((['creation', 'update', 'failure', 'conflict'] as const).flatMap(outcome => [true, false].map(returnWhilePending => ({ outcome, returnWhilePending }))))('owns a deferred $outcome across projects (return while pending: $returnWhilePending)', async ({ outcome, returnWhilePending }) => {
@@ -276,10 +220,10 @@ it.each((['creation', 'update', 'failure', 'conflict'] as const).flatMap(outcome
     await screen.findByRole('button', { name: /Deliver search/ })
     fireEvent.click(screen.getByRole('button', { name: outcome === 'creation' ? 'Create task' : /Deliver search/ }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Project A saved title' } })
-    fireEvent.change(screen.getByLabelText('Note / completion evidence'), { target: { value: 'Project A evidence' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Project A evidence' } })
     let complete!: (response: Response) => void
     vi.mocked(fetch).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
-    fireEvent.click(editor().getByRole('button', { name: outcome === 'creation' ? 'Create task' : 'Save task' }))
+    fireEvent.click(editor().getByRole('button', { name: outcome === 'creation' ? 'Create task' : 'Save' }))
     const submissions = () => vi.mocked(fetch).mock.calls.filter(([, init]) => init?.body)
     expect(submissions()).toHaveLength(1)
     expect(submissions()[0][0]).toContain('project_path=%2Fproject')
@@ -291,7 +235,7 @@ it.each((['creation', 'update', 'failure', 'conflict'] as const).flatMap(outcome
         await switchProject('/project')
         expect(screen.getByLabelText('Title')).toHaveValue('Project A saved title')
         expect(screen.getByLabelText('Title')).toBeDisabled()
-        expect(editor().getByRole('button', { name: 'Close' })).toBeDisabled()
+        expect(editor().getByRole('button', { name: outcome === 'creation' ? 'Cancel' : 'Close' })).toBeDisabled()
         expect(editor().getByRole('button', { name: 'Saving…' })).toBeDisabled()
         fireEvent.click(editor().getByRole('button', { name: 'Saving…' }))
         fireEvent.keyDown(screen.getByLabelText('Title'), { key: 'Escape' })
@@ -300,34 +244,34 @@ it.each((['creation', 'update', 'failure', 'conflict'] as const).flatMap(outcome
         await switchProject('/other')
     }
     const success = outcome === 'creation' || outcome === 'update'
-    if (success) task = { ...task, id: outcome === 'creation' ? 'task-new' : task.id, revision: outcome === 'creation' ? 1 : 2, fields: { ...task.fields, title: 'Project A saved title' } }
-    if (outcome === 'conflict') task = { ...task, revision: 2, fields: { ...task.fields, next_action: 'Server next action' } }
+    if (success) task = { ...task, id: outcome === 'creation' ? 'task-new' : task.id, revision: outcome === 'creation' ? 1 : 2, fields: { ...task.fields, title: 'Project A saved title', description: 'Project A evidence' } }
+    if (outcome === 'conflict') task = { ...task, revision: 2, fields: { ...task.fields, stage: 'review' } }
     await act(async () => { complete({ ok: success, status: success ? 200 : outcome === 'conflict' ? 409 : 500, json: async () => success ? task : { detail: 'Save unavailable' } } as Response) })
     expect(screen.getByLabelText('Title')).toHaveValue('Project B draft')
     expect(screen.getByLabelText('Title')).toBeEnabled()
     await switchProject('/project')
     expect(screen.getByLabelText('Title')).toHaveValue('Project A saved title')
     expect(screen.getByLabelText('Title')).toBeEnabled()
-    expect(editor().getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(editor().getByRole('button', { name: outcome === 'creation' && !success ? 'Cancel' : 'Close' })).toBeEnabled()
     if (success) {
         expect(editor().getByRole('heading', { name: 'Project A saved title' })).toBeInTheDocument()
-        expect(editor().getByRole('button', { name: 'Save task' })).toBeEnabled()
-        expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('')
+        expect(editor().getByRole('button', { name: 'Save' })).toBeEnabled()
+        expect(screen.getByLabelText('Description')).toHaveValue('Project A evidence')
         expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
         fireEvent.click(editor().getByRole('button', { name: 'Close' }))
         fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
         expect(screen.getByLabelText('Title')).toHaveValue('')
     } else {
-        expect(screen.getByLabelText('Note / completion evidence')).toHaveValue('Project A evidence')
+        expect(screen.getByLabelText('Description')).toHaveValue('Project A evidence')
         expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
         expect(screen.getByRole('alert')).toHaveTextContent(outcome === 'conflict' ? 'Your edits are preserved' : 'Save unavailable')
         if (outcome === 'conflict') {
-            expect(editor().getByRole('button', { name: 'Save task' })).toBeDisabled()
+            expect(editor().getByRole('button', { name: 'Save' })).toBeDisabled()
             fireEvent.click(editor().getByRole('button', { name: 'Reconcile with latest revision' }))
-            expect(screen.getByLabelText('Next action')).toHaveValue('Server next action')
+            expect(screen.getByLabelText('Stage')).toHaveValue('review')
             expect(screen.getByLabelText('Title')).toHaveValue('Project A saved title')
         }
-        expect(editor().getByRole('button', { name: 'Save task' })).toBeEnabled()
+        expect(editor().getByRole('button', { name: 'Save' })).toBeEnabled()
     }
     expect(submissions()).toHaveLength(1)
 })
@@ -347,4 +291,18 @@ it('polls only the selected project while retained controllers keep their drafts
     vi.mocked(fetch).mockClear()
     await act(async () => { vi.advanceTimersByTime(30000) })
     expect(fetch).not.toHaveBeenCalled()
+})
+
+it('archives separately without saving or losing edited fields', async () => {
+    render(<TasksPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unsaved title' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Archive task' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Restore task' })).toBeEnabled())
+    expect(calls[0].body.fields).toEqual({ archived: true })
+    expect(task.fields.title).toBe('Deliver search')
+    expect(screen.getByLabelText('Title')).toHaveValue('Unsaved title')
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(task.fields.title).toBe('Unsaved title'))
 })

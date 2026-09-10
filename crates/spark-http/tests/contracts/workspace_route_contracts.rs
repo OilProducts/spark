@@ -313,3 +313,91 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[tokio::test]
+async fn task_routes_enforce_minimal_records_and_revision_protection() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("tasks-project");
+    fs::create_dir_all(&project).unwrap();
+    let app = build_app(settings);
+    let list_uri = format!("/workspace/api/tasks?project_path={}", project.display());
+    let created = request_json(
+        app.clone(),
+        "POST",
+        &list_uri,
+        Some(
+            json!({"fields":{"title":"Quick capture"},"actor":"assistant","note":"Captured issue"}),
+        ),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    assert_eq!(
+        created.1["fields"],
+        json!({"title":"Quick capture","description":"","stage":"backlog","archived":false})
+    );
+    assert_eq!(created.1["activity"][0]["actor"], "assistant");
+    let uri = format!(
+        "/workspace/api/tasks/{}?project_path={}",
+        created.1["id"].as_str().unwrap(),
+        project.display()
+    );
+    let updated = request_json(
+        app.clone(),
+        "PATCH",
+        &uri,
+        Some(json!({"revision":1,"fields":{"stage":"done"}})),
+    )
+    .await;
+    assert_eq!(updated.0, StatusCode::OK);
+    let stale = request_json(
+        app.clone(),
+        "PATCH",
+        &uri,
+        Some(json!({"revision":1,"fields":{"title":"Stale"}})),
+    )
+    .await;
+    assert_eq!(stale.0, StatusCode::CONFLICT);
+    for key in [
+        "priority",
+        "acceptance_criteria",
+        "next_action",
+        "blocked",
+        "needs_input",
+        "conversations",
+        "artifacts",
+        "runs",
+    ] {
+        let rejected = request_json(
+            app.clone(),
+            "PATCH",
+            &uri,
+            Some(json!({"revision":2,"fields":{key:null}})),
+        )
+        .await;
+        assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "{key}: {}", rejected.1);
+    }
+    let rejected = request_json(
+        app.clone(),
+        "POST",
+        &list_uri,
+        Some(json!({"fields":{"title":"No provenance"},"conversation_id":"old"})),
+    )
+    .await;
+    assert_eq!(rejected.0, StatusCode::BAD_REQUEST);
+    let listed = request_json(app.clone(), "GET", &list_uri, None).await;
+    assert_eq!(listed.1, json!({"tasks":[updated.1]}));
+    let fetched = request_json(app.clone(), "GET", &uri, None).await;
+    assert_eq!(fetched.1, updated.1);
+    let other = temp.path().join("other");
+    fs::create_dir(&other).unwrap();
+    let other_uri = format!(
+        "/workspace/api/tasks/{}?project_path={}",
+        created.1["id"].as_str().unwrap(),
+        other.display()
+    );
+    assert_eq!(
+        request_json(app, "GET", &other_uri, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+}

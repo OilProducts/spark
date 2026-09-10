@@ -32,7 +32,6 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
@@ -71,7 +70,6 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
@@ -107,7 +105,6 @@ fn by_handle_flow_run_request_attaches_to_in_flight_assistant_turn() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the approved review flow.".to_string(),
                 goal: None,
@@ -153,7 +150,6 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Reject me.".to_string(),
                 ..FlowRunRequestCreateByHandleRequest::default()
@@ -181,7 +177,6 @@ fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Launch me.".to_string(),
                 goal: Some("Run the tiny flow.".to_string()),
@@ -235,7 +230,6 @@ fn launch_failure_is_persisted_on_approved_flow_run_request() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/broken.yaml".to_string(),
                 summary: "This launch should fail validation.".to_string(),
                 execution_profile_id: Some("missing-profile".to_string()),
@@ -818,7 +812,6 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                task: None,
                 flow_name: "ops/review.yaml".to_string(),
                 summary: "Run the review flow.".to_string(),
                 ..FlowRunRequestCreateByHandleRequest::default()
