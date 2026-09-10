@@ -295,7 +295,7 @@ it.each(['selection revisit', 'session recreation', 'connection replacement'])(
             { type: 'run.journal_entry', resource: { kind: 'run', id: 'a' }, cursor: { kind: 'run_sequence', value: 92 },
                 payload: { sequence: 92, emitted_at: '2026-01-01T00:00:00Z', type: 'human_gate', node_id: 'stale', question_id: 'stale', prompt: 'obsolete' } },
             { type: 'resync_required', resource: { kind: 'run', id: 'a' }, payload: { reason: 'gap' } },
-            { type: 'activity.segment_upsert', resource: { kind: 'node_execution', id: 'stale' },
+            { type: 'conversation.segment_upsert', resource: { kind: 'node_execution', id: 'stale' },
                 payload: { run_id: 'a', node_id: 'stale', attempt: 1, record: { source_event_sequence: 93,
                     segment: { id: 'segment', turn_id: 'turn', order: 0, kind: 'assistant_message', role: 'assistant',
                         status: 'complete', timestamp: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: 'message' } } } },
@@ -354,5 +354,54 @@ it('broadcasts detected journal gaps so question snapshots also reconcile', asyn
         await act(async () => pending[1].resolve(snapshot('a')))
     } finally {
         window.removeEventListener('spark:run-resync-required', resync)
+    }
+})
+
+
+it.each([
+    ['root', 'a', 'a', 'a', 'root'],
+    ['selected child', 'a', 'a', 'parent', 'root'],
+    ['parent viewing child', 'a', 'child', 'a', 'child'],
+])('receives live execution activity for %s', async (_, selected, owner, presentation, scope) => {
+    class Source {
+        static instances: Source[] = []
+        onmessage: ((event: MessageEvent) => void) | null = null
+        onerror: (() => void) | null = null
+        close = vi.fn()
+        constructor(readonly url: string) { Source.instances.push(this) }
+    }
+    vi.stubGlobal('EventSource', Source)
+    select(selected)
+    render(<><WorkspaceLiveEventsController /><RunStream /></>)
+    await act(async () => pending[0].resolve(snapshot(selected)))
+    const dispatched = vi.fn()
+    const conversation = vi.fn()
+    window.addEventListener('spark:run-segment-upsert', dispatched)
+    window.addEventListener('spark:conversation-live-event', conversation)
+    const segment = {
+        id: 'live-segment', turn_id: 'turn', order: 0, kind: 'assistant_message', role: 'assistant',
+        status: 'complete', timestamp: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: 'Live progress',
+    }
+    const emit = (resource: object, payload: object) => act(() => Source.instances.at(-1)!.onmessage!(
+        new MessageEvent('message', { data: JSON.stringify({ type: 'conversation.segment_upsert', resource, payload }) }),
+    ))
+    try {
+        emit({ kind: 'node_execution', id: `${owner}:work:1:0` }, {
+            run_id: owner, presentation_run_id: presentation, node_id: 'work', attempt: 0,
+            source_scope: owner === presentation ? 'root' : 'child',
+            record: { source_event_sequence: 7, segment },
+        })
+        expect(useRunTranscriptStore.getState().byRunId[selected].segments).toEqual([
+            expect.objectContaining({ id: 'live-segment', content: 'Live progress', node_id: 'work',
+                source_run_id: owner, source_scope: scope, latest_sequence: 7 }),
+        ])
+        expect(dispatched).toHaveBeenCalledTimes(owner === presentation ? 1 : 2)
+        expect(conversation).not.toHaveBeenCalled()
+        emit({ kind: 'conversation', id: 'chat' }, { segment })
+        expect(conversation).toHaveBeenCalledTimes(1)
+        expect(dispatched).toHaveBeenCalledTimes(owner === presentation ? 1 : 2)
+    } finally {
+        window.removeEventListener('spark:run-segment-upsert', dispatched)
+        window.removeEventListener('spark:conversation-live-event', conversation)
     }
 })
