@@ -21,8 +21,7 @@ function display(key: keyof Fields, value: Fields[keyof Fields]) {
 export function TaskEditor({ editing, draft, latest, busy, conflict, error, unsaved, narrow, focusRequest, setDraft, save, archive, close, discard, reconcile }: Props) {
     const heading = useRef<HTMLHeadingElement>(null)
     const title = useRef<HTMLInputElement>(null)
-    const saved = Boolean(editing)
-    useEffect(() => { if (saved) heading.current?.focus(); else title.current?.focus() }, [saved, focusRequest])
+    useEffect(() => { title.current?.focus({ preventScroll: true }) }, [focusRequest])
     const changed = latest && latest.revision > (editing?.revision ?? 0)
     return <section aria-label="Task details" className={`flex min-h-0 min-w-0 flex-col rounded-md border border-border bg-card ${narrow ? 'w-full' : 'w-[28rem] shrink-0'}`} onKeyDown={e => {
         if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && !busy) { e.stopPropagation(); close() }
@@ -55,7 +54,7 @@ export function TaskEditor({ editing, draft, latest, busy, conflict, error, unsa
         <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-4">
             <Button type="submit" disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create task'}</Button>
             <Button type="button" variant="secondary" disabled={busy} onClick={close}>{editing ? 'Close' : 'Cancel'}</Button>
-            {editing && <Button type="button" variant="ghost" disabled={busy} onClick={discard}>Discard changes</Button>}
+            <Button type="button" variant="ghost" disabled={busy} onClick={discard}>Discard changes</Button>
         </footer>
         </form>
     </section>

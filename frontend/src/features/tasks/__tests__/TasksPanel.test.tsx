@@ -26,11 +26,13 @@ afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 it('supports every manual stage, Done without a note, and reopening', async () => {
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     for (const stage of ['backlog', 'planning', 'ready', 'in_progress', 'review', 'done', 'backlog']) {
         fireEvent.change(screen.getByLabelText('Stage'), { target: { value: stage } })
         fireEvent.click(screen.getByRole('button', { name: 'Save' }))
         await waitFor(() => expect(task.fields.stage).toBe(stage))
-        await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled())
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Edit', exact: true })).toBeEnabled())
+        fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     }
     expect(screen.getByText('Activity').closest('details')).not.toHaveAttribute('open')
     expect(screen.queryByLabelText('Priority')).not.toBeInTheDocument()
@@ -40,6 +42,7 @@ it('supports every manual stage, Done without a note, and reopening', async () =
 it('preserves drafts across refresh and tab activation, and reconciles concurrent changes', async () => {
     const view = render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'My draft' } })
     task = { ...task, revision: 2, fields: { ...task.fields, description: 'Server next action' } }
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -60,6 +63,7 @@ it('preserves drafts across refresh and tab activation, and reconciles concurren
 it('polls only while visible and preserves drafts when opening other cards', async () => {
     const view = render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unfinished edit' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Unfinished note' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
@@ -80,6 +84,7 @@ it('polls only while visible and preserves drafts when opening other cards', asy
 it('keeps unsaved edits scoped to their project when switching projects', async () => {
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Project A draft' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Project A note' } })
     await act(async () => { useStore.setState({ activeProjectPath: '/other' }) })
@@ -98,9 +103,10 @@ it('creates a manual task and supports archival through accessible controls', as
     expect(await screen.findByRole('button', { name: /Manual outcome/ })).toBeInTheDocument()
     expect(task.fields.stage).toBe('backlog')
     expect(calls[0].body.revision).toBeUndefined()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.click(screen.getByRole('button', { name: 'Archive task' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: /Manual outcome/ })).not.toBeInTheDocument())
-    fireEvent.click(screen.getByLabelText('Show archived'))
+    fireEvent.click(screen.getByRole('button', { name: 'Show archived' }))
     expect(screen.getByRole('button', { name: /Manual outcome/ })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Restore task' })).toBeEnabled())
     fireEvent.click(screen.getByRole('button', { name: 'Restore task' }))
@@ -140,7 +146,8 @@ it('preserves a new draft on Cancel', async () => {
 it('tracks reverted fields and note-only changes and discards to the latest revision', async () => {
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
-    expect(editor().getByRole('heading', { name: 'Deliver search' })).toHaveFocus()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
+    expect(screen.getByLabelText('Title')).toHaveFocus()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Changed' } })
     expect(editor().getByRole('heading', { name: 'Deliver search' })).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Deliver search' } })
@@ -154,14 +161,15 @@ it('tracks reverted fields and note-only changes and discards to the latest revi
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
     await screen.findByRole('status')
     fireEvent.click(editor().getByRole('button', { name: 'Discard changes' }))
-    expect(screen.getByLabelText('Title')).toHaveValue('Server title')
-    expect(screen.getByLabelText('Description')).toHaveValue('')
+    expect(editor().getByRole('heading', { name: 'Server title' })).toHaveFocus()
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
 })
 
 it('locks editing and dismissal during saving and preserves input after failure', async () => {
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Keep this' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Keep note' } })
     let reject!: (error: Error) => void
@@ -183,6 +191,7 @@ it('replaces the board at the narrow breakpoint and respects handled and outside
     window.innerWidth = 1024
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     expect(screen.queryByRole('region', { name: 'Ready' })).not.toBeInTheDocument()
     fireEvent.keyDown(screen.getByRole('heading', { name: 'Tasks' }), { key: 'Escape' })
     const title = screen.getByLabelText('Title')
@@ -197,6 +206,7 @@ it('replaces the board at the narrow breakpoint and respects handled and outside
 it('keeps conflicts blocked after dismissal when the latest revision cannot be loaded', async () => {
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Conflicting edit' } })
     vi.mocked(fetch).mockResolvedValueOnce({ ok: false, status: 409, json: async () => ({}) } as Response)
     vi.mocked(fetch).mockRejectedValueOnce(new Error('Refresh unavailable'))
@@ -208,17 +218,15 @@ it('keeps conflicts blocked after dismissal when the latest revision cannot be l
     expect(screen.getByRole('status')).toHaveTextContent('reconcile before saving')
     expect(editor().getByRole('button', { name: 'Save' })).toBeDisabled()
     fireEvent.click(editor().getByRole('button', { name: 'Discard changes' }))
-    expect(editor().getByRole('button', { name: 'Save' })).toBeDisabled()
-    task = { ...task, revision: 2 }
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Reconcile with latest revision' }))
-    expect(editor().getByRole('button', { name: 'Save' })).toBeEnabled()
+    expect(editor().getByRole('button', { name: 'Edit', exact: true })).toBeEnabled()
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
 })
 
 it.each((['creation', 'update', 'failure', 'conflict'] as const).flatMap(outcome => [true, false].map(returnWhilePending => ({ outcome, returnWhilePending }))))('owns a deferred $outcome across projects (return while pending: $returnWhilePending)', async ({ outcome, returnWhilePending }) => {
     render(<TasksPanel active />)
     await screen.findByRole('button', { name: /Deliver search/ })
     fireEvent.click(screen.getByRole('button', { name: outcome === 'creation' ? 'Create task' : /Deliver search/ }))
+    if (outcome !== 'creation') fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Project A saved title' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Project A evidence' } })
     let complete!: (response: Response) => void
@@ -250,13 +258,15 @@ it.each((['creation', 'update', 'failure', 'conflict'] as const).flatMap(outcome
     expect(screen.getByLabelText('Title')).toHaveValue('Project B draft')
     expect(screen.getByLabelText('Title')).toBeEnabled()
     await switchProject('/project')
-    expect(screen.getByLabelText('Title')).toHaveValue('Project A saved title')
-    expect(screen.getByLabelText('Title')).toBeEnabled()
+    if (!success) {
+        expect(screen.getByLabelText('Title')).toHaveValue('Project A saved title')
+        expect(screen.getByLabelText('Title')).toBeEnabled()
+    }
     expect(editor().getByRole('button', { name: outcome === 'creation' && !success ? 'Cancel' : 'Close' })).toBeEnabled()
     if (success) {
         expect(editor().getByRole('heading', { name: 'Project A saved title' })).toBeInTheDocument()
-        expect(editor().getByRole('button', { name: 'Save' })).toBeEnabled()
-        expect(screen.getByLabelText('Description')).toHaveValue('Project A evidence')
+        expect(editor().getByRole('button', { name: 'Edit', exact: true })).toBeEnabled()
+        expect(editor().getByText('Project A evidence')).toBeInTheDocument()
         expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
         fireEvent.click(editor().getByRole('button', { name: 'Close' }))
         fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
@@ -296,6 +306,7 @@ it('polls only the selected project while retained controllers keep their drafts
 it('archives separately without saving or losing edited fields', async () => {
     render(<TasksPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unsaved title' } })
     fireEvent.click(screen.getByRole('button', { name: 'Archive task' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Restore task' })).toBeEnabled())
@@ -305,4 +316,92 @@ it('archives separately without saving or losing edited fields', async () => {
     expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(task.fields.title).toBe('Unsaved title'))
+})
+
+it('filters titles locally with matching counts and keeps the selected read view', async () => {
+    task.fields.description = 'Paragraph one.\n\nParagraph two.'
+    render(<TasksPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    expect(editor().getByRole('heading')).toHaveFocus()
+    expect(editor().getByText(task.fields.description, { normalizer: value => value })).toHaveClass('whitespace-pre-wrap')
+    const count = vi.mocked(fetch).mock.calls.length
+    fireEvent.change(screen.getByLabelText('Search titles'), { target: { value: 'DELIVER' } })
+    expect(within(screen.getByRole('region', { name: 'Ready' })).getByLabelText('1 matching tasks')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Search titles'), { target: { value: 'missing' } })
+    expect(screen.queryByRole('button', { name: 'Deliver search' })).not.toBeInTheDocument()
+    expect(screen.getAllByText('No matches')).toHaveLength(6)
+    expect(editor().getByRole('heading')).toHaveTextContent('Deliver search')
+    fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+    expect(screen.getByRole('button', { name: 'Deliver search' })).toHaveAttribute('aria-pressed', 'true')
+    expect(fetch).toHaveBeenCalledTimes(count)
+    task = { ...task, revision: 2, fields: { ...task.fields, archived: true } }
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await waitFor(() => expect(editor().getByText('Archived')).toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'Deliver search' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show archived' }))
+    expect(screen.getByRole('button', { name: 'Show archived' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(screen.getByRole('button', { name: 'Deliver search' })).getByText('Archived')).toBeInTheDocument()
+})
+
+it('updates only stage from read mode, preserves prior stage on failure, and requires retry after conflict', async () => {
+    render(<TasksPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.change(screen.getByLabelText('Stage'), { target: { value: 'done' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit', exact: true })).toBeEnabled())
+    expect(calls[0].body).toEqual({ revision: 1, fields: { stage: 'done' }, actor: 'human' })
+    expect(screen.getByLabelText('Stage')).toHaveValue('done')
+    vi.mocked(fetch).mockRejectedValueOnce(new Error('Stage unavailable'))
+    fireEvent.change(screen.getByLabelText('Stage'), { target: { value: 'backlog' } })
+    expect(await screen.findByRole('alert')).toHaveTextContent('Stage unavailable')
+    expect(screen.getByLabelText('Stage')).toHaveValue('done')
+    task = { ...task, revision: 3, fields: { ...task.fields, stage: 'review', title: 'Latest title' } }
+    fireEvent.change(screen.getByLabelText('Stage'), { target: { value: 'backlog' } })
+    await waitFor(() => expect(screen.getByLabelText('Stage')).toHaveValue('review'))
+    expect(screen.getByRole('alert')).toHaveTextContent('retry your stage change')
+    expect(editor().getByRole('heading')).toHaveTextContent('Latest title')
+    expect(calls).toHaveLength(2)
+    fireEvent.change(screen.getByLabelText('Stage'), { target: { value: 'backlog' } })
+    await waitFor(() => expect(screen.getByLabelText('Stage')).toHaveValue('backlog'))
+    expect(calls[2].body.revision).toBe(3)
+})
+
+it('discards new creation explicitly and does not resurrect reverted cached drafts', async () => {
+    render(<TasksPanel active />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Temporary' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(screen.queryByRole('region', { name: 'Task details' })).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }))
+    expect(screen.getByLabelText('Title')).toHaveFocus()
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Temporary' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Deliver search' }))
+    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Deliver search' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Deliver search' }))
+    expect(screen.getByRole('button', { name: 'Edit', exact: true })).toBeInTheDocument()
+})
+
+it('keeps a pending stage change owned by its project and locks read actions', async () => {
+    render(<TasksPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    let complete!: (response: Response) => void
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+    fireEvent.change(screen.getByLabelText('Stage'), { target: { value: 'done' } })
+    expect(screen.getByLabelText('Stage')).toBeDisabled()
+    expect(editor().getByRole('button', { name: 'Edit', exact: true })).toBeDisabled()
+    expect(editor().getByRole('button', { name: 'Close' })).toBeDisabled()
+    fireEvent.keyDown(editor().getByRole('heading'), { key: 'Escape' })
+    expect(editor().getByRole('status')).toHaveTextContent('Saving')
+    await act(async () => { useStore.setState({ activeProjectPath: '/other' }) })
+    fireEvent.click(screen.getByRole('button', { name: 'Create task' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Other project draft' } })
+    task = { ...task, revision: 2, fields: { ...task.fields, stage: 'done' } }
+    await act(async () => { complete({ ok: true, json: async () => task } as Response) })
+    expect(screen.getByLabelText('Title')).toHaveValue('Other project draft')
+    await act(async () => { useStore.setState({ activeProjectPath: '/project' }) })
+    expect(screen.getByLabelText('Stage')).toHaveValue('done')
+    expect(editor().getByRole('button', { name: 'Edit', exact: true })).toBeEnabled()
 })

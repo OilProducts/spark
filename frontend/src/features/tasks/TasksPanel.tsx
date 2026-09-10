@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { RefreshCw } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { TaskDetail } from './TaskDetail'
 import { Label } from '@/components/ui/label'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { TaskEditor } from './TaskEditor'
@@ -33,9 +36,15 @@ export function TasksPanel({ active }: { active: boolean }) {
 function ProjectTasks({ project, selected, active }: { project: string; selected: boolean; active: boolean }) {
     const [board, setBoard] = useState<Board>({ tasks: [] })
     const [editing, setEditing] = useState<Task | null | undefined>(undefined)
+    const [mode, setMode] = useState<'read' | 'edit'>('read')
+    const [search, setSearch] = useState('')
     const [draft, setDraft] = useState<Fields>(empty)
     const [conflict, setConflict] = useState(false)
     const drafts = useRef(new Map<string, Draft>())
+    const searchInput = useRef<HTMLInputElement>(null)
+    const boardScroll = useRef<HTMLDivElement>(null)
+    const laneScroll = useRef<(HTMLDivElement | null)[]>([])
+    const scrollPositions = useRef(new Map<string, number[]>())
     const boardHeading = useRef<HTMLHeadingElement>(null)
     const origin = useRef<HTMLElement | null>(null)
     const [focusRequest, setFocusRequest] = useState(0)
@@ -55,28 +64,45 @@ function ProjectTasks({ project, selected, active }: { project: string; selected
         return () => { disposed = true; window.clearInterval(timer) }
     }, [project, active])
     async function refresh() { const sequence = ++refreshSequence.current; try { const value = await request<Board>(project); if (sequence === refreshSequence.current) { setBoard(value); setLoaded(true); setLoadError('') } } catch (e) { if (sequence === refreshSequence.current) setLoadError((e as Error).message) } }
+    function filter(nextSearch: string, nextArchived: boolean) {
+        scrollPositions.current.set(JSON.stringify([search, archived]), [boardScroll.current?.scrollLeft ?? 0, ...laneScroll.current.map(lane => lane?.scrollTop ?? 0)])
+        setSearch(nextSearch); setArchived(nextArchived)
+    }
+    useLayoutEffect(() => {
+        const position = scrollPositions.current.get(JSON.stringify([search, archived]))
+        if (!position) return
+        if (boardScroll.current) boardScroll.current.scrollLeft = position[0]
+        laneScroll.current.forEach((lane, i) => { if (lane) lane.scrollTop = position[i + 1] })
+    }, [search, archived])
+    function preserveDraft() {
+        if (mode !== 'edit' || editing === undefined) return
+        const key = editing?.id ?? 'new'
+        if (unsaved || conflict) drafts.current.set(key, { editing, fields: draft, conflict })
+        else drafts.current.delete(key)
+    }
     function open(task: Task | null, trigger: HTMLElement) {
         if (busy) return
         origin.current = trigger
         setFocusRequest(value => value + 1)
-        if (editing !== undefined) drafts.current.set(editing?.id ?? 'new', { editing, fields: draft, conflict })
+        preserveDraft()
         const cached = drafts.current.get(task?.id ?? 'new')
+        setMode(cached || !task ? 'edit' : 'read')
         setEditing(cached?.editing ?? task); setDraft(cached?.fields ?? task?.fields ?? { ...empty }); setConflict(cached?.conflict ?? false); setError('')
     }
     function close(preserve = true) {
         if (busy) return
-        if (preserve && editing !== undefined) drafts.current.set(editing?.id ?? 'new', { editing, fields: draft, conflict })
+        if (preserve) preserveDraft()
         setEditing(undefined); setError('')
         window.setTimeout(() => {
-            const target = origin.current
-            if (target?.isConnected && target.getClientRects().length) target.focus()
-            else boardHeading.current?.focus()
+            const target = origin.current?.isConnected ? origin.current : Array.from(boardScroll.current?.querySelectorAll<HTMLButtonElement>('[data-task-id]') ?? []).find(card => card.dataset.taskId === origin.current?.dataset.taskId)
+            if (target?.isConnected && target.getClientRects().length) target.focus({ preventScroll: true })
+            else boardHeading.current?.focus({ preventScroll: true })
         }, 0)
     }
     function discard() {
         if (editing) {
             reset(latest ?? editing)
-            if (conflict && !changed) setConflict(true)
+            setMode('read')
         }
         else { drafts.current.delete('new'); setDraft({ ...empty }); close(false) }
     }
@@ -92,37 +118,63 @@ function ProjectTasks({ project, selected, active }: { project: string; selected
         try {
             const saved = await request<Task>(project, editing?.id, { revision: editing?.revision, fields: archive === undefined ? draft : { archived: archive }, actor: 'human' })
             drafts.current.delete(editing?.id ?? 'new')
-            setBoard(current => ({ ...current, tasks: [...current.tasks.filter(task => task.id !== saved.id), saved] }))
-            if (archive === undefined) reset(saved)
+            setBoard(current => ({ ...current, tasks: current.tasks.some(task => task.id === saved.id) ? current.tasks.map(task => task.id === saved.id ? saved : task) : [...current.tasks, saved] }))
+            if (archive === undefined) { reset(saved); setMode('read') }
             else { setEditing(saved); setDraft(current => ({ ...current, archived: saved.fields.archived })) }
             await refresh()
         } catch (e) { setError((e as Error).message); if (e instanceof TaskConflict) { setConflict(true); await refresh() } } finally { setBusy(false) }
+    }
+    async function changeStage(stage: Stage) {
+        const task = latest ?? editing
+        if (busy || mode !== 'read' || !task) return
+        setBusy(true); setError('')
+        try {
+            const saved = await request<Task>(project, task.id, { revision: task.revision, fields: { stage }, actor: 'human' })
+            setBoard(current => ({ tasks: current.tasks.map(record => record.id === saved.id ? saved : record) }))
+            reset(saved)
+            await refresh()
+        } catch (e) {
+            setError(e instanceof TaskConflict ? 'This task changed on the server. Refresh the latest version and retry your stage change.' : (e as Error).message)
+            if (e instanceof TaskConflict) await refresh()
+        } finally { setBusy(false) }
+    }
+    function edit() {
+        reset(latest ?? editing ?? null)
+        setMode('edit'); setFocusRequest(value => value + 1)
     }
     const latest = editing ? board.tasks.find(t => t.id === editing.id) : undefined
     const changed = latest && latest.revision > (editing?.revision ?? 0)
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)
     if (!selected) return null
     return <section aria-label="Project tasks" className="flex h-full min-h-0 flex-col gap-4 p-3 lg:p-6">
-        <div className="flex shrink-0 flex-wrap gap-2 items-center"><h1 ref={boardHeading} tabIndex={-1} className="text-lg font-semibold tracking-tight">Tasks</h1><Button type="button" disabled={busy} onClick={e => open(null, e.currentTarget)}>Create task</Button><Button type="button" variant="secondary" disabled={busy} onClick={() => void refresh()}>Refresh</Button>
-            <Label><Checkbox checked={archived} onCheckedChange={value => setArchived(value === true)} /> Show archived</Label>
+        <div className="flex shrink-0 flex-wrap gap-2 items-center"><h1 ref={boardHeading} tabIndex={-1} className="text-lg font-semibold tracking-tight">Tasks</h1>
+            <Button type="button" disabled={busy} onClick={e => open(null, e.currentTarget)}>Create task</Button>
+            <Label className="flex items-center gap-2">Search titles<Input ref={searchInput} type="search" value={search} onChange={e => filter(e.target.value, archived)} className="w-40" /></Label>
+            {search && <Button variant="ghost" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear search</Button>}
+            <Button type="button" variant="secondary" className="border border-transparent aria-pressed:border-foreground/50" aria-pressed={archived} onClick={() => filter(search, !archived)}>Show archived</Button>
+            <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh tasks</TooltipContent></Tooltip></TooltipProvider>
         </div>
         {(error || loadError) && editing === undefined && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground">{error || loadError}</p>}
         <div className="flex min-h-0 flex-1 gap-4">
-        <div hidden={narrow && editing !== undefined} className="min-w-0 flex-1 overflow-auto">
-        <div className="grid grid-cols-[repeat(6,minmax(10rem,1fr))] items-start gap-3">
+        <div ref={boardScroll} hidden={narrow && editing !== undefined} className="min-w-0 flex-1 overflow-x-auto">
+        <div className="grid h-full min-h-0 grid-cols-[repeat(6,minmax(15rem,1fr))] gap-3">
             {stages.map((stage, i) => {
-                const tasks = board.tasks.filter(t => t.fields.stage === stage && (archived || !t.fields.archived))
-                return <section key={stage} aria-label={labels[i]} className="rounded-md border border-border bg-muted/20 p-2 space-y-2">
-                    <h2 className="px-1 py-1 text-sm font-semibold">{labels[i]}</h2>
-                    {tasks.map(task => <button type="button" disabled={busy} key={task.id} aria-pressed={editing?.id === task.id} onClick={e => open(task, e.currentTarget)} className={`block w-full rounded-md border p-3 text-left text-sm break-words transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === task.id ? 'border-ring bg-accent text-accent-foreground' : 'border-border bg-card text-card-foreground'}`}>
-                        {task.fields.title}
+                const tasks = board.tasks.filter(t => t.fields.stage === stage && (archived || !t.fields.archived) && t.fields.title.toLowerCase().includes(search.toLowerCase()))
+                return <section key={stage} aria-label={labels[i]} className="flex min-h-0 flex-col rounded-md border border-border bg-muted/50 p-2">
+                    <h2 className="flex shrink-0 items-center justify-between px-1 pb-3 pt-1 text-sm font-semibold">{labels[i]}<span aria-label={`${tasks.length} matching tasks`} className="text-xs font-normal text-muted-foreground">{tasks.length}</span></h2>
+                    <div ref={node => { laneScroll.current[i] = node }} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-1">
+                    {tasks.map(task => <button type="button" disabled={busy} key={task.id} data-task-id={task.id} aria-label={task.fields.title} aria-pressed={editing?.id === task.id} onClick={e => open(task, e.currentTarget)} className={`block w-full rounded-md border p-3 text-left text-sm break-words transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === task.id ? 'border-ring bg-accent text-accent-foreground' : 'border-border bg-card text-card-foreground hover:border-foreground/40 hover:bg-muted'}`}>
+                        <span className="line-clamp-3 font-semibold">{task.fields.title}</span>
+                        {task.fields.description && <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{task.fields.description}</span>}
+                        {task.fields.archived && <span className="mt-2 inline-block rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>}
                     </button>)}
-                    {!tasks.length && <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : loaded ? 'No tasks' : 'Loading…'}</p>}
+                    {!tasks.length && <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : loaded ? search ? 'No matches' : 'No tasks' : 'Loading…'}</p>}
+                    </div>
                 </section>
             })}
         </div></div>
-        {editing !== undefined && <TaskEditor key={editing?.id ?? 'new'} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
-            setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />}
+        {editing !== undefined && (mode === 'read' && editing ? <TaskDetail task={latest ?? editing} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} changeStage={changeStage} /> : <TaskEditor key={editing?.id ?? 'new'} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
+            setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)}
         </div>
     </section>
 }
