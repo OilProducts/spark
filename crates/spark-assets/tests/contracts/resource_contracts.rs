@@ -267,6 +267,126 @@ fn implement_milestone_reviews_before_expensive_validation_and_blocks_invalid_st
 }
 
 #[test]
+fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
+    let asset = flows::load_starter_flow("software-development/merge-change.yaml").unwrap();
+    let flow = attractor_dsl::parse_flow_definition(asset.text().unwrap()).unwrap();
+    let routes = flow
+        .edges
+        .iter()
+        .filter(|edge| edge.from == "prepare_integration")
+        .collect::<Vec<_>>();
+    assert_eq!(routes.len(), 2);
+    for (to, condition) in [
+        (
+            "finish_merge",
+            "outcome=success && context.integration.conflict_count=0",
+        ),
+        (
+            "resolve_conflicts",
+            "outcome=success && context.integration.conflict_count!=0",
+        ),
+    ] {
+        assert!(routes
+            .iter()
+            .any(|edge| edge.to == to && edge.condition == condition));
+    }
+    assert!(flow
+        .edges
+        .iter()
+        .any(|edge| edge.from == "resolve_conflicts"
+            && edge.to == "validate"
+            && edge.condition == "outcome=success"));
+    assert!(flow.edges.iter().any(|edge| edge.from == "validate"
+        && edge.to == "finish_merge"
+        && edge.condition == "outcome=success"));
+    let prepare = serde_json::to_value(&flow.nodes["prepare_integration"].config).unwrap();
+    let finish = serde_json::to_value(&flow.nodes["finish_merge"].config).unwrap();
+    for scenario in ["clean", "conflict", "unrelated", "already-integrated"] {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        seed_change_repository(repo);
+        run_git(repo, &["branch", "-M", "target"]);
+        run_git(repo, &["config", "user.name", "Contracts"]);
+        run_git(repo, &["config", "user.email", "contracts@example.com"]);
+        if scenario == "unrelated" {
+            run_git(repo, &["checkout", "--orphan", "source"]);
+            run_git(repo, &["rm", "-f", "seed.txt"]);
+        } else {
+            run_git(repo, &["checkout", "-b", "source"]);
+        }
+        if scenario != "already-integrated" {
+            fs::write(repo.join("seed.txt"), "source").unwrap();
+            run_git(repo, &["add", "seed.txt"]);
+            run_git(repo, &["commit", "-m", "source"]);
+        }
+        run_git(repo, &["checkout", "target"]);
+        if scenario == "conflict" {
+            fs::write(repo.join("seed.txt"), "target").unwrap();
+            run_git(repo, &["add", "seed.txt"]);
+            run_git(repo, &["commit", "-m", "target"]);
+        }
+        let output = Command::new("sh")
+            .arg("-ec")
+            .arg(prepare["command"].as_str().unwrap())
+            .current_dir(repo)
+            .env("SPARK_SOURCE_REF", "source")
+            .env("SPARK_RUN_ID", "merge-check")
+            .output()
+            .unwrap();
+        if matches!(scenario, "unrelated" | "already-integrated") {
+            assert!(
+                !output.status.success(),
+                "{scenario} must not reach finish_merge"
+            );
+            continue;
+        }
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result["conflict_count"],
+            if scenario == "clean" { 0 } else { 1 }
+        );
+        if scenario == "clean" {
+            let output = Command::new("sh")
+                .arg("-ec")
+                .arg(finish["command"].as_str().unwrap())
+                .current_dir(repo)
+                .env("SPARK_INTEGRATION_PATH", result["path"].as_str().unwrap())
+                .env(
+                    "SPARK_TARGET_COMMIT",
+                    result["target_commit"].as_str().unwrap(),
+                )
+                .env("SPARK_SOURCE_REF", "source")
+                .env("SPARK_RUN_ID", "merge-check")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read_to_string(repo.join("seed.txt")).unwrap(), "source");
+            let parents = Command::new("git")
+                .args(["show", "-s", "--format=%P", "HEAD"])
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&parents.stdout)
+                    .split_whitespace()
+                    .count(),
+                2
+            );
+            assert!(!repo.join(".spark/integrations/merge-check").exists());
+        }
+    }
+}
+
+#[test]
 fn research_program_separates_correctness_from_substantive_progress() {
     let asset = flows::load_starter_flow("math-research/research-program.yaml")
         .expect("load research program");

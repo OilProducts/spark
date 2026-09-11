@@ -1,8 +1,8 @@
 schema_version: '1'
 id: merge_change
 title: Merge Change
-description: Integrate a completed Spark branch into a clean local target using a validated explicit merge commit.
-goal: Integrate a completed Spark branch into a clean local target using a validated explicit merge commit.
+description: Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating only when conflicts require resolution.
+goal: Integrate a completed Spark branch into a clean local target using an explicit merge commit, validating only when conflicts require resolution.
 inputs:
 - key: context.request.source_ref
   label: Source Ref
@@ -72,7 +72,12 @@ nodes:
         cd "$worktree"
         merge_head=$(git rev-parse --git-path MERGE_HEAD)
         if [ ! -f "$merge_head" ]; then
-          git merge --no-ff --no-commit "$source_commit" >/dev/null 2>&1 || true
+          git merge --no-ff --no-commit "$source_commit" >/dev/null ||
+            test -n "$(git diff --name-only --diff-filter=U)"
+        fi
+        if [ ! -f "$merge_head" ]; then
+          echo "no merge in progress; source may already be integrated" >&2
+          exit 1
         fi
         conflicts=$(git diff --name-only --diff-filter=U | wc -l | tr -d ' ')
         printf '{"path":"%s","target_branch":"%s","target_commit":"%s","source_commit":"%s","conflict_count":%s}' \
@@ -165,8 +170,11 @@ edges:
   to: prepare_integration
   condition: outcome=success
 - from: prepare_integration
+  to: finish_merge
+  condition: outcome=success && context.integration.conflict_count=0
+- from: prepare_integration
   to: resolve_conflicts
-  condition: outcome=success
+  condition: outcome=success && context.integration.conflict_count!=0
 - from: resolve_conflicts
   to: validate
   condition: outcome=success
