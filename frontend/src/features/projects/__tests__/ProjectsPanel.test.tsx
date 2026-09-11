@@ -934,7 +934,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Still working on it.')
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Thinking')
     })
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can I interrupt?')
@@ -1617,6 +1617,8 @@ describe('ProjectsPanel', () => {
         })),
       } as MessageEvent)
     })
+
+    await user.click(await screen.findByRole('button', { name: 'Thinking' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the project layout first.')
@@ -2753,6 +2755,7 @@ describe('ProjectsPanel', () => {
       } as MessageEvent)
     })
 
+    await user.click(await screen.findByRole('button', { name: 'Thinking' }))
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the repository structure first.')
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('I found the main entry points and can summarize them.')
@@ -3114,6 +3117,7 @@ describe('ProjectsPanel', () => {
       ),
     )
 
+    for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
       const text = history.textContent ?? ''
@@ -3333,6 +3337,7 @@ describe('ProjectsPanel', () => {
       ),
     )
 
+    for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
       const text = history.textContent ?? ''
@@ -3564,6 +3569,7 @@ describe('ProjectsPanel', () => {
       }
     })
 
+    for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
       expect(history).toHaveTextContent('Planning from the project context. and I am checking the repository first.')

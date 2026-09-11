@@ -84,8 +84,8 @@ export const parseThinkingSummaryContent = (content: string): { heading: string 
     const headingMatch = trimmed.match(/^\*\*(.+?)\*\*(?:\s*[\r\n]+|\s+|$)/)
     if (!headingMatch) {
         return {
-            heading: trimmed.length > 0 ? trimmed : null,
-            details: '',
+            heading: null,
+            details: content,
         }
     }
     const heading = headingMatch[1]?.trim() || null
@@ -200,13 +200,13 @@ export const ThinkingRow = memo(function ThinkingRow({
     testIdPrefix?: string
 }) {
     const parsedThinking = parseThinkingSummaryContent(entry.content)
-    const heading = parsedThinking.heading || 'Thinking...'
+    const heading = parsedThinking.heading || 'Thinking'
     const details = parsedThinking.details
     const isExpandable = details.length > 0
 
     return (
         <li className="flex min-w-0 justify-start">
-            <div className="max-w-[85%] rounded border border-border/80 bg-background px-3 py-2 text-muted-foreground">
+            <div className="min-w-0 max-w-[85%] rounded border border-border/80 bg-background px-3 py-2 text-muted-foreground">
                 {isExpandable ? (
                     <Button
                         type="button"
@@ -230,9 +230,9 @@ export const ThinkingRow = memo(function ThinkingRow({
                     <p className="text-xs font-semibold text-foreground">{heading}</p>
                 )}
                 {isExpanded && details ? (
-                    <p className="mt-2 whitespace-pre-wrap text-xs italic leading-5">
-                        {details}
-                    </p>
+                    <div className="mt-2">
+                        <ProjectConversationMarkdown content={details} />
+                    </div>
                 ) : null}
                 <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
             </div>
@@ -275,7 +275,7 @@ export const MessageRow = memo(function MessageRow({
             className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
         >
             <div
-                className={`max-w-[85%] rounded border px-3 py-2 ${
+                className={`min-w-0 max-w-[85%] rounded border px-3 py-2 ${
                     entry.role === 'user'
                         ? 'border-primary/40 bg-primary/10 text-foreground'
                         : entry.presentation === 'thinking'

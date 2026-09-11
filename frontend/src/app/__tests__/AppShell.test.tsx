@@ -1400,7 +1400,7 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking'),
       ).toBeVisible()
     })
 
@@ -1447,7 +1447,7 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking'),
       ).toBeVisible()
     })
     expect(screen.queryByText('Finished while hidden')).not.toBeInTheDocument()
@@ -1567,7 +1567,7 @@ describe('App shell behavior', () => {
 
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking'),
       ).toBeVisible()
     })
 
@@ -1631,7 +1631,7 @@ describe('App shell behavior', () => {
     })
     await waitFor(() => {
       expect(
-        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking...'),
+        within(screen.getByTestId('project-ai-conversation-history')).getByText('Thinking'),
       ).toBeVisible()
     })
     expect(screen.queryByText('Finished while hidden on other project')).not.toBeInTheDocument()

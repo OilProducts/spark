@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react"
-import { fetchProjectChatModelsValidated, type ProjectChatModelsResponse } from "@/lib/api/projectsApi"
 import { useStore } from "@/store"
 import { useLlmProfiles } from "@/lib/useLlmProfiles"
 import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from "@/lib/llmSuggestions"
@@ -9,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { NativeSelect } from "@/components/ui/native-select"
 import { Switch } from "@/components/ui/switch"
 import { useDialogController } from "@/components/app/dialog-controller"
+import { useModelDiscovery } from "./hooks/useModelDiscovery"
 import { useWorkspaceSettings } from "./hooks/useWorkspaceSettings"
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
@@ -46,16 +46,11 @@ export function SettingsPanel() {
     const [desktopSettingsError, setDesktopSettingsError] = useState<string | null>(null)
     const [isSavingDesktopSettings, setIsSavingDesktopSettings] = useState(false)
 
-    const [discovery, setDiscovery] = useState<{
-        projectPath: string
-        payload?: ProjectChatModelsResponse
-        failed?: boolean
-    } | null>(null)
     const [customModel, setCustomModel] = useState(false)
     const provider = uiDefaults.llm_profile || uiDefaults.llm_provider
     const providerOptions = [...new Set([...getLlmSelectionOptions(llmProfiles), provider])].filter(Boolean)
     const profile = llmProfiles.find((entry) => entry.id === provider)
-    const currentDiscovery = discovery?.projectPath === activeProjectPath ? discovery : null
+    const currentDiscovery = useModelDiscovery(activeProjectPath)
     const discoveredModels = currentDiscovery?.payload?.models.filter((model) => model.provider === provider)
     const discoveryUnavailable = provider === 'codex'
         && currentDiscovery?.payload?.providers.codex.status === 'unavailable'
@@ -69,21 +64,6 @@ export function SettingsPanel() {
         ? (!currentDiscovery ? 'Loading models…'
             : currentDiscovery.failed || discoveryUnavailable ? 'Model discovery unavailable. Using suggestions.' : null)
         : null
-
-    useEffect(() => {
-        if (!activeProjectPath) return
-        let cancelled = false
-        setDiscovery(null)
-        void fetchProjectChatModelsValidated(activeProjectPath).then(
-            (payload) => {
-                if (!cancelled) setDiscovery({ projectPath: activeProjectPath, payload })
-            },
-            () => {
-                if (!cancelled) setDiscovery({ projectPath: activeProjectPath, failed: true })
-            },
-        )
-        return () => { cancelled = true }
-    }, [activeProjectPath])
 
     useEffect(() => {
         const invoke = getTauriInvoke()

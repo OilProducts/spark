@@ -130,7 +130,7 @@ edges:
   await flowButton.click()
   await expect(page.getByTestId("canvas-workspace-primary")).toBeVisible()
 
-  await page.getByRole("button", { name: "Raw YAML" }).click()
+  await page.getByRole("button", { name: "YAML", exact: true }).click()
   const rawYamlEditor = page.getByTestId("raw-yaml-editor")
   await expect(rawYamlEditor).toBeVisible()
   const rawYamlEntry = await rawYamlEditor.inputValue()
@@ -143,14 +143,14 @@ edges:
   if ((await rawHandoffError.count()) > 0) {
     await expect(rawHandoffError).toContainText("Safe handoff requires valid YAML.")
   }
-  await expect(page.getByRole("button", { name: "Add Node" })).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "+ Node", exact: true })).toHaveCount(0)
   await expect.poll(() => parseErrorBodies.length).toBeGreaterThanOrEqual(1)
   await page.screenshot({ path: screenshotPath("19a-raw-yaml-parse-error-blocked.png"), fullPage: true })
 
   const savedBeforeRoundTrip = savedBodies.length
   await rawYamlEditor.fill(equivalentYaml)
   await page.getByRole("button", { name: "Structured" }).click()
-  await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
   await expect.poll(() => savedBodies.length).toBeGreaterThan(savedBeforeRoundTrip)
   await page.screenshot({ path: screenshotPath("19b-raw-yaml-round-trip-saved.png"), fullPage: true })
 })

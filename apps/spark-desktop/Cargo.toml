@@ -26,6 +26,7 @@ spark-common = { path = "../../crates/spark-common" }
 spark-http = { path = "../../crates/spark-http" }
 spark-server = { path = "../../crates/spark-server" }
 tauri = { version = "2" }
+tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 
 [dev-dependencies]

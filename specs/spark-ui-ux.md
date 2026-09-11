@@ -266,8 +266,15 @@ Conversation UX commitments include:
 - background assistant activity must continue to reconcile into the active thread session even while Home is hidden
 - returning to Home must not transiently drop the thread list or show a false `No threads` state while session-backed data is still restoring
 - normal assistant text rows in Home chat render markdown from normalized `TurnStreamEvent` assistant content semantics as a frontend presentation rule over existing string content
-- user text, thinking summaries, tool rows, and inline flow artifact rows keep their literal or custom rendering paths
-- markdown links render as non-interactive label text until dedicated link handling exists
+- user text and raw tool output remain literal; inline flow artifacts retain their custom rendering
+- assistant replies, expanded thinking, and existing plan/result cards share react-markdown with GFM tables (including alignment and horizontal scrolling), read-only tasks, strikethrough, ordered-list starts, instance-local footnotes, syntax highlighting (unknown languages plain), and untrusted KaTeX math (`$…$` / `$$…$$`, invalid math readable)
+- thinking stays collapsed by default; leading bold headings are preserved, otherwise the header is “Thinking” and the full content is expandable
+- HTTP/HTTPS links are accessible external links: browser tabs use noopener/noreferrer; desktop uses the Tauri opener restricted to HTTP/HTTPS. Local absolute/relative references offer literal Copy path, including line suffixes; unsupported schemes are noninteractive
+- HTTP/HTTPS images load lazily without referrers, preserve aspect ratio within the bubble, and fall back to alt text and a source link on failure. Local images offer alt text and Copy path, without a filesystem endpoint
+- attribute-free `<br>`, `<br/>`, and `<br />` become AST line breaks; other raw HTML is skipped. Soft breaks and code contents remain unchanged
+- headings descend in size without uppercase; list/blockquote paragraphs retain spacing. Wide tables, code, math, and diagrams stay within the bubble, with horizontal scrolling and styles isolated from generated output
+- Mermaid is lazy-loaded in strict mode with scanning and injected error diagrams disabled. Every source update (including incomplete streaming fences) is attempted; each component runs one render at a time and coalesces pending updates to the latest source. Stale/unmounted results are ignored. Pending/invalid diagrams show source; valid diagrams keep source in a disclosure
+- code copying retains exact fenced bodies and existing eligibility; message copying retains original Markdown. Memoization, streaming, scroll behavior, and copy feedback remain unchanged
 
 The UI must not reconstruct chat cards from raw protocol notifications.
 

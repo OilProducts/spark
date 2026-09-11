@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { expect, test } from '@playwright/test'
@@ -50,7 +50,7 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
   await expect(missingApi.json()).resolves.toEqual({ detail: 'Not Found' })
 
   const flowName = `rust-shell-${Date.now()}.yaml`
-  const projectRoot = mkdtempSync(path.join(os.tmpdir(), 'spark-rust-shell-project-'))
+  const projectRoot = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'spark-rust-shell-project-')))
   mkdirSync(projectRoot, { recursive: true })
   try {
     const saveFlow = await page.request.post('/attractor/api/flows', {

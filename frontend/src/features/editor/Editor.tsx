@@ -1053,6 +1053,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             position: { x: Math.random() * 200 + 100, y: Math.random() * 200 + 100 },
             data: {
                 label: 'New Node',
+                kind: 'agent_task',
                 shape,
                 status: 'idle',
                 llm_model: defaultModel,
