@@ -32,7 +32,7 @@ const STARTER_FLOW_NAMES: &[&str] = &[
 #[test]
 fn math_chain_deployment_removes_ignite_timers_and_keeps_one_completed_chain_per_project() {
     let deployment = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../changes/CR-2026-0093-safe-math-flow-chaining/deployment");
+        .join("../test-fixtures/math-flow-chaining/deployment");
     let removed = fs::read_to_string(deployment.join("removed-trigger-ids.txt"))
         .expect("removed trigger ids");
     assert_eq!(

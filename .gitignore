@@ -21,3 +21,8 @@ frontend/.tmp-*/
 compose.override.yaml
 compose.override.yml
 agent-notes.md
+
+# Local change records and generated output
+/changes/
+*.log
+/containers/mathlab/spark-server-bin

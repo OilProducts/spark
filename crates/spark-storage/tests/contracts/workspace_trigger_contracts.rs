@@ -13,7 +13,7 @@ use spark_storage::{
 #[test]
 fn math_chain_deployment_applies_ordering_to_the_trigger_repository() {
     let deployment = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../changes/CR-2026-0093-safe-math-flow-chaining/deployment");
+        .join("../test-fixtures/math-flow-chaining/deployment");
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("config");
     let trigger_dir = config_dir.join("triggers");

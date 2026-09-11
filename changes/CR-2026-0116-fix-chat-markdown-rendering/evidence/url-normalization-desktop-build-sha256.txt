@@ -1,3 +1,0 @@
-366680dc50f7c09ac9d227edc2b1cf37868d2ca352012cd8eb098d6fe1e46fb8  /tmp/spark-cr0116-normalized-desktop
-687fddab4fda6512bf97cdf9e88e3e127b70d97b24f522d18b6a6afd217093b0  frontend/dist/index.html
-09df683c2f6b49b92783cd0b11cbc1ad348ebfde2d2ed30fb59b668ae1e2a31f  frontend/dist/assets/index-fVm4Of_P.js
