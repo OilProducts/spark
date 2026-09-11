@@ -10,17 +10,17 @@
 .conversation-markdown ul:not(.markdown-diagram *) { list-style: disc; padding-left: 1.5rem; }
 .conversation-markdown ol:not(.markdown-diagram *) { list-style: decimal; padding-left: 1.5rem; }
 .conversation-markdown .task-list-item { list-style: none; }
-.conversation-markdown blockquote:not(.markdown-diagram *) { border-left: 2px solid var(--border); padding-left: .75rem; }
-.conversation-markdown a:not(.markdown-diagram *) { color: var(--primary); text-decoration: underline; }
-.conversation-markdown :not(pre) > code:not(.markdown-diagram *) { border: 1px solid var(--border); border-radius: 3px; padding: .1rem .25rem; background: var(--background); font-size: 11px; }
-.conversation-markdown pre:not(.markdown-diagram *) { max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; padding: .75rem 2.25rem .75rem .75rem; border: 1px solid var(--border); border-radius: 4px; background: var(--background); }
+.conversation-markdown blockquote:not(.markdown-diagram *) { border-left: 2px solid hsl(var(--border)); padding-left: .75rem; }
+.conversation-markdown a:not(.markdown-diagram *) { color: hsl(var(--primary)); text-decoration: underline; }
+.conversation-markdown :not(pre) > code:not(.markdown-diagram *) { border: 1px solid hsl(var(--border)); border-radius: 3px; padding: .1rem .25rem; background: hsl(var(--background)); font-size: 11px; }
+.conversation-markdown pre:not(.markdown-diagram *) { max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; padding: .75rem 2.25rem .75rem .75rem; border: 1px solid hsl(var(--border)); border-radius: 4px; background: hsl(var(--background)); }
 .conversation-markdown pre > code:not(.markdown-diagram *) { font-size: 11px; white-space: pre; overflow: visible; padding: 0; background: transparent; }
 .markdown-code-block { position: relative; min-width: 0; max-width: 100%; }
 .markdown-code-copy { position: absolute; top: .25rem; right: .25rem; }
 .markdown-table { max-width: 100%; overflow-x: auto; }
 .markdown-table table { border-collapse: collapse; width: max-content; min-width: 100%; }
-.markdown-table :where(th, td):not(.markdown-diagram *) { border: 1px solid var(--border); padding: .35rem .6rem; }
-.markdown-table th { font-weight: 600; background: var(--muted); }
+.markdown-table :where(th, td):not(.markdown-diagram *) { border: 1px solid hsl(var(--border)); padding: .35rem .6rem; }
+.markdown-table th { font-weight: 600; background: hsl(var(--muted)); }
 .conversation-markdown img:not(.markdown-diagram *) { max-width: 100%; height: auto; }
 .conversation-markdown .katex-display, .markdown-diagram { max-width: 100%; overflow-x: auto; overflow-wrap: normal; }
 .markdown-diagram svg { max-width: 100%; height: auto; }
