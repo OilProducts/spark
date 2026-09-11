@@ -791,7 +791,11 @@ fn launch_default_child_run(
         record.execution_profile_id = parent.execution_profile_id;
         record.execution_container_image = parent.execution_container_image;
         record.execution_profile_capabilities = parent.execution_profile_capabilities;
-        record.execution_lock = parent.execution_lock;
+        record.execution_lock = parent.execution_lock.map(|mut lock| {
+            lock.state = "inherited".to_string();
+            lock.queue_position = None;
+            lock
+        });
     }
 
     let checkpoint = CheckpointState {

@@ -404,3 +404,114 @@ fn unsupported_lock_scope_is_a_validation_error() {
         response.body
     );
 }
+
+#[test]
+fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    let project = temp.path().join("repo");
+    init_git_repo(&project);
+    let child_path = project.join("child.yaml");
+    fs::write(
+        &child_path,
+        tool_flow(
+            "child",
+            &format!(
+                "({}); test -f retry-child",
+                wait_for_release_file_command("release-child")
+            ),
+        ),
+    )
+    .unwrap();
+    let parent_flow = format!(
+        r#"schema_version: '1'
+id: parent
+nodes:
+  start: {{ kind: start }}
+  child:
+    kind: subflow
+    runtime: {{ error_policy: continue }}
+    config: {{ kind: subflow, flow_ref: child.yaml }}
+  wait:
+    kind: tool
+    config: {{ kind: tool, command: '{}' }}
+  done: {{ kind: exit }}
+edges:
+- {{ from: start, to: child }}
+- {{ from: child, to: wait, condition: outcome=fail }}
+- {{ from: wait, to: done }}
+"#,
+        wait_for_release_file_command("release-parent")
+    );
+    let service = AttractorApiService::new(settings.clone());
+    let store = RunStore::for_settings(&settings);
+    start_locked_run(
+        &service,
+        "parent",
+        &project,
+        parent_flow,
+        Some(project_lock("integration")),
+    );
+    let mut child_id = String::new();
+    wait_until("child inherits the parent lock", || {
+        let children = store.list_child_run_bundles("parent").unwrap();
+        let Some(child) = children.first().and_then(|b| b.record.as_ref()) else {
+            return false;
+        };
+        child_id = child.run_id.clone();
+        child
+            .execution_lock
+            .as_ref()
+            .is_some_and(|lock| lock.state == "inherited" && lock.queue_position.is_none())
+    });
+    let identity = read_lock(&settings, "parent").unwrap().identity;
+    assert_eq!(read_lock(&settings, &child_id).unwrap().identity, identity);
+    start_locked_run(
+        &service,
+        "competitor",
+        &project,
+        tool_flow(
+            "competitor",
+            &wait_for_release_file_command("release-competitor"),
+        ),
+        Some(project_lock("integration")),
+    );
+    wait_until("competitor queues", || {
+        read_status(&settings, "competitor") == "queued"
+    });
+    fs::write(project.join("release-child"), "go").unwrap();
+    wait_until("child fails", || {
+        read_status(&settings, &child_id) == "failed"
+    });
+    assert_eq!(read_lock(&settings, &child_id).unwrap().state, "released");
+    assert_eq!(read_lock(&settings, "parent").unwrap().state, "holding");
+    assert_eq!(read_status(&settings, "competitor"), "queued");
+    fs::write(project.join("release-parent"), "go").unwrap();
+    wait_until("parent releases and competitor takes lock", || {
+        read_lock(&settings, "parent").is_some_and(|l| l.state == "released")
+            && read_lock(&settings, "competitor").is_some_and(|l| l.state == "holding")
+    });
+    fs::write(project.join("retry-child"), "go").unwrap();
+    wait_until("parent executor exits and child retry is accepted", || {
+        let response = service.retry_pipeline_route(&child_id);
+        if response.status_code == 200 {
+            return true;
+        }
+        assert_eq!(
+            response.body["detail"], "Retry conflicts with an active executor in the run tree",
+            "{:?}",
+            response.body
+        );
+        false
+    });
+    wait_until("independent child retry queues for the same lock", || {
+        read_lock(&settings, &child_id)
+            .is_some_and(|l| l.state == "queued" && l.identity == identity)
+    });
+    fs::write(project.join("release-competitor"), "go").unwrap();
+    wait_until("retry completes and releases", || {
+        read_status(&settings, &child_id) == "completed"
+            && read_lock(&settings, &child_id).is_some_and(|l| l.state == "released")
+    });
+}

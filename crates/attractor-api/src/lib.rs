@@ -1057,7 +1057,11 @@ impl AttractorApiService {
                     child.execution_container_image = parent.execution_container_image.clone();
                     child.execution_profile_capabilities =
                         parent.execution_profile_capabilities.clone();
-                    child.execution_lock = parent.execution_lock.clone();
+                    child.execution_lock = parent.execution_lock.clone().map(|mut lock| {
+                        lock.state = "inherited".to_string();
+                        lock.queue_position = None;
+                        lock
+                    });
                 });
             }
         }

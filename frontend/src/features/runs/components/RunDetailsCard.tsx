@@ -179,7 +179,9 @@ export function RunDetailsCard({ run, activeProjectPath, now, resumeNode = null 
                                 ? 'Holding execution lock'
                                 : run.execution_lock?.state === 'queued'
                                     ? 'Queued for execution lock'
-                                    : run.execution_lock?.state || '—'}
+                                    : run.execution_lock?.state === 'inherited'
+                                        ? 'Inherited from parent'
+                                        : run.execution_lock?.state || '—'}
                         </SummaryRow>
                         <SummaryRow testId="run-summary-execution-lock-key" label="Key">
                             {run.execution_lock?.key || '—'}

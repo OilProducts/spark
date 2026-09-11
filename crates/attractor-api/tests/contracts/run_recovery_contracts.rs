@@ -334,7 +334,13 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
         child.execution_profile_capabilities,
         Some(json!({"network": false}))
     );
-    assert_eq!(child.execution_lock, root.execution_lock);
+    let lock = child.execution_lock.as_ref().expect("child lock metadata");
+    assert_eq!(
+        lock.identity,
+        root.execution_lock.as_ref().unwrap().identity
+    );
+    assert_eq!(lock.state, "released");
+    assert_eq!(lock.queue_position, None);
     let child_checkpoint = children[0].checkpoint.as_ref().expect("child checkpoint");
     assert!(child_checkpoint
         .completed_nodes

@@ -94,6 +94,17 @@ pub fn normalize_run_status(status: &str) -> String {
 
 pub fn normalize_record(record: &mut RunRecord) {
     record.status = normalize_run_status(record.status.trim());
+    // A terminal child cannot own or wait for its parent's execution lock.
+    if record.parent_run_id.is_some()
+        && matches!(record.status.as_str(), "completed" | "failed" | "canceled")
+    {
+        if let Some(lock) = record.execution_lock.as_mut() {
+            if matches!(lock.state.as_str(), "holding" | "queued" | "inherited") {
+                lock.state = "released".to_string();
+                lock.queue_position = None;
+            }
+        }
+    }
     if record.execution_mode.trim().is_empty() {
         record.execution_mode = "native".to_string();
     }

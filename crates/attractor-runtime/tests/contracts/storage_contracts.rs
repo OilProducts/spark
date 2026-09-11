@@ -743,3 +743,51 @@ fn flow_node(kind: NodeKind) -> FlowNode {
         ..FlowNode::default()
     }
 }
+
+#[test]
+fn terminal_child_lock_metadata_is_normalized_on_read_and_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = store(&temp);
+    let paths = store
+        .create_run(CreateRunRequest {
+            record: record("legacy-child", "/tmp/project"),
+            ..Default::default()
+        })
+        .unwrap();
+    for parent in [None, Some("parent")] {
+        for status in [
+            "running",
+            "queued",
+            "waiting",
+            "completed",
+            "failed",
+            "canceled",
+        ] {
+            for state in ["inherited", "holding", "queued"] {
+                let mut raw = record("legacy-child", "/tmp/project");
+                raw.parent_run_id = parent.map(str::to_string);
+                raw.status = status.to_string();
+                raw.execution_lock = Some(attractor_core::RunExecutionLock {
+                    identity: "same-lock".into(),
+                    state: state.into(),
+                    queue_position: Some(1),
+                    ..Default::default()
+                });
+                write_json_atomic(paths.run_json(), &raw, JsonWriteOptions::default()).unwrap();
+                let loaded = store.read_run_record(&paths).unwrap().unwrap();
+                let lock = loaded.execution_lock.as_ref().unwrap();
+                let terminal_child =
+                    parent.is_some() && matches!(status, "completed" | "failed" | "canceled");
+                assert_eq!(lock.state, if terminal_child { "released" } else { state });
+                assert_eq!(
+                    lock.queue_position,
+                    if terminal_child { None } else { Some(1) }
+                );
+                assert_eq!(lock.identity, "same-lock");
+                store.write_run_record(&paths, &raw).unwrap();
+                let persisted: RunRecord = read_json(paths.run_json()).unwrap();
+                assert_eq!(persisted.execution_lock, loaded.execution_lock);
+            }
+        }
+    }
+}
