@@ -1,0 +1,73 @@
+
+> frontend@0.0.0 ui:smoke
+> playwright test --config=playwright.config.ts editor-diagnostics.spec.ts:95 editor-diagnostics.spec.ts:288 editor-diagnostics.spec.ts:554 editor-diagnostics.spec.ts:581 editor-save.spec.ts rust-product-shell.spec.ts
+
+(node:33577) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+
+Running 6 tests using 3 workers
+
+(node:33644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33643) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33645) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33644) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(node:33644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33645) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(node:33643) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(node:33645) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33643) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  1 e2e/smoke/rust-product-shell.spec.ts:30:1 › Rust product shell serves the built SPA and owns core browser routes (417ms)
+  ✓  2 e2e/smoke/editor-save.spec.ts:17:1 › raw YAML save blocks parse errors and hydrates valid handoff (1.2s)
+  ✘  3 e2e/smoke/editor-diagnostics.spec.ts:95:1 › prompt edits trigger live preview diagnostics before blur for item 5.1-03 (6.1s)
+(node:33723) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:33723) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(node:33723) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ✓  4 e2e/smoke/editor-diagnostics.spec.ts:288:1 › inline node and edge diagnostic badges render for item 7.1-02 (1.4s)
+  ✓  5 e2e/smoke/editor-diagnostics.spec.ts:554:1 › flow metadata edits trigger live preview diagnostics (774ms)
+  ✓  6 e2e/smoke/editor-diagnostics.spec.ts:581:1 › flow metadata round trips through YAML without legacy stylesheet controls (937ms)
+
+
+  1) e2e/smoke/editor-diagnostics.spec.ts:95:1 › prompt edits trigger live preview diagnostics before blur for item 5.1-03 
+
+    Error: [2mexpect([22m[31mlocator[39m[2m).[22mtoBeVisible[2m([22m[2m)[22m failed
+
+    Locator: getByText('Live prompt diagnostic 1789097631967')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+    [2m  - Expect "toBeVisible" with timeout 5000ms[22m
+    [2m  - waiting for getByText('Live prompt diagnostic 1789097631967')[22m
+
+
+      142 |     await promptField.pressSequentially(promptToken)
+      143 |     await expect(promptField).toBeFocused()
+    > 144 |     await expect(page.getByText(diagnosticMessage)).toBeVisible()
+          |                                                     ^
+      145 |     await page.screenshot({ path: screenshotPath("09-live-prompt-diagnostics.png"), fullPage: true })
+      146 |   } finally {
+      147 |     await deleteFlowAfterSmoke(page, flowName)
+        at /Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/e2e/smoke/editor-diagnostics.spec.ts:144:53
+
+    Error Context: test-results/smoke-editor-diagnostics-p-c0b97-before-blur-for-item-5-1-03/error-context.md
+
+    attachment #2: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results/smoke-editor-diagnostics-p-c0b97-before-blur-for-item-5-1-03/trace.zip
+    Usage:
+
+        npx playwright show-trace test-results/smoke-editor-diagnostics-p-c0b97-before-blur-for-item-5-1-03/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    e2e/smoke/editor-diagnostics.spec.ts:95:1 › prompt edits trigger live preview diagnostics before blur for item 5.1-03 
+  5 passed (19.9s)

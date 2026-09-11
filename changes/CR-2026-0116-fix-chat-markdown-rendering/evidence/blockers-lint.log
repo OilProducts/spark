@@ -1,0 +1,40 @@
+
+> frontend@0.0.0 lint
+> eslint .
+
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/app/AppSessionControllers.tsx
+  114:8  warning  React Hook useEffect has a missing dependency: 'threadStatus'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/editor/Editor.tsx
+   829:8  warning  React Hook useEffect has missing dependencies: 'setEditorMode', 'setRawHandoffError', and 'setRawYamlDraft'. Either include them or remove the dependency array    react-hooks/exhaustive-deps
+  1135:8  warning  React Hook useCallback has missing dependencies: 'setEditorMode', 'setRawHandoffError', and 'setRawYamlDraft'. Either include them or remove the dependency array  react-hooks/exhaustive-deps
+  1227:8  warning  React Hook useCallback has missing dependencies: 'setEditorMode' and 'setRawHandoffError'. Either include them or remove the dependency array                      react-hooks/exhaustive-deps
+  1396:8  warning  React Hook useEffect has a missing dependency: 'editorMode'. Either include it or remove the dependency array                                                      react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/editor/GraphSettings.tsx
+  134:8  warning  React Hook useMemo has an unnecessary dependency: 'launchPolicy'. Either exclude it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/editor/Sidebar.tsx
+  242:8  warning  React Hook useEffect has a missing dependency: 'refreshFlows'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/projects/components/ProjectConversationRequestUserInputCard.tsx
+  40:8  warning  React Hook useEffect has a missing dependency: 'entry.requestUserInput.answers'. Either include it or remove the dependency array. If 'setDraftAnswers' needs the current value of 'entry.requestUserInput.answers', you can also switch to useReducer instead of useState and read 'entry.requestUserInput.answers' in the reducer  react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/projects/hooks/useHomeSidebarLayout.ts
+  264:8  warning  React Hook useEffect has a missing dependency: 'setSidebarPrimaryHeight'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/projects/hooks/useProjectsHomeController.ts
+  218:9   warning  React Hook useMemo has an unnecessary dependency: 'activeProjectScope'. Either exclude it or remove the dependency array                                                                                                        react-hooks/exhaustive-deps
+  253:11  warning  The 'activeProjectChatModels' logical expression could make the dependencies of useMemo Hook (at line 297) change on every render. To fix this, wrap the initialization of 'activeProjectChatModels' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/runs/hooks/useRunTimeline.ts
+  259:8  warning  React Hook useMemo has unnecessary dependencies: 'journalState.lastMutation' and 'journalState.revision'. Either exclude them or remove the dependency array  react-hooks/exhaustive-deps
+  279:8  warning  React Hook useMemo has an unnecessary dependency: 'journalState.revision'. Either exclude it or remove the dependency array                                   react-hooks/exhaustive-deps
+
+/Users/chris/projects/spark/.spark/checkouts/run-18d422e20b728b78/frontend/src/features/triggers/hooks/useTriggersList.ts
+   69:8  warning  React Hook useEffect has a missing dependency: 'refreshTriggers'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+  119:8  warning  React Hook useEffect has a missing dependency: 'refreshTriggers'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+✖ 15 problems (0 errors, 15 warnings)
+

@@ -1,0 +1,3 @@
+d1f0480277150dbe96b3252c22cfc989b3dbf5c4ef67250295d36d527db34933  /tmp/spark-cr0116-desktop
+cfe83e7d79afcfe95baf453c93f27b36376996e676f5a3f51d388cf394114e2d  frontend/dist/index.html
+4ea65136f52ba21abe36156334bbacd6b6299e710eb5c03770a282bb22e96d2c  frontend/dist/assets/index-D4ti6bZK.js

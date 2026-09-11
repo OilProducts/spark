@@ -247,3 +247,20 @@ impl Drop for EnvVarGuard {
         }
     }
 }
+
+#[test]
+fn markdown_opener_permission_is_restricted_to_web_urls() {
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+    let permissions = capability["permissions"].as_array().unwrap();
+    assert_eq!(
+        permissions,
+        &vec![
+            serde_json::json!("core:default"),
+            serde_json::json!({
+                "identifier": "opener:allow-open-url",
+                "allow": [{"url": "http://*"}, {"url": "https://*"}]
+            })
+        ]
+    );
+}

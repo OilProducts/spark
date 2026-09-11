@@ -1,12 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Allows the Spark desktop window to call its local desktop settings commands.",
+  "description": "Allows desktop settings commands and opening external HTTP/HTTPS links.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
   },
   "permissions": [
-    "core:default"
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "http://*"
+        },
+        {
+          "url": "https://*"
+        }
+      ]
+    }
   ]
 }

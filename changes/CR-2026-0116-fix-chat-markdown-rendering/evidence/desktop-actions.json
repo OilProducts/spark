@@ -1,0 +1,26 @@
+[
+  {
+    "mode": "mouse",
+    "scheme": "https",
+    "time": "2026-09-10T17:04:51-1000",
+    "browser_urls": "https://example.com/?spark-markdown-https=CR-2026-0116-review"
+  },
+  {
+    "mode": "mouse",
+    "scheme": "http",
+    "time": "2026-09-10T17:04:56-1000",
+    "browser_urls": "https://example.com/?spark-markdown-https=CR-2026-0116-review, https://example.com/?spark-markdown-http=CR-2026-0116-review"
+  },
+  {
+    "mode": "keyboard",
+    "scheme": "https",
+    "time": "2026-09-10T17:05:00-1000",
+    "browser_urls": "https://example.com/?spark-markdown-https=CR-2026-0116-review, https://example.com/?spark-markdown-http=CR-2026-0116-review, https://example.com/?spark-markdown-https=CR-2026-0116-review"
+  },
+  {
+    "mode": "keyboard",
+    "scheme": "http",
+    "time": "2026-09-10T17:05:05-1000",
+    "browser_urls": "https://example.com/?spark-markdown-https=CR-2026-0116-review, https://example.com/?spark-markdown-http=CR-2026-0116-review, https://example.com/?spark-markdown-https=CR-2026-0116-review, https://example.com/?spark-markdown-http=CR-2026-0116-review"
+  }
+]

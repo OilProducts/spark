@@ -463,7 +463,7 @@ describe('ProjectConversationHistory', () => {
         const codeBlock = history.querySelector('pre > code')
         expect(codeBlock).not.toBeNull()
         expect(codeBlock).toHaveTextContent('npm test')
-        expect(codeBlock?.closest('pre')).toHaveClass('overflow-x-hidden')
+        expect(codeBlock?.closest('pre')).toHaveClass('overflow-x-auto')
     })
 
     it('does not rerender an older unchanged assistant markdown row when the latest assistant markdown changes', () => {
@@ -915,7 +915,7 @@ describe('ProjectConversationHistory', () => {
         expect(within(expiredCard).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
-    it('renders assistant markdown links as plain labels without anchors', () => {
+    it('renders assistant markdown links as external anchors', () => {
         renderHistory([
             makeMessageEntry({
                 content: 'Read [the docs](https://example.com/docs) before continuing.',
@@ -924,11 +924,11 @@ describe('ProjectConversationHistory', () => {
 
         const history = screen.getByTestId('project-ai-conversation-history-list')
         expect(within(history).getByText('the docs')).toBeVisible()
-        expect(within(history).queryByRole('link', { name: 'the docs' })).not.toBeInTheDocument()
+        expect(within(history).getByRole('link', { name: 'the docs' })).toHaveAttribute('rel', 'noopener noreferrer')
         expect(history).not.toHaveTextContent('https://example.com/docs')
     })
 
-    it('keeps assistant markdown image syntax from rendering images', () => {
+    it('loads assistant web images inline', () => {
         renderHistory([
             makeMessageEntry({
                 content: 'Diagram: ![Architecture overview](https://example.com/diagram.png)',
@@ -936,8 +936,7 @@ describe('ProjectConversationHistory', () => {
         ])
 
         const history = screen.getByTestId('project-ai-conversation-history-list')
-        expect(within(history).getByText('Architecture overview')).toBeVisible()
-        expect(within(history).queryByRole('img', { name: 'Architecture overview' })).not.toBeInTheDocument()
+        expect(within(history).getByRole('img', { name: 'Architecture overview' })).toHaveAttribute('loading', 'lazy')
     })
 
     it('keeps user messages literal even when they contain markdown syntax', () => {

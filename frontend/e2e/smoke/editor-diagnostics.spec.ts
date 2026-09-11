@@ -94,7 +94,7 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
 
 test("prompt edits trigger live preview diagnostics before blur for item 5.1-03", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-live-${Date.now()}`
-  const promptToken = `live-prompt-${Date.now()}`
+  const promptToken = `instruction-live-prompt-${Date.now()}`
   const diagnosticMessage = `Live prompt diagnostic ${Date.now()}`
   const flowName = await createFlowForSmokeTest(page, "ui-smoke-live-prompt")
 
@@ -128,8 +128,9 @@ test("prompt edits trigger live preview diagnostics before blur for item 5.1-03"
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
-    await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
-    await page.getByRole("button", { name: "Add Node" }).click()
+    await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
+    await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "+ Node", exact: true }).click()
 
     const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
     await expect(newNode).toBeVisible()
@@ -287,7 +288,7 @@ test("validation panel supports filter and sort controls for item 7.1-01", async
 
 test("inline node and edge diagnostic badges render for item 7.1-02", async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-inline-badges-${Date.now()}`
-  const promptToken = `inline-badges-${Date.now()}`
+  const promptToken = `instruction-inline-badges-${Date.now()}`
   const nodeDiagnosticMessage = `Node diagnostic ${Date.now()}`
   const edgeDiagnosticMessage = `Edge diagnostic ${Date.now()}`
   const flowName = await createFlowForSmokeTest(page, "ui-smoke-inline-badges")
@@ -330,8 +331,9 @@ test("inline node and edge diagnostic badges render for item 7.1-02", async ({ p
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
-    await expect(page.getByRole("button", { name: "Add Node" })).toBeVisible()
-    await page.getByRole("button", { name: "Add Node" }).click()
+    await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
+    await expect(page.getByRole("button", { name: "+ Node", exact: true })).toBeVisible()
+    await page.getByRole("button", { name: "+ Node", exact: true }).click()
 
     const newNode = page.locator(".react-flow__node").filter({ hasText: "New Node" }).last()
     await expect(newNode).toBeVisible()
@@ -550,99 +552,52 @@ test("validation diagnostics navigate to matching canvas entities for item 7.3-0
   }
 })
 
-test("stylesheet parse diagnostics render in graph settings for item 6.5-02", async ({ page }) => {
-  const projectPath = `/tmp/ui-smoke-project-stylesheet-${Date.now()}`
-  const stylesheetToken = ".bad$class { llm_model: gpt-5; }"
-  const diagnosticMessage = `Stylesheet syntax diagnostic ${Date.now()}`
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-stylesheet-diagnostics")
-
+// FlowDefinition replaced stylesheet authoring with typed defaults and metadata.
+test("flow metadata edits trigger live preview diagnostics", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-metadata-${Date.now()}`
+  const token = `annotation-value-${Date.now()}`
+  const diagnosticMessage = "Metadata diagnostic"
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata")
   try {
     await page.route("**/attractor/preview", async (route) => {
-      const body = route.request().postData() || ""
-      if (body.includes(stylesheetToken)) {
-        await route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            status: "ok",
-            diagnostics: [
-              {
-                rule_id: "stylesheet_syntax",
-                severity: "error",
-                message: diagnosticMessage,
-                line: 1,
-              },
-            ],
-          }),
-        })
-        return
-      }
-      await route.continue()
+      if ((route.request().postData() || "").includes(token)) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+          status: "ok", diagnostics: [{ rule_id: "metadata", severity: "warning", message: diagnosticMessage }],
+        }) })
+      } else await route.continue()
     })
-
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("nav-mode-editor").click()
-
-    const flowButton = page.getByRole("button", { name: flowName })
-    await expect(flowButton).toBeVisible()
-    await flowButton.click()
-
-    await expect(page.locator('[data-inspector-scope="graph"]')).toBeVisible()
-    const advancedToggle = page.getByTestId("graph-advanced-toggle")
-    await expect(advancedToggle).toBeVisible()
-    await advancedToggle.click()
-    await expect(page.getByTestId("graph-model-stylesheet-editor")).toBeVisible()
-
-    const previewRequest = page.waitForRequest(
-      (request) =>
-        request.url().includes("/attractor/preview") &&
-        request.method() === "POST" &&
-        (request.postData() || "").includes(stylesheetToken),
-    )
-
-    const stylesheetInput = page.getByTestId("model-stylesheet-editor").locator("textarea")
-    await stylesheetInput.fill(stylesheetToken)
-    await previewRequest
-
-    await expect(page.getByTestId("graph-model-stylesheet-selector-guidance")).toBeVisible()
-    await expect(page.getByTestId("graph-model-stylesheet-diagnostics").getByText(diagnosticMessage)).toBeVisible()
-    await page.screenshot({ path: screenshotPath("10-stylesheet-diagnostics.png"), fullPage: true })
+    await page.getByRole("button", { name: flowName }).click()
+    await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
+    await page.getByTestId("graph-advanced-toggle").click()
+    await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
+    await page.getByTestId("graph-extension-attr-new-value").fill(token)
+    await page.getByRole("button", { name: "Add Attribute", exact: true }).click()
+    await expect(page.getByTestId("graph-extension-attr-value-0")).toHaveValue(token)
+    await expect(page.getByText(diagnosticMessage)).toBeVisible()
   } finally {
     await deleteFlowAfterSmoke(page, flowName)
   }
 })
 
-test("stylesheet selector/effective previews render in graph settings for item 6.5-03", async ({ page }) => {
-  const projectPath = `/tmp/ui-smoke-project-stylesheet-preview-${Date.now()}`
-  const stylesheetToken = "* { llm_provider: openai; } .critical { llm_model: gpt-5.2; }"
-  const flowName = await createFlowForSmokeTest(page, "ui-smoke-stylesheet-preview")
-
+test("flow metadata round trips through YAML without legacy stylesheet controls", async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-metadata-roundtrip-${Date.now()}`
+  const flowName = await createFlowForSmokeTest(page, "ui-smoke-metadata-roundtrip")
   try {
     await gotoWithRegisteredProject(page, projectPath)
     await page.getByTestId("nav-mode-editor").click()
-
-    const flowButton = page.getByRole("button", { name: flowName })
-    await expect(flowButton).toBeVisible()
-    await flowButton.click()
-
-    await expect(page.locator('[data-inspector-scope="graph"]')).toBeVisible()
-    const advancedToggle = page.getByTestId("graph-advanced-toggle")
-    await expect(advancedToggle).toBeVisible()
-    await advancedToggle.click()
-
-    const stylesheetInput = page.getByTestId("model-stylesheet-editor").locator("textarea")
-    await stylesheetInput.fill(stylesheetToken)
-
-    await expect(page.getByTestId("graph-model-stylesheet-selector-preview")).toBeVisible()
-    await expect(page.getByTestId("graph-model-stylesheet-effective-preview")).toBeVisible()
-    await expect(page.getByTestId("graph-model-stylesheet-precedence-guidance")).toBeVisible()
-    await expect(page.getByTestId("graph-model-stylesheet-selector-preview")).toContainText(".critical")
-    await expect(page.getByTestId("graph-model-stylesheet-effective-preview")).toContainText("(stylesheet)")
-    await expect(page.getByTestId("graph-model-stylesheet-effective-preview")).toContainText("(graph default)")
-    await page
-      .getByTestId("graph-model-stylesheet-effective-preview")
-      .screenshot({ path: screenshotPath("12-stylesheet-precedence-rendering.png") })
-    await page.screenshot({ path: screenshotPath("11-stylesheet-selector-effective-preview.png"), fullPage: true })
+    await page.getByRole("button", { name: flowName }).click()
+    await expect(page.locator('.react-flow__node[data-id="ingest_spec"]')).toBeVisible()
+    await page.getByTestId("graph-advanced-toggle").click()
+    await expect(page.getByTestId("graph-model-stylesheet-editor")).toHaveCount(0)
+    await page.getByTestId("graph-extension-attr-new-key").fill("smoke_note")
+    await page.getByTestId("graph-extension-attr-new-value").fill("roundtrip-value")
+    await page.getByRole("button", { name: "Add Attribute", exact: true }).click()
+    await page.getByRole("button", { name: "YAML", exact: true }).click()
+    await expect(page.getByTestId("raw-yaml-editor")).toHaveValue(/smoke_note:.*roundtrip-value/)
+    await page.getByRole("button", { name: "Structured", exact: true }).click()
+    await expect(page.getByTestId("graph-extension-attr-value-0")).toHaveValue("roundtrip-value")
   } finally {
     await deleteFlowAfterSmoke(page, flowName)
   }

@@ -46,3 +46,12 @@ the desktop server section. The server URL displayed there should match the
 in-process loopback URL. Enabling remote access must show the warning and, after
 confirmation, persist `remote_access_enabled: true` in the app config while
 indicating that restart is required for the bind-host change.
+
+## Markdown external links (CR-2026-0116)
+
+In an assistant reply, activate HTTP and HTTPS links with lowercase, uppercase,
+and mixed-case schemes by mouse and keyboard. Confirm they open the system browser and the Spark window stays on
+the conversation. Local references (including a line suffix) must offer Copy
+path without navigating; `file:`, `javascript:`, and `data:` links must be
+noninteractive. The desktop capability grants only `opener:allow-open-url` for
+HTTP/HTTPS, with automatic opener link interception disabled.
