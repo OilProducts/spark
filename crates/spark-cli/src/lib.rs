@@ -1704,19 +1704,9 @@ fn resolve_base_url(
             let bootstrap =
                 spark_common::settings::resolve_settings_with_env(&Default::default(), env)
                     .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?;
-            let path = bootstrap.config_dir.join("spark.toml");
-            let document = spark_storage::settings::read_settings_document(&path)
-                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?;
-            let connections: spark_common::settings::ConnectionSettings = document
-                .section(&path, "connections")
-                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?
-                .unwrap_or_default();
-            connections
-                .validate()
-                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?;
-            Ok(connections
-                .client_api_base_url
-                .unwrap_or_else(|| DEFAULT_API_BASE_URL.to_string()))
+            spark_storage::settings::resolve_client_api_base_url(&bootstrap.config_dir, env)
+                .map(|(url, _)| url)
+                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))
         }
         Err(SparkCommonError::SourceCheckoutGuard(message)) => {
             Err(json_error(message, EXIT_GENERAL_FAILURE))

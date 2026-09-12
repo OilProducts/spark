@@ -1,6 +1,6 @@
 # CR-2026-0117 result
 
-Status: implementation and review fixes are delivered and validated in the worktree. The overall delivery contract is incomplete: required intermediate commits and validation evidence tied to the final committed state require the authorized parent delivery stage.
+Historical implementation record. Independent evaluation subsequently identified F1–F8; see reports/CR-2026-0117-evaluation.md and the CR-2026-0118 result for corrections and current verification.
 
 ## Shipped implementation
 
@@ -68,32 +68,5 @@ All checks passed on the final implementation working tree after the conversatio
 
 Local command logs: `/tmp/cr0117-conversation.log`, `/tmp/cr0117-frontend.log`, `/tmp/cr0117-just-test.log`, `/tmp/cr0117-lint.log`, `/tmp/cr0117-e2e.log`, `/tmp/cr0117-build.log`, `/tmp/cr0117-desktop.log`. These establish working-tree validation, not validation of a final commit that does not yet exist.
 
-## Delivery
 
-The matching frontend/backend migration remains together in this worktree. This stage's instruction says: “Do not commit, push, create branches or worktrees, or clean anything up; the parent flow evaluates, validates, commits, and releases the workspace.” No such actions were performed.
-
-The change request's intermediate-commit requirement is still outstanding; this report does not waive it or claim it has been satisfied. The authorized parent stage must create the required intermediate implementation commits for the five phases and deliver the completed migration with its matching frontend/backend together before release. Include all new/untracked implementation and test files, as well as this result document, in those commits. HEAD was verified as `9839f9f0` during this review pass; repository history has not yet satisfied this requirement.
-
-## Delivery review handoff
-
-The delivery-only review was inspected without changing implementation or tests. HEAD remains `9839f9f0a2eeed5d5352ab7045b8bcf6564b19f8`; no implementation commit IDs exist to record. `git status --porcelain=v1 -uall` reports 199 changed/new files (the review's 184 entries collapse untracked directories). Existing validation logs confirm the recorded frontend build, lint, 12 browser scenarios and production Desktop build. Both unstaged and staged `git diff --check` pass. No affected checks need rerunning for this report-only update.
-
-For the authorized delivery stage, the current content fingerprint is `e8e248662af262c445e454b08affe3af12da50152059053a13d49da1b710209b` across 860 files. Compute it from the sorted, deduplicated paths returned by `git ls-files -z --cached --others --exclude-standard`, excluding this result document and non-files: SHA-256 of the concatenation of each path's bytes, NUL, the lowercase SHA-256 hex digest of its file bytes, and newline. This records current worktree contents for delivery comparison; it is not proof of committed-tree equivalence or a retrospective fingerprint of the earlier test runs.
-
-Remaining authorized parent delivery actions:
-
-1. Create intermediate commits for the five implementation phases in section 4, including every new implementation and test file. Deliver the matching frontend/backend migration together.
-2. Verify the final committed tree matches the validated worktree, including file modes and all new files; rerun affected checks if implementation contents change.
-3. Record the five phase commit IDs and final verification evidence here, then mark delivery complete. This stage cannot truthfully mark those actions complete because its explicit no-commit instruction reserves them for the parent flow.
-
-## Gatekeeper delivery routing
-
-Inspected `/tmp/cr0117-gate-test.log`, `/tmp/cr0117-gate-lint.log`, `/tmp/cr0117-gate-e2e.log`, and `/tmp/cr0117-gate-desktop.log`: Rust tests/doctests, 567 frontend tests, TypeScript and production frontend build passed; lint reports zero errors and 15 warnings; all 12 browser scenarios passed; production Desktop build completed. Both staged and unstaged whitespace checks passed again. Implementation contents retain the 860-file fingerprint above; only this report changed, so affected implementation checks were not rerun.
-
-The current content-and-Git-mode fingerprint is `b8b1d9f9a5a17b19411180bc6659d4246f81019996eaf1977e45a14cf725ba1a`, using the same sorted paths and report exclusion above. Prefix each content record with its Git mode and a space (`100755` for executable regular files, `100644` otherwise, `120000` for symlinks; hash symlink target bytes). The delivery stage must compare committed blob contents and modes against this worktree baseline, and separately verify the final report is committed exactly. This is a handoff baseline, not a claim that final commit verification has occurred.
-
-Route to the authorized delivery stage. All five phase commit IDs remain pending: shared model/persistence, runtime integration, inheritance, API/editor, and client preferences/cleanup. The parent must create those commits with all new implementation/test files, deliver matching frontend/backend migration together, and record their actual IDs and final tree verification here. No implementation deletion or simplification is required by this review.
-
-Latest delivery-only review: inspected `/tmp/cr0117-current-gate-test.log`, `/tmp/cr0117-current-gate-lint.log`, `/tmp/cr0117-current-gate-e2e.log`, and `/tmp/cr0117-current-gate-desktop-final.log`. The fresh gate evidence confirms successful validation, zero lint errors (15 warnings), 12 passing browser scenarios, and a completed production Desktop build. Recomputed the content-and-Git-mode fingerprint: it remains `b8b1d9f9a5a17b19411180bc6659d4246f81019996eaf1977e45a14cf725ba1a` over 860 files excluding this report. HEAD and the 199 changed/new-file count remain unchanged. Staged and unstaged whitespace checks pass. Only this report was updated; no implementation changes require affected checks to rerun.
-
-Delivery remains incomplete pending the authorized parent's commits and committed-tree verification. Route this blocker directly to that parent, not back to an implementation stage prohibited from committing. Mark this report complete only after recording actual phase commit IDs and verifying committed contents and modes against the validated worktree.
+Delivery history is a separate decision. This worker must not commit, merge or release, and completion does not require a particular number of phase commits.

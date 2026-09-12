@@ -262,6 +262,7 @@ fn settings_with_project_root(root: &Path, project_root: PathBuf) -> SparkSettin
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),

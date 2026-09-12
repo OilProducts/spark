@@ -410,6 +410,13 @@ fn migrate_core_with_desktop(core: &Path, legacy: Option<&Path>) -> Result<Setti
         )?;
     }
     if document.values == original {
+        if original
+            .get("defaults_migration_version")
+            .and_then(toml::Value::as_integer)
+            == Some(1)
+        {
+            cleanup_legacy_defaults(&defaults_path)?;
+        }
         return Ok(document);
     }
     if let Some(bytes) = &defaults_source {
@@ -428,7 +435,31 @@ fn migrate_core_with_desktop(core: &Path, legacy: Option<&Path>) -> Result<Setti
         };
         backup_migration_source(core, suffix, &bytes)?;
     }
-    persist(core, &document.values)
+    let document = persist(core, &document.values)?;
+    if document
+        .values
+        .get("defaults_migration_version")
+        .and_then(toml::Value::as_integer)
+        == Some(1)
+    {
+        cleanup_legacy_defaults(&defaults_path)?;
+    }
+    Ok(document)
+}
+
+fn cleanup_legacy_defaults(path: &Path) -> Result<()> {
+    if let Some(bytes) = read_bytes(path)? {
+        let suffix = if read_bytes(&sidecar(path, ".v0.bak"))?.is_some_and(|backup| backup != bytes)
+        {
+            format!(".cleanup-{:x}.bak", Sha1::digest(&bytes))
+        } else {
+            ".v0.bak".into()
+        };
+        backup_migration_source(path, &suffix, &bytes)?;
+        std::fs::remove_file(path)
+            .map_err(|error| StorageError::io("remove imported defaults", path, error))?;
+    }
+    Ok(())
 }
 
 fn backup_migration_source(path: &Path, suffix: &str, bytes: &[u8]) -> Result<()> {
@@ -774,4 +805,31 @@ pub fn import_client_preferences(
         .values
         .insert("browser_migration_version".into(), 1.into());
     persist(path, &document.values)
+}
+
+/// Target for a new CLI using this configuration home (an explicit CLI flag wins before this).
+pub fn resolve_client_api_base_url(
+    config_dir: &Path,
+    env: &impl spark_common::paths::Environment,
+) -> Result<(String, &'static str)> {
+    if let Some(value) = env
+        .get_var("SPARK_API_BASE_URL")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok((value.trim().to_owned(), "environment: SPARK_API_BASE_URL"));
+    }
+    let path = config_dir.join("spark.toml");
+    let connections: spark_common::settings::ConnectionSettings = read_settings_document(&path)?
+        .section(&path, "connections")?
+        .unwrap_or_default();
+    connections
+        .validate()
+        .map_err(|error| invalid(&path, error.to_string()))?;
+    Ok(match connections.client_api_base_url {
+        Some(value) => (value, "stored"),
+        None => (
+            spark_common::source_checkout::DEFAULT_API_BASE_URL.into(),
+            "built-in default",
+        ),
+    })
 }

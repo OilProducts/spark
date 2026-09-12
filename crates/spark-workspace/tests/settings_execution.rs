@@ -327,6 +327,19 @@ fn active_turn_uses_captured_connection(profile: bool) {
         .unwrap();
     assert_eq!(turn["status"], "complete", "{turn}");
     assert_eq!(turn["content"], "captured endpoint");
+    let history = service
+        .get_snapshot("captured-chat", Some("/projects/inheritance"))
+        .unwrap();
+    assert!(history["settings"]["models"]["effective"].is_null());
+    assert!(!history["settings"]["models"]["validation_errors"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(history["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|turn| turn["content"] == "captured endpoint"));
 }
 
 #[test]

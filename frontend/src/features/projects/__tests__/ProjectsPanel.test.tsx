@@ -5287,8 +5287,8 @@ describe('ProjectsPanel', () => {
             conversation_handle: '',
             project_path: '/tmp/model-project',
             chat_mode: 'chat',
-            model: body.model,
-            reasoning_effort: body.reasoning_effort,
+            model: (body.model_settings as Record<string, unknown>).model,
+            reasoning_effort: (body.model_settings as Record<string, unknown>).reasoning_effort,
             title: 'New thread',
             created_at: '2026-04-16T18:10:00Z',
             updated_at: `2026-04-16T18:10:0${updateIndex}Z`,
@@ -5381,12 +5381,11 @@ describe('ProjectsPanel', () => {
     })
     expect(settingsRequests[0]).toMatchObject({
       project_path: '/tmp/model-project',
-      model: 'gpt-5.4-mini',
+      model_settings: { model: 'gpt-5.4-mini' },
     })
     expect(settingsRequests[1]).toMatchObject({
       project_path: '/tmp/model-project',
-      model: 'gpt-5.4-mini',
-      reasoning_effort: 'medium',
+      model_settings: { model: 'gpt-5.4-mini', reasoning_effort: 'medium' },
     })
     expect(turnRequests[0]).toMatchObject({
       project_path: '/tmp/model-project',
@@ -5395,6 +5394,65 @@ describe('ProjectsPanel', () => {
     expect(turnRequests[0]).not.toHaveProperty('model')
     expect(turnRequests[0]).not.toHaveProperty('provider')
     expect(turnRequests[0]).not.toHaveProperty('reasoning_effort')
+  })
+
+  it('preserves an inherited profile through effort and model edits, explicit selection and reset', async () => {
+    const user = userEvent.setup()
+    const group = { provider: null as string | null, llm_profile: 'team' as string | null, model: null as string | null, reasoning_effort: 'low' as string | null }
+    let effective = { ...group }
+    let stored: typeof group | null = null
+    let revision = 1
+    const requests: Record<string, unknown>[] = []
+    const snapshot = () => withSnapshotSchema({
+      conversation_id: 'profile-thread', project_path: '/tmp/model-project', chat_mode: 'chat',
+      provider: effective.provider || 'openai_compatible', model: effective.model, reasoning_effort: effective.reasoning_effort,
+      title: 'Profile thread', created_at: '2026-04-16T18:00:00Z', updated_at: `2026-04-16T18:00:0${revision}Z`, revision_override: revision,
+      turns: [], segments: [], event_log: [], flow_run_requests: [], flow_launches: [],
+      settings: { models: { scope: 'conversation', revision: String(revision), stored, effective, source: stored ? 'conversation' : 'workspace' } },
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = resolveRequestUrl(input)
+      let response: unknown = {}
+      if (url.includes('/llm-profiles')) response = { profiles: [{id:'team', provider:'openai_compatible', models:['model-one','model-two'], default_model:'model-one', configured:false}, {id:'manual',provider:'openai_compatible',models:['manual-model'],configured:false}] }
+      else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null}}, models:[] }
+      else if (url.includes('/projects/metadata')) response = {branch:'main',commit:'abc123'}
+      else if (url.includes('/projects/conversations')) response = [snapshot()]
+      else if (url.includes('/conversations/profile-thread')) {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>
+          requests.push(body)
+          stored = body.model_settings as typeof group | null
+          effective = stored || { ...group }
+          revision += 1
+        }
+        response = snapshot()
+      }
+      return new Response(JSON.stringify(response), {status:200, headers:{'Content-Type':'application/json'}})
+    }))
+    act(() => {
+      useStore.getState().registerProject('/tmp/model-project')
+      useStore.getState().setActiveProjectPath('/tmp/model-project')
+      useStore.getState().setConversationId('profile-thread')
+    })
+    renderProjectsPanel()
+    const provider = screen.getByTestId('project-ai-conversation-provider-select')
+    await waitFor(() => expect(provider).toHaveValue('team'))
+    await user.selectOptions(screen.getByTestId('project-ai-conversation-reasoning-effort-select'), 'high')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]).toMatchObject({model_settings:{...group,reasoning_effort:'high'}})
+    await user.selectOptions(screen.getByTestId('project-ai-conversation-model-select'), 'model-two')
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1]).toMatchObject({model_settings:{...group,model:'model-two',reasoning_effort:'high'}})
+    await user.selectOptions(provider, 'claude-code')
+    await waitFor(() => expect(requests).toHaveLength(3))
+    expect(requests[2]).toMatchObject({model_settings:{provider:'claude-code',llm_profile:null,model:null,reasoning_effort:null}})
+    await user.click(await screen.findByRole('button', {name:'Use defaults'}))
+    await waitFor(() => expect(requests).toHaveLength(4))
+    expect(requests[3]).toHaveProperty('model_settings', null)
+    await waitFor(() => expect(provider).toHaveValue('team'))
+    await user.selectOptions(provider, 'manual')
+    await waitFor(() => expect(requests).toHaveLength(5))
+    expect(requests[4]).toMatchObject({model_settings:{provider:null,llm_profile:'manual',model:'manual-model',reasoning_effort:null}})
   })
 
   it('shows each thread’s own project chat model and effort when switching threads', async () => {

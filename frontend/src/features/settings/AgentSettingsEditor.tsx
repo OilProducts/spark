@@ -26,21 +26,22 @@ export function AgentSettingsEditor() {
                 <FieldLabel htmlFor={`agent-native-${key}`}>{key.replaceAll('_', ' ')}</FieldLabel>
                 <Input id={`agent-native-${key}`} aria-invalid={editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim()} value={editor.draft?.native?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value || null } }))} />
                 {editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim() && <p role="alert">Enter a nonempty path or leave blank for the default.</p>}
-                <p className="text-xs">Effective: {editor.saved?.effective.native?.[key] ?? 'Platform default'}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
+                {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs">Startup: {editor.saved.active_startup[key] ?? 'Platform default'} · Retained until restart</p>}
+                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? 'Platform default' : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
             </Field>)}
             <Field><FieldLabel htmlFor="agent-claude-permission">Claude permission mode</FieldLabel>
                 <NativeSelect id="agent-claude-permission" value={editor.draft.native?.claude_permission_mode ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, claude_permission_mode: event.target.value || null } }))}>
                     <option value="">Default (bypassPermissions)</option>
                     {['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'].map((mode) => <option key={mode} value={mode}>{mode}</option>)}
                 </NativeSelect>
-                <p className="text-xs">Effective: {editor.saved?.effective.native?.claude_permission_mode ?? 'bypassPermissions'}</p>
+                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.claude_permission_mode ?? 'bypassPermissions' : 'Unavailable'}</p>
             </Field>
             {(['codex_jsonrpc_trace', 'agent_trace'] as const).map((key) => <Field key={key}>
                 <FieldLabel htmlFor={`agent-${key}`}>{key.replaceAll('_', ' ')}</FieldLabel>
                 <NativeSelect id={`agent-${key}`} value={editor.draft?.native?.[key] == null ? '' : String(editor.draft.native[key])} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value === '' ? null : event.target.value === 'true' } }))}>
                     <option value="">Default (off)</option><option value="true">On</option><option value="false">Off</option>
                 </NativeSelect>
-                <p className="text-xs">Effective: {editor.saved?.effective.native?.[key] ? 'On' : 'Off'}</p>
+                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ? 'On' : 'Off' : 'Unavailable'}</p>
             </Field>)}
             {(['tool_output_limits', 'line_limits'] as const).map((key) => <fieldset key={key} className="space-y-2">
                 <legend>{key === 'tool_output_limits' ? 'Tool output character limits' : 'Tool output line limits'}</legend>

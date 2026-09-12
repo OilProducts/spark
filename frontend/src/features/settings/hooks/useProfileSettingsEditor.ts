@@ -9,7 +9,7 @@ export function useProfileSettingsEditor<T>(section: ProfileSection, parse: (val
     const [error, setError] = useState('')
     const [message, setMessage] = useState('')
     const dirty = additionalDirty || (!!saved && JSON.stringify(draft) !== JSON.stringify(saved.stored))
-    useSettingsNavigationProtection(dirty || pending)
+    useSettingsNavigationProtection(dirty, pending)
     useEffect(() => {
         let cancelled = false
         const refresh = () => {

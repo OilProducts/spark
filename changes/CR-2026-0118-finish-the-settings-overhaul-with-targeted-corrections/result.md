@@ -1,0 +1,33 @@
+# CR-2026-0118 implementation result
+
+The bounded F1–F8 corrections are implemented. The prior implementation, architecture, inheritance rules, explicit execution profiles, configuration editors, client preferences, native execution, and historical captures remain in place. The source worktree `run-18d45752f4ec6770` was inspected read-only and remains unchanged.
+
+- **F1:** Conversation controls send complete `model_settings` groups. Model/effort edits preserve profiles and omitted defaults; explicit selection replaces the old provider/profile, and Use defaults clears the override. Configured profiles use the existing selection options. A profile without a default starts with its first declared compatible model in this immediate-save control. Legacy scalar API handling remains.
+- **F3/F6:** Validate and Save share candidate-content and authored-reference checks, including same-ID edits, missing/default models, deleted profiles and disabled referenced execution profiles. Save retains locked revision/reference rechecks. Rejections preserve disk contents; valid label/endpoint/model-list edits remain possible. Authored flow node model/profile pairs resolve through the existing inheritance functions: removing `m2` from inherited profile `team` rejects Validate and Save and identifies the affected flow/node. Explicit node selection retains precedence. Historical snapshots are excluded.
+- **F2:** Desktop resolves the process environment while preserving its explicit app-owned home, captures startup provenance, retains startup-only paths for new work, and reports its actual bound port.
+- **F4:** Container launch capture avoids host executable discovery. The existing executor resolves binaries and homes inside the target before dispatch and retains those choices for its active work. Explicit paths/mounts remain explicit. Host-home defaults are not automatically forwarded. Selected custom credential references extend the existing allowlist; values stay in the transient process environment, out of snapshots, command arguments and command diagnostics.
+- **F5:** Every affected navigation-protection caller passes dirty and pending separately. Pending saves cannot offer a misleading discard-and-leave operation.
+- **F7:** Views distinguish stored values, effective values, active startup values and sources. New-CLI target resolution shares the CLI resolver, including its actual configuration home; Desktop's home can differ. Invalid sections/references produce scoped errors, and unrelated sections remain usable. Existing controls repair domain errors; invalid field shapes offer an explicit replacement draft that still requires Save. Conversation history remains readable when defaults become invalid. The project execution parser retains the revision and scoped errors for malformed stored selections and invalid profile references. Its existing dialog requires an explicit replacement profile or workspace-default selection followed by Save; an invalid selection is never displayed as an effective default. No effective fallback or raw-file repair editor was introduced.
+- **F8:** Successful legacy-default migration removes the obsolete source only after backup. Completed migration retries cleanup without reimporting or overwriting authoritative settings. Recreated sources with different bytes receive separate content-addressed backups. Documentation and the historical implementation result were corrected; no phase-commit requirement is imposed on this worker.
+
+## Verification
+
+Audit reproductions were promoted into the existing Rust and frontend suites. The F3/F6 inherited-flow follow-up passed all 13 profile settings tests, including rejection without writes, valid profile edits and explicit node selection precedence. Original evaluation reports and reproduction evidence are retained under `reports/CR-2026-0117-*`.
+
+| Check | Result |
+| --- | --- |
+| Affected Rust suites, before the gate | Passed: candidate/reference checks, unchanged persistence on rejection, scoped repair, history/captures, migration cleanup, Desktop startup retention, target-shell/credential transport and real launch-to-worker dispatch. |
+| Affected frontend suites | Earlier correction run: 15 files / 74 tests passed. F7 follow-up: 2 files / 12 tests passed, using the real settings parser for malformed execution selections and invalid references, explicit repair, and retained revisions/drafts on conflict. |
+| Required isolated-home `just test` | Passed with workspace/all-features Rust tests, 76 frontend files / 572 tests, and the production frontend build. Pre-existing ignored tests remain ignored. |
+| Frontend lint | Passed: 0 errors, 15 warnings. |
+| Release Desktop build, all features | Passed. |
+| Real browser, disposable server/home | All 14 settings scenarios passed, including conversation/profile edits and malformed project execution selection replacement/reset. Repair preserves unrelated metadata; selection writes nothing before Save; stale revisions return HTTP 409 without changing the repaired file. No conversation turn was submitted. |
+| Final formatting and whitespace checks | Passed. |
+
+The inherited-flow follow-up exact required gate exited 0 at 2026-09-12 09:38 UTC after its focused suite passed, with the same 572 frontend tests, successful builds and 0 lint errors / 15 existing warnings. The earlier F7 gate passed at 09:24 UTC; its first attempt hit a transient Rust HTTP fixture timeout; a later attempt found generated third-party browser-home files during lint. The fixture passed independently, all browser artifacts were retained under the existing ignored smoke-test directory, and the complete gate then passed without changing source lint rules. Browser verification used the installed Chromium cache via `PLAYWRIGHT_BROWSERS_PATH`; the sequential provider/agent browser test now reloads the shared revision between edits. See [validation evidence](../../reports/CR-2026-0118-validation.md) for commands, logs and limitations.
+
+## Runtime limits and delivery
+
+A real Docker scenario is **unverified**: `docker version` found the installed CLI but no daemon socket at `/var/run/docker.sock`. Target-shell, credential-boundary and launch-to-worker dispatch tests provide automated coverage, not a substitute claim of a live container run. No paid model call was made.
+
+Desktop bootstrap/retention is exercised by a subprocess test; an interactive native GUI restart was not performed. Temporary validation homes and browser artifacts were retained. No commit, push, branch/worktree creation, merge, release, canceled-workflow restart or source-worktree cleanup was performed.

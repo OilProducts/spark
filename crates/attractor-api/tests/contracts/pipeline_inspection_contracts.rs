@@ -672,6 +672,7 @@ fn sse_data_entries(body: &str) -> Vec<Value> {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),

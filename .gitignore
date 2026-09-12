@@ -26,3 +26,10 @@ agent-notes.md
 /changes/
 *.log
 /containers/mathlab/spark-server-bin
+
+# Contract and retained audit evidence for the targeted settings corrections.
+!/changes/
+/changes/*
+!/changes/CR-2026-0118-finish-the-settings-overhaul-with-targeted-corrections/
+!/reports/CR-2026-0117-evaluation.md
+!/reports/CR-2026-0117-audit/

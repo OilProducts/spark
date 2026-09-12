@@ -226,6 +226,7 @@ fn delete_flow_removes_existing_file() {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),

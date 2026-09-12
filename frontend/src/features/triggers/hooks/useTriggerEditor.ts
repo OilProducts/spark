@@ -104,7 +104,7 @@ export function useTriggerEditor({
     const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
     const dirty = Boolean(currentEditDraft?.form)
     const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
-    useSettingsNavigationProtection(dirty || pending)
+    useSettingsNavigationProtection(dirty, pending)
 
     useEffect(() => {
         activeProjectPathRef.current = activeProjectPath

@@ -41,6 +41,7 @@ export function useProjectSettingsDialog(
     const [revision, setRevision] = useState<string | null>(null)
     const [settings, setSettings] = useState<WorkspaceSettingsResponse | null>(null)
     const [loadError, setLoadError] = useState<string | null>(null)
+    const [validationError, setValidationError] = useState<string | null>(null)
     const [saveError, setSaveError] = useState<string | null>(null)
     const [isLoading, setLoading] = useState(false)
     const [isSaving, setSaving] = useState(false)
@@ -71,6 +72,7 @@ export function useProjectSettingsDialog(
         setSelectedProfileValue(WORKSPACE_DEFAULT_VALUE)
         setSavedProfileValue(WORKSPACE_DEFAULT_VALUE)
         setSettings(null)
+        setValidationError(null)
         setMessage('')
         setSaveError(null)
     }, [open, projectPath])
@@ -95,9 +97,12 @@ export function useProjectSettingsDialog(
                 setLoadError(null)
                 setMessage('')
                 setSettings((previous) => JSON.stringify(previous) === JSON.stringify(response) ? previous : response)
-                setSavedProfileValue(execution.stored || WORKSPACE_DEFAULT_VALUE)
+                const errors = execution.validation_errors?.join(' ') || null
+                const value = errors ? '' : typeof execution.stored === 'string' ? execution.stored : WORKSPACE_DEFAULT_VALUE
+                setValidationError(errors)
+                setSavedProfileValue(value)
                 setRevision(execution.revision)
-                setSelectedProfileValue(execution.stored || WORKSPACE_DEFAULT_VALUE)
+                setSelectedProfileValue(value)
             })
             .catch((error) => {
                 if (cancelled) return
@@ -128,7 +133,7 @@ export function useProjectSettingsDialog(
         [settings],
     )
     const settingsError = buildSettingsError(settings, loadError)
-    const canSave = Boolean(projectPath) && Boolean(revision) && !isLoading && !isSaving && !settingsError
+    const canSave = Boolean(projectPath) && Boolean(revision) && !isLoading && !isSaving && !settingsError && Boolean(selectedProfileValue)
 
     const onSave = async () => {
         if (!projectPath || !revision || !canSave) {
@@ -158,6 +163,7 @@ export function useProjectSettingsDialog(
         requestOpenChange,
         enabledProfiles,
         settingsError,
+        validationError,
         saveError,
         isLoading,
         isSaving,

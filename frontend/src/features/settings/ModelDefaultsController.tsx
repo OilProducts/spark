@@ -9,6 +9,7 @@ export function ModelDefaultsController() {
         const refresh = () => {
             void loadAndMigrateModelDefaults().then(({ effective }) => {
                 if (cancelled) return
+                if (!effective) { setError('Workspace model defaults are invalid. Repair them in Settings.'); return }
                 useStore.getState().setUiDefaults({ llm_provider: effective.provider ?? '', llm_profile: effective.llm_profile ?? '',
                     llm_model: effective.model ?? '', reasoning_effort: effective.reasoning_effort ?? '' })
                 setError('')

@@ -210,3 +210,20 @@ export async function fetchTextWithValidation<T>(
 }
 
 export { isAbortError } from '../abortError'
+
+export function parseSettingsFeedback(record: Record<string, unknown>, endpoint: string): { sources?: Record<string, string>; validation_errors?: string[] } {
+    const sources = record.sources == null ? undefined : Object.fromEntries(Object.entries(expectObjectRecord(record.sources, endpoint))
+        .map(([key, value]) => [key, expectString(value, endpoint, 'sources')]))
+    if (record.validation_errors != null && !Array.isArray(record.validation_errors)) throw new ApiSchemaError(endpoint, 'Expected validation errors.')
+    return { sources, validation_errors: (record.validation_errors as unknown[] | undefined)?.map((value) => expectString(value, endpoint, 'validation_errors')) }
+}
+
+// Malformed field shapes require an explicit replacement draft, followed by Save.
+// The server still returns the original stored section and never invents an effective value.
+export function parseRepairableStored<T>(record: Record<string, unknown>, parse: (value: unknown) => T): { stored: T | null; repair_defaults?: T } {
+    try { return { stored: record.stored == null ? null : parse(record.stored) } }
+    catch (error) {
+        if (!(error instanceof ApiSchemaError) || !Array.isArray(record.validation_errors) || !record.validation_errors.length || record.repair_defaults == null) throw error
+        return { stored: null, repair_defaults: parse(record.repair_defaults) }
+    }
+}

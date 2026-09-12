@@ -39,6 +39,7 @@ export function ProjectSettingsDialog({
         requestOpenChange,
         enabledProfiles,
         settingsError,
+        validationError,
         saveError,
         isLoading,
         isSaving,
@@ -71,9 +72,9 @@ export function ProjectSettingsDialog({
                                 id="project-default-execution-profile"
                                 data-testid="project-default-execution-profile"
                                 className="w-full"
-                                aria-invalid={Boolean(settingsError)}
+                                aria-invalid={Boolean(settingsError || validationError)}
                             >
-                                <SelectValue placeholder="Use workspace default" />
+                                <SelectValue placeholder={validationError ? "Select a replacement or workspace default" : "Use workspace default"} />
                             </SelectTrigger>
                             <SelectContent>
                                 <SelectItem value={WORKSPACE_DEFAULT_VALUE}>Use workspace default</SelectItem>
@@ -90,9 +91,9 @@ export function ProjectSettingsDialog({
                             Loading execution profiles...
                         </p>
                     ) : null}
-                    {settingsError ? (
+                    {settingsError || validationError ? (
                         <p data-testid="project-settings-error" className="text-xs text-destructive">
-                            {settingsError}
+                            {settingsError || validationError}
                         </p>
                     ) : null}
                     {message && <p role="status" className="text-xs">{message}</p>}

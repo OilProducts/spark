@@ -299,6 +299,7 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),
@@ -406,7 +407,7 @@ async fn task_routes_enforce_minimal_records_and_revision_protection() {
 }
 
 #[tokio::test]
-async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_hide_invalid_values() {
+async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_scope_invalid_values() {
     let temp = tempfile::tempdir().unwrap();
     let config = settings(temp.path());
     fs::create_dir_all(&config.config_dir).unwrap();
@@ -472,8 +473,16 @@ async fn runtime_settings_http_preserve_sections_reject_stale_writes_and_hide_in
     assert!(!wrong_type.1.to_string().contains("secret-value"));
     fs::write(&path, "[runtime]\nproject_roots = 'secret-from-file'\n").unwrap();
     let bad_file = request_json(app, "GET", "/workspace/api/settings", None).await;
-    assert_eq!(bad_file.0, StatusCode::BAD_REQUEST);
-    assert!(!bad_file.1.to_string().contains("secret-from-file"));
+    assert_eq!(bad_file.0, StatusCode::OK);
+    assert_eq!(
+        bad_file.1["runtime"]["stored"]["project_roots"],
+        "secret-from-file"
+    );
+    assert!(!bad_file.1["runtime"]["validation_errors"]
+        .to_string()
+        .contains("secret-from-file"));
+    assert!(bad_file.1["runtime"]["effective"].is_null());
+    assert!(!bad_file.1["runtime"]["repair_defaults"].is_null());
 }
 
 #[tokio::test]
@@ -951,7 +960,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
 }
 
 #[tokio::test]
-async fn file_edited_model_defaults_are_rejected_by_settings_and_workflow_before_persistence() {
+async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_before_persistence() {
     for scope in ["workspace", "project"] {
         for group in [
             "provider='nonexistent-provider'",
@@ -989,11 +998,12 @@ async fn file_edited_model_defaults_are_rejected_by_settings_and_workflow_before
                 format!("/workspace/api/settings?project_path={}", project.display())
             };
             let read = request_json(app.clone(), "GET", &uri, None).await;
-            assert_eq!(
-                read.0,
-                StatusCode::BAD_REQUEST,
-                "{scope}: {group}: {read:?}"
-            );
+            assert_eq!(read.0, StatusCode::OK, "{scope}: {group}: {read:?}");
+            assert!(read.1["models"]["effective"].is_null());
+            assert!(!read.1["models"]["validation_errors"]
+                .as_array()
+                .unwrap()
+                .is_empty());
             let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
                 "run_id":"invalid-defaults", "working_directory":project, "wait":true,
                 "flow_content":"schema_version: '1'\nid: invalid\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n"

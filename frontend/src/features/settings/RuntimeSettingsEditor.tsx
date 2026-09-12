@@ -14,19 +14,22 @@ export function RuntimeSettingsEditor() {
                 {(['runs_dir', 'flows_dir', 'ui_dir'] as const).map((key) => <Field key={key}>
                     <FieldLabel htmlFor={`runtime-${key}`}>{({ runs_dir: 'Runs directory', flows_dir: 'Flows directory', ui_dir: 'UI directory' })[key]}</FieldLabel>
                     <Input id={`runtime-${key}`} disabled={pending} value={draft[key] ?? ''} onChange={(event) => { setDraft({ ...draft, [key]: event.target.value || null }); setMessage('') }} />
-                    <p className="text-xs text-muted-foreground">Effective: {saved.effective[key] ?? 'Not configured'} · Requires restart</p>
+                    <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective[key] ?? 'Not configured' : 'Unavailable'} · {saved.sources?.[key]} · Requires restart</p>
                 </Field>)}
                 <Field>
                     <FieldLabel htmlFor="runtime-project-roots">Project roots (one absolute path per line)</FieldLabel>
                     <textarea id="runtime-project-roots" className="min-h-20 rounded border p-2 text-sm" disabled={pending} aria-invalid={invalidRoots} aria-describedby={invalidRoots ? 'runtime-roots-error' : undefined} value={draft.project_roots.join('\n')} onChange={(event) => { setDraft({ ...draft, project_roots: event.target.value ? event.target.value.split('\n') : [] }); setMessage('') }} />
                     {invalidRoots && <p id="runtime-roots-error" role="alert">Each project root must be an absolute path.</p>}
-                    <p className="text-xs text-muted-foreground">Effective: {saved.effective.project_roots.join(', ') || 'Default roots'} · Requires restart</p>
+                    <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
                 </Field>
                 <div className="flex gap-2">
                     <Button disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save runtime settings</Button>
                     <Button variant="outline" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard runtime changes</Button>
                 </div>
             </>}
+            {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: flows {saved.active_startup.flows_dir}, runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
+            {!draft && saved?.repair_defaults && <Button variant="outline" disabled={pending} onClick={() => setDraft(saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
             {message && <p role="status" className="text-sm">{message}</p>}
         </CardContent>

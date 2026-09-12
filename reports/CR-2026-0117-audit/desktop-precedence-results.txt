@@ -1,0 +1,9 @@
+resolved_before_startup_retention=Some("/tmp/audit-claude-config")
+captured_after_startup_retention=None
+desktop_startup=None
+
+thread 'main' (7656328) panicked at /Users/chris/projects/spark/reports/CR-2026-0117-audit/desktop_precedence.rs:11:2:
+assertion `left == right` failed: Desktop must retain the environment-selected home at startup
+  left: None
+ right: Some("/tmp/audit-claude-config")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

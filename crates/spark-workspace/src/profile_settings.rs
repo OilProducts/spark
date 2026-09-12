@@ -1,5 +1,4 @@
 //! Dedicated profile documents, edited through the shared revision/lock boundary.
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -20,8 +19,16 @@ pub struct ExecutionProfilesUpdate {
 pub fn llm_profiles_view(settings: &SparkSettings) -> WorkspaceResult<Value> {
     let path = settings.config_dir.join("llm-profiles.toml");
     let document = read_settings_document(&path)?;
-    let profiles = parse_llm_profiles(&document.values)
-        .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+    let profiles = match parse_llm_profiles(&document.values) {
+        Ok(profiles) => profiles,
+        Err(error) => {
+            let stored = profile_stored_values(&document.values);
+            return Ok(
+                json!({"scope":"workspace", "revision":document.revision, "stored":stored,
+                "effective":null, "repair_defaults":[], "credential_status":{}, "restart_fields":[], "validation_errors":[error.to_string()]}),
+            );
+        }
+    };
     Ok(json!({"scope": "workspace", "revision": document.revision,
         "stored": profiles.values().collect::<Vec<_>>(),
         "credential_status": profiles.iter().map(|(id, profile)|
@@ -52,13 +59,34 @@ pub fn execution_profiles_view(settings: &SparkSettings) -> WorkspaceResult<Valu
         Ok(graph) => graph,
         Err(error) => {
             return Ok(json!({"scope": "workspace", "revision": document.revision,
-            "stored": null, "restart_fields": [], "validation_errors": [error.to_string()]}))
+            "stored": {"profiles":profile_stored_values(&document.values), "default_execution_profile_id":document.values.get("defaults").and_then(|value| value.get("execution_profile_id"))}, "effective":null, "repair_defaults":{"profiles":[], "default_execution_profile_id":null}, "restart_fields": [], "validation_errors": [error.to_string()]}))
         }
     };
     Ok(json!({"scope": "workspace", "revision": document.revision,
         "stored": {"profiles": graph.profiles.values().collect::<Vec<_>>(),
             "default_execution_profile_id": graph.default_execution_profile_id},
         "restart_fields": [], "validation_errors": []}))
+}
+
+fn profile_stored_values(values: &toml::Table) -> Value {
+    if let Some(profiles) = values.get("profiles") {
+        if !profiles.is_table() {
+            return json!(profiles);
+        }
+    }
+    json!(values
+        .get("profiles")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|profiles| profiles.iter())
+        .map(|(id, value)| {
+            let mut value = json!(value);
+            if let Some(fields) = value.as_object_mut() {
+                fields.insert("id".into(), json!(id));
+            }
+            value
+        })
+        .collect::<Vec<_>>())
 }
 
 fn profiles_table<'a, T: Serialize + 'a>(
@@ -143,46 +171,11 @@ pub fn update_profiles(
             .iter()
             .map(|(key, value)| (key.as_str(), Some(value.clone()))),
         |values| {
-            let validate = || -> WorkspaceResult<()> {
-                if execution {
-                    attractor_execution::profile::parse_execution_profiles(values)
-                        .and_then(|graph| graph.validate_default())
-                        .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
-                } else {
-                    parse_llm_profiles(values)
-                        .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+            validate_profile_candidate(settings, values, execution).map_err(|error| {
+                spark_storage::StorageError::SettingsValidation {
+                    path: path.clone(),
+                    reason: error.to_string(),
                 }
-                let old = read_settings_document(&path)?;
-                let old_ids = old
-                    .values
-                    .get("profiles")
-                    .and_then(toml::Value::as_table)
-                    .into_iter()
-                    .flat_map(|profiles| profiles.keys())
-                    .map(|id| id.trim().to_owned())
-                    .chain((execution && old.revision == "absent").then(|| "native".to_owned()));
-                let removed: BTreeSet<_> = old_ids
-                    .filter(|id| {
-                        !values["profiles"]
-                            .as_table()
-                            .expect("validated profiles")
-                            .contains_key(id)
-                    })
-                    .collect();
-                if !removed.is_empty() {
-                    let references = profile_references(settings, &removed, execution)?;
-                    if !references.is_empty() {
-                        return Err(WorkspaceError::Validation(format!(
-                            "Cannot delete referenced profiles. Update these references first: {}",
-                            references.join(", ")
-                        )));
-                    }
-                }
-                Ok(())
-            };
-            validate().map_err(|error| spark_storage::StorageError::SettingsValidation {
-                path: path.clone(),
-                reason: error.to_string(),
             })
         },
     )?;
@@ -199,11 +192,27 @@ pub fn update_profiles(
     Ok(json!({section: view}))
 }
 
-fn profile_references(
+pub fn validate_profile_candidate(
     settings: &SparkSettings,
-    removed: &BTreeSet<String>,
+    candidate: &toml::Table,
     execution: bool,
-) -> WorkspaceResult<Vec<String>> {
+) -> WorkspaceResult<()> {
+    let llm = if execution {
+        Default::default()
+    } else {
+        parse_llm_profiles(candidate)
+            .map_err(|error| WorkspaceError::Validation(error.to_string()))?
+    };
+    let graph = if execution {
+        let graph = attractor_execution::profile::parse_execution_profiles(candidate)
+            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+        graph
+            .validate_default()
+            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+        Some(graph)
+    } else {
+        None
+    };
     let mut references = Vec::new();
     let key = if execution {
         "execution_profile_id"
@@ -211,7 +220,29 @@ fn profile_references(
         "llm_profile"
     };
     let mut inspect = |value: Value, label: String| {
-        find_references(&value, &label, key, removed, &mut references)
+        find_references(
+            &value,
+            &label,
+            key,
+            &|id, fields| {
+                if let Some(graph) = &graph {
+                    return graph
+                        .profiles
+                        .get(id)
+                        .is_none_or(|profile| !profile.enabled);
+                }
+                let Some(profile) = llm.get(id) else {
+                    return true;
+                };
+                let model = fields
+                    .get("model")
+                    .or_else(|| fields.get("llm_model"))
+                    .or_else(|| fields.get("_attractor.runtime.launch_model"))
+                    .and_then(Value::as_str);
+                spark_agent_adapter::config::validate_profile_model(profile, model).is_err()
+            },
+            &mut references,
+        )
     };
     let core = settings.config_dir.join("spark.toml");
     inspect(
@@ -264,21 +295,46 @@ fn profile_references(
                     "Cannot read flow {name} to check profile references."
                 ))
             })?;
-        let flow = attractor_dsl::parse_flow_definition(&source).map_err(|_| {
+        let mut flow = attractor_dsl::parse_flow_definition(&source).map_err(|_| {
             WorkspaceError::Validation(format!(
                 "Invalid flow {name}; repair it before deleting profiles."
             ))
         })?;
+        if !execution {
+            for node in flow.nodes.values_mut() {
+                let selection = node.execution.get_or_insert_with(Default::default);
+                let inputs = unified_llm_adapter::LlmResolutionInputs {
+                    node_model: selection.llm_model.clone(),
+                    node_profile: selection.llm_profile.clone(),
+                    fallback_model: flow.defaults.llm_model.clone(),
+                    fallback_profile: flow.defaults.llm_profile.clone(),
+                    ..Default::default()
+                };
+                // Resolve authored inheritance only; runtime captures are not references.
+                let context = Default::default();
+                selection.llm_profile =
+                    unified_llm_adapter::resolve_effective_llm_profile(&inputs, &context);
+                selection.llm_model =
+                    unified_llm_adapter::resolve_effective_llm_model(&inputs, &context);
+            }
+        }
         inspect(json!(flow), format!("flow {name}"));
     }
-    Ok(references)
+    if references.is_empty() {
+        Ok(())
+    } else {
+        Err(WorkspaceError::Validation(format!(
+            "Candidate profiles invalidate references. Update these configurations first: {}",
+            references.join(", ")
+        )))
+    }
 }
 
 fn find_references(
     value: &Value,
     label: &str,
     key: &str,
-    removed: &BTreeSet<String>,
+    invalid: &impl Fn(&str, &serde_json::Map<String, Value>) -> bool,
     result: &mut Vec<String>,
 ) {
     match value {
@@ -288,17 +344,17 @@ fn find_references(
                 if (field == key
                     || (key == "llm_profile"
                         && field == unified_llm_adapter::RUNTIME_LAUNCH_PROFILE_KEY))
-                    && value.as_str().is_some_and(|id| removed.contains(id.trim()))
+                    && value.as_str().is_some_and(|id| invalid(id.trim(), fields))
                 {
                     result.push(path);
                 } else {
-                    find_references(value, &path, key, removed, result);
+                    find_references(value, &path, key, invalid, result);
                 }
             }
         }
         Value::Array(values) => {
             for (index, value) in values.iter().enumerate() {
-                find_references(value, &format!("{label}[{index}]"), key, removed, result);
+                find_references(value, &format!("{label}[{index}]"), key, invalid, result);
             }
         }
         _ => (),

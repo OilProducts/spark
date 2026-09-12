@@ -605,11 +605,26 @@ impl WorkspaceConversationService {
     fn attach_model_settings(&self, snapshot: &mut Value) -> WorkspaceResult<()> {
         let project_path = snapshot_project_path(snapshot).unwrap_or_default();
         let group = snapshot_model_group(snapshot)?;
-        let (effective, source) = crate::settings::conversation_model_settings(
+        let (effective, source) = match crate::settings::conversation_model_settings(
             &self.settings,
             &project_path,
             group.as_ref(),
-        )?;
+        ) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                let source = if group.is_some() {
+                    json!("conversation")
+                } else {
+                    crate::settings::project_model_settings_view(&self.settings, &project_path)
+                        .ok()
+                        .map(|view| view["models"]["source"].clone())
+                        .unwrap_or(json!("workspace"))
+                };
+                snapshot["settings"] = json!({"models":{"scope":"conversation", "revision":snapshot_revision(snapshot).to_string(),
+                    "stored":group, "effective":null, "source":source, "restart_fields":[], "validation_errors":[error.to_string()]}});
+                return Ok(());
+            }
+        };
         snapshot["settings"] = json!({"models": {"scope": "conversation", "revision": snapshot_revision(snapshot).to_string(),
             "stored": group, "effective": effective, "source": source, "restart_fields": []}});
         snapshot["provider"] = json!(if let Some(id) = effective.llm_profile.as_deref() {

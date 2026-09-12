@@ -142,12 +142,15 @@ impl ContainerCommandRunner for FakeDocker {
 
     fn run(&mut self, spec: CommandSpec) -> std::io::Result<CommandResult> {
         let is_run = spec.args.first().map(String::as_str) == Some("run");
+        let is_resolve = spec.args.get(2).is_some_and(|arg| arg == "sh");
         let is_exec = spec.args.first().map(String::as_str) == Some("exec");
         self.commands.lock().expect("commands").push(spec);
         Ok(CommandResult {
             exit_code: 0,
             stdout: if is_run {
                 "fake-container\n".to_string()
+            } else if is_resolve {
+                "/target/bin/codex\0/target/bin/claude\0/target/runtime\0/target/seed\0/target/claude\0".into()
             } else if is_exec {
                 serde_json::to_string(&json!({
                     "type": "result",
@@ -287,7 +290,7 @@ fn assert_docker_dispatch(commands: &[CommandSpec]) {
         .expect("docker run");
     let exec = commands
         .iter()
-        .position(|command| command.args.first().map(String::as_str) == Some("exec"))
+        .position(|command| command.args.get(1).map(String::as_str) == Some("-i"))
         .expect("docker exec");
     assert!(run < exec, "docker run must precede docker exec");
     assert_eq!(
@@ -301,6 +304,22 @@ fn assert_docker_dispatch(commands: &[CommandSpec]) {
             "run-node",
         ]
     );
+    if let Some(resolve) = commands
+        .iter()
+        .find(|command| command.args.get(2).is_some_and(|arg| arg == "sh"))
+    {
+        assert_eq!(
+            &resolve.args[6..8],
+            ["", ""],
+            "Container capture must not discover host binaries"
+        );
+        let request: serde_json::Value = serde_json::from_str(&commands[exec].stdin).unwrap();
+        assert_eq!(
+            request["context"]["internal.execution_configuration_snapshot"]["agents"]["native"]
+                ["codex_binary"],
+            "/target/bin/codex"
+        );
+    }
 }
 
 fn wait_for_status(settings: &SparkSettings, run_id: &str, expected: &str) {
@@ -504,6 +523,7 @@ fn retry_reconstruction_failures_are_persisted_without_native_or_docker_executio
 
 fn settings(root: &std::path::Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),

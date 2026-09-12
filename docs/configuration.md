@@ -91,14 +91,13 @@ or `all`. These controls support explicit Save/Discard in Preferences, and their
 contextual toggles persist when the interaction completes. Existing per-flow and
 per-node view state remains session state.
 
-Other split/sort choices, graph layouts and browser preference migration remain
-outside this implementation and required by CR-2026-0117.
+Split/sort choices, graph layouts and browser preference migration are described below.
 
 ### Home sidebar split and legacy imports
 
 Client preferences also store `home_sidebar_primary_split_ratio` (a finite number from 0 to 1, or omitted for automatic sizing). The home sidebar saves a drag on pointer release and keyboard adjustments on completion. The Preferences editor supports explicit Save/Discard and validates the ratio. Minimum pane heights still apply. Conversation scrolling, selected records and drafts remain session state.
 
-Bootstrap imports the flat legacy `config/ui-defaults.json` fields `llm_provider`, `llm_profile`, `llm_model`, and `reasoning_effort` into the core model group only when no authored core model group exists. Empty strings become omitted selections; a profile takes precedence over the legacy provider field. `defaults_migration_version = 1` prevents reimport. The source is backed up as `ui-defaults.json.v0.bak`, and an existing core document is backed up before replacement. Invalid source field types fail without replacing the core or echoing source values.
+Bootstrap imports the flat legacy `config/ui-defaults.json` fields `llm_provider`, `llm_profile`, `llm_model`, and `reasoning_effort` into the core model group only when no authored core model group exists. Empty strings become omitted selections; a profile takes precedence over the legacy provider field. `defaults_migration_version = 1` prevents reimport. The source is removed after successful import and backup; cleanup retries on later bootstrap without reimporting authoritative settings. The backup remains at `ui-defaults.json.v0.bak`, and an existing core document is backed up before replacement. Invalid source field types fail without replacing the core or echoing source values.
 
 Conversation settings migration enumerates `workspace/projects/*/conversations/*` directly, including projects with missing or malformed registration metadata. It uses the existing conversation commit lock and changes only conversation settings metadata. It does not traverse symlinked directories. Historical turn files and nested historical metadata are preserved.
 
@@ -260,3 +259,45 @@ current origin and can be recomputed. Desktop restores its durable positions
 using its stable native identity even when the new HTTP port has no browser
 cache. Other clients have their own documents. Browser origins that cannot be
 accessed cannot be imported automatically.
+
+### Targeted settings corrections (CR-2026-0118)
+
+Conversation model and effort controls copy the complete effective model group,
+including its profile and omitted provider defaults. Explicit provider/profile
+selection replaces that selection; **Use defaults** clears the conversation group.
+Legacy scalar API callers remain supported.
+
+Profile Validate and Save check candidate contents against authored workspace,
+project, conversation, trigger and flow references. Save repeats these checks
+under the existing reference and document locks. Historical execution snapshots
+are excluded. Rejected candidates leave the document unchanged.
+
+Desktop resolves startup environment overrides while keeping its app-owned Spark
+home. Runtime and agent-home sources are captured at startup and reported with
+restart retention. Connection views separate the running server from the target
+for new CLI commands; `--base-url` still takes precedence, then
+`SPARK_API_BASE_URL`, then the target in the CLI-resolved Spark home and the
+built-in default. The view identifies that configuration directory, which can
+differ from Desktop’s app-owned home.
+Live provider and agent fields report environment or stored/default sources.
+
+Parseable invalid sections retain their stored values and scoped errors. Valid
+sections remain editable. Invalid domain values can be repaired in their existing
+controls. If a section has invalid field types, **Start replacement draft with
+defaults** prepares a replacement for that section; it does not write anything.
+Review the fields and explicitly Save, or Discard. An effective value is absent
+when it cannot be resolved; it is not silently replaced with defaults.
+
+Container launches capture portable settings without discovering host agent
+binaries. The existing container executor resolves binaries and agent homes in
+the image before dispatch, then retains those paths for that executor's active
+work. Explicit paths and profile mounts remain explicit. Host HOME, CODEX_HOME,
+XDG paths and Spark runtime-home defaults are not automatically forwarded. Only
+custom credential references selected by launch/flow configuration are added to
+the conventional provider allowlist. Credential values travel in the transient
+Docker process environment, not command arguments, snapshots or diagnostics.
+
+After successful defaults migration, bootstrap removes `ui-defaults.json` only
+after backup. Completed migrations retry cleanup without reimporting. A source
+recreated with different bytes gets a separate content-addressed cleanup backup;
+the original migration backup and authoritative core settings remain intact.

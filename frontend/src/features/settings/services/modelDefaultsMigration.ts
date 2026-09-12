@@ -7,6 +7,7 @@ const LEGACY_KEY = 'spark.ui_defaults'
 /** Only accessible browser data can be imported; authored workspace defaults always win. */
 export async function loadAndMigrateModelDefaults(): Promise<ModelSettingsView> {
     let view = await fetchModelSettings()
+    if (view.validation_errors?.length) return view
     let legacy: string | null
     try { legacy = localStorage.getItem(LEGACY_KEY) } catch { return view }
     if (legacy === null) return view

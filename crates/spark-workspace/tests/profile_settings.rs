@@ -352,3 +352,232 @@ fn connection_updates_preserve_other_sections_and_report_running_values() {
     )
     .is_err());
 }
+
+#[test]
+fn candidate_profile_contents_are_checked_by_validate_and_save_without_writes() {
+    use spark_workspace::settings::validate_workspace_settings_update;
+    let (_temp, settings) = fixture();
+    let first = save(&settings, "llm_profiles", "absent", json!([llm("team")])).unwrap();
+    let revision = first["llm_profiles"]["revision"].as_str().unwrap();
+    save(
+        &settings,
+        "models",
+        "absent",
+        json!({"llm_profile":"team", "model":"model"}),
+    )
+    .unwrap();
+    let path = settings.config_dir.join("llm-profiles.toml");
+    let before = std::fs::read(&path).unwrap();
+    let mut changed = llm("team");
+    changed["models"] = json!(["other"]);
+    changed["default_model"] = json!("other");
+    for value in [json!([]), json!([changed])] {
+        let request = serde_json::from_value(
+            json!({"section":"llm_profiles", "expected_revision":revision, "value":value}),
+        )
+        .unwrap();
+        assert!(validate_workspace_settings_update(&settings, &request)
+            .unwrap_err()
+            .to_string()
+            .contains("spark.toml.models.llm_profile"));
+        assert!(update_workspace_settings(&settings, request).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    let mut valid = llm("team");
+    valid["label"] = json!("Renamed");
+    valid["base_url"] = json!("http://localhost:9998/v1");
+    valid["models"] = json!(["model", "other"]);
+    save(&settings, "llm_profiles", revision, json!([valid])).unwrap();
+}
+
+#[test]
+fn invalid_model_reference_is_scoped_and_repairable_without_blocking_connections() {
+    let (_temp, settings) = fixture();
+    let path = settings.config_dir.join("spark.toml");
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    std::fs::write(&path, "[models]\nllm_profile='missing'\n").unwrap();
+    let view = workspace_settings(&settings).unwrap();
+    assert_eq!(view["models"]["stored"]["llm_profile"], "missing");
+    assert!(view["models"]["effective"].is_null());
+    assert!(!view["models"]["validation_errors"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let saved = save(
+        &settings,
+        "connections",
+        view["connections"]["revision"].as_str().unwrap(),
+        json!({"client_api_base_url":"http://localhost:4987"}),
+    )
+    .unwrap();
+    assert_eq!(
+        saved["connections"]["effective"]["client_api_base_url"],
+        spark_storage::settings::resolve_client_api_base_url(
+            &spark_common::settings::resolve_settings_with_env(
+                &Default::default(),
+                &spark_common::paths::ProcessEnvironment
+            )
+            .unwrap()
+            .config_dir,
+            &spark_common::paths::ProcessEnvironment,
+        )
+        .unwrap()
+        .0
+    );
+    assert_eq!(saved["models"]["stored"]["llm_profile"], "missing");
+    let repaired = save(
+        &settings,
+        "models",
+        saved["models"]["revision"].as_str().unwrap(),
+        json!({"provider":"codex"}),
+    )
+    .unwrap();
+    assert_eq!(repaired["models"]["validation_errors"], json!([]));
+}
+
+#[test]
+fn disabling_referenced_execution_profile_fails_validate_and_save() {
+    let (_temp, settings) = fixture();
+    let profile = json!({"id":"native", "label":"Native", "mode":"native", "enabled":true, "capabilities":[], "metadata":{}});
+    let first = save(
+        &settings,
+        "execution_profiles",
+        "absent",
+        json!({"profiles":[profile.clone()], "default_execution_profile_id":null}),
+    )
+    .unwrap();
+    spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .register_project_with_execution_profile("/project", Some("native"))
+        .unwrap();
+    let mut disabled = profile;
+    disabled["enabled"] = json!(false);
+    let request = serde_json::from_value(json!({"section":"execution_profiles", "expected_revision":first["execution_profiles"]["revision"], "value":{"profiles":[disabled], "default_execution_profile_id":null}})).unwrap();
+    let path = settings.config_dir.join("execution-profiles.toml");
+    let before = std::fs::read(&path).unwrap();
+    assert!(
+        spark_workspace::settings::validate_workspace_settings_update(&settings, &request).is_err()
+    );
+    assert!(update_workspace_settings(&settings, request).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn invalid_section_shape_preserves_stored_value_and_can_be_replaced_independently() {
+    let (_temp, settings) = fixture();
+    let path = settings.config_dir.join("spark.toml");
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    std::fs::write(
+        &path,
+        "[runtime]\nproject_roots=42\n[models]\nprovider='codex'\n",
+    )
+    .unwrap();
+    let view = workspace_settings(&settings).unwrap();
+    assert_eq!(view["runtime"]["stored"]["project_roots"], 42);
+    assert_eq!(
+        view["runtime"]["active_startup"]["flows_dir"],
+        settings.flows_dir.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        view["runtime"]["repair_defaults"]["project_roots"],
+        json!([])
+    );
+    assert_eq!(view["models"]["effective"]["provider"], "codex");
+    let repaired = save(
+        &settings,
+        "runtime",
+        view["runtime"]["revision"].as_str().unwrap(),
+        view["runtime"]["repair_defaults"].clone(),
+    )
+    .unwrap();
+    assert_eq!(repaired["runtime"]["validation_errors"], json!([]));
+    assert_eq!(repaired["models"]["stored"], view["models"]["stored"]);
+}
+
+#[test]
+fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence() {
+    use spark_workspace::settings::validate_workspace_settings_update;
+    let (_temp, settings) = fixture();
+    let mut team = llm("team");
+    team["models"] = json!(["m1", "m2"]);
+    team["default_model"] = json!("m1");
+    let mut other = llm("other");
+    other["models"] = json!(["m2"]);
+    other["default_model"] = json!("m2");
+    let first = save(&settings, "llm_profiles", "absent", json!([team, other])).unwrap();
+    let revision = first["llm_profiles"]["revision"].as_str().unwrap();
+    let flow_path = settings.flows_dir.join("inherited.yaml");
+    let source = r#"schema_version: "1"
+id: inherited
+defaults:
+  llm_profile: team
+  llm_model: m1
+nodes:
+  start:
+    kind: start
+  work:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: No model call in this test
+    execution:
+      llm_model: m2
+  exit:
+    kind: exit
+edges:
+  - from: start
+    to: work
+  - from: work
+    to: exit
+"#;
+    std::fs::write(&flow_path, source).unwrap();
+    let path = settings.config_dir.join("llm-profiles.toml");
+    let before = std::fs::read(&path).unwrap();
+    let mut candidate = json!([team, other]);
+    candidate[0]["models"] = json!(["m1"]);
+    let request = || {
+        serde_json::from_value(json!({
+            "section":"llm_profiles", "expected_revision":revision, "value":candidate
+        }))
+        .unwrap()
+    };
+    let error = validate_workspace_settings_update(&settings, &request()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("flow inherited.yaml.nodes.work.execution.llm_profile"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let error = update_workspace_settings(&settings, request()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("flow inherited.yaml.nodes.work.execution.llm_profile"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // Explicit node profile wins over the flow profile; its model wins over m1.
+    std::fs::write(
+        &flow_path,
+        source.replace("llm_model: m2", "llm_model: m2\n      llm_profile: other"),
+    )
+    .unwrap();
+    validate_workspace_settings_update(&settings, &request()).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    let saved = update_workspace_settings(&settings, request()).unwrap();
+    assert_eq!(saved["llm_profiles"]["stored"][1]["models"], json!(["m1"]));
+
+    // Endpoint, label and supported model-list edits remain valid with inheritance.
+    std::fs::write(&flow_path, source).unwrap();
+    candidate[0]["models"] = json!(["m1", "m2", "m3"]);
+    candidate[0]["label"] = json!("Renamed team");
+    candidate[0]["base_url"] = json!("http://localhost:9998/v1");
+    let request = serde_json::from_value(json!({
+        "section":"llm_profiles", "expected_revision":saved["llm_profiles"]["revision"], "value":candidate
+    })).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    validate_workspace_settings_update(&settings, &request).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    update_workspace_settings(&settings, request).unwrap();
+}

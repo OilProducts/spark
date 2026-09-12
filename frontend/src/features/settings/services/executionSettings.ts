@@ -1,5 +1,5 @@
 import { fetchWorkspaceJsonValidated } from '@/lib/api/apiClient'
-import { ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
+import { parseRepairableStored, parseSettingsFeedback, ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
 
 export const providers = ['openai', 'anthropic', 'gemini', 'openrouter', 'litellm', 'openai_compatible'] as const
 export type Provider = typeof providers[number]
@@ -14,8 +14,11 @@ export interface ProviderConnection {
 export type ProviderSettings = Partial<Record<Provider, ProviderConnection>>
 export interface ProviderSettingsView {
     revision: string
-    stored: ProviderSettings
-    effective: ProviderSettings
+    stored: ProviderSettings | null
+    repair_defaults?: ProviderSettings
+    effective: ProviderSettings | null
+    sources?: Record<string, string>
+    validation_errors?: string[]
     credential_status: Partial<Record<Provider, boolean>>
 }
 function parseProviders(payload: unknown, endpoint: string): ProviderSettingsView {
@@ -33,9 +36,9 @@ function parseProviders(payload: unknown, endpoint: string): ProviderSettingsVie
         }
         return result
     }
-    const status = expectObjectRecord(view.credential_status, endpoint)
+    const status = expectObjectRecord(view.credential_status ?? {}, endpoint)
     if (Object.values(status).some((value) => typeof value !== 'boolean')) throw new ApiSchemaError(endpoint, 'Invalid credential status.')
-    return { revision: expectString(view.revision, endpoint, 'revision'), stored: parse(view.stored), effective: parse(view.effective), credential_status: status as ProviderSettingsView['credential_status'] }
+    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint), credential_status: status as ProviderSettingsView['credential_status'] }
 }
 export function providerFieldError(key: keyof ProviderConnection, value: string | null | undefined): string {
     if (value == null || value === '') return ''
@@ -81,7 +84,7 @@ export interface AgentSettings {
     loop_detection_window: number
     max_subagent_depth: number
 }
-export interface AgentSettingsView { revision: string; stored: AgentSettings; effective: AgentSettings }
+export interface AgentSettingsView { revision: string; stored: AgentSettings | null; repair_defaults?: AgentSettings; effective: AgentSettings | null; active_startup?: NativeAgentSettings; sources?: Record<string, string>; validation_errors?: string[] }
 function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
     const view = expectObjectRecord(expectObjectRecord(payload, endpoint).agents, endpoint)
     const parse = (value: unknown): AgentSettings => {
@@ -105,7 +108,10 @@ function parseAgents(payload: unknown, endpoint: string): AgentSettingsView {
         if (fields.environment_inheritance != null && !['inherit_all', 'inherit_none', 'inherit_core_only'].includes(String(fields.environment_inheritance))) throw new ApiSchemaError(endpoint, 'Invalid environment inheritance.')
         return fields as unknown as AgentSettings
     }
-    return { revision: expectString(view.revision, endpoint, 'revision'), stored: parse(view.stored), effective: parse(view.effective) }
+    const startup = view.active_startup == null ? undefined : expectObjectRecord(view.active_startup, endpoint)
+    const active_startup = startup && Object.fromEntries(['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir']
+        .map((key) => [key, startup[key] == null ? null : expectString(startup[key], endpoint, key)]))
+    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), active_startup, effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint) }
 }
 export function fetchAgentSettings(): Promise<AgentSettingsView> {
     return fetchWorkspaceJsonValidated('/settings', undefined, '/workspace/api/settings', parseAgents)

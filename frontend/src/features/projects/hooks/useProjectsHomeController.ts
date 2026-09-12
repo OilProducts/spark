@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { getModelSuggestions } from '@/lib/llmSuggestions'
-import { LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
+import { getLlmSelectionOptions, splitLlmSelection } from '@/lib/llmSuggestions'
+import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import type { ModelSettings } from '@/lib/api/settingsApi'
 import {
     fetchProjectChatModelsValidated,
     submitConversationRequestUserInputValidated,
@@ -191,7 +193,7 @@ export function useProjectsHomeController() {
     // snapshot updates; showing the requested values while the save is in
     // flight keeps the selects consistent (no stale model from the previous
     // provider shown under a freshly picked provider).
-    const [pendingChatSettings, setPendingChatSettings] = useState<{ provider: string; model: string; reasoningEffort: string } | null>(null)
+    const [pendingChatSettings, setPendingChatSettings] = useState<ModelSettings | null>(null)
     const {
         conversationBodyRef,
         homeSidebarRef,
@@ -242,18 +244,28 @@ export function useProjectsHomeController() {
         latestFlowLaunchId,
         latestFlowRunRequestId,
     } = projectsHomeViewModel
-    const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.provider : storedChatProvider
-    const activeProjectChatModel = pendingChatSettings ? pendingChatSettings.model : storedChatModel
+    const profiles = useLlmProfiles()
+    const effectiveModelSettings = activeConversationRecord?.model_settings_view?.effective
+    const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.llm_profile || pendingChatSettings.provider || 'codex' : effectiveModelSettings?.llm_profile || storedChatProvider
+    const activeProjectChatModel = pendingChatSettings ? pendingChatSettings.model || '' : storedChatModel
     const activeProjectChatReasoningEffort = pendingChatSettings
-        ? pendingChatSettings.reasoningEffort
+        ? pendingChatSettings.reasoning_effort || ''
         : storedChatReasoningEffort
+    const currentModelSettings = useMemo<ModelSettings>(() => pendingChatSettings ?? effectiveModelSettings ?? {
+        provider: !activeConversationRecord && uiDefaults.llm_profile ? null : storedChatProvider || 'codex',
+        llm_profile: !activeConversationRecord ? uiDefaults.llm_profile || null : null,
+        model: storedChatModel || null,
+        reasoning_effort: storedChatReasoningEffort || null,
+    }, [pendingChatSettings, effectiveModelSettings, activeConversationRecord, uiDefaults.llm_profile, storedChatProvider, storedChatModel, storedChatReasoningEffort])
     const activeProjectChatModelsResponse = activeProjectPath
         ? chatModelsByProjectPath[activeProjectPath]
         : undefined
     const activeProjectChatModels = activeProjectChatModelsResponse?.models || []
     const chatModelOptions = useMemo(
-        () => buildModelOptions(activeProjectChatModelsResponse, activeProjectChatModel, activeProjectChatProvider),
-        [activeProjectChatModel, activeProjectChatModelsResponse, activeProjectChatProvider],
+        () => profiles.some((profile) => profile.id === activeProjectChatProvider)
+            ? getModelSuggestions(activeProjectChatProvider, profiles).map((value) => ({ value, label: value }))
+            : buildModelOptions(activeProjectChatModelsResponse, activeProjectChatModel, activeProjectChatProvider),
+        [activeProjectChatModel, activeProjectChatModelsResponse, activeProjectChatProvider, profiles],
     )
     const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
     const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')
@@ -274,7 +286,7 @@ export function useProjectsHomeController() {
         : null
     const isChatSubmissionDisabled = isChatInputDisabled || !isChatModelReady
     const chatProviderOptions = useMemo(
-        () => LLM_PROVIDER_OPTIONS.map((provider) => ({
+        () => [...new Set([...getLlmSelectionOptions(profiles), activeProjectChatProvider])].filter(Boolean).map((provider) => ({
             value: provider,
             label: provider === 'codex'
                 ? 'Codex'
@@ -286,7 +298,7 @@ export function useProjectsHomeController() {
                         ? 'LiteLLM'
                         : provider[0].toUpperCase() + provider.slice(1),
         })),
-        [],
+        [profiles, activeProjectChatProvider],
     )
     const chatReasoningEffortOptions = useMemo(
         () => buildReasoningEffortOptions(
@@ -427,7 +439,7 @@ export function useProjectsHomeController() {
         resetComposerRef.current = resetComposer
     }, [resetComposer])
 
-    const persistChatSettings = useCallback(async (values: { provider: string; model: string; reasoningEffort: string }) => {
+    const persistChatSettings = useCallback(async (values: ModelSettings) => {
         if (!activeProjectPath) {
             return
         }
@@ -441,9 +453,7 @@ export function useProjectsHomeController() {
             const snapshot = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
                 expected_revision: String(conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0),
-                provider: values.provider.trim() || 'codex',
-                model: values.model.trim() || null,
-                reasoning_effort: values.reasoningEffort.trim() || '',
+                model_settings: values,
             })
             applyConversationSnapshot(activeProjectPath, snapshot, 'chat-settings-response', {
                 forceWorkspaceSync: true,
@@ -459,24 +469,22 @@ export function useProjectsHomeController() {
     }, [activeProjectPath, applyConversationSnapshot, ensureConversationId, setPanelError, conversationCacheRef])
 
     const onChatModelChange = useCallback((value: string) => {
-        void persistChatSettings({
-            provider: activeProjectChatProvider,
-            model: value,
-            reasoningEffort: activeProjectChatReasoningEffort,
-        })
-    }, [activeProjectChatProvider, activeProjectChatReasoningEffort, persistChatSettings])
+        void persistChatSettings({ ...currentModelSettings, model: value || null })
+    }, [currentModelSettings, persistChatSettings])
 
     const onChatProviderChange = useCallback((value: string) => {
+        const selection = splitLlmSelection(value, profiles)
+        const profile = profiles.find((entry) => entry.id === selection.llm_profile)
         void persistChatSettings({
-            provider: value || 'codex',
-            model: '',
-            reasoningEffort: activeProjectChatReasoningEffort,
+            provider: selection.llm_profile ? null : selection.llm_provider || 'codex',
+            // This immediate-save control must select a compatible model when the profile has no default.
+            llm_profile: selection.llm_profile || null, model: profile && !profile.default_model ? profile.models[0] ?? null : null, reasoning_effort: null,
         })
-    }, [activeProjectChatReasoningEffort, persistChatSettings])
+    }, [profiles, persistChatSettings])
 
     const onUseModelDefaults = async () => {
         if (!activeProjectPath || !activeConversationId || pendingChatSettings) return
-        setPendingChatSettings({ provider: activeProjectChatProvider, model: activeProjectChatModel, reasoningEffort: activeProjectChatReasoningEffort })
+        setPendingChatSettings(currentModelSettings)
         try {
             const snapshot = await updateConversationSettingsValidated(activeConversationId, {
                 project_path: activeProjectPath,
@@ -488,12 +496,8 @@ export function useProjectsHomeController() {
     }
 
     const onChatReasoningEffortChange = useCallback((value: string) => {
-        void persistChatSettings({
-            provider: activeProjectChatProvider,
-            model: activeProjectChatModel,
-            reasoningEffort: value,
-        })
-    }, [activeProjectChatProvider, activeProjectChatModel, persistChatSettings])
+        void persistChatSettings({ ...currentModelSettings, reasoning_effort: value || null })
+    }, [currentModelSettings, persistChatSettings])
 
     const {
         onCreateConversationThread,
@@ -633,7 +637,7 @@ export function useProjectsHomeController() {
             isChatInputDisabled,
             isChatModelSelectDisabled: isCodexDiscoveryUnavailable,
             isChatSendDisabled: isChatSubmissionDisabled,
-            panelError,
+            panelError: panelError || activeConversationRecord?.model_settings_view?.validation_errors?.join(' ') || null,
             conversationBodyRef,
             onSyncConversationPinnedState: syncConversationPinnedState,
             onScrollConversationToBottom: scrollConversationToBottom,

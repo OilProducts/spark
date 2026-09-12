@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use spark_common::settings::{
     resolve_model_settings, ModelSettings, ModelSettingsSource, RuntimeSettings, SparkSettings,
@@ -6,15 +6,6 @@ use spark_common::settings::{
 use spark_storage::settings::{read_settings_document, update_settings_section, SettingsDocument};
 
 use crate::{WorkspaceError, WorkspaceResult};
-
-#[derive(Debug, Serialize)]
-pub struct RuntimeSettingsView {
-    pub scope: &'static str,
-    pub revision: String,
-    pub stored: RuntimeSettings,
-    pub effective: RuntimeSettings,
-    pub restart_fields: [&'static str; 4],
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -74,59 +65,231 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
     let execution_placement = attractor_api::execution_placement_settings(settings);
     let path = settings.config_dir.join("spark.toml");
     let document = read_settings_document(&path)?;
-    let mut execution = spark_storage::settings::read_execution_configuration(
-        &settings.config_dir,
-        &spark_common::paths::ProcessEnvironment,
-    )?;
-    execution
-        .agents
-        .native
-        .retain_startup_paths(&settings.agents.native);
-    let connections = document
-        .section::<spark_common::settings::ConnectionSettings>(&path, "connections")?
-        .unwrap_or_default();
-    connections
-        .validate()
-        .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
-    let stored = runtime_section(&path, &document)?;
-    let models = document
-        .section::<ModelSettings>(&path, "models")?
-        .unwrap_or_default();
-    validate_model_settings(settings, &models)?;
-    let effective = RuntimeSettings {
+    let env = spark_common::paths::ProcessEnvironment;
+    let mut result = json!({"execution_placement": execution_placement.body});
+    for section in ["runtime", "models", "providers", "agents", "connections"] {
+        let repair_defaults = match section {
+            "runtime" => json!(RuntimeSettings::default()),
+            "models" => json!(ModelSettings::default()),
+            "providers" => json!(spark_common::provider_settings::ProviderConnections::default()),
+            "agents" => json!(spark_common::agent_settings::SessionConfig::default()),
+            _ => json!(spark_common::settings::ConnectionSettings::default()),
+        };
+        let view = (|| -> WorkspaceResult<Value> {
+            let stored = match section {
+                "runtime" => json!(document
+                    .section::<RuntimeSettings>(&path, section)?
+                    .unwrap_or_default()),
+                "models" => json!(document.section::<ModelSettings>(&path, section)?),
+                "connections" => json!(document
+                    .section::<spark_common::settings::ConnectionSettings>(&path, section)?
+                    .unwrap_or_default()),
+                "providers" => json!(document
+                    .section::<spark_common::provider_settings::ProviderConnections>(
+                        &path, section
+                    )?
+                    .unwrap_or_default()),
+                _ => json!(document
+                    .section::<spark_common::agent_settings::SessionConfig>(&path, section)?
+                    .unwrap_or_default()),
+            };
+            let mut view = json!({"scope":"workspace", "revision":document.revision,
+                "stored":stored, "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[]});
+            // Preserve typed stored values even when domain validation fails.
+            let resolved = (|| -> WorkspaceResult<()> {
+                match section {
+                    "runtime" => {
+                        view["effective"] = json!(RuntimeSettings {
+                            runs_dir: Some(settings.runs_dir.clone()),
+                            flows_dir: Some(settings.flows_dir.clone()),
+                            ui_dir: settings.ui_dir.clone(),
+                            project_roots: settings.project_roots.clone()
+                        });
+                        view["restart_fields"] =
+                            json!(["runs_dir", "flows_dir", "ui_dir", "project_roots"]);
+                        for key in ["runs_dir", "flows_dir", "ui_dir", "project_roots"] {
+                            view["sources"][key] =
+                                json!(startup_source(settings, &format!("{section}.{key}")));
+                        }
+                        runtime_section(&path, &document)?;
+                    }
+                    "models" => {
+                        let models = document
+                            .section::<ModelSettings>(&path, section)?
+                            .unwrap_or_default();
+                        validate_model_settings(settings, &models)?;
+                        view["effective"] = json!(models);
+                    }
+                    "connections" => {
+                        view["running_server"] = json!(settings.connections);
+                        let connections = document
+                            .section::<spark_common::settings::ConnectionSettings>(&path, section)?
+                            .unwrap_or_default();
+                        let mut effective = settings.connections.clone();
+                        let environment_target = std::env::var("SPARK_API_BASE_URL")
+                            .is_ok_and(|value| !value.trim().is_empty());
+                        let client_config_dir = if environment_target {
+                            settings.config_dir.clone()
+                        } else {
+                            spark_common::settings::resolve_settings_with_env(
+                                &Default::default(),
+                                &env,
+                            )
+                            .map_err(|error| WorkspaceError::Validation(error.to_string()))?
+                            .config_dir
+                        };
+                        let (target, source) =
+                            spark_storage::settings::resolve_client_api_base_url(
+                                &client_config_dir,
+                                &env,
+                            )?;
+                        effective.client_api_base_url = Some(target);
+                        view["client_config_dir"] = if environment_target {
+                            Value::Null
+                        } else {
+                            json!(client_config_dir)
+                        };
+                        view["effective"] = json!(effective);
+                        view["running_server"] = json!(settings.connections);
+                        view["restart_fields"] = json!(["server_host", "server_port"]);
+                        view["sources"] = json!({"server_host":startup_source(settings, "connections.server_host"), "server_port":startup_source(settings, "connections.server_port"),
+                            "client_api_base_url": source});
+                        connections
+                            .validate()
+                            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+                    }
+                    "providers" => {
+                        let providers = document
+                            .section::<spark_common::provider_settings::ProviderConnections>(
+                                &path, section,
+                            )?
+                            .unwrap_or_default();
+                        let effective = providers
+                            .resolve(&env)
+                            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+                        view["credential_status"] = json!(effective.credential_status(&env));
+                        view["effective"] = json!(effective);
+                        for (provider, fields) in
+                            view["effective"].as_object().cloned().unwrap_or_default()
+                        {
+                            for key in fields
+                                .as_object()
+                                .into_iter()
+                                .flat_map(|fields| fields.keys())
+                            {
+                                let suffix = match key.as_str() {
+                                    "api_key_env" => "API_KEY",
+                                    "organization" => "ORG_ID",
+                                    "project" => "PROJECT_ID",
+                                    other => other,
+                                };
+                                let variable = if provider == "gemini"
+                                    && key == "api_key_env"
+                                    && fields[key] == "GOOGLE_API_KEY"
+                                {
+                                    "GOOGLE_API_KEY".to_owned()
+                                } else {
+                                    format!("{}_{}", provider.to_uppercase(), suffix.to_uppercase())
+                                };
+                                view["sources"][format!("{provider}.{key}")] =
+                                    json!(value_source(&stored[&provider][key], &variable));
+                            }
+                        }
+                    }
+                    _ => {
+                        let mut agents = document
+                            .section::<spark_common::agent_settings::SessionConfig>(&path, section)?
+                            .unwrap_or_default();
+                        agents
+                            .validate()
+                            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+                        agents.native = agents
+                            .native
+                            .resolve(&env)
+                            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+                        agents.native.retain_startup_paths(&settings.agents.native);
+                        view["effective"] = json!(agents);
+                        view["restart_fields"] = json!([
+                            "native.codex_runtime_root",
+                            "native.codex_seed_dir",
+                            "native.claude_config_dir"
+                        ]);
+                        for (key, variable) in [
+                            ("codex_binary", "SPARK_CODEX_APP_SERVER_BIN"),
+                            ("claude_binary", "SPARK_CLAUDE_CODE_BIN"),
+                            (
+                                "claude_permission_mode",
+                                "SPARK_CLAUDE_CODE_PERMISSION_MODE",
+                            ),
+                            ("codex_jsonrpc_trace", "SPARK_DEBUG_CODEX_JSONRPC"),
+                            ("agent_trace", "SPARK_DEBUG_AGENT_TRACE"),
+                        ] {
+                            view["sources"][format!("native.{key}")] =
+                                json!(if ["codex_jsonrpc_trace", "agent_trace"].contains(&key)
+                                    && std::env::var(variable).is_ok()
+                                {
+                                    format!("environment: {variable}")
+                                } else {
+                                    value_source(&stored["native"][key], variable)
+                                });
+                        }
+                        for key in ["codex_runtime_root", "codex_seed_dir", "claude_config_dir"] {
+                            view["sources"][format!("native.{key}")] =
+                                json!(startup_source(settings, &format!("agents.native.{key}")));
+                        }
+                        view["policies"] = json!({"codex_service_tier":"standard", "codex_approval_policy":"never", "codex_sandbox":"danger-full-access"});
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = resolved {
+                view["validation_errors"] = json!([error.to_string()]);
+            }
+            Ok(view)
+        })();
+        result[section] = view.unwrap_or_else(|error| json!({"scope":"workspace", "revision":document.revision,
+            "stored":document.values.get(section), "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[error.to_string()]}));
+        if !result[section]["validation_errors"]
+            .as_array()
+            .is_some_and(Vec::is_empty)
+        {
+            result[section]["repair_defaults"] = repair_defaults;
+        }
+        if section == "models" {
+            result[section]["source"] = json!("workspace");
+        }
+    }
+    result["runtime"]["active_startup"] = json!(RuntimeSettings {
         runs_dir: Some(settings.runs_dir.clone()),
         flows_dir: Some(settings.flows_dir.clone()),
         ui_dir: settings.ui_dir.clone(),
-        project_roots: settings.project_roots.clone(),
-    };
-    Ok(json!({
-        "execution_placement": execution_placement.body,
-        "providers": {"scope": "workspace", "revision": document.revision,
-            "stored": document.section::<spark_common::provider_settings::ProviderConnections>(&path, "providers")?.unwrap_or_default(),
-            "effective": execution.providers, "credential_status": execution.providers.credential_status(&spark_common::paths::ProcessEnvironment),
-            "restart_fields": [], "validation_errors": []},
-        "agents": {"scope": "workspace", "revision": document.revision,
-            "stored": document.section::<spark_common::agent_settings::SessionConfig>(&path, "agents")?.unwrap_or_default(), "effective": execution.agents,
-            "policies": {"codex_service_tier": "standard", "codex_approval_policy": "never", "codex_sandbox": "danger-full-access"},
-            "restart_fields": ["native.codex_runtime_root", "native.codex_seed_dir", "native.claude_config_dir"], "validation_errors": []},
-        "connections": {"scope": "workspace", "revision": document.revision,
-            "stored": connections, "effective": settings.connections,
-            "restart_fields": ["server_host", "server_port"], "validation_errors": []},
-        "llm_profiles": crate::profile_settings::llm_profiles_view(settings)?,
-        "execution_profiles": crate::profile_settings::execution_profiles_view(settings)?,
-        "models": {
-            "scope": "workspace", "revision": document.revision,
-            "stored": document.section::<ModelSettings>(&path, "models")?,
-            "effective": models, "source": "workspace", "restart_fields": [],
-        },
-        "runtime": RuntimeSettingsView {
-            scope: "workspace",
-            revision: document.revision,
-            stored,
-            effective,
-            restart_fields: ["runs_dir", "flows_dir", "ui_dir", "project_roots"],
-        },
-    }))
+        project_roots: settings.project_roots.clone()
+    });
+    result["connections"]["running_server"] = json!(settings.connections);
+    result["agents"]["active_startup"] = json!({"codex_runtime_root":settings.agents.native.codex_runtime_root, "codex_seed_dir":settings.agents.native.codex_seed_dir, "claude_config_dir":settings.agents.native.claude_config_dir});
+    result["llm_profiles"] = crate::profile_settings::llm_profiles_view(settings)?;
+    result["execution_profiles"] = crate::profile_settings::execution_profiles_view(settings)?;
+    Ok(result)
+}
+
+fn startup_source(settings: &SparkSettings, key: &str) -> String {
+    format!(
+        "{}; retained until restart",
+        settings
+            .startup_sources
+            .get(key)
+            .map(String::as_str)
+            .unwrap_or("startup selection")
+    )
+}
+
+fn value_source(stored: &Value, variable: &str) -> String {
+    spark_common::settings::setting_source(
+        false,
+        &spark_common::paths::ProcessEnvironment,
+        variable,
+        !stored.is_null(),
+    )
 }
 
 fn runtime_section(
@@ -155,10 +318,18 @@ pub fn validate_workspace_settings_update(
             .validate()
             .map_err(|error| WorkspaceError::Validation(error.to_string())),
         WorkspaceSettingsSection::LlmProfiles(value) => {
-            crate::profile_settings::llm_candidate(value).map(|_| ())
+            crate::profile_settings::validate_profile_candidate(
+                settings,
+                &crate::profile_settings::llm_candidate(value)?,
+                false,
+            )
         }
         WorkspaceSettingsSection::ExecutionProfiles(value) => {
-            crate::profile_settings::execution_candidate(value).map(|_| ())
+            crate::profile_settings::validate_profile_candidate(
+                settings,
+                &crate::profile_settings::execution_candidate(value)?,
+                true,
+            )
         }
         WorkspaceSettingsSection::ClientPreferences {
             client_id,
@@ -373,18 +544,22 @@ pub fn update_workspace_settings(
         section,
         Some(value),
         |values| {
-            let document = SettingsDocument {
-                values: values.clone(),
-                revision: String::new(),
-            };
-            spark_storage::settings::validate_core_sections(&path, values)?;
-            let models: ModelSettings = document.section(&path, "models")?.unwrap_or_default();
-            validate_model_settings(settings, &models).map_err(|error| {
-                spark_storage::StorageError::SettingsValidation {
-                    path: path.clone(),
-                    reason: error.to_string(),
-                }
-            })?;
+            spark_storage::settings::validate_core_version(&path, values)?;
+            let candidate = toml::Table::from_iter([(section.to_owned(), values[section].clone())]);
+            spark_storage::settings::validate_core_sections(&path, &candidate)?;
+            if section == "models" {
+                let document = SettingsDocument {
+                    values: candidate,
+                    revision: String::new(),
+                };
+                let models: ModelSettings = document.section(&path, "models")?.unwrap_or_default();
+                validate_model_settings(settings, &models).map_err(|error| {
+                    spark_storage::StorageError::SettingsValidation {
+                        path: path.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+            }
             if importing {
                 spark_storage::settings::backup_settings_before_import(&path)?;
             }
@@ -482,27 +657,46 @@ pub fn project_model_settings_view(
         .project_paths(project_path)?
         .project_file;
     let document = read_settings_document(&path)?;
-    let stored: Option<ModelSettings> = document.section(&path, "model_settings")?;
-    let workspace = workspace_model_settings(settings)?;
-    let (effective, source) = resolve_model_settings(&workspace, stored.as_ref(), None)
+    let source = if document.values.contains_key("model_settings") {
+        "project"
+    } else {
+        "workspace"
+    };
+    let mut models = json!({"scope":"project", "project_path":project_path, "revision":document.revision,
+        "stored":document.values.get("model_settings"), "effective":null, "source":source, "restart_fields":[], "validation_errors":[]});
+    let resolved = (|| -> WorkspaceResult<Value> {
+        let stored: Option<ModelSettings> = document.section(&path, "model_settings")?;
+        let workspace = workspace_model_settings(settings)?;
+        let (effective, _) = resolve_model_settings(&workspace, stored.as_ref(), None)
+            .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
+        validate_model_settings(settings, effective)?;
+        Ok(json!(effective))
+    })();
+    match resolved {
+        Ok(effective) => models["effective"] = effective,
+        Err(error) => {
+            models["validation_errors"] = json!([error.to_string()]);
+            models["repair_defaults"] = json!(ModelSettings::default());
+        }
+    }
+    let mut execution = json!({"scope":"project", "project_path":project_path, "revision":document.revision,
+        "stored":document.values.get("execution_profile_id"), "effective":null, "source":if document.values.contains_key("execution_profile_id") { "project" } else { "workspace" }, "restart_fields":[], "validation_errors":[]});
+    let resolved = (|| -> WorkspaceResult<Value> {
+        let stored: Option<String> = document.section(&path, "execution_profile_id")?;
+        let selection = attractor_execution::resolve_execution_profile_by_id(
+            settings,
+            None,
+            stored.as_deref(),
+            None,
+        )
         .map_err(|error| WorkspaceError::Validation(error.to_string()))?;
-    validate_model_settings(settings, effective)?;
-    let stored_execution: Option<String> = document.section(&path, "execution_profile_id")?;
-    let default_execution = attractor_api::execution_placement_settings(settings).body
-        ["default_execution_profile_id"]
-        .clone();
-    let effective_execution = stored_execution
-        .as_ref()
-        .map(|id| json!(id))
-        .unwrap_or(default_execution);
-    Ok(
-        json!({"models": {"scope": "project", "project_path": project_path,
-        "revision": document.revision, "stored": stored, "effective": effective,
-        "source": source, "restart_fields": []},
-        "execution": {"scope": "project", "project_path": project_path,
-        "revision": document.revision, "stored": stored_execution,
-        "effective": effective_execution, "source": if stored_execution.is_some() { "project" } else { "workspace" }, "restart_fields": []}}),
-    )
+        Ok(json!(selection.selected_profile_id))
+    })();
+    match resolved {
+        Ok(effective) => execution["effective"] = effective,
+        Err(error) => execution["validation_errors"] = json!([error.to_string()]),
+    }
+    Ok(json!({"models":models, "execution":execution}))
 }
 
 pub fn conversation_model_settings(

@@ -1,0 +1,42 @@
+Worktree: /Users/chris/projects/spark/.spark/checkouts/run-18d45752f4ec6770
+Base and HEAD: 9839f9f0a2eeed5d5352ab7045b8bcf6564b19f8
+Modified/new implementation files: 199
+Implementation commits beyond base: 0
+
+Independent audit gates:
+- SPARK_HOME=<isolated writable temporary home> just test: exit 0.
+  Includes cargo fmt --all -- --check, cargo test --workspace --all-features,
+  npm --prefix frontend run test:unit, npm --prefix frontend run build.
+- Frontend unit/component suite: 74 files, 567 tests passed.
+- npm --prefix frontend run lint: exit 0, 0 errors, 15 warnings.
+- npm --prefix frontend run build: exit 0; TypeScript and Vite pass.
+- cargo build --release -p spark-desktop --all-features: exit 0.
+  Release build finished in 34.22 seconds. No native window was launched.
+
+Additional audit reproductions:
+- API: inherited profile lost by the contextual edit payload (F1).
+- API: referenced profile model edit accepted, then aggregate settings GET fails (F3).
+- API: referenced profile deletion validates successfully but Save rejects it (F6).
+- API: stale client target in effective view; absent non-model source fields (F7).
+- Desktop bootstrap/capture assertion fails: environment-selected agent home lost (F2).
+- Runtime editor pending-navigation assertion fails: Discard-and-leave proceeds (F5).
+- Container transport/binary findings (F4): source inspection; no live Docker run.
+
+Environment caveat:
+Initial unqualified just test failed two worker-process JSON protocol tests under
+the sandbox's default-home restriction. A startup settings-lock warning was emitted
+to stdout before worker JSON. The isolated writable SPARK_HOME run passed fully.
+Some intentionally ignored Rust tests remain ignored; no claim that optional live
+provider tests were executed. Build warnings include large frontend chunks.
+
+Browser limitation:
+Automatic approval review denied browser access to the isolated audit server.
+No workaround attempted. Earlier workflow E2E results were not independently rerun.
+
+Original session logs (temporary, not required by the reproduction scripts):
+/tmp/spark-cr0117-audit-isolated-test.log
+/tmp/spark-cr0117-audit-frontend.log
+/tmp/spark-cr0117-audit-lint.log
+/tmp/spark-cr0117-audit-build.log
+/tmp/spark-cr0117-audit-desktop.log
+/tmp/spark-cr0117-audit-test.log

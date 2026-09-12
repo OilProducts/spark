@@ -10,7 +10,7 @@ export function useProviderSettingsEditor() {
     const [error, setError] = useState('')
     const [message, setMessage] = useState('')
     const dirty = !!saved && !!draft && JSON.stringify(saved.stored) !== JSON.stringify(draft)
-    useSettingsNavigationProtection(dirty || pending)
+    useSettingsNavigationProtection(dirty, pending)
     useEffect(() => {
         let cancelled = false
         const refresh = () => {

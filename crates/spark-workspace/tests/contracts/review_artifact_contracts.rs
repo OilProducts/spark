@@ -705,6 +705,7 @@ pub(super) fn settings(root: &Path) -> SparkSettings {
 
 fn settings_for_project(project_root: &Path, root: &Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),

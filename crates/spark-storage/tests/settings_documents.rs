@@ -536,6 +536,12 @@ fn defaults_file_import_is_backed_up_once_and_authoritative_models_win() {
             migrate_core_settings(&core).unwrap().revision,
             migrated.revision
         );
+        assert!(!legacy.exists());
+        assert!(fs::read_dir(home.path()).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("ui-defaults.json.cleanup-")));
         if !authored {
             assert_eq!(migrated.values["extension"]["keep"].as_bool(), Some(true));
         }
@@ -613,5 +619,55 @@ fn legacy_profile_defaults_cannot_import_a_deleted_reference() {
     assert_eq!(
         fs::read_to_string(home.path().join("ui-defaults.json.v0.bak")).unwrap(),
         source
+    );
+}
+
+#[test]
+fn completed_defaults_migration_retries_cleanup_without_reimporting() {
+    let home = tempfile::tempdir().unwrap();
+    let core = home.path().join("spark.toml");
+    let source = home.path().join("ui-defaults.json");
+    let bytes = r#"{"llm_provider":"codex","llm_model":"old"}"#;
+    fs::write(&source, bytes).unwrap();
+    spark_storage::settings::migrate_core_settings(&core).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read_to_string(home.path().join("ui-defaults.json.v0.bak")).unwrap(),
+        bytes
+    );
+    let authored =
+        "schema_version=1\ndefaults_migration_version=1\n[models]\nprovider='codex'\nmodel='new'\n";
+    fs::write(&core, authored).unwrap();
+    fs::write(&source, bytes).unwrap();
+    spark_storage::settings::migrate_core_settings(&core).unwrap();
+    assert!(!source.exists());
+    assert_eq!(fs::read_to_string(&core).unwrap(), authored);
+}
+
+#[test]
+fn new_client_target_uses_environment_then_current_storage_then_default() {
+    let home = tempfile::tempdir().unwrap();
+    let env = std::collections::BTreeMap::new();
+    let resolve = spark_storage::settings::resolve_client_api_base_url;
+    assert_eq!(
+        resolve(home.path(), &env).unwrap().0,
+        "http://127.0.0.1:8000"
+    );
+    fs::write(
+        home.path().join("spark.toml"),
+        "[connections]\nclient_api_base_url='http://localhost:4987'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        resolve(home.path(), &env).unwrap().0,
+        "http://localhost:4987"
+    );
+    let env = std::collections::BTreeMap::from([(
+        "SPARK_API_BASE_URL".into(),
+        " http://localhost:4988 ".into(),
+    )]);
+    assert_eq!(
+        resolve(home.path(), &env).unwrap().0,
+        "http://localhost:4988"
     );
 }

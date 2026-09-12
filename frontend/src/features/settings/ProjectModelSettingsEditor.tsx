@@ -22,8 +22,8 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
             <p className="break-all text-xs text-muted-foreground">{projectPath}</p>
             <p className="text-xs">{editor.saved?.source === 'project' ? 'Project default' : 'Workspace default'}</p>
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
-                <Label className="flex items-center gap-2 text-xs"><Switch checked={editor.draft !== null}
-                    onCheckedChange={(checked) => editor.setDraft(checked ? { ...editor.saved!.effective } : null)} />Override workspace model settings</Label>
+                <Label className="flex items-center gap-2 text-xs"><Switch disabled={!editor.draft && !editor.saved?.effective} checked={editor.draft !== null}
+                    onCheckedChange={(checked) => editor.setDraft(checked && editor.saved?.effective ? { ...editor.saved.effective } : null)} />Override workspace model settings</Label>
                 {editor.draft && <>
                     <Label className="block text-xs">Project provider or profile<NativeSelect value={selected} onChange={(event) => {
                         const selection = splitLlmSelection(event.target.value, profiles)
@@ -40,6 +40,8 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
             </fieldset>
             <div className="flex gap-2"><Button size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save project defaults</Button>
                 <Button size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard project changes</Button></div>
+            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             {editor.error && <p role="alert" className="text-xs text-destructive">{editor.error}</p>}
             {editor.message && <p role="status" className="text-xs">{editor.message}</p>}
         </CardContent>

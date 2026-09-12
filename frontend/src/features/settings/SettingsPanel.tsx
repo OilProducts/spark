@@ -64,7 +64,7 @@ export function SettingsPanel() {
     const [desktopMessage, setDesktopMessage] = useState('')
     const [remoteDraft, setRemoteDraft] = useState<boolean | null>(null)
     const desktopDirty = remoteDraft !== null && remoteDraft !== desktopSettings?.remote_access_enabled
-    useSettingsNavigationProtection(desktopDirty || isSavingDesktopSettings)
+    useSettingsNavigationProtection(desktopDirty, isSavingDesktopSettings)
 
     const [customModel, setCustomModel] = useState(false)
     const provider = uiDefaults.llm_profile || uiDefaults.llm_provider
@@ -251,7 +251,9 @@ export function SettingsPanel() {
                             <Button size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard model changes</Button>
                         </div>
                         {invalidModel && <p role="alert" className="text-xs text-destructive">Choose a compatible model for this provider or profile.</p>}
-                        {models.error && <p role="alert" className="text-xs text-destructive">{models.error}</p>}
+                        {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
+            {models.error && <p role="alert" className="text-xs text-destructive">{models.error}</p>}
                         {models.message && <p role="status" className="text-xs">{models.message}</p>}
                     </CardContent>
                 </Card>

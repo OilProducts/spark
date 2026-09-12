@@ -1,0 +1,36 @@
+
+ RUN  v4.0.18 /Users/chris/projects/spark/reports/CR-2026-0117-audit
+
+ ❯ pending-navigation.test.tsx (1 test | 1 failed) 179ms
+   × audit: navigation must stay blocked while a runtime save is pending 178ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  pending-navigation.test.tsx > audit: navigation must stay blocked while a runtime save is pending
+AssertionError: A still-running save must not permit Discard-and-leave navigation: expected "vi.fn()" to not be called at all, but actually been called 1 times
+
+Received: 
+
+  1st vi.fn() call:
+
+    Array []
+
+
+Number of calls: 1
+
+ ❯ pending-navigation.test.tsx:23:90
+     21|  if(leave) await user.click(leave)
+     22|  await act(async()=>{})
+     23|  expect(proceed,'A still-running save must not permit Discard-and-leav…
+       |                                                                                          ^
+     24| })
+     25| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  17:50:57
+   Duration  626ms (transform 67ms, setup 51ms, import 156ms, tests 179ms, environment 177ms)
+

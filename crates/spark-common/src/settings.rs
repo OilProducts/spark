@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::error::{Result, SparkCommonError};
@@ -395,6 +396,7 @@ pub fn resolve_model_settings<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SparkSettings {
+    pub startup_sources: BTreeMap<String, String>,
     pub connections: ConnectionSettings,
     pub providers: crate::provider_settings::ProviderConnections,
     pub agents: crate::agent_settings::SessionConfig,
@@ -481,7 +483,44 @@ pub fn resolve_settings_with_persisted(
             .collect::<Result<Vec<_>>>()?,
     };
 
+    let startup_sources = [
+        (
+            "runtime.runs_dir",
+            overrides.runs_dir.is_some(),
+            "",
+            persisted.runs_dir.is_some(),
+        ),
+        (
+            "runtime.flows_dir",
+            overrides.flows_dir.is_some(),
+            ENV_FLOWS_DIR,
+            persisted.flows_dir.is_some(),
+        ),
+        (
+            "runtime.ui_dir",
+            overrides.ui_dir.is_some(),
+            ENV_UI_DIR,
+            persisted.ui_dir.is_some(),
+        ),
+        (
+            "runtime.project_roots",
+            false,
+            ENV_PROJECT_ROOTS,
+            !persisted.project_roots.is_empty(),
+        ),
+    ]
+    .into_iter()
+    .map(|(key, cli, variable, stored)| {
+        let source = if variable == ENV_PROJECT_ROOTS && env.get_var(variable).is_some() {
+            format!("environment: {variable}")
+        } else {
+            setting_source(cli, env, variable, stored)
+        };
+        (key.into(), source)
+    })
+    .collect();
     Ok(SparkSettings {
+        startup_sources,
         connections: ConnectionSettings::default(),
         providers: Default::default(),
         agents: Default::default(),
@@ -606,5 +645,22 @@ impl ExecutionConfiguration {
         self.agents
             .native
             .retain_startup_paths(&settings.agents.native);
+    }
+}
+
+/// Provenance contains names only, never environment values.
+pub fn setting_source(cli: bool, env: &impl Environment, variable: &str, stored: bool) -> String {
+    if cli {
+        "CLI override".into()
+    } else if !variable.is_empty()
+        && env
+            .get_var(variable)
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        format!("environment: {variable}")
+    } else if stored {
+        "stored".into()
+    } else {
+        "built-in default".into()
     }
 }

@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -229,7 +228,7 @@ pub fn bootstrap_desktop_runtime(
             ui_dir: None,
             force: false,
         },
-        &BTreeMap::new(),
+        &spark_common::paths::ProcessEnvironment,
     )?;
     let bind_host = server_host_for_settings(settings).to_string();
     Ok(DesktopBootstrap {
@@ -254,8 +253,16 @@ pub fn start_desktop_server(
     let url = frontend_url_for_addr(local_addr);
     // Desktop owns its listener and client target; remote access still requires
     // the native confirmation boundary. Report that effective choice separately.
+    settings.startup_sources.insert(
+        "connections.server_host".into(),
+        "Desktop remote-access selection".into(),
+    );
+    settings.startup_sources.insert(
+        "connections.server_port".into(),
+        "Desktop automatic port".into(),
+    );
     settings.connections.server_host = Some(bind_host.to_owned());
-    settings.connections.server_port = Some(0);
+    settings.connections.server_port = Some(local_addr.port());
     settings.connections.client_api_base_url = Some(url.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let (startup_tx, startup_rx) =

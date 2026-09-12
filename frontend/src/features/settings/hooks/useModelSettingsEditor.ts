@@ -9,7 +9,7 @@ export function useModelSettingsEditor(projectPath?: string) {
     const [error, setError] = useState('')
     const [message, setMessage] = useState('')
     const dirty = !!saved && JSON.stringify(saved.stored ?? (projectPath ? null : saved.effective)) !== JSON.stringify(draft)
-    useSettingsNavigationProtection(dirty || pending)
+    useSettingsNavigationProtection(dirty, pending)
     useEffect(() => {
         let cancelled = false
         const refresh = () => {

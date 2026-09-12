@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test } from '@playwright/test'
@@ -254,6 +254,8 @@ test('provider and agent sections validate, save, report references and restart 
         await page.getByRole('button', { name: 'Save provider connections', exact: true }).click()
         await expect.poll(async () => (await read()).providers.stored.openai.api_key_env).toBe('CR_SETTINGS_TEST_REFERENCE')
         await expect(group.getByText(/Effective:.*(Configured|Missing)/)).toBeVisible()
+        // Both sections share a document revision; load the new revision before the next edit.
+        await page.reload()
         const timeout = page.getByLabel('default command timeout ms', { exact: true })
         await timeout.fill('1234')
         await page.getByLabel('codex runtime root', { exact: true }).fill('/tmp/spark-cr-native-home')
@@ -457,4 +459,106 @@ test('scoped configuration links open existing flow and trigger editors with nav
     await page.getByTestId('nav-mode-settings').click()
     await page.getByRole('button', { name: 'Edit triggers', exact: true }).click()
     await expect(page.getByTestId('triggers-panel')).toBeVisible()
+})
+
+test('conversation effort and model edits preserve an inherited profile; selection and reset work without a model call', async ({ page }, testInfo) => {
+    const project = testInfo.outputPath('profile-conversation-project')
+    mkdirSync(project, { recursive: true })
+    const read = async () => (await page.request.get('/workspace/api/settings')).json()
+    const original = await read()
+    const save = async (section: string, value: unknown) => {
+        const current = await read()
+        const response = await page.request.patch('/workspace/api/settings', {data:{section, value, expected_revision:current[section].revision}})
+        expect(response.ok(), await response.text()).toBeTruthy()
+    }
+    const id = 'cr0118-browser-profile'
+    const conversationPath = '/workspace/api/conversations/cr0118-browser-conversation'
+    const conversation = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
+    try {
+        expect((await page.request.post('/workspace/api/projects/register', {data:{project_path:project}})).ok()).toBeTruthy()
+        await save('llm_profiles', [...original.llm_profiles.stored, {id, provider:'openai_compatible', base_url:'http://127.0.0.1:1', models:['model-one','model-two'], default_model:'model-one'}])
+        await save('models', {llm_profile:id, model:null, reasoning_effort:'low'})
+        const created = await page.request.put(`${conversationPath}/settings`, {data:{project_path:project, expected_revision:'0', model_settings:null}})
+        expect(created.ok(), await created.text()).toBeTruthy()
+        const title = (await created.json()).title as string
+        await page.goto('/')
+        await page.getByTestId('top-nav-project-switcher').click()
+        await page.getByRole('option').filter({hasText:project}).click()
+        await page.getByRole('button', {name:new RegExp(`Open thread ${title}`)}).click()
+        const provider = page.getByTestId('project-ai-conversation-provider-select')
+        await expect(provider).toHaveValue(id)
+        await page.getByTestId('project-ai-conversation-reasoning-effort-select').selectOption('high')
+        await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:null,reasoning_effort:'high'})
+        await page.getByTestId('project-ai-conversation-model-select').selectOption('model-two')
+        await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:'model-two',reasoning_effort:'high'})
+        await provider.selectOption('claude-code')
+        await expect.poll(async () => (await conversation()).settings.models.stored.provider).toBe('claude-code')
+        await page.getByRole('button', {name:'Use defaults',exact:true}).click()
+        await expect.poll(async () => (await conversation()).settings.models.stored).toBeNull()
+        await expect(provider).toHaveValue(id)
+        expect((await conversation()).turns).toEqual([])
+    } finally {
+        const current = await conversation()
+        if (current.settings?.models) await page.request.put(`${conversationPath}/settings`, {data:{project_path:project,expected_revision:current.settings.models.revision,model_settings:null}})
+        await save('models', original.models.effective)
+        await save('llm_profiles', original.llm_profiles.stored)
+    }
+})
+
+
+test('malformed project execution selection is repairable with explicit Save and revision protection', async ({ page }, testInfo) => {
+    const project = testInfo.outputPath('malformed-execution-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    await page.goto('/')
+    await page.getByTestId('top-nav-project-switcher').click()
+    const activated = page.waitForResponse(response => response.url().endsWith('/workspace/api/projects/state')
+        && response.request().method() === 'PATCH' && response.request().postDataJSON().project_path === project)
+    await page.getByRole('option').filter({ hasText: project }).click()
+    expect((await activated).ok()).toBeTruthy()
+    const home = process.env.SPARK_SETTINGS_TEST_HOME ?? path.resolve('.tmp-ui-smoke/spark-home')
+    const directory = path.join(home, 'workspace/projects')
+    const file = readdirSync(directory).map(id => path.join(directory, id, 'project.toml'))
+        .find(file => readFileSync(file, 'utf8').includes(project))
+    expect(file).toBeDefined()
+    const original = readFileSync(file!, 'utf8')
+    const malformed = original + '\nexecution_profile_id = 42\n[repair_metadata]\nnote = "preserve me"\n'
+    writeFileSync(file!, malformed)
+    const read = async () => (await page.request.get('/workspace/api/settings?project_path=' + encodeURIComponent(project))).json()
+    const initial = await read()
+    expect(initial.execution.stored).toBe(42)
+    expect(initial.execution.effective).toBeNull()
+    await page.getByTestId('top-nav-project-settings-button').click()
+    const select = page.getByTestId('project-default-execution-profile')
+    const save = page.getByTestId('project-settings-save-button')
+    await expect(page.getByTestId('project-settings-error')).toBeVisible()
+    await expect(select).toBeEnabled()
+    await expect(select).toContainText('Select a replacement or workspace default')
+    await expect(save).toBeDisabled()
+    await select.click()
+    await page.getByRole('option').filter({ hasText: /native/i }).click()
+    expect(readFileSync(file!, 'utf8')).toBe(malformed)
+    await save.click()
+    await expect(page.getByTestId('project-settings-dialog')).toHaveCount(0)
+    expect((await read()).execution.stored).toBe('native')
+    expect(readFileSync(file!, 'utf8')).toContain('note = "preserve me"')
+    const repaired = readFileSync(file!, 'utf8')
+    const stale = await page.request.patch('/workspace/api/projects/state', { data: {
+        project_path: project, expected_revision: initial.execution.revision, execution_profile_id: null,
+    } })
+    expect(stale.status()).toBe(409)
+    expect(readFileSync(file!, 'utf8')).toBe(repaired)
+    expect((await read()).execution.stored).toBe('native')
+
+    // Exercise reset from the same malformed stored selection, also without an implicit write.
+    writeFileSync(file!, malformed)
+    await page.getByTestId('top-nav-project-settings-button').click()
+    await expect(select).toContainText('Select a replacement or workspace default')
+    await select.click()
+    await page.getByRole('option', { name: 'Use workspace default', exact: true }).click()
+    expect(readFileSync(file!, 'utf8')).toBe(malformed)
+    await save.click()
+    await expect(page.getByTestId('project-settings-dialog')).toHaveCount(0)
+    expect((await read()).execution.stored).toBeNull()
+    expect(readFileSync(file!, 'utf8')).toContain('note = "preserve me"')
 })

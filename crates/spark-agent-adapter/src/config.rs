@@ -61,16 +61,7 @@ pub fn validate_model_settings(
             .map_err(|_| {
                 "Unable to load the selected LLM profile; check llm-profiles.toml.".to_string()
             })?;
-        if value
-            .model
-            .as_ref()
-            .is_some_and(|model| !profile.models.contains(model))
-        {
-            return Err("Select a model supported by the LLM profile.".into());
-        }
-        if value.model.is_none() && profile.default_model.is_none() {
-            return Err("The LLM profile has no default model; select a model.".into());
-        }
+        validate_profile_model(&profile, value.model.as_deref())?;
     }
     if let Some(effort) = value.reasoning_effort.as_deref() {
         validate_reasoning_effort(effort)?;
@@ -119,4 +110,18 @@ pub fn read_project_model_defaults(
         .map_err(|error| error.to_string())?;
     validate_model_settings(settings, &defaults.0)?;
     Ok(defaults)
+}
+
+/// Validate a selection against either stored or candidate profile contents.
+pub fn validate_profile_model(
+    profile: &unified_llm_adapter::LlmProfile,
+    model: Option<&str>,
+) -> Result<(), String> {
+    if model.is_some_and(|model| !profile.models.iter().any(|entry| entry == model)) {
+        return Err("Select a model supported by the LLM profile.".into());
+    }
+    if model.is_none() && profile.default_model.is_none() {
+        return Err("The LLM profile has no default model; select a model.".into());
+    }
+    Ok(())
 }

@@ -727,6 +727,7 @@ mod incremental_usage_tests {
     fn test_settings(root: &std::path::Path) -> SparkSettings {
         let data = root.join("data");
         SparkSettings {
+            startup_sources: Default::default(),
             connections: Default::default(),
             providers: Default::default(),
             agents: Default::default(),

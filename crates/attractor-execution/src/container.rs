@@ -14,12 +14,22 @@ use crate::modes::ExecutionMode;
 use crate::profile::ExecutionProfileSelection;
 use crate::protocol::{outcome_from_payload, RunRootMetadata, WorkerFrame, WorkerNodeRequest};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CommandSpec {
     pub program: String,
     pub args: Vec<String>,
     pub stdin: String,
     pub env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for CommandSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandSpec")
+            .field("program", &self.program)
+            .field("args", &self.args)
+            .field("environment_keys", &self.env.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CommandSpec {
@@ -140,6 +150,7 @@ pub struct ContainerizedNodeExecutor {
     selection: ExecutionProfileSelection,
     command_runner: Box<dyn ContainerCommandRunner>,
     container_id: Option<String>,
+    target_native: Option<Value>,
     container_name: String,
     docker_program: String,
     last_cleanup_error: Option<String>,
@@ -158,6 +169,7 @@ impl ContainerizedNodeExecutor {
             selection,
             command_runner: Box::<SystemCommandRunner>::default(),
             container_id: None,
+            target_native: None,
             container_name,
             docker_program: "docker".to_string(),
             last_cleanup_error: None,
@@ -232,6 +244,8 @@ impl ContainerizedNodeExecutor {
             ));
         }
         self.ensure_container_started(&request, &image)?;
+        let mut context = request.context.clone();
+        self.resolve_target_paths(&mut context)?;
         let worker_request = WorkerNodeRequest {
             run_id: request.run_id.clone(),
             flow: request.flow.clone(),
@@ -239,7 +253,7 @@ impl ContainerizedNodeExecutor {
             stage_index: request.stage_index,
             attempt: request.attempt,
             prompt: request.prompt.clone(),
-            context: request.context.clone(),
+            context,
             context_logs: Vec::new(),
             logs_root: request.run_paths.as_ref().map(|paths| paths.logs_dir()),
             working_dir: request.run_workdir.clone(),
@@ -331,6 +345,73 @@ impl ContainerizedNodeExecutor {
         Ok(outcome)
     }
 
+    fn resolve_target_paths(
+        &mut self,
+        context: &mut attractor_core::ContextMap,
+    ) -> Result<(), RuntimeNodeError> {
+        let Some(native) = context
+            .get_mut("internal.execution_configuration_snapshot")
+            .and_then(|capture| capture.pointer_mut("/agents/native"))
+        else {
+            return Ok(());
+        };
+        if self.target_native.is_none() {
+            // Arguments carry authored paths only. Discovery and home expansion run in the image.
+            const RESOLVE: &str = r#"
+path() { case "$1" in '~') printf '%s' "$HOME" ;; '~/'*) printf '%s/%s' "$HOME" "${1#\~/}" ;; /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "$1" ;; esac; }
+binary() { value=$(command -v "$1" 2>/dev/null) || value=$1; case "$value" in */*) path "$value" ;; *) printf '%s' "$value" ;; esac; }
+binary "${1:-${SPARK_CODEX_APP_SERVER_BIN:-codex}}"; printf '\0'
+binary "${2:-${SPARK_CLAUDE_CODE_BIN:-claude}}"; printf '\0'
+path "${3:-${ATTRACTOR_CODEX_RUNTIME_ROOT:-${SPARK_HOME:-$HOME/.spark}/runtime/codex}}"; printf '\0'
+path "${4:-${ATTRACTOR_CODEX_SEED_DIR:-${CODEX_HOME:-$HOME/.codex}}}"; printf '\0'
+path "${5:-${SPARK_CLAUDE_CODE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}}"; printf '\0'
+"#;
+            let keys = [
+                "codex_binary",
+                "claude_binary",
+                "codex_runtime_root",
+                "codex_seed_dir",
+                "claude_config_dir",
+            ];
+            let mut args = vec![
+                "exec".into(),
+                self.container_id.clone().expect("started container"),
+                "sh".into(),
+                "-c".into(),
+                RESOLVE.into(),
+                "spark-resolve-paths".into(),
+            ];
+            args.extend(
+                keys.iter()
+                    .map(|key| native[*key].as_str().unwrap_or_default().to_owned()),
+            );
+            let result = self
+                .command_runner
+                .run(CommandSpec::new(&self.docker_program, args))
+                .map_err(|_| {
+                    RuntimeNodeError::terminal(
+                        "Unable to resolve agent paths in the execution container.",
+                    )
+                })?;
+            let paths: Vec<_> = result.stdout.split_terminator('\0').collect();
+            if result.exit_code != 0
+                || paths.len() != keys.len()
+                || paths.iter().any(|path| path.is_empty())
+            {
+                return Err(RuntimeNodeError::terminal(
+                    "Unable to resolve agent paths in the execution container.",
+                ));
+            }
+            let mut resolved = native.clone();
+            for (key, path) in keys.into_iter().zip(paths) {
+                resolved[key] = Value::String(path.into());
+            }
+            self.target_native = Some(resolved);
+        }
+        *native = self.target_native.clone().expect("resolved paths");
+        Ok(())
+    }
+
     fn ensure_container_started(
         &mut self,
         request: &NodeExecutionRequest,
@@ -369,9 +450,14 @@ impl ContainerizedNodeExecutor {
             args.push("-v".to_string());
             args.push(mount);
         }
-        for (key, value) in container_env() {
+        let environment = container_env(
+            &request.context,
+            &serde_json::to_value(&request.flow).expect("serializable flow"),
+            &spark_common::paths::ProcessEnvironment,
+        );
+        for key in environment.keys() {
             args.push("-e".to_string());
-            args.push(format!("{key}={value}"));
+            args.push(key.clone());
         }
         args.extend([
             image.to_string(),
@@ -379,9 +465,11 @@ impl ContainerizedNodeExecutor {
             "-f".to_string(),
             "/dev/null".to_string(),
         ]);
+        let mut command = CommandSpec::new(&self.docker_program, args);
+        command.env = environment;
         let result = self
             .command_runner
-            .run(CommandSpec::new(&self.docker_program, args))
+            .run(command)
             .map_err(|error| RuntimeNodeError::terminal(error.to_string()))?;
         if result.exit_code != 0 {
             return Err(RuntimeNodeError::terminal(format!(
@@ -429,7 +517,11 @@ fn format_diagnostic(message: &str, result: &CommandResult) -> String {
     }
 }
 
-fn container_env() -> BTreeMap<String, String> {
+fn container_env(
+    context: &attractor_core::ContextMap,
+    flow: &Value,
+    env: &impl spark_common::paths::Environment,
+) -> BTreeMap<String, String> {
     const PROVIDER_ENV_ALLOWLIST: &[&str] = &[
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
@@ -448,20 +540,71 @@ fn container_env() -> BTreeMap<String, String> {
         "LITELLM_API_KEY",
         "OPENAI_COMPATIBLE_BASE_URL",
         "OPENAI_COMPATIBLE_API_KEY",
-        "HOME",
-        "CODEX_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-        "ATTRACTOR_CODEX_RUNTIME_ROOT",
-        "SPARK_HOME",
     ];
-    PROVIDER_ENV_ALLOWLIST
+    let mut keys: std::collections::BTreeSet<String> = PROVIDER_ENV_ALLOWLIST
         .iter()
-        .filter_map(|key| {
-            std::env::var(key)
-                .ok()
-                .map(|value| ((*key).to_string(), value))
-        })
+        .map(|key| (*key).to_owned())
+        .collect();
+    if let Some(captured) = context.get("internal.execution_configuration_snapshot") {
+        let mut selections = std::collections::BTreeSet::new();
+        fn inspect(value: &Value, selections: &mut std::collections::BTreeSet<String>) {
+            match value {
+                Value::Object(fields) => {
+                    for (key, value) in fields {
+                        if [
+                            "provider",
+                            "llm_provider",
+                            "llm_profile",
+                            "_attractor.runtime.launch_profile",
+                            "_attractor.runtime.launch_provider",
+                        ]
+                        .contains(&key.as_str())
+                        {
+                            if let Some(value) = value.as_str() {
+                                selections.insert(value.trim().to_owned());
+                            }
+                        } else if !key.starts_with("internal.") {
+                            inspect(value, selections);
+                        }
+                    }
+                }
+                Value::Array(values) => {
+                    for value in values {
+                        inspect(value, selections);
+                    }
+                }
+                _ => (),
+            }
+        }
+        inspect(&serde_json::json!(context), &mut selections);
+        inspect(flow, &mut selections);
+        // Only credential references for selected providers/profiles cross the boundary.
+        for section in [
+            captured.get("providers"),
+            context.get("internal.llm_profiles_snapshot"),
+        ] {
+            if let Some(profiles) = section.and_then(Value::as_object) {
+                for (id, profile) in profiles {
+                    if !selections.contains(id) {
+                        continue;
+                    }
+                    if let Some(key) = profile.get("api_key_env").and_then(Value::as_str) {
+                        if !key.is_empty()
+                            && key.bytes().enumerate().all(|(i, c)| {
+                                c == b'_'
+                                    || c.is_ascii_alphabetic()
+                                    || (i > 0 && c.is_ascii_digit())
+                            })
+                        {
+                            keys.insert(key.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    keys.into_iter()
+        .filter_map(|key| env.get_var(&key).map(|value| (key, value)))
         .collect()
 }
 
@@ -550,5 +693,128 @@ fn _failure_outcome(message: impl Into<String>) -> Outcome {
         retryable: Some(false),
         failure_kind: Some(FailureKind::Runtime),
         ..Outcome::new(OutcomeStatus::Fail)
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn only_selected_credential_references_cross_the_environment_boundary() {
+        let context = BTreeMap::from([
+            ("_attractor.runtime.launch_profile".into(), json!("team")),
+            (
+                "internal.llm_profiles_snapshot".into(),
+                json!({"team":{"api_key_env":"TEAM_KEY"}, "unused":{"api_key_env":"UNUSED_KEY"}}),
+            ),
+            (
+                "internal.execution_configuration_snapshot".into(),
+                json!({"providers":{"openai":{"api_key_env":"CUSTOM_OPENAI_KEY"}}}),
+            ),
+        ]);
+        let env = BTreeMap::from([
+            ("TEAM_KEY".into(), "secret-test-sentinel".into()),
+            ("UNUSED_KEY".into(), "unused".into()),
+            ("CUSTOM_OPENAI_KEY".into(), "provider-test-sentinel".into()),
+            ("HOME".into(), "/host-home".into()),
+            ("CODEX_HOME".into(), "/host-codex".into()),
+        ]);
+        let result = container_env(
+            &context,
+            &json!({"nodes":[{"llm_provider":"openai"}]}),
+            &env,
+        );
+        assert_eq!(result.len(), 2);
+        assert_eq!(result["TEAM_KEY"], "secret-test-sentinel");
+        assert!(!serde_json::to_string(&context)
+            .unwrap()
+            .contains("secret-test-sentinel"));
+        let mut spec = CommandSpec::new("docker", ["run", "-e", "TEAM_KEY"]);
+        spec.env = result;
+        assert!(!format!("{spec:?}").contains("secret-test-sentinel"));
+    }
+
+    struct TargetShell {
+        home: PathBuf,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl ContainerCommandRunner for TargetShell {
+        fn command_exists(&self, _: &str) -> bool {
+            true
+        }
+        fn run(&mut self, spec: CommandSpec) -> std::io::Result<CommandResult> {
+            if spec.args.first().is_some_and(|arg| arg == "rm") {
+                return Ok(CommandResult {
+                    exit_code: 0,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                });
+            }
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(&spec.args[..4], ["exec", "test-container", "sh", "-c"]);
+            let output = Command::new("/bin/sh")
+                .args(&spec.args[3..])
+                .env_clear()
+                .env("HOME", &self.home)
+                .env("PATH", self.home.join("bin"))
+                .current_dir(&self.home)
+                .output()?;
+            Ok(CommandResult {
+                exit_code: output.status.code().unwrap_or(1),
+                stdout: String::from_utf8(output.stdout).unwrap(),
+                stderr: String::from_utf8(output.stderr).unwrap(),
+            })
+        }
+    }
+
+    #[test]
+    fn paths_resolve_in_target_home_and_path_and_are_frozen_for_active_work() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("bin")).unwrap();
+        let binary = home.path().join("bin/codex");
+        std::fs::write(&binary, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut executor = ContainerizedNodeExecutor::new(
+            ExecutionProfileSelection {
+                profile: crate::profile::ExecutionProfile::implementation_native(),
+                selected_profile_id: "test".into(),
+                selection_source: "test".into(),
+            },
+            RuntimeHandlerRunner::new(),
+        )
+        .with_command_runner(TargetShell {
+            home: home.path().into(),
+            calls: calls.clone(),
+        });
+        executor.container_id = Some("test-container".into());
+        let mut context = BTreeMap::from([(
+            "internal.execution_configuration_snapshot".into(),
+            json!({"agents":{"native":{"claude_config_dir":"~/custom-claude"}}}),
+        )]);
+        executor.resolve_target_paths(&mut context).unwrap();
+        let native = &context["internal.execution_configuration_snapshot"]["agents"]["native"];
+        assert_eq!(native["codex_binary"], binary.to_string_lossy().as_ref());
+        assert_eq!(
+            native["codex_runtime_root"],
+            home.path()
+                .join(".spark/runtime/codex")
+                .to_string_lossy()
+                .as_ref()
+        );
+        assert_eq!(
+            native["claude_config_dir"],
+            home.path().join("custom-claude").to_string_lossy().as_ref()
+        );
+        let captured = native.clone();
+        executor.resolve_target_paths(&mut context).unwrap();
+        assert_eq!(
+            context["internal.execution_configuration_snapshot"]["agents"]["native"],
+            captured
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

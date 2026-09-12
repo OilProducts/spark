@@ -716,6 +716,25 @@ pub fn build_serve_configuration_from_args(
     .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     validate_settings(&settings)
         .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+    for (key, cli, variable, stored) in [
+        (
+            "connections.server_host",
+            serve_args.host.is_some(),
+            "SPARK_HOST",
+            settings.connections.server_host.is_some(),
+        ),
+        (
+            "connections.server_port",
+            serve_args.port.is_some(),
+            "SPARK_PORT",
+            settings.connections.server_port.is_some(),
+        ),
+    ] {
+        settings.startup_sources.insert(
+            key.into(),
+            spark_common::settings::setting_source(cli, env, variable, stored),
+        );
+    }
     settings.connections = settings
         .connections
         .resolve(env, serve_args.host.as_deref(), serve_args.port)
@@ -764,6 +783,32 @@ pub fn resolve_server_settings_with_executable_path(
         spark_storage::settings::read_execution_configuration(&settings.config_dir, env)
             .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
     settings.providers = execution.providers;
+    let stored_agents: spark_common::agent_settings::SessionConfig = document
+        .section(&path, "agents")
+        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?
+        .unwrap_or_default();
+    for (key, variable, stored) in [
+        (
+            "agents.native.codex_runtime_root",
+            "ATTRACTOR_CODEX_RUNTIME_ROOT",
+            stored_agents.native.codex_runtime_root.is_some(),
+        ),
+        (
+            "agents.native.codex_seed_dir",
+            "ATTRACTOR_CODEX_SEED_DIR",
+            stored_agents.native.codex_seed_dir.is_some(),
+        ),
+        (
+            "agents.native.claude_config_dir",
+            "SPARK_CLAUDE_CODE_CONFIG_DIR",
+            stored_agents.native.claude_config_dir.is_some(),
+        ),
+    ] {
+        settings.startup_sources.insert(
+            key.into(),
+            spark_common::settings::setting_source(false, env, variable, stored),
+        );
+    }
     settings.agents = execution.agents;
     spark_storage::settings::migrate_workspace_conversation_settings(&settings.data_dir)
         .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;

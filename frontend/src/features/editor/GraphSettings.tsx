@@ -85,7 +85,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
     const catalogDirty = savedCatalog !== null && savedCatalog !== JSON.stringify([launchPolicy, executionLock])
-    useSettingsNavigationProtection(catalogDirty || launchPolicySaveState === 'saving')
+    useSettingsNavigationProtection(catalogDirty, launchPolicySaveState === 'saving')
     useEffect(() => {
         const refresh = (event: Event) => {
             const section = (event as CustomEvent<{ payload?: { section?: string } }>).detail?.payload?.section

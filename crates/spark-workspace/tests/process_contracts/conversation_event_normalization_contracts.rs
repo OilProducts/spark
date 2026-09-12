@@ -3104,6 +3104,7 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, state: Value) {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        startup_sources: Default::default(),
         connections: Default::default(),
         providers: Default::default(),
         agents: Default::default(),

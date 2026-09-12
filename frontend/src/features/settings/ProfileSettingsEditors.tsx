@@ -43,7 +43,9 @@ export function LlmProfilesEditor() {
         {duplicateIds(profiles) && <p role="alert">Enter unique, nonempty profile IDs without surrounding whitespace.</p>}
         <div className="flex gap-2"><Button disabled={!editor.dirty || editor.pending || !!invalid || profiles.some((p) => p.models.some((m) => !m.trim()))} onClick={() => void editor.save()}>Save LLM profiles</Button>
             <Button variant="outline" disabled={editor.pending || !editor.saved} onClick={() => void editor.discard()}>Discard LLM profile changes</Button></div>
-        {editor.error && <p role="alert">{editor.error}</p>}{editor.message && <p role="status">{editor.message}</p>}
+        {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
+            {editor.error && <p role="alert">{editor.error}</p>}{editor.message && <p role="status">{editor.message}</p>}
     </CardContent></Card>
 }
 
@@ -102,6 +104,8 @@ export function ExecutionProfilesEditor() {
         {duplicateIds(profiles) && <p role="alert">Enter unique, nonempty profile IDs without surrounding whitespace.</p>}
         <div className="flex gap-2"><Button disabled={!editor.dirty || editor.pending || invalid} onClick={() => void editor.save()}>Save execution profiles</Button>
             <Button variant="outline" disabled={editor.pending || !editor.saved} onClick={() => { void editor.discard().then((discarded) => { if (discarded) { setGeneration((value) => value + 1); setInvalidMetadata({}) } }) }}>Discard execution profile changes</Button></div>
-        {editor.error && <p role="alert">{editor.error}</p>}{editor.message && <p role="status">{editor.message}</p>}
+        {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
+            {editor.error && <p role="alert">{editor.error}</p>}{editor.message && <p role="status">{editor.message}</p>}
     </CardContent></Card>
 }

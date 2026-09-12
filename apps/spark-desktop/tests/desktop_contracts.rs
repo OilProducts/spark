@@ -446,3 +446,65 @@ fn native_settings_save_publishes_through_existing_http_live_transport() {
     drop(stream);
     server.shutdown();
 }
+
+#[test]
+fn desktop_retains_environment_selected_startup_paths() {
+    const CHILD: &str = "SPARK_DESKTOP_PRECEDENCE_TEST_ROOT";
+    let Ok(root) = std::env::var(CHILD) else {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "desktop_retains_environment_selected_startup_paths",
+                "--nocapture",
+            ])
+            .env(CHILD, temp.path())
+            .env(
+                "SPARK_CLAUDE_CODE_CONFIG_DIR",
+                temp.path().join("environment-claude"),
+            )
+            .env("SPARK_HOME", temp.path().join("ignored-home"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let paths = DesktopPaths::new(root.join("data"), root.join("config"));
+    let boot = bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).unwrap();
+    assert_eq!(
+        boot.settings.data_dir,
+        default_spark_data_dir(&paths).canonicalize().unwrap()
+    );
+    let selected = root
+        .join("environment-claude")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        boot.settings.agents.native.claude_config_dir,
+        Some(selected.clone())
+    );
+    let core = boot.settings.config_dir.join("spark.toml");
+    let source = fs::read_to_string(&core).unwrap();
+    fs::write(
+        &core,
+        format!("{source}\n[agents.native]\nclaude_config_dir='/after-restart'\n"),
+    )
+    .unwrap();
+    let mut captured = spark_storage::settings::read_execution_configuration(
+        &boot.settings.config_dir,
+        &std::collections::BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        captured.agents.native.claude_config_dir.as_deref(),
+        Some("/after-restart")
+    );
+    captured.retain_startup_settings(&boot.settings);
+    assert_eq!(captured.agents.native.claude_config_dir, Some(selected));
+}

@@ -1767,7 +1767,6 @@ impl AttractorApiService {
             Err(error) => return validation_error_response(&error.to_string()),
         };
         configuration.retain_startup_settings(&self.settings);
-        spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
         let profiles = match unified_llm_adapter::load_llm_profiles(&self.settings.config_dir) {
             Ok(profiles) => profiles,
             Err(_) => {
@@ -1819,6 +1818,9 @@ impl AttractorApiService {
                 );
             }
         };
+        if execution_selection.profile.mode.as_str() == "native" {
+            spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
+        }
         let execution_metadata = attractor_execution::build_launch_metadata(&execution_selection);
 
         let mut record = RunRecord::new(&run_id, &working_directory);

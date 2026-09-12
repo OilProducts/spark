@@ -1,0 +1,87 @@
+{
+  "finding": "F1",
+  "before": {
+    "effective": {
+      "llm_profile": "audit-local",
+      "model": "audit-model",
+      "provider": null,
+      "reasoning_effort": null
+    },
+    "restart_fields": [],
+    "revision": "1",
+    "scope": "conversation",
+    "source": "workspace",
+    "stored": null
+  },
+  "after": {
+    "effective": {
+      "llm_profile": null,
+      "model": "audit-model",
+      "provider": "openai_compatible",
+      "reasoning_effort": "high"
+    },
+    "restart_fields": [],
+    "revision": "2",
+    "scope": "conversation",
+    "source": "conversation",
+    "stored": {
+      "llm_profile": null,
+      "model": "audit-model",
+      "provider": "openai_compatible",
+      "reasoning_effort": "high"
+    }
+  }
+}
+{
+  "finding": "F6",
+  "validate": [
+    200,
+    {
+      "valid": true
+    }
+  ],
+  "save": [
+    400,
+    {
+      "detail": "Cannot delete referenced profiles. Update these references first: /private/var/folders/wx/wh9np15d04ncb_k6wlcks2_r0000gn/T/spark-settings-audit-d241uy8s/home/config/spark.toml.models.llm_profile"
+    }
+  ]
+}
+{
+  "finding": "F3",
+  "profile_save_status": 200,
+  "next_settings_read": [
+    400,
+    {
+      "detail": "Select a model supported by the LLM profile."
+    }
+  ]
+}
+{
+  "finding": "F7",
+  "connections": {
+    "effective": {
+      "client_api_base_url": "http://127.0.0.1:8000",
+      "server_host": "127.0.0.1",
+      "server_port": 54692
+    },
+    "restart_fields": [
+      "server_host",
+      "server_port"
+    ],
+    "revision": "35f476e064eade90986dee07e82a1c247b21eb46",
+    "scope": "workspace",
+    "stored": {
+      "client_api_base_url": "http://127.0.0.1:4987",
+      "server_host": null,
+      "server_port": null
+    },
+    "validation_errors": []
+  },
+  "source_fields": {
+    "runtime": null,
+    "connections": null,
+    "providers": null,
+    "agents": null
+  }
+}

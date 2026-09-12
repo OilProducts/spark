@@ -1,4 +1,5 @@
 import {
+    parseRepairableStored, parseSettingsFeedback,
     ApiSchemaError,
     asOptionalNullableString,
     asUnknownRecord,
@@ -121,8 +122,12 @@ export interface RuntimeSettings {
 export interface RuntimeSettingsView {
     scope: 'workspace'
     revision: string
-    stored: RuntimeSettings
-    effective: RuntimeSettings
+    stored: RuntimeSettings | null
+    repair_defaults?: RuntimeSettings
+    effective: RuntimeSettings | null
+    active_startup?: RuntimeSettings
+    sources?: Record<string, string>
+    validation_errors?: string[]
     restart_fields: string[]
 }
 
@@ -141,7 +146,9 @@ function parseRuntimeView(payload: unknown, endpoint: string): RuntimeSettingsVi
     if (record.scope !== 'workspace') throw new ApiSchemaError(endpoint, 'Expected workspace scope.')
     return {
         scope: 'workspace', revision: expectString(record.revision, endpoint, 'revision'),
-        stored: parseRuntimeSettings(record.stored, endpoint), effective: parseRuntimeSettings(record.effective, endpoint),
+        ...parseRepairableStored(record, (value) => parseRuntimeSettings(value, endpoint)),
+        active_startup: record.active_startup == null ? undefined : parseRuntimeSettings(record.active_startup, endpoint), effective: record.effective == null ? null : parseRuntimeSettings(record.effective, endpoint),
+        ...parseSettingsFeedback(record, endpoint),
         restart_fields: Array.isArray(record.restart_fields) ? record.restart_fields.map((value) => expectString(value, endpoint, 'restart_fields')) : [],
     }
 }
@@ -168,7 +175,9 @@ export interface ModelSettingsView {
     scope: 'workspace' | 'project' | 'conversation'
     revision: string
     stored: ModelSettings | null
-    effective: ModelSettings
+    repair_defaults?: ModelSettings
+    effective: ModelSettings | null
+    validation_errors?: string[]
     source: 'workspace' | 'project' | 'conversation'
 }
 
@@ -178,14 +187,13 @@ export function parseModelSettingsView(payload: unknown, endpoint: string): Mode
         const fields = expectObjectRecord(value, endpoint)
         const field = (key: string) => fields[key] == null ? null : expectString(fields[key], endpoint, key)
         const result = { provider: field('provider'), llm_profile: field('llm_profile'), model: field('model'), reasoning_effort: field('reasoning_effort') }
-        if (!!result.provider === !!result.llm_profile) throw new ApiSchemaError(endpoint, 'Expected exactly one provider or profile.')
         return result
     }
     const scope = record.scope
     const source = record.source
     if (scope !== 'workspace' && scope !== 'project' && scope !== 'conversation') throw new ApiSchemaError(endpoint, 'Invalid settings scope.')
     if (source !== 'workspace' && source !== 'project' && source !== 'conversation') throw new ApiSchemaError(endpoint, 'Invalid settings source.')
-    return { scope, source, revision: expectString(record.revision, endpoint, 'revision'), stored: record.stored == null ? null : group(record.stored), effective: group(record.effective) }
+    return { scope, source, revision: expectString(record.revision, endpoint, 'revision'), ...parseRepairableStored(record, group), effective: record.effective == null ? null : group(record.effective), ...parseSettingsFeedback(record, endpoint) }
 }
 
 export function fetchModelSettings(projectPath?: string): Promise<ModelSettingsView> {
@@ -201,10 +209,12 @@ export function saveModelSettings(revision: string, value: ModelSettings | null,
     }, '/workspace/api/settings', parseModelSettingsView)
 }
 
-export function fetchProjectExecutionSettings(projectPath: string): Promise<{ revision: string, stored: string | null }> {
+export function fetchProjectExecutionSettings(projectPath: string): Promise<{ revision: string, stored: unknown, validation_errors?: string[] }> {
     return fetchWorkspaceJsonValidated(`/settings?project_path=${encodeURIComponent(projectPath)}`, undefined, '/workspace/api/settings', (payload, endpoint) => {
         const record = expectObjectRecord(expectObjectRecord(payload, endpoint).execution, endpoint)
-        return { revision: expectString(record.revision, endpoint, 'revision'), stored: record.stored == null ? null : expectString(record.stored, endpoint, 'stored') }
+        const feedback = parseSettingsFeedback(record, endpoint)
+        if (!feedback.validation_errors?.length && record.stored != null) expectString(record.stored, endpoint, 'stored')
+        return { revision: expectString(record.revision, endpoint, 'revision'), stored: record.stored, ...feedback }
     })
 }
 
@@ -215,8 +225,13 @@ export interface ConnectionSettings {
 }
 export interface ConnectionSettingsView {
     revision: string
-    stored: ConnectionSettings
-    effective: ConnectionSettings
+    stored: ConnectionSettings | null
+    repair_defaults?: ConnectionSettings
+    effective: ConnectionSettings | null
+    running_server?: ConnectionSettings
+    client_config_dir?: string | null
+    sources?: Record<string, string>
+    validation_errors?: string[]
 }
 function parseConnectionView(payload: unknown, endpoint: string): ConnectionSettingsView {
     const view = expectObjectRecord(expectObjectRecord(payload, endpoint).connections, endpoint)
@@ -228,7 +243,7 @@ function parseConnectionView(payload: unknown, endpoint: string): ConnectionSett
             server_port: port == null ? null : port as number,
             client_api_base_url: fields.client_api_base_url == null ? null : expectString(fields.client_api_base_url, endpoint, 'client_api_base_url') }
     }
-    return { revision: expectString(view.revision, endpoint, 'revision'), stored: parse(view.stored), effective: parse(view.effective) }
+    return { revision: expectString(view.revision, endpoint, 'revision'), ...parseRepairableStored(view, parse), client_config_dir: view.client_config_dir == null ? null : expectString(view.client_config_dir, endpoint, 'client_config_dir'), running_server: view.running_server == null ? undefined : parse(view.running_server), effective: view.effective == null ? null : parse(view.effective), ...parseSettingsFeedback(view, endpoint) }
 }
 export function fetchConnectionSettings(): Promise<ConnectionSettingsView> {
     return fetchWorkspaceJsonValidated('/settings', undefined, '/workspace/api/settings', parseConnectionView)
