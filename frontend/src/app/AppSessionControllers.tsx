@@ -1,3 +1,5 @@
+import { ClientPreferencesController } from '@/features/settings/ClientPreferencesController'
+import { ModelDefaultsController } from '@/features/settings/ModelDefaultsController'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
@@ -366,6 +368,7 @@ export function WorkspaceLiveEventsController() {
         }
         // The workflow event log is a global, always-on feed for the Home pane.
         params.set('include_workflow_log', 'true')
+        params.set('include_settings', 'true')
         return buildWorkspaceLiveEventsUrl(params)
     }, [
         activeConversationId,
@@ -454,6 +457,10 @@ export function WorkspaceLiveEventsController() {
                     && typeof envelope.payload === 'object'
                     && !Array.isArray(envelope.payload)
                 ) ? envelope.payload as Record<string, unknown> : {}
+                if (envelope.type === 'settings.changed' || (envelope.type === 'resync_required' && envelope.resource?.kind === 'settings')) {
+                    window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: envelope }))
+                    return
+                }
                 if (envelope.type === 'resync_required') {
                     if (envelope.resource?.kind === 'conversation' && envelope.resource.id) {
                         window.dispatchEvent(new CustomEvent('spark:conversation-live-event', {
@@ -552,6 +559,9 @@ export function WorkspaceLiveEventsController() {
             eventSource?.close()
             const source = new EventSource(buildUrlWithCursors())
             eventSource = source
+            source.onopen = () => {
+                if (isCurrent(source)) window.dispatchEvent(new Event('spark:settings-live-event'))
+            }
             source.onmessage = (event) => handleMessage(event, source)
             source.onerror = () => {
                 if (!isCurrent(source)) {
@@ -637,6 +647,8 @@ export function RunsHashRoutingController() {
 export function AppSessionControllers() {
     return (
         <>
+            <ModelDefaultsController />
+            <ClientPreferencesController />
             <WorkspaceLiveEventsController />
             <HomeSessionController />
             <RunsSessionController />

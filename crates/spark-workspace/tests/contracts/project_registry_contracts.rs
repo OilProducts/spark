@@ -327,6 +327,9 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: serde_j
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

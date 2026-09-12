@@ -72,7 +72,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
                 message: "  Build this feature  ".to_string(),
                 provider: Some("openai".to_string()),
                 model: Some("gpt-5".to_string()),
-                llm_profile: Some("frontier".to_string()),
+                llm_profile: None,
                 reasoning_effort: Some("high".to_string()),
                 chat_mode: Some("plan".to_string()),
             },
@@ -84,7 +84,7 @@ fn start_turn_persists_one_user_one_assistant_turn_settings_and_events() {
     assert_eq!(prepared.model.as_deref(), Some("gpt-5"));
     assert_eq!(snapshot["chat_mode"], "plan");
     assert_eq!(snapshot["provider"], "openai");
-    assert_eq!(snapshot["llm_profile"], "frontier");
+    assert_eq!(snapshot["llm_profile"], Value::Null);
     assert_eq!(snapshot["reasoning_effort"], "high");
     assert_eq!(snapshot["title"], "Build this feature");
     let turns = snapshot["turns"].as_array().expect("turns");
@@ -487,7 +487,7 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
                 message: "Second question".to_string(),
                 provider: Some("openrouter".to_string()),
                 model: Some("openrouter/model".to_string()),
-                llm_profile: Some("implementation".to_string()),
+                llm_profile: None,
                 reasoning_effort: Some("HIGH".to_string()),
                 chat_mode: Some("plan".to_string()),
             },
@@ -506,7 +506,7 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
     );
     assert_eq!(request.provider.as_deref(), Some("openrouter"));
     assert_eq!(request.model.as_deref(), Some("openrouter/model"));
-    assert_eq!(request.llm_profile.as_deref(), Some("implementation"));
+    assert_eq!(request.llm_profile.as_deref(), None);
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(request.chat_mode.as_deref(), Some("plan"));
     assert_eq!(
@@ -652,7 +652,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
                 message: "Second question".to_string(),
                 provider: Some("openrouter".to_string()),
                 model: Some("openrouter/model".to_string()),
-                llm_profile: Some("implementation".to_string()),
+                llm_profile: None,
                 reasoning_effort: Some("HIGH".to_string()),
                 chat_mode: Some("plan".to_string()),
             },
@@ -673,7 +673,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
     );
     assert_eq!(request.provider.as_deref(), Some("openrouter"));
     assert_eq!(request.model.as_deref(), Some("openrouter/model"));
-    assert_eq!(request.llm_profile.as_deref(), Some("implementation"));
+    assert_eq!(request.llm_profile.as_deref(), None);
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(request.chat_mode.as_deref(), Some("plan"));
     let history = serde_json::to_value(&request.history).expect("history");
@@ -1957,7 +1957,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
                 message: "Need approval".to_string(),
                 provider: Some("openrouter".to_string()),
                 model: Some("openrouter/model".to_string()),
-                llm_profile: Some("implementation".to_string()),
+                llm_profile: None,
                 reasoning_effort: Some("HIGH".to_string()),
                 chat_mode: Some("chat".to_string()),
                 ..ConversationTurnRequest::default()
@@ -2053,10 +2053,7 @@ fn request_user_input_answers_call_backend_lifecycle_and_ingest_output() {
     }
     assert_eq!(answer_request.provider.as_deref(), Some("openrouter"));
     assert_eq!(answer_request.model.as_deref(), Some("openrouter/model"));
-    assert_eq!(
-        answer_request.llm_profile.as_deref(),
-        Some("implementation")
-    );
+    assert_eq!(answer_request.llm_profile.as_deref(), None);
     assert_eq!(answer_request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(answer_request.chat_mode.as_deref(), Some("chat"));
     assert_eq!(
@@ -3107,6 +3104,9 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, state: Value) {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
@@ -3268,11 +3268,12 @@ fn claude_code_recovery_keeps_fresh_turn_and_replaces_runtime_session() {
                 project_path: project_path.to_string(),
                 provider: Some("claude-code".to_string()),
                 model: Some(String::new()),
-                llm_profile: Some("stale-profile".to_string()),
+                expected_revision: Some("0".into()),
+                llm_profile: None,
                 ..ConversationSettingsUpdate::default()
             },
         )
-        .expect("claude-code accepts a blank model despite retained profile state");
+        .expect("claude-code accepts its default model");
 
     for message in ["first", "recover", "continue"] {
         service

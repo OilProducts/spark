@@ -25,6 +25,7 @@ spark-agent-adapter = { path = "../../crates/spark-agent-adapter" }
 spark-common = { path = "../../crates/spark-common" }
 spark-http = { path = "../../crates/spark-http" }
 spark-server = { path = "../../crates/spark-server" }
+spark-storage = { path = "../../crates/spark-storage" }
 tauri = { version = "2" }
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
@@ -32,5 +33,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 spark-assets = { path = "../../crates/spark-assets" }
-spark-storage = { path = "../../crates/spark-storage" }
 tempfile = "3.10"

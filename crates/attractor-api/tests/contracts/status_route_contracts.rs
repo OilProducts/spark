@@ -58,7 +58,7 @@ fn route_dispatch_keeps_root_and_api_subroutes_distinct() {
     let profiles =
         handle_attractor_request("GET", "/attractor/api/llm-profiles", "", settings.clone());
     assert_eq!(profiles.status_code, 200);
-    assert_eq!(profiles.body, json!({"profiles": []}));
+    assert_eq!(profiles.body, json!({"profiles": [], "revision": "absent"}));
 
     let moved = handle_attractor_request("GET", "/attractor/llm-profiles", "", settings);
     assert_eq!(moved.status_code, 404);
@@ -88,6 +88,9 @@ fn workspace_root() -> PathBuf {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("project"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

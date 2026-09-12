@@ -387,6 +387,7 @@ export function RunGraphCard({
                         setPaneHeight(resizeState.startHeight + (event.clientY - resizeState.startY))
                     }}
                     onPointerUp={(event) => {
+                        useStore.getState().setClientRunPresentation({ graph_height: paneHeight })
                         resizeStateRef.current = null
                         event.currentTarget.releasePointerCapture(event.pointerId)
                     }}
@@ -394,9 +395,11 @@ export function RunGraphCard({
                         if (event.key === 'ArrowUp') {
                             event.preventDefault()
                             setPaneHeight(paneHeight - GRAPH_PANE_KEYBOARD_STEP)
+                            useStore.getState().setClientRunPresentation({ graph_height: clampGraphPaneHeight(paneHeight - GRAPH_PANE_KEYBOARD_STEP) })
                         } else if (event.key === 'ArrowDown') {
                             event.preventDefault()
                             setPaneHeight(paneHeight + GRAPH_PANE_KEYBOARD_STEP)
+                            useStore.getState().setClientRunPresentation({ graph_height: clampGraphPaneHeight(paneHeight + GRAPH_PANE_KEYBOARD_STEP) })
                         }
                     }}
                     className="group flex h-3 cursor-row-resize items-center justify-center rounded-sm hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

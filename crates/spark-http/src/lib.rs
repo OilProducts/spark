@@ -51,6 +51,29 @@ pub fn build_app_with_rust_llm_client(
     )
 }
 
+/// Native settings writes share the HTTP app's existing live transport.
+pub fn build_app_with_rust_llm_client_and_settings_notifications(
+    settings: SparkSettings,
+    client: unified_llm_adapter::Client,
+) -> (Router, impl Fn(&str) + Send + Sync + 'static) {
+    let live_hub = Arc::new(WorkspaceLiveHub::new());
+    let publisher = live_hub.clone();
+    let app = build_app_with_live_hub(
+        settings,
+        attractor_api::rust_llm_runtime_handler_runner_factory(client.clone()),
+        Arc::new(RustLlmAgentTurnBackend::new(client)),
+        live_hub,
+    );
+    (app, move |revision| {
+        publisher.publish_settings_change(
+            "workspace",
+            "desktop",
+            None,
+            serde_json::json!(revision),
+        );
+    })
+}
+
 pub fn build_app_with_agent_turn_backend(
     settings: SparkSettings,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
@@ -80,8 +103,21 @@ pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
 ) -> Router {
+    build_app_with_live_hub(
+        settings,
+        runtime_handler_runner_factory,
+        agent_turn_backend,
+        Arc::new(WorkspaceLiveHub::new()),
+    )
+}
+
+fn build_app_with_live_hub(
+    settings: SparkSettings,
+    runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
+    agent_turn_backend: Arc<dyn AgentTurnBackend>,
+    live_hub: Arc<WorkspaceLiveHub>,
+) -> Router {
     let settings = Arc::new(settings);
-    let live_hub = Arc::new(WorkspaceLiveHub::new());
     let (run_event_observer, run_event_publisher) =
         RunEventPublisher::spawn(settings.clone(), live_hub.clone());
     let state = HttpAppState {
@@ -118,6 +154,14 @@ pub fn build_app_with_runtime_handler_runner_factory_and_agent_turn_backend(
             workspace::router().fallback(workspace_api_fallback),
         )
         .route("/attractor", any(redirect_attractor_mount))
+        .route(
+            "/attractor/api/llm-profiles",
+            get(attractor_dispatch).patch(workspace::patch_llm_profiles),
+        )
+        .route(
+            "/attractor/api/execution-placement-settings",
+            get(attractor_dispatch).patch(workspace::patch_execution_profiles),
+        )
         .route("/attractor/{*path}", any(attractor_dispatch))
         .fallback(product_fallback)
         .with_state(state)
@@ -188,6 +232,26 @@ impl WorkspaceLiveHub {
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<LiveEnvelope> {
         self.sender.subscribe()
+    }
+
+    pub(crate) fn publish_settings_change(
+        &self,
+        scope: &str,
+        section: &str,
+        project_path: Option<String>,
+        revision: serde_json::Value,
+    ) {
+        self.publish(LiveEnvelope {
+            event_type: "settings.changed".into(),
+            project_path,
+            resource: spark_workspace::LiveResource {
+                kind: "settings".into(),
+                id: Some(scope.into()),
+            },
+            cursor: None,
+            reason: None,
+            payload: serde_json::json!({"scope": scope, "section": section, "revision": revision}),
+        });
     }
 
     pub(crate) fn publish(&self, envelope: LiveEnvelope) {
@@ -663,6 +727,9 @@ mod incremental_usage_tests {
     fn test_settings(root: &std::path::Path) -> SparkSettings {
         let data = root.join("data");
         SparkSettings {
+            connections: Default::default(),
+            providers: Default::default(),
+            agents: Default::default(),
             project_root: root.to_path_buf(),
             data_dir: data.clone(),
             config_dir: data.join("config"),
@@ -957,6 +1024,7 @@ mod incremental_usage_tests {
         spark_storage::TriggerRepositories::from_settings(&settings)
             .definitions
             .put(&spark_storage::TriggerDefinition {
+                revision: String::new(),
                 id: "math-http-chain".into(),
                 name: "Math HTTP chain".into(),
                 enabled: true,

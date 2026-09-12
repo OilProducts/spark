@@ -15,7 +15,8 @@ use spark_common::debug::{codex_jsonrpc_trace_enabled_with_env, ENV_SPARK_DEBUG_
 use spark_common::logging::init_spark_logging;
 use spark_common::paths::{Environment, ProcessEnvironment};
 use spark_common::settings::{
-    resolve_settings_with_env, validate_settings, SettingsOverrides, SparkSettings,
+    resolve_settings_with_env, resolve_settings_with_persisted, validate_settings, RuntimeSettings,
+    SettingsOverrides, SparkSettings,
 };
 use spark_common::source_checkout::{
     installed_package_root_from_executable, require_explicit_dev_home_with_env,
@@ -88,8 +89,8 @@ struct ServeArgs {
     data_dir: Option<PathBuf>,
     flows_dir: Option<PathBuf>,
     ui_dir: Option<PathBuf>,
-    host: String,
-    port: u16,
+    host: Option<String>,
+    port: Option<u16>,
     reload: bool,
     debug_codex_jsonrpc: bool,
 }
@@ -324,6 +325,9 @@ fn rust_llm_client_from_env() -> unified_llm_adapter::Client {
 pub fn rust_llm_client_from_settings(settings: &SparkSettings) -> unified_llm_adapter::Client {
     let env = std::env::vars().collect::<std::collections::BTreeMap<_, _>>();
     unified_llm_adapter::Client::from_env_map_and_profiles(&env, &settings.config_dir, None)
+        .and_then(|client| {
+            client.with_execution_environment(&settings.providers.execution_environment(&env))
+        })
         .unwrap_or_else(|error| {
             tracing::warn!(
                 target: "spark_server",
@@ -700,7 +704,7 @@ pub fn build_serve_configuration_from_args(
     {
         return Err(guard_output);
     }
-    let settings = resolve_server_settings_with_env(
+    let mut settings = resolve_server_settings_with_env(
         &SettingsOverrides {
             data_dir: serve_args.data_dir.clone(),
             flows_dir: serve_args.flows_dir.clone(),
@@ -712,9 +716,17 @@ pub fn build_serve_configuration_from_args(
     .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     validate_settings(&settings)
         .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
+    settings.connections = settings
+        .connections
+        .resolve(env, serve_args.host.as_deref(), serve_args.port)
+        .map_err(|error| CommandOutput::stderr(EXIT_GENERAL_FAILURE, format!("{error}\n")))?;
     Ok(ServeConfiguration {
-        host: serve_args.host,
-        port: serve_args.port,
+        host: settings
+            .connections
+            .server_host
+            .clone()
+            .expect("resolved host"),
+        port: settings.connections.server_port.expect("resolved port"),
         reload: serve_args.reload,
         debug_codex_jsonrpc: serve_args.debug_codex_jsonrpc
             || codex_jsonrpc_trace_enabled_with_env(env),
@@ -735,7 +747,26 @@ pub fn resolve_server_settings_with_executable_path(
     env: &impl Environment,
     executable_path: Option<&Path>,
 ) -> std::result::Result<SparkSettings, SparkCommonError> {
-    let mut settings = resolve_settings_with_env(overrides, env)?;
+    let bootstrap = resolve_settings_with_env(overrides, env)?;
+    let path = bootstrap.config_dir.join("spark.toml");
+    let document = spark_storage::settings::migrate_core_settings(&path)
+        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
+    let runtime = document
+        .section::<RuntimeSettings>(&path, "runtime")
+        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?
+        .unwrap_or_default();
+    let mut settings = resolve_settings_with_persisted(overrides, env, &runtime)?;
+    settings.connections = document
+        .section(&path, "connections")
+        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?
+        .unwrap_or_default();
+    let execution =
+        spark_storage::settings::read_execution_configuration(&settings.config_dir, env)
+            .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
+    settings.providers = execution.providers;
+    settings.agents = execution.agents;
+    spark_storage::settings::migrate_workspace_conversation_settings(&settings.data_dir)
+        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
     if let Some(package_root) = executable_path
         .and_then(|path| installed_package_root_from_executable(path, "spark-server"))
     {
@@ -918,23 +949,21 @@ fn parse_init_args(args: &[String]) -> std::result::Result<InitArgs, String> {
 }
 
 fn parse_serve_args(args: &[String]) -> std::result::Result<ServeArgs, String> {
-    let mut parsed = ServeArgs {
-        host: "127.0.0.1".to_string(),
-        port: 8000,
-        ..ServeArgs::default()
-    };
+    let mut parsed = ServeArgs::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--data-dir" => parsed.data_dir = Some(next_path(args, &mut index, "--data-dir")?),
             "--flows-dir" => parsed.flows_dir = Some(next_path(args, &mut index, "--flows-dir")?),
             "--ui-dir" => parsed.ui_dir = Some(next_path(args, &mut index, "--ui-dir")?),
-            "--host" => parsed.host = next_value(args, &mut index, "--host")?,
+            "--host" => parsed.host = Some(next_value(args, &mut index, "--host")?),
             "--port" => {
                 let value = next_value(args, &mut index, "--port")?;
-                parsed.port = value
-                    .parse::<u16>()
-                    .map_err(|_| format!("argument --port: invalid int value: '{value}'"))?;
+                parsed.port = Some(
+                    value
+                        .parse::<u16>()
+                        .map_err(|_| format!("argument --port: invalid int value: '{value}'"))?,
+                );
             }
             "--reload" => {
                 parsed.reload = true;

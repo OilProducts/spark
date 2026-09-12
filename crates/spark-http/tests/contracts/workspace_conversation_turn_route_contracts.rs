@@ -125,7 +125,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
             "message": "Ship it",
             "provider": "openai",
             "model": "gpt-5",
-            "llm_profile": "frontier",
+            "llm_profile": null,
             "reasoning_effort": "HIGH",
             "chat_mode": "chat"
         })),
@@ -135,7 +135,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     assert_eq!(response.1["conversation_id"], "conversation-http-turn");
     assert_eq!(response.1["provider"], "openai");
     assert_eq!(response.1["model"], "gpt-5");
-    assert_eq!(response.1["llm_profile"], "frontier");
+    assert_eq!(response.1["llm_profile"], Value::Null);
     assert_eq!(response.1["reasoning_effort"], "high");
     assert_eq!(response.1["turns"].as_array().expect("turns").len(), 4);
     let assistant_turn = response.1["turns"]
@@ -237,7 +237,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
     );
     assert_eq!(backend_request.provider.as_deref(), Some("openai"));
     assert_eq!(backend_request.model.as_deref(), Some("gpt-5"));
-    assert_eq!(backend_request.llm_profile.as_deref(), Some("frontier"));
+    assert_eq!(backend_request.llm_profile.as_deref(), None);
     assert_eq!(backend_request.reasoning_effort.as_deref(), Some("high"));
     assert_eq!(backend_request.chat_mode.as_deref(), Some("chat"));
     let user_turn_id = backend_request.metadata["spark.workspace.user_turn_id"]
@@ -356,6 +356,8 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
 async fn conversation_turn_route_uses_rust_llm_client_backend_for_openai_compatible_profile() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).unwrap();
+    std::fs::write(settings.config_dir.join("llm-profiles.toml"), "[profiles.frontier]\nprovider = 'openai_compatible'\nbase_url = 'http://localhost:9999/v1'\nmodels = ['gpt-route-agent', 'profile-default']\ndefault_model = 'profile-default'\n").unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
         "openai_compatible",
@@ -789,7 +791,7 @@ async fn request_user_input_answer_route_continues_pending_requests() {
                 message: "Need input".to_string(),
                 provider: Some("openrouter".to_string()),
                 model: Some("openrouter/route-input".to_string()),
-                llm_profile: Some("implementation".to_string()),
+                llm_profile: None,
                 reasoning_effort: Some("HIGH".to_string()),
                 chat_mode: Some("chat".to_string()),
                 ..ConversationTurnRequest::default()
@@ -868,10 +870,7 @@ async fn request_user_input_answer_route_continues_pending_requests() {
         answer_requests[0].model.as_deref(),
         Some("openrouter/route-input")
     );
-    assert_eq!(
-        answer_requests[0].llm_profile.as_deref(),
-        Some("implementation")
-    );
+    assert_eq!(answer_requests[0].llm_profile.as_deref(), None);
     assert_eq!(answer_requests[0].reasoning_effort.as_deref(), Some("high"));
     assert_eq!(answer_requests[0].chat_mode.as_deref(), Some("chat"));
     drop(answer_requests);
@@ -1394,6 +1393,9 @@ fn source(app_turn_id: &str, item_id: &str) -> TurnStreamSource {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

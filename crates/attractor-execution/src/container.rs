@@ -469,7 +469,7 @@ fn container_env() -> BTreeMap<String, String> {
 /// `metadata."container.mounts" = ["host:container[:options]", ...]`,
 /// letting profiles provide runtime resources (for example agent
 /// credentials, mounted read-only) without baking them into image layers.
-fn profile_mounts(
+pub(crate) fn profile_mounts(
     profile: &crate::profile::ExecutionProfile,
 ) -> Result<Vec<String>, RuntimeNodeError> {
     let Some(declared) = profile.metadata.get("container.mounts") else {

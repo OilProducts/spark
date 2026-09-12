@@ -1034,3 +1034,106 @@ fn list_available_codex_models_queries_the_local_app_server() {
         Some("medium")
     );
 }
+
+#[test]
+fn captured_native_configuration_controls_actual_codex_launch_and_runtime_home() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", temp.path());
+    let _codex_home = EnvVarGuard::set("CODEX_HOME", temp.path().join("empty-codex-home"));
+    let _binary = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", "/missing/later-binary");
+    let _runtime = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("later-runtime"),
+    );
+    let captured = temp.path().join("captured-runtime");
+    let request: AgentTurnRequest = serde_json::from_value(json!({
+        "conversation_id": "captured-native", "project_path": temp.path(), "prompt": "Hello", "history": [], "provider": "codex", "model": "gpt-codex-test",
+        "metadata": {"spark.execution.settings": {"configuration": {"agents": {"native": {
+            "codex_binary": fake_codex_app_server_bin(), "codex_runtime_root": captured,
+            "codex_seed_dir": temp.path().join("empty-seed"), "codex_jsonrpc_trace": false
+        }}}}}
+    })).unwrap();
+    CodexAppServerBackend::new()
+        .run_agent_turn(request)
+        .unwrap();
+    assert!(captured.join(".codex").is_dir());
+    assert!(!temp.path().join("later-runtime").exists());
+    let config = std::fs::read_to_string(captured.join(".codex/config.toml")).unwrap();
+    assert!(config.contains("service_tier"));
+    assert!(config
+        .lines()
+        .any(|line| line == "service_tier = \"standard\""));
+}
+
+#[test]
+fn workflow_native_tracing_uses_saved_settings_and_retains_captured_choice() {
+    use spark_agent_adapter::{CodergenHandler, CodergenRequest, RustLlmCodergenBackend};
+    use spark_common::debug::CODEX_JSONRPC_TRACE_FILE_NAME;
+    use spark_common::paths::ProcessEnvironment;
+    use spark_storage::settings::read_execution_configuration;
+
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _runtime = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", temp.path().join("runtime"));
+    let _seed = EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", temp.path().join("empty-seed"));
+    let _debug = EnvVarGuard::remove(ENV_SPARK_DEBUG_CODEX_JSONRPC);
+    let config_dir = temp.path().join("config");
+    fs::create_dir_all(&config_dir).unwrap();
+    let core = config_dir.join("spark.toml");
+    let capture = || read_execution_configuration(&config_dir, &ProcessEnvironment).unwrap();
+    let graph = attractor_core::FlowDefinition::from_yaml_str(
+        "schema_version: '1'\nid: trace\ntitle: Trace\nnodes:\n  task:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: Say hello\n    execution:\n      llm_provider: codex\n      llm_model: gpt-codex-test\n",
+    ).unwrap().to_runtime_dot_graph();
+    let execute = |name: &str,
+                   configuration: &spark_common::settings::ExecutionConfiguration,
+                   expected: bool| {
+        let logs = temp.path().join(name);
+        let request: CodergenRequest = serde_json::from_value(json!({
+            "node_id": "task", "node": graph.nodes["task"], "graph": graph,
+            "logs_root": logs, "project_path": temp.path(),
+            "metadata": {"spark.execution.settings": {"configuration": configuration}}
+        }))
+        .unwrap();
+        let result = CodergenHandler::with_backend(RustLlmCodergenBackend::new(
+            unified_llm_adapter::Client::new(),
+        ))
+        .execute(request)
+        .expect("workflow native launch");
+        assert_eq!(result.response_text, "Ack");
+        let trace = logs.join("task").join(CODEX_JSONRPC_TRACE_FILE_NAME);
+        assert_eq!(trace.exists(), expected, "{name}");
+        if expected {
+            let records: Vec<Value> = fs::read_to_string(trace)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert!(records
+                .iter()
+                .any(|record| record["direction"] == "outgoing"));
+            assert!(records
+                .iter()
+                .any(|record| record["direction"] == "incoming"));
+        }
+    };
+
+    execute("default-disabled", &capture(), false);
+    fs::write(&core, "[agents.native]\ncodex_jsonrpc_trace = true\n").unwrap();
+    let enabled = capture();
+    execute("saved-enabled", &enabled, true);
+    fs::write(&core, "[agents.native]\ncodex_jsonrpc_trace = false\n").unwrap();
+    let disabled = capture();
+    execute("active-enabled", &enabled, true);
+    execute("new-disabled", &disabled, false);
+    fs::write(&core, "[agents.native]\ncodex_jsonrpc_trace = true\n").unwrap();
+    let _off = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "0");
+    execute("environment-disabled", &capture(), false);
+    drop(_off);
+    fs::write(&core, "[agents.native]\ncodex_jsonrpc_trace = false\n").unwrap();
+    let _on = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
+    execute("environment-enabled", &capture(), true);
+    execute("active-disabled", &disabled, false);
+}

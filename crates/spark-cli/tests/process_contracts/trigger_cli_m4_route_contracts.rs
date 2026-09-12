@@ -100,7 +100,7 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     let update_payload = temp.path().join("trigger-update.json");
     fs::write(
         &update_payload,
-        json!({"name": "Compat webhook updated", "regenerate_webhook_secret": true}).to_string(),
+        json!({"expected_revision": created_payload["revision"], "name": "Compat webhook updated", "regenerate_webhook_secret": true}).to_string(),
     )
     .expect("write update payload");
     let updated = run_spark(
@@ -132,6 +132,8 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
         [
             "trigger",
             "delete",
+            "--expected-revision",
+            updated_payload["revision"].as_str().unwrap(),
             "--id",
             trigger_id.as_str(),
             "--base-url",
@@ -169,6 +171,8 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         [
             "trigger",
             "delete",
+            "--expected-revision",
+            "protected",
             "--id",
             "trigger-protected",
             "--base-url",
@@ -185,7 +189,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     let protected_update_payload = temp.path().join("protected-update.json");
     fs::write(
         &protected_update_payload,
-        json!({"action": {"static_context": {"changed": true}}}).to_string(),
+        json!({"expected_revision": read_trigger_definition(&settings.config_dir, "trigger-protected").unwrap().unwrap().revision, "action": {"static_context": {"changed": true}}}).to_string(),
     )
     .expect("write protected update payload");
     let protected_update = run_spark(
@@ -287,6 +291,7 @@ fn stderr(output: &Output) -> String {
 
 fn protected_definition(id: &str) -> TriggerDefinition {
     TriggerDefinition {
+        revision: String::new(),
         id: id.to_string(),
         name: "Protected".to_string(),
         enabled: true,
@@ -321,6 +326,9 @@ fn write_flow(settings: &SparkSettings, name: &str) {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
@@ -476,5 +484,77 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
             .unwrap()
             .len(),
         2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settings_cli_validates_and_saves_through_the_real_revision_checked_route() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let server = spawn_server(settings.clone()).await;
+    let read = run_spark(
+        temp.path(),
+        ["settings", "get", "--base-url", &server.base_url],
+    );
+    assert!(read.status.success(), "{}", stderr(&read));
+    let first: Value = serde_json::from_slice(&read.stdout).unwrap();
+    let payload = temp.path().join("settings.json");
+    fs::write(
+        &payload,
+        json!({
+            "expected_revision": first["runtime"]["revision"],
+            "section": "runtime", "value": {"flows_dir": "/from-cli", "project_roots": []}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let validated = run_spark(
+        temp.path(),
+        [
+            "settings",
+            "validate",
+            "--json",
+            payload.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert!(validated.status.success(), "{}", stderr(&validated));
+    assert!(!settings.config_dir.join("spark.toml").exists());
+    let saved = run_spark(
+        temp.path(),
+        [
+            "settings",
+            "set",
+            "--json",
+            payload.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert!(saved.status.success(), "{}", stderr(&saved));
+    let document: Value = serde_json::from_slice(&saved.stdout).unwrap();
+    assert_eq!(document["runtime"]["stored"]["flows_dir"], "/from-cli");
+    let stale = run_spark(
+        temp.path(),
+        [
+            "settings",
+            "set",
+            "--json",
+            payload.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert!(!stale.status.success());
+    assert!(stderr(&stale).contains("Settings changed"));
+    let read = run_spark(
+        temp.path(),
+        ["settings", "get", "--base-url", &server.base_url],
+    );
+    let latest: Value = serde_json::from_slice(&read.stdout).unwrap();
+    assert_eq!(
+        latest["runtime"]["revision"],
+        document["runtime"]["revision"]
     );
 }

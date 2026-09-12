@@ -108,17 +108,57 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
         json!({"output": "full output", "output_size": 11})
     );
 
+    for payload in [
+        json!({"project_path": "/projects/http-app", "chat_mode": "plan"}),
+        json!({"project_path": "/projects/http-app", "chat_mode": "plan", "expected_revision": "0"}),
+    ] {
+        let expected = if payload.get("expected_revision").is_some() {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        let rejected = request_json(
+            app.clone(),
+            "PUT",
+            "/workspace/api/conversations/conversation-http/settings",
+            Some(payload),
+        )
+        .await;
+        assert_eq!(rejected.0, expected);
+        let unchanged = request_json(
+            app.clone(),
+            "GET",
+            "/workspace/api/conversations/conversation-http?project_path=/projects/http-app",
+            None,
+        )
+        .await;
+        assert_eq!(unchanged.1, snapshot.1);
+    }
+
     let settings_response = request_json(
         app.clone(),
         "PUT",
         "/workspace/api/conversations/conversation-http/settings",
-        Some(json!({"project_path": "/projects/http-app", "chat_mode": "plan"})),
+        Some(json!({"project_path": "/projects/http-app", "chat_mode": "plan", "expected_revision": snapshot.1["revision"].to_string()})),
     )
     .await;
     assert_eq!(settings_response.0, StatusCode::OK);
     assert_eq!(settings_response.1["chat_mode"], "plan");
     // Mode-change turn entry plus settings journal entry.
     assert_eq!(settings_response.1["revision"], 3);
+
+    let rejected = request_json(app.clone(), "PUT",
+        "/workspace/api/conversations/conversation-http/settings",
+        Some(json!({"project_path": "/projects/http-app", "chat_mode": "chat", "expected_revision": snapshot.1["revision"].to_string()}))).await;
+    assert_eq!(rejected.0, StatusCode::CONFLICT);
+    let unchanged = request_json(
+        app.clone(),
+        "GET",
+        "/workspace/api/conversations/conversation-http?project_path=/projects/http-app",
+        None,
+    )
+    .await;
+    assert_eq!(unchanged.1, settings_response.1);
 
     let deprecated = request_text(
         app.clone(),
@@ -356,6 +396,9 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

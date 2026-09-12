@@ -2,15 +2,36 @@ use serde_json::{json, Value};
 
 use crate::errors::ExecutionProfileConfigError;
 use crate::modes::EXECUTION_MODES;
-use crate::profile::{
-    load_execution_profile_config, ExecutionProfile, ExecutionProfileSettings,
-    EXECUTION_PROFILES_FILENAME,
-};
+use crate::profile::{ExecutionProfile, ExecutionProfileSettings, EXECUTION_PROFILES_FILENAME};
 
 pub fn public_execution_placement_settings(settings: &impl ExecutionProfileSettings) -> Value {
     let config_path = settings.config_dir().join(EXECUTION_PROFILES_FILENAME);
+    let document = spark_storage::settings::read_settings_document(&config_path);
+    let revision = document
+        .as_ref()
+        .ok()
+        .map(|document| document.revision.clone());
+    let graph = document
+        .map_err(|error| ExecutionProfileConfigError::new(error.to_string()))
+        .and_then(|document| {
+            if document.revision == "absent" {
+                Ok(crate::profile::ExecutionProfileGraph {
+                    profiles: std::collections::BTreeMap::from([(
+                        "native".into(),
+                        ExecutionProfile::implementation_native(),
+                    )]),
+                    synthesized_native_default: true,
+                    ..Default::default()
+                })
+            } else {
+                crate::profile::parse_execution_profiles(&document.values).and_then(|graph| {
+                    graph.validate_default()?;
+                    Ok(graph)
+                })
+            }
+        });
     let (loaded, profiles, default_execution_profile_id, synthesized_native_default, errors) =
-        match load_execution_profile_config(settings, None, None, None) {
+        match graph {
             Ok(graph) => {
                 let profiles = graph
                     .profiles
@@ -38,6 +59,7 @@ pub fn public_execution_placement_settings(settings: &impl ExecutionProfileSetti
         };
 
     json!({
+        "revision": revision,
         "execution_modes": EXECUTION_MODES,
         "config": {
             "filename": EXECUTION_PROFILES_FILENAME,

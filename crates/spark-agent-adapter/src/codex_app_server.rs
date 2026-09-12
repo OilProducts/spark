@@ -206,15 +206,21 @@ impl CodexAppServerBackend {
         capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
         clarification_handler: Option<crate::codergen::ClarificationHandler>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        let trace_path = codex_jsonrpc_trace_enabled()
+        let configuration = crate::config::captured_session_config(&request.metadata)
+            .map_err(CodexAppServerError::configuration)?;
+        let native = configuration.as_ref().map(|config| &config.native);
+        let trace_path = native
+            .and_then(|config| config.codex_jsonrpc_trace)
+            .unwrap_or_else(codex_jsonrpc_trace_enabled)
             .then(|| {
                 metadata_string(&request.metadata, &[CODEX_JSONRPC_TRACE_PATH_METADATA_KEY])
                     .map(PathBuf::from)
             })
             .flatten();
-        let mut client = CodexAppServerClient::connect_with_trace_path(
+        let mut client = CodexAppServerClient::connect_with_settings(
             PathBuf::from(&request.project_path),
             trace_path,
+            native,
         )?;
         client.clarification_handler = clarification_handler;
         let model = request
@@ -395,18 +401,29 @@ impl CodexAppServerClient {
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
     ) -> Result<Self, CodexAppServerError> {
+        Self::connect_with_settings(working_dir, trace_path, None)
+    }
+
+    fn connect_with_settings(
+        working_dir: PathBuf,
+        trace_path: Option<PathBuf>,
+        native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+    ) -> Result<Self, CodexAppServerError> {
         if !working_dir.exists() {
             return Err(CodexAppServerError::configuration(format!(
                 "codex app-server working directory is unavailable in the runtime: {}",
                 working_dir.display()
             )));
         }
-        let executable = codex_executable();
+        let executable = native
+            .and_then(|config| config.codex_binary.as_ref())
+            .map(PathBuf::from)
+            .unwrap_or_else(codex_executable);
         let mut command = Command::new(&executable);
         command
             .arg("app-server")
             .current_dir(&working_dir)
-            .envs(build_codex_runtime_environment()?)
+            .envs(build_codex_runtime_environment_with_settings(native)?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -1837,7 +1854,24 @@ impl EventBuilder {
 }
 
 pub fn build_codex_runtime_environment() -> Result<BTreeMap<String, String>, CodexAppServerError> {
+    build_codex_runtime_environment_with_settings(None)
+}
+
+fn build_codex_runtime_environment_with_settings(
+    native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+) -> Result<BTreeMap<String, String>, CodexAppServerError> {
     let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+    if let Some(native) = native {
+        for (key, value) in [
+            (CODEX_RUNTIME_ROOT_ENV, &native.codex_runtime_root),
+            (CODEX_SEED_DIR_ENV, &native.codex_seed_dir),
+        ] {
+            env_map.remove(key);
+            if let Some(value) = value {
+                env_map.insert(key.into(), value.clone());
+            }
+        }
+    }
     if let Some(spark_home) = CODEX_SPARK_HOME.get() {
         env_map.insert(
             "SPARK_HOME".to_string(),
@@ -1965,9 +1999,15 @@ pub struct CodexModelMetadata {
 /// Ask the local codex app-server which models it serves. Spawns a short
 /// lived app-server process; callers cache the result.
 pub fn list_available_codex_models() -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
+    list_available_codex_models_with_settings(None)
+}
+
+pub fn list_available_codex_models_with_settings(
+    native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+) -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
     let working_dir = env::current_dir().unwrap_or_else(|_| env::temp_dir());
-    let mut client =
-        CodexAppServerClient::connect(working_dir).map_err(log_model_discovery_error)?;
+    let mut client = CodexAppServerClient::connect_with_settings(working_dir, None, native)
+        .map_err(log_model_discovery_error)?;
     let result = client
         .list_models()
         .map_err(|error| log_model_discovery_error(error))?;
@@ -2096,7 +2136,7 @@ fn reasoning_effort_from_value(value: &Value) -> Option<String> {
     (!normalized.is_empty()).then_some(normalized)
 }
 
-fn codex_executable() -> PathBuf {
+pub(crate) fn codex_executable() -> PathBuf {
     let explicit = env::var("SPARK_CODEX_APP_SERVER_BIN")
         .ok()
         .and_then(|value| non_empty(&value).map(str::to_string));

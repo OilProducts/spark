@@ -1,13 +1,13 @@
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { type StateCreator } from 'zustand'
 import {
     buildDiagnosticMaps,
     DEFAULT_WORKING_DIRECTORY,
     deriveGraphAttrErrors,
-    loadUiDefaults,
+    DEFAULT_UI_DEFAULTS,
     normalizeGraphAttrs,
     normalizeGraphAttrValue,
     resolveProjectSessionState,
-    saveUiDefaults,
     validateGraphAttrValue,
 } from './store-helpers'
 import type { AppState, EditorSlice } from './store-types'
@@ -65,7 +65,7 @@ const deriveNextFlowMetadataState = (
     }
 }
 
-export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (set) => ({
+export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (set, get) => ({
     editorSidebarWidth: DEFAULT_EDITOR_SIDEBAR_WIDTH,
     setEditorSidebarWidth: (width) =>
         set((state) => {
@@ -80,6 +80,16 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 editorSidebarWidth: nextWidth,
             }
         }),
+    clientPreferencesLoaded: false,
+    clientFlowNodePositions: {},
+    clientFlowEdgePorts: {},
+    clientRunPresentation: {},
+    setClientRunPresentation: (patch) => {
+        const run_presentation = { ...get().clientRunPresentation, ...patch }
+        set({ clientRunPresentation: run_presentation })
+        completePreferenceInteraction({ run_presentation })
+    },
+    preferredEditorMode: 'structured',
     editorMode: 'structured',
     setEditorMode: (mode) => set({ editorMode: mode }),
     rawYamlDraft: '',
@@ -113,33 +123,48 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
         }),
     model: '',
     setModel: (value) => set({ model: value }),
+    preferredAdvancedControls: false,
+    preferredExpandChildFlows: false,
+    preferredGraphSettingsOpen: false,
+    preferredHomeSidebarPrimarySplitRatio: null,
     editorGraphSettingsPanelOpenByFlow: {},
-    setEditorGraphSettingsPanelOpen: (flowName, isOpen) =>
+    setEditorGraphSettingsPanelOpen: (flowName, isOpen) => {
+        completePreferenceInteraction({ graph_settings_open: isOpen })
         set((state) => ({
+            preferredGraphSettingsOpen: isOpen,
             editorGraphSettingsPanelOpenByFlow: {
                 ...state.editorGraphSettingsPanelOpenByFlow,
                 [flowName]: isOpen,
             },
-        })),
+        }))
+    },
     editorExpandChildFlowsByFlow: {},
-    setEditorExpandChildFlows: (flowName, expandChildren) =>
+    setEditorExpandChildFlows: (flowName, expandChildren) => {
+        completePreferenceInteraction({ expand_child_flows: expandChildren })
         set((state) => ({
+            preferredExpandChildFlows: expandChildren,
             editorExpandChildFlowsByFlow: {
                 ...state.editorExpandChildFlowsByFlow,
                 [flowName]: expandChildren,
             },
-        })),
+        }))
+    },
     editorShowAdvancedFlowMetadataByFlow: {},
-    setEditorShowAdvancedFlowMetadata: (flowName, showAdvanced) =>
+    setEditorShowAdvancedFlowMetadata: (flowName, showAdvanced) => {
+        completePreferenceInteraction({ show_advanced_controls: showAdvanced })
         set((state) => ({
+            preferredAdvancedControls: showAdvanced,
             editorShowAdvancedFlowMetadataByFlow: {
                 ...state.editorShowAdvancedFlowMetadataByFlow,
                 [flowName]: showAdvanced,
             },
-        })),
+        }))
+    },
     editorShowAdvancedGraphAttrsByFlow: {},
-    setEditorShowAdvancedGraphAttrs: (flowName, showAdvanced) =>
+    setEditorShowAdvancedGraphAttrs: (flowName, showAdvanced) => {
+        completePreferenceInteraction({ show_advanced_controls: showAdvanced })
         set((state) => ({
+            preferredAdvancedControls: showAdvanced,
             editorShowAdvancedGraphAttrsByFlow: {
                 ...state.editorShowAdvancedGraphAttrsByFlow,
                 [flowName]: showAdvanced,
@@ -148,7 +173,8 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
                 ...state.editorShowAdvancedFlowMetadataByFlow,
                 [flowName]: showAdvanced,
             },
-        })),
+        }))
+    },
     editorLaunchInputDraftsByFlow: {},
     editorLaunchInputDraftErrorByFlow: {},
     setEditorLaunchInputDraftState: (flowName, drafts, error) =>
@@ -163,17 +189,22 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
             },
         })),
     editorNodeInspectorSessionsByNodeId: {},
-    updateEditorNodeInspectorSession: (nodeId, patch) =>
+    updateEditorNodeInspectorSession: (nodeId, patch) => {
+        if (patch.showAdvanced !== undefined) completePreferenceInteraction({ show_advanced_controls: patch.showAdvanced })
         set((state) => ({
+            preferredAdvancedControls: patch.showAdvanced ?? state.preferredAdvancedControls,
             editorNodeInspectorSessionsByNodeId: {
                 ...state.editorNodeInspectorSessionsByNodeId,
                 [nodeId]: {
-                    ...DEFAULT_EDITOR_NODE_INSPECTOR_SESSION,
-                    ...(state.editorNodeInspectorSessionsByNodeId[nodeId] ?? {}),
+                    ...(state.editorNodeInspectorSessionsByNodeId[nodeId] ?? {
+                        ...DEFAULT_EDITOR_NODE_INSPECTOR_SESSION,
+                        showAdvanced: state.preferredAdvancedControls,
+                    }),
                     ...patch,
                 },
             },
-        })),
+        }))
+    },
     flowMetadata: {},
     flowMetadataErrors: {},
     flowMetadataUserEditVersion: 0,
@@ -253,17 +284,10 @@ export const createEditorSlice: StateCreator<AppState, [], [], EditorSlice> = (s
     hasValidationErrors: false,
     suppressPreview: false,
     setSuppressPreview: (value) => set({ suppressPreview: value }),
-    uiDefaults: loadUiDefaults(),
+    uiDefaults: { ...DEFAULT_UI_DEFAULTS },
     setUiDefaults: (values) =>
         set((state) => {
             const next = { ...state.uiDefaults, ...values }
-            saveUiDefaults(next)
-            return { uiDefaults: next }
-        }),
-    setUiDefault: (key, value) =>
-        set((state) => {
-            const next = { ...state.uiDefaults, [key]: value }
-            saveUiDefaults(next)
             return { uiDefaults: next }
         }),
     saveState: 'idle',

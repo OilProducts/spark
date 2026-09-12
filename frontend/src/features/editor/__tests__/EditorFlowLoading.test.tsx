@@ -100,6 +100,11 @@ const resetEditorState = (activeFlow: string | null) => {
   useStore.setState((state) => ({
     ...state,
     viewMode: 'editor',
+    preferredAdvancedControls: false,
+    preferredExpandChildFlows: false,
+    preferredGraphSettingsOpen: false,
+    preferredEditorMode: 'structured',
+    clientPreferencesLoaded: false,
     activeFlow,
     executionFlow: null,
     suppressPreview: true,
@@ -138,6 +143,19 @@ describe('Editor flow loading behavior', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it('opens the preferred raw mode through serialization after hydration without persisting flow resets', async () => {
+    vi.mocked(loadEditorPreview).mockResolvedValue(buildPreview(1))
+    useStore.setState({ preferredEditorMode: 'raw', clientPreferencesLoaded: true })
+    const persist = vi.fn()
+    window.addEventListener('spark:preferences-completed', persist)
+    try {
+      renderEditor()
+      await waitFor(() => expect(useStore.getState().editorMode).toBe('raw'))
+      expect(useStore.getState().rawYamlDraft).toContain('node_1')
+      expect(persist).not.toHaveBeenCalled()
+    } finally { window.removeEventListener('spark:preferences-completed', persist) }
   })
 
   it('clears the previous canvas when the next flow load fails', async () => {
@@ -214,7 +232,7 @@ describe('Editor flow loading behavior', () => {
     await waitFor(() => expect(profile).toHaveAttribute('data-node-count', '3'))
   })
 
-  it('persists the child-flow expansion toggle per active flow and keeps expanded editor previews read-only', async () => {
+  it('reuses child-flow expansion preferences while preserving explicit per-flow choices and read-only previews', async () => {
     const user = userEvent.setup()
     vi.mocked(loadEditorPreview).mockImplementation(async (_dot: string, _init, options) => {
       const flowName = options?.flowName ?? 'unknown.dot'
@@ -259,9 +277,11 @@ describe('Editor flow loading behavior', () => {
     await waitFor(() => {
       expect(
         vi.mocked(loadEditorPreview).mock.calls.some(([, , options]) =>
-          options?.flowName === 'flow-b.dot' && options?.expandChildren !== true),
+          options?.flowName === 'flow-b.dot' && options?.expandChildren === true),
       ).toBe(true)
     })
+    await screen.findByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')
+    await user.click(screen.getByRole('button', { name: 'Parent' }))
     await waitFor(() => {
       expect(
         screen.queryByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.'),
@@ -269,7 +289,7 @@ describe('Editor flow loading behavior', () => {
     })
     expect(screen.getByRole('button', { name: '+ Node' })).toBeInTheDocument()
     expect(useStore.getState().editorExpandChildFlowsByFlow['flow-a.dot']).toBe(true)
-    expect(useStore.getState().editorExpandChildFlowsByFlow['flow-b.dot']).toBeUndefined()
+    expect(useStore.getState().editorExpandChildFlowsByFlow['flow-b.dot']).toBe(false)
 
     act(() => {
       useStore.setState((state) => ({ ...state, activeFlow: 'flow-a.dot' }))

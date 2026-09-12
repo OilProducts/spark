@@ -1,3 +1,4 @@
+import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
@@ -53,6 +54,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const setWorkingDir = useStore((state) => state.setWorkingDir)
     const viewMode = useStore((state) => state.viewMode)
     const uiDefaults = useStore((state) => state.uiDefaults)
+    const preferredGraphSettingsOpen = useStore((state) => state.preferredGraphSettingsOpen)
+    const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
     const editorGraphSettingsPanelOpenByFlow = useStore((state) => state.editorGraphSettingsPanelOpenByFlow)
     const setEditorGraphSettingsPanelOpen = useStore((state) => state.setEditorGraphSettingsPanelOpen)
     const editorShowAdvancedFlowMetadataByFlow = useStore((state) => state.editorShowAdvancedFlowMetadataByFlow)
@@ -70,6 +73,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const autosaveScopeRef = useRef<string | null>(null)
     const lastHandledFlowMetadataVersionRef = useRef(flowMetadataUserEditVersion)
     const activeFlowRef = useRef<string | null>(activeFlow)
+    const [savedCatalog, setSavedCatalog] = useState<string | null>(null)
+    const [catalogRefresh, setCatalogRefresh] = useState(0)
+    const [launchPolicyRevision, setLaunchPolicyRevision] = useState<string | null>(null)
     const [launchPolicy, setLaunchPolicy] = useState<FlowLaunchPolicy>('disabled')
     const [launchPolicySource, setLaunchPolicySource] = useState<FlowLaunchPolicy | null>(null)
     const [launchPolicyEffective, setLaunchPolicyEffective] = useState<FlowLaunchPolicy>('disabled')
@@ -78,6 +84,21 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
     const [launchPolicyLoadError, setLaunchPolicyLoadError] = useState<string | null>(null)
     const [launchPolicySaveState, setLaunchPolicySaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
     const [launchPolicySaveError, setLaunchPolicySaveError] = useState<string | null>(null)
+    const catalogDirty = savedCatalog !== null && savedCatalog !== JSON.stringify([launchPolicy, executionLock])
+    useSettingsNavigationProtection(catalogDirty || launchPolicySaveState === 'saving')
+    useEffect(() => {
+        const refresh = (event: Event) => {
+            const section = (event as CustomEvent<{ payload?: { section?: string } }>).detail?.payload?.section
+            if (section && section !== 'flow_policy') return
+            if (launchPolicySaveState === 'saving') return
+            if (catalogDirty) {
+                setLaunchPolicySaveState('error')
+                setLaunchPolicySaveError('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.')
+            } else setCatalogRefresh((value) => value + 1)
+        }
+        window.addEventListener('spark:settings-live-event', refresh)
+        return () => window.removeEventListener('spark:settings-live-event', refresh)
+    }, [catalogDirty, launchPolicySaveState])
     const llmProfiles = useLlmProfiles()
     const flowProviderFallback = flowMetadata.llm_provider || uiDefaults.llm_provider || ''
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
@@ -94,9 +115,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         [rawLaunchInputsValue],
     )
 
-    const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? false) : false
+    const isOpen = activeFlow ? (editorGraphSettingsPanelOpenByFlow[activeFlow] ?? preferredGraphSettingsOpen) : false
     const showAdvancedFlowMetadata = activeFlow
-        ? (editorShowAdvancedFlowMetadataByFlow[activeFlow] ?? false)
+        ? (editorShowAdvancedFlowMetadataByFlow[activeFlow] ?? preferredAdvancedControls)
         : false
     const launchInputDrafts = activeFlow
         ? (editorLaunchInputDraftsByFlow[activeFlow] ?? parsedLaunchInputs.entries)
@@ -233,7 +254,10 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     effectiveLaunchPolicy: response.effective_launch_policy,
                     executionLock: response.execution_lock ?? null,
                 })
+                if (!response.revision) throw new Error('Flow policy revision is missing; reload before editing.')
+                setLaunchPolicyRevision(response.revision)
                 const nextLaunchPolicy = response.launch_policy ?? response.effective_launch_policy
+                setSavedCatalog(JSON.stringify([nextLaunchPolicy, response.execution_lock ?? null]))
                 setLaunchPolicy(nextLaunchPolicy)
                 setLaunchPolicySource(response.launch_policy)
                 setLaunchPolicyEffective(response.effective_launch_policy)
@@ -259,21 +283,25 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         return () => {
             cancelled = true
         }
-    }, [activeFlow])
+    }, [activeFlow, catalogRefresh])
 
     const saveWorkspaceCatalogConfig = async (
         flowName: string,
         nextPolicy: FlowLaunchPolicy,
         nextExecutionLock: FlowExecutionLockResponse | null,
     ) => {
+        if (!launchPolicyRevision) throw new Error('Reload the flow policy before saving.')
         const response = await saveGraphLaunchPolicy(flowName, {
+            expected_revision: launchPolicyRevision,
             launch_policy: nextPolicy,
             execution_lock: nextExecutionLock,
         })
         if (activeFlowRef.current !== flowName) {
             return
         }
+        setLaunchPolicyRevision(response.revision)
         const savedPolicy = response.launch_policy ?? response.effective_launch_policy
+        setSavedCatalog(JSON.stringify([savedPolicy, response.execution_lock ?? null]))
         setLaunchPolicy(savedPolicy)
         setLaunchPolicySource(response.launch_policy)
         setLaunchPolicyEffective(response.effective_launch_policy)
@@ -281,83 +309,35 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         setLaunchPolicySaveState('saved')
     }
 
-    const handleLaunchPolicyChange = async (nextPolicy: FlowLaunchPolicy) => {
-        if (!activeFlow || launchPolicyLoadState !== 'ready') {
-            return
-        }
-        const flowName = activeFlow
-        const previousPolicy = launchPolicy
-        const previousSource = launchPolicySource
-        const previousEffective = launchPolicyEffective
-        const previousExecutionLock = executionLock
+    const handleLaunchPolicyChange = (nextPolicy: FlowLaunchPolicy) => {
         setLaunchPolicy(nextPolicy)
-        setLaunchPolicySaveState('saving')
-        setLaunchPolicySaveError(null)
-
-        try {
-            await saveWorkspaceCatalogConfig(flowName, nextPolicy, executionLock)
-        } catch (error) {
-            if (activeFlowRef.current !== flowName) {
-                return
-            }
-            setLaunchPolicy(previousPolicy)
-            setLaunchPolicySource(previousSource)
-            setLaunchPolicyEffective(previousEffective)
-            setExecutionLock(previousExecutionLock)
-            setLaunchPolicySaveState('error')
-            setLaunchPolicySaveError(error instanceof Error ? error.message : 'Unable to save workspace launch policy.')
-        }
+        setLaunchPolicySaveState('idle')
     }
 
     const handleExecutionLockEnabledChange = (enabled: boolean) => {
-        if (!activeFlow || launchPolicyLoadState !== 'ready') {
-            return
-        }
-        const nextExecutionLock = enabled
-            ? (executionLock ?? { scope: 'project', key: '', conflict_policy: 'queue' })
-            : null
-        setExecutionLock(nextExecutionLock)
-        if (!enabled || (nextExecutionLock && nextExecutionLock.key.trim())) {
-            setLaunchPolicySaveState('saving')
-            setLaunchPolicySaveError(null)
-            void saveWorkspaceCatalogConfig(activeFlow, launchPolicy, nextExecutionLock).catch((error) => {
-                if (activeFlowRef.current !== activeFlow) {
-                    return
-                }
-                setExecutionLock(executionLock)
-                setLaunchPolicySaveState('error')
-                setLaunchPolicySaveError(error instanceof Error ? error.message : 'Unable to save workspace launch policy.')
-            })
-        }
+        setExecutionLock(enabled ? (executionLock ?? { scope: 'project', key: '', conflict_policy: 'queue' }) : null)
+        setLaunchPolicySaveState('idle')
     }
 
     const handleExecutionLockKeyChange = (nextKey: string) => {
-        setExecutionLock((current) => (
-            current
-                ? { ...current, key: nextKey }
-                : { scope: 'project', key: nextKey, conflict_policy: 'queue' }
-        ))
+        setExecutionLock({ scope: 'project', key: nextKey, conflict_policy: 'queue' })
+        setLaunchPolicySaveState('idle')
     }
 
-    const handleExecutionLockKeyCommit = async () => {
-        if (!activeFlow || launchPolicyLoadState !== 'ready' || executionLock === null) {
-            return
-        }
-        const previousExecutionLock = executionLock
-        if (!executionLock.key.trim()) {
+    const saveCatalog = async () => {
+        if (!activeFlow || launchPolicyLoadState !== 'ready' || launchPolicySaveState === 'saving') return
+        if (executionLock && !executionLock.key.trim()) {
             setLaunchPolicySaveState('error')
             setLaunchPolicySaveError('Execution lock key is required.')
             return
         }
+        const flowName = activeFlow
         setLaunchPolicySaveState('saving')
         setLaunchPolicySaveError(null)
         try {
-            await saveWorkspaceCatalogConfig(activeFlow, launchPolicy, executionLock)
+            await saveWorkspaceCatalogConfig(flowName, launchPolicy, executionLock)
         } catch (error) {
-            if (activeFlowRef.current !== activeFlow) {
-                return
-            }
-            setExecutionLock(previousExecutionLock)
+            if (activeFlowRef.current !== flowName) return
             setLaunchPolicySaveState('error')
             setLaunchPolicySaveError(error instanceof Error ? error.message : 'Unable to save workspace launch policy.')
         }
@@ -467,7 +447,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     onLaunchPolicyChange={handleLaunchPolicyChange}
                     onExecutionLockEnabledChange={handleExecutionLockEnabledChange}
                     onExecutionLockKeyChange={handleExecutionLockKeyChange}
-                    onExecutionLockKeyCommit={handleExecutionLockKeyCommit}
+                    dirty={catalogDirty}
+                    onSave={saveCatalog}
+                    onDiscard={() => setCatalogRefresh((value) => value + 1)}
                 />
                 <GraphLaunchInputsSection
                     launchInputDrafts={launchInputDrafts}

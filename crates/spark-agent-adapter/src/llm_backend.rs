@@ -1242,12 +1242,37 @@ fn build_agent_session_for_source(
         profile.request_provider = Some(request_provider);
     }
     profile.provider_options = llm_request.request.provider_options.clone();
-    let execution_environment =
-        ExecutionEnvironment::local(project_path).with_metadata(llm_request.request.metadata);
-    let config = SessionConfig {
-        reasoning_effort: selection.reasoning_effort,
-        ..SessionConfig::default()
-    };
+    let mut config: SessionConfig = llm_request
+        .request
+        .metadata
+        .get("spark.execution.settings")
+        .and_then(|snapshot| snapshot.get("configuration"))
+        .and_then(|configuration| configuration.get("agents"))
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|_| {
+            AdapterError::new(
+                unified_llm_adapter::AdapterErrorKind::Configuration,
+                "Invalid captured agent configuration.",
+            )
+        })?
+        .unwrap_or_default();
+    config.validate().map_err(|_| {
+        AdapterError::new(
+            unified_llm_adapter::AdapterErrorKind::Configuration,
+            "Invalid captured agent configuration.",
+        )
+    })?;
+    config.reasoning_effort = selection.reasoning_effort;
+    let execution_environment = ExecutionEnvironment::from_backend(
+        crate::local_environment::LocalExecutionEnvironment::with_options(
+            project_path,
+            config.default_command_timeout_ms,
+            config.max_command_timeout_ms,
+            config.environment_inheritance,
+        ),
+    )
+    .with_metadata(llm_request.request.metadata);
 
     let mut session = Session::new(profile, execution_environment, config);
     session.history = history;
@@ -1876,4 +1901,31 @@ fn is_codex_provider_selector(provider: &str) -> bool {
 fn is_claude_code_provider_selector(provider: &str) -> bool {
     let normalized = provider.trim();
     normalized.eq_ignore_ascii_case("claude-code") || normalized.eq_ignore_ascii_case("claude_code")
+}
+
+#[cfg(test)]
+mod captured_settings_tests {
+    use super::*;
+
+    #[test]
+    fn real_session_builder_consumes_captured_limits() {
+        let client = Client::from_env_map(
+            &BTreeMap::from([(
+                "OPENAI_COMPATIBLE_BASE_URL".into(),
+                "http://localhost:10001".into(),
+            )]),
+            None,
+        )
+        .unwrap();
+        let request: AgentTurnRequest = serde_json::from_value(json!({
+            "conversation_id": "capture", "project_path": ".", "prompt": "test", "history": [],
+            "provider": "openai_compatible", "model": "test-model",
+            "metadata": {"spark.execution.settings": {"configuration": {"agents": {"max_turns": 3, "default_command_timeout_ms": 123, "max_command_timeout_ms": 456, "tool_output_limits": {"shell": 789}, "enable_loop_detection": false}}}}
+        })).unwrap();
+        let session = build_agent_session(&client, request).unwrap();
+        assert_eq!(session.config.max_turns, 3);
+        assert_eq!(session.config.default_command_timeout_ms, 123);
+        assert_eq!(session.config.tool_output_limits["shell"], 789);
+        assert!(!session.config.enable_loop_detection);
+    }
 }

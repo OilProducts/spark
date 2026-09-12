@@ -103,6 +103,7 @@ homeConversationCache: {
 homeThreadSummariesStatusByProjectPath: {},
 homeThreadSummariesErrorByProjectPath: {},
 homeProjectSessionsByPath: {},
+preferredHomeSidebarPrimarySplitRatio: null,
 homeConversationSessionsById: {},
 homeProjectGitMetadataByPath: {},
 graphAttrs: {},
@@ -130,6 +131,7 @@ runsListSession: {
       streamError: null,
     },
 runDetailSessionsByRunId: {},
+clientRunPresentation: {},
 triggersSession: {
       status: 'idle',
       error: null,
@@ -333,6 +335,7 @@ const buildTriggerRecord = ({
   name,
   enabled: true,
   protected: protectedTrigger,
+  revision: 'revision-1',
   source_type: 'schedule',
   created_at: '2026-03-22T00:00:00Z',
   updated_at: '2026-03-22T00:00:00Z',
@@ -582,6 +585,9 @@ describe('App shell behavior', () => {
     })
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/settings?project_path=')) {
+        return jsonResponse({ execution: { revision: 'project-settings-1', stored: useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId ?? null } })
+      }
       if (url.endsWith('/workspace/api/settings')) {
         return jsonResponse(buildWorkspaceSettingsPayload())
       }
@@ -630,6 +636,7 @@ describe('App shell behavior', () => {
       expect(stateRequest).toBeDefined()
       expect(JSON.parse(String(stateRequest?.[1]?.body))).toEqual({
         project_path: '/tmp/project-shell',
+        expected_revision: 'project-settings-1',
         execution_profile_id: 'local-dev',
       })
       expect(useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId).toBe('local-dev')
@@ -651,6 +658,9 @@ describe('App shell behavior', () => {
     })
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/settings?project_path=')) {
+        return jsonResponse({ execution: { revision: 'project-settings-1', stored: useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId ?? null } })
+      }
       if (url.endsWith('/workspace/api/settings')) {
         return jsonResponse(buildWorkspaceSettingsPayload())
       }
@@ -691,6 +701,7 @@ describe('App shell behavior', () => {
       const stateRequest = fetchMock.mock.calls.find(([input]) => resolveRequestUrl(input).includes('/workspace/api/projects/state'))
       expect(JSON.parse(String(stateRequest?.[1]?.body))).toEqual({
         project_path: '/tmp/project-shell',
+        expected_revision: 'project-settings-1',
         execution_profile_id: null,
       })
       expect(useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId).toBeUndefined()
@@ -705,6 +716,9 @@ describe('App shell behavior', () => {
     })
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = resolveRequestUrl(input)
+      if (url.includes('/workspace/api/settings?project_path=')) {
+        return jsonResponse({ execution: { revision: 'project-settings-1', stored: useStore.getState().projectRegistry['/tmp/project-shell']?.executionProfileId ?? null } })
+      }
       if (url.endsWith('/workspace/api/settings')) {
         return jsonResponse(buildWorkspaceSettingsPayload({
           validation_errors: [
@@ -1311,7 +1325,7 @@ describe('App shell behavior', () => {
     })
 
     expect(
-      useStore.getState().homeProjectSessionsByPath['/tmp/project-home-restore']?.sidebarPrimarySplitRatio,
+      useStore.getState().preferredHomeSidebarPrimarySplitRatio,
     ).toBeCloseTo(380 / (720 - 12), 5)
     expect(useStore.getState().homeConversationSessionsById['conversation-home-restore']?.expandedToolCalls).toMatchObject({
       'tool-ls': true,

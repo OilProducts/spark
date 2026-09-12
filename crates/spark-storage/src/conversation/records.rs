@@ -20,6 +20,8 @@ pub const SEGMENT_KIND_BOUNDARY: &str = "boundary";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMeta {
     pub schema_version: i64,
+    #[serde(default)]
+    pub settings_schema_version: i64,
     pub revision: i64,
     pub conversation_id: String,
     #[serde(default)]
@@ -35,6 +37,8 @@ pub struct ConversationMeta {
     pub llm_profile: Option<String>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub model_settings: Option<spark_common::settings::ModelSettings>,
     #[serde(default = "default_title")]
     pub title: String,
     #[serde(default)]
@@ -59,6 +63,7 @@ impl ConversationMeta {
     pub fn new(conversation_id: &str, project_path: &str) -> Self {
         Self {
             schema_version: crate::CONVERSATION_STATE_SCHEMA_VERSION,
+            settings_schema_version: 1,
             revision: 0,
             conversation_id: conversation_id.to_string(),
             conversation_handle: String::new(),
@@ -68,6 +73,7 @@ impl ConversationMeta {
             model: None,
             llm_profile: None,
             reasoning_effort: None,
+            model_settings: None,
             title: default_title(),
             created_at: String::new(),
             updated_at: String::new(),

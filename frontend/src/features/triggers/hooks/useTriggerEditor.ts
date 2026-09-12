@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
     createTriggerValidated,
     deleteTriggerValidated,
@@ -13,6 +13,7 @@ import {
     type TriggerFormState,
     triggerToFormState,
 } from '../model/triggerForm'
+import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { useDialogController } from '@/components/app/dialog-controller'
 type UseTriggerEditorArgs = {
     activeProjectPath: string | null
@@ -86,6 +87,8 @@ export function useTriggerEditor({
     setSelectedTriggerId,
 }: UseTriggerEditorArgs) {
     const { confirm } = useDialogController()
+    const pendingRef = useRef(false)
+    const [pending, setPending] = useState(false)
     const activeProjectPathRef = useRef(activeProjectPath)
     const newTriggerDraft = useStore((state) => state.triggersSession.newTriggerDraft)
     const editTriggerDraftsByTriggerId = useStore((state) => state.triggersSession.editTriggerDraftsByTriggerId)
@@ -99,6 +102,9 @@ export function useTriggerEditor({
     const newTriggerForm = newTriggerDraft.form
     const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[selectedTrigger.id] ?? null : null
     const resolvedEditTriggerForm = currentEditDraft?.form ?? selectedTriggerForm
+    const dirty = Boolean(currentEditDraft?.form)
+    const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
+    useSettingsNavigationProtection(dirty || pending)
 
     useEffect(() => {
         activeProjectPathRef.current = activeProjectPath
@@ -119,7 +125,8 @@ export function useTriggerEditor({
     }, [activeProjectPath, newTriggerDraft, setTriggersSessionNewDraft])
 
     useEffect(() => {
-        if (!selectedTrigger || !currentEditDraft?.form) {
+        if (!selectedTrigger || !currentEditDraft?.form
+            || (currentEditDraft.expectedRevision && currentEditDraft.expectedRevision !== selectedTrigger.revision)) {
             return
         }
         if (currentEditDraft.targetBehavior === 'manual') {
@@ -138,6 +145,9 @@ export function useTriggerEditor({
     }, [activeProjectPath, currentEditDraft, selectedTrigger, setTriggersSessionEditDraft])
 
     const onCreateTrigger = async () => {
+        if (pendingRef.current) return
+        pendingRef.current = true
+        setPending(true)
         try {
             const created = await createTriggerValidated({
                 name: newTriggerForm.name,
@@ -157,13 +167,18 @@ export function useTriggerEditor({
             setSelectedTriggerId(created.id)
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to create trigger.')
+        } finally {
+            pendingRef.current = false
+            setPending(false)
         }
     }
 
     const onSaveSelectedTrigger = async () => {
-        if (!selectedTrigger || !resolvedEditTriggerForm) {
+        if (pendingRef.current || !selectedTrigger || !resolvedEditTriggerForm) {
             return
         }
+        pendingRef.current = true
+        setPending(true)
         try {
             const payload = selectedTrigger.protected
                 ? buildProtectedTriggerUpdatePayload(resolvedEditTriggerForm)
@@ -173,18 +188,22 @@ export function useTriggerEditor({
                     action: buildTriggerActionPayload(resolvedEditTriggerForm),
                     source: buildTriggerSourcePayload(resolvedEditTriggerForm),
                 }
-            const updated = await updateTriggerValidated(selectedTrigger.id, payload)
+            const updated = await updateTriggerValidated(selectedTrigger.id, { ...payload, expected_revision: currentEditDraft?.form ? currentEditDraft.expectedRevision ?? '' : selectedTrigger.revision })
             if (updated.webhook_secret) {
                 revealWebhookSecret(updated.id, updated.webhook_secret)
             }
+            setTriggersSessionEditDraft(selectedTrigger.id, null)
             await refreshTriggers()
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to save trigger.')
+        } finally {
+            pendingRef.current = false
+            setPending(false)
         }
     }
 
     const onDeleteSelectedTrigger = async () => {
-        if (!selectedTrigger || selectedTrigger.protected) {
+        if (pendingRef.current || !selectedTrigger || selectedTrigger.protected) {
             return
         }
         const confirmed = await confirm({
@@ -197,24 +216,38 @@ export function useTriggerEditor({
         if (!confirmed) {
             return
         }
+        if (pendingRef.current) return
+        pendingRef.current = true
+        setPending(true)
         try {
-            await deleteTriggerValidated(selectedTrigger.id)
+            await deleteTriggerValidated(selectedTrigger.id, currentEditDraft?.form ? currentEditDraft.expectedRevision ?? '' : selectedTrigger.revision)
             setTriggersSessionEditDraft(selectedTrigger.id, null)
             setSelectedTriggerId(null)
             await refreshTriggers()
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to delete trigger.')
+        } finally {
+            pendingRef.current = false
+            setPending(false)
         }
     }
 
     return {
+        pending,
+        dirty,
+        externalChange,
+        discard: () => {
+            if (pendingRef.current || !selectedTrigger) return
+            setTriggersSessionEditDraft(selectedTrigger.id, null)
+            void refreshTriggers()
+        },
         editTriggerForm: resolvedEditTriggerForm,
         newTriggerForm,
         onCreateTrigger,
         onDeleteSelectedTrigger,
         onSaveSelectedTrigger,
         setEditTriggerForm: (next: TriggerFormState | null) => {
-            if (!selectedTrigger) {
+            if (pendingRef.current || !selectedTrigger) {
                 return
             }
             const currentDraft = currentEditDraft
@@ -224,11 +257,13 @@ export function useTriggerEditor({
                 : currentDraft?.targetBehavior ?? 'inferred'
             setTriggersSessionEditDraft(selectedTrigger.id, {
                 triggerId: selectedTrigger.id,
+                expectedRevision: currentDraft?.form ? currentDraft.expectedRevision ?? '' : selectedTrigger.revision,
                 form: next,
                 targetBehavior,
             })
         },
         setNewTriggerForm: (next: TriggerFormState) => {
+            if (pendingRef.current) return
             setTriggersSessionNewDraft({
                 form: next,
                 targetBehavior: didTriggerTargetChange(newTriggerDraft.form, next)

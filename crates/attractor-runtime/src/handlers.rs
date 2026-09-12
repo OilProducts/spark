@@ -507,11 +507,10 @@ fn write_agent_trace_event(trace_path: Option<&std::path::Path>, event: &Coderge
 }
 
 fn should_write_agent_trace(event: &CodergenEvent) -> bool {
-    agent_trace_enabled()
-        && matches!(
-            event.event_type.as_str(),
-            "rust_agent_session_event" | "rust_agent_raw_log_line"
-        )
+    matches!(
+        event.event_type.as_str(),
+        "rust_agent_session_event" | "rust_agent_raw_log_line"
+    )
 }
 
 fn adapter_intervention_request_from_runtime(
@@ -553,6 +552,7 @@ pub struct RuntimeHandlerRunner {
     interviewer: Arc<Mutex<Box<dyn Interviewer + Send>>>,
     fan_in_ranker: Option<Arc<Mutex<FanInRanker>>>,
     codergen_backend_factory: Option<CodergenBackendFactory>,
+    rust_llm_client: Option<unified_llm_adapter::Client>,
     codergen_intervention_broker: Option<spark_agent_adapter::CodergenSessionInterventionBroker>,
     event_append_lock: Arc<Mutex<()>>,
     child_run_launcher: Option<ChildRunLauncher>,
@@ -581,6 +581,7 @@ impl RuntimeHandlerRunner {
             interviewer: Arc::new(Mutex::new(Box::<QueueInterviewer>::default())),
             fan_in_ranker: None,
             codergen_backend_factory: None,
+            rust_llm_client: None,
             codergen_intervention_broker: None,
             event_append_lock: Arc::new(Mutex::new(())),
             child_run_launcher: None,
@@ -669,12 +670,14 @@ impl RuntimeHandlerRunner {
         mut self,
         factory: impl Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync + 'static,
     ) -> Self {
+        self.rust_llm_client = None;
         self.codergen_backend_factory = Some(Arc::new(factory));
         self.codergen_intervention_broker = None;
         self
     }
 
     pub fn with_rust_llm_client(mut self, client: unified_llm_adapter::Client) -> Self {
+        self.rust_llm_client = Some(client.clone());
         let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
         let factory_broker = broker.clone();
         self.codergen_backend_factory = Some(Arc::new(move || {
@@ -693,11 +696,13 @@ impl RuntimeHandlerRunner {
         &mut self,
         factory: impl Fn() -> Box<dyn spark_agent_adapter::CodergenBackend> + Send + Sync + 'static,
     ) {
+        self.rust_llm_client = None;
         self.codergen_backend_factory = Some(Arc::new(factory));
         self.codergen_intervention_broker = None;
     }
 
     pub fn set_rust_llm_client(&mut self, client: unified_llm_adapter::Client) {
+        self.rust_llm_client = Some(client.clone());
         let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
         let factory_broker = broker.clone();
         self.codergen_backend_factory = Some(Arc::new(move || {
@@ -946,7 +951,25 @@ impl RuntimeHandlerRunner {
                 runtime.handler_graph.clone(),
                 runtime.logs_root.clone(),
                 {
-                    let mut backend = factory();
+                    let mut backend = match (
+                        self.codergen_intervention_broker.as_ref().zip(self.rust_llm_client.as_ref()),
+                        runtime.context.get("internal.llm_profiles_snapshot"),
+                    ) {
+                        (Some((broker, base_client)), Some(value)) => {
+                            let profiles = serde_json::from_value(value.clone())
+                                .map_err(|_| RuntimeNodeError::runtime("Invalid captured LLM profiles."))?;
+                            let env = std::env::vars().collect::<BTreeMap<_, _>>();
+                            let client = if let Some(value) = runtime.context.get("internal.execution_configuration_snapshot") {
+                                let configuration: spark_storage::settings::ExecutionConfiguration = serde_json::from_value(value.clone()).map_err(|_| RuntimeNodeError::runtime("Invalid captured execution configuration."))?;
+                                base_client.clone().with_execution_environment(&configuration.providers.execution_environment(&env)).map_err(|_| RuntimeNodeError::runtime("Unable to initialize captured provider connections."))?
+                            } else { base_client.clone() };
+                            let client = client.with_profile_definitions(profiles, &env)
+                                .map_err(|_| RuntimeNodeError::runtime("Unable to initialize captured LLM profiles; check credential environment references."))?;
+                            Box::new(spark_agent_adapter::RustLlmCodergenBackend::with_intervention_broker(client, broker.clone()))
+                                as Box<dyn spark_agent_adapter::CodergenBackend>
+                        }
+                        _ => factory(),
+                    };
                     let text_only = runtime
                         .node
                         .contracts
@@ -991,6 +1014,9 @@ impl RuntimeHandlerRunner {
                     json!(runtime.run_workdir.to_string_lossy().to_string()),
                 ),
             ]);
+            if let Some(configuration) = runtime.context.get("internal.execution_configuration_snapshot") {
+                metadata.insert("spark.execution.settings".into(), json!({"configuration": configuration}));
+            }
             if let Some(root) = execution_root.as_ref() {
                 metadata.insert("spark.runtime.execution_root".to_string(), json!(root));
             }
@@ -999,8 +1025,14 @@ impl RuntimeHandlerRunner {
         // Persist detailed codergen events in the owning execution while the
         // node runs, then materialize completed logical units into its transcript.
         let live_sink_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let trace_enabled = runtime
+            .context
+            .get("internal.execution_configuration_snapshot")
+            .and_then(|value| value["agents"]["native"]["agent_trace"].as_bool())
+            .unwrap_or_else(agent_trace_enabled);
         let trace_path = execution_root
             .as_ref()
+            .filter(|_| trace_enabled)
             .map(|root| root.join(AGENT_TRACE_FILE_NAME));
         let has_event_destination =
             self.external_event_sink.is_some() || runtime.run_paths.is_some();

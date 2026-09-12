@@ -5,6 +5,23 @@ use attractor_execution::{
 use serde_json::json;
 
 #[test]
+fn malformed_profile_errors_redact_source_and_error_chain() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = "[profiles.local.metadata]\ncredential = pasted-secret-credential\n";
+    let path = temp.path().join("execution-profiles.toml");
+    std::fs::write(&path, source).unwrap();
+    let settings = ExecutionProfileConfigRoot::new(temp.path());
+    let error = load_execution_profile_config(&settings, None, None, None).unwrap_err();
+    assert!(error.to_string().contains("near byte"));
+    assert!(!format!("{error:?}").contains("pasted-secret-credential"));
+    assert!(std::error::Error::source(&error).is_none());
+    let response = public_execution_placement_settings(&settings);
+    assert_eq!(response["config"]["loaded"], false);
+    assert!(!response.to_string().contains("pasted-secret-credential"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
 fn profile_resolution_matches_python_fixture_observations() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("config");

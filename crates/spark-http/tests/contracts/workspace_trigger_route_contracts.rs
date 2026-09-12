@@ -91,7 +91,7 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
         app.clone(),
         "PATCH",
         &format!("/workspace/api/triggers/{trigger_id}"),
-        Some(json!({"name": "Compat webhook updated", "regenerate_webhook_secret": true})),
+        Some(json!({"expected_revision": described.1["revision"], "name": "Compat webhook updated", "regenerate_webhook_secret": true})),
     )
     .await;
     assert_eq!(updated.0, StatusCode::OK);
@@ -105,7 +105,10 @@ async fn trigger_crud_routes_persist_definition_and_state_contracts() {
     let deleted = request_json(
         app,
         "DELETE",
-        &format!("/workspace/api/triggers/{trigger_id}"),
+        &format!(
+            "/workspace/api/triggers/{trigger_id}?expected_revision={}",
+            updated.1["revision"].as_str().unwrap()
+        ),
         None,
     )
     .await;
@@ -303,7 +306,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
     let protected_delete = request_json(
         app.clone(),
         "DELETE",
-        "/workspace/api/triggers/trigger-protected",
+        "/workspace/api/triggers/trigger-protected?expected_revision=protected",
         None,
     )
     .await;
@@ -317,7 +320,7 @@ async fn trigger_routes_return_json_errors_for_missing_protected_json_and_unknow
         app.clone(),
         "PATCH",
         "/workspace/api/triggers/trigger-protected",
-        Some(json!({"action": {"static_context": {"changed": true}}})),
+        Some(json!({"expected_revision": spark_storage::read_trigger_definition(&settings.config_dir, "trigger-protected").unwrap().unwrap().revision, "action": {"static_context": {"changed": true}}})),
     )
     .await;
     assert_eq!(static_context.0, StatusCode::BAD_REQUEST);
@@ -433,7 +436,7 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
     let protected_delete = request_json(
         app.clone(),
         "DELETE",
-        "/workspace/api/triggers/trigger-protected",
+        "/workspace/api/triggers/trigger-protected?expected_revision=protected",
         None,
     )
     .await;
@@ -455,7 +458,7 @@ async fn protected_trigger_delete_rejection_preserves_runtime_state_files() {
     let protected_delete_without_state = request_json(
         app,
         "DELETE",
-        "/workspace/api/triggers/trigger-protected",
+        "/workspace/api/triggers/trigger-protected?expected_revision=protected",
         None,
     )
     .await;
@@ -531,7 +534,7 @@ minute = 0"#,
         app.clone(),
         "PATCH",
         "/workspace/api/triggers/trigger-unknown-source",
-        Some(json!({"name": "Ignored"})),
+        Some(json!({"expected_revision": "invalid-document", "name": "Ignored"})),
     )
     .await;
     assert_eq!(unknown_source.0, StatusCode::BAD_REQUEST);
@@ -543,7 +546,7 @@ minute = 0"#,
     let missing_secret = request_json(
         app.clone(),
         "DELETE",
-        "/workspace/api/triggers/trigger-missing-secret",
+        "/workspace/api/triggers/trigger-missing-secret?expected_revision=invalid-document",
         None,
     )
     .await;
@@ -696,6 +699,7 @@ async fn request_text_with_headers(
 
 fn protected_definition(id: &str) -> TriggerDefinition {
     TriggerDefinition {
+        revision: String::new(),
         id: id.to_string(),
         name: "Protected".to_string(),
         enabled: true,
@@ -761,6 +765,9 @@ flow_name = "{flow_name}"
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
@@ -927,4 +934,61 @@ async fn webhook_dispatch_returns_while_the_run_still_executes() {
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+}
+
+#[tokio::test]
+async fn trigger_revisions_reject_missing_and_stale_http_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    write_flow(&settings, "ops/run.yaml");
+    let app = build_app(settings.clone());
+    let created = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/triggers",
+        Some(json!({
+            "name": "Original", "source_type": "schedule",
+            "action": {"flow_name": "ops/run.yaml"},
+            "source": {"kind": "interval", "interval_seconds": 60}
+        })),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    let url = format!(
+        "/workspace/api/triggers/{}",
+        created.1["id"].as_str().unwrap()
+    );
+    let revision = created.1["revision"].as_str().unwrap();
+    let missing = request_json(app.clone(), "PATCH", &url, Some(json!({"name": "Missing"}))).await;
+    assert_eq!(missing.0, StatusCode::BAD_REQUEST);
+    let missing_delete = request_json(app.clone(), "DELETE", &url, None).await;
+    assert_eq!(missing_delete.0, StatusCode::BAD_REQUEST);
+    let saved = request_json(
+        app.clone(),
+        "PATCH",
+        &url,
+        Some(json!({"expected_revision": revision, "name": "Saved"})),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK);
+    assert_ne!(saved.1["revision"], revision);
+    let stale = request_json(
+        app.clone(),
+        "PATCH",
+        &url,
+        Some(json!({"expected_revision": revision, "name": "Stale"})),
+    )
+    .await;
+    assert_eq!(stale.0, StatusCode::CONFLICT);
+    let stale_delete = request_json(
+        app.clone(),
+        "DELETE",
+        &format!("{url}?expected_revision={revision}"),
+        None,
+    )
+    .await;
+    assert_eq!(stale_delete.0, StatusCode::CONFLICT);
+    let loaded = request_json(app, "GET", &url, None).await;
+    assert_eq!(loaded.1["name"], "Saved");
+    assert_eq!(loaded.1["revision"], saved.1["revision"]);
 }

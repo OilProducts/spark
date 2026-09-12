@@ -78,9 +78,15 @@ let nextSessionLifetime = 0
 const resolveRunDetailSession = (
     sessionsByRunId: Record<string, RunDetailSessionState>,
     runId: string,
-) => ({
+    preferences: AppState['clientRunPresentation'] = {},
+) => sessionsByRunId[runId] ?? ({
     ...DEFAULT_RUN_DETAIL_SESSION_STATE,
-    ...(sessionsByRunId[runId] ?? { lifetime: ++nextSessionLifetime }),
+    activityMode: preferences.activity_mode ?? null,
+    inspectorTab: preferences.inspector_tab ?? null,
+    timelineCategoryFilter: preferences.timeline_category ?? 'all',
+    timelineSeverityFilter: preferences.timeline_severity ?? 'all',
+    graphPaneHeight: preferences.graph_height ?? 512,
+    lifetime: ++nextSessionLifetime,
 })
 
 const LIVE_FIELDS = ['status', 'outcome', 'outcome_reason_code', 'outcome_reason_message', 'ended_at', 'last_error', 'token_usage', 'token_usage_breakdown', 'estimated_model_cost'] as const
@@ -186,7 +192,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
         set((state) => state.runsListSession.selectedRunIdByScopeKey[scopeKey] === runId ? state : ({
             ...(runId ? { runDetailSessionsByRunId: {
                 ...state.runDetailSessionsByRunId,
-                [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId)),
+                [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
                     record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
                     questionsStatus: 'idle' as const,
                 },
@@ -204,7 +210,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             runDetailSessionsByRunId: {
                 ...state.runDetailSessionsByRunId,
                 [runId]: {
-                    ...resolveRunDetailSession(state.runDetailSessionsByRunId, runId),
+                    ...resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation),
                     ...patch,
                 },
             },

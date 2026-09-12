@@ -177,6 +177,7 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const flowMetadata = useStore((state) => state.flowMetadata)
     const uiDefaults = useStore((state) => state.uiDefaults)
     const editorNodeInspectorSessionsByNodeId = useStore((state) => state.editorNodeInspectorSessionsByNodeId)
+    const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
     const updateEditorNodeInspectorSession = useStore((state) => state.updateEditorNodeInspectorSession)
     const [flows, setFlows] = useState<string[]>([])
     const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
@@ -398,6 +399,7 @@ edges:
             editorNodeInspectorSessionsByNodeId[selectedNodeId]
             ?? {
                 ...DEFAULT_NODE_INSPECTOR_SESSION,
+                showAdvanced: preferredAdvancedControls,
                 readsContextDraft: parsedSelectedNodeReadsContext.keys.join('\n'),
                 readsContextError: parsedSelectedNodeReadsContext.error,
                 writesContextDraft: parsedSelectedNodeWritesContext.keys.join('\n'),
@@ -406,6 +408,7 @@ edges:
         )
         : {
             ...DEFAULT_NODE_INSPECTOR_SESSION,
+            showAdvanced: preferredAdvancedControls,
             readsContextDraft: parsedSelectedNodeReadsContext.keys.join('\n'),
             readsContextError: parsedSelectedNodeReadsContext.error,
             writesContextDraft: parsedSelectedNodeWritesContext.keys.join('\n'),

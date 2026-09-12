@@ -433,7 +433,9 @@ interface GraphLaunchPolicySectionProps {
     onLaunchPolicyChange: (policy: FlowLaunchPolicy) => void | Promise<void>
     onExecutionLockEnabledChange: (enabled: boolean) => void
     onExecutionLockKeyChange: (value: string) => void
-    onExecutionLockKeyCommit: () => void | Promise<void>
+    dirty: boolean
+    onSave: () => void | Promise<void>
+    onDiscard: () => void
 }
 
 export function GraphLaunchPolicySection({
@@ -447,7 +449,7 @@ export function GraphLaunchPolicySection({
     onLaunchPolicyChange,
     onExecutionLockEnabledChange,
     onExecutionLockKeyChange,
-    onExecutionLockKeyCommit,
+    dirty, onSave, onDiscard,
 }: GraphLaunchPolicySectionProps) {
     const controlsDisabled = !activeFlow || launchPolicyLoadState !== 'ready' || launchPolicySaveState === 'saving'
     return (
@@ -500,7 +502,6 @@ export function GraphLaunchPolicySection({
                         id="graph-execution-lock-key"
                         value={executionLock?.key ?? ''}
                         onChange={(event) => onExecutionLockKeyChange(event.target.value)}
-                        onBlur={() => void onExecutionLockKeyCommit()}
                         disabled={controlsDisabled || !executionLockEnabled}
                         className="h-8 text-xs"
                     />
@@ -515,6 +516,10 @@ export function GraphLaunchPolicySection({
                         <option value="queue">Queue</option>
                     </NativeSelect>
                 </GraphSettingsField>
+            </div>
+            <div className="flex gap-2">
+                <Button size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save launch policy</Button>
+                <Button size="sm" variant="outline" disabled={controlsDisabled} onClick={onDiscard}>Discard launch policy</Button>
             </div>
             <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"

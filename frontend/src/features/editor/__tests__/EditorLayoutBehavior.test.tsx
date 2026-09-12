@@ -201,6 +201,9 @@ const resetEditorState = (activeFlow: string | null) => {
   useStore.setState((state) => ({
     ...state,
     viewMode: 'editor',
+    clientFlowNodePositions: {},
+    clientFlowEdgePorts: {},
+    clientPreferencesLoaded: false,
     activeProjectPath: PROJECT_PATH,
     activeFlow,
     executionFlow: null,
@@ -268,7 +271,7 @@ const storageKeyFor = (flowName: string) => buildSavedFlowLayoutStorageKey(
 )
 
 const readSavedLayout = (flowName: string): SavedFlowLayoutV1 =>
-  JSON.parse(window.localStorage.getItem(storageKeyFor(flowName)) ?? 'null') as SavedFlowLayoutV1
+  ({ ...JSON.parse(window.localStorage.getItem(storageKeyFor(flowName).replace('spark.saved_flow_layout.v1:', 'spark.flow_layout_cache.v1:')) ?? '{}'), nodePositions: useStore.getState().clientFlowNodePositions[storageKeyFor(flowName).slice('spark.saved_flow_layout.v1:'.length)] }) as SavedFlowLayoutV1
 
 const currentNodePosition = (nodeId: string) => {
   const node = reactFlowHarness.latestProps?.nodes.find((entry) => entry.id === nodeId)
@@ -700,7 +703,7 @@ describe('Editor layout behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Reset' }))
 
     await waitFor(() => {
-      expect(removeItemSpy).toHaveBeenCalledWith(storageKeyFor('flow-a.dot'))
+      expect(removeItemSpy).toHaveBeenCalledWith(storageKeyFor('flow-a.dot').replace('spark.saved_flow_layout.v1:', 'spark.flow_layout_cache.v1:'))
       expect(currentNodePosition('a')).toEqual({ x: 140, y: 10 })
       expect(currentNodePosition('b')).toEqual({ x: 500, y: 10 })
       const persistedLayout = readSavedLayout('flow-a.dot')

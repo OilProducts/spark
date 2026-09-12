@@ -34,6 +34,7 @@ const resetRunsState = () => {
   useRunJournalStore.setState({ byRunId: {} })
   {
 useStore.setState({viewMode: 'runs',
+clientRunPresentation: {},
 activeProjectPath: null,
 executionFlow: null,
 executionContinuation: null,

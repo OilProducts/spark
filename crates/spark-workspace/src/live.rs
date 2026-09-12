@@ -24,6 +24,7 @@ pub struct RawLiveQuery {
     pub include_triggers: Option<String>,
     pub triggers_project_path: Option<String>,
     pub include_workflow_log: Option<String>,
+    pub include_settings: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,7 @@ pub struct LiveQuery {
     pub include_triggers: bool,
     pub triggers_project_path: Option<String>,
     pub include_workflow_log: bool,
+    pub include_settings: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -128,6 +130,7 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
         include_triggers,
         triggers_project_path,
         include_workflow_log,
+        include_settings: parse_bool(raw.include_settings.as_deref()),
     })
 }
 
@@ -400,6 +403,7 @@ pub fn trigger_delete_envelope(deleted: &Value, project_path: Option<String>) ->
 
 pub fn envelope_matches_query(envelope: &LiveEnvelope, query: &LiveQuery) -> bool {
     match envelope.resource.kind.as_str() {
+        "settings" => query.include_settings,
         "conversation" => {
             let Some(expected_id) = query.conversation_id.as_deref() else {
                 return false;
@@ -921,6 +925,14 @@ fn trigger_snapshot_envelope(
 pub fn lagged_resync_envelopes(query: &LiveQuery) -> Vec<LiveEnvelope> {
     const REASON: &str = "live event stream lagged behind the publisher and dropped frames";
     let mut envelopes = Vec::new();
+    if query.include_settings {
+        envelopes.push(resync_required(
+            "settings",
+            Some("workspace".into()),
+            None,
+            REASON,
+        ));
+    }
     if let Some(conversation_id) = query.conversation_id.as_deref() {
         envelopes.push(resync_required(
             "conversation",

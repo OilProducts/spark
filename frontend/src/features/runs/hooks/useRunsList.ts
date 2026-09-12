@@ -43,6 +43,7 @@ export function useRunsList({
     selectedRunId: string | null
     manageSync?: boolean
 }) {
+    const sort = useStore((state) => state.clientRunPresentation.sort)
     const viewMode = useStore((state) => state.viewMode)
     const runsListSession = useStore((state) => state.runsListSession)
     const updateRunsListSession = useStore((state) => state.updateRunsListSession)
@@ -196,7 +197,7 @@ export function useRunsList({
         error: runsListSession.error,
         fetchRuns,
         isLoading: runsListSession.status === 'loading',
-        scopedRuns: displayedRuns,
+        scopedRuns: sort === 'oldest' ? [...displayedRuns].reverse() : displayedRuns,
         selectedRunSummary,
         status: runsListSession.status,
         streamError: runsListSession.streamError,

@@ -7,6 +7,7 @@ pub mod errors;
 pub mod flows;
 pub mod live;
 pub mod models;
+pub mod profile_settings;
 pub mod projects;
 pub mod settings;
 pub mod triggers;

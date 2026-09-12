@@ -11,10 +11,7 @@ use attractor_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use spark_common::debug::{
-    codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_FILE_NAME,
-    CODEX_JSONRPC_TRACE_PATH_METADATA_KEY,
-};
+use spark_common::debug::{CODEX_JSONRPC_TRACE_FILE_NAME, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
 use spark_storage::{write_json_atomic, write_text_atomic, JsonWriteOptions};
 use thiserror::Error;
 use unified_llm_adapter::{
@@ -771,17 +768,13 @@ impl CodergenHandler {
                     .to_string_lossy()
                     .to_string()),
             );
-        }
-        if codex_jsonrpc_trace_enabled() {
-            if let Some(stage_dir) = stage_dir.as_ref() {
-                metadata.insert(
-                    CODEX_JSONRPC_TRACE_PATH_METADATA_KEY.to_string(),
-                    json!(stage_dir
-                        .join(CODEX_JSONRPC_TRACE_FILE_NAME)
-                        .to_string_lossy()
-                        .to_string()),
-                );
-            }
+            metadata.insert(
+                CODEX_JSONRPC_TRACE_PATH_METADATA_KEY.to_string(),
+                json!(stage_dir
+                    .join(CODEX_JSONRPC_TRACE_FILE_NAME)
+                    .to_string_lossy()
+                    .to_string()),
+            );
         }
         let backend_request = CodergenBackendRequest {
             node_id: request.node_id.clone(),

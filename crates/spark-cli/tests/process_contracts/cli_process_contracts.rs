@@ -25,17 +25,18 @@ fn process_help_matches_top_level_contract() {
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
         concat!(
-            "usage: spark [-h] {convo,run,flow,trigger,task} ...\n",
+            "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n",
             "\n",
             "Spark agent CLI\n",
             "\n",
             "positional arguments:\n",
-            "  {convo,run,flow,trigger,task}\n",
+            "  {convo,run,flow,trigger,task,settings}\n",
             "    convo               Conversation-scoped artifact commands\n",
             "    run                 Direct execution commands\n",
             "    flow                Flow discovery and validation\n",
             "    trigger             Workspace trigger management\n",
             "    task                Project task management\n",
+            "    settings            Read, validate, and save workspace settings\n",
             "\n",
             "options:\n",
             "  -h, --help            show this help message and exit\n",
@@ -321,6 +322,8 @@ fn process_trigger_http_error_maps_to_stderr_json() {
         .args([
             "trigger",
             "delete",
+            "--expected-revision",
+            "revision-1",
             "--id",
             "protected",
             "--base-url",
@@ -462,4 +465,60 @@ fn temp_dir(label: &str) -> PathBuf {
 
 fn valid_flow_source() -> &'static str {
     "schema_version: '1'\nid: workflow\ntitle: Workflow\nnodes:\n  start:\n    kind: start\n  task:\n    kind: agent_task\n    label: Task\n    config:\n      kind: agent_task\n      prompt: Do work\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: task\n  - from: task\n    to: done\n"
+}
+
+#[test]
+fn installed_cli_reads_persisted_target_and_preserves_explicit_target_precedence() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = temp.path().join("package/bin/spark");
+    fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    fs::copy(spark_bin(), &bin).unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join("config")).unwrap();
+    for source in ["persisted", "environment", "flag"] {
+        let (target, requests) = serve_once(HttpResponse::json(200, r#"{"preferences":{}}"#));
+        let persisted = if source == "persisted" {
+            &target
+        } else {
+            "http://127.0.0.1:1"
+        };
+        fs::write(
+            home.join("config/spark.toml"),
+            format!("[connections]\nclient_api_base_url = '{persisted}'\n"),
+        )
+        .unwrap();
+        let mut command = Command::new(&bin);
+        command
+            .args(["settings", "get"])
+            .env_clear()
+            .env("SPARK_HOME", &home);
+        if source == "environment" {
+            command.env("SPARK_API_BASE_URL", format!(" {target} "));
+        }
+        if source == "flag" {
+            command.env("SPARK_API_BASE_URL", "http://127.0.0.1:1");
+            command.args(["--base-url", target.as_str()]);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            requests.recv_timeout(Duration::from_secs(2)).unwrap().path,
+            "/workspace/api/settings"
+        );
+    }
+    // The source binary must still require an explicit target even with a saved one.
+    let rejected = Command::new(spark_bin())
+        .args(["settings", "get"])
+        .env_clear()
+        .env("SPARK_HOME", &home)
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("Refusing to use default API target")
+    );
 }

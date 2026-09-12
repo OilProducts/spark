@@ -19,6 +19,7 @@ export interface FlowExecutionLockResponse {
 }
 
 export interface WorkspaceFlowResponse {
+    revision?: string
     name: string
     title: string
     description: string
@@ -36,6 +37,7 @@ export interface WorkspaceFlowResponse {
 }
 
 export interface WorkspaceFlowLaunchPolicyResponse {
+    revision: string
     name: string
     launch_policy: FlowLaunchPolicy | null
     effective_launch_policy: FlowLaunchPolicy
@@ -123,6 +125,7 @@ export function parseWorkspaceFlowResponse(value: unknown, endpoint: string): Wo
         : undefined
     return {
         name: expectString(record.name, endpoint, 'name'),
+        revision: asOptionalNullableString(record.revision) ?? undefined,
         title: expectString(record.title, endpoint, 'title'),
         description: expectString(record.description, endpoint, 'description'),
         launch_policy: parseFlowLaunchPolicy(record.launch_policy, endpoint, 'launch_policy', true),
@@ -167,6 +170,7 @@ export function parseWorkspaceFlowLaunchPolicyResponse(
         ? record.allowed_execution_lock_conflict_policies
         : undefined
     return {
+        revision: expectString(record.revision, endpoint, 'revision'),
         name: expectString(record.name, endpoint, 'name'),
         launch_policy: parseFlowLaunchPolicy(record.launch_policy, endpoint, 'launch_policy', true),
         effective_launch_policy: parseFlowLaunchPolicy(record.effective_launch_policy, endpoint, 'effective_launch_policy')!,
@@ -217,6 +221,7 @@ export async function fetchWorkspaceFlowRawValidated(
 export async function updateWorkspaceFlowLaunchPolicyValidated(
     flowName: string,
     payload: {
+        expected_revision: string
         launch_policy: FlowLaunchPolicy
         execution_lock?: FlowExecutionLockResponse | null
     },

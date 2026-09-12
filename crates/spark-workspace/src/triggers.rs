@@ -84,9 +84,13 @@ impl WorkspaceTriggerService {
             .map_err(Into::into)
     }
 
-    pub fn delete_trigger(&self, trigger_id: &str) -> WorkspaceResult<TriggerDeleteResponse> {
+    pub fn delete_trigger(
+        &self,
+        trigger_id: &str,
+        expected_revision: &str,
+    ) -> WorkspaceResult<TriggerDeleteResponse> {
         TriggerService::new(self.settings.clone())
-            .delete_trigger(trigger_id)
+            .delete_trigger(trigger_id, expected_revision)
             .map_err(Into::into)
     }
 

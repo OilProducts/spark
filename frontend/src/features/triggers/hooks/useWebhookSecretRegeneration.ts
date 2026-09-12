@@ -17,11 +17,12 @@ export function useWebhookSecretRegeneration({
     const [isRegenerating, setIsRegenerating] = useState(false)
 
     const onRegenerateWebhookSecret = async () => {
-        if (!selectedTrigger || selectedTrigger.source_type !== 'webhook') return
+        if (isRegenerating || !selectedTrigger || selectedTrigger.source_type !== 'webhook') return
         setIsRegenerating(true)
         try {
             const updated = await updateTriggerValidated(selectedTrigger.id, {
                 regenerate_webhook_secret: true,
+                expected_revision: selectedTrigger.revision,
             })
             if (updated.webhook_secret) {
                 revealWebhookSecret(selectedTrigger.id, updated.webhook_secret)

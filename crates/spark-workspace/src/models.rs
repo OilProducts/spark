@@ -1,3 +1,4 @@
+use spark_common::agent_settings::NativeAgentSettings;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,8 @@ const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "u
 /// cached briefly; the installed model set changes on codex upgrades, not
 /// per request.
 const CODEX_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
-static CODEX_MODELS_CACHE: Mutex<Option<(Instant, Vec<ChatModelMetadata>)>> = Mutex::new(None);
+static CODEX_MODELS_CACHE: Mutex<Option<(Instant, NativeAgentSettings, Vec<ChatModelMetadata>)>> =
+    Mutex::new(None);
 
 /// Claude Code models come from the CLI's stdio control protocol, cached on
 /// the same rationale as codex. Discovery failures (CLI missing, logged out,
@@ -23,8 +25,9 @@ static CODEX_MODELS_CACHE: Mutex<Option<(Instant, Vec<ChatModelMetadata>)>> = Mu
 // ponytail: second copy of the codex model-cache pattern; extract a shared
 // helper when a third provider needs one.
 const CLAUDE_CODE_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
-static CLAUDE_CODE_MODELS_CACHE: Mutex<Option<(Instant, Vec<ChatModelMetadata>)>> =
-    Mutex::new(None);
+static CLAUDE_CODE_MODELS_CACHE: Mutex<
+    Option<(Instant, NativeAgentSettings, Vec<ChatModelMetadata>)>,
+> = Mutex::new(None);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatModelMetadata {
@@ -43,7 +46,8 @@ pub struct ChatModelProviderStatus {
 }
 
 pub fn chat_models(settings: &SparkSettings) -> WorkspaceResult<Value> {
-    let codex_result = codex_chat_models();
+    let native = native_configuration(settings)?;
+    let codex_result = codex_chat_models(&native);
     chat_models_with_codex_result(settings, codex_result)
 }
 
@@ -67,7 +71,7 @@ pub fn chat_models_with_codex_result(
             },
         ),
     };
-    models.extend(claude_code_chat_models());
+    models.extend(claude_code_chat_models(&native_configuration(settings)?));
     models.extend(public_unified_chat_models());
     models.extend(configured_profile_chat_models(settings)?);
     Ok(serde_json::json!({
@@ -78,21 +82,36 @@ pub fn chat_models_with_codex_result(
     }))
 }
 
-fn claude_code_chat_models() -> Vec<ChatModelMetadata> {
+fn native_configuration(settings: &SparkSettings) -> WorkspaceResult<NativeAgentSettings> {
+    let mut configuration = spark_storage::settings::read_execution_configuration(
+        &settings.config_dir,
+        &spark_common::paths::ProcessEnvironment,
+    )?;
+    configuration
+        .agents
+        .native
+        .retain_startup_paths(&settings.agents.native);
+    spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
+    Ok(configuration.agents.native)
+}
+
+fn claude_code_chat_models(native: &NativeAgentSettings) -> Vec<ChatModelMetadata> {
     if let Ok(cache) = CLAUDE_CODE_MODELS_CACHE.lock() {
-        if let Some((fetched_at, models)) = cache.as_ref() {
-            if fetched_at.elapsed() < CLAUDE_CODE_MODELS_CACHE_TTL {
+        if let Some((fetched_at, captured, models)) = cache.as_ref() {
+            if captured == native && fetched_at.elapsed() < CLAUDE_CODE_MODELS_CACHE_TTL {
                 return models.clone();
             }
         }
     }
-    let models = spark_agent_adapter::list_available_claude_code_models()
-        .map(claude_code_chat_models_from_metadata)
-        .ok()
-        .filter(|models| !models.is_empty())
-        .unwrap_or_else(claude_code_static_alias_models);
+    let models = spark_agent_adapter::claude_code::list_available_claude_code_models_with_settings(
+        Some(native),
+    )
+    .map(claude_code_chat_models_from_metadata)
+    .ok()
+    .filter(|models| !models.is_empty())
+    .unwrap_or_else(claude_code_static_alias_models);
     if let Ok(mut cache) = CLAUDE_CODE_MODELS_CACHE.lock() {
-        *cache = Some((Instant::now(), models.clone()));
+        *cache = Some((Instant::now(), native.clone(), models.clone()));
     }
     models
 }
@@ -134,19 +153,21 @@ pub fn claude_code_chat_models_from_metadata(
 
 /// Codex models come from the local install itself (`model/list`), so the
 /// chooser only offers what codex will actually serve.
-fn codex_chat_models() -> Result<Vec<ChatModelMetadata>, String> {
+fn codex_chat_models(native: &NativeAgentSettings) -> Result<Vec<ChatModelMetadata>, String> {
     if let Ok(cache) = CODEX_MODELS_CACHE.lock() {
-        if let Some((fetched_at, models)) = cache.as_ref() {
-            if fetched_at.elapsed() < CODEX_MODELS_CACHE_TTL {
+        if let Some((fetched_at, captured, models)) = cache.as_ref() {
+            if captured == native && fetched_at.elapsed() < CODEX_MODELS_CACHE_TTL {
                 return Ok(models.clone());
             }
         }
     }
-    let live = spark_agent_adapter::list_available_codex_models()
-        .map(codex_chat_models_from_metadata)
-        .map_err(|error| format!("Codex model discovery failed: {error}"))?;
+    let live = spark_agent_adapter::codex_app_server::list_available_codex_models_with_settings(
+        Some(native),
+    )
+    .map(codex_chat_models_from_metadata)
+    .map_err(|error| format!("Codex model discovery failed: {error}"))?;
     if let Ok(mut cache) = CODEX_MODELS_CACHE.lock() {
-        *cache = Some((Instant::now(), live.clone()));
+        *cache = Some((Instant::now(), native.clone(), live.clone()));
     }
     Ok(live)
 }

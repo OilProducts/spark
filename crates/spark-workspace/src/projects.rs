@@ -21,6 +21,7 @@ pub struct ProjectRegistrationRequest {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectStateUpdate {
+    pub expected_revision: Option<String>,
     pub project_path: String,
     pub last_accessed_at: Option<Option<String>>,
     pub is_favorite: Option<bool>,
@@ -73,36 +74,53 @@ impl WorkspaceProjectService {
         &self,
         request: ProjectRegistrationRequest,
     ) -> WorkspaceResult<ProjectRecord> {
+        let _references =
+            spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = normalize_project_path_or_400(&request.project_path)?;
         let registry = self.registry();
-        let mut record = registry.register_project(&project_path)?;
-        if request.execution_profile_id.is_some() {
-            let execution_profile_id = self
-                .validate_project_execution_profile_id(request.execution_profile_id.as_deref())?;
-            record = registry.update_project_record(
-                &project_path,
-                ProjectRecordUpdate {
-                    execution_profile_id: Some(execution_profile_id),
-                    ..ProjectRecordUpdate::default()
-                },
-            )?;
+        if request.execution_profile_id.is_some()
+            && registry.read_project_record(&project_path)?.is_some()
+        {
+            return Err(WorkspaceError::Validation("Use the project settings update with expected_revision to change an existing execution profile.".into()));
         }
-        Ok(record)
+        let execution_profile_id =
+            self.validate_project_execution_profile_id(request.execution_profile_id.as_deref())?;
+        registry
+            .register_project_with_execution_profile(&project_path, execution_profile_id.as_deref())
+            .map_err(Into::into)
     }
 
     pub fn update_project_state(
         &self,
         request: ProjectStateUpdate,
     ) -> WorkspaceResult<ProjectRecord> {
+        let _references =
+            spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = normalize_project_path_or_400(&request.project_path)?;
         let execution_profile_id = match request.execution_profile_id {
             Some(value) => Some(self.validate_project_execution_profile_id(value.as_deref())?),
             None => None,
         };
+        if execution_profile_id.is_some() && request.expected_revision.is_none() {
+            return Err(WorkspaceError::Validation(
+                "expected_revision is required to change project execution settings.".into(),
+            ));
+        }
+        if execution_profile_id.is_some()
+            && self
+                .registry()
+                .read_project_record(&project_path)?
+                .is_none()
+        {
+            return Err(WorkspaceError::NotFound(
+                "Register the project before editing its defaults.".into(),
+            ));
+        }
         self.registry()
             .update_project_record(
                 &project_path,
                 ProjectRecordUpdate {
+                    expected_revision: request.expected_revision,
                     last_accessed_at: request.last_accessed_at,
                     is_favorite: request.is_favorite,
                     active_conversation_id: request.active_conversation_id,
@@ -271,7 +289,7 @@ impl WorkspaceProjectService {
         Ok(normalized)
     }
 
-    fn validate_project_execution_profile_id(
+    pub(crate) fn validate_project_execution_profile_id(
         &self,
         execution_profile_id: Option<&str>,
     ) -> WorkspaceResult<Option<String>> {

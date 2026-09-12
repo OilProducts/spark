@@ -689,3 +689,103 @@ fn concurrent_repository_instances_serialize_revision_allocation_and_keep_all_tu
     ));
     assert_eq!(activity.read_transcript_records().unwrap().len(), 9);
 }
+
+#[test]
+fn competing_mode_updates_conflict_without_changing_history_and_events_still_rebase() {
+    let project_path = "/projects/mode-conflict";
+    let (temp, repo) = setup(project_path);
+    let initial = repo
+        .commit_conversation(
+            "chat",
+            project_path,
+            0,
+            vec![ConversationMutation::TurnUpserted {
+                turn: user_turn("user", "Preserve this transcript"),
+            }],
+        )
+        .unwrap();
+    let mode_update = |mode: &str| {
+        vec![
+            ConversationMutation::TurnUpserted {
+                turn: TranscriptTurn {
+                    id: format!("mode-{mode}"),
+                    kind: Some("mode_change".into()),
+                    content: mode.into(),
+                    ..user_turn("unused", "")
+                },
+            },
+            ConversationMutation::MetadataUpdated {
+                patch: ConversationMetadataPatch {
+                    chat_mode: Some(mode.into()),
+                    ..Default::default()
+                },
+            },
+        ]
+    };
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let writers: Vec<_> = ["plan", "chat"]
+        .into_iter()
+        .map(|mode| {
+            let repo = ConversationRepository::new(temp.path().join("spark-home"));
+            let barrier = barrier.clone();
+            let mutations = mode_update(mode);
+            let revision = initial.revision;
+            std::thread::spawn(move || {
+                barrier.wait();
+                repo.commit_conversation("chat", project_path, revision, mutations)
+            })
+        })
+        .collect();
+    let results: Vec<_> = writers
+        .into_iter()
+        .map(|writer| writer.join().unwrap())
+        .collect();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(StorageError::SettingsConflict { .. })))
+            .count(),
+        1
+    );
+    let winner = results.into_iter().find_map(Result::ok).unwrap();
+    assert_eq!(winner.record.transcript.turns.len(), 2);
+    let root = conversation_dir(&temp, project_path, "chat");
+    let files = ["conversation.json", "transcript.jsonl", "events.jsonl"];
+    let before: Vec<_> = files
+        .iter()
+        .map(|file| fs::read(root.join(file)).unwrap())
+        .collect();
+    assert!(matches!(
+        repo.commit_conversation("chat", project_path, initial.revision, mode_update("plan")),
+        Err(StorageError::SettingsConflict { .. })
+    ));
+    for (file, bytes) in files.iter().zip(before) {
+        assert_eq!(fs::read(root.join(file)).unwrap(), bytes);
+    }
+    assert_eq!(
+        repo.read_snapshot("chat", Some(project_path))
+            .unwrap()
+            .unwrap(),
+        winner.snapshot
+    );
+    let operational = repo
+        .commit_conversation(
+            "chat",
+            project_path,
+            initial.revision,
+            vec![ConversationMutation::TurnUpserted {
+                turn: assistant_turn("assistant", "complete"),
+            }],
+        )
+        .unwrap();
+    assert!(operational.rebased);
+    assert_eq!(
+        operational.record.meta.chat_mode,
+        winner.record.meta.chat_mode
+    );
+    assert_eq!(
+        &operational.record.transcript.turns[..2],
+        &winner.record.transcript.turns
+    );
+}

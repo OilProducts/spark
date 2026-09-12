@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -40,6 +40,8 @@ pub struct Client {
     provider_order: Vec<String>,
     profile_routes: BTreeMap<String, ProfileRoute>,
     profile_order: Vec<String>,
+    file_profile_ids: BTreeSet<String>,
+    environment_provider_ids: BTreeSet<String>,
     default_provider: Option<String>,
     middleware: Vec<Arc<dyn Middleware>>,
 }
@@ -117,7 +119,10 @@ impl Client {
             providers.push((provider.to_string(), configured_adapter(config)?));
         }
 
-        Self::from_provider_entries(providers, environment.default_provider.as_deref())
+        let mut client =
+            Self::from_provider_entries(providers, environment.default_provider.as_deref())?;
+        client.environment_provider_ids = environment.providers.keys().cloned().collect();
+        Ok(client)
     }
 
     pub fn from_env_and_profiles(
@@ -133,6 +138,19 @@ impl Client {
         config_dir: impl AsRef<Path>,
         default_provider: Option<&str>,
     ) -> Result<Self, AdapterError> {
+        Self::from_env_map_and_profile_definitions(
+            env,
+            load_llm_profiles(config_dir)?,
+            default_provider,
+        )
+    }
+
+    /// Construct a client from captured profile contents without rereading mutable files.
+    pub fn from_env_map_and_profile_definitions(
+        env: &BTreeMap<String, String>,
+        profiles: BTreeMap<String, LlmProfile>,
+        default_provider: Option<&str>,
+    ) -> Result<Self, AdapterError> {
         let environment = ProviderEnvironment::from_env_map(env, None);
         let mut providers = Vec::new();
         for provider in PROVIDER_REGISTRATION_ORDER {
@@ -143,12 +161,55 @@ impl Client {
         }
 
         let mut client = Self::from_provider_entries(providers, None)?;
-        client.add_llm_profiles(load_llm_profiles(config_dir)?, env)?;
+        client.environment_provider_ids = environment.providers.keys().cloned().collect();
+        client = client.with_profile_definitions(profiles, env)?;
         let default_provider = default_provider
             .map(normalize_provider_name)
             .or(environment.default_provider);
         client.set_default_provider_name(default_provider.as_deref())?;
         Ok(client)
+    }
+
+    /// Replace environment-managed adapters for new work, preserving injected adapters.
+    pub fn with_execution_environment(
+        mut self,
+        env: &BTreeMap<String, String>,
+    ) -> Result<Self, AdapterError> {
+        for id in &self.environment_provider_ids {
+            self.providers.remove(id);
+        }
+        self.provider_order
+            .retain(|id| !self.environment_provider_ids.contains(id));
+        let environment = ProviderEnvironment::from_env_map(env, None);
+        self.environment_provider_ids = environment.providers.keys().cloned().collect();
+        for provider in PROVIDER_REGISTRATION_ORDER {
+            if let Some(config) = environment.providers.get(provider) {
+                let adapter = configured_adapter(config)?;
+                adapter.initialize()?;
+                self.providers.insert(provider.into(), adapter);
+                if !self.provider_order.iter().any(|id| id == provider) {
+                    self.provider_order.push(provider.into());
+                }
+            }
+        }
+        self.set_default_provider_name(environment.default_provider.as_deref())?;
+        Ok(self)
+    }
+
+    /// Apply captured file-backed profiles while retaining injected provider adapters.
+    pub fn with_profile_definitions(
+        mut self,
+        profiles: BTreeMap<String, LlmProfile>,
+        env: &impl LlmProfileEnvironment,
+    ) -> Result<Self, AdapterError> {
+        for id in &self.file_profile_ids {
+            self.profile_routes.remove(id);
+        }
+        self.profile_order
+            .retain(|id| !self.file_profile_ids.contains(id));
+        self.file_profile_ids = profiles.keys().cloned().collect();
+        self.add_llm_profiles(profiles, env)?;
+        Ok(self)
     }
 
     pub fn with_llm_profile_adapter(
@@ -198,6 +259,8 @@ impl Client {
             provider_order,
             profile_routes: BTreeMap::new(),
             profile_order: Vec::new(),
+            file_profile_ids: BTreeSet::new(),
+            environment_provider_ids: BTreeSet::new(),
             default_provider: None,
             middleware: Vec::new(),
         };

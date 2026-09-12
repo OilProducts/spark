@@ -10,13 +10,12 @@ import type {
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 
 export const DEFAULT_UI_DEFAULTS: UiDefaults = {
-    llm_model: 'gpt-5.5',
-    llm_provider: '',
+    llm_model: '',
+    llm_provider: 'codex',
     llm_profile: '',
     reasoning_effort: '',
 }
 
-export const UI_DEFAULTS_STORAGE_KEY = 'spark.ui_defaults'
 export const ROUTE_STATE_STORAGE_KEY = 'spark.ui_route_state'
 export const DEFAULT_WORKING_DIRECTORY = './test-app'
 export const RECENT_PROJECT_LIMIT = 5
@@ -217,32 +216,6 @@ export const saveRouteState = (state: RouteState) => {
     if (typeof window === 'undefined') return
     try {
         window.localStorage.setItem(ROUTE_STATE_STORAGE_KEY, JSON.stringify(state))
-    } catch {
-        // Ignore storage failures (private mode, quota, etc.)
-    }
-}
-
-export const loadUiDefaults = (): UiDefaults => {
-    if (typeof window === 'undefined') {
-        return { ...DEFAULT_UI_DEFAULTS }
-    }
-    try {
-        const raw = window.localStorage.getItem(UI_DEFAULTS_STORAGE_KEY)
-        if (!raw) return { ...DEFAULT_UI_DEFAULTS }
-        const parsed = JSON.parse(raw) as Partial<UiDefaults>
-        return {
-            ...DEFAULT_UI_DEFAULTS,
-            ...parsed,
-        }
-    } catch {
-        return { ...DEFAULT_UI_DEFAULTS }
-    }
-}
-
-export const saveUiDefaults = (defaults: UiDefaults) => {
-    if (typeof window === 'undefined') return
-    try {
-        window.localStorage.setItem(UI_DEFAULTS_STORAGE_KEY, JSON.stringify(defaults))
     } catch {
         // Ignore storage failures (private mode, quota, etc.)
     }

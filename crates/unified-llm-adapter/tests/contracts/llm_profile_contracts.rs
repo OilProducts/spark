@@ -345,6 +345,20 @@ fn profiles_key_must_be_a_table_when_present() {
     );
 }
 
+#[test]
+fn malformed_profile_errors_do_not_expose_source_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = "[profiles.local]\napi_key_env = pasted-secret-credential\n";
+    let path = temp.path().join("llm-profiles.toml");
+    std::fs::write(&path, source).unwrap();
+    let error = load_llm_profiles(temp.path()).unwrap_err();
+    assert!(error.to_string().contains("near byte"));
+    assert!(!format!("{error:?}").contains("pasted-secret-credential"));
+    let adapter_error: unified_llm_adapter::AdapterError = error.into();
+    assert!(!format!("{adapter_error:?}").contains("pasted-secret-credential"));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
 fn assert_profile_error(config: &str, expected: &str) {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::write(temp.path().join("llm-profiles.toml"), config).expect("write profiles");
@@ -362,4 +376,25 @@ fn unused_base_url() -> String {
     let url = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
     url
+}
+
+#[test]
+fn replacing_file_profile_capture_removes_deleted_routes_without_mutating_active_client() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("llm-profiles.toml"), "[profiles.original]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['original-model']\ndefault_model='original-model'\n").unwrap();
+    let env = BTreeMap::<String, String>::new();
+    let active = Client::from_env_map_and_profiles(&env, temp.path(), None).unwrap();
+    let next = active
+        .clone()
+        .with_profile_definitions(BTreeMap::new(), &env)
+        .unwrap();
+    assert!(next.llm_profile("original").is_none());
+    assert_eq!(
+        active
+            .llm_profile("original")
+            .unwrap()
+            .default_model
+            .as_deref(),
+        Some("original-model")
+    );
 }

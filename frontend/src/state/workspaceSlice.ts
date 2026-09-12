@@ -5,7 +5,6 @@ import {
     buildRegisterProjectTransition,
     buildRemoveProjectTransition,
     buildSetActiveProjectTransition,
-    saveProjectScopeRouteState,
 } from './projectScopeTransitions'
 import {
     DEFAULT_WORKING_DIRECTORY,
@@ -45,17 +44,31 @@ export const initialWorkspaceEditorState = {
     workingDir: restoredProjectScope ? restoredProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
 }
 
-export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (set) => ({
+export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (rawSet, get) => {
+    // All project transitions must confirm before changing the scope of mounted editors.
+    const set = (update: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => {
+        const next = typeof update === 'function' ? update(get()) : update
+        const proceed = () => rawSet((state) => {
+            const patch = typeof update === 'function' ? update(state) : update
+            if ('activeProjectPath' in patch || 'viewMode' in patch) {
+                saveRouteState({
+                    viewMode: patch.viewMode ?? state.viewMode,
+                    activeProjectPath: patch.activeProjectPath === undefined ? state.activeProjectPath : patch.activeProjectPath,
+                })
+            }
+            return patch
+        })
+        if ((next.activeProjectPath !== undefined && next.activeProjectPath !== get().activeProjectPath
+            || get().viewMode === 'settings' && next.viewMode !== undefined && next.viewMode !== get().viewMode)
+            && !window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) return
+        proceed()
+    }
+    return ({
     viewMode: restoredRouteState.viewMode,
-    setViewMode: (mode) =>
-        set((state) => {
-            const nextViewMode = resolveViewModeForProjectScope(mode)
-            saveRouteState({
-                viewMode: nextViewMode,
-                activeProjectPath: state.activeProjectPath,
-            })
-            return { viewMode: nextViewMode }
-        }),
+    setViewMode: (mode) => {
+        const nextViewMode = resolveViewModeForProjectScope(mode)
+        set({ viewMode: nextViewMode })
+    },
     activeProjectPath: restoredRouteState.activeProjectPath,
     projectRegistry: initialProjectRegistry,
     recentProjectPaths: restoredRouteState.activeProjectPath ? [restoredRouteState.activeProjectPath] : [],
@@ -63,7 +76,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     hydrateProjectRegistry: (projects) =>
         set((state) => {
             const nextState = buildHydrateProjectRegistryTransition(state, projects)
-            saveRouteState(saveProjectScopeRouteState(nextState))
             return nextState
         }),
     upsertProjectRegistryEntry: (project) =>
@@ -105,7 +117,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             if (!nextState) {
                 return state
             }
-            saveRouteState(saveProjectScopeRouteState(nextState))
             return nextState
         }),
     setActiveProjectPath: (projectPath) =>
@@ -114,7 +125,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             if (!nextState) {
                 return state
             }
-            saveRouteState(saveProjectScopeRouteState(nextState))
             return nextState
         }),
     projectRegistrationError: null,
@@ -152,10 +162,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             }
 
             const nextState = buildRegisterProjectTransition(state, normalizedPath)
-            saveRouteState({
-                viewMode: state.viewMode,
-                activeProjectPath: nextState.activeProjectPath,
-            })
             result = {
                 ok: true,
                 normalizedPath,
@@ -287,10 +293,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 path === normalizedCurrentPath ? normalizedNextPath : path,
             )
 
-            saveRouteState({
-                viewMode: state.viewMode,
-                activeProjectPath: nextActiveProjectPath,
-            })
             result = {
                 ok: true,
                 normalizedPath: normalizedNextPath,
@@ -368,13 +370,10 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                     projectSessionsByPath: nextProjectSessionStates,
                 }
             }
-            saveRouteState({
-                viewMode: state.viewMode,
-                activeProjectPath: state.activeProjectPath,
-            })
             return {
                 projectSessionsByPath: nextProjectSessionStates,
                 workingDir: nextScopedWorkspace.workingDir,
             }
         }),
 })
+}

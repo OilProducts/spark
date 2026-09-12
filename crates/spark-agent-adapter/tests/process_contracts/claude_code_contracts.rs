@@ -523,3 +523,25 @@ fn claude_code_error_result_surfaces_as_backend_error() {
         other => panic!("expected backend error, got: {other:?}"),
     }
 }
+
+#[test]
+fn captured_native_configuration_controls_actual_claude_launch() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let log = temp.path().join("args.log");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let _binary = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", "/missing/later-binary");
+    let _permission = EnvVarGuard::set("SPARK_CLAUDE_CODE_PERMISSION_MODE", "bypassPermissions");
+    let mut request = agent_request(temp.path());
+    request.metadata.insert(
+        "spark.execution.settings".into(),
+        json!({"configuration": {"agents": {"native": {
+            "claude_binary": fake_claude_code_bin(), "claude_permission_mode": "acceptEdits",
+            "claude_config_dir": temp.path().join("captured-config")
+        }}}}),
+    );
+    ClaudeCodeBackend::new().run_agent_turn(request).unwrap();
+    let args = std::fs::read_to_string(log).unwrap();
+    assert!(args.contains("acceptEdits"));
+    assert!(!args.contains("bypassPermissions"));
+}

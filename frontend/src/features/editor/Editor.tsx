@@ -1,3 +1,4 @@
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
     ReactFlow,
@@ -187,6 +188,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const pendingEditorNodeSelection = useStore((state) => state.pendingEditorNodeSelection);
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection);
     const editorMode = useStore((state) => state.editorMode);
+    const clientPreferencesLoaded = useStore((state) => state.clientPreferencesLoaded);
+    const initialModeFlowRef = useRef<string | null>(null);
     const setEditorMode = useStore((state) => state.setEditorMode);
     const rawYamlDraft = useStore((state) => state.rawYamlDraft);
     const setRawYamlDraft = useStore((state) => state.setRawYamlDraft);
@@ -211,7 +214,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const clearDiagnostics = useStore((state) => state.clearDiagnostics);
     const suppressPreview = useStore((state) => state.suppressPreview);
     const expandChildFlows = useStore((state) => (
-        state.activeFlow ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? false) : false
+        state.activeFlow ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? state.preferredExpandChildFlows) : false
     ));
     const setEditorExpandChildFlows = useStore((state) => state.setEditorExpandChildFlows);
     const hasValidationErrors = useStore((state) => state.hasValidationErrors);
@@ -338,7 +341,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         ),
     })
 
-    const persistLayoutState = useCallback((layout?: SavedFlowLayoutV1 | null) => {
+    const persistLayoutState = useCallback((layout?: SavedFlowLayoutV1 | null, userControlled = true) => {
         if (!flowName || expandChildFlowsRef.current) {
             return
         }
@@ -351,6 +354,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             flowName,
             EDITOR_LAYOUT_CANVAS_KIND,
             nextLayout,
+            userControlled,
         )
     }, [activeProjectPath, flowName])
 
@@ -568,7 +572,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         try {
             const savedLayout = options?.expandChildren || !flowName
                 ? null
-                : loadSavedFlowLayout(activeProjectPath, flowName, EDITOR_LAYOUT_CANVAS_KIND);
+                : await loadSavedFlowLayout(activeProjectPath, flowName, EDITOR_LAYOUT_CANVAS_KIND);
             const layoutGraph = await layoutWithElk(hydratedGraph.nodes, hydratedGraph.edges, {
                 savedLayout,
                 forceFreshLayout: options?.forceFreshLayout,
@@ -794,7 +798,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 setNodes(hydrated.nodes);
                 setEdges(hydrated.edges);
                 if (!expandChildFlowsRef.current) {
-                    persistLayoutState(hydrated.layout);
+                    persistLayoutState(hydrated.layout, false);
                 }
                 primeFlowSaveBaseline(
                     flowName,
@@ -1122,7 +1126,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         applyLaidOutGraph(layoutGraph)
     }, [activeProjectPath, applyLaidOutGraph, edges, expandChildFlows, flowName, nodes])
 
-    const enterRawYamlMode = useCallback(() => {
+    const enterRawYamlMode = useCallback((persistPreference = true) => {
         if (!flowName) return;
         if (editorMode === 'raw') return;
         flushPendingSave();
@@ -1133,7 +1137,18 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         setRawYamlDraft(yaml);
         setRawHandoffError(null);
         setEditorMode('raw');
+        if (persistPreference) {
+            useStore.setState({ preferredEditorMode: 'raw' });
+            completePreferenceInteraction({ editor_mode: 'raw' });
+        }
     }, [flowMetadata, flowName, editorMode, edges, flushPendingSave, nodes]);
+
+    useEffect(() => {
+        if (!isHydrated) { initialModeFlowRef.current = null; return; }
+        if (!clientPreferencesLoaded || hydratedFlowNameRef.current !== flowName || initialModeFlowRef.current === flowName) return;
+        initialModeFlowRef.current = flowName;
+        if (useStore.getState().preferredEditorMode === 'raw') enterRawYamlMode(false);
+    }, [clientPreferencesLoaded, enterRawYamlMode, flowName, isHydrated]);
 
     const returnToStructuredMode = useCallback(async () => {
         if (!flowName) return;
@@ -1198,7 +1213,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 setNodes(hydrated.nodes);
                 setEdges(hydrated.edges);
                 if (!expandChildFlowsRef.current) {
-                    persistLayoutState(hydrated.layout);
+                    persistLayoutState(hydrated.layout, false);
                 }
                 primeFlowSaveBaseline(
                     flowName,
@@ -1218,6 +1233,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 setRawHandoffError(null);
                 rawYamlEntryDraftRef.current = '';
                 setEditorMode('structured');
+                useStore.setState({ preferredEditorMode: 'structured' });
+                completePreferenceInteraction({ editor_mode: 'structured' });
             } catch {
                 setRawHandoffError('Safe handoff requires valid YAML. Failed to parse YAML preview for structured mode.');
             }
@@ -1381,7 +1398,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 setNodes(hydrated.nodes)
                 setEdges(hydrated.edges)
                 if (!expandChildFlowsRef.current) {
-                    persistLayoutState(hydrated.layout)
+                    persistLayoutState(hydrated.layout, false)
                 }
             })
             .catch((error) => {
@@ -1496,7 +1513,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         onSelectStructured={() => {
                             if (editorMode === 'raw') void returnToStructuredMode()
                         }}
-                        onSelectYaml={enterRawYamlMode}
+                        onSelectYaml={() => enterRawYamlMode()}
                         onSetChildFlowsExpanded={(expanded) => setEditorExpandChildFlows(flowName, expanded)}
                         onArrange={() => {
                             void onAutoArrange()

@@ -24,6 +24,9 @@ pub mod error;
 /// Schema-neutral repository traits and adapters.
 pub mod repository;
 
+/// Revision-checked settings documents and backed-up version transitions.
+pub mod settings;
+
 /// Unknown-field policy helpers.
 pub mod unknown_fields;
 
@@ -69,11 +72,11 @@ pub use workspace_flow_catalog::{
     normalize_execution_lock_conflict_policy, normalize_execution_lock_scope,
     normalize_execution_lock_value, normalize_flow_name, normalize_launch_policy,
     read_flow_launch_policy, seed_default_flow_catalog, set_flow_catalog_entry,
-    set_flow_launch_policy, write_flow_catalog, FlowCatalogEntry, FlowExecutionLockConfig,
-    FlowLaunchPolicyState, ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES, ALLOWED_EXECUTION_LOCK_SCOPES,
-    ALLOWED_LAUNCH_POLICIES, DEFAULT_AGENT_REQUESTABLE_FLOWS, EXECUTION_LOCK_CONFLICT_POLICY_QUEUE,
-    EXECUTION_LOCK_SCOPE_PROJECT, FLOW_CATALOG_FILE_NAME, LAUNCH_POLICY_AGENT_REQUESTABLE,
-    LAUNCH_POLICY_DISABLED, LAUNCH_POLICY_TRIGGER_ONLY,
+    set_flow_catalog_entry_revision, set_flow_launch_policy, write_flow_catalog, FlowCatalogEntry,
+    FlowExecutionLockConfig, FlowLaunchPolicyState, ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES,
+    ALLOWED_EXECUTION_LOCK_SCOPES, ALLOWED_LAUNCH_POLICIES, DEFAULT_AGENT_REQUESTABLE_FLOWS,
+    EXECUTION_LOCK_CONFLICT_POLICY_QUEUE, EXECUTION_LOCK_SCOPE_PROJECT, FLOW_CATALOG_FILE_NAME,
+    LAUNCH_POLICY_AGENT_REQUESTABLE, LAUNCH_POLICY_DISABLED, LAUNCH_POLICY_TRIGGER_ONLY,
 };
 pub use workspace_projects::{
     DeletedProjectRecord, ProjectPaths, ProjectRecord, ProjectRecordUpdate, ProjectRegistry,

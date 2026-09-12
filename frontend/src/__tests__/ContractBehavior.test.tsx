@@ -151,6 +151,7 @@ runsListSession: {
       streamError: null,
     },
 runDetailSessionsByRunId: {},
+clientRunPresentation: {},
 workingDir: DEFAULT_WORKING_DIRECTORY,
 projectRegistry: {
       '/tmp/project-contract-behavior': {
@@ -177,6 +178,9 @@ diagnostics: [],
 nodeDiagnostics: {},
 edgeDiagnostics: {},
 hasValidationErrors: false,
+preferredAdvancedControls: false,
+preferredExpandChildFlows: false,
+preferredGraphSettingsOpen: false,
 editorGraphSettingsPanelOpenByFlow: {},
 editorShowAdvancedGraphAttrsByFlow: {},
 editorLaunchInputDraftsByFlow: {},
@@ -623,6 +627,7 @@ describe('Frontend contract behavior', () => {
         if (url === '/workspace/api/flows/alpha%20flow.yaml/launch-policy' && method === 'PUT') {
           return jsonResponse({
             name: 'alpha flow.yaml',
+            revision: 'saved-catalog',
             launch_policy: 'agent_requestable',
             effective_launch_policy: 'agent_requestable',
           })
@@ -662,6 +667,7 @@ describe('Frontend contract behavior', () => {
     })
     await expect(fetchWorkspaceFlowRawValidated('alpha flow.yaml')).resolves.toBe('digraph G {}')
     await expect(updateWorkspaceFlowLaunchPolicyValidated('alpha flow.yaml', {
+      expected_revision: 'read-catalog',
       launch_policy: 'agent_requestable',
       execution_lock: null,
     })).resolves.toMatchObject({

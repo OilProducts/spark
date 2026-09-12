@@ -44,6 +44,7 @@ pub struct DeletedProjectRecord {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectRecordUpdate {
+    pub expected_revision: Option<String>,
     pub display_name: Option<String>,
     pub last_accessed_at: Option<Option<String>>,
     pub is_favorite: Option<bool>,
@@ -76,6 +77,14 @@ impl ProjectRegistry {
     }
 
     pub fn ensure_project_paths(&self, project_path: &str) -> Result<ProjectPaths> {
+        self.ensure_project_paths_with_profile(project_path, None)
+    }
+
+    fn ensure_project_paths_with_profile(
+        &self,
+        project_path: &str,
+        initial_profile: Option<&str>,
+    ) -> Result<ProjectPaths> {
         let project_paths = self.project_paths(project_path)?;
         for directory in [
             &project_paths.root,
@@ -89,7 +98,14 @@ impl ProjectRegistry {
             })?;
         }
 
-        let payload = read_project_payload_lossy(&project_paths.project_file);
+        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
+        let document = crate::settings::read_settings_document(&project_paths.project_file)?;
+        if initial_profile.is_some() && document.revision != "absent" {
+            return Err(StorageError::SettingsConflict {
+                path: project_paths.project_file,
+            });
+        }
+        let payload = document.values;
         let valid = payload.get("project_id").and_then(toml::Value::as_str)
             == Some(project_paths.project_id.as_str())
             && payload.get("project_path").and_then(toml::Value::as_str)
@@ -127,14 +143,26 @@ impl ProjectRegistry {
             last_accessed_at: read_optional_string(&payload, "last_accessed_at"),
             is_favorite: read_optional_bool(&payload, "is_favorite", false),
             active_conversation_id: read_optional_string(&payload, "active_conversation_id"),
-            execution_profile_id: read_optional_string(&payload, "execution_profile_id"),
+            execution_profile_id: initial_profile
+                .map(str::to_string)
+                .or_else(|| read_optional_string(&payload, "execution_profile_id")),
         };
         write_project_record(&project_paths.project_file, &record)?;
         Ok(project_paths)
     }
 
     pub fn register_project(&self, project_path: &str) -> Result<ProjectRecord> {
-        let project_paths = self.ensure_project_paths(project_path)?;
+        self.register_project_with_execution_profile(project_path, None)
+    }
+
+    pub fn register_project_with_execution_profile(
+        &self,
+        project_path: &str,
+        initial_profile: Option<&str>,
+    ) -> Result<ProjectRecord> {
+        let project_paths =
+            self.ensure_project_paths_with_profile(project_path, initial_profile)?;
+        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
         let mut record = self
             .read_project_record_by_id(&project_paths.project_id)?
             .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))?;
@@ -237,8 +265,30 @@ impl ProjectRegistry {
         project_path: &str,
         update: ProjectRecordUpdate,
     ) -> Result<ProjectRecord> {
-        let project_paths = self.ensure_project_paths(project_path)?;
-        let payload = read_project_payload_lossy(&project_paths.project_file);
+        if update.execution_profile_id.is_some() && update.expected_revision.is_none() {
+            return Err(StorageError::SettingsValidation {
+                path: self.project_paths(project_path)?.project_file,
+                reason: "expected_revision is required to change project execution settings."
+                    .into(),
+            });
+        }
+        let project_paths = if update.expected_revision.is_some() {
+            self.project_paths(project_path)?
+        } else {
+            self.ensure_project_paths(project_path)?
+        };
+        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
+        let document = crate::settings::read_settings_document(&project_paths.project_file)?;
+        if update
+            .expected_revision
+            .as_ref()
+            .is_some_and(|revision| *revision != document.revision)
+        {
+            return Err(StorageError::SettingsConflict {
+                path: project_paths.project_file,
+            });
+        }
+        let payload = document.values;
         let record = ProjectRecord {
             project_id: project_paths.project_id.clone(),
             project_path: project_paths.project_path.clone(),
@@ -298,7 +348,7 @@ impl ProjectRegistry {
         Ok(deleted)
     }
 
-    fn project_paths(&self, project_path: &str) -> Result<ProjectPaths> {
+    pub fn project_paths(&self, project_path: &str) -> Result<ProjectPaths> {
         let normalized = normalize_project_path_for_storage(project_path)?
             .ok_or_else(|| invalid_project_path(project_path, "Project path is required."))?;
         let project_id = project_id_for_path(&normalized)?;
@@ -328,7 +378,22 @@ fn read_project_payload_lossy(path: &Path) -> TomlMap<String, toml::Value> {
     value.as_table().cloned().unwrap_or_default()
 }
 
+// Caller holds the shared document lock across reading and replacing the record.
 fn write_project_record(path: &Path, record: &ProjectRecord) -> Result<()> {
+    let mut extra = crate::settings::read_settings_document(path)?.values;
+    for key in [
+        "project_id",
+        "project_path",
+        "display_name",
+        "created_at",
+        "last_opened_at",
+        "last_accessed_at",
+        "is_favorite",
+        "active_conversation_id",
+        "execution_profile_id",
+    ] {
+        extra.remove(key);
+    }
     let mut lines = vec![
         format!("project_id = {}", toml_string(&record.project_id)),
         format!("project_path = {}", toml_string(&record.project_path)),
@@ -362,6 +427,14 @@ fn write_project_record(path: &Path, record: &ProjectRecord) -> Result<()> {
         lines.push(format!("execution_profile_id = {}", toml_string(value)));
     }
     lines.push(String::new());
+    if !extra.is_empty() {
+        lines.push(
+            toml::to_string(&extra).map_err(|_| StorageError::SettingsValidation {
+                path: path.into(),
+                reason: "Unable to serialize project settings.".into(),
+            })?,
+        );
+    }
     crate::write_text_atomic(path, lines.join("\n"))
 }
 

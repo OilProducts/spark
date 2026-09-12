@@ -3,9 +3,8 @@
 use std::sync::Mutex;
 
 use desktop_core::{
-    bootstrap_desktop_runtime, load_desktop_settings, set_remote_access_enabled, settings_view,
-    start_desktop_server, DesktopPaths, DesktopServer, DesktopServerSettings,
-    DesktopServerSettingsView,
+    bootstrap_desktop_runtime, load_desktop_settings, read_desktop_settings_view,
+    start_desktop_server, DesktopPaths, DesktopServer, DesktopServerSettingsView,
 };
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -13,25 +12,22 @@ pub mod desktop_core;
 
 struct DesktopAppState {
     paths: DesktopPaths,
-    settings: Mutex<DesktopServerSettings>,
+    client_id: String,
     server: Mutex<DesktopServer>,
     current_bind_host: String,
     server_url: String,
 }
 
 #[tauri::command]
+fn desktop_client_identity(state: tauri::State<'_, DesktopAppState>) -> String {
+    state.client_id.clone()
+}
+
+#[tauri::command]
 fn desktop_server_settings(
     state: tauri::State<'_, DesktopAppState>,
 ) -> Result<DesktopServerSettingsView, String> {
-    let settings = state
-        .settings
-        .lock()
-        .map_err(|_| "Desktop settings lock is poisoned.".to_string())?;
-    Ok(settings_view(
-        &settings,
-        &state.current_bind_host,
-        state.server_url.clone(),
-    ))
+    read_desktop_settings_view(&state.paths, &state.current_bind_host, &state.server_url)
 }
 
 #[tauri::command]
@@ -39,18 +35,14 @@ fn set_desktop_remote_access_enabled(
     state: tauri::State<'_, DesktopAppState>,
     enabled: bool,
     confirmed_warning: bool,
+    expected_revision: String,
 ) -> Result<DesktopServerSettingsView, String> {
-    let updated = set_remote_access_enabled(&state.paths, enabled, confirmed_warning)?;
-    let mut settings = state
-        .settings
+    state
+        .server
         .lock()
-        .map_err(|_| "Desktop settings lock is poisoned.".to_string())?;
-    *settings = updated;
-    Ok(settings_view(
-        &settings,
-        &state.current_bind_host,
-        state.server_url.clone(),
-    ))
+        .map_err(|_| "Desktop server state is unavailable.".to_string())?
+        .save_remote_access(&state.paths, enabled, confirmed_warning, &expected_revision)?;
+    read_desktop_settings_view(&state.paths, &state.current_bind_host, &state.server_url)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -62,11 +54,13 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            desktop_client_identity,
             desktop_server_settings,
             set_desktop_remote_access_enabled
         ])
         .setup(|app| {
             let paths = tauri_desktop_paths(app.handle()).map_err(boxed_error)?;
+            let client_id = desktop_core::desktop_client_identity(&paths).map_err(boxed_error)?;
             let desktop_settings = load_desktop_settings(&paths).map_err(boxed_error)?;
             let bootstrap =
                 bootstrap_desktop_runtime(&paths, &desktop_settings).map_err(boxed_error)?;
@@ -82,7 +76,7 @@ pub fn run() {
                 .map_err(|error| boxed_error(format!("Invalid desktop server URL: {error}")))?;
             app.manage(DesktopAppState {
                 paths,
-                settings: Mutex::new(desktop_settings),
+                client_id,
                 server: Mutex::new(server),
                 current_bind_host: bootstrap.bind_host,
                 server_url,

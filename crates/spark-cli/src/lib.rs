@@ -36,17 +36,18 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,task} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,task}\n",
+    "  {convo,run,flow,trigger,task,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
     "    task                Project task management\n",
+    "    settings            Read, validate, and save workspace settings\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -100,6 +101,7 @@ enum CommandDomain {
     Flow,
     Trigger,
     Task,
+    Settings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,7 +233,7 @@ fn run_agent_shell(
             Ok(plan) => execute_request_plan(&plan),
             Err(output) => output,
         },
-        CommandDomain::Task | CommandDomain::Trigger => {
+        CommandDomain::Task | CommandDomain::Trigger | CommandDomain::Settings => {
             match build_request_plan(args, env, stdin) {
                 Ok(plan) => execute_request_plan(&plan),
                 Err(output) => output,
@@ -273,6 +275,7 @@ fn build_request_plan(
         CommandDomain::Flow => build_flow_plan(args, env),
         CommandDomain::Trigger => build_trigger_plan(args, env, stdin),
         CommandDomain::Task => build_task_plan(args, env, stdin),
+        CommandDomain::Settings => build_settings_plan(args, env, stdin),
     }
 }
 
@@ -728,19 +731,22 @@ fn build_trigger_plan(
         "delete" => {
             let options = parse_api_options(
                 &args[2..],
-                &["--id", "--base-url"],
+                &["--id", "--expected-revision", "--base-url"],
                 &[],
                 PositionalMode::None,
             )?;
-            require_values(&options, &["--id"])?;
+            require_values(&options, &["--id", "--expected-revision"])?;
             let base_url = resolve_base_url(&options, "spark trigger delete", env)?;
             let trigger_id = non_empty_value(&options, "--id", "Missing required --id.")?;
             Ok(ApiRequestPlan {
                 method: HttpMethod::Delete,
                 base_url,
                 path: format!(
-                    "/workspace/api/triggers/{}",
-                    percent_encode_component(&trigger_id)
+                    "/workspace/api/triggers/{}?expected_revision={}",
+                    percent_encode_component(&trigger_id),
+                    percent_encode_component(
+                        options.value("--expected-revision").unwrap_or_default()
+                    )
                 ),
                 body: None,
                 text: false,
@@ -1278,6 +1284,12 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
         return Err(legacy_command_path_error(args));
     };
     match domain_name {
+        "settings" => match domain_matches.subcommand_name() {
+            Some("get" | "validate" | "set") => Ok(CommandPath {
+                domain: CommandDomain::Settings,
+            }),
+            _ => Err(usage_error("Unknown command")),
+        },
         "convo" => match domain_matches.subcommand_name() {
             Some("run-request") => Ok(CommandPath {
                 domain: CommandDomain::Convo,
@@ -1320,7 +1332,9 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
         return CommandOutput::stdout(0, TOP_LEVEL_HELP);
     };
     match domain {
-        "convo" | "run" | "flow" | "trigger" | "task" => usage_error("Unknown command"),
+        "convo" | "run" | "flow" | "trigger" | "task" | "settings" => {
+            usage_error("Unknown command")
+        }
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
     }
 }
@@ -1353,6 +1367,12 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("get"))
                 .subcommand(clap_command_leaf("validate"))
                 .subcommand(clap_command_leaf("format")),
+        )
+        .subcommand(
+            Command::new("settings")
+                .subcommand(clap_command_leaf("get"))
+                .subcommand(clap_command_leaf("validate"))
+                .subcommand(clap_command_leaf("set")),
         )
         .subcommand(
             Command::new("task")
@@ -1674,14 +1694,30 @@ fn resolve_base_url(
         .filter(|value| !value.is_empty());
     let project_root = source_guard_root("spark");
     match require_explicit_agent_base_url_with_env(command_name, base_url, &project_root, env) {
-        Ok(()) => Ok(base_url
-            .map(str::to_string)
-            .or_else(|| {
+        Ok(()) => {
+            if let Some(value) = base_url.map(str::to_owned).or_else(|| {
                 env.get_var("SPARK_API_BASE_URL")
-                    .map(|value| value.trim().to_string())
-            })
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| DEFAULT_API_BASE_URL.to_string())),
+                    .filter(|value| !value.trim().is_empty())
+            }) {
+                return Ok(value.trim().to_owned());
+            }
+            let bootstrap =
+                spark_common::settings::resolve_settings_with_env(&Default::default(), env)
+                    .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?;
+            let path = bootstrap.config_dir.join("spark.toml");
+            let document = spark_storage::settings::read_settings_document(&path)
+                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?;
+            let connections: spark_common::settings::ConnectionSettings = document
+                .section(&path, "connections")
+                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?
+                .unwrap_or_default();
+            connections
+                .validate()
+                .map_err(|error| json_error(error.to_string(), EXIT_GENERAL_FAILURE))?;
+            Ok(connections
+                .client_api_base_url
+                .unwrap_or_else(|| DEFAULT_API_BASE_URL.to_string()))
+        }
         Err(SparkCommonError::SourceCheckoutGuard(message)) => {
             Err(json_error(message, EXIT_GENERAL_FAILURE))
         }
@@ -2496,6 +2532,65 @@ fn build_task_plan(
             _ => return Err(usage_error("Unknown command")),
         },
         base_url: resolve_base_url(&options, "spark task", env)?,
+        path,
+        body,
+        text: false,
+    })
+}
+
+fn build_settings_plan(
+    args: &[String],
+    env: &impl Environment,
+    stdin: &mut RuntimeStdin,
+) -> Result<ApiRequestPlan, CommandOutput> {
+    let command = args.get(1).map(String::as_str).unwrap_or_default();
+    let write = matches!(command, "set" | "validate");
+    let flags: &[&str] = if write {
+        &["--base-url", "--json"]
+    } else {
+        &["--base-url", "--project", "--conversation", "--client"]
+    };
+    let options = parse_api_options(&args[2..], flags, &[], PositionalMode::None)?;
+    let base_url = resolve_base_url(&options, "spark settings", env)?;
+    let body = if write {
+        require_values(&options, &["--json"])?;
+        Some(
+            read_required_json_object(
+                options.value("--json").unwrap_or_default(),
+                "Settings payload",
+                stdin,
+            )
+            .map_err(|error| usage_error(&error))?,
+        )
+    } else {
+        None
+    };
+    let mut path = if command == "validate" {
+        "/workspace/api/settings/validate".to_string()
+    } else {
+        "/workspace/api/settings".to_string()
+    };
+    let mut separator = '?';
+    for (flag, parameter) in [
+        ("--project", "project_path"),
+        ("--conversation", "conversation_id"),
+        ("--client", "client_id"),
+    ] {
+        if let Some(value) = options.value(flag) {
+            path.push(separator);
+            path.push_str(parameter);
+            path.push('=');
+            path.push_str(&percent_encode_component(value));
+            separator = '&';
+        }
+    }
+    Ok(ApiRequestPlan {
+        method: match command {
+            "set" => HttpMethod::Patch,
+            "validate" => HttpMethod::Post,
+            _ => HttpMethod::Get,
+        },
+        base_url,
         path,
         body,
         text: false,

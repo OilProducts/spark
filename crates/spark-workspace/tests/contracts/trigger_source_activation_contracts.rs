@@ -780,6 +780,7 @@ async fn non_math_chain_id_keeps_static_schedule_context_nested() {
     let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let definition = spark_storage::TriggerDefinition {
+        revision: String::new(),
         id: "ordinary-chain".to_string(),
         name: "Ordinary chain".to_string(),
         enabled: true,
@@ -880,6 +881,7 @@ fn flow_event_definition(
     static_context: Map<String, Value>,
 ) -> spark_storage::TriggerDefinition {
     spark_storage::TriggerDefinition {
+        revision: String::new(),
         id: id.to_string(),
         name: id.to_string(),
         enabled: true,
@@ -939,6 +941,9 @@ fn at(value: &str) -> OffsetDateTime {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

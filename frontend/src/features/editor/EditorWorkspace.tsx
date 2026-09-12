@@ -1,3 +1,4 @@
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { ReactFlowProvider } from '@xyflow/react'
 
@@ -37,12 +38,15 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const editorSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
     const effectiveIsEditorSidebarResizing = isEditorSidebarResizing && !isNarrowViewport
 
+    const persistSidebarWidth = () => completePreferenceInteraction({ editor_sidebar_width: useStore.getState().editorSidebarWidth })
+
     const adjustEditorSidebarWidth = (delta: number) => {
         const containerWidth = workspaceRef.current?.getBoundingClientRect().width || 0
         if (containerWidth <= 0) {
             return
         }
         setEditorSidebarWidth(clampEditorSidebarWidth(editorSidebarWidth + delta, containerWidth))
+        persistSidebarWidth()
     }
 
     const onEditorSidebarResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -77,11 +81,13 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
         if (event.key === 'Home') {
             event.preventDefault()
             setEditorSidebarWidth(clampEditorSidebarWidth(MIN_EDITOR_SIDEBAR_WIDTH, containerWidth))
+            persistSidebarWidth()
             return
         }
         if (event.key === 'End') {
             event.preventDefault()
             setEditorSidebarWidth(clampEditorSidebarWidth(MAX_EDITOR_SIDEBAR_WIDTH, containerWidth))
+            persistSidebarWidth()
         }
     }
 
@@ -119,6 +125,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
         }
 
         const stopEditorSidebarResize = () => {
+            completePreferenceInteraction({ editor_sidebar_width: useStore.getState().editorSidebarWidth })
             setIsEditorSidebarResizing(false)
             editorSidebarResizeRef.current = null
             document.body.style.cursor = ''

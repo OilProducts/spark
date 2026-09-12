@@ -6,6 +6,7 @@
 //! source checkout, project identity, process output, logging, and event
 //! boundaries.
 
+pub mod agent_settings;
 pub mod debug;
 pub mod error;
 pub mod events;
@@ -13,6 +14,7 @@ pub mod logging;
 pub mod paths;
 pub mod process;
 pub mod project;
+pub mod provider_settings;
 pub mod segments;
 pub mod settings;
 pub mod source_checkout;

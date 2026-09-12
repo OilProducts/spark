@@ -6,6 +6,11 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// Errors raised by typed filesystem storage helpers.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
+    #[error("Settings changed in {path}; reload before saving.")]
+    SettingsConflict { path: PathBuf },
+
+    #[error("Invalid settings in {path}: {reason}")]
+    SettingsValidation { path: PathBuf, reason: String },
     #[error("Unable to {action} {path}: {source}")]
     Io {
         action: &'static str,
