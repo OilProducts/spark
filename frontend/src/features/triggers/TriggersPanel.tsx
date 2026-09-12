@@ -1,3 +1,4 @@
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useEffect, useMemo } from "react"
 
 import { TriggerEditor } from "./components/TriggerEditor"
@@ -49,6 +50,10 @@ export function TriggersPanel() {
     })
   }
   const {
+    pending,
+    dirty,
+    externalChange,
+    discard,
     editTriggerForm,
     newTriggerForm,
     onCreateTrigger,
@@ -136,7 +141,7 @@ export function TriggersPanel() {
             <Button
               type="button"
               data-testid="triggers-filter-all"
-              onClick={() => updateTriggersSession({ scopeFilter: 'all' })}
+              onClick={() => { updateTriggersSession({ scopeFilter: 'all' }); completePreferenceInteraction({ triggers_scope: 'all' }) }}
               variant={scopeFilter === 'all' ? 'secondary' : 'outline'}
               size="xs"
             >
@@ -145,7 +150,7 @@ export function TriggersPanel() {
             <Button
               type="button"
               data-testid="triggers-filter-active-project"
-              onClick={() => updateTriggersSession({ scopeFilter: 'active' })}
+              onClick={() => { updateTriggersSession({ scopeFilter: 'active' }); completePreferenceInteraction({ triggers_scope: 'active' }) }}
               variant={scopeFilter === 'active' ? 'secondary' : 'outline'}
               size="xs"
             >
@@ -282,6 +287,7 @@ export function TriggersPanel() {
                 <Button
                   type="button"
                   data-testid="trigger-create-button"
+                  disabled={pending || isRegenerating}
                   onClick={() => void onCreateTrigger()}
                 >
                   Create trigger
@@ -302,6 +308,7 @@ export function TriggersPanel() {
                   <Button
                     type="button"
                     data-testid="trigger-delete-button"
+                  disabled={pending || isRegenerating}
                     onClick={() => void onDeleteSelectedTrigger()}
                     variant="outline"
                     size="xs"
@@ -372,10 +379,13 @@ export function TriggersPanel() {
                     </div>
                   </div>
 
-                  <div className="mt-4 flex justify-end">
+                  {externalChange ? <p role="status">This trigger changed elsewhere. Your draft is retained; discard to reload.</p> : null}
+                  <div className="mt-4 flex justify-end gap-2">
+                    <Button type="button" variant="outline" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
                     <Button
                       type="button"
                       data-testid="trigger-save-button"
+                  disabled={pending || isRegenerating}
                       onClick={() => void onSaveSelectedTrigger()}
                     >
                       Save trigger

@@ -13,7 +13,6 @@ const EMPTY_PROJECT_SESSION = {
     panelError: null as string | null,
     pendingConversationTurn: null as PendingConversationTurnState | null,
     pendingDeleteConversationId: null as string | null,
-    sidebarPrimarySplitRatio: null as number | null,
 }
 
 const EMPTY_CONVERSATION_SESSION = {

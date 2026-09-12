@@ -1,3 +1,4 @@
+import { parseModelSettingsView, type ModelSettings, type ModelSettingsView } from './settingsApi'
 import {
     ApiSchemaError,
     asOptionalNullableString,
@@ -145,6 +146,8 @@ export interface ProposedPlanArtifactResponse {
 }
 
 export interface ConversationSnapshotResponse {
+    model_settings_view?: ModelSettingsView
+
     schema_version: number
     revision: number
     conversation_id: string
@@ -640,6 +643,7 @@ export function parseConversationSnapshotResponse(
         conversation_handle: asOptionalNullableString(record.conversation_handle),
         project_path: expectString(record.project_path, endpoint, 'project_path'),
         chat_mode: record.chat_mode === 'plan' ? 'plan' : 'chat',
+        model_settings_view: record.settings == null ? undefined : parseModelSettingsView(record.settings, endpoint),
         provider: asOptionalNullableString(record.provider) || 'codex',
         model: asOptionalNullableString(record.model),
         reasoning_effort: asOptionalNullableString(record.reasoning_effort),
@@ -876,6 +880,8 @@ export async function updateConversationSettingsValidated(
     conversationId: string,
     payload: {
         project_path: string
+        expected_revision: string
+        model_settings?: ModelSettings | null
         chat_mode?: ConversationChatMode | null
         provider?: string | null
         model?: string | null

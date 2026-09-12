@@ -57,6 +57,7 @@ pub struct FlowCatalogEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FlowLaunchPolicyState {
+    pub revision: String,
     pub name: String,
     pub launch_policy: Option<String>,
     pub effective_launch_policy: String,
@@ -88,6 +89,13 @@ pub fn load_flow_catalog(
             path: path.clone(),
             source,
         })?;
+    decode_flow_catalog(&path, &payload)
+}
+
+fn decode_flow_catalog(
+    path: &Path,
+    payload: &TomlValue,
+) -> Result<BTreeMap<String, FlowCatalogEntry>> {
     let Some(flows_section) = payload.get("flows") else {
         return Ok(BTreeMap::new());
     };
@@ -155,6 +163,14 @@ pub fn write_flow_catalog(
     catalog: &BTreeMap<String, FlowCatalogEntry>,
 ) -> Result<PathBuf> {
     let path = flow_catalog_path(config_dir)?;
+    let _lock = crate::settings::lock_document(&path)?;
+    write_flow_catalog_locked(&path, catalog)
+}
+
+fn write_flow_catalog_locked(
+    path: &Path,
+    catalog: &BTreeMap<String, FlowCatalogEntry>,
+) -> Result<PathBuf> {
     let mut normalized_catalog = BTreeMap::new();
     for (flow_name, entry) in catalog {
         let flow_name = normalize_flow_name(flow_name)?;
@@ -177,32 +193,35 @@ pub fn write_flow_catalog(
         );
     }
 
-    let mut lines = Vec::new();
-    for (flow_name, entry) in normalized_catalog {
-        if entry.launch_policy.is_none() && entry.execution_lock.is_none() {
-            continue;
+    let mut document = crate::settings::read_settings_document(path)?;
+    decode_flow_catalog(path, &TomlValue::Table(document.values.clone()))?;
+    let existing = document
+        .values
+        .remove("flows")
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+    let mut flows = toml::Table::new();
+    for (name, entry) in normalized_catalog {
+        let mut fields = existing
+            .get(&name)
+            .and_then(TomlValue::as_table)
+            .cloned()
+            .unwrap_or_default();
+        for key in ["launch_policy", "execution_lock"] {
+            fields.remove(key);
         }
-        lines.push(format!("[flows.{}]", toml_string(&flow_name)));
-        if let Some(launch_policy) = entry.launch_policy {
-            lines.push(format!("launch_policy = {}", toml_string(&launch_policy)));
-        }
-        if let Some(execution_lock) = entry.execution_lock {
-            lines.push(String::new());
-            lines.push(format!(
-                "[flows.{}.execution_lock]",
-                toml_string(&flow_name)
-            ));
-            lines.push(format!("scope = {}", toml_string(&execution_lock.scope)));
-            lines.push(format!("key = {}", toml_string(&execution_lock.key)));
-            lines.push(format!(
-                "conflict_policy = {}",
-                toml_string(&execution_lock.conflict_policy)
-            ));
-        }
-        lines.push(String::new());
+        let serialized =
+            TomlValue::try_from(entry).map_err(|_| invalid_value("Invalid catalog entry."))?;
+        fields.extend(serialized.as_table().cloned().unwrap_or_default());
+        flows.insert(name, TomlValue::Table(fields));
     }
-    write_text_atomic(&path, lines.join("\n"))?;
-    Ok(path)
+    document
+        .values
+        .insert("flows".into(), TomlValue::Table(flows));
+    let text = toml::to_string_pretty(&document.values)
+        .map_err(|_| invalid_value("Invalid flow catalog."))?;
+    write_text_atomic(path, text)?;
+    Ok(path.to_path_buf())
 }
 
 pub fn read_flow_launch_policy(
@@ -210,7 +229,9 @@ pub fn read_flow_launch_policy(
     flow_name: &str,
 ) -> Result<FlowLaunchPolicyState> {
     let normalized_flow_name = normalize_flow_name(flow_name)?;
-    let catalog = load_flow_catalog(config_dir)?;
+    let path = flow_catalog_path(config_dir)?;
+    let document = crate::settings::read_settings_document(&path)?;
+    let catalog = decode_flow_catalog(&path, &TomlValue::Table(document.values))?;
     let entry = catalog
         .get(&normalized_flow_name)
         .cloned()
@@ -220,6 +241,7 @@ pub fn read_flow_launch_policy(
         .clone()
         .unwrap_or_else(|| LAUNCH_POLICY_DISABLED.to_string());
     Ok(FlowLaunchPolicyState {
+        revision: document.revision,
         name: normalized_flow_name,
         launch_policy: entry.launch_policy,
         effective_launch_policy,
@@ -232,26 +254,14 @@ pub fn set_flow_launch_policy(
     flow_name: &str,
     launch_policy: &str,
 ) -> Result<FlowLaunchPolicyState> {
-    let normalized_flow_name = normalize_flow_name(flow_name)?;
-    let normalized_launch_policy = normalize_launch_policy(launch_policy)?;
-    let mut catalog = load_flow_catalog(config_dir.as_ref())?;
-    let execution_lock = catalog
-        .get(&normalized_flow_name)
-        .and_then(|entry| entry.execution_lock.clone());
-    catalog.insert(
-        normalized_flow_name.clone(),
-        FlowCatalogEntry {
-            launch_policy: Some(normalized_launch_policy.clone()),
-            execution_lock: execution_lock.clone(),
-        },
-    );
-    write_flow_catalog(config_dir, &catalog)?;
-    Ok(FlowLaunchPolicyState {
-        name: normalized_flow_name,
-        launch_policy: Some(normalized_launch_policy.clone()),
-        effective_launch_policy: normalized_launch_policy,
-        execution_lock,
-    })
+    let current = read_flow_launch_policy(config_dir.as_ref(), flow_name)?;
+    set_flow_catalog_entry_revision(
+        config_dir,
+        flow_name,
+        launch_policy,
+        current.execution_lock,
+        &current.revision,
+    )
 }
 
 pub fn set_flow_catalog_entry(
@@ -260,30 +270,77 @@ pub fn set_flow_catalog_entry(
     launch_policy: &str,
     execution_lock: Option<FlowExecutionLockConfig>,
 ) -> Result<FlowLaunchPolicyState> {
-    let normalized_flow_name = normalize_flow_name(flow_name)?;
-    let normalized_launch_policy = normalize_launch_policy(launch_policy)?;
-    let normalized_execution_lock = execution_lock
+    let path = flow_catalog_path(config_dir.as_ref())?;
+    let revision = crate::settings::read_settings_document(&path)?.revision;
+    set_flow_catalog_entry_revision(
+        config_dir,
+        flow_name,
+        launch_policy,
+        execution_lock,
+        &revision,
+    )
+}
+
+/// Resource adapters use the revision observed by their caller, never a fresh revision.
+pub fn set_flow_catalog_entry_revision(
+    config_dir: impl AsRef<Path>,
+    flow_name: &str,
+    launch_policy: &str,
+    execution_lock: Option<FlowExecutionLockConfig>,
+    expected_revision: &str,
+) -> Result<FlowLaunchPolicyState> {
+    let name = normalize_flow_name(flow_name)?;
+    let policy = normalize_launch_policy(launch_policy)?;
+    let execution_lock = execution_lock
         .as_ref()
         .map(normalize_execution_lock_config)
         .transpose()?;
-    let mut catalog = load_flow_catalog(config_dir.as_ref())?;
-    catalog.insert(
-        normalized_flow_name.clone(),
-        FlowCatalogEntry {
-            launch_policy: Some(normalized_launch_policy.clone()),
-            execution_lock: normalized_execution_lock.clone(),
-        },
-    );
-    write_flow_catalog(config_dir, &catalog)?;
+    let path = flow_catalog_path(config_dir)?;
+    let document = crate::settings::read_settings_document(&path)?;
+    if document.revision != expected_revision {
+        return Err(StorageError::SettingsConflict { path });
+    }
+    decode_flow_catalog(&path, &TomlValue::Table(document.values.clone()))?;
+    let mut flows = document
+        .values
+        .get("flows")
+        .and_then(TomlValue::as_table)
+        .cloned()
+        .unwrap_or_default();
+    let mut entry = flows
+        .get(&name)
+        .and_then(TomlValue::as_table)
+        .cloned()
+        .unwrap_or_default();
+    entry.insert("launch_policy".into(), policy.clone().into());
+    if let Some(lock) = &execution_lock {
+        entry.insert(
+            "execution_lock".into(),
+            TomlValue::try_from(lock).map_err(|_| invalid_value("Invalid execution lock."))?,
+        );
+    } else {
+        entry.remove("execution_lock");
+    }
+    flows.insert(name.clone(), TomlValue::Table(entry));
+    let saved = crate::settings::update_settings_section(
+        &path,
+        expected_revision,
+        "flows",
+        Some(TomlValue::Table(flows)),
+        |values| decode_flow_catalog(&path, &TomlValue::Table(values.clone())).map(|_| ()),
+    )?;
     Ok(FlowLaunchPolicyState {
-        name: normalized_flow_name,
-        launch_policy: Some(normalized_launch_policy.clone()),
-        effective_launch_policy: normalized_launch_policy,
-        execution_lock: normalized_execution_lock,
+        revision: saved.revision,
+        name,
+        launch_policy: Some(policy.clone()),
+        effective_launch_policy: policy,
+        execution_lock,
     })
 }
 
 pub fn seed_default_flow_catalog(config_dir: impl AsRef<Path>) -> Result<Vec<String>> {
+    let path = flow_catalog_path(config_dir.as_ref())?;
+    let _lock = crate::settings::lock_document(&path)?;
     let mut catalog = load_flow_catalog(config_dir.as_ref())?;
     let mut missing = Vec::new();
     for flow_name in DEFAULT_AGENT_REQUESTABLE_FLOWS {
@@ -318,7 +375,7 @@ pub fn seed_default_flow_catalog(config_dir: impl AsRef<Path>) -> Result<Vec<Str
         missing.push(normalized_flow_name);
     }
     if !missing.is_empty() {
-        write_flow_catalog(config_dir, &catalog)?;
+        write_flow_catalog_locked(&path, &catalog)?;
     }
     Ok(missing)
 }
@@ -450,10 +507,6 @@ fn json_scalar_to_string(value: Option<&JsonValue>) -> String {
             String::new()
         }
     }
-}
-
-fn toml_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn invalid_value(reason: impl Into<String>) -> StorageError {

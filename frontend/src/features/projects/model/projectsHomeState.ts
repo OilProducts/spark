@@ -39,6 +39,7 @@ export type ConversationStreamEvent =
 export type ConversationStreamDelta = ConversationStreamDeltaEventResponse
 
 export type NormalizedConversationRecord = {
+    model_settings_view?: ConversationSnapshotResponse['model_settings_view']
     schema_version: ConversationSnapshotResponse['schema_version']
     revision: ConversationSnapshotResponse['revision']
     conversation_id: string
@@ -434,6 +435,7 @@ export function hydrateConversationRecordFromSnapshot(
     })
 
     const recordBase: NormalizedConversationRecord = {
+        model_settings_view: snapshot.model_settings_view,
         schema_version: snapshot.schema_version,
         revision: snapshot.revision,
         conversation_id: snapshot.conversation_id,

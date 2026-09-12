@@ -160,6 +160,12 @@ export interface EditorNodeInspectorSessionState {
 export interface EditorSlice {
     editorSidebarWidth: number
     setEditorSidebarWidth: (width: number) => void
+    clientRunPresentation: import('@/features/settings/services/clientPreferences').RunPresentation
+    setClientRunPresentation: (patch: import('@/features/settings/services/clientPreferences').RunPresentation) => void
+    clientPreferencesLoaded: boolean
+    clientFlowEdgePorts: import('@/features/settings/services/clientPreferences').FlowEdgePorts
+    clientFlowNodePositions: import('@/features/settings/services/clientPreferences').FlowNodePositions
+    preferredEditorMode: EditorMode
     editorMode: EditorMode
     setEditorMode: (mode: EditorMode) => void
     rawYamlDraft: string
@@ -198,11 +204,14 @@ export interface EditorSlice {
     setSuppressPreview: (value: boolean) => void
     uiDefaults: UiDefaults
     setUiDefaults: (values: Partial<UiDefaults>) => void
-    setUiDefault: (key: keyof UiDefaults, value: string) => void
     saveState: SaveState
     saveStateVersion: number
     saveErrorMessage: string | null
     saveErrorKind: SaveErrorKind | null
+    preferredAdvancedControls: boolean
+    preferredExpandChildFlows: boolean
+    preferredGraphSettingsOpen: boolean
+    preferredHomeSidebarPrimarySplitRatio: number | null
     editorGraphSettingsPanelOpenByFlow: Record<string, boolean>
     setEditorGraphSettingsPanelOpen: (flowName: string, isOpen: boolean) => void
     editorShowAdvancedFlowMetadataByFlow: Record<string, boolean>

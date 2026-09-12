@@ -33,6 +33,10 @@ export function ProjectSettingsDialog({
     onOpenChange,
 }: ProjectSettingsDialogProps) {
     const {
+        dirty,
+        message,
+        discard,
+        requestOpenChange,
         enabledProfiles,
         settingsError,
         saveError,
@@ -45,7 +49,7 @@ export function ProjectSettingsDialog({
     } = useProjectSettingsDialog(open, projectPath, onOpenChange)
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
+        <Dialog open={open} onOpenChange={(next) => void requestOpenChange(next)}>
             <DialogContent data-testid="project-settings-dialog" className="sm:max-w-md">
                 <DialogHeader>
                     <DialogTitle data-testid="project-settings-title">
@@ -61,7 +65,7 @@ export function ProjectSettingsDialog({
                         <Select
                             value={selectedProfileValue}
                             onValueChange={setSelectedProfileValue}
-                            disabled={isLoading || Boolean(settingsError)}
+                            disabled={isLoading || isSaving || Boolean(settingsError)}
                         >
                             <SelectTrigger
                                 id="project-default-execution-profile"
@@ -91,6 +95,7 @@ export function ProjectSettingsDialog({
                             {settingsError}
                         </p>
                     ) : null}
+                    {message && <p role="status" className="text-xs">{message}</p>}
                     {saveError ? (
                         <p data-testid="project-settings-save-error" className="text-xs text-destructive">
                             {saveError}
@@ -98,13 +103,16 @@ export function ProjectSettingsDialog({
                     ) : null}
                 </div>
                 <DialogFooter>
-                    <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                    <Button type="button" variant="outline" disabled={isSaving || isLoading} onClick={discard}>
+                        Discard and reload
+                    </Button>
+                    <Button type="button" variant="outline" disabled={isSaving} onClick={() => void requestOpenChange(false)}>
                         Cancel
                     </Button>
                     <Button
                         type="button"
                         data-testid="project-settings-save-button"
-                        disabled={!canSave}
+                        disabled={!canSave || !dirty}
                         onClick={() => {
                             void onSave()
                         }}

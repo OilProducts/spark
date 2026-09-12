@@ -43,9 +43,6 @@ type UseConversationComposerArgs = {
     activeProjectPath: string | null
     chatDraft: string
     isChatInputDisabled: boolean
-    provider: string
-    model: string
-    reasoningEffort: string
     ensureConversationId: () => string | null
     getCurrentConversationId: (projectPath: string) => string | null
     getCurrentConversationRevision: (conversationId: string) => number
@@ -65,9 +62,6 @@ export function useConversationComposer({
     activeProjectPath,
     chatDraft,
     isChatInputDisabled,
-    provider,
-    model,
-    reasoningEffort,
     ensureConversationId,
     getCurrentConversationId,
     getCurrentConversationRevision,
@@ -103,6 +97,7 @@ export function useConversationComposer({
                 const snapshot = await updateConversationSettingsValidated(conversationId, {
                     project_path: activeProjectPath,
                     chat_mode: parsedCommand.chatMode,
+                    expected_revision: String(getCurrentConversationRevision(conversationId)),
                 })
                 applyConversationSnapshot(activeProjectPath, snapshot, 'settings-response', {
                     forceWorkspaceSync: true,
@@ -123,9 +118,6 @@ export function useConversationComposer({
             const snapshot = await sendConversationTurnValidated(conversationId, {
                 project_path: activeProjectPath,
                 message: messageToSend,
-                provider: provider.trim() || 'codex',
-                model: model.trim() || null,
-                reasoning_effort: reasoningEffort.trim(),
                 chat_mode: chatMode,
             })
             setPendingConversationTurn(null)

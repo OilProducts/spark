@@ -167,6 +167,7 @@ fn validate_trigger_definition_payload(
     let source = normalize_source(&source_type, &source, None)?;
     let now = iso_now();
     Ok(TriggerDefinition {
+        revision: String::new(),
         id,
         name,
         enabled,

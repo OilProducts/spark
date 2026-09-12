@@ -1,3 +1,4 @@
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useShallow } from 'zustand/react/shallow'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -46,7 +47,7 @@ function RunsSidebar({ activeProjectPath, scopeMode, selectedRunId }: {
             activeProjectPath={activeProjectPath}
             error={error}
             scopeMode={scopeMode}
-            onScopeModeChange={(mode) => useStore.getState().updateRunsListSession({ scopeMode: mode })}
+            onScopeModeChange={(mode) => { useStore.getState().updateRunsListSession({ scopeMode: mode }); completePreferenceInteraction({ runs_scope: mode }) }}
             status={status}
             onSelectRun={(run) => {
                 const state = useStore.getState()
@@ -503,6 +504,7 @@ export function RunsPanel() {
                                     inspectorTab={inspectorTab}
                                     onInspectorTabChange={(tab) => {
                                         patchSelectedRunSession({ inspectorTab: tab })
+                                        useStore.getState().setClientRunPresentation({ inspector_tab: tab })
                                     }}
                                     fillHeight={!isNarrowViewport}
                                     scrollRegionRef={detailsScrollRef}
@@ -514,6 +516,7 @@ export function RunsPanel() {
                                         activityMode={activityMode}
                                         onActivityModeChange={(mode) => {
                                             patchSelectedRunSession({ activityMode: mode })
+                                            useStore.getState().setClientRunPresentation({ activity_mode: mode })
                                         }}
                                         selectedNodeId={selectedNodeId}
                                         onClearNodeSelection={() => {

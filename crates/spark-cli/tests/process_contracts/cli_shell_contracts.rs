@@ -15,17 +15,18 @@ use spark_cli::{
 };
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,task} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,task}\n",
+    "  {convo,run,flow,trigger,task,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
     "    task                Project task management\n",
+    "    settings            Read, validate, and save workspace settings\n",
     "\n",
     "options:\n",
     "  -h, --help            show this help message and exit\n",
@@ -75,7 +76,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
 spark: error: unrecognized arguments: --image direct-selection\n"
     );
 }
@@ -894,7 +895,7 @@ fn flow_format_file_rejects_missing_value_before_option() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
 spark: error: argument --file: expected one argument\n"
     );
 }
@@ -1049,7 +1050,7 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
 spark: error: argument --file: not allowed with argument --flow\n"
     );
 }
@@ -1321,6 +1322,8 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
             "spark",
             "trigger",
             "delete",
+            "--expected-revision",
+            "revision-1",
             "--id",
             "trigger/custom",
             "--base-url",
@@ -1335,7 +1338,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     assert_eq!(delete_request.method, "DELETE");
     assert_eq!(
         delete_request.path,
-        "/workspace/api/triggers/trigger%2Fcustom"
+        "/workspace/api/triggers/trigger%2Fcustom?expected_revision=revision-1"
     );
 
     let _ = fs::remove_dir_all(temp_dir);
@@ -1353,6 +1356,8 @@ fn trigger_http_errors_preserve_cli_stderr_envelope() {
             "spark",
             "trigger",
             "delete",
+            "--expected-revision",
+            "revision-1",
             "--id",
             "protected",
             "--base-url",
@@ -1396,7 +1401,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
 spark: error: argument --goal-file: not allowed with argument --goal\n"
     );
 }
@@ -1649,4 +1654,87 @@ fn task_commands_use_project_scope_and_minimal_payloads() {
             }
         }
     }
+}
+
+#[test]
+fn settings_commands_use_scoped_http_and_preserve_explicit_target_safeguards() {
+    let env = std::collections::BTreeMap::<String, String>::new();
+    let get = spark_cli::request_plan_with_args_env_and_stdin(
+        [
+            "spark",
+            "settings",
+            "get",
+            "--base-url",
+            "http://127.0.0.1:9876",
+        ],
+        &env,
+        "",
+    )
+    .unwrap();
+    assert_eq!(get.method, spark_cli::HttpMethod::Get);
+    assert_eq!(get.path, "/workspace/api/settings");
+    for (command, method, path) in [
+        (
+            "set",
+            spark_cli::HttpMethod::Patch,
+            "/workspace/api/settings",
+        ),
+        (
+            "validate",
+            spark_cli::HttpMethod::Post,
+            "/workspace/api/settings/validate",
+        ),
+    ] {
+        let payload =
+            r#"{"expected_revision":"rev-1","section":"runtime","value":{"flows_dir":"/chosen"}}"#;
+        let plan = spark_cli::request_plan_with_args_env_and_stdin(
+            [
+                "spark",
+                "settings",
+                command,
+                "--base-url",
+                "http://127.0.0.1:9876",
+                "--json",
+                "-",
+            ],
+            &env,
+            payload,
+        )
+        .unwrap();
+        assert_eq!(plan.method, method);
+        assert_eq!(plan.path, path);
+        assert_eq!(plan.body.unwrap()["expected_revision"], "rev-1");
+    }
+    assert!(spark_cli::request_plan_with_args_env_and_stdin(
+        ["spark", "settings", "get"],
+        &env,
+        ""
+    )
+    .is_err());
+}
+
+#[test]
+fn settings_get_encodes_project_and_conversation_scopes() {
+    let env = std::collections::BTreeMap::<String, String>::new();
+    let plan = spark_cli::request_plan_with_args_env_and_stdin(
+        [
+            "spark",
+            "settings",
+            "get",
+            "--base-url",
+            "http://127.0.0.1:9876",
+            "--project",
+            "/tmp/a & b",
+            "--conversation",
+            "chat/1",
+        ],
+        &env,
+        "",
+    )
+    .unwrap();
+    assert_eq!(
+        plan.path,
+        "/workspace/api/settings?project_path=%2Ftmp%2Fa%20%26%20b&conversation_id=chat%2F1"
+    );
+    assert_eq!(plan.method, spark_cli::HttpMethod::Get);
 }

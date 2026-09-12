@@ -82,19 +82,7 @@ fn default_grep_max_results() -> usize {
     100
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentInheritancePolicy {
-    InheritAll,
-    InheritNone,
-    InheritCoreOnly,
-}
-
-impl Default for EnvironmentInheritancePolicy {
-    fn default() -> Self {
-        Self::InheritCoreOnly
-    }
-}
+pub use spark_common::agent_settings::EnvironmentInheritancePolicy;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommandOptions {

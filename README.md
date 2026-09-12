@@ -26,7 +26,7 @@ spark-server service status
 spark-server service remove
 ```
 
-By default, runtime data lives under `~/.spark`. Set `SPARK_HOME` to use a different runtime tree.
+By default, runtime data lives under `~/.spark`. Set `SPARK_HOME` to use a different runtime tree. See [persisted settings](docs/configuration.md) for the supported configuration scopes, revision-checked saves, and migration boundaries.
 
 ## Development
 

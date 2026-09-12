@@ -90,6 +90,13 @@ fn project_registry_updates_optional_state_and_deletes_project_handles() {
                 is_favorite: Some(true),
                 active_conversation_id: Some(Some("conversation-1".to_string())),
                 execution_profile_id: Some(Some("native".to_string())),
+                expected_revision: Some(
+                    spark_storage::settings::read_settings_document(
+                        &registry.project_paths(project_path).unwrap().project_file,
+                    )
+                    .unwrap()
+                    .revision,
+                ),
                 ..ProjectRecordUpdate::default()
             },
         )
@@ -304,12 +311,16 @@ fn initialization_repairs_records_and_preserves_legacy_defaults() {
     assert!(!repaired.created_at.is_empty());
     assert_eq!(repaired.created_at, repaired.last_opened_at);
 
+    let valid = fs::read(&paths.project_file).unwrap();
     fs::write(&paths.project_file, "not valid toml [").unwrap();
-    registry.ensure_project_paths(path).unwrap();
-    let repaired = registry.read_project_record(path).unwrap().unwrap();
-    assert_eq!(repaired.display_name, "repair");
-    assert!(!repaired.is_favorite);
-    assert_eq!(repaired.execution_profile_id, None);
+    // Project metadata now owns authored configuration; invalid TOML cannot be
+    // repaired by silently dropping settings and reverting to built-in defaults.
+    assert!(registry.ensure_project_paths(path).is_err());
+    assert_eq!(
+        fs::read_to_string(&paths.project_file).unwrap(),
+        "not valid toml ["
+    );
+    fs::write(&paths.project_file, valid).unwrap();
 
     let mut payload: toml::Value = fs::read_to_string(&paths.project_file)
         .unwrap()

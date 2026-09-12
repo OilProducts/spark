@@ -409,9 +409,6 @@ export function useProjectsHomeController() {
         activeProjectPath,
         chatDraft,
         isChatInputDisabled: isChatSubmissionDisabled,
-        model: activeProjectChatModel,
-        provider: activeProjectChatProvider,
-        reasoningEffort: activeProjectChatReasoningEffort,
         ensureConversationId,
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
@@ -443,6 +440,7 @@ export function useProjectsHomeController() {
         try {
             const snapshot = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
+                expected_revision: String(conversationCacheRef.current.conversationsById[conversationId]?.revision ?? 0),
                 provider: values.provider.trim() || 'codex',
                 model: values.model.trim() || null,
                 reasoning_effort: values.reasoningEffort.trim() || '',
@@ -458,7 +456,7 @@ export function useProjectsHomeController() {
             // in flight with its own optimistic state.
             setPendingChatSettings((current) => (current === values ? null : current))
         }
-    }, [activeProjectPath, applyConversationSnapshot, ensureConversationId, setPanelError])
+    }, [activeProjectPath, applyConversationSnapshot, ensureConversationId, setPanelError, conversationCacheRef])
 
     const onChatModelChange = useCallback((value: string) => {
         void persistChatSettings({
@@ -475,6 +473,19 @@ export function useProjectsHomeController() {
             reasoningEffort: activeProjectChatReasoningEffort,
         })
     }, [activeProjectChatReasoningEffort, persistChatSettings])
+
+    const onUseModelDefaults = async () => {
+        if (!activeProjectPath || !activeConversationId || pendingChatSettings) return
+        setPendingChatSettings({ provider: activeProjectChatProvider, model: activeProjectChatModel, reasoningEffort: activeProjectChatReasoningEffort })
+        try {
+            const snapshot = await updateConversationSettingsValidated(activeConversationId, {
+                project_path: activeProjectPath,
+                expected_revision: String(activeConversationRecord?.revision ?? 0), model_settings: null,
+            })
+            applyConversationSnapshot(activeProjectPath, snapshot, 'model-defaults-response', { forceWorkspaceSync: true })
+        } catch (error) { setPanelError(extractApiErrorMessage(error, 'Unable to use model defaults.')) }
+        finally { setPendingChatSettings(null) }
+    }
 
     const onChatReasoningEffortChange = useCallback((value: string) => {
         void persistChatSettings({
@@ -632,6 +643,8 @@ export function useProjectsHomeController() {
             onChatModelChange,
             onChatProviderChange,
             onChatReasoningEffortChange,
+            modelSettingsSource: activeConversationRecord?.model_settings_view?.source,
+            onUseModelDefaults,
         },
     }
 }

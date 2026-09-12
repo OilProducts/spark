@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const DEFAULT_WORKING_DIRECTORY = './test-app'
 const TEST_GRAPH_FLOW = 'test-graph.yaml'
+let serverModels = { provider: 'openai' as string | null, llm_profile: null as string | null, model: 'gpt-5.3' as string | null, reasoning_effort: 'high' as string | null }
+let settingsRevision = 1
 
 const resetGraphSettingsState = () => {
   {
@@ -46,6 +48,9 @@ flowMetadataUserEditVersion: 0,
 graphAttrs: {},
 graphAttrErrors: {},
 graphAttrsUserEditVersion: 0,
+preferredAdvancedControls: false,
+preferredExpandChildFlows: false,
+preferredGraphSettingsOpen: false,
 editorGraphSettingsPanelOpenByFlow: {},
 editorShowAdvancedFlowMetadataByFlow: {},
 editorShowAdvancedGraphAttrsByFlow: {},
@@ -74,6 +79,8 @@ const wrapWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{nod
 describe('Graph and settings behavior', () => {
   beforeEach(() => {
     resetGraphSettingsState()
+    serverModels = { provider: 'openai', llm_profile: null, model: 'gpt-5.3', reasoning_effort: 'high' }
+    settingsRevision = 1
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -83,11 +90,21 @@ describe('Graph and settings behavior', () => {
             ? input.toString()
             : input.url
         const method = init?.method ?? 'GET'
+        if (url.endsWith('/workspace/api/settings')) {
+          if (method === 'PATCH') {
+            const body = JSON.parse(String(init?.body))
+            if (body.expected_revision !== String(settingsRevision)) return Response.json({ detail: 'Settings changed.' }, { status: 409 })
+            serverModels = body.value
+            settingsRevision += 1
+          }
+          return Response.json({ models: { scope: 'workspace', source: 'workspace', revision: String(settingsRevision), stored: serverModels, effective: serverModels } })
+        }
         if (url.includes('/workspace/api/flows/') && url.includes('/launch-policy') && method === 'PUT') {
           const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {}
           return new Response(
             JSON.stringify({
               name: TEST_GRAPH_FLOW,
+              revision: 'catalog-revision',
               launch_policy: body.launch_policy ?? 'agent_requestable',
               effective_launch_policy: body.launch_policy ?? 'agent_requestable',
               execution_lock: body.execution_lock ?? null,
@@ -107,6 +124,7 @@ describe('Graph and settings behavior', () => {
               name: TEST_GRAPH_FLOW,
               title: 'Implement From Plan File',
               description: 'Snapshot a plan file, implement it, and iterate until complete.',
+              revision: 'catalog-revision',
               launch_policy: null,
               effective_launch_policy: 'disabled',
               execution_lock: null,
@@ -130,79 +148,61 @@ describe('Graph and settings behavior', () => {
     vi.unstubAllGlobals()
   })
 
-  it('persists global dropdown selections and reasoning effort immediately', async () => {
+  it('keeps model edits local until explicit Save and clears incompatible fields on provider changes', async () => {
     const user = userEvent.setup()
     useStore.setState({ activeProjectPath: null })
     render(<SettingsPanel />)
-
     const provider = screen.getByLabelText('Default LLM Provider')
-    const model = screen.getByLabelText('Default LLM Model')
-    expect(within(model).getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
+    await waitFor(() => expect(provider).toBeEnabled())
     await user.selectOptions(provider, 'anthropic')
-    expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
-    expect(screen.getByLabelText('Custom model')).toHaveValue('gpt-5.3')
-    expect(within(model).queryByRole('option', { name: 'gpt-5.4' })).toBeNull()
-    await user.selectOptions(model, 'model:claude-sonnet-4-6')
+    expect(screen.getByLabelText('Default LLM Model')).toHaveValue('')
+    expect(serverModels.provider).toBe('openai')
+    await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'model:claude-sonnet-4-6')
     await user.selectOptions(screen.getByLabelText('Default Reasoning Effort'), 'xhigh')
-
-    expect(useStore.getState().uiDefaults).toEqual({
-      llm_provider: 'anthropic',
-      llm_model: 'claude-sonnet-4-6',
-      llm_profile: '',
-      reasoning_effort: 'xhigh',
-    })
-    expect(JSON.parse(localStorage.getItem('spark.ui_defaults')!)).toEqual(useStore.getState().uiDefaults)
-    await user.selectOptions(model, '')
-    expect(useStore.getState().uiDefaults.llm_model).toBe('')
-    await user.selectOptions(provider, '')
-    expect(useStore.getState().uiDefaults.llm_provider).toBe('')
-    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('chat-models'))).toBe(false)
+    expect(useStore.getState().uiDefaults.llm_provider).toBe('openai')
+    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await screen.findByText('Saved. Applies to the next message.')
+    expect(serverModels).toEqual({ provider: 'anthropic', llm_profile: null, model: 'claude-sonnet-4-6', reasoning_effort: 'xhigh' })
+    await user.selectOptions(provider, 'codex')
+    await user.click(screen.getByRole('button', { name: 'Discard model changes' }))
+    await waitFor(() => expect(provider).toHaveValue('anthropic'))
   })
 
-  it('keeps saved unlisted providers and models editable and supports custom entry', async () => {
+  it('keeps custom model drafts through failed saves and reloads persisted values on Discard', async () => {
     const user = userEvent.setup()
-    useStore.setState({ activeProjectPath: null, uiDefaults: {
-      llm_provider: 'private-provider', llm_profile: '', llm_model: 'private-model', reasoning_effort: 'high',
-    } })
-    const rendered = render(<SettingsPanel />)
-    expect(screen.getByLabelText('Default LLM Provider')).toHaveValue('private-provider')
-    expect(screen.getByLabelText('Default LLM Model')).toHaveDisplayValue('private-model (custom)')
+    useStore.setState({ activeProjectPath: null })
+    serverModels = { provider: 'openai', llm_profile: null, model: 'private-model', reasoning_effort: 'high' }
+    render(<SettingsPanel />)
+    await waitFor(() => expect(screen.getByLabelText('Custom model')).toBeEnabled())
     await user.clear(screen.getByLabelText('Custom model'))
     await user.type(screen.getByLabelText('Custom model'), 'custom:next')
-    expect(useStore.getState().uiDefaults.llm_model).toBe('custom:next')
-    rendered.unmount()
-    render(<SettingsPanel />)
+    settingsRevision += 1
+    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await screen.findByText(/responded with HTTP 409/)
     expect(screen.getByLabelText('Custom model')).toHaveValue('custom:next')
-    await user.selectOptions(screen.getByLabelText('Default LLM Model'), '')
-    expect(screen.queryByLabelText('Custom model')).toBeNull()
-    await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'custom')
-    expect(useStore.getState().uiDefaults.llm_model).toBe('')
-    await user.type(screen.getByLabelText('Custom model'), 'gpt-5.4-extra')
-    expect(screen.getByLabelText('Custom model')).toHaveValue('gpt-5.4-extra')
-    expect(JSON.parse(localStorage.getItem('spark.ui_defaults')!).llm_model).toBe('gpt-5.4-extra')
+    expect(serverModels.model).toBe('private-model')
+    await user.click(screen.getByRole('button', { name: 'Discard model changes' }))
+    await waitFor(() => expect(screen.getByLabelText('Custom model')).toHaveValue('private-model'))
   })
 
-  it('uses configured profile models and preserves provider/profile mapping and saved missing profiles', async () => {
+  it('uses configured profile models and saves mutually exclusive provider/profile selectors', async () => {
     const user = userEvent.setup()
     const originalFetch = fetch
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('/llm-profiles')) return Promise.resolve(Response.json({ profiles: [{
-        id: 'team', provider: 'openai', models: ['team-model'], default_model: 'team-model', configured: true,
+        id: 'team', provider: 'openai_compatible', models: ['team-model'], default_model: 'team-model', configured: true,
       }] }))
       return originalFetch(input, init)
     }))
-    useStore.setState({ uiDefaults: { llm_provider: '', llm_profile: 'missing-profile', llm_model: 'saved', reasoning_effort: 'high' } })
     render(<SettingsPanel />)
-    expect(screen.getByLabelText('Default LLM Provider')).toHaveValue('missing-profile')
+    await waitFor(() => expect(screen.getByLabelText('Default LLM Provider')).toBeEnabled())
     await screen.findByRole('option', { name: 'team' })
     await user.selectOptions(screen.getByLabelText('Default LLM Provider'), 'team')
-    expect(useStore.getState().uiDefaults).toMatchObject({ llm_provider: '', llm_profile: 'team', llm_model: 'saved' })
+    expect(screen.getByLabelText('Default LLM Model')).toHaveValue('')
     expect(within(screen.getByLabelText('Default LLM Model')).queryByRole('option', { name: 'gpt-5.4' })).toBeNull()
     await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'model:team-model')
-    expect(useStore.getState().uiDefaults.llm_model).toBe('team-model')
-    await user.selectOptions(screen.getByLabelText('Default LLM Provider'), 'openai')
-    expect(useStore.getState().uiDefaults).toMatchObject({ llm_provider: 'openai', llm_profile: '', llm_model: 'team-model' })
-    expect(screen.getByLabelText('Custom model')).toHaveValue('team-model')
+    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await waitFor(() => expect(serverModels).toMatchObject({ provider: null, llm_profile: 'team', model: 'team-model' }))
   })
 
   it('loads provider-dependent discovery without changing saved defaults', async () => {
@@ -220,12 +220,12 @@ describe('Graph and settings behavior', () => {
     ], providers: { codex: { status: 'available', error: null } } })))
     expect(screen.queryByRole('status')).toBeNull()
     expect(useStore.getState().uiDefaults).toEqual(saved)
-    expect(screen.getByRole('option', { name: 'discovered-openai' })).toBeVisible()
+    expect(await screen.findByRole('option', { name: 'discovered-openai' })).toBeVisible()
     expect(screen.queryByRole('option', { name: 'discovered-anthropic' })).toBeNull()
     await user.selectOptions(screen.getByLabelText('Default LLM Provider'), 'anthropic')
     expect(screen.queryByRole('option', { name: 'discovered-openai' })).toBeNull()
     await user.selectOptions(screen.getByLabelText('Default LLM Model'), 'model:discovered-anthropic')
-    expect(JSON.parse(localStorage.getItem('spark.ui_defaults')!).llm_model).toBe('discovered-anthropic')
+    expect(serverModels.model).toBe('gpt-5.3')
   })
 
   it.each(['rejected', 'unavailable'] as const)('shows %s discovery feedback without overwriting defaults', async (failure) => {
@@ -236,7 +236,7 @@ describe('Graph and settings behavior', () => {
         models: [], providers: { codex: { status: 'unavailable', error: 'CLI unavailable' } },
       }))
     }))
-    if (failure === 'unavailable') useStore.setState({ uiDefaults: { ...useStore.getState().uiDefaults, llm_provider: 'codex' } })
+    if (failure === 'unavailable') serverModels.provider = 'codex'
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Model discovery unavailable. Using suggestions.'))
@@ -259,7 +259,7 @@ describe('Graph and settings behavior', () => {
       if (rejectOld) requests[0].reject(new Error('old failure'))
       else requests[0].resolve(payload('stale-model'))
     })
-    expect(screen.getByRole('option', { name: 'current-model' })).toBeVisible()
+    expect(await screen.findByRole('option', { name: 'current-model' })).toBeVisible()
     expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull()
     expect(screen.queryByRole('status')).toBeNull()
     act(() => useStore.setState({ activeProjectPath: null }))
@@ -472,6 +472,8 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByLabelText('Launch Policy')).toHaveValue('disabled')
 
     await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
+    expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: 'Save launch policy' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
@@ -496,6 +498,7 @@ describe('Graph and settings behavior', () => {
     await user.click(screen.getByLabelText('Enable execution lock'))
     await user.type(screen.getByLabelText('Lock Key'), 'main-worktree-integration')
     fireEvent.blur(screen.getByLabelText('Lock Key'))
+    await user.click(screen.getByRole('button', { name: 'Save launch policy' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
@@ -506,6 +509,24 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByLabelText('Lock Scope')).toHaveValue('project')
     expect(screen.getByLabelText('Lock Key')).toHaveValue('main-worktree-integration')
     expect(screen.getByLabelText('Conflict Policy')).toHaveValue('queue')
+  })
+
+  it('retains a stale policy draft and reloads the catalog on Discard', async () => {
+    const user = userEvent.setup()
+    wrapWithFlowProvider(<GraphSettings inline />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Discard launch policy' })).toBeEnabled())
+    await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockResolvedValueOnce(Response.json({ detail: 'Settings changed; reload before saving.' }, { status: 409 }))
+    await user.click(screen.getByRole('button', { name: 'Save launch policy' }))
+    await waitFor(() => expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent('Settings changed'))
+    expect(screen.getByLabelText('Launch Policy')).toHaveValue('agent_requestable')
+    const request = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    expect(JSON.parse(String(request?.[1]?.body)).expected_revision).toBe('catalog-revision')
+    expect(screen.getByRole('button', { name: 'Save launch policy' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Discard launch policy' }))
+    await waitFor(() => expect(screen.getByLabelText('Launch Policy')).toHaveValue('disabled'))
+    expect(screen.getByRole('button', { name: 'Save launch policy' })).toBeDisabled()
   })
 
   it('does not autosave when graph attrs are replaced from hydrated state', async () => {

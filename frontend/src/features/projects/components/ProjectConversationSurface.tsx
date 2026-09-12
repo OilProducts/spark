@@ -47,6 +47,8 @@ interface ProjectConversationSurfaceProps {
     onChatModelChange: (value: string) => void
     onChatProviderChange: (value: string) => void
     onChatReasoningEffortChange: (value: string) => void
+    modelSettingsSource?: 'workspace' | 'project' | 'conversation'
+    onUseModelDefaults?: () => void
 }
 
 export function ProjectConversationSurface({
@@ -79,6 +81,8 @@ export function ProjectConversationSurface({
     onChatModelChange,
     onChatProviderChange,
     onChatReasoningEffortChange,
+    modelSettingsSource,
+    onUseModelDefaults,
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
     const selectedModelValue = chatModelOptions.some((option) => option.value === activeChatModel)
@@ -177,6 +181,8 @@ export function ProjectConversationSurface({
                                     Press Enter to send. Use Shift+Enter for a new line.
                                 </p>
                                 <div className="flex flex-wrap items-center justify-end gap-2">
+                                    {modelSettingsSource && <span className="text-xs text-muted-foreground">{modelSettingsSource === 'conversation' ? 'Conversation override' : modelSettingsSource === 'project' ? 'Project default' : 'Workspace default'}</span>}
+                                    {modelSettingsSource === 'conversation' && onUseModelDefaults && <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>}
                                     <NativeSelect
                                         aria-label="Project chat provider"
                                         data-testid="project-ai-conversation-provider-select"

@@ -22,7 +22,7 @@ use spark_common::segments::{
     request_user_input_answer_summary, set_string_value, set_value,
     should_emit_segment_upsert_for_event, truncate_utf8, upsert_segment,
 };
-use spark_common::settings::SparkSettings;
+use spark_common::settings::{ModelSettings, SparkSettings};
 use spark_storage::conversation::{
     ArtifactCollection, ConversationCommit, ConversationMetadataPatch, ConversationMutation,
     RuntimeSession, TranscriptSegment, TranscriptTurn, TransientStreamBody, TransientStreamEvent,
@@ -61,6 +61,13 @@ pub struct ConversationSummary {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ConversationSettingsUpdate {
+    #[serde(default)]
+    pub expected_revision: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "spark_common::settings::deserialize_nullable_patch"
+    )]
+    pub model_settings: Option<Option<ModelSettings>>,
     pub project_path: String,
     #[serde(default)]
     pub chat_mode: Option<String>,
@@ -250,6 +257,60 @@ impl EnvironmentAgentTurnBackend {
     fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }
+    fn client_for_execution(
+        &self,
+        metadata: &BTreeMap<String, Value>,
+        environment: &BTreeMap<String, String>,
+    ) -> Result<unified_llm_adapter::Client, AgentError> {
+        if let Some(snapshot) = metadata.get("spark.execution.settings") {
+            let profile: Option<unified_llm_adapter::LlmProfile> =
+                serde_json::from_value(snapshot["llm_profile"].clone()).map_err(|_| {
+                    AgentError {
+                        message: "Invalid captured LLM profile.".into(),
+                        retryable: false,
+                        raw: None,
+                    }
+                })?;
+            let profiles = if let Some(profiles) = snapshot.get("llm_profiles") {
+                serde_json::from_value(profiles.clone()).map_err(|_| AgentError {
+                    message: "Invalid captured LLM profiles.".into(),
+                    retryable: false,
+                    raw: None,
+                })?
+            } else {
+                profile
+                    .into_iter()
+                    .map(|profile| (profile.id.clone(), profile))
+                    .collect()
+            };
+            let credential_environment = environment.clone();
+            let env = if let Some(configuration) = snapshot.get("configuration") {
+                let configuration: spark_storage::settings::ExecutionConfiguration =
+                    serde_json::from_value(configuration.clone()).map_err(|_| AgentError {
+                        message: "Invalid captured execution configuration.".into(),
+                        retryable: false,
+                        raw: None,
+                    })?;
+                configuration
+                    .providers
+                    .execution_environment(&credential_environment)
+            } else {
+                credential_environment.clone()
+            };
+            unified_llm_adapter::Client::from_env_map(&env, None)
+                .and_then(|client| {
+                    client.with_profile_definitions(profiles, &credential_environment)
+                })
+                .and_then(|client| client.with_default_provider(None))
+        } else {
+            unified_llm_adapter::Client::from_env_map_and_profiles(
+                environment,
+                &self.config_dir,
+                None,
+            )
+        }
+        .map_err(adapter_error_to_agent_error)
+    }
 }
 
 impl AgentTurnBackend for EnvironmentAgentTurnBackend {
@@ -262,8 +323,7 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let client = unified_llm_adapter::Client::from_env_and_profiles(&self.config_dir, None)
-            .map_err(adapter_error_to_agent_error)?;
+        let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
         RustLlmAgentTurnBackend::new(client).run_turn_with_event_sink(request, event_sink)
     }
 
@@ -271,8 +331,7 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         &self,
         request: AgentRequestUserInputAnswerRequest,
     ) -> Result<AgentTurnOutput, AgentError> {
-        let client = unified_llm_adapter::Client::from_env_and_profiles(&self.config_dir, None)
-            .map_err(adapter_error_to_agent_error)?;
+        let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
         RustLlmAgentTurnBackend::new(client).answer_request_user_input(request)
     }
 }
@@ -502,6 +561,74 @@ impl WorkspaceConversationService {
         Ok(summaries)
     }
 
+    fn explicit_model_group(
+        &self,
+        snapshot: &Value,
+        project_path: &str,
+        provider: Option<&str>,
+        profile: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> WorkspaceResult<Option<ModelSettings>> {
+        if provider.is_none() && profile.is_none() && model.is_none() && effort.is_none() {
+            return Ok(None);
+        }
+        let current = snapshot_model_group(snapshot)?;
+        let (mut group, _) = crate::settings::conversation_model_settings(
+            &self.settings,
+            project_path,
+            current.as_ref(),
+        )?;
+        if profile.is_some()
+            || provider.is_some_and(|value| group.provider.as_deref() != Some(value))
+        {
+            group = ModelSettings {
+                provider: provider.map(str::to_owned),
+                llm_profile: profile.map(str::to_owned),
+                model: None,
+                reasoning_effort: None,
+            };
+            if profile.is_some() {
+                group.provider = None;
+            }
+        }
+        if let Some(value) = model {
+            group.model = non_empty_string(value);
+        }
+        if let Some(value) = effort {
+            group.reasoning_effort = non_empty_string(&validate_reasoning_effort(value)?);
+        }
+        crate::settings::validate_model_settings(&self.settings, &group)?;
+        Ok(Some(group))
+    }
+
+    fn attach_model_settings(&self, snapshot: &mut Value) -> WorkspaceResult<()> {
+        let project_path = snapshot_project_path(snapshot).unwrap_or_default();
+        let group = snapshot_model_group(snapshot)?;
+        let (effective, source) = crate::settings::conversation_model_settings(
+            &self.settings,
+            &project_path,
+            group.as_ref(),
+        )?;
+        snapshot["settings"] = json!({"models": {"scope": "conversation", "revision": snapshot_revision(snapshot).to_string(),
+            "stored": group, "effective": effective, "source": source, "restart_fields": []}});
+        snapshot["provider"] = json!(if let Some(id) = effective.llm_profile.as_deref() {
+            Some(
+                unified_llm_adapter::get_llm_profile(&self.settings.config_dir, id)
+                    .map_err(|_| {
+                        WorkspaceError::Validation("Unable to load selected LLM profile.".into())
+                    })?
+                    .provider,
+            )
+        } else {
+            effective.provider
+        });
+        snapshot["llm_profile"] = json!(effective.llm_profile);
+        snapshot["model"] = json!(effective.model);
+        snapshot["reasoning_effort"] = json!(effective.reasoning_effort);
+        Ok(())
+    }
+
     pub fn get_snapshot(
         &self,
         conversation_id: &str,
@@ -550,6 +677,7 @@ impl WorkspaceConversationService {
             }
         }
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+        self.attach_model_settings(&mut snapshot)?;
         Ok(snapshot)
     }
 
@@ -558,6 +686,8 @@ impl WorkspaceConversationService {
         conversation_id: &str,
         request: ConversationSettingsUpdate,
     ) -> WorkspaceResult<Value> {
+        let _references =
+            spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = normalize_project_path_or_400(&request.project_path)?;
         let chat_mode = request
             .chat_mode
@@ -594,6 +724,50 @@ impl WorkspaceConversationService {
         }
 
         let base_revision = snapshot_revision(&snapshot);
+        let changes_models = request.model_settings.is_some()
+            || request.provider.is_some()
+            || request.llm_profile.is_some()
+            || request.model.is_some()
+            || request.reasoning_effort.is_some();
+        if (changes_models || chat_mode.is_some()) && request.expected_revision.is_none() {
+            return Err(WorkspaceError::Validation(
+                "expected_revision is required for conversation settings updates.".into(),
+            ));
+        }
+        if request
+            .expected_revision
+            .as_ref()
+            .is_some_and(|value| value != &base_revision.to_string())
+        {
+            return Err(WorkspaceError::Conflict(
+                "Conversation settings changed; reload before saving.".into(),
+            ));
+        }
+        let group_patch = if let Some(group) = request.model_settings {
+            if request.provider.is_some()
+                || request.llm_profile.is_some()
+                || request.model.is_some()
+                || request.reasoning_effort.is_some()
+            {
+                return Err(WorkspaceError::Validation(
+                    "Send a model_settings group or individual selectors, not both.".into(),
+                ));
+            }
+            if let Some(value) = group.as_ref() {
+                crate::settings::validate_model_settings(&self.settings, value)?;
+            }
+            Some(group)
+        } else {
+            self.explicit_model_group(
+                &snapshot,
+                &project_path,
+                provider.as_deref(),
+                normalized_profile.as_deref(),
+                request.model.as_deref(),
+                request.reasoning_effort.as_deref(),
+            )?
+            .map(Some)
+        };
         let current_chat_mode = normalize_chat_mode(
             snapshot
                 .get("chat_mode")
@@ -601,7 +775,10 @@ impl WorkspaceConversationService {
                 .unwrap_or("chat"),
         );
         let mut mutations = Vec::new();
-        let mut patch = ConversationMetadataPatch::default();
+        let mut patch = ConversationMetadataPatch {
+            model_settings: group_patch,
+            ..Default::default()
+        };
         if let Some(chat_mode) = chat_mode {
             if chat_mode != current_chat_mode {
                 mutations.push(turn_mutation_from_value(&mode_change_turn_value(
@@ -628,6 +805,7 @@ impl WorkspaceConversationService {
         if mutations.is_empty() {
             let mut snapshot = snapshot;
             prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+            self.attach_model_settings(&mut snapshot)?;
             return Ok(snapshot);
         }
         let commit = commit_conversation_mutations(
@@ -639,6 +817,7 @@ impl WorkspaceConversationService {
         )?;
         let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+        self.attach_model_settings(&mut snapshot)?;
         Ok(snapshot)
     }
 
@@ -647,6 +826,8 @@ impl WorkspaceConversationService {
         conversation_id: &str,
         request: ConversationTurnRequest,
     ) -> WorkspaceResult<(PreparedConversationTurn, Value)> {
+        let _references =
+            spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = normalize_project_path_or_400(&request.project_path)?;
         let message = non_empty_string(&request.message)
             .ok_or_else(|| WorkspaceError::Validation("Message is required.".to_string()))?;
@@ -660,12 +841,6 @@ impl WorkspaceConversationService {
             .as_deref()
             .map(validate_provider)
             .transpose()?;
-        let reasoning_effort = request
-            .reasoning_effort
-            .as_deref()
-            .map(validate_reasoning_effort)
-            .transpose()?;
-        let normalized_model = request.model.as_deref().and_then(non_empty_string);
         let normalized_profile = request.llm_profile.as_deref().and_then(non_empty_string);
 
         let repository = self.repository();
@@ -699,63 +874,81 @@ impl WorkspaceConversationService {
             settings_patch.chat_mode = Some(effective_chat_mode.clone());
         }
         set_string(&mut snapshot, "chat_mode", &effective_chat_mode);
-        if request.provider.is_some() {
-            let effective = provider.as_deref().unwrap_or("codex").to_string();
-            set_string(&mut snapshot, "provider", &effective);
-            settings_patch.provider = Some(effective);
+        let explicit = self.explicit_model_group(
+            &snapshot,
+            &project_path,
+            provider.as_deref(),
+            normalized_profile.as_deref(),
+            request.model.as_deref(),
+            request.reasoning_effort.as_deref(),
+        )?;
+        if let Some(group) = explicit.as_ref() {
+            settings_patch.model_settings = Some(Some(group.clone()));
+            snapshot["model_settings"] = json!(group);
         }
-        if request.model.is_some() {
-            set_optional_string(&mut snapshot, "model", normalized_model.as_deref());
-            settings_patch.model = Some(normalized_model.clone());
+        let group = snapshot_model_group(&snapshot)?;
+        let (effective, source) = crate::settings::conversation_model_settings(
+            &self.settings,
+            &project_path,
+            group.as_ref(),
+        )?;
+        let profile_contents = effective
+            .llm_profile
+            .as_deref()
+            .map(|id| {
+                unified_llm_adapter::get_llm_profile(&self.settings.config_dir, id).map_err(|_| {
+                    WorkspaceError::Validation("Unable to load selected LLM profile.".into())
+                })
+            })
+            .transpose()?;
+        let effective_provider = effective
+            .provider
+            .clone()
+            .or_else(|| {
+                profile_contents
+                    .as_ref()
+                    .map(|profile| profile.provider.clone())
+            })
+            .unwrap_or_else(|| "codex".into());
+        let effective_model = effective.model.clone().or_else(|| {
+            profile_contents
+                .as_ref()
+                .and_then(|profile| profile.default_model.clone())
+        });
+        let effective_profile = effective.llm_profile.clone();
+        let effective_reasoning_effort = effective.reasoning_effort.clone();
+        let mut configuration = spark_storage::settings::read_execution_configuration(
+            &self.settings.config_dir,
+            &spark_common::paths::ProcessEnvironment,
+        )?;
+        configuration.retain_startup_settings(&self.settings);
+        spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
+        let profile_definitions = unified_llm_adapter::load_llm_profiles(&self.settings.config_dir)
+            .map_err(|_| {
+                WorkspaceError::Validation(
+                    "Unable to load LLM profiles; check llm-profiles.toml.".into(),
+                )
+            })?;
+        let execution_settings = json!({"configuration": configuration, "llm_profiles": profile_definitions, "model_settings": effective, "source": source, "llm_profile": profile_contents, "chat_mode": effective_chat_mode});
+        // Compatibility projection only; new turns resolve the authored group above.
+        if snapshot["provider"] != json!(effective_provider) {
+            settings_patch.provider = Some(effective_provider.clone());
         }
-        if request.llm_profile.is_some() {
-            set_optional_string(&mut snapshot, "llm_profile", normalized_profile.as_deref());
-            settings_patch.llm_profile = Some(normalized_profile.clone());
+        if snapshot["model"] != json!(effective_model) {
+            settings_patch.model = Some(effective_model.clone());
         }
-        if request.reasoning_effort.is_some() {
-            set_optional_string(
-                &mut snapshot,
-                "reasoning_effort",
-                reasoning_effort.as_deref(),
-            );
-            settings_patch.reasoning_effort = Some(reasoning_effort.clone());
+        if snapshot["llm_profile"] != json!(effective_profile) {
+            settings_patch.llm_profile = Some(effective_profile.clone());
         }
-
-        let effective_provider = snapshot
-            .get("provider")
-            .and_then(Value::as_str)
-            .map(validate_provider)
-            .transpose()?
-            .unwrap_or_else(|| "codex".to_string());
-        let effective_model = snapshot
-            .get("model")
-            .and_then(Value::as_str)
-            .and_then(non_empty_string);
-        let effective_profile = snapshot
-            .get("llm_profile")
-            .and_then(Value::as_str)
-            .and_then(non_empty_string);
-        let effective_reasoning_effort = snapshot
-            .get("reasoning_effort")
-            .and_then(Value::as_str)
-            .and_then(non_empty_string);
-        if ((effective_profile.is_some()
-            && !matches!(effective_provider.as_str(), "codex" | "claude-code"))
-            || matches!(
-                effective_provider.as_str(),
-                "openrouter" | "litellm" | "openai_compatible"
-            ))
-            && effective_model.is_none()
-        {
-            return Err(WorkspaceError::Validation(format!(
-                "Provider {effective_provider} requires an explicit model."
-            )));
+        if snapshot["reasoning_effort"] != json!(effective_reasoning_effort) {
+            settings_patch.reasoning_effort = Some(effective_reasoning_effort.clone());
         }
         if active_assistant_turn_id(&snapshot).is_some() {
             return Err(WorkspaceError::Conflict(
                 ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
             ));
         }
+        snapshot["provider"] = json!(effective_provider);
         let previous_app_thread_id = resume_runtime_session_thread_id(
             &repository,
             conversation_id,
@@ -778,6 +971,7 @@ impl WorkspaceConversationService {
             "timestamp": iso_now(),
             "status": "pending",
             "kind": "message",
+            "execution_settings": execution_settings,
             "parent_turn_id": user_turn.get("id").and_then(Value::as_str).unwrap_or(""),
         });
         let user_turn_id = user_turn
@@ -816,6 +1010,7 @@ impl WorkspaceConversationService {
                 json!(assistant_turn_id.clone()),
             ),
         ]);
+        metadata.insert("spark.execution.settings".into(), execution_settings);
         if let Some(thread_id) = previous_app_thread_id.as_deref() {
             let key = if effective_provider == "claude-code" {
                 "spark.runtime.claude_code.session_id"
@@ -824,7 +1019,11 @@ impl WorkspaceConversationService {
             };
             metadata.insert(key.to_string(), json!(thread_id));
         }
-        if codex_jsonrpc_trace_enabled() {
+        if metadata["spark.execution.settings"]["configuration"]["agents"]["native"]
+            ["codex_jsonrpc_trace"]
+            .as_bool()
+            .unwrap_or_else(codex_jsonrpc_trace_enabled)
+        {
             if let Some(trace_path) = repository
                 .conversation_codex_jsonrpc_trace_path(conversation_id, Some(&project_path))?
             {
@@ -874,6 +1073,7 @@ impl WorkspaceConversationService {
             agent_turn_request,
         };
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+        self.attach_model_settings(&mut snapshot)?;
         Ok((prepared, snapshot))
     }
 
@@ -1308,27 +1508,48 @@ impl WorkspaceConversationService {
                     "Conversation input request is missing its assistant turn.".to_string(),
                 )
             })?;
+        let captured = snapshot
+            .get("turns")
+            .and_then(Value::as_array)
+            .and_then(|turns| turns.iter().find(|turn| turn["id"] == assistant_turn_id))
+            .and_then(|turn| turn.get("execution_settings"))
+            .cloned();
+        let mut selection = snapshot.clone();
+        if let Some(captured) = captured.as_ref() {
+            let group = &captured["model_settings"];
+            selection["provider"] = group["provider"]
+                .as_str()
+                .map(|value| json!(value))
+                .unwrap_or_else(|| captured["llm_profile"]["provider"].clone());
+            selection["model"] = group["model"]
+                .as_str()
+                .map(|value| json!(value))
+                .unwrap_or_else(|| captured["llm_profile"]["default_model"].clone());
+            selection["llm_profile"] = group["llm_profile"].clone();
+            selection["reasoning_effort"] = group["reasoning_effort"].clone();
+            selection["chat_mode"] = captured["chat_mode"].clone();
+        }
         let effective_chat_mode = normalize_chat_mode(
-            snapshot
+            selection
                 .get("chat_mode")
                 .and_then(Value::as_str)
                 .unwrap_or("chat"),
         );
-        let effective_provider = snapshot
+        let effective_provider = selection
             .get("provider")
             .and_then(Value::as_str)
             .map(validate_provider)
             .transpose()?
             .unwrap_or_else(|| "codex".to_string());
-        let effective_model = snapshot
+        let effective_model = selection
             .get("model")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        let effective_profile = snapshot
+        let effective_profile = selection
             .get("llm_profile")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        let effective_reasoning_effort = snapshot
+        let effective_reasoning_effort = selection
             .get("reasoning_effort")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
@@ -1355,13 +1576,19 @@ impl WorkspaceConversationService {
         )?;
         snapshot = answered_commit.snapshot;
 
-        let answer_trace_path = if codex_jsonrpc_trace_enabled() {
+        let answer_trace_path = if captured
+            .as_ref()
+            .and_then(|value| {
+                value["configuration"]["agents"]["native"]["codex_jsonrpc_trace"].as_bool()
+            })
+            .unwrap_or_else(codex_jsonrpc_trace_enabled)
+        {
             repository
                 .conversation_codex_jsonrpc_trace_path(conversation_id, Some(&project_path))?
         } else {
             None
         };
-        let answer_metadata = request_user_input_answer_metadata(
+        let mut answer_metadata = request_user_input_answer_metadata(
             &segment,
             &request_record,
             &assistant_turn_id,
@@ -1371,6 +1598,9 @@ impl WorkspaceConversationService {
             answer_trace_path.as_deref(),
         );
 
+        if let Some(captured) = captured {
+            answer_metadata.insert("spark.execution.settings".into(), captured);
+        }
         let answer_request = AgentRequestUserInputAnswerRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
@@ -5423,32 +5653,13 @@ fn normalize_chat_mode(value: &str) -> String {
     }
 }
 
-fn validate_provider(value: &str) -> WorkspaceResult<String> {
-    let normalized = value.trim().to_lowercase();
-    let normalized = if normalized.is_empty() {
-        "codex".to_string()
-    } else {
-        normalized
-    };
-    match normalized.as_str() {
-        "codex" | "claude-code" | "openai" | "anthropic" | "gemini" | "openrouter" | "litellm"
-        | "openai_compatible" => Ok(normalized),
-        _ => Err(WorkspaceError::Validation(
-            "Provider must be blank or one of: codex, claude-code, openai, anthropic, gemini, openrouter, litellm, openai_compatible."
-                .to_string(),
-        )),
-    }
+pub(crate) fn validate_provider(value: &str) -> WorkspaceResult<String> {
+    spark_agent_adapter::config::validate_provider(value).map_err(WorkspaceError::Validation)
 }
 
-fn validate_reasoning_effort(value: &str) -> WorkspaceResult<String> {
-    let normalized = value.trim().to_lowercase();
-    if normalized.is_empty() || matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
-        Ok(normalized)
-    } else {
-        Err(WorkspaceError::Validation(
-            "Reasoning effort must be blank or one of: low, medium, high, xhigh.".to_string(),
-        ))
-    }
+pub(crate) fn validate_reasoning_effort(value: &str) -> WorkspaceResult<String> {
+    spark_agent_adapter::config::validate_reasoning_effort(value)
+        .map_err(WorkspaceError::Validation)
 }
 
 fn normalize_project_path_or_400(project_path: &str) -> WorkspaceResult<String> {
@@ -5489,15 +5700,6 @@ fn set_string(snapshot: &mut Value, key: &str, value: &str) {
     }
 }
 
-fn set_optional_string(snapshot: &mut Value, key: &str, value: Option<&str>) {
-    if let Some(object) = snapshot.as_object_mut() {
-        object.insert(
-            key.to_string(),
-            value.map(|value| json!(value)).unwrap_or(Value::Null),
-        );
-    }
-}
-
 fn iso_now() -> String {
     let now = OffsetDateTime::now_utc();
     format!(
@@ -5509,4 +5711,52 @@ fn iso_now() -> String {
         now.minute(),
         now.second()
     )
+}
+
+fn snapshot_model_group(snapshot: &Value) -> WorkspaceResult<Option<ModelSettings>> {
+    serde_json::from_value(
+        snapshot
+            .get("model_settings")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|_| WorkspaceError::Validation("Invalid conversation model_settings group.".into()))
+}
+
+#[cfg(test)]
+mod captured_credential_tests {
+    use super::*;
+
+    #[test]
+    fn provider_aliases_do_not_supply_credentials_to_unrelated_profile_references() {
+        let backend = EnvironmentAgentTurnBackend::new(PathBuf::from("/unused-captured-config"));
+        let metadata = BTreeMap::from([(
+            "spark.execution.settings".into(),
+            json!({
+                "configuration": {"providers": {"openai": {"api_key_env": "TEAM_KEY", "base_url": "http://localhost:1"}}, "agents": {}},
+                "llm_profile": null,
+                "llm_profiles": {"separate": {"id": "separate", "provider": "openai_compatible", "base_url": "http://localhost:1", "models": ["test-model"], "api_key_env": "OPENAI_API_KEY"}}
+            }),
+        )]);
+        let client = backend
+            .client_for_execution(
+                &metadata,
+                &BTreeMap::from([("TEAM_KEY".into(), "NEVER_EXPOSE_THIS_VALUE".into())]),
+            )
+            .unwrap();
+        let error = client
+            .complete(unified_llm_adapter::Request {
+                provider: Some("separate".into()),
+                model: "test-model".into(),
+                messages: vec![unified_llm_adapter::Message::user("test")],
+                ..Default::default()
+            })
+            .unwrap_err();
+        assert_eq!(
+            error.kind,
+            unified_llm_adapter::AdapterErrorKind::Configuration
+        );
+        assert!(error.message.contains("OPENAI_API_KEY"));
+        assert!(!error.message.contains("NEVER_EXPOSE_THIS_VALUE"));
+    }
 }

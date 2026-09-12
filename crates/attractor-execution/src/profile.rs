@@ -45,6 +45,7 @@ impl ExecutionProfileSettings for ExecutionProfileConfigRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionProfile {
     pub id: String,
     pub label: String,
@@ -91,6 +92,18 @@ pub struct ExecutionProfileGraph {
     pub synthesized_native_default: bool,
 }
 
+impl ExecutionProfileGraph {
+    /// Editing a document validates its default; explicit historical selections
+    /// still resolve independently of a subsequently changed workspace default.
+    pub fn validate_default(&self) -> Result<(), ExecutionProfileConfigError> {
+        if let Some(id) = self.default_execution_profile_id.as_deref() {
+            validate_selected_profile(self, id)
+                .map_err(|error| ExecutionProfileConfigError::new(error.message))?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecutionProfileSelection {
     pub profile: ExecutionProfile,
@@ -133,13 +146,17 @@ pub fn load_execution_profile_config(
         )
     })?;
     let raw = raw_text.parse::<toml::Value>().map_err(|source| {
-        ExecutionProfileConfigError::with_source(
-            format!("invalid {EXECUTION_PROFILES_FILENAME}: {source}"),
-            source,
-        )
+        // Do not retain the parser error: its Display and Debug include source values.
+        let position = source
+            .span()
+            .map(|span| format!(" near byte {}", span.start))
+            .unwrap_or_default();
+        ExecutionProfileConfigError::new(format!(
+            "invalid {EXECUTION_PROFILES_FILENAME}: malformed TOML{position}; check document syntax"
+        ))
     })?;
     let table = raw.as_table().cloned().unwrap_or_default();
-    let graph = normalize_graph(&table)?;
+    let graph = parse_execution_profiles(&table)?;
     let selected_profile_id = first_profile_id([
         explicit_profile_id,
         project_default_profile_id,
@@ -202,7 +219,9 @@ pub fn resolve_execution_profile_by_id(
     })
 }
 
-fn normalize_graph(raw: &Table) -> Result<ExecutionProfileGraph, ExecutionProfileConfigError> {
+pub fn parse_execution_profiles(
+    raw: &Table,
+) -> Result<ExecutionProfileGraph, ExecutionProfileConfigError> {
     let mut field_errors = Vec::new();
     let defaults = table_field(raw, "defaults", &mut field_errors);
     let profiles = table_field(raw, "profiles", &mut field_errors);
@@ -212,11 +231,23 @@ fn normalize_graph(raw: &Table) -> Result<ExecutionProfileGraph, ExecutionProfil
     if !field_errors.is_empty() {
         return Err(ExecutionProfileConfigError::with_field_errors(field_errors));
     }
-    Ok(ExecutionProfileGraph {
+    let graph = ExecutionProfileGraph {
         profiles,
         default_execution_profile_id,
         synthesized_native_default: false,
-    })
+    };
+    for profile in graph.profiles.values() {
+        crate::container::profile_mounts(profile).map_err(|_| {
+            ExecutionProfileConfigError::with_field_errors(vec![
+                ExecutionProfileFieldError::for_profile(
+                    profile.id.clone(),
+                    format!("profiles.{}.metadata.container.mounts", profile.id),
+                    "Mounts must be an array of nonempty host:container[:options] strings.",
+                ),
+            ])
+        })?;
+    }
+    Ok(graph)
 }
 
 fn table_field(
@@ -282,6 +313,17 @@ fn load_profiles(
             continue;
         };
         let start_error_count = field_errors.len();
+        if raw_profile
+            .get("metadata")
+            .is_some_and(|value| !value.is_table())
+        {
+            profile_error(
+                field_errors,
+                &normalized_id,
+                "metadata",
+                "metadata must be a table",
+            );
+        }
         let mode = profile_mode(raw_profile, &normalized_id, field_errors);
         let enabled = optional_bool(raw_profile, &normalized_id, field_errors);
         let label = required_profile_text(raw_profile, "label", &normalized_id, field_errors);

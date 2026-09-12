@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use spark_desktop::desktop_core::{
-    bootstrap_desktop_runtime, default_spark_data_dir, desktop_config_file, frontend_url_for_addr,
-    is_app_owned_data_dir, load_desktop_settings, server_host_for_settings,
-    set_remote_access_enabled, settings_view, start_desktop_server, DesktopPaths,
-    DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
+    bootstrap_desktop_runtime, core_config_file, default_spark_data_dir, desktop_config_file,
+    desktop_settings_revision, frontend_url_for_addr, is_app_owned_data_dir, load_desktop_settings,
+    server_host_for_settings, set_remote_access_enabled, settings_view, start_desktop_server,
+    DesktopPaths, DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
 };
 use spark_storage::ConversationRepository;
 
@@ -61,16 +61,34 @@ fn remote_toggle_maps_to_local_or_remote_bind_host_and_requires_confirmation() {
 
     let default_settings = load_desktop_settings(&paths).expect("default settings");
     assert_eq!(server_host_for_settings(&default_settings), LOCAL_BIND_HOST);
-    assert!(set_remote_access_enabled(&paths, true, false).is_err());
+    assert!(set_remote_access_enabled(
+        &paths,
+        true,
+        false,
+        &desktop_settings_revision(&paths).unwrap()
+    )
+    .is_err());
 
-    let enabled = set_remote_access_enabled(&paths, true, true).expect("enable remote");
+    let enabled = set_remote_access_enabled(
+        &paths,
+        true,
+        true,
+        &desktop_settings_revision(&paths).unwrap(),
+    )
+    .expect("enable remote");
     assert_eq!(server_host_for_settings(&enabled), REMOTE_BIND_HOST);
-    assert_eq!(
-        fs::read_to_string(desktop_config_file(&paths)).expect("desktop config"),
-        "{\n  \"remote_access_enabled\": true\n}\n"
-    );
+    assert!(fs::read_to_string(core_config_file(&paths))
+        .unwrap()
+        .contains("remote_access_enabled = true"));
+    assert!(!desktop_config_file(&paths).exists());
 
-    let disabled = set_remote_access_enabled(&paths, false, false).expect("disable remote");
+    let disabled = set_remote_access_enabled(
+        &paths,
+        false,
+        false,
+        &desktop_settings_revision(&paths).unwrap(),
+    )
+    .expect("disable remote");
     assert_eq!(server_host_for_settings(&disabled), LOCAL_BIND_HOST);
 }
 
@@ -82,6 +100,7 @@ fn settings_view_marks_remote_change_as_restart_required_for_running_server() {
         },
         LOCAL_BIND_HOST,
         "http://127.0.0.1:42001/",
+        "revision".into(),
     );
 
     assert_eq!(view.bind_host, REMOTE_BIND_HOST);
@@ -263,4 +282,167 @@ fn markdown_opener_permission_is_restricted_to_web_urls() {
             })
         ]
     );
+}
+
+#[test]
+fn desktop_settings_migrate_once_with_backups_and_core_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
+    fs::create_dir_all(&paths.app_config_dir).unwrap();
+    let legacy = desktop_config_file(&paths);
+    let original = b"{\"remote_access_enabled\":true}\n";
+    fs::write(&legacy, original).unwrap();
+    let loaded = load_desktop_settings(&paths).unwrap();
+    assert!(loaded.remote_access_enabled);
+    let backup = legacy.with_file_name("spark-desktop.json.v0.bak");
+    assert_eq!(fs::read(backup).unwrap(), original);
+    let core = core_config_file(&paths);
+    let migrated = fs::read(&core).unwrap();
+    // A later old source must not overwrite the migrated workspace.
+    fs::write(&legacy, b"{\"remote_access_enabled\":false}").unwrap();
+    assert!(load_desktop_settings(&paths).unwrap().remote_access_enabled);
+    assert_eq!(fs::read(&core).unwrap(), migrated);
+    let revision = desktop_settings_revision(&paths).unwrap();
+    set_remote_access_enabled(&paths, false, false, &revision).unwrap();
+    assert!(set_remote_access_enabled(&paths, true, true, &revision).is_err());
+    assert!(!load_desktop_settings(&paths).unwrap().remote_access_enabled);
+
+    let other = DesktopPaths::new(
+        temp.path().join("other-data"),
+        temp.path().join("other-config"),
+    );
+    fs::create_dir_all(&other.app_config_dir).unwrap();
+    fs::write(desktop_config_file(&other), original).unwrap();
+    let other_core = core_config_file(&other);
+    fs::create_dir_all(other_core.parent().unwrap()).unwrap();
+    let authored = b"[desktop]\nremote_access_enabled = false\n[runtime]\nflows_dir = '/chosen'\n";
+    fs::write(&other_core, authored).unwrap();
+    assert!(!load_desktop_settings(&other).unwrap().remote_access_enabled);
+    assert_eq!(
+        fs::read(other_core.with_file_name("spark.toml.v0.bak")).unwrap(),
+        authored
+    );
+    assert!(fs::read_to_string(other_core).unwrap().contains("/chosen"));
+}
+
+#[test]
+fn desktop_runtime_and_model_settings_survive_restarts_on_different_ports() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
+    let client_id = spark_desktop::desktop_core::desktop_client_identity(&paths).unwrap();
+    let desktop = load_desktop_settings(&paths).unwrap();
+    let bootstrap = bootstrap_desktop_runtime(&paths, &desktop).unwrap();
+    let mut first = start_desktop_server(bootstrap.settings, LOCAL_BIND_HOST).unwrap();
+    let first_url = first.url().to_string();
+    let client = http_client();
+    let document: serde_json::Value = client
+        .get(format!("{first_url}workspace/api/settings"))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let flows = temp.path().canonicalize().unwrap().join("new-flows");
+    let response = client.patch(format!("{first_url}workspace/api/settings")).json(&serde_json::json!({
+        "expected_revision": document["runtime"]["revision"], "section": "runtime", "value": {"flows_dir": flows, "project_roots": []}
+    })).send().unwrap();
+    assert!(
+        response.status().is_success(),
+        "{}",
+        response.text().unwrap()
+    );
+    let saved: serde_json::Value = response.json().unwrap();
+    let model_response = client.patch(format!("{first_url}workspace/api/settings")).json(&serde_json::json!({
+        "expected_revision": saved["models"]["revision"], "section": "models", "value": {"provider": "codex", "model": "restart-model"}
+    })).send().unwrap();
+    assert!(model_response.status().is_success());
+    let preference_response = client.patch(format!("{first_url}workspace/api/settings")).json(&serde_json::json!({
+        "expected_revision": "absent", "section": "client_preferences",
+        "value": {"client_id": client_id, "preferences": {"editor_mode": "raw", "editor_sidebar_width": 400}}
+    })).send().unwrap();
+    assert!(preference_response.status().is_success());
+    // Keep the old listener open so the replacement necessarily gets a different port.
+    let restarted =
+        bootstrap_desktop_runtime(&paths, &load_desktop_settings(&paths).unwrap()).unwrap();
+    assert_eq!(restarted.settings.flows_dir, flows);
+    let mut second = start_desktop_server(restarted.settings, LOCAL_BIND_HOST).unwrap();
+    assert_ne!(second.url(), first_url);
+    assert_eq!(
+        spark_desktop::desktop_core::desktop_client_identity(&paths).unwrap(),
+        client_id
+    );
+    let preferences: serde_json::Value = client
+        .get(format!(
+            "{}workspace/api/settings?client_id={client_id}",
+            second.url()
+        ))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(
+        preferences["preferences"]["effective"]["editor_sidebar_width"],
+        400
+    );
+    assert_eq!(
+        preferences["preferences"]["effective"]["editor_mode"],
+        "raw"
+    );
+    let response: serde_json::Value = client
+        .get(format!("{}workspace/api/settings", second.url()))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(
+        response["runtime"]["effective"]["flows_dir"],
+        flows.to_string_lossy().as_ref()
+    );
+    assert_eq!(response["models"]["stored"]["model"], "restart-model");
+    assert_eq!(response["models"]["effective"]["model"], "restart-model");
+    first.shutdown();
+    second.shutdown();
+}
+
+#[test]
+fn native_settings_save_publishes_through_existing_http_live_transport() {
+    use std::io::{BufRead, BufReader};
+    let temp = tempfile::tempdir().unwrap();
+    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
+    let bootstrap = bootstrap_desktop_runtime(&paths, &DesktopServerSettings::default()).unwrap();
+    let mut server = start_desktop_server(bootstrap.settings, &bootstrap.bind_host).unwrap();
+    let response = http_client()
+        .get(format!(
+            "{}workspace/api/live/events?include_settings=true",
+            server.url()
+        ))
+        .send()
+        .unwrap();
+    assert!(response.status().is_success());
+    let original = desktop_settings_revision(&paths).unwrap();
+    assert!(server
+        .save_remote_access(&paths, true, false, &original)
+        .is_err());
+    assert_eq!(desktop_settings_revision(&paths).unwrap(), original);
+    server
+        .save_remote_access(&paths, true, true, &original)
+        .unwrap();
+    let revision = desktop_settings_revision(&paths).unwrap();
+    assert!(server
+        .save_remote_access(&paths, false, false, &original)
+        .is_err());
+    let mut stream = BufReader::new(response);
+    loop {
+        let mut line = String::new();
+        assert!(stream.read_line(&mut line).unwrap() > 0);
+        if let Some(payload) = line.strip_prefix("data: ") {
+            let event: serde_json::Value = serde_json::from_str(payload).unwrap();
+            if event["type"] == "settings.changed" {
+                assert_eq!(event["payload"]["section"], "desktop");
+                assert_eq!(event["payload"]["revision"], revision);
+                break;
+            }
+        }
+    }
+    drop(stream);
+    server.shutdown();
 }

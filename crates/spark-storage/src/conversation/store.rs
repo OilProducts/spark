@@ -104,10 +104,22 @@ impl RecordWritePlan {
 /// when `conversation.json` does not exist. Missing transcript/artifact files
 /// default to empty (a crash between record writes must not brick the read).
 pub(crate) fn read_record(paths: &ConversationRecordPaths) -> Result<Option<ConversationRecord>> {
-    let Some(meta) = read_json_optional::<ConversationMeta>(paths.conversation_json())? else {
+    let Some(meta) =
+        read_json_optional::<ConversationMeta>(paths.conversation_json()).map_err(|error| {
+            match error {
+                StorageError::JsonRead { .. } => StorageError::SettingsValidation {
+                    path: paths.conversation_json(),
+                    reason: "Invalid conversation metadata; check field names and types.".into(),
+                },
+                error => error,
+            }
+        })?
+    else {
         return Ok(None);
     };
-    if meta.schema_version != CONVERSATION_STATE_SCHEMA_VERSION {
+    if meta.schema_version != CONVERSATION_STATE_SCHEMA_VERSION
+        || !(0..=1).contains(&meta.settings_schema_version)
+    {
         return Err(StorageError::InvalidConversationState {
             path: paths.conversation_json(),
             reason: UNSUPPORTED_CONVERSATION_STATE_SCHEMA.to_string(),

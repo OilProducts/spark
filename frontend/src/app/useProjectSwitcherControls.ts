@@ -20,8 +20,6 @@ import {
     toHydratedProjectRecord,
 } from '@/features/projects/model/projectsHomeState'
 
-const DEFAULT_WORKING_DIRECTORY = './test-app'
-
 export function useProjectSwitcherControls() {
     const { confirm } = useDialogController()
     const viewMode = useStore((state) => state.viewMode)
@@ -117,20 +115,7 @@ export function useProjectSwitcherControls() {
             clearProjectRegistrationError()
             return true
         } catch (error) {
-            useStore.setState((state) => {
-                const nextProjectRegistry = { ...state.projectRegistry }
-                const nextProjectSessionStates = { ...state.projectSessionsByPath }
-                delete nextProjectRegistry[normalizedProjectPath]
-                delete nextProjectSessionStates[normalizedProjectPath]
-                const nextActiveProjectPath = state.activeProjectPath === normalizedProjectPath ? null : state.activeProjectPath
-                return {
-                    projectRegistry: nextProjectRegistry,
-                    projectSessionsByPath: nextProjectSessionStates,
-                    activeProjectPath: nextActiveProjectPath,
-                    activeFlow: state.activeFlow,
-                    workingDir: nextActiveProjectPath ? state.workingDir : DEFAULT_WORKING_DIRECTORY,
-                }
-            })
+            removeProject(normalizedProjectPath)
             setProjectRegistrationError(extractApiErrorMessage(error, 'Unable to register the project.'))
             return false
         }

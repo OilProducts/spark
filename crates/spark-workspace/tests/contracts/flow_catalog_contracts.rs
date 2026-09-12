@@ -117,6 +117,10 @@ fn describe_raw_validate_and_launch_policy_update_use_catalog_and_yaml_sources()
         .update_launch_policy(
             "ops/review/inspectable.yaml",
             WorkspaceFlowLaunchPolicyUpdate {
+                expected_revision: service
+                    .describe_flow("ops/review/inspectable.yaml", None)
+                    .unwrap()
+                    .revision,
                 launch_policy: "trigger_only".to_string(),
                 execution_lock: Some(json!({
                     "scope": "project",
@@ -182,6 +186,9 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

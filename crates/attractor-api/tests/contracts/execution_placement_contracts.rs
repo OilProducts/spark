@@ -504,6 +504,9 @@ fn retry_reconstruction_failures_are_persisted_without_native_or_docker_executio
 
 fn settings(root: &std::path::Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("project"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

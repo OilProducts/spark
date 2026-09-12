@@ -61,6 +61,7 @@ const makeTrigger = (overrides: Partial<Record<string, unknown>> = {}) => ({
   name: String(overrides.name ?? 'Trigger'),
   enabled: overrides.enabled === false ? false : true,
   protected: overrides.protected === true,
+  revision: 'revision-1',
   source_type: String(overrides.source_type ?? 'schedule'),
   created_at: '2026-03-22T00:00:00Z',
   updated_at: '2026-03-22T00:00:00Z',
@@ -108,6 +109,7 @@ describe('TriggersPanel', () => {
               name: 'Created schedule',
               enabled: true,
               protected: false,
+              revision: 'revision-1',
               source_type: 'schedule',
               created_at: '2026-03-22T00:00:00Z',
               updated_at: '2026-03-22T00:00:00Z',
@@ -125,6 +127,7 @@ describe('TriggersPanel', () => {
           name: 'Created schedule',
           enabled: true,
           protected: false,
+          revision: 'revision-1',
           source_type: 'schedule',
           created_at: '2026-03-22T00:00:00Z',
           updated_at: '2026-03-22T00:00:00Z',
@@ -163,6 +166,7 @@ describe('TriggersPanel', () => {
             name: 'Webhook trigger',
             enabled: true,
             protected: false,
+            revision: 'revision-1',
             source_type: 'webhook',
             created_at: '2026-03-22T00:00:00Z',
             updated_at: '2026-03-22T00:00:00Z',
@@ -178,6 +182,7 @@ describe('TriggersPanel', () => {
           name: 'Webhook trigger',
           enabled: true,
           protected: false,
+          revision: 'revision-1',
           source_type: 'webhook',
           created_at: '2026-03-22T00:00:00Z',
           updated_at: '2026-03-22T00:01:00Z',
@@ -221,6 +226,7 @@ describe('TriggersPanel', () => {
         const createdTrigger = makeTrigger({
           id: `trigger-created-${postPayloads.length}`,
           name: payload.name,
+          revision: 'revision-1',
           source_type: payload.source_type,
           flow_name: (payload.action as Record<string, unknown>).flow_name,
           project_path: (payload.action as Record<string, unknown>).project_path ?? null,
@@ -360,6 +366,7 @@ describe('TriggersPanel', () => {
       id: 'trigger-protected',
       name: 'Protected planning route',
       protected: true,
+      revision: 'revision-1',
       source_type: 'schedule',
       flow_name: 'protected-plan.dot',
       project_path: '/tmp/protected-project',
@@ -438,4 +445,45 @@ describe('TriggersPanel', () => {
       expect(selectedTriggerScope.getByText('Target: Project · protected-project')).toBeVisible()
     })
   })
+  it('retains the draft revision after a live edit and conflict, blocks duplicate saves, and discards explicitly', async () => {
+    let trigger = makeTrigger({ name: 'Original' })
+    const patches: Array<Record<string, unknown>> = []
+    let finishSave: ((response: Response) => void) | undefined
+    vi.mocked(global.fetch).mockImplementation(async (_input, init) => {
+      if (init?.method === 'PATCH') {
+        patches.push(JSON.parse(String(init.body)))
+        return new Promise<Response>((resolve) => { finishSave = resolve })
+      }
+      return jsonResponse([trigger])
+    })
+    renderTriggersPanel()
+    const input = await screen.findByDisplayValue('Original')
+    const user = userEvent.setup()
+    await user.clear(input)
+    await user.type(input, 'My draft')
+    trigger = { ...trigger, name: 'External', revision: 'revision-2' }
+    act(() => {
+      useStore.getState().updateTriggersSession({ triggers: [trigger] })
+    })
+    expect(screen.getByDisplayValue('My draft')).toBeVisible()
+    expect(screen.getByText(/changed elsewhere/)).toBeVisible()
+    const save = screen.getByTestId('trigger-save-button')
+    await user.click(save)
+    expect(save).toBeDisabled()
+    await user.click(save)
+    expect(patches).toHaveLength(1)
+    expect(patches[0].expected_revision).toBe('revision-1')
+    await act(async () => {
+      finishSave?.(new Response(JSON.stringify({ detail: 'Settings changed; reload before saving.' }), {
+        status: 409, headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    expect(screen.getByDisplayValue('My draft')).toBeVisible()
+    expect(save).toBeEnabled()
+    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default'].expectedRevision).toBe('revision-1')
+    await user.click(screen.getByRole('button', { name: 'Discard', exact: true }))
+    expect(await screen.findByDisplayValue('External')).toBeVisible()
+    expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default']).toBeUndefined()
+  })
+
 })

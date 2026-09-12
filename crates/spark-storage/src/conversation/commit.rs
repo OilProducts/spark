@@ -35,7 +35,7 @@ impl ConversationRepository {
     /// The single conversation commit boundary.
     ///
     /// Loads the latest committed state, applies identity-keyed mutations onto
-    /// it (so a stale `base_revision` rebases instead of clobbering), allocates
+    /// it (operational mutations rebase; stale settings updates conflict), allocates
     /// segment orders and all journal revisions, maintains conversation
     /// metadata (timestamps, title, handle), persists durable state, and
     /// appends the stamped journal entries.
@@ -66,6 +66,7 @@ impl ConversationRepository {
         // the lock through revision allocation and publication, across instances/processes.
         lock.lock_exclusive()
             .map_err(|e| StorageError::io("lock conversation", &lock_path, e))?;
+        crate::settings::migrate_conversation_model_settings(&root.join("conversation.json"))?;
         let latest_snapshot =
             self.read_snapshot_without_recovery(conversation_id, Some(project_path))?;
         if latest_snapshot.is_none() && base_revision != 0 {
@@ -80,6 +81,16 @@ impl ConversationRepository {
         };
         let latest_revision = record.meta.revision;
         let rebased = latest_revision != base_revision;
+        if rebased
+            && mutations.iter().any(|mutation| {
+                matches!(mutation,
+            ConversationMutation::MetadataUpdated { patch } if patch.model_settings.is_some() || patch.chat_mode.is_some())
+            })
+        {
+            return Err(StorageError::SettingsConflict {
+                path: root.join("conversation.json"),
+            });
+        }
 
         validate_segment_targets(conversation_id, &record, &mutations)?;
 
@@ -300,6 +311,9 @@ fn resolve_segment_order(record: &ConversationRecord, segment: &mut TranscriptSe
 
 fn apply_metadata_patch(record: &mut ConversationRecord, patch: ConversationMetadataPatch) {
     let meta = &mut record.meta;
+    if let Some(group) = patch.model_settings {
+        meta.model_settings = group;
+    }
     if let Some(chat_mode) = patch.chat_mode {
         meta.chat_mode = chat_mode;
     }

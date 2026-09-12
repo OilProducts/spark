@@ -47,6 +47,10 @@ pub fn snapshot_from_record(record: &ConversationRecord) -> Value {
     let meta = &record.meta;
     let mut object = Map::new();
     object.insert("schema_version".to_string(), json!(meta.schema_version));
+    object.insert(
+        "settings_schema_version".into(),
+        json!(meta.settings_schema_version),
+    );
     object.insert("revision".to_string(), json!(meta.revision));
     object.insert(
         "conversation_id".to_string(),
@@ -58,6 +62,7 @@ pub fn snapshot_from_record(record: &ConversationRecord) -> Value {
     );
     object.insert("project_path".to_string(), json!(meta.project_path.clone()));
     object.insert("chat_mode".to_string(), json!(meta.chat_mode.clone()));
+    object.insert("model_settings".into(), json!(meta.model_settings));
     object.insert("provider".to_string(), json!(meta.provider.clone()));
     object.insert("model".to_string(), optional_string(&meta.model));
     object.insert(

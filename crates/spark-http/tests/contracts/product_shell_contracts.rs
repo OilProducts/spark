@@ -262,6 +262,9 @@ fn settings_with_project_root(root: &Path, project_root: PathBuf) -> SparkSettin
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

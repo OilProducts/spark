@@ -10,13 +10,16 @@ export function useLlmProfiles(): LlmProfileMetadata[] {
 
     useEffect(() => {
         let cancelled = false
-        void fetchLlmProfiles().then((profiles) => {
+        const refresh = () => { void fetchLlmProfiles().then((profiles) => {
             if (!cancelled) {
                 setLlmProfiles(profiles)
             }
-        })
+        }) }
+        refresh()
+        window.addEventListener('spark:settings-live-event', refresh)
         return () => {
             cancelled = true
+            window.removeEventListener('spark:settings-live-event', refresh)
         }
     }, [])
 

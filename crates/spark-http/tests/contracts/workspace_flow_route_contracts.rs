@@ -105,7 +105,7 @@ edges:
         app,
         "PUT",
         "/workspace/api/flows/ops/review/inspectable.yaml/launch-policy",
-        Some(json!({"launch_policy": "trigger_only"})),
+        Some(json!({"launch_policy": "trigger_only", "expected_revision": detail.1["revision"]})),
     )
     .await;
     assert_eq!(policy.0, StatusCode::OK);
@@ -254,6 +254,9 @@ fn simple_flow(id: &str) -> String {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
@@ -267,4 +270,42 @@ fn settings(root: &Path) -> SparkSettings {
         ui_dir: None,
         project_roots: Vec::new(),
     }
+}
+
+#[tokio::test]
+async fn flow_policy_adapter_requires_revision_and_rejects_stale_clients() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    write_flow(&settings, "policy.yaml", &simple_flow("policy"));
+    let app = build_app(settings);
+    let detail = request_json(app.clone(), "GET", "/workspace/api/flows/policy.yaml", None).await;
+    let missing = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/flows/policy.yaml/launch-policy",
+        Some(json!({"launch_policy":"agent_requestable"})),
+    )
+    .await;
+    assert_eq!(missing.0, StatusCode::BAD_REQUEST);
+    let payload =
+        json!({"launch_policy":"agent_requestable", "expected_revision": detail.1["revision"]});
+    let saved = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/flows/policy.yaml/launch-policy",
+        Some(payload.clone()),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK);
+    let stale = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/flows/policy.yaml/launch-policy",
+        Some(payload),
+    )
+    .await;
+    assert_eq!(stale.0, StatusCode::CONFLICT);
+    let detail = request_json(app, "GET", "/workspace/api/flows/policy.yaml", None).await;
+    assert_eq!(detail.1["revision"], saved.1["revision"]);
+    assert_eq!(detail.1["launch_policy"], "agent_requestable");
 }

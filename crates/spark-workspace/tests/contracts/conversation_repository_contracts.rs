@@ -139,6 +139,7 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
                 project_path: project_path.to_string(),
                 chat_mode: Some("plan".to_string()),
                 provider: Some("openai".to_string()),
+                expected_revision: Some("0".into()),
                 model: Some("gpt-5".to_string()),
                 reasoning_effort: Some("high".to_string()),
                 ..ConversationSettingsUpdate::default()
@@ -169,6 +170,7 @@ fn conversation_settings_update_creates_shell_state_handle_and_mode_change_once(
             ConversationSettingsUpdate {
                 project_path: project_path.to_string(),
                 chat_mode: Some("plan".to_string()),
+                expected_revision: Some(snapshot["revision"].to_string()),
                 ..ConversationSettingsUpdate::default()
             },
         )
@@ -352,6 +354,9 @@ fn write_state(conversations_dir: &Path, conversation_id: &str, payload: Value) 
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

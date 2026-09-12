@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useStore } from '@/store'
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 
 const DEFAULT_HOME_SIDEBAR_PRIMARY_HEIGHT = 320
 const HOME_SIDEBAR_MIN_PRIMARY_HEIGHT = 208
@@ -38,7 +39,7 @@ function resolveHomeSidebarPrimaryHeight(containerHeight: number, sidebarPrimary
 
 function resolveHomeSidebarPrimaryRatio(height: number, containerHeight: number) {
     const splitSpace = getHomeSidebarSplitSpace(containerHeight)
-    return splitSpace > 0 ? clampHomeSidebarPrimaryHeight(height, containerHeight) / splitSpace : null
+    return splitSpace > 0 ? Math.min(clampHomeSidebarPrimaryHeight(height, containerHeight) / splitSpace, 1) : null
 }
 
 export function useHomeSidebarLayout(
@@ -46,14 +47,10 @@ export function useHomeSidebarLayout(
     activeProjectPath: string | null,
     activeConversationId: string | null,
 ) {
-    const homeProjectSessionsByPath = useStore((state) => state.homeProjectSessionsByPath)
     const homeConversationSessionsById = useStore((state) => state.homeConversationSessionsById)
-    const updateHomeProjectSession = useStore((state) => state.updateHomeProjectSession)
     const updateHomeConversationSession = useStore((state) => state.updateHomeConversationSession)
 
-    const persistedHomeSidebarPrimarySplitRatio = activeProjectPath
-        ? (homeProjectSessionsByPath[activeProjectPath]?.sidebarPrimarySplitRatio ?? null)
-        : null
+    const persistedHomeSidebarPrimarySplitRatio = useStore((state) => state.preferredHomeSidebarPrimarySplitRatio)
     const isConversationPinnedToBottom = activeConversationId
         ? (homeConversationSessionsById[activeConversationId]?.isPinnedToBottom ?? true)
         : true
@@ -146,19 +143,16 @@ export function useHomeSidebarLayout(
         }
     })
 
-    const setSidebarPrimaryHeight = (nextHeight: number) => {
+    const setSidebarPrimaryHeight = (nextHeight: number, completed = true) => {
         const containerHeight = measureHomeSidebarContainerHeight()
         if (containerHeight <= 0) {
             return
         }
         const clampedHeight = clampHomeSidebarPrimaryHeight(nextHeight, containerHeight)
         setHomeSidebarPrimaryHeight(clampedHeight)
-        if (!activeProjectPath) {
-            return
-        }
-        updateHomeProjectSession(activeProjectPath, {
-            sidebarPrimarySplitRatio: resolveHomeSidebarPrimaryRatio(clampedHeight, containerHeight),
-        })
+        const ratio = resolveHomeSidebarPrimaryRatio(clampedHeight, containerHeight)
+        useStore.setState({ preferredHomeSidebarPrimarySplitRatio: ratio })
+        if (completed) completePreferenceInteraction({ home_sidebar_primary_split_ratio: ratio })
     }
 
     const adjustHomeSidebarPrimaryHeight = (delta: number) => {
@@ -236,6 +230,7 @@ export function useHomeSidebarLayout(
         }
 
         const stopHomeSidebarResize = () => {
+            completePreferenceInteraction({ home_sidebar_primary_split_ratio: useStore.getState().preferredHomeSidebarPrimarySplitRatio })
             setIsHomeSidebarResizing(false)
             homeSidebarResizeRef.current = null
             document.body.style.cursor = ''
@@ -248,7 +243,7 @@ export function useHomeSidebarLayout(
                 return
             }
             const nextHeight = resizeState.startHeight + (event.clientY - resizeState.startY)
-            setSidebarPrimaryHeight(nextHeight)
+            setSidebarPrimaryHeight(nextHeight, false)
         }
 
         window.addEventListener('pointermove', handleHomeSidebarPointerMove)

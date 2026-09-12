@@ -33,7 +33,6 @@ export interface HomeProjectSessionState {
     panelError: string | null
     pendingConversationTurn: PendingConversationTurnState | null
     pendingDeleteConversationId: string | null
-    sidebarPrimarySplitRatio: number | null
 }
 
 export interface HomeConversationSessionState {
@@ -118,6 +117,7 @@ export interface TriggerCreateDraftState {
 }
 
 export interface TriggerEditDraftState {
+    expectedRevision?: string
     triggerId: string | null
     form: TriggerFormState | null
     targetBehavior: 'inferred' | 'active' | 'manual'

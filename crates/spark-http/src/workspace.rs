@@ -128,7 +128,8 @@ pub fn router() -> Router<HttpAppState> {
             "/conversations/{conversation_id}",
             get(get_conversation).delete(delete_conversation),
         )
-        .route("/settings", get(settings))
+        .route("/settings", get(settings).patch(patch_settings))
+        .route("/settings/validate", post(validate_settings_update))
 }
 
 #[derive(Debug, Deserialize)]
@@ -173,6 +174,7 @@ struct FlowSurfaceQuery {
 
 #[derive(Debug, Deserialize)]
 struct ProjectStateUpdateBody {
+    expected_revision: Option<String>,
     project_path: String,
     #[serde(default)]
     is_favorite: Option<Option<bool>>,
@@ -180,7 +182,10 @@ struct ProjectStateUpdateBody {
     last_accessed_at: Option<Option<String>>,
     #[serde(default)]
     active_conversation_id: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "spark_common::settings::deserialize_nullable_patch"
+    )]
     execution_profile_id: Option<Option<String>>,
 }
 
@@ -195,31 +200,50 @@ async fn list_projects(
 
 async fn register_project(
     State(settings): State<Arc<SparkSettings>>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<ProjectRegistrationRequest>, JsonRejection>,
 ) -> ApiResult<ProjectRecord> {
     let request = json_payload(payload)?;
-    WorkspaceProjectService::new((*settings).clone())
-        .register_project(request)
-        .map(Json)
-        .map_err(Into::into)
+    let changes_settings = request.execution_profile_id.is_some();
+    let record = WorkspaceProjectService::new((*settings).clone()).register_project(request)?;
+    if changes_settings {
+        live_hub.publish_settings_change(
+            "project",
+            "execution",
+            Some(record.project_path.clone()),
+            Value::Null,
+        );
+    }
+    Ok(Json(record))
 }
 
 async fn update_project_state(
     State(settings): State<Arc<SparkSettings>>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
     payload: Result<Json<ProjectStateUpdateBody>, JsonRejection>,
 ) -> ApiResult<ProjectRecord> {
     let request = json_payload(payload)?;
     let is_favorite = request.is_favorite.map(|value| value.unwrap_or(false));
-    WorkspaceProjectService::new((*settings).clone())
-        .update_project_state(ProjectStateUpdate {
+    let changes_settings = request.execution_profile_id.is_some();
+    let record = WorkspaceProjectService::new((*settings).clone()).update_project_state(
+        ProjectStateUpdate {
+            expected_revision: request.expected_revision,
             project_path: request.project_path,
             last_accessed_at: request.last_accessed_at,
             is_favorite,
             active_conversation_id: request.active_conversation_id,
             execution_profile_id: request.execution_profile_id,
-        })
-        .map(Json)
-        .map_err(Into::into)
+        },
+    )?;
+    if changes_settings {
+        live_hub.publish_settings_change(
+            "project",
+            "execution",
+            Some(record.project_path.clone()),
+            Value::Null,
+        );
+    }
+    Ok(Json(record))
 }
 
 async fn delete_project(
@@ -263,9 +287,22 @@ async fn update_conversation_settings(
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let project_path = request.project_path.clone();
+    let changes_models = request.model_settings.is_some()
+        || request.provider.is_some()
+        || request.llm_profile.is_some()
+        || request.model.is_some()
+        || request.reasoning_effort.is_some();
     let service = WorkspaceConversationService::new((*settings).clone());
     let updated = service.update_conversation_settings(&conversation_id, request)?;
     publish_conversation_snapshot(&settings, &live_hub, &conversation_id, &project_path);
+    if changes_models {
+        live_hub.publish_settings_change(
+            "conversation",
+            "models",
+            Some(project_path),
+            updated["settings"]["models"]["revision"].clone(),
+        );
+    }
     Ok(Json(updated))
 }
 
@@ -740,6 +777,7 @@ async fn create_trigger(
     if let Ok(value) = serde_json::to_value(&trigger) {
         live_hub.publish(trigger_upsert_envelope(&value));
     }
+    live_hub.publish_settings_change("workspace", "triggers", None, Value::Null);
     Ok(Json(trigger))
 }
 
@@ -765,22 +803,31 @@ async fn update_trigger(
     if let Ok(value) = serde_json::to_value(&trigger) {
         live_hub.publish(trigger_upsert_envelope(&value));
     }
+    live_hub.publish_settings_change("workspace", "triggers", None, Value::Null);
     Ok(Json(trigger))
+}
+
+#[derive(Deserialize)]
+struct TriggerDeleteQuery {
+    expected_revision: String,
 }
 
 async fn delete_trigger(
     State(settings): State<Arc<SparkSettings>>,
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(trigger_id): AxumPath<String>,
+    payload: Result<Query<TriggerDeleteQuery>, QueryRejection>,
 ) -> ApiResult<TriggerDeleteResponse> {
+    let query = query_payload(payload)?;
     let service = WorkspaceTriggerService::new((*settings).clone());
     let project_path = read_trigger_definition(&settings.config_dir, &trigger_id)
         .map_err(WorkspaceError::from)?
         .and_then(|definition| definition.action.project_path);
-    let deleted = service.delete_trigger(&trigger_id)?;
+    let deleted = service.delete_trigger(&trigger_id, &query.expected_revision)?;
     if let Ok(value) = serde_json::to_value(&deleted) {
         live_hub.publish(trigger_delete_envelope(&value, project_path));
     }
+    live_hub.publish_settings_change("workspace", "triggers", None, Value::Null);
     Ok(Json(deleted))
 }
 
@@ -873,6 +920,7 @@ async fn get_workspace_flow_dispatch(
 
 async fn put_workspace_flow_dispatch(
     State(settings): State<Arc<SparkSettings>>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(flow_path): AxumPath<String>,
     payload: Result<Json<WorkspaceFlowLaunchPolicyUpdate>, JsonRejection>,
 ) -> ApiResult<spark_workspace::WorkspaceFlowLaunchPolicyResponse> {
@@ -881,14 +929,133 @@ async fn put_workspace_flow_dispatch(
         return Err(WorkspaceError::NotFound("Not Found".to_string()).into());
     };
     let request = json_payload(payload)?;
-    WorkspaceFlowService::new((*settings).clone())
-        .update_launch_policy(flow_name, request)
-        .map(Json)
-        .map_err(Into::into)
+    let response =
+        WorkspaceFlowService::new((*settings).clone()).update_launch_policy(flow_name, request)?;
+    live_hub.publish_settings_change("workspace", "flow_policy", None, json!(response.revision));
+    Ok(Json(response))
 }
 
-async fn settings(State(settings): State<Arc<SparkSettings>>) -> Json<Value> {
-    Json(workspace_settings(&settings))
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsQuery {
+    client_id: Option<String>,
+    project_path: Option<String>,
+    conversation_id: Option<String>,
+}
+
+async fn settings(
+    State(settings): State<Arc<SparkSettings>>,
+    Query(query): Query<SettingsQuery>,
+) -> ApiResult<Value> {
+    if let Some(id) = query.client_id {
+        if query.project_path.is_some() || query.conversation_id.is_some() {
+            return Err(WorkspaceError::Validation(
+                "Client scope cannot be combined with project or conversation scope.".into(),
+            )
+            .into());
+        }
+        return spark_workspace::settings::client_settings(&settings, &id)
+            .map(Json)
+            .map_err(Into::into);
+    }
+    match (query.project_path, query.conversation_id) {
+        (project_path, Some(id)) => WorkspaceConversationService::new((*settings).clone())
+            .get_snapshot(&id, project_path.as_deref())
+            .map(|snapshot| snapshot["settings"].clone()),
+        (Some(path), None) => {
+            spark_workspace::settings::project_model_settings_view(&settings, &path)
+        }
+        (None, None) => workspace_settings(&settings),
+    }
+    .map(Json)
+    .map_err(Into::into)
+}
+
+async fn patch_settings(
+    State(settings): State<Arc<SparkSettings>>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
+    payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
+) -> ApiResult<Value> {
+    let request = payload
+        .map_err(|_| {
+            WorkspaceError::Validation(
+                "Invalid settings update; check section, revision, and field types.".into(),
+            )
+        })?
+        .0;
+    let (scope, section, project_path) = match &request.section {
+        spark_workspace::settings::WorkspaceSettingsSection::Providers(_) => {
+            ("workspace", "providers", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::Agents(_) => {
+            ("workspace", "agents", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::Connections(_) => {
+            ("workspace", "connections", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::LlmProfiles(_) => {
+            ("workspace", "llm_profiles", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::ExecutionProfiles(_) => {
+            ("workspace", "execution_profiles", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::ClientPreferences { .. }
+        | spark_workspace::settings::WorkspaceSettingsSection::ImportClientPreferences { .. } => {
+            ("client", "preferences", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::ProjectExecution {
+            project_path,
+            ..
+        } => ("project", "execution", Some(project_path.clone())),
+        spark_workspace::settings::WorkspaceSettingsSection::Runtime(_) => {
+            ("workspace", "runtime", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::Models(_)
+        | spark_workspace::settings::WorkspaceSettingsSection::ImportModels(_) => {
+            ("workspace", "models", None)
+        }
+        spark_workspace::settings::WorkspaceSettingsSection::ProjectModels {
+            project_path, ..
+        } => ("project", "models", Some(project_path.clone())),
+        spark_workspace::settings::WorkspaceSettingsSection::ConversationModels {
+            project_path,
+            ..
+        } => ("conversation", "models", Some(project_path.clone())),
+    };
+    let conversation = match &request.section {
+        spark_workspace::settings::WorkspaceSettingsSection::ConversationModels {
+            conversation_id,
+            project_path,
+            ..
+        } => Some((conversation_id.clone(), project_path.clone())),
+        _ => None,
+    };
+    let response = spark_workspace::settings::update_workspace_settings(&settings, request)?;
+    if let Some((id, project)) = conversation {
+        publish_conversation_snapshot(&settings, &live_hub, &id, &project);
+    }
+    live_hub.publish_settings_change(
+        scope,
+        section,
+        project_path,
+        response[section]["revision"].clone(),
+    );
+    Ok(Json(response))
+}
+
+async fn validate_settings_update(
+    State(settings): State<Arc<SparkSettings>>,
+    payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
+) -> ApiResult<Value> {
+    let request = payload
+        .map_err(|_| {
+            WorkspaceError::Validation(
+                "Invalid settings update; check section, revision, and field types.".into(),
+            )
+        })?
+        .0;
+    spark_workspace::settings::validate_workspace_settings_update(&settings, &request)?;
+    Ok(Json(json!({"valid": true})))
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -1077,7 +1244,8 @@ fn sse_data_frame(envelope: &spark_workspace::live::LiveEnvelope) -> Bytes {
 }
 
 fn live_query_subscribes(query: &spark_workspace::live::LiveQuery) -> bool {
-    query.conversation_id.is_some()
+    query.include_settings
+        || query.conversation_id.is_some()
         || query.run_id.is_some()
         || query.include_runs_overview
         || query.include_triggers
@@ -1283,4 +1451,45 @@ async fn update_task(
             json_payload(payload)?,
         )?,
     ))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProfileResourceUpdate {
+    expected_revision: String,
+    value: Value,
+}
+
+pub(crate) async fn patch_llm_profiles(
+    settings: State<Arc<SparkSettings>>,
+    live_hub: State<Arc<WorkspaceLiveHub>>,
+    payload: Result<Json<ProfileResourceUpdate>, JsonRejection>,
+) -> ApiResult<Value> {
+    patch_profile_resource(settings, live_hub, payload, "llm_profiles").await
+}
+
+pub(crate) async fn patch_execution_profiles(
+    settings: State<Arc<SparkSettings>>,
+    live_hub: State<Arc<WorkspaceLiveHub>>,
+    payload: Result<Json<ProfileResourceUpdate>, JsonRejection>,
+) -> ApiResult<Value> {
+    patch_profile_resource(settings, live_hub, payload, "execution_profiles").await
+}
+
+async fn patch_profile_resource(
+    settings: State<Arc<SparkSettings>>,
+    live_hub: State<Arc<WorkspaceLiveHub>>,
+    payload: Result<Json<ProfileResourceUpdate>, JsonRejection>,
+    section: &str,
+) -> ApiResult<Value> {
+    let payload = payload
+        .map_err(|_| {
+            WorkspaceError::Validation(
+                "Invalid profile update; supply expected_revision and a typed value.".into(),
+            )
+        })?
+        .0;
+    let request = serde_json::from_value(json!({"expected_revision": payload.expected_revision, "section": section, "value": payload.value}))
+        .map_err(|_| WorkspaceError::Validation("Invalid profile fields.".into()))?;
+    patch_settings(settings, live_hub, Ok(Json(request))).await
 }

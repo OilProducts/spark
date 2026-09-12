@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha1::{Digest, Sha1};
 use spark_common::project::normalize_project_path;
 use spark_common::settings::SparkSettings;
 use toml::Value as TomlValue;
@@ -51,6 +52,8 @@ fn is_static_action_mode(value: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TriggerDefinition {
+    #[serde(skip)]
+    pub revision: String,
     pub id: String,
     pub name: String,
     pub enabled: bool,
@@ -143,17 +146,42 @@ impl TriggerDefinitionRepository {
         let table = payload
             .as_table()
             .ok_or_else(|| invalid_trigger(&path, "Trigger definition must be a TOML table."))?;
-        parse_trigger_definition(trigger_id, table, &path).map(Some)
+        let mut definition = parse_trigger_definition(trigger_id, table, &path)?;
+        definition.revision = format!("{:x}", Sha1::digest(text.as_bytes()));
+        Ok(Some(definition))
     }
 
-    pub fn put(&self, definition: &TriggerDefinition) -> Result<PathBuf> {
+    pub fn put(&self, definition: &TriggerDefinition) -> Result<String> {
+        let _references = crate::settings::lock_profile_references(&self.config_dir)?;
+        crate::settings::validate_profile_references(
+            &self.config_dir,
+            &serde_json::json!(definition.action),
+        )?;
         let path = self.definition_path(&definition.id)?;
-        write_text_atomic(&path, trigger_definition_toml(definition))?;
-        Ok(path)
+        let _lock = crate::settings::lock_document(&path)?;
+        let current = crate::settings::read_settings_document(&path)?;
+        let expected = if definition.revision.is_empty() {
+            "absent"
+        } else {
+            &definition.revision
+        };
+        if current.revision != expected {
+            return Err(StorageError::SettingsConflict { path });
+        }
+        let text = trigger_definition_toml(definition);
+        let payload: toml::Table =
+            toml::from_str(&text).map_err(|_| invalid_trigger(&path, "Invalid trigger TOML."))?;
+        parse_trigger_definition(&definition.id, &payload, &path)?;
+        write_text_atomic(&path, &text)?;
+        Ok(format!("{:x}", Sha1::digest(text.as_bytes())))
     }
 
-    pub fn delete(&self, trigger_id: &str) -> Result<()> {
+    pub fn delete(&self, trigger_id: &str, expected_revision: &str) -> Result<()> {
         let path = self.definition_path(trigger_id)?;
+        let _lock = crate::settings::lock_document(&path)?;
+        if crate::settings::read_settings_document(&path)?.revision != expected_revision {
+            return Err(StorageError::SettingsConflict { path });
+        }
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -277,11 +305,18 @@ pub fn write_trigger_definition(
     config_dir: impl AsRef<Path>,
     definition: &TriggerDefinition,
 ) -> Result<PathBuf> {
-    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf()).put(definition)
+    let repository = TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf());
+    repository.put(definition)?;
+    repository.definition_path(&definition.id)
 }
 
-pub fn delete_trigger_definition(config_dir: impl AsRef<Path>, trigger_id: &str) -> Result<()> {
-    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf()).delete(trigger_id)
+pub fn delete_trigger_definition(
+    config_dir: impl AsRef<Path>,
+    trigger_id: &str,
+    expected_revision: &str,
+) -> Result<()> {
+    TriggerDefinitionRepository::new(config_dir.as_ref().to_path_buf())
+        .delete(trigger_id, expected_revision)
 }
 
 pub fn load_trigger_state(data_dir: impl AsRef<Path>, trigger_id: &str) -> Result<TriggerState> {
@@ -351,6 +386,7 @@ fn parse_trigger_definition(
         path,
     )?;
     Ok(TriggerDefinition {
+        revision: String::new(),
         id: trigger_id.to_string(),
         name: toml_scalar_to_string(payload.get("name"))
             .trim()

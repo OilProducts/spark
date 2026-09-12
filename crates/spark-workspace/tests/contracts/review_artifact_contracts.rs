@@ -705,6 +705,9 @@ pub(super) fn settings(root: &Path) -> SparkSettings {
 
 fn settings_for_project(project_root: &Path, root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: project_root.to_path_buf(),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

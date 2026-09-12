@@ -1,3 +1,6 @@
+import { useStore } from '@/store'
+import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
+import { loadAndMigrateClientPreferences, LEGACY_LAYOUT_PREFIX, LAYOUT_CACHE_PREFIX } from '@/features/settings/services/clientPreferencesMigration'
 import type { CanvasViewportState } from '@/state/store-types'
 
 import type { EdgeRoute, RouteSide } from './edgeRouting'
@@ -20,7 +23,7 @@ export type SavedFlowLayoutV1 = {
     viewport?: CanvasViewportState | null
 }
 
-const SAVED_FLOW_LAYOUT_STORAGE_PREFIX = 'spark.saved_flow_layout.v1:'
+const SAVED_FLOW_LAYOUT_STORAGE_PREFIX = LEGACY_LAYOUT_PREFIX
 
 function isRouteSide(value: unknown): value is RouteSide {
     return value === 'top' || value === 'right' || value === 'bottom' || value === 'left'
@@ -145,24 +148,46 @@ export function buildSavedFlowLayoutStorageKey(
     return `${SAVED_FLOW_LAYOUT_STORAGE_PREFIX}${normalizedProjectPath}:${flowName}:${canvasKind}`
 }
 
-export function loadSavedFlowLayout(
+export async function loadSavedFlowLayout(
     projectPath: string | null,
     flowName: string,
     canvasKind: FlowCanvasKind,
-): SavedFlowLayoutV1 | null {
+): Promise<SavedFlowLayoutV1 | null> {
     if (typeof window === 'undefined') {
         return null
     }
 
-    try {
-        const raw = window.localStorage.getItem(buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind))
-        if (!raw) {
-            return null
+    const legacyKey = buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind)
+    const key = legacyKey.slice(LEGACY_LAYOUT_PREFIX.length)
+    if (!useStore.getState().clientPreferencesLoaded && !useStore.getState().clientFlowNodePositions[key]) {
+        try {
+            const view = await loadAndMigrateClientPreferences()
+            useStore.setState({ clientFlowNodePositions: view.effective.flow_node_positions ?? {}, clientFlowEdgePorts: view.effective.flow_edge_ports ?? {} })
+        } catch {
+            // The controller reports migration/load failures. Preserve accessible legacy data.
+            const raw = window.localStorage.getItem(legacyKey)
+            if (raw) {
+                try {
+                    const layout = normalizeSavedLayout(JSON.parse(raw))
+                    if (layout) useStore.setState((state) => ({ clientFlowNodePositions: { ...state.clientFlowNodePositions, [key]: layout.nodePositions } }))
+                    return layout
+                } catch { return null }
+            }
         }
-        return normalizeSavedLayout(JSON.parse(raw))
-    } catch {
-        return null
     }
+    const nodePositions = useStore.getState().clientFlowNodePositions[key]
+    if (!nodePositions) return null
+    let cache = {}
+    try { cache = JSON.parse(window.localStorage.getItem(`${LAYOUT_CACHE_PREFIX}${key}`) ?? '{}') } catch { /* Recompute corrupt caches. */ }
+    const layout = normalizeSavedLayout({ version: 1, topologyStamp: '', edgeLayouts: {}, ...cache, nodePositions })
+    if (!layout) return null
+    const ports = useStore.getState().clientFlowEdgePorts[key]
+    if (ports) layout.edgeLayouts = Object.fromEntries(Object.entries(ports).map(([id, edge]) => [id, {
+        sourceSide: edge.source_side, targetSide: edge.target_side, sourceSlot: edge.source_slot, targetSlot: edge.target_slot,
+        route: layout.edgeLayouts[id]?.route ?? [],
+    }]))
+    return layout
+
 }
 
 export function saveSavedFlowLayout(
@@ -170,19 +195,24 @@ export function saveSavedFlowLayout(
     flowName: string,
     canvasKind: FlowCanvasKind,
     layout: SavedFlowLayoutV1,
+    userControlled = true,
 ): void {
     if (typeof window === 'undefined') {
         return
     }
 
-    try {
-        window.localStorage.setItem(
-            buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind),
-            JSON.stringify(layout),
-        )
-    } catch {
-        // Ignore storage failures.
+    const key = buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind).slice(LEGACY_LAYOUT_PREFIX.length)
+    if (userControlled) {
+        const positions = { ...useStore.getState().clientFlowNodePositions, [key]: layout.nodePositions }
+        const ports = { ...useStore.getState().clientFlowEdgePorts, [key]: Object.fromEntries(Object.entries(layout.edgeLayouts).map(([id, edge]) => [id, {
+            source_side: edge.sourceSide, target_side: edge.targetSide, source_slot: edge.sourceSlot, target_slot: edge.targetSlot,
+        }])) }
+        useStore.setState({ clientFlowNodePositions: positions, clientFlowEdgePorts: ports })
+        completePreferenceInteraction({ flow_node_positions: positions, flow_edge_ports: ports })
     }
+    const cache = { version: layout.version, topologyStamp: layout.topologyStamp, edgeLayouts: layout.edgeLayouts, viewport: layout.viewport }
+    try { window.localStorage.setItem(`${LAYOUT_CACHE_PREFIX}${key}`, JSON.stringify(cache)) } catch { /* Recomputable cache. */ }
+
 }
 
 export function clearSavedFlowLayout(
@@ -194,9 +224,13 @@ export function clearSavedFlowLayout(
         return
     }
 
-    try {
-        window.localStorage.removeItem(buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind))
-    } catch {
-        // Ignore storage failures.
-    }
+    const legacyKey = buildSavedFlowLayoutStorageKey(projectPath, flowName, canvasKind)
+    const key = legacyKey.slice(LEGACY_LAYOUT_PREFIX.length)
+    const positions = { ...useStore.getState().clientFlowNodePositions }
+    delete positions[key]
+    const ports = { ...useStore.getState().clientFlowEdgePorts }
+    delete ports[key]
+    useStore.setState({ clientFlowNodePositions: positions, clientFlowEdgePorts: ports })
+    completePreferenceInteraction({ flow_node_positions: positions, flow_edge_ports: ports })
+    try { window.localStorage.removeItem(`${LAYOUT_CACHE_PREFIX}${key}`) } catch { /* Recomputable cache. */ }
 }

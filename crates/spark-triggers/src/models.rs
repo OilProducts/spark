@@ -30,6 +30,7 @@ pub struct TriggerCreateRequest {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TriggerUpdateRequest {
+    pub expected_revision: String,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -44,6 +45,7 @@ pub struct TriggerUpdateRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SerializedTrigger {
+    pub revision: String,
     pub id: String,
     pub name: String,
     pub enabled: bool,

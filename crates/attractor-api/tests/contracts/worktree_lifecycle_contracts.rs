@@ -7,6 +7,9 @@ use spark_common::settings::SparkSettings;
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("project"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

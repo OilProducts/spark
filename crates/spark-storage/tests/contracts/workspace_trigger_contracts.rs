@@ -71,14 +71,18 @@ fn trigger_definition_toml_round_trips_webhook_without_losing_secret_hash() {
     let loaded = read_trigger_definition(&config_dir, "trigger-storage")
         .expect("read definition")
         .expect("definition");
-    assert_eq!(loaded, definition);
+    assert!(!loaded.revision.is_empty());
+    assert_eq!(
+        serde_json::to_value(loaded).unwrap(),
+        serde_json::to_value(definition).unwrap()
+    );
 }
 
 #[test]
 fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("spark-home/config");
-    for definition in [
+    for mut definition in [
         definition_with_source(
             "trigger-schedule",
             "schedule",
@@ -110,6 +114,10 @@ fn schedule_poll_and_flow_event_sources_round_trip_source_shapes() {
         ),
     ] {
         write_trigger_definition(&config_dir, &definition).expect("write definition");
+        definition.revision = read_trigger_definition(&config_dir, &definition.id)
+            .unwrap()
+            .unwrap()
+            .revision;
         assert_eq!(
             read_trigger_definition(&config_dir, &definition.id)
                 .expect("read")
@@ -132,7 +140,15 @@ fn trigger_definition_and_route_state_delete_only_their_canonical_files() {
     assert!(definition_path.exists());
     assert!(state_path.exists());
 
-    delete_trigger_definition(&config_dir, &definition.id).expect("delete definition");
+    delete_trigger_definition(
+        &config_dir,
+        &definition.id,
+        &read_trigger_definition(&config_dir, &definition.id)
+            .unwrap()
+            .unwrap()
+            .revision,
+    )
+    .expect("delete definition");
     assert!(!definition_path.exists());
     assert!(state_path.exists());
 
@@ -149,7 +165,7 @@ fn trigger_definition_repository_uses_canonical_paths_and_keeps_list_compatible(
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("spark-home/config");
     let repository = TriggerDefinitionRepository::new(config_dir.clone());
-    let first = webhook_definition("trigger-a");
+    let mut first = webhook_definition("trigger-a");
     let second = definition_with_source(
         "trigger-b",
         "schedule",
@@ -170,7 +186,7 @@ fn trigger_definition_repository_uses_canonical_paths_and_keeps_list_compatible(
         config_dir.join("triggers/trigger-a.toml")
     );
     repository.put(&second).expect("write second");
-    repository.put(&first).expect("write first");
+    first.revision = repository.put(&first).expect("write first");
     std::fs::write(
         repository
             .root_dir()
@@ -195,7 +211,12 @@ fn trigger_definition_repository_uses_canonical_paths_and_keeps_list_compatible(
         first
     );
 
-    repository.delete("trigger-a").expect("delete");
+    repository
+        .delete(
+            "trigger-a",
+            &repository.get("trigger-a").unwrap().unwrap().revision,
+        )
+        .expect("delete");
     assert!(repository.get("trigger-a").expect("missing").is_none());
     assert!(matches!(
         repository.definition_path("../bad"),
@@ -355,6 +376,7 @@ fn definition_with_source(
     source: Map<String, Value>,
 ) -> TriggerDefinition {
     TriggerDefinition {
+        revision: String::new(),
         id: id.to_string(),
         name: "Storage trigger".to_string(),
         enabled: true,

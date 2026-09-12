@@ -76,8 +76,8 @@ impl TriggerService {
         &self,
         request: TriggerCreateRequest,
     ) -> TriggerResult<SerializedTrigger> {
-        let (definition, webhook_secret) = normalize_trigger_create(request)?;
-        self.repositories.definitions.put(&definition)?;
+        let (mut definition, webhook_secret) = normalize_trigger_create(request)?;
+        definition.revision = self.repositories.definitions.put(&definition)?;
         self.serialize_with_refreshed_state(definition, webhook_secret)
     }
 
@@ -91,12 +91,29 @@ impl TriggerService {
             .definitions
             .get(trigger_id)?
             .ok_or(TriggerError::UnknownTrigger)?;
-        let (definition, webhook_secret) = normalize_trigger_update(existing, request)?;
-        self.repositories.definitions.put(&definition)?;
+        if request.expected_revision.is_empty() {
+            return Err(TriggerError::Validation(
+                "expected_revision is required.".into(),
+            ));
+        }
+        if existing.revision != request.expected_revision {
+            return Err(spark_storage::StorageError::SettingsConflict {
+                path: self.repositories.definitions.definition_path(trigger_id)?,
+            }
+            .into());
+        }
+        let revision = existing.revision.clone();
+        let (mut definition, webhook_secret) = normalize_trigger_update(existing, request)?;
+        definition.revision = revision;
+        definition.revision = self.repositories.definitions.put(&definition)?;
         self.serialize_with_refreshed_state(definition, webhook_secret)
     }
 
-    pub fn delete_trigger(&self, trigger_id: &str) -> TriggerResult<TriggerDeleteResponse> {
+    pub fn delete_trigger(
+        &self,
+        trigger_id: &str,
+        expected_revision: &str,
+    ) -> TriggerResult<TriggerDeleteResponse> {
         let definition = self
             .repositories
             .definitions
@@ -105,7 +122,15 @@ impl TriggerService {
         if definition.protected {
             return Err(TriggerError::ProtectedDelete);
         }
-        self.repositories.definitions.delete(trigger_id)?;
+        if definition.revision != expected_revision {
+            return Err(spark_storage::StorageError::SettingsConflict {
+                path: self.repositories.definitions.definition_path(trigger_id)?,
+            }
+            .into());
+        }
+        self.repositories
+            .definitions
+            .delete(trigger_id, expected_revision)?;
         self.repositories.runtime_state.delete(trigger_id)?;
         Ok(TriggerDeleteResponse {
             status: "deleted".to_string(),
@@ -188,6 +213,7 @@ pub fn serialize_trigger(
         source.remove("secret_hash");
     }
     SerializedTrigger {
+        revision: definition.revision,
         id: definition.id,
         name: definition.name,
         enabled: definition.enabled,

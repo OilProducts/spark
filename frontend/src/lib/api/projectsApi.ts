@@ -264,6 +264,7 @@ export async function registerProjectValidated(projectPath: string): Promise<Pro
 }
 
 export async function updateProjectStateValidated(payload: {
+    expected_revision?: string
     project_path: string
     is_favorite?: boolean | null
     last_accessed_at?: string | null

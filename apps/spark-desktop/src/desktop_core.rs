@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use spark_common::settings::SparkSettings;
 use spark_server::{RuntimeInitializationOptions, SeedStarterFlowsResult};
 use tokio::sync::oneshot;
@@ -30,11 +30,7 @@ impl DesktopPaths {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DesktopServerSettings {
-    #[serde(default)]
-    pub remote_access_enabled: bool,
-}
+pub use spark_common::settings::DesktopSettings as DesktopServerSettings;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct DesktopServerSettingsView {
@@ -42,6 +38,7 @@ pub struct DesktopServerSettingsView {
     pub bind_host: String,
     pub server_url: String,
     pub requires_restart: bool,
+    pub revision: String,
     pub remote_access_warning: &'static str,
 }
 
@@ -53,6 +50,7 @@ pub struct DesktopBootstrap {
 }
 
 pub struct DesktopServer {
+    notify_settings_changed: Box<dyn Fn(&str) + Send + Sync>,
     url: String,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -61,6 +59,19 @@ pub struct DesktopServer {
 impl DesktopServer {
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    pub fn save_remote_access(
+        &self,
+        paths: &DesktopPaths,
+        enabled: bool,
+        confirmed_warning: bool,
+        expected_revision: &str,
+    ) -> Result<(), String> {
+        let document =
+            save_remote_access_document(paths, enabled, confirmed_warning, expected_revision)?;
+        (self.notify_settings_changed)(&document.revision);
+        Ok(())
     }
 
     pub fn request_shutdown(&mut self) {
@@ -94,47 +105,75 @@ pub fn desktop_config_file(paths: &DesktopPaths) -> PathBuf {
     paths.app_config_dir.join("spark-desktop.json")
 }
 
-pub fn load_desktop_settings(paths: &DesktopPaths) -> Result<DesktopServerSettings, String> {
-    let config_file = desktop_config_file(paths);
-    if !config_file.exists() {
-        return Ok(DesktopServerSettings::default());
-    }
-    let content = fs::read_to_string(&config_file)
-        .map_err(|error| format!("Unable to read {}: {error}", config_file.display()))?;
-    serde_json::from_str(&content)
-        .map_err(|error| format!("Unable to parse {}: {error}", config_file.display()))
+pub fn core_config_file(paths: &DesktopPaths) -> PathBuf {
+    default_spark_data_dir(paths).join("config/spark.toml")
 }
 
-pub fn save_desktop_settings(
+pub fn load_desktop_settings(paths: &DesktopPaths) -> Result<DesktopServerSettings, String> {
+    let path = core_config_file(paths);
+    spark_storage::settings::migrate_desktop_settings(&path, &desktop_config_file(paths))
+        .and_then(|document| document.section(&path, "desktop"))
+        .map(|settings| settings.unwrap_or_default())
+        .map_err(|error| error.to_string())
+}
+
+pub fn desktop_settings_revision(paths: &DesktopPaths) -> Result<String, String> {
+    spark_storage::settings::read_settings_document(&core_config_file(paths))
+        .map(|document| document.revision)
+        .map_err(|error| error.to_string())
+}
+
+pub fn read_desktop_settings_view(
     paths: &DesktopPaths,
-    settings: &DesktopServerSettings,
-) -> Result<(), String> {
-    fs::create_dir_all(&paths.app_config_dir).map_err(|error| {
-        format!(
-            "Unable to create desktop config directory {}: {error}",
-            paths.app_config_dir.display()
-        )
-    })?;
-    let config_file = desktop_config_file(paths);
-    let content = serde_json::to_string_pretty(settings)
-        .map_err(|error| format!("Unable to serialize desktop settings: {error}"))?;
-    fs::write(&config_file, format!("{content}\n"))
-        .map_err(|error| format!("Unable to write {}: {error}", config_file.display()))
+    current_bind_host: &str,
+    server_url: &str,
+) -> Result<DesktopServerSettingsView, String> {
+    let path = core_config_file(paths);
+    let document =
+        spark_storage::settings::migrate_desktop_settings(&path, &desktop_config_file(paths))
+            .map_err(|error| error.to_string())?;
+    let settings = document
+        .section(&path, "desktop")
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    Ok(settings_view(
+        &settings,
+        current_bind_host,
+        server_url,
+        document.revision,
+    ))
 }
 
 pub fn set_remote_access_enabled(
     paths: &DesktopPaths,
     enabled: bool,
     confirmed_warning: bool,
+    expected_revision: &str,
 ) -> Result<DesktopServerSettings, String> {
+    save_remote_access_document(paths, enabled, confirmed_warning, expected_revision)?;
+    Ok(DesktopServerSettings {
+        remote_access_enabled: enabled,
+    })
+}
+
+fn save_remote_access_document(
+    paths: &DesktopPaths,
+    enabled: bool,
+    confirmed_warning: bool,
+    expected_revision: &str,
+) -> Result<spark_storage::settings::SettingsDocument, String> {
     if enabled && !confirmed_warning {
         return Err("Remote access requires explicit warning confirmation.".to_string());
     }
     let settings = DesktopServerSettings {
         remote_access_enabled: enabled,
     };
-    save_desktop_settings(paths, &settings)?;
-    Ok(settings)
+    spark_storage::settings::update_desktop_settings(
+        &core_config_file(paths),
+        expected_revision,
+        &settings,
+    )
+    .map_err(|error| error.to_string())
 }
 
 pub fn server_host_for_settings(settings: &DesktopServerSettings) -> &'static str {
@@ -159,6 +198,7 @@ pub fn settings_view(
     settings: &DesktopServerSettings,
     current_bind_host: &str,
     server_url: impl Into<String>,
+    revision: String,
 ) -> DesktopServerSettingsView {
     let bind_host = server_host_for_settings(settings).to_string();
     DesktopServerSettingsView {
@@ -167,6 +207,7 @@ pub fn settings_view(
         bind_host,
         server_url: server_url.into(),
         remote_access_warning: REMOTE_ACCESS_WARNING,
+        revision,
     }
 }
 
@@ -199,7 +240,7 @@ pub fn bootstrap_desktop_runtime(
 }
 
 pub fn start_desktop_server(
-    settings: SparkSettings,
+    mut settings: SparkSettings,
     bind_host: &str,
 ) -> Result<DesktopServer, String> {
     let listener = TcpListener::bind((bind_host, 0))
@@ -211,8 +252,14 @@ pub fn start_desktop_server(
         .local_addr()
         .map_err(|error| format!("Unable to read desktop server address: {error}"))?;
     let url = frontend_url_for_addr(local_addr);
+    // Desktop owns its listener and client target; remote access still requires
+    // the native confirmation boundary. Report that effective choice separately.
+    settings.connections.server_host = Some(bind_host.to_owned());
+    settings.connections.server_port = Some(0);
+    settings.connections.client_api_base_url = Some(url.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let (startup_tx, startup_rx) = mpsc::channel::<Result<(), String>>();
+    let (startup_tx, startup_rx) =
+        mpsc::channel::<Result<Box<dyn Fn(&str) + Send + Sync>, String>>();
     let thread = thread::Builder::new()
         .name("spark-desktop-http".to_string())
         .spawn(move || {
@@ -239,8 +286,11 @@ pub fn start_desktop_server(
                     }
                 };
                 let client = spark_server::rust_llm_client_from_settings(&settings);
-                let app = spark_http::build_app_with_rust_llm_client(settings, client);
-                let _ = startup_tx.send(Ok(()));
+                let (app, notify) =
+                    spark_http::build_app_with_rust_llm_client_and_settings_notifications(
+                        settings, client,
+                    );
+                let _ = startup_tx.send(Ok(Box::new(notify)));
                 let server = axum::serve(listener, app).with_graceful_shutdown(async {
                     let _ = shutdown_rx.await;
                 });
@@ -248,10 +298,11 @@ pub fn start_desktop_server(
             });
         })
         .map_err(|error| format!("Unable to spawn desktop server thread: {error}"))?;
-    startup_rx
+    let notify_settings_changed = startup_rx
         .recv()
         .map_err(|error| format!("Desktop server startup channel closed: {error}"))??;
     Ok(DesktopServer {
+        notify_settings_changed,
         url,
         shutdown: Some(shutdown_tx),
         thread: Some(thread),
@@ -260,4 +311,10 @@ pub fn start_desktop_server(
 
 pub fn is_app_owned_data_dir(paths: &DesktopPaths, data_dir: &Path) -> bool {
     data_dir.starts_with(&paths.app_data_dir)
+}
+
+/// App-owned bootstrap identity survives ephemeral HTTP ports and WebView origins.
+pub fn desktop_client_identity(paths: &DesktopPaths) -> Result<String, String> {
+    spark_storage::settings::load_or_create_client_identity(&paths.app_config_dir.join("client-id"))
+        .map_err(|error| error.to_string())
 }

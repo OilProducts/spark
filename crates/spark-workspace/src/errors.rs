@@ -43,6 +43,12 @@ impl WorkspaceError {
 impl From<spark_storage::StorageError> for WorkspaceError {
     fn from(value: spark_storage::StorageError) -> Self {
         match value {
+            spark_storage::StorageError::SettingsConflict { .. } => Self::Conflict(
+                "Settings changed since this document was read. Reload before saving.".into(),
+            ),
+            spark_storage::StorageError::SettingsValidation { reason, .. } => {
+                Self::Validation(reason)
+            }
             spark_storage::StorageError::InvalidRepositoryPath { reason, .. } => {
                 Self::Validation(reason)
             }

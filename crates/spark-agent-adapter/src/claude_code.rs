@@ -116,7 +116,13 @@ impl ClaudeCodeBackend {
                 working_dir.display()
             )));
         }
-        let executable = claude_code_executable();
+        let configuration = crate::config::captured_session_config(&request.metadata)
+            .map_err(ClaudeCodeError::configuration)?;
+        let native = configuration.as_ref().map(|config| &config.native);
+        let executable = native
+            .and_then(|config| config.claude_binary.as_ref())
+            .map(PathBuf::from)
+            .unwrap_or_else(claude_code_executable);
         let mut command = Command::new(&executable);
         command
             .arg("-p")
@@ -125,7 +131,11 @@ impl ClaudeCodeBackend {
             .arg("--include-partial-messages")
             .arg("--verbose")
             .arg("--permission-mode")
-            .arg(permission_mode())
+            .arg(
+                native
+                    .and_then(|config| config.claude_permission_mode.clone())
+                    .unwrap_or_else(permission_mode),
+            )
             .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -136,10 +146,12 @@ impl ClaudeCodeBackend {
         if let Some(session_id) = resume_session_id {
             command.arg("--resume").arg(session_id);
         }
-        if let Some(config_dir) = env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
-            .ok()
-            .and_then(|value| non_empty(&value).map(str::to_string))
-        {
+        if let Some(config_dir) = match native {
+            Some(config) => config.claude_config_dir.clone(),
+            None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
+                .ok()
+                .and_then(|value| non_empty(&value).map(str::to_string)),
+        } {
             command.env("CLAUDE_CONFIG_DIR", config_dir);
         }
 
@@ -280,7 +292,16 @@ const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 /// at the caller.
 pub fn list_available_claude_code_models() -> Result<Vec<ClaudeCodeModelMetadata>, ClaudeCodeError>
 {
-    let executable = claude_code_executable();
+    list_available_claude_code_models_with_settings(None)
+}
+
+pub fn list_available_claude_code_models_with_settings(
+    native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+) -> Result<Vec<ClaudeCodeModelMetadata>, ClaudeCodeError> {
+    let executable = native
+        .and_then(|config| config.claude_binary.as_ref())
+        .map(PathBuf::from)
+        .unwrap_or_else(claude_code_executable);
     let mut command = Command::new(&executable);
     command
         .arg("-p")
@@ -295,10 +316,12 @@ pub fn list_available_claude_code_models() -> Result<Vec<ClaudeCodeModelMetadata
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if let Some(config_dir) = env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
-        .ok()
-        .and_then(|value| non_empty(&value).map(str::to_string))
-    {
+    if let Some(config_dir) = match native {
+        Some(config) => config.claude_config_dir.clone(),
+        None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
+            .ok()
+            .and_then(|value| non_empty(&value).map(str::to_string)),
+    } {
         command.env("CLAUDE_CONFIG_DIR", config_dir);
     }
 
@@ -868,7 +891,7 @@ pub fn usage_from_claude_code_usage_payload(payload: &Value) -> Option<Usage> {
     Some(usage.normalized())
 }
 
-fn claude_code_executable() -> PathBuf {
+pub(crate) fn claude_code_executable() -> PathBuf {
     env::var(CLAUDE_CODE_BIN_ENV)
         .ok()
         .and_then(|value| non_empty(&value).map(PathBuf::from))

@@ -238,3 +238,49 @@ fn legacy_dot_catalog_entries_are_skipped_instead_of_failing_load() {
         );
     }
 }
+
+#[test]
+fn revision_checked_catalog_edits_preserve_extensions_and_reject_stale_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("flow-catalog.toml");
+    fs::write(&path, "schema_version = 1\n[custom]\nretained = true\n[flows.\"one.yaml\"]\nlaunch_policy = \"disabled\"\nnote = \"keep\"\n[flows.\"two.yaml\"]\nlaunch_policy = \"trigger_only\"\n").unwrap();
+    let before = read_flow_launch_policy(temp.path(), "one.yaml").unwrap();
+    let saved = spark_storage::set_flow_catalog_entry_revision(
+        temp.path(),
+        "one.yaml",
+        "agent_requestable",
+        None,
+        &before.revision,
+    )
+    .unwrap();
+    assert_ne!(before.revision, saved.revision);
+    let bytes = fs::read(&path).unwrap();
+    let document = spark_storage::settings::read_settings_document(&path).unwrap();
+    assert_eq!(document.values["custom"]["retained"].as_bool(), Some(true));
+    assert_eq!(
+        document.values["flows"]["one.yaml"]["note"].as_str(),
+        Some("keep")
+    );
+    assert_eq!(
+        document.values["flows"]["two.yaml"]["launch_policy"].as_str(),
+        Some("trigger_only")
+    );
+    assert!(matches!(
+        spark_storage::set_flow_catalog_entry_revision(
+            temp.path(),
+            "two.yaml",
+            "disabled",
+            None,
+            &before.revision
+        ),
+        Err(StorageError::SettingsConflict { .. })
+    ));
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    spark_storage::seed_default_flow_catalog(temp.path()).unwrap();
+    let seeded = spark_storage::settings::read_settings_document(&path).unwrap();
+    assert_eq!(seeded.values["custom"]["retained"].as_bool(), Some(true));
+    assert_eq!(
+        seeded.values["flows"]["one.yaml"]["note"].as_str(),
+        Some("keep")
+    );
+}

@@ -6,6 +6,8 @@ pub type Result<T> = std::result::Result<T, SparkCommonError>;
 /// Errors raised by the compatibility-oriented common crate.
 #[derive(Debug, thiserror::Error)]
 pub enum SparkCommonError {
+    #[error("{0}")]
+    SettingsValidation(String),
     #[error("Project path is required.")]
     EmptyProjectPath,
 

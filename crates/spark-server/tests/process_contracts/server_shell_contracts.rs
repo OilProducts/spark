@@ -661,3 +661,113 @@ fn collect_flow_files(root: &Path, current: &Path, files: &mut Vec<String>) {
         }
     }
 }
+
+#[test]
+fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("home");
+    fs::create_dir_all(home.join("config")).unwrap();
+    let path = home.join("config/spark.toml");
+    let first = root.join("first-flows");
+    let second = root.join("second-flows");
+    let overrides = SettingsOverrides {
+        data_dir: Some(home.clone()),
+        ..Default::default()
+    };
+    let env = BTreeMap::new();
+    fs::write(
+        &path,
+        format!("[runtime]\nflows_dir = '{}'\n", first.display()),
+    )
+    .unwrap();
+    let captured = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
+    assert_eq!(captured.flows_dir, first);
+    let original_backup = fs::read(path.with_file_name("spark.toml.v0.bak")).unwrap();
+    assert!(String::from_utf8(original_backup)
+        .unwrap()
+        .contains(first.to_str().unwrap()));
+    assert_eq!(
+        spark_storage::settings::read_settings_document(&path)
+            .unwrap()
+            .values["schema_version"]
+            .as_integer(),
+        Some(1)
+    );
+    fs::write(
+        &path,
+        format!(
+            "schema_version = 1\n[runtime]\nflows_dir = '{}'\n",
+            second.display()
+        ),
+    )
+    .unwrap();
+    let restarted = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
+    assert_eq!(restarted.flows_dir, second);
+    assert_eq!(captured.flows_dir, first);
+    assert_eq!(restarted.data_dir, home);
+    let mut env = env;
+    env.insert(
+        "SPARK_FLOWS_DIR".into(),
+        first.to_string_lossy().into_owned(),
+    );
+    assert_eq!(
+        resolve_server_settings_with_executable_path(&overrides, &env, None)
+            .unwrap()
+            .flows_dir,
+        first
+    );
+    let overrides = SettingsOverrides {
+        flows_dir: Some(second.clone()),
+        ..overrides
+    };
+    assert_eq!(
+        resolve_server_settings_with_executable_path(&overrides, &env, None)
+            .unwrap()
+            .flows_dir,
+        second
+    );
+    fs::write(&path, "[runtime]\nflows_dir = 123\n").unwrap();
+    assert!(resolve_server_settings_with_executable_path(&overrides, &env, None).is_err());
+}
+
+#[test]
+fn persisted_connections_apply_on_restart_with_cli_and_environment_precedence() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config");
+    fs::create_dir_all(&config).unwrap();
+    fs::write(config.join("spark.toml"), "[connections]\nserver_host = '127.0.0.2'\nserver_port = 8123\nclient_api_base_url = 'https://spark.example'\n").unwrap();
+    let args: Vec<String> = ["serve", "--data-dir", temp.path().to_str().unwrap()]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let persisted = build_serve_configuration_from_args(&args, &BTreeMap::new()).unwrap();
+    assert_eq!(
+        (persisted.host.as_str(), persisted.port),
+        ("127.0.0.2", 8123)
+    );
+    let env = BTreeMap::from([
+        ("SPARK_HOST".into(), "127.0.0.3".into()),
+        ("SPARK_PORT".into(), "9123".into()),
+    ]);
+    let overridden = build_serve_configuration_from_args(&args, &env).unwrap();
+    assert_eq!(
+        (overridden.host.as_str(), overridden.port),
+        ("127.0.0.3", 9123)
+    );
+    let mut flags = args.clone();
+    flags.extend(
+        ["--host", "127.0.0.4", "--port", "0"]
+            .into_iter()
+            .map(str::to_owned),
+    );
+    let explicit = build_serve_configuration_from_args(&flags, &env).unwrap();
+    assert_eq!((explicit.host.as_str(), explicit.port), ("127.0.0.4", 0));
+    assert_eq!(explicit.settings.connections.server_port, Some(0));
+    let document =
+        spark_storage::settings::read_settings_document(&config.join("spark.toml")).unwrap();
+    assert_eq!(
+        document.values["connections"]["server_port"].as_integer(),
+        Some(8123)
+    );
+}

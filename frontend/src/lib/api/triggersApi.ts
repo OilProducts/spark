@@ -29,6 +29,7 @@ export interface TriggerStateResponse {
 }
 
 export interface TriggerResponse {
+    revision: string
     id: string
     name: string
     enabled: boolean
@@ -78,6 +79,7 @@ export function parseTriggerResponse(payload: unknown, endpoint = '/workspace/ap
     }
     const actionRecord = expectObjectRecord(record.action, endpoint)
     return {
+        revision: expectString(record.revision, endpoint, 'revision'),
         id: expectString(record.id, endpoint, 'id'),
         name: expectString(record.name, endpoint, 'name'),
         enabled: record.enabled === true,
@@ -138,6 +140,7 @@ export async function createTriggerValidated(payload: {
 export async function updateTriggerValidated(
     triggerId: string,
     payload: {
+        expected_revision: string
         name?: string
         enabled?: boolean
         action?: Record<string, unknown>
@@ -157,9 +160,9 @@ export async function updateTriggerValidated(
     )
 }
 
-export async function deleteTriggerValidated(triggerId: string): Promise<{ status: 'deleted'; id: string }> {
+export async function deleteTriggerValidated(triggerId: string, expectedRevision: string): Promise<{ status: 'deleted'; id: string }> {
     return fetchWorkspaceJsonValidated(
-        `/triggers/${encodeURIComponent(triggerId)}`,
+        `/triggers/${encodeURIComponent(triggerId)}?expected_revision=${encodeURIComponent(expectedRevision)}`,
         {
             method: 'DELETE',
         },

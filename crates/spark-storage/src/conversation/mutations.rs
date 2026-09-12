@@ -43,6 +43,7 @@ pub enum ConversationMutation {
 /// `Option` distinguishes "set" from "clear" for nullable settings.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConversationMetadataPatch {
+    pub model_settings: Option<Option<spark_common::settings::ModelSettings>>,
     pub chat_mode: Option<String>,
     pub provider: Option<String>,
     pub model: Option<Option<String>>,
@@ -53,7 +54,8 @@ pub struct ConversationMetadataPatch {
 
 impl ConversationMetadataPatch {
     pub fn is_empty(&self) -> bool {
-        self.chat_mode.is_none()
+        self.model_settings.is_none()
+            && self.chat_mode.is_none()
             && self.provider.is_none()
             && self.model.is_none()
             && self.llm_profile.is_none()

@@ -46,6 +46,7 @@ impl From<LlmProfileConfigurationError> for AdapterError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LlmProfile {
     pub id: String,
     pub provider: String,
@@ -167,9 +168,23 @@ pub fn load_llm_profiles(
         ))
     })?;
     let raw = raw_text.parse::<toml::Value>().map_err(|source| {
-        LlmProfileConfigurationError::new(format!("Invalid LLM profile config: {source}"))
+        // TOML errors include source lines, which can contain pasted credentials.
+        let position = source
+            .span()
+            .map(|span| format!(" near byte {}", span.start))
+            .unwrap_or_default();
+        LlmProfileConfigurationError::new(format!(
+            "Invalid LLM profile config: malformed TOML{position}; check llm-profiles.toml syntax."
+        ))
     })?;
     let table = raw.as_table().cloned().unwrap_or_default();
+    parse_llm_profiles(&table)
+}
+
+/// The same pure validator is used by disk readers and revision-checked edits.
+pub fn parse_llm_profiles(
+    table: &Table,
+) -> Result<BTreeMap<String, LlmProfile>, LlmProfileConfigurationError> {
     let Some(profiles_raw) = table.get("profiles") else {
         return Ok(BTreeMap::new());
     };
@@ -260,6 +275,27 @@ fn parse_profile(
         raw.get("base_url"),
         &format!("LLM profile '{profile_id}' base_url"),
     )?;
+    let endpoint = reqwest::Url::parse(&base_url).map_err(|_| {
+        LlmProfileConfigurationError::new(
+            "LLM profile base_url must be an HTTP(S) URL without embedded credentials.",
+        )
+    })?;
+    if !matches!(endpoint.scheme(), "http" | "https")
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(LlmProfileConfigurationError::new(
+            "LLM profile base_url must be an HTTP(S) URL without credentials, query parameters or fragments; use api_key_env."));
+    }
+    if let Some(key) = optional_text(raw.get("api_key_env"))? {
+        if !key.bytes().enumerate().all(|(index, byte)| {
+            byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+        }) {
+            return Err(LlmProfileConfigurationError::new("LLM profile api_key_env must name an environment variable, not contain a credential value."));
+        }
+    }
     let models_raw = raw
         .get("models")
         .and_then(|value| value.as_array())

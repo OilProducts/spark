@@ -1352,10 +1352,29 @@ impl AttractorApiService {
         let record = bundle
             .record
             .ok_or_else(|| format!("Run record unavailable: {run_id}"))?;
-        let execution_selection = self.recorded_execution_profile(&record)?;
         let checkpoint = bundle
             .checkpoint
             .ok_or_else(|| format!("Checkpoint unavailable: {run_id}"))?;
+        let execution_selection = match checkpoint
+            .context
+            .get("internal.execution_profile_snapshot")
+        {
+            Some(value) => {
+                let selection: attractor_execution::ExecutionProfileSelection =
+                    serde_json::from_value(value.clone())
+                        .map_err(|_| "Invalid captured execution profile.".to_string())?;
+                if Some(selection.selected_profile_id.as_str())
+                    != record.execution_profile_id.as_deref()
+                    || selection.profile.id != selection.selected_profile_id
+                    || selection.profile.mode.as_str() != record.execution_mode
+                    || selection.profile.image != record.execution_container_image
+                {
+                    return Err("Captured execution profile does not match the run record.".into());
+                }
+                selection
+            }
+            None => self.recorded_execution_profile(&record)?,
+        };
         let lock_identity = record
             .execution_lock
             .as_ref()
@@ -1561,6 +1580,23 @@ impl AttractorApiService {
     }
 
     pub fn save_flow(&self, req: SaveFlowRequest) -> RuntimeRouteResponse {
+        let _references =
+            match spark_storage::settings::lock_profile_references(&self.settings.config_dir) {
+                Ok(lock) => lock,
+                Err(error) => {
+                    return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
+                }
+            };
+        let flow = match attractor_dsl::parse_flow_definition(&req.content) {
+            Ok(flow) => flow,
+            Err(error) => return flow_save_definition_error_response(error),
+        };
+        if let Err(error) = spark_storage::settings::validate_profile_references(
+            &self.settings.config_dir,
+            &json!(flow),
+        ) {
+            return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
+        }
         save_flow_request(&self.settings.flows_dir, req)
     }
 
@@ -1579,8 +1615,18 @@ impl AttractorApiService {
     }
 
     pub fn list_llm_profiles(&self) -> RuntimeRouteResponse {
-        match unified_llm_adapter::public_llm_profiles(&self.settings.config_dir) {
-            Ok(profiles) => RuntimeRouteResponse::json(200, json!({"profiles": profiles})),
+        let path = self.settings.config_dir.join("llm-profiles.toml");
+        let document = match spark_storage::settings::read_settings_document(&path) {
+            Ok(document) => document,
+            Err(error) => {
+                return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}))
+            }
+        };
+        match unified_llm_adapter::profiles::parse_llm_profiles(&document.values) {
+            Ok(profiles) => RuntimeRouteResponse::json(
+                200,
+                json!({"profiles": profiles.values().map(|profile| profile.to_public_value(&unified_llm_adapter::profiles::ProcessLlmProfileEnvironment)).collect::<Vec<_>>(), "revision": document.revision}),
+            ),
             Err(error) => RuntimeRouteResponse::json(400, json!({"detail": error.to_string()})),
         }
     }
@@ -1662,17 +1708,96 @@ impl AttractorApiService {
             Ok(lock) => lock,
             Err(error) => return validation_error_response(error),
         };
-        let (selected_model, display_model) =
+        let (defaults, defaults_source) =
+            match spark_agent_adapter::config::read_project_model_defaults(
+                &self.settings,
+                &working_directory,
+            ) {
+                Ok(defaults) => defaults,
+                Err(error) => return validation_error_response(error.to_string()),
+            };
+        let (mut selected_model, _) =
             resolve_launch_model(&flow, request.model.as_deref(), &requested_context);
-        let selected_provider =
-            resolve_launch_provider(&flow, request.llm_provider.as_deref(), &requested_context)
-                .unwrap_or_else(|| "codex".to_string());
-        let selected_profile =
+        let explicit_provider =
+            resolve_launch_provider(&flow, request.llm_provider.as_deref(), &requested_context);
+        let explicit_profile =
             resolve_launch_profile(&flow, request.llm_profile.as_deref(), &requested_context);
+        // Authored selectors keep their precedence. Only a compatible selector can
+        // borrow the inherited group's model; a provider switch starts fresh.
+        let use_defaults = explicit_provider
+            .as_ref()
+            .is_none_or(|provider| Some(provider) == defaults.provider.as_ref())
+            && explicit_profile
+                .as_ref()
+                .is_none_or(|profile| Some(profile) == defaults.llm_profile.as_ref());
+        let selected_profile = explicit_profile.or_else(|| {
+            (explicit_provider.is_none())
+                .then(|| defaults.llm_profile.clone())
+                .flatten()
+        });
+        let has_explicit_provider = explicit_provider.is_some();
+        let mut selected_provider = explicit_provider
+            .or_else(|| {
+                selected_profile
+                    .is_none()
+                    .then(|| defaults.provider.clone())
+                    .flatten()
+            })
+            .unwrap_or_else(|| "codex".to_string());
+        if use_defaults && selected_model.is_none() {
+            selected_model = defaults.model.clone();
+        }
+        let display_model = selected_model
+            .clone()
+            .unwrap_or_else(|| unified_llm_adapter::DISPLAY_MODEL_PLACEHOLDER.to_string());
         let selected_reasoning_effort = resolve_launch_reasoning_effort(
             request.reasoning_effort.as_deref(),
             &requested_context,
-        );
+        )
+        .or_else(|| {
+            use_defaults
+                .then(|| defaults.reasoning_effort.clone())
+                .flatten()
+        });
+        let mut configuration = match spark_storage::settings::read_execution_configuration(
+            &self.settings.config_dir,
+            &spark_common::paths::ProcessEnvironment,
+        ) {
+            Ok(configuration) => configuration,
+            Err(error) => return validation_error_response(&error.to_string()),
+        };
+        configuration.retain_startup_settings(&self.settings);
+        spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
+        let profiles = match unified_llm_adapter::load_llm_profiles(&self.settings.config_dir) {
+            Ok(profiles) => profiles,
+            Err(_) => {
+                return validation_error_response("Invalid LLM profiles; check llm-profiles.toml.")
+            }
+        };
+        if defaults.llm_profile.is_some()
+            && selected_profile == defaults.llm_profile
+            && selected_profile
+                .as_ref()
+                .is_some_and(|id| !profiles.contains_key(id))
+        {
+            return validation_error_response("Selected default LLM profile does not exist.");
+        }
+        if let Some(profile) = selected_profile.as_ref().and_then(|id| profiles.get(id)) {
+            if !has_explicit_provider {
+                selected_provider = profile.provider.clone();
+            }
+            if selected_model
+                .as_ref()
+                .is_some_and(|model| !profile.models.contains(model))
+            {
+                return validation_error_response("Select a model supported by the LLM profile.");
+            }
+            if selected_model.is_none() && profile.default_model.is_none() {
+                return validation_error_response(
+                    "Selected LLM profile requires an explicit model.",
+                );
+            }
+        }
         let diagnostic_payloads = flow_diagnostics_payload(&flow.diagnostics());
         let error_payloads = diagnostic_payloads.clone();
         let execution_selection = match attractor_execution::resolve_execution_profile_by_id(
@@ -1741,6 +1866,21 @@ impl AttractorApiService {
         runtime_context.insert(
             unified_llm_adapter::RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
             json!(selected_reasoning_effort.clone().unwrap_or_default()),
+        );
+        runtime_context.insert(
+            "internal.model_defaults_snapshot".into(),
+            json!({
+                "group": defaults, "source": defaults_source,
+            }),
+        );
+        runtime_context.insert(
+            "internal.execution_configuration_snapshot".into(),
+            json!(configuration),
+        );
+        runtime_context.insert("internal.llm_profiles_snapshot".into(), json!(profiles));
+        runtime_context.insert(
+            "internal.execution_profile_snapshot".into(),
+            json!(execution_selection),
         );
         runtime_context.extend(execution_metadata.as_context_updates());
         runtime_context.insert("internal.run_id".to_string(), json!(run_id.clone()));

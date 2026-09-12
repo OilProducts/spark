@@ -260,6 +260,7 @@ homeConversationCache: {
 homeThreadSummariesStatusByProjectPath: {},
 homeThreadSummariesErrorByProjectPath: {},
 homeProjectSessionsByPath: {},
+preferredHomeSidebarPrimarySplitRatio: null,
 homeConversationSessionsById: {},
 homeProjectGitMetadataByPath: {},
 uiDefaults: {
@@ -463,15 +464,21 @@ describe('ProjectsPanel', () => {
 
     expect(sidebarPrimarySurface.style.height).toBe('320px')
 
+    const completed = vi.fn()
+    window.addEventListener('spark:preferences-completed', completed)
     fireEvent.pointerDown(resizeHandle, { clientY: 240 })
     fireEvent.pointerMove(window, { clientY: 300 })
+    expect(completed).not.toHaveBeenCalled()
     fireEvent.pointerUp(window)
+    window.removeEventListener('spark:preferences-completed', completed)
+    expect(completed).toHaveBeenCalledTimes(1)
+    expect((completed.mock.calls[0][0] as CustomEvent).detail.home_sidebar_primary_split_ratio).toBeCloseTo(380 / 708, 5)
 
     await waitFor(() => {
       expect(sidebarPrimarySurface.style.height).toBe('380px')
     })
     expect(
-      useStore.getState().homeProjectSessionsByPath['/tmp/quick-switch-project']?.sidebarPrimarySplitRatio,
+      useStore.getState().preferredHomeSidebarPrimarySplitRatio,
     ).toBeCloseTo(380 / (720 - 12), 5)
   })
 
@@ -496,7 +503,7 @@ describe('ProjectsPanel', () => {
       expect(sidebarPrimarySurface.style.height).toBe('380px')
     })
 
-    const persistedRatio = useStore.getState().homeProjectSessionsByPath['/tmp/quick-switch-project']?.sidebarPrimarySplitRatio
+    const persistedRatio = useStore.getState().preferredHomeSidebarPrimarySplitRatio
     expect(persistedRatio).not.toBeNull()
 
     sidebarRect.setHeight(900)
@@ -530,7 +537,7 @@ describe('ProjectsPanel', () => {
       expect(sidebarPrimarySurface.style.height).toBe('380px')
     })
 
-    const persistedRatio = useStore.getState().homeProjectSessionsByPath['/tmp/quick-switch-project']?.sidebarPrimarySplitRatio
+    const persistedRatio = useStore.getState().preferredHomeSidebarPrimarySplitRatio
     expect(persistedRatio).not.toBeNull()
 
     sidebarRect.setHeight(520)
@@ -4808,6 +4815,7 @@ describe('ProjectsPanel', () => {
     expect(settingsRequests[0]?.body).toMatchObject({
       project_path: '/tmp/mode-project',
       chat_mode: 'plan',
+      expected_revision: '0',
     })
     const history = screen.getByTestId('project-ai-conversation-history-list')
     expect(history).toHaveTextContent('Switched to Plan mode')
@@ -5097,7 +5105,7 @@ describe('ProjectsPanel', () => {
     )
   })
 
-  it('seeds project chat controls from global defaults and sends them with a turn', async () => {
+  it('seeds project chat controls from defaults without writing inherited selectors back', async () => {
     const user = userEvent.setup()
     const turnRequests: Array<Record<string, unknown>> = []
 
@@ -5216,12 +5224,13 @@ describe('ProjectsPanel', () => {
     expect(turnRequests[0]).toMatchObject({
       project_path: '/tmp/model-project',
       message: 'Use the default chat controls.',
-      model: 'gpt-5.4-mini',
-      reasoning_effort: 'high',
     })
+    expect(turnRequests[0]).not.toHaveProperty('model')
+    expect(turnRequests[0]).not.toHaveProperty('provider')
+    expect(turnRequests[0]).not.toHaveProperty('reasoning_effort')
   })
 
-  it('updates project chat settings from the composer controls and sends the selected values later', async () => {
+  it('commits explicit composer settings and sends later messages without copying selectors', async () => {
     const user = userEvent.setup()
     const settingsRequests: Array<Record<string, unknown>> = []
     const turnRequests: Array<Record<string, unknown>> = []
@@ -5382,9 +5391,10 @@ describe('ProjectsPanel', () => {
     expect(turnRequests[0]).toMatchObject({
       project_path: '/tmp/model-project',
       message: 'Continue with selected settings.',
-      model: 'gpt-5.4-mini',
-      reasoning_effort: 'medium',
     })
+    expect(turnRequests[0]).not.toHaveProperty('model')
+    expect(turnRequests[0]).not.toHaveProperty('provider')
+    expect(turnRequests[0]).not.toHaveProperty('reasoning_effort')
   })
 
   it('shows each thread’s own project chat model and effort when switching threads', async () => {

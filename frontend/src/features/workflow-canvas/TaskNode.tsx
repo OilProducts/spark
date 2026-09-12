@@ -105,7 +105,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const flowName = useStore((state) => (isEditorCanvas ? state.activeFlow : null))
     const isExpandedChildPreview = useStore((state) => (
         isEditorCanvas && state.activeFlow
-            ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? false)
+            ? (state.editorExpandChildFlowsByFlow[state.activeFlow] ?? state.preferredExpandChildFlows)
             : false
     ))
     const executionHumanGate = useStore((state) => (runId ? state.runDetailSessionsByRunId[runId]?.humanGate ?? null : null))

@@ -120,6 +120,7 @@ fn service_crud_uses_production_repositories_for_definition_and_state_files() {
         .update_trigger(
             &created.id,
             TriggerUpdateRequest {
+                expected_revision: service.get_trigger(&created.id).unwrap().unwrap().revision,
                 name: Some("Schedule disabled".to_string()),
                 enabled: Some(false),
                 ..TriggerUpdateRequest::default()
@@ -142,7 +143,12 @@ fn service_crud_uses_production_repositories_for_definition_and_state_files() {
         .unwrap_or("")
         .ends_with('Z'));
 
-    service.delete_trigger(&created.id).expect("delete trigger");
+    service
+        .delete_trigger(
+            &created.id,
+            &service.get_trigger(&created.id).unwrap().unwrap().revision,
+        )
+        .expect("delete trigger");
     assert!(repositories
         .definitions
         .get(&created.id)
@@ -222,6 +228,7 @@ fn update_regenerates_webhook_secret_and_preserves_immutable_fields() {
         .update_trigger(
             &created.id,
             TriggerUpdateRequest {
+                expected_revision: service.get_trigger(&created.id).unwrap().unwrap().revision,
                 name: Some("Webhook updated".to_string()),
                 regenerate_webhook_secret: true,
                 ..TriggerUpdateRequest::default()
@@ -293,13 +300,16 @@ fn webhook_handler_authenticates_by_stored_key_and_secret() {
 fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let original_definition = protected_definition("trigger-protected");
+    let mut original_definition = protected_definition("trigger-protected");
     let original_state = TriggerState {
         last_result: Some("existing".to_string()),
         ..TriggerState::default()
     };
     spark_storage::write_trigger_definition(&settings.config_dir, &original_definition)
         .expect("write protected");
+    original_definition = read_trigger_definition(&settings.config_dir, &original_definition.id)
+        .unwrap()
+        .unwrap();
     save_trigger_state(&settings.data_dir, "trigger-protected", &original_state)
         .expect("write protected state");
     let service = TriggerService::new(settings.clone());
@@ -308,6 +318,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
         service.update_trigger(
             "trigger-protected",
             TriggerUpdateRequest {
+                expected_revision: service
+                    .get_trigger("trigger-protected")
+                    .unwrap()
+                    .unwrap()
+                    .revision,
                 source: Some(Map::new()),
                 ..TriggerUpdateRequest::default()
             },
@@ -318,6 +333,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
         service.update_trigger(
             "trigger-protected",
             TriggerUpdateRequest {
+                expected_revision: service
+                    .get_trigger("trigger-protected")
+                    .unwrap()
+                    .unwrap()
+                    .revision,
                 action: Some(Map::from_iter([(
                     "static_context".to_string(),
                     json!({"changed": true}),
@@ -331,6 +351,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
         service.update_trigger(
             "trigger-protected",
             TriggerUpdateRequest {
+                expected_revision: service
+                    .get_trigger("trigger-protected")
+                    .unwrap()
+                    .unwrap()
+                    .revision,
                 action: Some(Map::from_iter([(
                     "project_path".to_string(),
                     json!("/tmp/other"),
@@ -344,6 +369,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
         service.update_trigger(
             "trigger-protected",
             TriggerUpdateRequest {
+                expected_revision: service
+                    .get_trigger("trigger-protected")
+                    .unwrap()
+                    .unwrap()
+                    .revision,
                 regenerate_webhook_secret: true,
                 ..TriggerUpdateRequest::default()
             },
@@ -351,7 +381,14 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
         "Protected triggers do not support webhook secret regeneration.",
     );
     assert!(matches!(
-        service.delete_trigger("trigger-protected"),
+        service.delete_trigger(
+            "trigger-protected",
+            &service
+                .get_trigger("trigger-protected")
+                .unwrap()
+                .unwrap()
+                .revision
+        ),
         Err(TriggerError::ProtectedDelete)
     ));
     assert_eq!(
@@ -369,6 +406,11 @@ fn protected_triggers_reject_forbidden_edits_and_delete_but_allow_flow_name() {
         .update_trigger(
             "trigger-protected",
             TriggerUpdateRequest {
+                expected_revision: service
+                    .get_trigger("trigger-protected")
+                    .unwrap()
+                    .unwrap()
+                    .revision,
                 action: Some(Map::from_iter([(
                     "flow_name".to_string(),
                     json!("ops/other.dot"),
@@ -428,6 +470,7 @@ run_at = "2026-06-23T10:00:00Z""#,
         service.update_trigger(
             "trigger-unknown-source",
             TriggerUpdateRequest {
+                expected_revision: "invalid-document".into(),
                 name: Some("ignored".to_string()),
                 ..TriggerUpdateRequest::default()
             },
@@ -435,7 +478,7 @@ run_at = "2026-06-23T10:00:00Z""#,
         "Unsupported trigger source type: unknown",
     );
     assert_validation(
-        service.delete_trigger("trigger-missing-secret"),
+        service.delete_trigger("trigger-missing-secret", "invalid-document"),
         "Webhook triggers require secret_hash.",
     );
     assert_validation(
@@ -571,6 +614,7 @@ fn action() -> Map<String, Value> {
 
 fn protected_definition(id: &str) -> TriggerDefinition {
     TriggerDefinition {
+        revision: String::new(),
         id: id.to_string(),
         name: "Protected".to_string(),
         enabled: true,
@@ -626,6 +670,9 @@ flow_name = "{flow_name}"
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),

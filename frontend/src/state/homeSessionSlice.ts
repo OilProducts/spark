@@ -13,7 +13,6 @@ const DEFAULT_HOME_PROJECT_SESSION_STATE: HomeProjectSessionState = {
     panelError: null,
     pendingConversationTurn: null,
     pendingDeleteConversationId: null,
-    sidebarPrimarySplitRatio: null,
 }
 
 const DEFAULT_HOME_CONVERSATION_SESSION_STATE: HomeConversationSessionState = {

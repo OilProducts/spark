@@ -1313,6 +1313,19 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     assert_eq!(snapshot["type"], "trigger.snapshot");
     assert_eq!(snapshot["payload"], json!({"triggers": []}));
 
+    let settings_live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?include_settings=true",
+        None,
+    )
+    .await;
+    let mut settings_stream = settings_live.into_body().into_data_stream();
+    assert_eq!(
+        next_sse_chunk(&mut settings_stream).await,
+        ": keepalive\n\n"
+    );
+
     let created = request(
         app.clone(),
         "POST",
@@ -1333,6 +1346,9 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     let created_body = json_body(created).await;
     let trigger_id = created_body["id"].as_str().expect("trigger id").to_string();
 
+    let settings_event = sse_data_json(&next_sse_chunk(&mut settings_stream).await);
+    assert_eq!(settings_event["type"], "settings.changed");
+    assert_eq!(settings_event["payload"]["section"], "triggers");
     let upsert = sse_data_json(&next_sse_chunk(&mut live_stream).await);
     assert_eq!(upsert["type"], "trigger.upsert");
     assert_eq!(
@@ -1344,12 +1360,18 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     let deleted = request(
         app,
         "DELETE",
-        &format!("/workspace/api/triggers/{trigger_id}"),
+        &format!(
+            "/workspace/api/triggers/{trigger_id}?expected_revision={}",
+            created_body["revision"].as_str().unwrap()
+        ),
         None,
     )
     .await;
     assert_eq!(deleted.status(), StatusCode::OK);
 
+    let settings_event = sse_data_json(&next_sse_chunk(&mut settings_stream).await);
+    assert_eq!(settings_event["type"], "settings.changed");
+    assert_eq!(settings_event["payload"]["section"], "triggers");
     let delete = sse_data_json(&next_sse_chunk(&mut live_stream).await);
     assert_eq!(delete["type"], "trigger.delete");
     assert_eq!(
@@ -2078,6 +2100,9 @@ fn latest_journal_sequence(settings: &SparkSettings, run_id: &str) -> u64 {
 
 fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
+        connections: Default::default(),
+        providers: Default::default(),
+        agents: Default::default(),
         project_root: root.join("source"),
         data_dir: root.join("spark-home"),
         config_dir: root.join("spark-home/config"),
@@ -2606,4 +2631,67 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
         break;
     }
     drop(app);
+}
+
+#[tokio::test]
+async fn settings_only_stream_receives_flow_policy_and_conversation_resource_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    write_flow(&settings, "ops/settings.yaml");
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).unwrap();
+    seed_conversation(&settings, &project_path, "settings-live");
+    let app = build_app(settings);
+    let flow = json_body(
+        request(
+            app.clone(),
+            "GET",
+            "/workspace/api/flows/ops/settings.yaml",
+            None,
+        )
+        .await,
+    )
+    .await;
+    let conversation = json_body(
+        request(
+            app.clone(),
+            "GET",
+            &format!(
+                "/workspace/api/conversations/settings-live?project_path={}",
+                url_encode(&project_path.to_string_lossy())
+            ),
+            None,
+        )
+        .await,
+    )
+    .await;
+    let response = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?include_settings=true",
+        None,
+    )
+    .await;
+    let mut stream = response.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
+    for (path, payload, section) in [
+        (
+            "/workspace/api/flows/ops/settings.yaml/launch-policy",
+            json!({"expected_revision":flow["revision"], "launch_policy":"trigger_only"}),
+            "flow_policy",
+        ),
+        (
+            "/workspace/api/conversations/settings-live/settings",
+            json!({"project_path":project_path, "expected_revision":conversation["settings"]["models"]["revision"], "model_settings":{"provider":"claude-code"}}),
+            "models",
+        ),
+    ] {
+        let saved = request(app.clone(), "PUT", path, Some(payload)).await;
+        assert_eq!(saved.status(), StatusCode::OK, "{}", json_body(saved).await);
+        let event = sse_data_json(&next_sse_chunk(&mut stream).await);
+        assert_eq!(event["type"], "settings.changed");
+        assert_eq!(event["resource"]["kind"], "settings");
+        assert_eq!(event["payload"]["section"], section);
+        assert!(!event["payload"]["revision"].is_null());
+    }
 }

@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+attractor-execution = { path = "../attractor-execution" }
 attractor-core = { path = "../attractor-core" }
 attractor-api = { path = "../attractor-api" }
 attractor-dsl = { path = "../attractor-dsl" }
@@ -20,9 +21,11 @@ spark-storage = { path = "../spark-storage" }
 spark-triggers = { path = "../spark-triggers" }
 thiserror = "1.0"
 time = "0.3"
+toml = "0.8"
 unified-llm-adapter = { path = "../unified-llm-adapter" }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+fs2 = "0.4"
 tempfile = "3.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

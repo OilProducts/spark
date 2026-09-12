@@ -8,9 +8,10 @@ use serde_json::{Map, Value};
 use spark_common::settings::SparkSettings;
 use spark_storage::{
     load_flow_catalog, normalize_execution_lock_value, normalize_launch_policy,
-    read_flow_launch_policy, set_flow_catalog_entry, FlowCatalogEntry, FlowExecutionLockConfig,
-    ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES, ALLOWED_EXECUTION_LOCK_SCOPES,
-    ALLOWED_LAUNCH_POLICIES, LAUNCH_POLICY_AGENT_REQUESTABLE, LAUNCH_POLICY_DISABLED,
+    read_flow_launch_policy, set_flow_catalog_entry_revision, FlowCatalogEntry,
+    FlowExecutionLockConfig, ALLOWED_EXECUTION_LOCK_CONFLICT_POLICIES,
+    ALLOWED_EXECUTION_LOCK_SCOPES, ALLOWED_LAUNCH_POLICIES, LAUNCH_POLICY_AGENT_REQUESTABLE,
+    LAUNCH_POLICY_DISABLED,
 };
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
@@ -35,6 +36,7 @@ pub struct WorkspaceFlowSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceFlowDescription {
+    pub revision: String,
     #[serde(flatten)]
     pub summary: WorkspaceFlowSummary,
     pub node_count: usize,
@@ -51,6 +53,7 @@ pub struct WorkspaceFlowRaw {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceFlowLaunchPolicyUpdate {
+    pub expected_revision: String,
     pub launch_policy: String,
     #[serde(default)]
     pub execution_lock: Option<Value>,
@@ -58,6 +61,7 @@ pub struct WorkspaceFlowLaunchPolicyUpdate {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceFlowLaunchPolicyResponse {
+    pub revision: String,
     pub name: String,
     pub launch_policy: Option<String>,
     pub effective_launch_policy: String,
@@ -111,11 +115,15 @@ impl WorkspaceFlowService {
     ) -> WorkspaceResult<WorkspaceFlowDescription> {
         let surface = validate_surface(surface)?;
         let source = self.read_existing_flow(flow_name)?;
-        let catalog = load_flow_catalog(&self.settings.config_dir)?;
-        let entry = catalog.get(&source.name).cloned().unwrap_or_default();
+        let state = read_flow_launch_policy(&self.settings.config_dir, &source.name)?;
+        let entry = FlowCatalogEntry {
+            launch_policy: state.launch_policy,
+            execution_lock: state.execution_lock,
+        };
         let summary = build_flow_summary_from_definition(&source.name, &source.flow, entry);
         filter_flow_surface_or_404(&summary, surface)?;
         Ok(WorkspaceFlowDescription {
+            revision: state.revision,
             node_count: source.flow.nodes.len(),
             edge_count: source.flow.edges.len(),
             features: WorkspaceFlowFeatures {
@@ -199,13 +207,15 @@ impl WorkspaceFlowService {
             .map(normalize_execution_lock_value)
             .transpose()?;
         self.ensure_flow_exists(flow_name)?;
-        let policy_state = set_flow_catalog_entry(
+        let policy_state = set_flow_catalog_entry_revision(
             &self.settings.config_dir,
             flow_name,
             &normalized_launch_policy,
             execution_lock,
+            &request.expected_revision,
         )?;
         Ok(WorkspaceFlowLaunchPolicyResponse {
+            revision: policy_state.revision,
             name: policy_state.name,
             launch_policy: policy_state.launch_policy,
             effective_launch_policy: policy_state.effective_launch_policy,

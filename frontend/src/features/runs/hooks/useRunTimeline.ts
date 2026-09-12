@@ -403,8 +403,8 @@ export function useRunTimeline({
                 ? next(timelineSession.gateNotesByGateId)
                 : next,
         }),
-        setTimelineCategoryFilter: (value: 'all' | TimelineEventCategory) => patchTimelineSession({ timelineCategoryFilter: value }),
-        setTimelineSeverityFilter: (value: 'all' | TimelineSeverity) => patchTimelineSession({ timelineSeverityFilter: value }),
+        setTimelineCategoryFilter: (value: 'all' | TimelineEventCategory) => { patchTimelineSession({ timelineCategoryFilter: value }); useStore.getState().setClientRunPresentation({ timeline_category: value }) },
+        setTimelineSeverityFilter: (value: 'all' | TimelineSeverity) => { patchTimelineSession({ timelineSeverityFilter: value }); useStore.getState().setClientRunPresentation({ timeline_severity: value }) },
         submittingGateIds: timelineSession.submittingGateIds,
         submitPendingGateAnswer,
         timelineCategoryFilter: timelineSession.timelineCategoryFilter,
