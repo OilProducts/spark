@@ -212,6 +212,16 @@ codex_jsonrpc_trace = false
 agent_trace = false
 ```
 
+Codex authentication is managed through **Settings → Codex connection**. Sign in
+once for each Spark runtime; Codex stores and refreshes its own credentials.
+Use a device code when Spark runs in Docker or on another computer. Existing
+installations with copied or expired credentials should reconnect here; signing
+in preserves conversations and replaces credentials through Codex's login API.
+Authentication failures also offer a reconnect dialog directly in the transcript.
+OAuth credentials are never copied from the host or seed directory and are not
+part of Spark's settings documents. Seed directories provide configuration and
+plugin caches only.
+
 Optional native fields are `codex_binary`, `codex_runtime_root`, `codex_seed_dir`,
 `claude_binary`, and `claude_config_dir`. Existing `SPARK_CODEX_APP_SERVER_BIN`,
 `ATTRACTOR_CODEX_RUNTIME_ROOT`, `ATTRACTOR_CODEX_SEED_DIR`, `SPARK_CLAUDE_CODE_BIN`,

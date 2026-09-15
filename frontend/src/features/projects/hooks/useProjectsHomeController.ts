@@ -377,6 +377,12 @@ export function useProjectsHomeController() {
     }, [activeProjectPath, conversationBodyRef, conversationHistoryRevisionKey])
 
     useEffect(() => {
+        const refresh = () => setChatModelsByProjectPath({})
+        window.addEventListener('spark:codex-connected', refresh)
+        return () => window.removeEventListener('spark:codex-connected', refresh)
+    }, [])
+
+    useEffect(() => {
         if (!activeProjectPath || activeProjectPath in chatModelsByProjectPath) {
             return
         }

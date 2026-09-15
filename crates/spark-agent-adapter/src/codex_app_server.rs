@@ -25,6 +25,8 @@ use crate::agent::{
 };
 use crate::session::SessionSteeringHandle;
 
+pub mod auth;
+
 pub const CODEX_APP_SERVER_BACKEND: &str = "codex_app_server";
 /// Control-plane requests (initialize, thread/start, turn/start, …) normally
 /// answer in well under a second; the bound only has to catch a wedged
@@ -80,8 +82,9 @@ impl CodexAppServerError {
     }
 
     fn runtime(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
-            message: message.into(),
+            message: auth::normalize_auth_error(message),
             retryable: false,
             details: None,
             artifact: false,
@@ -238,6 +241,8 @@ impl CodexAppServerBackend {
         ) {
             match client.resume_thread(&thread_id, model.as_deref(), Some(&request.project_path)) {
                 Ok(resumed) => resumed,
+                // Authentication failure says nothing about the saved thread's validity.
+                Err(error) if auth::requires_login(&error.message) => return Err(error),
                 Err(error) => {
                     return Ok(thread_resume_failure_output(
                         "thread/resume",
@@ -1697,8 +1702,7 @@ pub fn process_codex_app_server_message(
         "error" => {
             let error = params
                 .get("error")
-                .and_then(Value::as_object)
-                .and_then(|error| object_text(error, &["message"]))
+                .and_then(auth::error_message)
                 .or_else(|| object_text(&params, &["message"]))
                 .unwrap_or_else(|| "codex app-server error".to_string());
             state.turn_status = Some("failed".to_string());
@@ -1724,8 +1728,7 @@ pub fn process_codex_app_server_message(
             {
                 let error = turn
                     .get("error")
-                    .and_then(Value::as_object)
-                    .and_then(|error| object_text(error, &["message"]))
+                    .and_then(auth::error_message)
                     .or_else(|| state.turn_error.clone())
                     .unwrap_or_else(|| {
                         format!(
@@ -1814,12 +1817,12 @@ impl EventBuilder {
     }
 
     fn error(mut self, error: String) -> Self {
-        self.error = Some(error);
+        self.error = Some(auth::normalize_auth_error(error));
         self
     }
 
     fn error_opt(mut self, error: Option<String>) -> Self {
-        self.error = error;
+        self.error = error.map(auth::normalize_auth_error);
         self
     }
 
@@ -1829,6 +1832,11 @@ impl EventBuilder {
     }
 
     fn build(self) -> TurnStreamEvent {
+        let error_code = self
+            .error
+            .as_deref()
+            .filter(|error| auth::requires_login(error))
+            .map(|_| "codex_auth_required".to_string());
         TurnStreamEvent {
             kind: self.kind.expect("event kind"),
             channel: self.channel,
@@ -1845,7 +1853,7 @@ impl EventBuilder {
             request_user_input: self.request_user_input,
             token_usage: self.token_usage,
             error: self.error,
-            error_code: None,
+            error_code,
             details: None,
             phase: self.phase,
             status: self.status,
@@ -1914,16 +1922,10 @@ fn build_codex_runtime_environment_with_settings(
             seed_candidates.push(candidate);
         }
     }
-    for file_name in ["auth.json", "config.toml"] {
+    // OAuth credentials must come from a login in this home. Even a one-time
+    // copy shares the host's refresh token and can invalidate either session.
+    for file_name in ["config.toml"] {
         let destination = codex_home.join(file_name);
-        // Credentials are seeded once, never re-copied: the runtime home owns
-        // its own OAuth refresh chain after the first launch (or a login run
-        // against CODEX_HOME). Re-copying the host's auth.json on every spawn
-        // shares one refresh token between two codex installs, and whichever
-        // rotates it second is invalidated ("refresh token was already used").
-        if file_name == "auth.json" && destination.is_file() {
-            continue;
-        }
         if let Some(source) = seed_candidates
             .iter()
             .map(|candidate| candidate.join(file_name))
@@ -2697,9 +2699,9 @@ fn normalize_reasoning_effort(value: Option<&str>) -> Result<Option<String>, Cod
 
 fn rpc_error(prefix: &str, response: &Value) -> CodexAppServerError {
     let message = response
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .and_then(non_empty)
+        .get("error")
+        .and_then(auth::error_message)
+        .filter(|message| !message.trim().is_empty())
         .map(|message| format!("{prefix}: {message}"))
         .unwrap_or_else(|| prefix.to_string());
     CodexAppServerError::runtime(message).with_details(response.clone())

@@ -82,7 +82,7 @@ pub fn chat_models_with_codex_result(
     }))
 }
 
-fn native_configuration(settings: &SparkSettings) -> WorkspaceResult<NativeAgentSettings> {
+pub fn native_configuration(settings: &SparkSettings) -> WorkspaceResult<NativeAgentSettings> {
     let mut configuration = spark_storage::settings::read_execution_configuration(
         &settings.config_dir,
         &spark_common::paths::ProcessEnvironment,

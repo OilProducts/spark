@@ -22,7 +22,8 @@ if [[ -f "${env_file}" ]]; then
 fi
 
 mkdir -p "${docker_codex_home}"
-for codex_file in auth.json config.toml; do
+# Codex credentials are created by Spark's Connect Codex flow, never copied.
+for codex_file in config.toml; do
   host_path="${host_codex_home}/${codex_file}"
   docker_path="${docker_codex_home}/${codex_file}"
   if [[ -f "${host_path}" && ! -e "${docker_path}" ]]; then

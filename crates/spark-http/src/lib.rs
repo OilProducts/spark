@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
 
+mod codex_auth;
 mod workspace;
 
 pub fn build_app(settings: SparkSettings) -> Router {
@@ -121,6 +122,7 @@ fn build_app_with_live_hub(
     let (run_event_observer, run_event_publisher) =
         RunEventPublisher::spawn(settings.clone(), live_hub.clone());
     let state = HttpAppState {
+        codex_connection: Arc::new(Mutex::new(Default::default())),
         settings,
         live_hub,
         runtime_handler_runner_factory,
@@ -169,6 +171,7 @@ fn build_app_with_live_hub(
 
 #[derive(Clone)]
 pub(crate) struct HttpAppState {
+    codex_connection: Arc<Mutex<spark_agent_adapter::codex_app_server::auth::CodexConnection>>,
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,

@@ -32,6 +32,8 @@ fn run_default(
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut awaiting_request_user_input_response = false;
+    let fake_login =
+        PathBuf::from(env::var_os("CODEX_HOME").unwrap_or_default()).join("fake-login-complete");
 
     for raw in stdin.lock().lines().map_while(Result::ok) {
         let message = serde_json::from_str::<Value>(&raw).expect("json-rpc request");
@@ -61,6 +63,47 @@ fn run_default(
                 json!({"id": request_id, "result": {"userAgent": "fake"}}),
             ),
             "initialized" => {}
+            "account/read" if mode == "auth-expired" && !fake_login.exists() => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"message": "Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}}),
+            ),
+            "account/read" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "result": {
+                    "account": if fake_login.exists() { json!({"type": "chatgpt", "email": "spark@example.test", "planType": "plus", "accessToken": "must-not-leak"}) } else { Value::Null },
+                    "requiresOpenaiAuth": true,
+                }}),
+            ),
+            "account/login/start" => {
+                let device = message.pointer("/params/type").and_then(Value::as_str)
+                    == Some("chatgptDeviceCode");
+                let result = if device {
+                    json!({"type": "chatgptDeviceCode", "loginId": "login-test", "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "ABCD-1234"})
+                } else {
+                    json!({"type": "chatgpt", "loginId": "login-test", "authUrl": "https://auth.openai.com/test-login"})
+                };
+                if mode != "auth-pending" && mode != "auth-failure" && mode != "auth-exit" {
+                    fs::write(&fake_login, "connected").expect("persist fake login");
+                }
+                // Arriving before the RPC response exercises notification routing.
+                write_json(
+                    &mut stdout,
+                    json!({"method": "account/login/completed", "params": {"loginId": "unrelated", "success": false, "error": "unrelated login"}}),
+                );
+                if mode != "auth-pending" && mode != "auth-exit" {
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "account/login/completed", "params": {"loginId": "login-test", "success": mode != "auth-failure", "error": "Sign-in declined."}}),
+                    );
+                }
+                write_json(&mut stdout, json!({"id": request_id, "result": result}));
+                if mode == "auth-exit" {
+                    return;
+                }
+            }
+            "account/login/cancel" => {
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}))
+            }
             "thread/start" if mode == "thread-start-error" => write_json(
                 &mut stdout,
                 json!({"id": request_id, "error": {"code": -32000, "message": "thread start failed"}}),
@@ -72,6 +115,14 @@ fn run_default(
             "thread/resume" if mode == "thread-resume-error" => write_json(
                 &mut stdout,
                 json!({"id": request_id, "error": {"code": -32000, "message": "thread resume failed"}}),
+            ),
+            "thread/resume" if mode == "auth-resume-error" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"code": -32000, "message": "Your access token could not be refreshed because your refresh token was already used."}}),
+            ),
+            "thread/resume" if mode == "auth-resume-unauthorized" => write_json(
+                &mut stdout,
+                json!({"id": request_id, "error": {"code": -32000, "message": "Permission denied", "data": {"codexErrorInfo": "unauthorized"}}}),
             ),
             "thread/resume" if !model_list_only => write_json(
                 &mut stdout,

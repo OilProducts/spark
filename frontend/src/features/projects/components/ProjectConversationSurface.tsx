@@ -2,6 +2,8 @@ import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import { HomeWorkspace } from './HomeWorkspace'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
+import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
+import { isCodexAuthError } from '@/features/settings/services/codexConnection'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
     Empty,
@@ -116,7 +118,10 @@ export function ProjectConversationSurface({
                         data-testid="project-panel-error"
                         className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
                     >
-                        <AlertDescription className="text-inherit">{panelError}</AlertDescription>
+                        <AlertDescription className="text-inherit">
+                            {panelError}
+                            {isCodexAuthError(panelError) && <CodexReconnect />}
+                        </AlertDescription>
                     </Alert>
                 ) : null}
                 {!activeProjectPath ? (

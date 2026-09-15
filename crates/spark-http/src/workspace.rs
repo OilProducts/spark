@@ -65,6 +65,7 @@ fn conversation_service(
 
 pub fn router() -> Router<HttpAppState> {
     Router::new()
+        .nest("/codex", crate::codex_auth::router())
         .route("/tasks", get(list_tasks).post(create_task))
         .route("/tasks/{task_id}", get(get_task).patch(update_task))
         .route("/projects", get(list_projects).delete(delete_project))

@@ -1,4 +1,5 @@
 import { ProviderSettingsEditor } from "./ProviderSettingsEditor"
+import { CodexConnectionSettings } from "./CodexConnectionSettings"
 import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
@@ -159,6 +160,8 @@ export function SettingsPanel() {
                         Model defaults apply to inheriting conversations on their next message.
                     </p>
                 </div>
+
+                <CodexConnectionSettings />
 
                 <Card className="gap-4 py-4 shadow-sm">
                     <CardHeader className="gap-1 px-4">

@@ -19,10 +19,24 @@ the image architecture, so the same build works on Linux and macOS
 
 Merge `execution-profiles.example.toml` into
 `$SPARK_HOME/config/execution-profiles.toml`, adjusting the
-`container.mounts` host path. Codex auth is bind-mounted read-only at
-`/mnt/codex-auth` and seeded into a writable container-local home by
-`mathlab-entry.sh` at container start — it is never baked into image
-layers.
+`container.mounts` paths. The source is a dedicated directory for this profile;
+the destination must match the worker's effective `codex_runtime_root` (the
+example uses `/home/YOU/.spark/runtime/codex`). Set that absolute runtime root
+in Spark's Agent session limits if needed so native and container workers agree
+on the destination. The mounted source keeps a separate login between containers.
+Sign in once using that source directory:
+
+```sh
+docker run --rm -it \
+  -v /home/YOU/.spark-mathlab-codex:/codex-runtime \
+  -e CODEX_HOME=/codex-runtime/.codex \
+  spark-mathlab:latest codex login --device-auth
+```
+
+This execution container has its own runtime, separate from the Spark server's
+connection in Settings. Replace older `/mnt/codex-auth` mounts with the new
+runtime mount and sign in afresh; never copy a host `auth.json`. Credentials
+stay outside image layers, and Codex can persist token refreshes.
 
 ## Use
 

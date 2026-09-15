@@ -9,6 +9,49 @@ use spark_http::build_app;
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn codex_connection_routes_validate_login_input_and_cancel_without_changing_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let app = build_app(settings.clone());
+    for body in [
+        json!({"method": "unknown"}),
+        json!({"method": "browser", "access_token": "unexpected"}),
+        json!({}),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/workspace/api/codex/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/workspace/api/codex/login")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "disconnected");
+    assert!(body["login_url"].is_null());
+    assert!(!settings.runtime_dir.join("codex/.codex/auth.json").exists());
+}
+
+#[tokio::test]
 async fn workspace_project_routes_persist_records_and_return_json_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
     // Canonicalize: registered project paths come back canonical (macOS /var -> /private/var).

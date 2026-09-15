@@ -15,8 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Agent runtime: codex CLI. Codex auth is NOT baked into this image — the
-# math-lab execution profile bind-mounts the host ~/.codex read-only at
-# runtime via container.mounts and the entrypoint seeds it into $HOME.
+# math-lab execution profile mounts a dedicated writable Codex runtime.
+# Sign in once in that runtime; never copy the host's OAuth credentials.
 RUN npm install -g @openai/codex
 
 RUN git config --system safe.directory "*"
@@ -50,7 +50,4 @@ RUN cp /opt/mathlab/mathlib4/lean-toolchain /opt/mathlab/template/lean-toolchain
 # architecture so the image builds identically on Linux and macOS hosts.
 COPY --from=worker-builder /src/target/release/spark-server /usr/local/bin/spark-server
 
-COPY containers/mathlab/mathlab-entry.sh /usr/local/bin/mathlab-entry.sh
-RUN chmod +x /usr/local/bin/mathlab-entry.sh
-ENTRYPOINT ["/usr/local/bin/mathlab-entry.sh"]
 CMD ["tail", "-f", "/dev/null"]

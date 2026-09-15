@@ -1,4 +1,6 @@
 import { memo } from 'react'
+import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
+import { isCodexAuthError } from '@/features/settings/services/codexConnection'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
@@ -260,6 +262,8 @@ export const MessageRow = memo(function MessageRow({
                 ? (entry.error || 'Response failed.')
                 : 'Thinking...'
             : entry.content
+    const needsCodexLogin = entry.role === 'assistant' && entry.status === 'failed'
+        && isCodexAuthError(entry.error || entry.content)
     const canCopy = enableCopy && (
         entry.role === 'user'
         || (
@@ -299,9 +303,11 @@ export const MessageRow = memo(function MessageRow({
                             entry.presentation === 'thinking' ? 'italic' : ''
                         }`}
                     >
-                        {literalContent}
+                        {needsCodexLogin && isCodexAuthError(literalContent)
+                            ? 'Your Codex connection needs sign-in. Your conversation is saved.' : literalContent}
                     </p>
                 )}
+                {needsCodexLogin && <CodexReconnect />}
                 <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
             </div>
         </li>

@@ -501,9 +501,8 @@ fn runtime_environment_never_overwrites_an_existing_runtime_auth_file() {
     let host_codex_home = temp.path().join("host-codex-home");
     fs::create_dir_all(&host_codex_home).expect("host codex home");
     fs::create_dir_all(&isolated_codex_home).expect("runtime codex home");
-    // The runtime home already owns its own credentials (a login run against
-    // CODEX_HOME, or a prior refresh); the host's differing copy must not
-    // clobber them, or both installs end up sharing one refresh chain.
+    // A login (including an existing stale login) is replaced only by Codex's
+    // managed sign-in flow, never by host credentials or startup migration.
     fs::write(
         isolated_codex_home.join("auth.json"),
         r#"{"owner":"runtime"}"#,
@@ -556,10 +555,7 @@ fn runtime_environment_uses_isolated_codex_home_and_seeds_from_host_home() {
         Some(isolated_codex_home.clone())
     );
     assert_ne!(isolated_codex_home, host_codex_home);
-    assert_eq!(
-        fs::read_to_string(isolated_codex_home.join("auth.json")).expect("seeded auth"),
-        r#"{"seed":true}"#
-    );
+    assert!(!isolated_codex_home.join("auth.json").exists());
     assert_eq!(
         fs::read_to_string(isolated_codex_home.join("config.toml")).expect("seeded config"),
         "model = \"gpt-5.6-sol\"\nservice_tier = \"standard\"\n"
@@ -962,6 +958,216 @@ fn read_jsonrpc_log(path: &std::path::Path) -> Vec<Value> {
 
 fn fake_codex_app_server_bin() -> &'static str {
     env!("CARGO_BIN_EXE_spark-agent-fake-codex-app-server")
+}
+
+#[test]
+fn codex_managed_login_reconnects_without_cloning_or_erasing_runtime_state() {
+    use spark_agent_adapter::codex_app_server::auth::{CodexConnection, CodexLoginMethod};
+    use spark_common::agent_settings::NativeAgentSettings;
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
+    let log = temp.path().join("rpc.jsonl");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log);
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "auth-expired");
+    let native = NativeAgentSettings {
+        codex_binary: Some(fake_codex_app_server_bin().into()),
+        codex_runtime_root: Some(temp.path().join("runtime").to_string_lossy().into_owned()),
+        codex_seed_dir: Some(temp.path().join("seed").to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let runtime_home = temp.path().join("runtime/.codex");
+    fs::create_dir_all(runtime_home.join("sessions")).unwrap();
+    fs::create_dir_all(temp.path().join("host")).unwrap();
+    fs::create_dir_all(temp.path().join("seed")).unwrap();
+    fs::write(temp.path().join("host/auth.json"), "host credentials").unwrap();
+    fs::write(temp.path().join("seed/auth.json"), "seed credentials").unwrap();
+    fs::write(runtime_home.join("auth.json"), "stale credentials").unwrap();
+    fs::write(
+        runtime_home.join("sessions/saved.jsonl"),
+        "saved conversation",
+    )
+    .unwrap();
+    let mut connection = CodexConnection::default();
+    let expired = connection.status(temp.path(), &native).unwrap();
+    assert_eq!(expired.status, "disconnected");
+    assert!(expired.message.unwrap().contains("needs sign-in"));
+    for method in [CodexLoginMethod::Browser, CodexLoginMethod::Device] {
+        let started = connection
+            .start_login(temp.path(), &native, method)
+            .unwrap();
+        assert_eq!(started.status, "pending");
+        assert!(started
+            .login_url
+            .unwrap()
+            .starts_with("https://auth.openai.com/"));
+        assert_eq!(
+            started.user_code.is_some(),
+            matches!(method, CodexLoginMethod::Device)
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let status = connection.status(temp.path(), &native).unwrap();
+            if status.status != "pending" {
+                assert_eq!(status.status, "connected");
+                assert_eq!(
+                    status.account.as_ref().unwrap().email.as_deref(),
+                    Some("spark@example.test")
+                );
+                assert!(!serde_json::to_string(&status)
+                    .unwrap()
+                    .contains("must-not-leak"));
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "login completion timed out"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert_eq!(
+        connection.status(temp.path(), &native).unwrap().status,
+        "connected"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_home.join("sessions/saved.jsonl")).unwrap(),
+        "saved conversation"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_home.join("auth.json")).unwrap(),
+        "stale credentials"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("host/auth.json")).unwrap(),
+        "host credentials"
+    );
+    let requests = read_jsonrpc_log(&log);
+    assert!(requests
+        .iter()
+        .any(|request| request["method"] == "account/read"
+            && request["params"]["refreshToken"] == true));
+    assert!(!requests
+        .iter()
+        .any(|request| request["method"] == "account/logout"));
+}
+
+#[test]
+fn codex_managed_login_handles_cancellation_decline_and_process_exit() {
+    use spark_agent_adapter::codex_app_server::auth::{CodexConnection, CodexLoginMethod};
+    use spark_common::agent_settings::NativeAgentSettings;
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
+    let log = temp.path().join("rpc.jsonl");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log);
+    let native = NativeAgentSettings {
+        codex_binary: Some(fake_codex_app_server_bin().into()),
+        codex_runtime_root: Some(temp.path().join("runtime").to_string_lossy().into_owned()),
+        codex_seed_dir: Some(temp.path().join("seed").to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    for mode in ["auth-pending", "auth-failure", "auth-exit"] {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", mode);
+        let mut connection = CodexConnection::default();
+        connection
+            .start_login(temp.path(), &native, CodexLoginMethod::Browser)
+            .unwrap();
+        if mode == "auth-pending" {
+            // Duplicate clicks reuse the pending flow instead of competing for its callback port.
+            connection
+                .start_login(temp.path(), &native, CodexLoginMethod::Browser)
+                .unwrap();
+            assert_eq!(
+                connection.status(temp.path(), &native).unwrap().status,
+                "pending"
+            );
+            assert_eq!(connection.cancel_login().status, "disconnected");
+            let requests = read_jsonrpc_log(&log);
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request["method"] == "account/login/start")
+                    .count(),
+                1
+            );
+            assert!(requests
+                .iter()
+                .any(|request| request["method"] == "account/login/cancel"));
+        } else {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let status = connection.status(temp.path(), &native).unwrap();
+                if status.status != "pending" {
+                    assert_eq!(status.status, "disconnected");
+                    assert!(status.message.unwrap().contains(if mode == "auth-failure" {
+                        "declined"
+                    } else {
+                        "exited"
+                    }));
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+}
+
+#[test]
+fn codex_auth_failure_during_resume_does_not_invalidate_the_saved_thread() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("CODEX_HOME", temp.path().join("host"));
+    let _bin = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _runtime = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", temp.path().join("runtime"));
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "auth-resume-error");
+    let request = AgentTurnRequest {
+        conversation_id: "saved-conversation".into(),
+        project_path: temp.path().to_string_lossy().into_owned(),
+        prompt: "Continue".into(),
+        history: vec![],
+        provider: Some("codex".into()),
+        model: Some("gpt-codex-test".into()),
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: Some("agent".into()),
+        metadata: BTreeMap::from([(
+            "spark.runtime.codex_app_server.thread_id".into(),
+            json!("saved-thread"),
+        )]),
+    };
+    let error = CodexAppServerBackend::new()
+        .run_agent_turn(request.clone())
+        .unwrap_err();
+    assert!(error.message.contains("Codex connection needs sign-in"));
+    drop(_mode);
+    let _mode = EnvVarGuard::set(
+        "SPARK_FAKE_CODEX_APP_SERVER_MODE",
+        "auth-resume-unauthorized",
+    );
+    let error = CodexAppServerBackend::new()
+        .run_agent_turn(request.clone())
+        .unwrap_err();
+    assert!(error.message.contains("Codex connection needs sign-in"));
+    drop(_mode);
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let resumed = CodexAppServerBackend::new()
+        .run_agent_turn(request)
+        .unwrap();
+    assert!(resumed.thread_resume_failure.is_none());
+    assert_eq!(resumed.final_assistant_text.as_deref(), Some("Ack"));
+    let mut state = CodexAppServerTurnState::default();
+    let events = process_codex_app_server_message(
+        &json!({"method": "error", "params": {"error": {"message": "Your refresh token has expired. Please sign in again."}}}),
+        &mut state,
+    );
+    assert_eq!(events[0].error_code.as_deref(), Some("codex_auth_required"));
+    assert!(
+        !spark_agent_adapter::codex_app_server::auth::requires_login(
+            "Failed to refresh token: connection timed out"
+        )
+    );
 }
 
 #[test]

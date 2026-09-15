@@ -82,7 +82,7 @@ The asset crate embeds authored flows, guides, the model catalog, icons, and the
 - Rust stable toolchain with Cargo
 - Node.js 20+ and npm
 - Graphviz `dot` on `PATH` for graph artifacts
-- `codex` CLI on `PATH` with working auth for Codex-backed handlers and project chat flows
+- `codex` CLI on `PATH`; use **Settings → Codex connection → Connect Codex** to sign in for Codex-backed handlers and project chat flows
 - `just` for the documented convenience commands
 
 ## Provider Configuration
