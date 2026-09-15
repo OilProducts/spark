@@ -213,12 +213,13 @@ describe('Graph and settings behavior', () => {
       ? new Promise<Response>((done) => { resolve = done }) : originalFetch(input, init)))
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
-    expect(screen.getByRole('status')).toHaveTextContent('Loading models')
+    const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
+    expect(modelSettings.getByRole('status')).toHaveTextContent('Loading models')
     await act(async () => resolve(Response.json({ models: [
       { provider: 'openai', id: 'discovered-openai', display: 'OpenAI' },
       { provider: 'anthropic', id: 'discovered-anthropic', display: 'Anthropic' },
     ], providers: { codex: { status: 'available', error: null } } })))
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(modelSettings.queryByRole('status')).toBeNull()
     expect(useStore.getState().uiDefaults).toEqual(saved)
     expect(await screen.findByRole('option', { name: 'discovered-openai' })).toBeVisible()
     expect(screen.queryByRole('option', { name: 'discovered-anthropic' })).toBeNull()
@@ -239,7 +240,8 @@ describe('Graph and settings behavior', () => {
     if (failure === 'unavailable') serverModels.provider = 'codex'
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Model discovery unavailable. Using suggestions.'))
+    const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
+    await waitFor(() => expect(modelSettings.getByRole('status')).toHaveTextContent('Model discovery unavailable. Using suggestions.'))
     expect(useStore.getState().uiDefaults).toEqual(saved)
     expect(screen.getByLabelText('Custom model')).toHaveValue(saved.llm_model)
     if (failure === 'rejected') expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
@@ -251,6 +253,7 @@ describe('Graph and settings behavior', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).includes('/chat-models')
       ? new Promise<Response>((resolve, reject) => { requests.push({ resolve, reject }) }) : originalFetch(input, init)))
     render(<SettingsPanel />)
+    const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
     act(() => useStore.setState({ activeProjectPath: '/tmp/next-project' }))
     expect(requests).toHaveLength(2)
     const payload = (id: string) => Response.json({ models: [{ provider: 'openai', id, display: id }], providers: { codex: { status: 'available', error: null } } })
@@ -261,7 +264,7 @@ describe('Graph and settings behavior', () => {
     })
     expect(await screen.findByRole('option', { name: 'current-model' })).toBeVisible()
     expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull()
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(modelSettings.queryByRole('status')).toBeNull()
     act(() => useStore.setState({ activeProjectPath: null }))
     expect(screen.queryByRole('option', { name: 'current-model' })).toBeNull()
     expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
