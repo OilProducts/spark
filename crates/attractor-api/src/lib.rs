@@ -787,7 +787,8 @@ impl AttractorApiService {
             Some(observer) => runner.with_run_event_observer(observer.clone()),
             None => runner,
         };
-        let executor = attractor_execution::ContainerizedNodeExecutor::new(selection, runner);
+        let executor = attractor_execution::ContainerizedNodeExecutor::new(selection, runner)
+            .keep_container_open();
         match &self.container_command_runner_factory {
             Some(factory) => executor.with_boxed_command_runner(factory()),
             None => executor,

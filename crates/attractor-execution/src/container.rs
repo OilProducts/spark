@@ -212,7 +212,11 @@ impl ContainerizedNodeExecutor {
                 &self.docker_program,
                 ["rm", "-f", container_id.as_str()],
             ))
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| {
+                let message = error.to_string();
+                self.last_cleanup_error = Some(message.clone());
+                message
+            })?;
         if result.exit_code != 0 {
             let message = if result.stderr.trim().is_empty() {
                 format!("docker rm -f failed with exit code {}", result.exit_code)
@@ -492,6 +496,10 @@ impl NodeExecutor for ContainerizedNodeExecutor {
             ExecutionMode::Native => self.inner.execute(request),
             ExecutionMode::LocalContainer => self.execute_container(request),
         }
+    }
+
+    fn finalize(&mut self) {
+        let _ = self.close();
     }
 
     fn take_cleanup_error(&mut self) -> Option<String> {

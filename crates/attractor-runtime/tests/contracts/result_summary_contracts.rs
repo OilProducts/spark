@@ -358,3 +358,100 @@ fn summarizer_resolves_through_the_real_codergen_graph_lookup() {
         "the simulation backend's summary output becomes the result body"
     );
 }
+
+#[test]
+fn execution_finalizes_before_return_on_every_exit_without_replacing_outcome() {
+    use attractor_runtime::{
+        ExecutionControlAction, NodeExecutionRequest, NodeExecutor, RuntimeNodeError,
+    };
+    struct Executor {
+        mode: &'static str,
+        finalized: Arc<Mutex<usize>>,
+    }
+    impl NodeExecutor for Executor {
+        fn execute(&mut self, _: NodeExecutionRequest) -> Result<Outcome, RuntimeNodeError> {
+            match self.mode {
+                "failure" => Err(RuntimeNodeError::terminal("original failure")),
+                "runtime" => Err(RuntimeNodeError::runtime("original runtime error")),
+                _ => Ok(Outcome::new(OutcomeStatus::Success)),
+            }
+        }
+        fn finalize(&mut self) {
+            *self.finalized.lock().unwrap() += 1;
+        }
+        fn take_cleanup_error(&mut self) -> Option<String> {
+            (*self.finalized.lock().unwrap() > 0).then(|| "cleanup failed".into())
+        }
+    }
+    for mode in [
+        "success", "failure", "runtime", "cancel", "pause", "invalid",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RunStore::for_runs_dir(temp.path().join("runs"));
+        let finalized = Arc::new(Mutex::new(0));
+        let mut polls = 0;
+        let mut executor = PipelineExecutor::with_control(
+            Executor {
+                mode,
+                finalized: finalized.clone(),
+            },
+            move || {
+                polls += 1;
+                if polls == 2 {
+                    match mode {
+                        "cancel" => Some(ExecutionControlAction::Cancel),
+                        "pause" => Some(ExecutionControlAction::Pause),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            },
+        );
+        let mut flow = flow_with_exit("true", summary_exit(false, None));
+        if mode == "invalid" {
+            flow.nodes.clear();
+        }
+        let result = executor.execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: RunRecord::new(mode, temp.path().to_string_lossy()),
+            flow,
+            flow_source: None,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: ExecutionStart::Fresh,
+        });
+        assert_eq!(*finalized.lock().unwrap(), 1, "{mode}");
+        if mode == "invalid" {
+            assert!(result.is_err());
+            continue;
+        }
+        let result = result.unwrap();
+        let expected = match mode {
+            "success" => "completed",
+            "cancel" => "canceled",
+            "pause" => "paused",
+            _ => "failed",
+        };
+        assert_eq!(result.status, expected, "{mode}");
+        if mode == "failure" || mode == "runtime" {
+            assert!(result.failure_reason.contains("original"), "{result:?}");
+        }
+        let meta = store.read_run_meta(mode).unwrap().unwrap();
+        assert_eq!(
+            meta.record.unwrap().cleanup_error.as_deref(),
+            Some("cleanup failed")
+        );
+        assert_eq!(
+            store
+                .read_raw_events(&meta.paths)
+                .unwrap()
+                .iter()
+                .filter(|e| e.event_type == "cleanup_error")
+                .count(),
+            1
+        );
+    }
+}

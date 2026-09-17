@@ -418,7 +418,16 @@ fn seed_retry(settings: &SparkSettings, run_id: &str) {
                 timestamp: "2026-07-22T00:00:00Z".to_string(),
                 current_node: "start".to_string(),
                 completed_nodes: Vec::new(),
-                context: Default::default(),
+                context: [(
+                    "internal.execution_configuration_snapshot".into(),
+                    json!(spark_common::settings::ExecutionConfiguration {
+                        runtime: Default::default(),
+                        config_dir: "/captured/config".into(),
+                        providers: Default::default(),
+                        agents: Default::default(),
+                    }),
+                )]
+                .into(),
                 retry_counts: Default::default(),
                 logs: Vec::new(),
             }),
@@ -440,6 +449,24 @@ fn retry_reconstructs_matching_container_placement() {
     assert_eq!(response.body["status"], json!("started"));
     wait_for_status(&settings, "retry-container", "completed");
     assert_docker_dispatch(&commands.lock().expect("commands"));
+    let commands = commands.lock().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.args[0] == "run")
+            .count(),
+        1
+    );
+    for command in commands
+        .iter()
+        .filter(|command| command.args.get(1).is_some_and(|arg| arg == "-i"))
+    {
+        let request: serde_json::Value = serde_json::from_str(&command.stdin).unwrap();
+        assert_eq!(
+            request["context"]["internal.execution_configuration_snapshot"]["config_dir"],
+            "/captured/config"
+        );
+    }
 }
 
 #[test]
@@ -466,6 +493,24 @@ fn continue_reconstructs_matching_container_placement() {
     let run_id = response.body["run_id"].as_str().expect("continued run id");
     wait_for_status(&settings, run_id, "completed");
     assert_docker_dispatch(&commands.lock().expect("commands"));
+    let commands = commands.lock().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.args[0] == "run")
+            .count(),
+        1
+    );
+    for command in commands
+        .iter()
+        .filter(|command| command.args.get(1).is_some_and(|arg| arg == "-i"))
+    {
+        let request: serde_json::Value = serde_json::from_str(&command.stdin).unwrap();
+        assert_eq!(
+            request["context"]["internal.execution_configuration_snapshot"]["config_dir"],
+            "/captured/config"
+        );
+    }
 }
 
 #[test]
@@ -488,6 +533,24 @@ fn startup_recovery_reconstructs_matching_container_placement() {
     );
     wait_for_status(&settings, "startup-container", "completed");
     assert_docker_dispatch(&commands.lock().expect("commands"));
+    let commands = commands.lock().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.args[0] == "run")
+            .count(),
+        1
+    );
+    for command in commands
+        .iter()
+        .filter(|command| command.args.get(1).is_some_and(|arg| arg == "-i"))
+    {
+        let request: serde_json::Value = serde_json::from_str(&command.stdin).unwrap();
+        assert_eq!(
+            request["context"]["internal.execution_configuration_snapshot"]["config_dir"],
+            "/captured/config"
+        );
+    }
 }
 
 #[test]
@@ -539,5 +602,257 @@ fn settings(root: &std::path::Path) -> SparkSettings {
         flows_dir: root.join("spark-home/flows"),
         ui_dir: None,
         project_roots: Vec::new(),
+    }
+}
+
+#[test]
+fn container_lifetime_spans_nodes_retry_and_summary_and_cleanup_preserves_outcome() {
+    struct LifecycleDocker {
+        inner: FakeDocker,
+        container: Option<String>,
+        visits: usize,
+        failure: bool,
+        cleanup: &'static str,
+    }
+    impl ContainerCommandRunner for LifecycleDocker {
+        fn command_exists(&self, _: &str) -> bool {
+            true
+        }
+        fn run(&mut self, spec: CommandSpec) -> std::io::Result<CommandResult> {
+            let operation = spec.args[0].clone();
+            let mut result = self.inner.run(spec.clone())?;
+            if operation == "run" {
+                assert!(self.container.is_none(), "one container per execution");
+                let index = spec.args.iter().position(|arg| arg == "--name").unwrap();
+                self.container = Some(spec.args[index + 1].clone());
+                result.stdout = self.container.clone().unwrap();
+            } else if operation == "rm" {
+                assert_eq!(Some(&spec.args[2]), self.container.as_ref());
+                self.container = None;
+                if self.cleanup == "launch" {
+                    return Err(std::io::Error::other("cleanup launch error"));
+                }
+                if self.cleanup == "exit" {
+                    result.exit_code = 1;
+                    result.stderr = "cleanup exit error".into();
+                }
+            } else if operation == "exec" && spec.args.get(1).is_some_and(|arg| arg == "-i") {
+                assert_eq!(Some(&spec.args[2]), self.container.as_ref());
+                self.visits += 1;
+                let request: serde_json::Value = serde_json::from_str(&spec.stdin).unwrap();
+                // The fake container's state must survive a node retry and the summary.
+                if request["node_id"] == "result_summary" {
+                    assert!(self.visits > 2);
+                }
+                if request["node_id"] == "task" && (self.failure || request["attempt"] == 0) {
+                    let mut frame: serde_json::Value =
+                        serde_json::from_str(result.stdout.trim()).unwrap();
+                    frame["outcome"]["status"] = json!("fail");
+                    frame["outcome"]["failure_reason"] = json!("original node failure");
+                    frame["outcome"]["retryable"] = json!(!self.failure);
+                    result.stdout = format!("{frame}\n");
+                }
+            }
+            Ok(result)
+        }
+        fn run_streaming(
+            &mut self,
+            spec: CommandSpec,
+            callback: &mut dyn FnMut(&str),
+        ) -> std::io::Result<CommandResult> {
+            let result = self.run(spec)?;
+            for line in result.stdout.lines() {
+                callback(line);
+            }
+            Ok(result)
+        }
+    }
+    for failure in [false, true] {
+        for cleanup in ["ok", "launch", "exit"] {
+            let temp = tempfile::tempdir().unwrap();
+            let settings = settings(temp.path());
+            write_container_profile(&settings, "spark-worker:test");
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let captured = commands.clone();
+            let service = AttractorApiService::new(settings.clone())
+                .with_container_command_runner_factory(Arc::new(move || {
+                    Box::new(LifecycleDocker {
+                        inner: FakeDocker {
+                            commands: captured.clone(),
+                        },
+                        container: None,
+                        visits: 0,
+                        failure,
+                        cleanup,
+                    })
+                }));
+            for run_id in ["first", "second"] {
+                let flow = worker_flow().replace("  task:\n", "  task:\n    retry: {max_retries: 1}\n").replace("  done:\n    kind: exit", "  done:\n    kind: exit\n    config:\n      kind: exit\n      result_summary: true");
+                let response = service.start_pipeline(PipelineStartRequest {
+                    run_id: Some(run_id.into()),
+                    flow_content: Some(flow),
+                    working_directory: temp.path().join("project").to_string_lossy().into(),
+                    execution_profile_id: Some("container".into()),
+                    wait: Some(true),
+                    ..PipelineStartRequest::default()
+                });
+                assert_eq!(response.status_code, 200, "{:?}", response.body);
+                let store = RunStore::for_settings(&settings);
+                let meta = store.read_run_meta(run_id).unwrap().unwrap();
+                let record = meta.record.unwrap();
+                assert_eq!(
+                    record.status,
+                    if failure { "failed" } else { "completed" },
+                    "{record:?}"
+                );
+                if failure {
+                    assert!(record.last_error.contains("original node failure"));
+                }
+                assert_eq!(record.cleanup_error.is_some(), cleanup != "ok");
+                assert_eq!(
+                    store
+                        .read_raw_events(&meta.paths)
+                        .unwrap()
+                        .iter()
+                        .filter(|event| event.event_type == "cleanup_error")
+                        .count(),
+                    usize::from(cleanup != "ok")
+                );
+            }
+            let commands = commands.lock().unwrap();
+            let runs: Vec<_> = commands.iter().filter(|c| c.args[0] == "run").collect();
+            assert_eq!(runs.len(), 2);
+            assert_ne!(runs[0].args, runs[1].args);
+            assert_eq!(commands.iter().filter(|c| c.args[0] == "rm").count(), 2);
+            if !failure {
+                let requests: Vec<serde_json::Value> = commands
+                    .iter()
+                    .filter(|c| c.args.get(1).is_some_and(|a| a == "-i"))
+                    .map(|c| serde_json::from_str(&c.stdin).unwrap())
+                    .collect();
+                assert_eq!(
+                    requests
+                        .iter()
+                        .filter(|r| r["node_id"] == "result_summary")
+                        .count(),
+                    2
+                );
+                assert_eq!(
+                    requests
+                        .iter()
+                        .filter(|r| r["node_id"] == "task" && r["attempt"] == 1)
+                        .count(),
+                    2
+                );
+            }
+        }
+    }
+}
+
+/// Run with an existing worker image, without invoking a model:
+/// SPARK_WORKER_IMAGE=spark:package cargo test -p attractor-api real_docker_run_lifetime -- --ignored
+#[test]
+#[ignore = "requires a running Docker daemon and an existing Spark worker image"]
+fn real_docker_run_lifetime() {
+    struct Docker {
+        commands: Arc<Mutex<Vec<CommandSpec>>>,
+    }
+    impl ContainerCommandRunner for Docker {
+        fn command_exists(&self, program: &str) -> bool {
+            attractor_execution::SystemCommandRunner.command_exists(program)
+        }
+        fn run(&mut self, spec: CommandSpec) -> std::io::Result<CommandResult> {
+            self.commands.lock().unwrap().push(spec.clone());
+            attractor_execution::SystemCommandRunner.run(spec)
+        }
+        fn run_streaming(
+            &mut self,
+            spec: CommandSpec,
+            callback: &mut dyn FnMut(&str),
+        ) -> std::io::Result<CommandResult> {
+            self.commands.lock().unwrap().push(spec.clone());
+            attractor_execution::SystemCommandRunner.run_streaming(spec, callback)
+        }
+    }
+    let info = std::process::Command::new("docker")
+        .arg("info")
+        .output()
+        .expect("docker CLI");
+    assert!(
+        info.status.success(),
+        "Docker unavailable: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let image = std::env::var("SPARK_WORKER_IMAGE").unwrap_or_else(|_| "spark:package".into());
+    assert!(
+        std::process::Command::new("docker")
+            .args(["image", "inspect", &image])
+            .status()
+            .unwrap()
+            .success(),
+        "worker image must already exist"
+    );
+    write_container_profile(&settings, &image);
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let captured = commands.clone();
+    let service = AttractorApiService::new(settings.clone()).with_container_command_runner_factory(
+        Arc::new(move || {
+            Box::new(Docker {
+                commands: captured.clone(),
+            })
+        }),
+    );
+    let flow = r#"schema_version: "1"
+id: container_smoke
+nodes:
+  start: {kind: start}
+  write:
+    kind: tool
+    config:
+      kind: tool
+      command: "test ! -e /tmp/spark-cr119 && printf preserved > /tmp/spark-cr119"
+  read:
+    kind: tool
+    config:
+      kind: tool
+      command: "test $(cat /tmp/spark-cr119) = preserved"
+  done: {kind: exit}
+edges:
+  - {from: start, to: write}
+  - {from: write, to: read}
+  - {from: read, to: done}
+"#;
+    for run_id in ["smoke-first", "smoke-second"] {
+        let response = service.start_pipeline(PipelineStartRequest {
+            run_id: Some(run_id.into()),
+            flow_content: Some(flow.into()),
+            working_directory: settings.project_root.to_string_lossy().into(),
+            execution_profile_id: Some("container".into()),
+            wait: Some(true),
+            ..PipelineStartRequest::default()
+        });
+        assert_eq!(response.status_code, 200, "{:?}", response.body);
+        let record = RunStore::for_settings(&settings)
+            .read_run_meta(run_id)
+            .unwrap()
+            .unwrap()
+            .record
+            .unwrap();
+        assert_eq!(record.status, "completed", "{record:?}");
+        assert_eq!(record.cleanup_error, None);
+    }
+    let commands = commands.lock().unwrap();
+    assert_eq!(commands.iter().filter(|c| c.args[0] == "run").count(), 2);
+    let removals: Vec<_> = commands.iter().filter(|c| c.args[0] == "rm").collect();
+    assert_eq!(removals.len(), 2);
+    assert_ne!(removals[0].args[2], removals[1].args[2]);
+    for removal in removals {
+        assert!(!std::process::Command::new("docker")
+            .args(["container", "inspect", &removal.args[2]])
+            .status()
+            .unwrap()
+            .success());
     }
 }

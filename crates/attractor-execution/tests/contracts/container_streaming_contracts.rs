@@ -386,3 +386,70 @@ edges:
         .iter()
         .all(|event| event.event_type != "CodergenAdapter"));
 }
+
+#[test]
+fn finalization_records_both_removal_failure_types_and_never_retries() {
+    struct RemovalFailure {
+        launch_error: bool,
+        removals: Arc<Mutex<usize>>,
+    }
+    impl ContainerCommandRunner for RemovalFailure {
+        fn command_exists(&self, _: &str) -> bool {
+            true
+        }
+        fn run(&mut self, spec: CommandSpec) -> io::Result<CommandResult> {
+            if spec.args[0] == "rm" {
+                *self.removals.lock().unwrap() += 1;
+                if self.launch_error {
+                    return Err(io::Error::other("removal launch failed"));
+                }
+                return Ok(CommandResult {
+                    exit_code: 1,
+                    stdout: String::new(),
+                    stderr: "removal failed".into(),
+                });
+            }
+            Ok(CommandResult {
+                exit_code: 0,
+                stdout: if spec.args[0] == "run" {
+                    "container-id".into()
+                } else {
+                    String::new()
+                },
+                stderr: String::new(),
+            })
+        }
+        fn run_streaming(
+            &mut self,
+            _: CommandSpec,
+            callback: &mut dyn FnMut(&str),
+        ) -> io::Result<CommandResult> {
+            callback(&result());
+            Ok(CommandResult {
+                exit_code: 0,
+                stdout: result(),
+                stderr: String::new(),
+            })
+        }
+    }
+    for launch_error in [false, true] {
+        let (_temp, executor, request, _, _) = fixture(vec![]);
+        let removals = Arc::new(Mutex::new(0));
+        let mut executor = executor
+            .keep_container_open()
+            .with_command_runner(RemovalFailure {
+                launch_error,
+                removals: removals.clone(),
+            });
+        assert_eq!(
+            executor.execute(request).unwrap().status,
+            OutcomeStatus::Success
+        );
+        assert_eq!(*removals.lock().unwrap(), 0);
+        executor.finalize();
+        assert!(executor.take_cleanup_error().unwrap().contains("removal"));
+        executor.finalize();
+        drop(executor);
+        assert_eq!(*removals.lock().unwrap(), 1);
+    }
+}

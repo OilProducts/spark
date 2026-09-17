@@ -103,6 +103,9 @@ pub trait NodeExecutor {
         request: NodeExecutionRequest,
     ) -> std::result::Result<Outcome, RuntimeNodeError>;
 
+    /// End this execution, releasing any resources before the caller returns.
+    fn finalize(&mut self) {}
+
     fn take_cleanup_error(&mut self) -> Option<String> {
         None
     }
@@ -201,7 +204,30 @@ where
         }
     }
 
-    pub fn execute(&mut self, request: ExecuteRunRequest) -> Result<PipelineExecutionResult> {
+    pub fn execute(&mut self, mut request: ExecuteRunRequest) -> Result<PipelineExecutionResult> {
+        let run_id = ensure_run_record_defaults(&mut request.record);
+        let store = request.store.clone();
+        let result = self.execute_inner(request);
+        self.node_executor.finalize();
+        if let Some(message) = self.node_executor.take_cleanup_error() {
+            // Cleanup diagnostics must never replace the execution's outcome.
+            let persisted = (|| -> Result<()> {
+                store.update_run_record(&run_id, |record| {
+                    record.cleanup_error = Some(message.clone());
+                })?;
+                if let Some(meta) = store.read_run_meta(&run_id)? {
+                    store.append_event(&meta.paths, cleanup_error_event(&run_id, message))?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = persisted {
+                eprintln!("Could not persist cleanup error for {run_id}: {error}");
+            }
+        }
+        result
+    }
+
+    fn execute_inner(&mut self, request: ExecuteRunRequest) -> Result<PipelineExecutionResult> {
         let ExecuteRunRequest {
             store,
             mut record,
