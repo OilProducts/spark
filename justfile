@@ -1,6 +1,19 @@
 set shell := ["bash", "-lc"]
 
 [private]
+tauri-cli:
+  if ! cargo tauri --version >/dev/null 2>&1; then echo "Tauri CLI not found. Install it with: cargo install tauri-cli --version '^2' --locked" >&2; exit 1; fi
+
+# Build a macOS .app bundle (target/release/bundle/macos/Spark.app) with the dev.spark.desktop bundle identifier.
+build-app: frontend-deps tauri-cli
+  cargo build --release -p spark-cli --bin spark
+  cd apps/spark-desktop && cargo tauri build --bundles app -- --all-features
+
+# Build the .app bundle and launch it through LaunchServices (so macOS sees it as "Spark", not a bare binary).
+run-app: build-app
+  open "$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/bundle/macos/Spark.app"
+
+[private]
 frontend-deps:
   if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest ]]; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
 

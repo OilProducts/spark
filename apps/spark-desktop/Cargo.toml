@@ -15,7 +15,7 @@ name = "spark-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 axum = "0.8"
@@ -26,7 +26,7 @@ spark-common = { path = "../../crates/spark-common" }
 spark-http = { path = "../../crates/spark-http" }
 spark-server = { path = "../../crates/spark-server" }
 spark-storage = { path = "../../crates/spark-storage" }
-tauri = { version = "2" }
+tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 
