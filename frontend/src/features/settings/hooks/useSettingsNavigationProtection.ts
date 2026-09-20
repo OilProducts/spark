@@ -20,10 +20,11 @@ export function useSettingsNavigationProtection(dirty: boolean, pending = false)
                 .finally(() => { confirming = false; transitions = [] })
         }
         window.addEventListener('beforeunload', unload)
-        window.addEventListener('spark:before-navigation', navigate)
+        // Pending writes must block navigation before any dirty editor offers to discard.
+        window.addEventListener('spark:before-navigation', navigate, { capture: pending })
         return () => {
             window.removeEventListener('beforeunload', unload)
-            window.removeEventListener('spark:before-navigation', navigate)
+            window.removeEventListener('spark:before-navigation', navigate, { capture: pending })
         }
     }, [dirty, pending, confirm])
 }

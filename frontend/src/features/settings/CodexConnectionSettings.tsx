@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { codexConnectionRequest, type CodexConnection } from './services/codexConnection'
 
@@ -86,7 +86,7 @@ export function CodexConnectionControls() {
 
 export function CodexConnectionSettings() {
     return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="px-4"><CardTitle className="text-sm">Codex connection</CardTitle></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-sm font-semibold">Codex connection</h3></CardHeader>
         <CardContent className="px-4"><CodexConnectionControls /></CardContent>
     </Card>
 }

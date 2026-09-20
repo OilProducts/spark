@@ -23,6 +23,7 @@ it('saves Desktop changes explicitly with confirmation and a revision, retaining
         ? Promise.resolve(original) : Promise.reject(new Error('Settings changed. Reload before saving.')))
     window.__TAURI__ = { core: { invoke } }
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    await user.click(screen.getByRole('tab', { name: 'System' }))
     const toggle = await screen.findByRole('switch', { name: 'Remote desktop server access' })
     await user.click(toggle)
     expect(invoke.mock.calls.filter(([command]) => command === 'set_desktop_remote_access_enabled')).toHaveLength(0)
@@ -55,6 +56,7 @@ it('refreshes native settings on live changes and keeps a dirty draft with its o
         ? Promise.resolve(current) : Promise.reject(new Error('Conflict')))
     window.__TAURI__ = { core: { invoke } }
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    await user.click(screen.getByRole('tab', { name: 'System' }))
     const toggle = await screen.findByRole('switch', { name: 'Remote desktop server access' })
     current = { ...current, revision: 'core-2', remote_access_enabled: true }
     act(() => window.dispatchEvent(new Event('spark:settings-live-event')))
@@ -72,4 +74,23 @@ it('refreshes native settings on live changes and keeps a dirty draft with its o
     await user.click(screen.getByRole('button', { name: 'Discard Desktop changes' }))
     await waitFor(() => expect(toggle).toBeChecked())
     expect(screen.queryByText(/Desktop settings changed elsewhere/)).toBeNull()
+})
+
+it('shows the native section while loading, reports initial failure, and retries', async () => {
+    const user = userEvent.setup()
+    let reject!: (error: Error) => void
+    const invoke = vi.fn().mockImplementation((command: string) => command === 'desktop_server_settings'
+        ? new Promise((_, fail) => { reject = fail }) : Promise.reject(new Error('Unsupported')))
+    window.__TAURI__ = { core: { invoke } }
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    await user.click(screen.getByRole('tab', { name: 'System' }))
+    expect(screen.getByRole('heading', { name: 'Desktop Server' })).toBeVisible()
+    expect(screen.getByText('Loading Desktop settings…')).toBeVisible()
+    await act(async () => reject(new Error('Native load failed')))
+    expect(screen.getByText('Native load failed')).toHaveAttribute('role', 'alert')
+    invoke.mockResolvedValue({ revision: 'retry', remote_access_enabled: false, bind_host: '127.0.0.1', server_url: 'http://localhost', requires_restart: true, remote_access_warning: '' })
+    await user.click(screen.getByRole('button', { name: 'Retry Desktop settings' }))
+    expect(await screen.findByRole('switch', { name: 'Remote desktop server access' })).not.toBeChecked()
+    expect(screen.getByText(/Restart Spark Desktop/)).toBeVisible()
+    expect(screen.queryByText('Native load failed')).toBeNull()
 })

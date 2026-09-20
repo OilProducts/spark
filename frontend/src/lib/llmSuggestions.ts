@@ -77,3 +77,9 @@ export function splitLlmSelection(value: string, profiles: LlmProfileMetadata[])
         llm_profile: '',
     }
 }
+
+export function isModelSelectionValid(provider: string, model: string | null, profiles: LlmProfileMetadata[]): boolean {
+    const profile = profiles.find((entry) => entry.id === provider)
+    return profile ? (model ? profile.models.includes(model) : !!profile.default_model)
+        : !['openrouter', 'litellm', 'openai_compatible'].includes(provider) || !!model
+}

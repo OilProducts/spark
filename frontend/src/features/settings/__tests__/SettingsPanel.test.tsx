@@ -1,0 +1,155 @@
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { DialogProvider } from '@/components/app/dialog-controller'
+import { useStore } from '@/store'
+import { fetchModelSettings, saveModelSettings } from '@/lib/api/settingsApi'
+import { fetchClientPreferences } from '../services/clientPreferences'
+import { useModelDiscovery } from '../hooks/useModelDiscovery'
+import { SettingsPanel } from '../SettingsPanel'
+
+vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), saveModelSettings: vi.fn() }))
+vi.mock('../services/clientPreferences', async (original) => ({ ...await original<object>(), fetchClientPreferences: vi.fn() }))
+vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [{ id: 'team', label: 'Team models', models: ['team-one'], default_model: 'team-one' }] }))
+vi.mock('../hooks/useModelDiscovery', () => ({ useModelDiscovery: vi.fn() }))
+vi.mock('../CodexConnectionSettings', () => ({ CodexConnectionSettings: () => null }))
+vi.mock('../ProviderSettingsEditor', () => ({ ProviderSettingsEditor: () => null }))
+vi.mock('../AgentSettingsEditor', () => ({ AgentSettingsEditor: () => null }))
+vi.mock('../ProfileSettingsEditors', () => ({ LlmProfilesEditor: () => null, ExecutionProfilesEditor: () => null }))
+vi.mock('../ConnectionSettingsEditor', () => ({ ConnectionSettingsEditor: () => null }))
+vi.mock('../RuntimeSettingsEditor', () => ({ RuntimeSettingsEditor: () => null }))
+
+const savedModel = { provider: 'codex', llm_profile: null, model: 'saved-model', reasoning_effort: 'high' }
+const card = (name: string) => within(screen.getByRole('heading', { name, exact: true }).closest<HTMLElement>('[data-slot=card]')!)
+beforeEach(() => {
+    vi.resetAllMocks()
+    useStore.setState({ viewMode: 'settings', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
+    vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel }))
+    vi.mocked(fetchClientPreferences).mockResolvedValue({ client_id: 'browser-test', revision: 'one', stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288 } })
+    vi.mocked(useModelDiscovery).mockReturnValue({ projectPath: '/project', failed: true })
+})
+afterEach(() => cleanup())
+
+it('has local default selection, semantic headings, keyboard tabs, and mounted hidden panels', async () => {
+    const user = userEvent.setup()
+    const view = render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    await waitFor(() => expect(card('Model defaults (Workspace)').getByLabelText('Provider or profile')).toBeEnabled())
+    const first = screen.getByRole('tab', { name: 'Models & accounts' })
+    expect(first).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
+    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(4)
+    expect(screen.getByRole('heading', { name: 'Project model defaults', level: 3 })).toBeVisible()
+    first.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: 'Preferences' })).toHaveFocus()
+    expect(screen.getByRole('heading', { name: 'Client preferences', level: 3 })).toBeVisible()
+    for (const name of ['Editor', 'Layout', 'Runs & triggers']) expect(screen.getByRole('heading', { name, level: 4 })).toBeVisible()
+    expect(screen.getByLabelText('Provider or profile')).not.toBeVisible()
+    await user.keyboard('{End}')
+    expect(screen.getByRole('tab', { name: 'System' })).toHaveFocus()
+    view.unmount()
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    expect(screen.getByRole('tab', { name: 'Models & accounts' })).toHaveAttribute('aria-selected', 'true')
+})
+
+it('retains hidden validation and dirty drafts, protects leaving and project changes, and discards per editor', async () => {
+    const user = userEvent.setup()
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    await user.click(screen.getByRole('tab', { name: 'Preferences' }))
+    const width = await screen.findByLabelText('Editor sidebar width (pixels)')
+    await waitFor(() => expect(width).toBeEnabled())
+    await user.type(width, '12')
+    await user.click(screen.getByRole('tab', { name: 'Execution' }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    const unload = new Event('beforeunload', { cancelable: true })
+    act(() => window.dispatchEvent(unload))
+    expect(unload.defaultPrevented).toBe(true)
+    await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(useStore.getState().viewMode).toBe('settings')
+    act(() => useStore.getState().setActiveProjectPath(null))
+    await user.click(screen.getByRole('button', { name: 'Keep editing' }))
+    expect(useStore.getState().activeProjectPath).toBe('/project')
+    await user.click(screen.getByRole('tab', { name: 'Preferences' }))
+    expect(width).toHaveValue(12)
+    expect(width).toHaveAccessibleDescription(/Choose a whole number from 256 to 560/)
+    expect(screen.getByRole('button', { name: 'Save preferences' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Discard preference changes' }))
+    await waitFor(() => expect(width).toHaveValue(null))
+    act(() => useStore.getState().setActiveProjectPath(null))
+    expect(useStore.getState().activeProjectPath).toBeNull()
+})
+
+it('shares discovery fallback, profiles, custom values and compatibility with project overrides and labels saved values', async () => {
+    const user = userEvent.setup()
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    const workspace = card('Model defaults (Workspace)')
+    const project = card('Project model defaults')
+    await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())
+    expect(project.getByText(/Saved effective:/)).toHaveTextContent('saved-model')
+    expect(project.queryByLabelText('Model')).toBeNull()
+    await user.click(project.getByRole('switch'))
+    const selectors = screen.getAllByLabelText('Provider or profile')
+    expect(new Set(selectors.map((select) => select.id)).size).toBe(2)
+    for (const editor of [workspace, project]) {
+        expect(editor.getByText('Model discovery unavailable. Using suggestions.')).toBeVisible()
+        expect(editor.getByLabelText('Custom model')).toHaveValue('saved-model')
+        await user.selectOptions(editor.getByLabelText('Provider or profile'), 'team')
+        expect(editor.getByRole('option', { name: 'Team models (team)' })).toHaveValue('team')
+        await user.selectOptions(editor.getByLabelText('Model'), 'custom')
+        await user.type(editor.getByLabelText('Custom model'), 'incompatible')
+        expect(editor.getByLabelText('Custom model')).toHaveAccessibleDescription('Choose a compatible model for this provider or profile.')
+        expect(editor.getByRole('button', { name: /Save .*defaults/ })).toBeDisabled()
+        await user.selectOptions(editor.getByLabelText('Model'), 'model:team-one')
+        expect(editor.getByRole('button', { name: /Save .*defaults/ })).toBeEnabled()
+    }
+    expect(project.getByText(/Saved effective:/)).toHaveTextContent('saved-model')
+    await user.click(screen.getByRole('tab', { name: 'System' }))
+    await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
+    expect(project.getByLabelText('Model')).toHaveValue('model:team-one')
+    expect(workspace.getByLabelText('Model')).toHaveValue('model:team-one')
+})
+
+it('keeps hidden requests mounted and blocks navigation before another dirty editor can offer discard', async () => {
+    const user = userEvent.setup()
+    let reject!: (error: Error) => void
+    vi.mocked(saveModelSettings).mockReturnValue(new Promise((_, fail) => { reject = fail }))
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    // Register another dirty editor first to verify pending requests take precedence.
+    await user.click(screen.getByRole('tab', { name: 'Preferences' }))
+    await waitFor(() => expect(screen.getByLabelText('Editor sidebar width (pixels)')).toBeEnabled())
+    await user.type(screen.getByLabelText('Editor sidebar width (pixels)'), '400')
+    await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
+    await user.selectOptions(card('Model defaults (Workspace)').getByLabelText('Provider or profile'), 'anthropic')
+    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await user.click(screen.getByRole('tab', { name: 'Execution' }))
+    await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
+    act(() => useStore.getState().setActiveProjectPath(null))
+    expect(useStore.getState().viewMode).toBe('settings')
+    expect(useStore.getState().activeProjectPath).toBe('/project')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(saveModelSettings).toHaveBeenCalledTimes(1)
+    await act(async () => reject(new Error('Save conflict')))
+    await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
+    expect(screen.getByText('Save conflict')).toBeVisible()
+    expect(card('Model defaults (Workspace)').getByLabelText('Provider or profile')).toHaveValue('anthropic')
+})
+
+it('uses discovered suggestions in both editors and displays inherited saved profile labels and defaults', async () => {
+    const user = userEvent.setup()
+    const effective = { provider: null, llm_profile: 'team', model: null, reasoning_effort: 'low' }
+    vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : effective, effective }))
+    vi.mocked(useModelDiscovery).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered' }], providers: { codex: { status: 'available', error: null } } } })
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    const project = card('Project model defaults')
+    await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())
+    expect(project.getByText(/Saved effective:/)).toHaveTextContent('Team models team · Model: team-one · Reasoning effort: low')
+    await user.click(project.getByRole('switch'))
+    for (const editor of [card('Model defaults (Workspace)'), project]) {
+        await user.selectOptions(editor.getByLabelText('Provider or profile'), 'codex')
+        expect(editor.getByRole('option', { name: 'discovered' })).toBeVisible()
+        await user.selectOptions(editor.getByLabelText('Model'), 'model:discovered')
+        expect(editor.getByLabelText('Model')).toHaveValue('model:discovered')
+    }
+    expect(project.getByText(/Saved effective:/)).toHaveTextContent('Team models team')
+})

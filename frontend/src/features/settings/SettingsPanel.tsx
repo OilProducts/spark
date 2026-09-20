@@ -1,3 +1,6 @@
+import { isModelSelectionValid } from '@/lib/llmSuggestions'
+import { ModelSettingsFields } from './ModelSettingsFields'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ProviderSettingsEditor } from "./ProviderSettingsEditor"
 import { CodexConnectionSettings } from "./CodexConnectionSettings"
 import { AgentSettingsEditor } from "./AgentSettingsEditor"
@@ -7,14 +10,9 @@ import { ProjectModelSettingsEditor } from "./ProjectModelSettingsEditor"
 import { useEffect, useState } from "react"
 import { useStore } from "@/store"
 import { useLlmProfiles } from "@/lib/useLlmProfiles"
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from "@/lib/llmSuggestions"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Field, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { NativeSelect } from "@/components/ui/native-select"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
 import { useDialogController } from "@/components/app/dialog-controller"
-import { useModelDiscovery } from "./hooks/useModelDiscovery"
 import { Button } from "@/components/ui/button"
 import { ConnectionSettingsEditor } from "./ConnectionSettingsEditor"
 import { RuntimeSettingsEditor } from "./RuntimeSettingsEditor"
@@ -48,13 +46,6 @@ function getTauriInvoke(): TauriInvoke | null {
 
 export function SettingsPanel() {
     const models = useModelSettingsEditor()
-    const uiDefaults = {
-        llm_provider: models.draft?.provider ?? '', llm_profile: models.draft?.llm_profile ?? '',
-        llm_model: models.draft?.model ?? '', reasoning_effort: models.draft?.reasoning_effort ?? '',
-    }
-    const setUiDefault = (key: 'llm_model' | 'reasoning_effort', value: string) => models.setDraft((draft) => draft && ({
-        ...draft, [key === 'llm_model' ? 'model' : key]: value || null,
-    }))
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const { confirm } = useDialogController()
     const llmProfiles = useLlmProfiles()
@@ -67,27 +58,9 @@ export function SettingsPanel() {
     const desktopDirty = remoteDraft !== null && remoteDraft !== desktopSettings?.remote_access_enabled
     useSettingsNavigationProtection(desktopDirty, isSavingDesktopSettings)
 
-    const [customModel, setCustomModel] = useState(false)
-    const provider = uiDefaults.llm_profile || uiDefaults.llm_provider
-    const providerOptions = [...new Set([...getLlmSelectionOptions(llmProfiles), provider])].filter(Boolean)
-    const profile = llmProfiles.find((entry) => entry.id === provider)
-    const invalidModel = profile ?
-        (!!uiDefaults.llm_model && !profile.models.includes(uiDefaults.llm_model)) || (!uiDefaults.llm_model && !profile.default_model)
-        : ['openrouter', 'litellm', 'openai_compatible'].includes(provider) && !uiDefaults.llm_model
-    const currentDiscovery = useModelDiscovery(activeProjectPath)
-    const discoveredModels = currentDiscovery?.payload?.models.filter((model) => model.provider === provider)
-    const discoveryUnavailable = provider === 'codex'
-        && currentDiscovery?.payload?.providers.codex.status === 'unavailable'
-    const modelOptions = [...new Set(profile ? profile.models : (
-        discoveredModels?.length && !discoveryUnavailable
-            ? discoveredModels.map((model) => model.id)
-            : getModelSuggestions(provider, llmProfiles)
-    ))].filter(Boolean)
-    const unlistedModel = !!uiDefaults.llm_model && !modelOptions.includes(uiDefaults.llm_model)
-    const discoveryMessage = !profile && activeProjectPath
-        ? (!currentDiscovery ? 'Loading models…'
-            : currentDiscovery.failed || discoveryUnavailable ? 'Model discovery unavailable. Using suggestions.' : null)
-        : null
+    const invalidModel = !!models.draft && !isModelSelectionValid(models.draft.llm_profile || models.draft.provider || '', models.draft.model, llmProfiles)
+    const [category, setCategory] = useState('models')
+    const [desktopRetry, setDesktopRetry] = useState(0)
 
     useEffect(() => {
         const invoke = getTauriInvoke()
@@ -117,7 +90,7 @@ export function SettingsPanel() {
             window.removeEventListener('spark:settings-live-event', refresh)
             window.removeEventListener('focus', refresh)
         }
-    }, [desktopSettings?.revision, desktopDirty, isSavingDesktopSettings])
+    }, [desktopSettings?.revision, desktopDirty, isSavingDesktopSettings, desktopRetry])
 
     const updateRemoteAccess = async (enabled: boolean) => {
         const invoke = getTauriInvoke()
@@ -152,7 +125,7 @@ export function SettingsPanel() {
     }
 
     return (
-        <div data-testid="settings-panel" className="flex-1 overflow-auto p-6">
+        <div data-testid="settings-panel" className="min-w-0 flex-1 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
                 <div className="space-y-1">
                     <h2 className="text-sm font-semibold text-foreground">Settings</h2>
@@ -161,99 +134,30 @@ export function SettingsPanel() {
                     </p>
                 </div>
 
+                <Tabs className="min-w-0" value={category} onValueChange={setCategory}>
+                <div className="max-w-full overflow-x-auto"><TabsList className="w-max" aria-label="Settings categories">
+                    <TabsTrigger value="models">Models &amp; accounts</TabsTrigger>
+                    <TabsTrigger value="preferences">Preferences</TabsTrigger>
+                    <TabsTrigger value="execution">Execution</TabsTrigger>
+                    <TabsTrigger value="system">System</TabsTrigger>
+                </TabsList></div>
+                <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
                 <CodexConnectionSettings />
 
                 <Card className="gap-4 py-4 shadow-sm">
                     <CardHeader className="gap-1 px-4">
-                        <CardTitle className="text-sm">Model defaults (Workspace)</CardTitle>
+                        <h3 className="text-sm font-semibold">Model defaults (Workspace)</h3>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
-                        <p className="text-xs text-muted-foreground">Workspace default</p>
+                        <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations.</p>
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
-                        <Field className="[&>[data-slot=native-select-wrapper]]:w-full">
-                            <FieldLabel htmlFor="settings-default-llm-provider">
-                                Default LLM Provider
-                            </FieldLabel>
-                            <NativeSelect
-                                id="settings-default-llm-provider"
-                                value={provider}
-                                onChange={(event) => {
-                                    const selection = splitLlmSelection(event.target.value, llmProfiles)
-                                    models.setDraft({ provider: selection.llm_profile ? null : selection.llm_provider || 'codex',
-                                        llm_profile: selection.llm_profile || null, model: null, reasoning_effort: null })
-                                    setCustomModel(false)
-                                }}
-                                className="text-xs"
-                            >
-                                <option value="">Use provider default</option>
-                                {providerOptions.map((option) => (
-                                    <option key={option} value={option}>{option}</option>
-                                ))}
-                            </NativeSelect>
-                        </Field>
-                        <Field className="[&>[data-slot=native-select-wrapper]]:w-full">
-                            <FieldLabel htmlFor="settings-default-llm-model">
-                                Default LLM Model
-                            </FieldLabel>
-                            <NativeSelect
-                                id="settings-default-llm-model"
-                                aria-invalid={!!invalidModel}
-                                value={customModel ? 'custom' : uiDefaults.llm_model ? `model:${uiDefaults.llm_model}` : ''}
-                                onChange={(event) => {
-                                    const value = event.target.value
-                                    setCustomModel(value === 'custom')
-                                    if (value !== 'custom') setUiDefault('llm_model', value.replace(/^model:/, ''))
-                                }}
-                                className="text-xs"
-                            >
-                                <option value="">Use provider default</option>
-                                {modelOptions.map((option) => (
-                                    <option key={option} value={`model:${option}`}>{option}</option>
-                                ))}
-                                {unlistedModel && (
-                                    <option value={`model:${uiDefaults.llm_model}`}>{uiDefaults.llm_model} (custom)</option>
-                                )}
-                                <option value="custom">Custom model…</option>
-                            </NativeSelect>
-                            {(customModel || unlistedModel) && (
-                                <>
-                                    <FieldLabel htmlFor="settings-custom-llm-model">Custom model</FieldLabel>
-                                    <Input
-                                        id="settings-custom-llm-model"
-                                        value={uiDefaults.llm_model}
-                                        onChange={(event) => {
-                                            setCustomModel(true)
-                                            setUiDefault('llm_model', event.target.value)
-                                        }}
-                                        className="text-xs"
-                                    />
-                                </>
-                            )}
-                            {discoveryMessage && <p role="status" className="text-xs text-muted-foreground">{discoveryMessage}</p>}
-                        </Field>
-                        <Field>
-                            <FieldLabel htmlFor="settings-default-reasoning-effort">
-                                Default Reasoning Effort
-                            </FieldLabel>
-                            <NativeSelect
-                                id="settings-default-reasoning-effort"
-                                value={uiDefaults.reasoning_effort}
-                                onChange={(event) => setUiDefault('reasoning_effort', event.target.value)}
-                                className="text-xs"
-                            >
-                                <option value="">Use provider default</option>
-                                <option value="low">Low</option>
-                                <option value="medium">Medium</option>
-                                <option value="high">High</option>
-                                <option value="xhigh">XHigh</option>
-                            </NativeSelect>
-                        </Field>
+                        {models.pending ? <p role="status">Saving or reloading settings…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
+                        <ModelSettingsFields profiles={llmProfiles} models={models} activeProjectPath={activeProjectPath} invalidModel={!!invalidModel} />
                         </fieldset>
-                        <div className="flex gap-2">
+                        <div className="flex flex-wrap gap-2">
                             <Button size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save model defaults</Button>
                             <Button size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard model changes</Button>
                         </div>
-                        {invalidModel && <p role="alert" className="text-xs text-destructive">Choose a compatible model for this provider or profile.</p>}
                         {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             {models.error && <p role="alert" className="text-xs text-destructive">{models.error}</p>}
@@ -261,25 +165,32 @@ export function SettingsPanel() {
                     </CardContent>
                 </Card>
 
+                {activeProjectPath && <ProjectModelSettingsEditor key={activeProjectPath} projectPath={activeProjectPath} />}
+                <ProviderSettingsEditor />
+                <LlmProfilesEditor />
+                </TabsContent>
+                <TabsContent value="preferences" forceMount hidden={category !== 'preferences'} className="space-y-6"><ClientPreferencesEditor /></TabsContent>
+                <TabsContent value="execution" forceMount hidden={category !== 'execution'} className="space-y-6">
+                <ExecutionProfilesEditor />
+                <AgentSettingsEditor />
                 <Card className="gap-4 py-4 shadow-sm">
-                    <CardHeader className="px-4"><CardTitle className="text-sm">Scoped configuration</CardTitle></CardHeader>
+                    <CardHeader className="px-4"><h3 className="text-sm font-semibold">Scoped configuration</h3></CardHeader>
                     <CardContent className="space-y-3 px-4">
                         <p className="text-xs text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
-                        <div className="flex gap-2">
-                            <Button variant="outline" onClick={() => useStore.getState().setViewMode('editor')}>Edit flow policies</Button>
+                        <div className="flex flex-wrap gap-2">
+                            <Button variant="outline" onClick={() => useStore.getState().setViewMode('editor')}>Open flow editor</Button>
                             <Button variant="outline" onClick={() => useStore.getState().setViewMode('triggers')}>Edit triggers</Button>
                         </div>
                     </CardContent>
                 </Card>
-                {activeProjectPath && <ProjectModelSettingsEditor key={activeProjectPath} projectPath={activeProjectPath} />}
-                <RuntimeSettingsEditor />
-                <ConnectionSettingsEditor />
-                <ClientPreferencesEditor />
-
-                {desktopSettings ? (
+                </TabsContent>
+                <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
+                <p className="text-xs text-muted-foreground">Server/Desktop configuration. Environment overrides take precedence over saved values.</p>
+                {getTauriInvoke() ? (
                     <Card className="gap-4 py-4 shadow-sm">
-                        <CardHeader className="gap-1 px-4"><CardTitle className="text-sm">Desktop Server</CardTitle></CardHeader>
+                        <CardHeader className="gap-1 px-4"><h3 className="text-sm font-semibold">Desktop Server</h3></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">
+                            {desktopSettings ? <>
                             <div className="flex items-center justify-between gap-4 rounded border border-border px-3 py-2">
                                 <div className="min-w-0 space-y-1">
                                     <div className="text-xs font-medium text-foreground">Remote access</div>
@@ -288,7 +199,7 @@ export function SettingsPanel() {
                                 <Switch data-testid="desktop-remote-access-toggle" checked={remoteDraft ?? desktopSettings.remote_access_enabled}
                                     disabled={isSavingDesktopSettings} onCheckedChange={setRemoteDraft} aria-label="Remote desktop server access" />
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                                 <Button disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save Desktop settings</Button>
                                 <Button variant="outline" disabled={isSavingDesktopSettings || (!desktopDirty && !desktopSettingsError)} onClick={() => {
                                     const invoke = getTauriInvoke()
@@ -300,16 +211,18 @@ export function SettingsPanel() {
                                         .finally(() => setIsSavingDesktopSettings(false))
                                 }}>Discard Desktop changes</Button>
                             </div>
+                            {isSavingDesktopSettings && <p role="status">Saving or reloading settings…</p>}
                             {desktopMessage && <p role="status" className="text-xs">{desktopMessage}</p>}
                             {desktopSettings.requires_restart ? <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">Restart Spark Desktop to apply the server binding change.</div> : null}
-                            {desktopSettingsError ? <div className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopSettingsError}</div> : null}
+                            </> : desktopSettingsError ? <Button variant="outline" onClick={() => { setDesktopSettingsError(null); setDesktopRetry((value) => value + 1) }}>Retry Desktop settings</Button> : <p role="status">Loading Desktop settings…</p>}
+                            {desktopSettingsError ? <div role="alert" className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopSettingsError}</div> : null}
                         </CardContent>
                     </Card>
                 ) : null}
-                <ProviderSettingsEditor />
-                <AgentSettingsEditor />
-                <LlmProfilesEditor />
-                <ExecutionProfilesEditor />
+                <ConnectionSettingsEditor />
+                <RuntimeSettingsEditor />
+                </TabsContent>
+                </Tabs>
             </div>
         </div>
     )

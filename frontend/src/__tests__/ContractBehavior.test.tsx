@@ -1345,9 +1345,9 @@ describe('Frontend contract behavior', () => {
     cleanup()
     render(<SettingsPanel />)
 
-    expect(screen.getByRole('combobox', { name: 'Default LLM Provider' })).toHaveAttribute('data-slot', 'native-select')
-    expect(screen.getByRole('combobox', { name: 'Default LLM Model' })).toHaveAttribute('data-slot', 'native-select')
-    expect(screen.getByLabelText('Default Reasoning Effort')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Provider or profile' })).toHaveAttribute('data-slot', 'native-select')
+    expect(screen.getByRole('combobox', { name: 'Model' })).toHaveAttribute('data-slot', 'native-select')
+    expect(screen.getByLabelText('Reasoning effort')).toBeVisible()
 
     cleanup()
     act(() => {

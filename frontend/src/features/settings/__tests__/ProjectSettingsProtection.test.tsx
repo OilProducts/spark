@@ -11,6 +11,7 @@ import { ProjectModelSettingsEditor } from '../ProjectModelSettingsEditor'
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), fetchProjectExecutionSettings: vi.fn(), saveModelSettings: vi.fn() }))
 vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), fetchWorkspaceSettingsValidated: vi.fn(), updateProjectStateValidated: vi.fn() }))
+vi.mock('../hooks/useModelDiscovery', () => ({ useModelDiscovery: () => null }))
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [] }))
 
 beforeEach(() => {
@@ -37,7 +38,8 @@ it.each(['switch', 'switch_and_leave', 'clear', 'remove', 'hydrate', 'rename'] a
     render(<DialogProvider><Models /></DialogProvider>)
     await waitFor(() => expect(screen.getByRole('switch')).toBeEnabled())
     await user.click(screen.getByRole('switch'))
-    await user.type(screen.getByLabelText('Project model'), 'unsaved-model')
+    await user.selectOptions(screen.getByLabelText('Model'), 'custom')
+    await user.type(screen.getByLabelText('Custom model'), 'unsaved-model')
     const navigate = () => {
         const state = useStore.getState()
         if (transition === 'switch') state.setActiveProjectPath('/project-two')
@@ -51,7 +53,7 @@ it.each(['switch', 'switch_and_leave', 'clear', 'remove', 'hydrate', 'rename'] a
     await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
     expect(useStore.getState().activeProjectPath).toBe('/project-one')
     expect(useStore.getState().viewMode).toBe('settings')
-    expect(screen.getByLabelText('Project model')).toHaveValue('unsaved-model')
+    expect(screen.getByLabelText('Custom model')).toHaveValue('unsaved-model')
     await act(async () => navigate())
     await user.click(await screen.findByRole('button', { name: 'Discard and leave' }))
     await waitFor(() => expect(useStore.getState().activeProjectPath).not.toBe('/project-one'))
