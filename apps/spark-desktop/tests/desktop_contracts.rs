@@ -268,14 +268,33 @@ impl Drop for EnvVarGuard {
 }
 
 #[test]
-fn markdown_opener_permission_is_restricted_to_web_urls() {
+fn desktop_permissions_are_restricted_to_expected_commands_and_origins() {
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
     let permissions = capability["permissions"].as_array().unwrap();
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(
+        capability["remote"],
+        serde_json::json!({"urls": ["http://127.0.0.1:*"]})
+    );
+    let desktop: serde_json::Value =
+        serde_json::from_str(include_str!("../permissions/desktop.json")).unwrap();
+    assert_eq!(desktop["permission"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        desktop["permission"][0]["identifier"],
+        "allow-desktop-settings"
+    );
+    assert_eq!(
+        desktop["permission"][0]["commands"],
+        serde_json::json!({
+            "allow": ["desktop_client_identity", "desktop_server_settings", "set_desktop_remote_access_enabled"]
+        })
+    );
     assert_eq!(
         permissions,
         &vec![
             serde_json::json!("core:default"),
+            serde_json::json!("allow-desktop-settings"),
             serde_json::json!({
                 "identifier": "opener:allow-open-url",
                 "allow": [{"url": "http://*"}, {"url": "https://*"}]

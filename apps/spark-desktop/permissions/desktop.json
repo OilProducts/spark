@@ -1,0 +1,15 @@
+{
+  "permission": [
+    {
+      "identifier": "allow-desktop-settings",
+      "description": "Allows the Spark desktop frontend to access its identity and server settings.",
+      "commands": {
+        "allow": [
+          "desktop_client_identity",
+          "desktop_server_settings",
+          "set_desktop_remote_access_enabled"
+        ]
+      }
+    }
+  ]
+}

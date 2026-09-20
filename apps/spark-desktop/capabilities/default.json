@@ -8,6 +8,7 @@
   },
   "permissions": [
     "core:default",
+    "allow-desktop-settings",
     {
       "identifier": "opener:allow-open-url",
       "allow": [
