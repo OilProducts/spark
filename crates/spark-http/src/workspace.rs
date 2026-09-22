@@ -95,10 +95,6 @@ pub fn router() -> Router<HttpAppState> {
             get(get_conversation_segment_tool_output),
         )
         .route(
-            "/conversations/{conversation_id}/events",
-            get(deprecated_conversation_events),
-        )
-        .route(
             "/conversations/{conversation_id}/turns",
             post(send_conversation_turn),
         )
@@ -645,19 +641,6 @@ async fn get_conversation_segment_tool_output(
         .get_segment_tool_output(&conversation_id, &segment_id, query.project_path.as_deref())
         .map(Json)
         .map_err(Into::into)
-}
-
-async fn deprecated_conversation_events(
-    State(settings): State<Arc<SparkSettings>>,
-    AxumPath(_conversation_id): AxumPath<String>,
-) -> impl IntoResponse {
-    (
-        StatusCode::GONE,
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        WorkspaceConversationService::new((*settings).clone())
-            .deprecated_events_response()
-            .to_string(),
-    )
 }
 
 async fn workspace_live_events(

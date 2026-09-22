@@ -63,15 +63,7 @@ pub fn update_settings_sections<'a>(
         return Err(StorageError::SettingsConflict { path: path.into() });
     }
     for (section, value) in sections {
-        if section.is_empty()
-            || matches!(
-                section,
-                "schema_version"
-                    | "desktop_migration_version"
-                    | "defaults_migration_version"
-                    | "browser_migration_version"
-            )
-        {
+        if section.is_empty() || matches!(section, "schema_version" | "browser_migration_version") {
             return Err(invalid(
                 path,
                 "A settings section is required; version markers are migration-owned.",
@@ -248,166 +240,23 @@ pub fn load_or_create_client_identity(path: &Path) -> Result<String> {
     Ok(id)
 }
 
-/// Every bootstrap uses this transition before reading persisted runtime choices.
-pub fn migrate_core_settings(core: &Path) -> Result<SettingsDocument> {
-    migrate_core_with_desktop(core, None)
-}
-
-/// Desktop may discover its platform-owned legacy source after server bootstrap
-/// has already versioned core settings. A separate import marker prevents later
-/// source reimports, including after an authored Desktop section is removed.
-pub fn migrate_desktop_settings(core: &Path, legacy: &Path) -> Result<SettingsDocument> {
-    migrate_core_with_desktop(core, Some(legacy))
-}
-
-fn migrate_core_with_desktop(core: &Path, legacy: Option<&Path>) -> Result<SettingsDocument> {
-    let config_dir = core.parent().unwrap_or_else(|| Path::new("."));
-    let _references = lock_profile_references(config_dir)?;
+/// Every bootstrap reads core settings through this boundary before loading
+/// persisted runtime choices. A fresh install creates the current document.
+pub fn load_core_settings(core: &Path) -> Result<SettingsDocument> {
+    let legacy = core.with_file_name("ui-defaults.json");
+    if legacy.exists() {
+        return Err(invalid(&legacy, "The legacy defaults import was removed; delete this file or move its values into spark.toml."));
+    }
     let _lock = lock_document(core)?;
-    let bytes = read_bytes(core)?;
-    let mut document = decode(core, bytes.as_deref())?;
-    validate_core_version(core, &document.values)?;
-    let original = document.values.clone();
-    let version = original
-        .get("schema_version")
-        .and_then(toml::Value::as_integer)
-        .unwrap_or(0);
-    let desktop_migrated = original
-        .get("desktop_migration_version")
-        .and_then(toml::Value::as_integer)
-        == Some(1);
-    let source = if !desktop_migrated && !original.contains_key("desktop") {
-        legacy
-            .map(|path| read_bytes(path).map(|bytes| bytes.map(|bytes| (path, bytes))))
-            .transpose()?
-            .flatten()
-    } else {
-        None
-    };
-    if let Some((path, bytes)) = &source {
-        let settings: spark_common::settings::DesktopSettings = serde_json::from_slice(bytes)
-            .map_err(|_| invalid(path, "Invalid legacy Desktop settings; expected remote_access_enabled to be a boolean."))?;
-        document.values.insert(
-            "desktop".into(),
-            toml::Value::try_from(settings)
-                .map_err(|_| invalid(core, "Invalid Desktop settings."))?,
+    let document = read_settings_document(core)?;
+    if document.revision == "absent" {
+        return persist(
+            core,
+            &toml::Table::from_iter([("schema_version".to_owned(), 1.into())]),
         );
     }
-    let defaults_path = core.with_file_name("ui-defaults.json");
-    let defaults_source = if original
-        .get("defaults_migration_version")
-        .and_then(toml::Value::as_integer)
-        != Some(1)
-    {
-        read_bytes(&defaults_path)?
-    } else {
-        None
-    };
-    if let Some(bytes) = &defaults_source {
-        if !original.contains_key("models") {
-            #[derive(serde::Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct LegacyDefaults {
-                llm_provider: Option<String>,
-                llm_profile: Option<String>,
-                llm_model: Option<String>,
-                reasoning_effort: Option<String>,
-            }
-            let legacy: LegacyDefaults = serde_json::from_slice(bytes)
-                .map_err(|_| invalid(&defaults_path, "Invalid legacy model defaults; expected llm_provider, llm_profile, llm_model and reasoning_effort text fields."))?;
-            let text = |value: Option<String>| {
-                value
-                    .map(|value| value.trim().to_owned())
-                    .filter(|value| !value.is_empty())
-            };
-            let profile = text(legacy.llm_profile);
-            let models = spark_common::settings::ModelSettings {
-                provider: if profile.is_some() {
-                    None
-                } else {
-                    Some(text(legacy.llm_provider).unwrap_or_else(|| "codex".into()))
-                },
-                llm_profile: profile,
-                model: text(legacy.llm_model),
-                reasoning_effort: text(legacy.reasoning_effort),
-            };
-            models
-                .validate()
-                .map_err(|error| invalid(&defaults_path, error.to_string()))?;
-            document.values.insert(
-                "models".into(),
-                toml::Value::try_from(models)
-                    .map_err(|_| invalid(&defaults_path, "Invalid legacy model defaults."))?,
-            );
-        }
-        document
-            .values
-            .insert("defaults_migration_version".into(), 1.into());
-    }
-    document.values.insert("schema_version".into(), 1.into());
-    if legacy.is_some() {
-        document
-            .values
-            .insert("desktop_migration_version".into(), 1.into());
-    }
     validate_core_sections(core, &document.values)?;
-    if document.values.get("models") != original.get("models") {
-        validate_profile_references(
-            config_dir,
-            &serde_json::json!(document.values.get("models")),
-        )?;
-    }
-    if document.values == original {
-        if original
-            .get("defaults_migration_version")
-            .and_then(toml::Value::as_integer)
-            == Some(1)
-        {
-            cleanup_legacy_defaults(&defaults_path)?;
-        }
-        return Ok(document);
-    }
-    if let Some(bytes) = &defaults_source {
-        backup_migration_source(&defaults_path, ".v0.bak", bytes)?;
-    }
-    if let Some((path, bytes)) = source {
-        backup_migration_source(path, ".v0.bak", &bytes)?;
-    }
-    if let Some(bytes) = bytes {
-        let suffix = if version == 0 {
-            ".v0.bak"
-        } else if defaults_source.is_some() {
-            ".defaults-import-v1.bak"
-        } else {
-            ".desktop-import-v1.bak"
-        };
-        backup_migration_source(core, suffix, &bytes)?;
-    }
-    let document = persist(core, &document.values)?;
-    if document
-        .values
-        .get("defaults_migration_version")
-        .and_then(toml::Value::as_integer)
-        == Some(1)
-    {
-        cleanup_legacy_defaults(&defaults_path)?;
-    }
     Ok(document)
-}
-
-fn cleanup_legacy_defaults(path: &Path) -> Result<()> {
-    if let Some(bytes) = read_bytes(path)? {
-        let suffix = if read_bytes(&sidecar(path, ".v0.bak"))?.is_some_and(|backup| backup != bytes)
-        {
-            format!(".cleanup-{:x}.bak", Sha1::digest(&bytes))
-        } else {
-            ".v0.bak".into()
-        };
-        backup_migration_source(path, &suffix, &bytes)?;
-        std::fs::remove_file(path)
-            .map_err(|error| StorageError::io("remove imported defaults", path, error))?;
-    }
-    Ok(())
 }
 
 fn backup_migration_source(path: &Path, suffix: &str, bytes: &[u8]) -> Result<()> {
@@ -481,105 +330,15 @@ pub fn update_desktop_settings(
 
 /// Validate the core version at every entry point, including non-Desktop reads/writes.
 pub fn validate_core_version(path: &Path, values: &toml::Table) -> Result<()> {
-    if !matches!(
-        values.get("defaults_migration_version"),
-        None | Some(toml::Value::Integer(0..=1))
-    ) {
-        return Err(invalid(
-            path,
-            "Unsupported defaults_migration_version; use a compatible Spark binary.",
-        ));
-    }
-    if !matches!(
-        values.get("desktop_migration_version"),
-        None | Some(toml::Value::Integer(0..=1))
-    ) {
-        return Err(invalid(
-            path,
-            "Unsupported desktop_migration_version; use a compatible Spark binary.",
-        ));
-    }
     match values.get("schema_version") {
-        None | Some(toml::Value::Integer(0..=1)) => Ok(()),
-        _ => Err(invalid(
+        None | Some(toml::Value::Integer(1)) => Ok(()),
+        Some(found) => Err(invalid(
             path,
-            "Unsupported settings schema_version; use a compatible Spark binary.",
+            format!(
+                "Unsupported settings schema_version {found}; expected 1. Use a compatible Spark binary."
+            ),
         )),
     }
-}
-
-/// Caller holds the conversation's existing .commit.lock, shared with all writers.
-pub(crate) fn migrate_conversation_model_settings(path: &Path) -> Result<()> {
-    let Some(bytes) = read_bytes(path)? else {
-        return Ok(());
-    };
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| invalid(path, "Invalid conversation metadata JSON."))?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| invalid(path, "Expected conversation metadata object."))?;
-    match object.get("settings_schema_version") {
-        Some(serde_json::Value::Number(version)) if version.as_i64() == Some(1) => return Ok(()),
-        None => {}
-        Some(serde_json::Value::Number(version)) if version.as_i64() == Some(0) => {}
-        _ => {
-            return Err(invalid(
-                path,
-                "Unsupported conversation settings version; use a compatible Spark binary.",
-            ))
-        }
-    }
-    let backup = sidecar(path, ".settings-v0.bak");
-    match read_bytes(&backup)? {
-        Some(existing) if existing != bytes => {
-            return Err(invalid(
-                path,
-                "Conversation migration backup differs; resolve the backup before retrying.",
-            ))
-        }
-        Some(_) => {}
-        None => write_atomic(&backup, &bytes)?,
-    }
-    object.insert("settings_schema_version".into(), 1.into());
-    object.insert("model_settings".into(), serde_json::Value::Null);
-    for field in ["provider", "model", "llm_profile", "reasoning_effort"] {
-        object.remove(field);
-    }
-    crate::write_json_atomic(path, &value, crate::JsonWriteOptions::default())
-}
-
-/// Enumerate storage, not project metadata: archived/orphaned project directories
-/// still own conversations even when their project record cannot be listed.
-pub fn migrate_workspace_conversation_settings(home: &Path) -> Result<()> {
-    let projects = crate::ProjectRegistry::new(home).projects_root();
-    for project in child_directories(&projects)? {
-        for conversation in child_directories(&project.join("conversations"))? {
-            crate::ConversationRepository::migrate_model_settings_at_root(&conversation)?;
-        }
-    }
-    Ok(())
-}
-
-fn child_directories(path: &Path) -> Result<Vec<PathBuf>> {
-    let entries = match fs::read_dir(path) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(StorageError::io("read migration directory", path, error)),
-    };
-    let mut directories = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| StorageError::io("read migration entry", path, error))?;
-        // Do not migrate through symlinks into another workspace or historical backup.
-        if entry
-            .file_type()
-            .map_err(|error| StorageError::io("read migration file type", entry.path(), error))?
-            .is_dir()
-        {
-            directories.push(entry.path());
-        }
-    }
-    directories.sort();
-    Ok(directories)
 }
 
 /// Called while the document update lock is held, after validating the candidate.

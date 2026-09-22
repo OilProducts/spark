@@ -133,130 +133,76 @@ fn separate_processes_cannot_overwrite_the_same_revision() {
 }
 
 #[test]
-fn desktop_migration_can_retry_source_backup_failures_without_partial_core_updates() {
-    let root = tempfile::tempdir().unwrap();
-    let core = root.path().join("spark.toml");
-    let legacy = root.path().join("spark-desktop.json");
-    let backup = root.path().join("spark-desktop.json.v0.bak");
-    let original = b"{\"remote_access_enabled\":true}\n";
-    fs::write(&legacy, original).unwrap();
-    fs::write(&backup, b"different").unwrap();
-    assert!(spark_storage::settings::migrate_desktop_settings(&core, &legacy).is_err());
-    assert!(!core.exists());
-    fs::write(&backup, original).unwrap();
-    let migrated = spark_storage::settings::migrate_desktop_settings(&core, &legacy).unwrap();
-    assert_eq!(
-        migrated.values["desktop"]["remote_access_enabled"].as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        spark_storage::settings::migrate_desktop_settings(&core, &legacy)
-            .unwrap()
-            .revision,
-        migrated.revision
-    );
-}
-
-#[test]
-fn every_legacy_conversation_migrates_with_backups_without_rewriting_history() {
-    let root = tempfile::tempdir().unwrap();
-    let registry = spark_storage::ProjectRegistry::new(root.path());
-    let project = registry
-        .ensure_project_paths("/projects/migration")
-        .unwrap();
-    let mut originals = Vec::new();
-    for (id, mode) in [("unopened", "plan"), ("active", "chat")] {
-        let dir = project.conversations_dir.join(id);
-        fs::create_dir_all(&dir).unwrap();
-        let mut meta =
-            spark_storage::conversation::ConversationMeta::new(id, "/projects/migration");
-        meta.chat_mode = mode.into();
-        meta.provider = "anthropic".into();
-        meta.model = Some("legacy-model".into());
-        let mut value = serde_json::to_value(meta).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("settings_schema_version");
-        value.as_object_mut().unwrap().remove("model_settings");
-        value["future_metadata"] = serde_json::json!({"preserve": true});
-        let bytes = serde_json::to_vec_pretty(&value).unwrap();
-        fs::write(dir.join("conversation.json"), &bytes).unwrap();
-        fs::write(
-            dir.join("transcript.jsonl"),
-            "historical model selectors stay here\n",
-        )
-        .unwrap();
-        fs::write(dir.join("events.jsonl"), "historical events stay here\n").unwrap();
-        originals.push((dir, bytes, mode));
-    }
-    spark_storage::settings::migrate_workspace_conversation_settings(root.path()).unwrap();
-    for (dir, bytes, mode) in &originals {
-        assert_eq!(
-            fs::read(dir.join("conversation.json.settings-v0.bak")).unwrap(),
-            *bytes
-        );
-        let migrated: serde_json::Value =
-            serde_json::from_slice(&fs::read(dir.join("conversation.json")).unwrap()).unwrap();
-        assert_eq!(migrated["settings_schema_version"], 1);
-        assert!(migrated["model_settings"].is_null());
-        assert_eq!(migrated["chat_mode"], *mode);
-        assert_eq!(migrated["future_metadata"]["preserve"], true);
-        assert_eq!(
-            fs::read_to_string(dir.join("transcript.jsonl")).unwrap(),
-            "historical model selectors stay here\n"
-        );
-        assert_eq!(
-            fs::read_to_string(dir.join("events.jsonl")).unwrap(),
-            "historical events stay here\n"
-        );
-    }
-    let before: Vec<_> = originals
-        .iter()
-        .map(|(dir, _, _)| fs::read(dir.join("conversation.json")).unwrap())
-        .collect();
-    spark_storage::settings::migrate_workspace_conversation_settings(root.path()).unwrap();
-    for ((dir, _, _), before) in originals.iter().zip(before) {
-        assert_eq!(fs::read(dir.join("conversation.json")).unwrap(), before);
-    }
-}
-
-#[test]
-fn newer_core_versions_cannot_be_read_or_overwritten_by_any_settings_writer() {
+fn unsupported_core_versions_are_rejected_naming_the_file_and_version() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("spark.toml");
-    let bytes = b"schema_version = 2\n[runtime]\nproject_roots = []\n";
-    fs::write(&path, bytes).unwrap();
-    assert!(read_settings_document(&path).is_err());
-    assert!(
-        update_settings_section(&path, "absent", "runtime", Some(section(2)), |_| Ok(())).is_err()
-    );
-    assert_eq!(fs::read(&path).unwrap(), bytes);
+    for found in [2, 0] {
+        let bytes = format!("schema_version = {found}\n[runtime]\nproject_roots = []\n");
+        fs::write(&path, &bytes).unwrap();
+        for error in [
+            read_settings_document(&path).unwrap_err(),
+            spark_storage::settings::load_core_settings(&path).unwrap_err(),
+            update_settings_section(&path, "absent", "runtime", Some(section(2)), |_| Ok(()))
+                .unwrap_err(),
+        ] {
+            let message = error.to_string();
+            assert!(message.contains(&path.display().to_string()), "{message}");
+            assert!(
+                message.contains(&format!("schema_version {found}; expected 1")),
+                "{message}"
+            );
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+    }
 }
 
 #[test]
-fn conversation_migration_retries_backups_and_rejects_future_versions() {
+fn fresh_core_bootstrap_creates_the_current_document() {
     let root = tempfile::tempdir().unwrap();
-    let registry = spark_storage::ProjectRegistry::new(root.path());
-    let project = registry.ensure_project_paths("/projects/retry").unwrap();
+    let path = root.path().join("config/spark.toml");
+    let created = spark_storage::settings::load_core_settings(&path).unwrap();
+    assert_eq!(created.values["schema_version"].as_integer(), Some(1));
+    assert_eq!(
+        spark_storage::settings::load_core_settings(&path)
+            .unwrap()
+            .revision,
+        created.revision
+    );
+}
+
+#[test]
+fn legacy_defaults_file_is_rejected_naming_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let core = root.path().join("spark.toml");
+    let legacy = root.path().join("ui-defaults.json");
+    fs::write(&legacy, "{\"llm_provider\":\"codex\"}").unwrap();
+    let error = spark_storage::settings::load_core_settings(&core)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&legacy.display().to_string()), "{error}");
+    assert!(!core.exists());
+}
+
+#[test]
+fn unsupported_conversation_settings_version_is_rejected_naming_the_file() {
+    let root = tempfile::tempdir().unwrap();
+    let project = spark_storage::ProjectRegistry::new(root.path())
+        .ensure_project_paths("/projects/old")
+        .unwrap();
     let dir = project.conversations_dir.join("chat");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("conversation.json");
-    let original =
-        b"{\"settings_schema_version\":0,\"chat_mode\":\"plan\",\"provider\":\"openai\"}\n";
-    fs::write(&path, original).unwrap();
-    let backup = dir.join("conversation.json.settings-v0.bak");
-    fs::write(&backup, "wrong backup").unwrap();
-    assert!(spark_storage::settings::migrate_workspace_conversation_settings(root.path()).is_err());
-    assert_eq!(fs::read(&path).unwrap(), original);
-    fs::write(&backup, original).unwrap();
-    spark_storage::settings::migrate_workspace_conversation_settings(root.path()).unwrap();
-    fs::write(&path, "{\"settings_schema_version\":2}").unwrap();
-    assert!(spark_storage::settings::migrate_workspace_conversation_settings(root.path()).is_err());
-    assert_eq!(
-        fs::read_to_string(&path).unwrap(),
-        "{\"settings_schema_version\":2}"
-    );
+    let mut meta = spark_storage::conversation::ConversationMeta::new("chat", "/projects/old");
+    meta.settings_schema_version = 0;
+    let bytes = serde_json::to_vec(&meta).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    let error = spark_storage::ConversationRepository::new(root.path())
+        .read_snapshot("chat", Some("/projects/old"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&path.display().to_string()), "{error}");
+    assert!(error.contains("settings_schema_version 0"), "{error}");
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]
@@ -328,63 +274,19 @@ fn project_operational_updates_read_under_the_settings_document_lock() {
 }
 
 #[test]
-fn core_and_desktop_bootstrap_order_preserves_authority_and_backups() {
-    use spark_storage::settings::{migrate_core_settings, migrate_desktop_settings};
-    for desktop_first in [false, true] {
-        let root = tempfile::tempdir().unwrap();
-        let core = root.path().join("spark.toml");
-        let legacy = root.path().join("spark-desktop.json");
-        let original = b"# original\n[runtime]\nflows_dir = '/chosen'\n[extension]\nkeep = true\n";
-        let source = b"{\"remote_access_enabled\":true}\n";
-        fs::write(&core, original).unwrap();
-        fs::write(&legacy, source).unwrap();
-        if !desktop_first {
-            migrate_core_settings(&core).unwrap();
-        }
-        let imported = migrate_desktop_settings(&core, &legacy).unwrap();
-        assert_eq!(
-            imported.values["desktop"]["remote_access_enabled"].as_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            imported.values["runtime"]["flows_dir"].as_str(),
-            Some("/chosen")
-        );
-        assert_eq!(imported.values["extension"]["keep"].as_bool(), Some(true));
-        assert_eq!(
-            fs::read(root.path().join("spark.toml.v0.bak")).unwrap(),
-            original
-        );
-        assert_eq!(
-            fs::read(root.path().join("spark-desktop.json.v0.bak")).unwrap(),
-            source
-        );
-        assert_eq!(
-            migrate_core_settings(&core).unwrap().revision,
-            imported.revision
-        );
-        assert_eq!(
-            migrate_desktop_settings(&core, &legacy).unwrap().revision,
-            imported.revision
-        );
-    }
-}
-
-#[test]
-fn core_bootstrap_validates_all_known_sections_before_versioning() {
-    use spark_storage::settings::migrate_core_settings;
+fn core_bootstrap_validates_all_known_sections() {
+    use spark_storage::settings::load_core_settings;
     let root = tempfile::tempdir().unwrap();
     let core = root.path().join("spark.toml");
     for invalid in [
-        "[models]\nprovider = 'codex'\nllm_profile = 'conflict'\n",
-        "[runtime]\nflows_dir = 123\n",
-        "[desktop]\nremote_access_enabled = 'SECRET_DO_NOT_EXPOSE'\n",
+        "schema_version = 1\n[models]\nprovider = 'codex'\nllm_profile = 'conflict'\n",
+        "schema_version = 1\n[runtime]\nflows_dir = 123\n",
+        "schema_version = 1\n[desktop]\nremote_access_enabled = 'SECRET_DO_NOT_EXPOSE'\n",
     ] {
         fs::write(&core, invalid).unwrap();
-        let error = migrate_core_settings(&core).unwrap_err().to_string();
+        let error = load_core_settings(&core).unwrap_err().to_string();
         assert!(!error.contains("SECRET_DO_NOT_EXPOSE"));
         assert_eq!(fs::read_to_string(&core).unwrap(), invalid);
-        assert!(!root.path().join("spark.toml.v0.bak").exists());
     }
 }
 
@@ -401,22 +303,6 @@ fn desktop_save_rejects_invalid_unrelated_core_sections_without_writing() {
         update_desktop_settings(&core, &document.revision, &DesktopSettings::default()).is_err()
     );
     assert_eq!(fs::read_to_string(&core).unwrap(), original);
-}
-
-#[test]
-fn desktop_import_marker_prevents_reimport_after_section_removal() {
-    use spark_storage::settings::{migrate_core_settings, migrate_desktop_settings};
-    let root = tempfile::tempdir().unwrap();
-    let core = root.path().join("spark.toml");
-    let legacy = root.path().join("spark-desktop.json");
-    fs::write(&legacy, "{\"remote_access_enabled\":true}").unwrap();
-    migrate_core_settings(&core).unwrap();
-    let imported = migrate_desktop_settings(&core, &legacy).unwrap();
-    let cleared =
-        update_settings_section(&core, &imported.revision, "desktop", None, |_| Ok(())).unwrap();
-    let again = migrate_desktop_settings(&core, &legacy).unwrap();
-    assert_eq!(again.revision, cleared.revision);
-    assert!(!again.values.contains_key("desktop"));
 }
 
 #[test]
@@ -440,151 +326,6 @@ fn client_identity_is_persisted_and_invalid_existing_identity_is_not_replaced() 
         fs::read_to_string(path).unwrap(),
         "../../SECRET_DO_NOT_EXPOSE"
     );
-}
-
-#[test]
-fn defaults_file_import_is_backed_up_once_and_authoritative_models_win() {
-    use spark_storage::settings::migrate_core_settings;
-    for authored in [false, true] {
-        let home = tempfile::tempdir().unwrap();
-        let core = home.path().join("spark.toml");
-        let legacy = home.path().join("ui-defaults.json");
-        let original = if authored {
-            "schema_version = 1\n[models]\nprovider = 'anthropic'\nmodel = 'authored'\n"
-        } else {
-            "schema_version = 1\n[extension]\nkeep = true\n"
-        };
-        fs::write(&core, original).unwrap();
-        let source = r#"{"llm_provider":"codex","llm_profile":"","llm_model":"old","reasoning_effort":"high"}"#;
-        fs::write(&legacy, source).unwrap();
-        let migrated = migrate_core_settings(&core).unwrap();
-        assert_eq!(
-            migrated.values["models"]["model"].as_str(),
-            Some(if authored { "authored" } else { "old" })
-        );
-        assert_eq!(
-            migrated.values["defaults_migration_version"].as_integer(),
-            Some(1)
-        );
-        assert_eq!(
-            fs::read_to_string(home.path().join("ui-defaults.json.v0.bak")).unwrap(),
-            source
-        );
-        assert_eq!(
-            fs::read_to_string(home.path().join("spark.toml.defaults-import-v1.bak")).unwrap(),
-            original
-        );
-        fs::write(&legacy, "invalid later source must never be reimported").unwrap();
-        assert_eq!(
-            migrate_core_settings(&core).unwrap().revision,
-            migrated.revision
-        );
-        assert!(!legacy.exists());
-        assert!(fs::read_dir(home.path()).unwrap().any(|entry| entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with("ui-defaults.json.cleanup-")));
-        if !authored {
-            assert_eq!(migrated.values["extension"]["keep"].as_bool(), Some(true));
-        }
-    }
-}
-
-#[test]
-fn invalid_defaults_import_retains_source_and_redacts_values() {
-    let home = tempfile::tempdir().unwrap();
-    let core = home.path().join("spark.toml");
-    let legacy = home.path().join("ui-defaults.json");
-    let source = r#"{"llm_model":{"SECRET_DO_NOT_EXPOSE":true}}"#;
-    fs::write(&legacy, source).unwrap();
-    let error = spark_storage::settings::migrate_core_settings(&core)
-        .unwrap_err()
-        .to_string();
-    assert!(!error.contains("SECRET_DO_NOT_EXPOSE"));
-    assert!(!core.exists());
-    assert_eq!(fs::read_to_string(legacy).unwrap(), source);
-}
-
-#[test]
-fn conversation_migration_includes_projects_without_readable_registration() {
-    let home = tempfile::tempdir().unwrap();
-    for (id, metadata) in [("missing", None), ("invalid", Some("invalid TOML ["))] {
-        let project = home.path().join("workspace/projects").join(id);
-        let chat = project.join("conversations/old");
-        fs::create_dir_all(&chat).unwrap();
-        if let Some(metadata) = metadata {
-            fs::write(project.join("project.toml"), metadata).unwrap();
-        }
-        let source = br#"{"id":"old","provider":"codex","model":"old-model","chat_mode":"plan","historical":{"model":"historical-model"}}"#;
-        fs::write(chat.join("conversation.json"), source).unwrap();
-        fs::write(chat.join("turns.jsonl"), "historical turn\n").unwrap();
-        spark_storage::settings::migrate_workspace_conversation_settings(home.path()).unwrap();
-        let migrated: serde_json::Value =
-            serde_json::from_slice(&fs::read(chat.join("conversation.json")).unwrap()).unwrap();
-        assert_eq!(migrated["settings_schema_version"], 1);
-        assert!(migrated["model_settings"].is_null());
-        assert_eq!(migrated["historical"]["model"], "historical-model");
-        assert_eq!(migrated["chat_mode"], "plan");
-        assert_eq!(
-            fs::read(chat.join("conversation.json.settings-v0.bak")).unwrap(),
-            source
-        );
-        assert_eq!(
-            fs::read_to_string(chat.join("turns.jsonl")).unwrap(),
-            "historical turn\n"
-        );
-        let before = fs::read(chat.join("conversation.json")).unwrap();
-        spark_storage::settings::migrate_workspace_conversation_settings(home.path()).unwrap();
-        assert_eq!(fs::read(chat.join("conversation.json")).unwrap(), before);
-    }
-}
-
-#[test]
-fn legacy_profile_defaults_cannot_import_a_deleted_reference() {
-    let home = tempfile::tempdir().unwrap();
-    let core = home.path().join("spark.toml");
-    let source = r#"{"llm_profile":"team"}"#;
-    fs::write(home.path().join("ui-defaults.json"), source).unwrap();
-    let error = spark_storage::settings::migrate_core_settings(&core).unwrap_err();
-    assert!(error.to_string().contains("Unknown profile reference"));
-    assert!(!core.exists());
-    assert_eq!(
-        fs::read_to_string(home.path().join("ui-defaults.json")).unwrap(),
-        source
-    );
-    fs::write(home.path().join("llm-profiles.toml"), "[profiles.' team ']\nprovider = 'openai_compatible'\nbase_url = 'http://localhost:9999/v1'\nmodels = ['model']\ndefault_model = 'model'\n").unwrap();
-    let document = spark_storage::settings::migrate_core_settings(&core).unwrap();
-    assert_eq!(
-        document.values["models"]["llm_profile"].as_str(),
-        Some("team")
-    );
-    assert_eq!(
-        fs::read_to_string(home.path().join("ui-defaults.json.v0.bak")).unwrap(),
-        source
-    );
-}
-
-#[test]
-fn completed_defaults_migration_retries_cleanup_without_reimporting() {
-    let home = tempfile::tempdir().unwrap();
-    let core = home.path().join("spark.toml");
-    let source = home.path().join("ui-defaults.json");
-    let bytes = r#"{"llm_provider":"codex","llm_model":"old"}"#;
-    fs::write(&source, bytes).unwrap();
-    spark_storage::settings::migrate_core_settings(&core).unwrap();
-    assert!(!source.exists());
-    assert_eq!(
-        fs::read_to_string(home.path().join("ui-defaults.json.v0.bak")).unwrap(),
-        bytes
-    );
-    let authored =
-        "schema_version=1\ndefaults_migration_version=1\n[models]\nprovider='codex'\nmodel='new'\n";
-    fs::write(&core, authored).unwrap();
-    fs::write(&source, bytes).unwrap();
-    spark_storage::settings::migrate_core_settings(&core).unwrap();
-    assert!(!source.exists());
-    assert_eq!(fs::read_to_string(&core).unwrap(), authored);
 }
 
 #[test]

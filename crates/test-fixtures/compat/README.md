@@ -29,7 +29,7 @@ not depend on ignored workflow state or one developer machine.
 
 ## M0-I03 HTTP And SSE Fixtures
 
-- `http/*.json` records Python product, Workspace, Attractor, deprecated,
+- `http/*.json` records Python product, Workspace, Attractor,
   trigger, webhook, static asset, guard, validation, and not-found route
   observations through real HTTP requests against `spark-server serve`.
 - `sse/*.json` records app-shell `/workspace/api/live/events` observations for

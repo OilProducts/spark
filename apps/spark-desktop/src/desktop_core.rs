@@ -100,17 +100,13 @@ pub fn default_spark_data_dir(paths: &DesktopPaths) -> PathBuf {
     paths.app_data_dir.join("spark")
 }
 
-pub fn desktop_config_file(paths: &DesktopPaths) -> PathBuf {
-    paths.app_config_dir.join("spark-desktop.json")
-}
-
 pub fn core_config_file(paths: &DesktopPaths) -> PathBuf {
     default_spark_data_dir(paths).join("config/spark.toml")
 }
 
 pub fn load_desktop_settings(paths: &DesktopPaths) -> Result<DesktopServerSettings, String> {
     let path = core_config_file(paths);
-    spark_storage::settings::migrate_desktop_settings(&path, &desktop_config_file(paths))
+    spark_storage::settings::load_core_settings(&path)
         .and_then(|document| document.section(&path, "desktop"))
         .map(|settings| settings.unwrap_or_default())
         .map_err(|error| error.to_string())
@@ -129,8 +125,7 @@ pub fn read_desktop_settings_view(
 ) -> Result<DesktopServerSettingsView, String> {
     let path = core_config_file(paths);
     let document =
-        spark_storage::settings::migrate_desktop_settings(&path, &desktop_config_file(paths))
-            .map_err(|error| error.to_string())?;
+        spark_storage::settings::load_core_settings(&path).map_err(|error| error.to_string())?;
     let settings = document
         .section(&path, "desktop")
         .map_err(|error| error.to_string())?

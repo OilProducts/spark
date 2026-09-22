@@ -163,35 +163,36 @@ fn error_reason(error: StorageError) -> String {
 }
 
 #[test]
-fn legacy_dot_catalog_entries_are_skipped_instead_of_failing_load() {
+fn legacy_dot_catalog_entries_fail_validation() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config_dir = temp.path().join("config");
     fs::create_dir_all(&config_dir).expect("config dir");
-    // A catalog written before the YAML cutover: startup must not abort on it.
     fs::write(
         config_dir.join("flow-catalog.toml"),
-        concat!(
-            "[flows.\"software-development/implement-change-request.dot\"]\n",
-            "launch_policy = \"agent_requestable\"\n",
-            "[flows.\"software-development/spec-implementation/implement-spec.yaml\"]\n",
-            "launch_policy = \"disabled\"\n",
-        ),
+        "[flows.\"software-development/implement-change-request.dot\"]\nlaunch_policy = \"agent_requestable\"\n",
     )
     .expect("write legacy catalog");
 
-    let catalog = load_flow_catalog(&config_dir).expect("legacy catalog loads");
-    assert_eq!(catalog.len(), 1, "legacy .dot entry is skipped");
-    assert_eq!(
-        catalog
-            .get("software-development/spec-implementation/implement-spec.yaml")
-            .expect("yaml entry survives")
-            .launch_policy
-            .as_deref(),
-        Some(LAUNCH_POLICY_DISABLED)
-    );
+    let error = load_flow_catalog(&config_dir).expect_err("legacy .dot entry is rejected");
+    assert!(matches!(
+        &error,
+        StorageError::InvalidRepositoryPath { path, reason }
+            if path.ends_with("implement-change-request.dot")
+                && reason == "Flow name must end with .yaml or .yml."
+    ));
+}
 
-    // Seeding after the skip re-registers the default flows under their
-    // .yaml names and the rewritten catalog drops the legacy keys.
+#[test]
+fn default_catalog_seed_registers_default_flows_and_locks() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join("config");
+    fs::create_dir_all(&config_dir).expect("config dir");
+    fs::write(
+        config_dir.join("flow-catalog.toml"),
+        "[flows.\"software-development/spec-implementation/implement-spec.yaml\"]\nlaunch_policy = \"disabled\"\n",
+    )
+    .expect("write catalog");
+
     let missing = spark_storage::seed_default_flow_catalog(&config_dir).expect("seed");
     assert_eq!(
         missing,
@@ -209,8 +210,6 @@ fn legacy_dot_catalog_entries_are_skipped_instead_of_failing_load() {
             "software-development/run-retrospective.yaml".to_string(),
         ]
     );
-    let rewritten = fs::read_to_string(config_dir.join("flow-catalog.toml")).expect("catalog");
-    assert!(!rewritten.contains(".dot"));
     let merge = read_flow_launch_policy(&config_dir, "software-development/merge-change.yaml")
         .expect("merge policy");
     assert_eq!(

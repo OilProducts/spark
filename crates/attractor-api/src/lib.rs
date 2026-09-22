@@ -273,14 +273,6 @@ impl RuntimeRouteResponse {
         }
     }
 
-    pub fn text(status_code: u16, body: impl Into<String>) -> Self {
-        Self {
-            status_code,
-            content_type: "text/plain; charset=utf-8".to_string(),
-            body: Value::String(body.into()),
-        }
-    }
-
     pub fn event_stream(status_code: u16, body: impl Into<String>) -> Self {
         Self {
             status_code,
@@ -863,57 +855,6 @@ impl AttractorApiService {
                     &right.run_id,
                 ))
         });
-        let mut next_legacy_index = std::collections::HashMap::new();
-        for record in &records {
-            if let (Some(parent), Some(node), Some(index)) = (
-                record.parent_run_id.as_ref(),
-                record.parent_node_id.as_ref(),
-                record.child_invocation_index,
-            ) {
-                next_legacy_index
-                    .entry((parent.clone(), node.clone()))
-                    .and_modify(|next: &mut u64| *next = (*next).max(index + 1))
-                    .or_insert(index + 1);
-            }
-        }
-        let mut missing_legacy_indices = std::collections::HashMap::new();
-        for record in &records {
-            if let (Some(parent), Some(node), None) = (
-                record.parent_run_id.as_ref(),
-                record.parent_node_id.as_ref(),
-                record.child_invocation_index,
-            ) {
-                *missing_legacy_indices
-                    .entry((parent.clone(), node.clone()))
-                    .or_insert(0usize) += 1;
-            }
-        }
-        for record in &mut records {
-            if record.parent_run_id.is_some()
-                && record.parent_node_id.is_some()
-                && record.child_invocation_index.is_none()
-            {
-                let key = (
-                    record.parent_run_id.clone().unwrap_or_default(),
-                    record.parent_node_id.clone().unwrap_or_default(),
-                );
-                if missing_legacy_indices
-                    .get(&key)
-                    .copied()
-                    .unwrap_or_default()
-                    != 1
-                {
-                    continue;
-                }
-                let index = next_legacy_index.entry(key).or_insert(1);
-                record.child_invocation_index = Some(*index);
-                *index += 1;
-                let assigned = record.child_invocation_index;
-                let _ = store.update_run_record(&record.run_id, |durable| {
-                    durable.child_invocation_index = assigned;
-                });
-            }
-        }
         let by_id = records
             .iter()
             .map(|r| (r.run_id.clone(), r))
@@ -921,35 +862,7 @@ impl AttractorApiService {
         let mut invocations = std::collections::HashSet::new();
         let mut lineage_failures = std::collections::HashSet::new();
 
-        for ((parent_id, node_id), count) in &missing_legacy_indices {
-            if *count > 1 && lineage_failures.insert(parent_id.clone()) {
-                self.fail_recovery(
-                    &store,
-                    parent_id,
-                    "recovery_ambiguous_child_invocation",
-                    "multiple legacy children have no invocation index",
-                );
-                failed.push(json!({
-                    "run_id": parent_id,
-                    "code": "recovery_ambiguous_child_invocation"
-                }));
-                for child in records.iter().filter(|record| {
-                    record.parent_run_id.as_deref() == Some(parent_id)
-                        && record.parent_node_id.as_deref() == Some(node_id)
-                        && record.child_invocation_index.is_none()
-                }) {
-                    self.fail_recovery(
-                        &store,
-                        &child.run_id,
-                        "recovery_ambiguous_child_invocation",
-                        "multiple legacy children have no invocation index",
-                    );
-                    lineage_failures.insert(child.run_id.clone());
-                }
-            }
-        }
-
-        // Check and repair the durable generic lineage before any executor
+        // Check the durable generic lineage before any executor
         // is attached. This prevents recovery from guessing at ownership.
         for record in &records {
             if record.parent_run_id.as_deref().is_none_or(str::is_empty)
@@ -1006,7 +919,17 @@ impl AttractorApiService {
                 interrupted.push(record.run_id.clone());
                 continue;
             };
-            let index = record.child_invocation_index.unwrap_or(0);
+            let Some(index) = record.child_invocation_index else {
+                self.fail_recovery(
+                    &store,
+                    &record.run_id,
+                    "recovery_missing_lineage",
+                    "child invocation index is missing",
+                );
+                lineage_failures.insert(record.run_id.clone());
+                failed.push(json!({"run_id": record.run_id, "code": "recovery_missing_lineage"}));
+                continue;
+            };
             if index == 0
                 || !invocations.insert((parent_id.to_string(), node_id.to_string(), index))
             {
@@ -1052,18 +975,16 @@ impl AttractorApiService {
                 .as_deref()
                 .is_none_or(str::is_empty)
             {
-                let _ = store.update_run_record(&record.run_id, |child| {
-                    child.execution_mode = parent.execution_mode.clone();
-                    child.execution_profile_id = parent.execution_profile_id.clone();
-                    child.execution_container_image = parent.execution_container_image.clone();
-                    child.execution_profile_capabilities =
-                        parent.execution_profile_capabilities.clone();
-                    child.execution_lock = parent.execution_lock.clone().map(|mut lock| {
-                        lock.state = "inherited".to_string();
-                        lock.queue_position = None;
-                        lock
-                    });
-                });
+                self.fail_recovery(
+                    &store,
+                    &record.run_id,
+                    "recovery_unrecoverable_placement",
+                    "child run record has no execution profile id",
+                );
+                lineage_failures.insert(record.run_id.clone());
+                failed.push(
+                    json!({"run_id": record.run_id, "code": "recovery_unrecoverable_placement"}),
+                );
             }
         }
 
@@ -1529,13 +1450,6 @@ impl AttractorApiService {
             Ok(runs) => RuntimeRouteResponse::json(200, json!({"runs": runs})),
             Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error})),
         }
-    }
-
-    pub fn deprecated_runs_events(&self) -> RuntimeRouteResponse {
-        RuntimeRouteResponse::text(
-            410,
-            "Deprecated. Use /workspace/api/live/events with include_runs_overview=true.",
-        )
     }
 
     pub fn preview(&self, req: PreviewRequest) -> RuntimeRouteResponse {
@@ -2921,7 +2835,6 @@ fn dispatch_attractor_route(
         ("GET", "/runs") => {
             service.list_runs_for_project(query_string(&query, "project_path").as_deref())
         }
-        ("GET", "/runs/events") => service.deprecated_runs_events(),
         ("POST", "/pipelines") => match serde_json::from_str::<PipelineStartRequest>(body) {
             Ok(req) => service.start_pipeline(req),
             Err(error) => RuntimeRouteResponse::json(

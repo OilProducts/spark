@@ -238,8 +238,12 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
     child.parent_node_id = Some("branch".to_string());
     child.root_run_id = Some("tree-root".to_string());
     child.child_invocation_index = Some(1);
-    // Legacy children did not persist inherited placement metadata.
-    child.execution_profile_id = None;
+    child.execution_profile_id = root.execution_profile_id.clone();
+    child.execution_profile_capabilities = root.execution_profile_capabilities.clone();
+    child.execution_lock = root.execution_lock.clone().map(|mut lock| {
+        lock.state = "inherited".to_string();
+        lock
+    });
     let child_context = attractor_core::ContextMap::from([
         ("internal.run_id".to_string(), json!("tree-child")),
         ("internal.parent_run_id".to_string(), json!("tree-root")),
@@ -611,6 +615,51 @@ fn parent_node_without_parent_run_is_stably_rejected() {
             Some("recovery_missing_lineage")
         );
     }
+}
+
+#[test]
+fn child_without_invocation_index_is_reported_by_run_id() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    std::fs::create_dir_all(&settings.config_dir).expect("config dir");
+    let workdir = temp.path().join("project");
+    std::fs::create_dir_all(&workdir).expect("workdir");
+    manufacture_orphaned_waiting_run(&settings, &workdir, "indexed-parent");
+    let store = manufacture_orphaned_waiting_run(&settings, &workdir, "unindexed-child");
+    store
+        .update_run_record("unindexed-child", |record| {
+            record.parent_run_id = Some("indexed-parent".to_string());
+            record.parent_node_id = Some("review".to_string());
+            record.root_run_id = Some("indexed-parent".to_string());
+            record.child_invocation_index = None;
+        })
+        .expect("drop invocation index");
+
+    let result = blocking_gate_service(&settings).recover_interrupted_runs();
+    assert!(
+        result["failed"]
+            .as_array()
+            .expect("failed list")
+            .contains(&json!({"run_id": "unindexed-child", "code": "recovery_missing_lineage"})),
+        "{result:?}"
+    );
+    let record = store
+        .read_run_bundle("unindexed-child")
+        .expect("bundle")
+        .and_then(|bundle| bundle.record)
+        .expect("record");
+    assert_eq!(record.status, "failed");
+    assert_eq!(
+        record.child_invocation_index, None,
+        "index is never invented"
+    );
+    assert!(
+        record
+            .last_error
+            .contains("child invocation index is missing"),
+        "{}",
+        record.last_error
+    );
 }
 
 #[test]

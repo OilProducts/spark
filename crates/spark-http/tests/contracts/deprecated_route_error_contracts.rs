@@ -9,30 +9,22 @@ use spark_http::build_app;
 use tower::ServiceExt;
 
 #[tokio::test]
-async fn deprecated_workspace_and_attractor_event_routes_keep_text_410_contracts() {
+async fn removed_workspace_and_attractor_event_routes_are_not_found() {
     let temp = tempfile::tempdir().expect("tempdir");
     let app = build_app(settings(temp.path()));
 
-    let conversation = request(
-        app.clone(),
-        "GET",
+    for path in [
         "/workspace/api/conversations/missing/events",
-    )
-    .await;
-    assert_eq!(conversation.status, StatusCode::GONE);
-    assert_eq!(conversation.content_type, "text/plain; charset=utf-8");
-    assert_eq!(
-        conversation.body_text(),
-        "Deprecated. Use /workspace/api/live/events with conversation_id and conversation_revision."
-    );
-
-    let runs = request(app, "GET", "/attractor/runs/events").await;
-    assert_eq!(runs.status, StatusCode::GONE);
-    assert_eq!(runs.content_type, "text/plain; charset=utf-8");
-    assert_eq!(
-        runs.body_text(),
-        "Deprecated. Use /workspace/api/live/events with include_runs_overview=true."
-    );
+        "/attractor/runs/events",
+    ] {
+        let response = request(app.clone(), "GET", path).await;
+        assert_eq!(response.status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(
+            response.body_json(),
+            json!({"detail": "Not Found"}),
+            "{path}"
+        );
+    }
 }
 
 #[tokio::test]

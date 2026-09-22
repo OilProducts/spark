@@ -66,7 +66,6 @@ impl ConversationRepository {
         // the lock through revision allocation and publication, across instances/processes.
         lock.lock_exclusive()
             .map_err(|e| StorageError::io("lock conversation", &lock_path, e))?;
-        crate::settings::migrate_conversation_model_settings(&root.join("conversation.json"))?;
         let latest_snapshot =
             self.read_snapshot_without_recovery(conversation_id, Some(project_path))?;
         if latest_snapshot.is_none() && base_revision != 0 {

@@ -401,6 +401,7 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
         &settings.data_dir,
         &json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 0,
             "conversation_id": conversation_id,
             "conversation_handle": "amber-anchor",

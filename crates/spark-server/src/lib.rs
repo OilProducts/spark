@@ -768,7 +768,7 @@ pub fn resolve_server_settings_with_executable_path(
 ) -> std::result::Result<SparkSettings, SparkCommonError> {
     let bootstrap = resolve_settings_with_env(overrides, env)?;
     let path = bootstrap.config_dir.join("spark.toml");
-    let document = spark_storage::settings::migrate_core_settings(&path)
+    let document = spark_storage::settings::load_core_settings(&path)
         .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
     let runtime = document
         .section::<RuntimeSettings>(&path, "runtime")
@@ -810,8 +810,6 @@ pub fn resolve_server_settings_with_executable_path(
         );
     }
     settings.agents = execution.agents;
-    spark_storage::settings::migrate_workspace_conversation_settings(&settings.data_dir)
-        .map_err(|error| SparkCommonError::SettingsValidation(error.to_string()))?;
     if let Some(package_root) = executable_path
         .and_then(|path| installed_package_root_from_executable(path, "spark-server"))
     {

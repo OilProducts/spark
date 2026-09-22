@@ -117,12 +117,20 @@ pub(crate) fn read_record(paths: &ConversationRecordPaths) -> Result<Option<Conv
     else {
         return Ok(None);
     };
-    if meta.schema_version != CONVERSATION_STATE_SCHEMA_VERSION
-        || !(0..=1).contains(&meta.settings_schema_version)
-    {
+    if meta.schema_version != CONVERSATION_STATE_SCHEMA_VERSION {
         return Err(StorageError::InvalidConversationState {
             path: paths.conversation_json(),
             reason: UNSUPPORTED_CONVERSATION_STATE_SCHEMA.to_string(),
+        });
+    }
+    if meta.settings_schema_version != 1 {
+        return Err(StorageError::InvalidConversationState {
+            reason: format!(
+                "Unsupported conversation settings_schema_version {} in {}; expected 1. Use a compatible Spark binary.",
+                meta.settings_schema_version,
+                paths.conversation_json().display()
+            ),
+            path: paths.conversation_json(),
         });
     }
     let activity = crate::ActivityRepository::new(paths.root());

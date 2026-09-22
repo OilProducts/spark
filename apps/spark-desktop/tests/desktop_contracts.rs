@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use spark_desktop::desktop_core::{
-    bootstrap_desktop_runtime, core_config_file, default_spark_data_dir, desktop_config_file,
-    desktop_settings_revision, frontend_url_for_addr, is_app_owned_data_dir, load_desktop_settings,
-    server_host_for_settings, set_remote_access_enabled, settings_view, start_desktop_server,
-    DesktopPaths, DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
+    bootstrap_desktop_runtime, core_config_file, default_spark_data_dir, desktop_settings_revision,
+    frontend_url_for_addr, is_app_owned_data_dir, load_desktop_settings, server_host_for_settings,
+    set_remote_access_enabled, settings_view, start_desktop_server, DesktopPaths,
+    DesktopServerSettings, LOCAL_BIND_HOST, REMOTE_BIND_HOST,
 };
 use spark_storage::ConversationRepository;
 
@@ -80,7 +80,6 @@ fn remote_toggle_maps_to_local_or_remote_bind_host_and_requires_confirmation() {
     assert!(fs::read_to_string(core_config_file(&paths))
         .unwrap()
         .contains("remote_access_enabled = true"));
-    assert!(!desktop_config_file(&paths).exists());
 
     let disabled = set_remote_access_enabled(
         &paths,
@@ -301,47 +300,6 @@ fn desktop_permissions_are_restricted_to_expected_commands_and_origins() {
             })
         ]
     );
-}
-
-#[test]
-fn desktop_settings_migrate_once_with_backups_and_core_authority() {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = DesktopPaths::new(temp.path().join("data"), temp.path().join("config"));
-    fs::create_dir_all(&paths.app_config_dir).unwrap();
-    let legacy = desktop_config_file(&paths);
-    let original = b"{\"remote_access_enabled\":true}\n";
-    fs::write(&legacy, original).unwrap();
-    let loaded = load_desktop_settings(&paths).unwrap();
-    assert!(loaded.remote_access_enabled);
-    let backup = legacy.with_file_name("spark-desktop.json.v0.bak");
-    assert_eq!(fs::read(backup).unwrap(), original);
-    let core = core_config_file(&paths);
-    let migrated = fs::read(&core).unwrap();
-    // A later old source must not overwrite the migrated workspace.
-    fs::write(&legacy, b"{\"remote_access_enabled\":false}").unwrap();
-    assert!(load_desktop_settings(&paths).unwrap().remote_access_enabled);
-    assert_eq!(fs::read(&core).unwrap(), migrated);
-    let revision = desktop_settings_revision(&paths).unwrap();
-    set_remote_access_enabled(&paths, false, false, &revision).unwrap();
-    assert!(set_remote_access_enabled(&paths, true, true, &revision).is_err());
-    assert!(!load_desktop_settings(&paths).unwrap().remote_access_enabled);
-
-    let other = DesktopPaths::new(
-        temp.path().join("other-data"),
-        temp.path().join("other-config"),
-    );
-    fs::create_dir_all(&other.app_config_dir).unwrap();
-    fs::write(desktop_config_file(&other), original).unwrap();
-    let other_core = core_config_file(&other);
-    fs::create_dir_all(other_core.parent().unwrap()).unwrap();
-    let authored = b"[desktop]\nremote_access_enabled = false\n[runtime]\nflows_dir = '/chosen'\n";
-    fs::write(&other_core, authored).unwrap();
-    assert!(!load_desktop_settings(&other).unwrap().remote_access_enabled);
-    assert_eq!(
-        fs::read(other_core.with_file_name("spark.toml.v0.bak")).unwrap(),
-        authored
-    );
-    assert!(fs::read_to_string(other_core).unwrap().contains("/chosen"));
 }
 
 #[test]

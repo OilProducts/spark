@@ -37,8 +37,6 @@ use time::OffsetDateTime;
 use crate::errors::{WorkspaceError, WorkspaceResult};
 
 const UI_TOOL_OUTPUT_PREVIEW_BYTES: usize = 8 * 1024;
-const DEPRECATED_EVENTS_MESSAGE: &str =
-    "Deprecated. Use /workspace/api/live/events with conversation_id and conversation_revision.";
 const ACTIVE_ASSISTANT_TURN_MESSAGE: &str = "An assistant turn is still in progress for this conversation. Wait for it to finish before sending another message.";
 const REQUEST_USER_INPUT_EXPIRED_ERROR: &str =
     "The requested input expired before the answer could be used.";
@@ -2743,10 +2741,6 @@ impl WorkspaceConversationService {
         Err(WorkspaceError::NotFound(
             "Unknown conversation segment tool output.".to_string(),
         ))
-    }
-
-    pub fn deprecated_events_response(&self) -> &'static str {
-        DEPRECATED_EVENTS_MESSAGE
     }
 
     fn get_snapshot_without_ui_truncation(

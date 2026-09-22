@@ -30,22 +30,6 @@ fn fresh_run_store_returns_empty_runs_payload() {
 }
 
 #[test]
-fn deprecated_runs_events_route_returns_plain_text_410() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let service = AttractorApiService::new(settings(temp.path()));
-    let fixture = fixture_json("http/deprecated-attractor-runs-events.json");
-
-    let response = service.deprecated_runs_events();
-
-    assert_eq!(response.status_code, 410);
-    assert_eq!(response.content_type, "text/plain; charset=utf-8");
-    assert_eq!(
-        response.body.as_str().unwrap(),
-        fixture["response"]["body"]["text"].as_str().unwrap()
-    );
-}
-
-#[test]
 fn route_dispatch_keeps_root_and_api_subroutes_distinct() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

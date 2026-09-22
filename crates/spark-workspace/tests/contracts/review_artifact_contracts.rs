@@ -395,6 +395,7 @@ fn seed_conversation_with_assistant_status(
         &settings.data_dir,
         &json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 0,
             "conversation_id": conversation_id,
             "conversation_handle": "amber-anchor",
@@ -449,6 +450,7 @@ fn seed_proposed_plan(settings: &SparkSettings, project_path: &str, conversation
         &settings.data_dir,
         &json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 0,
             "conversation_id": conversation_id,
             "conversation_handle": "",

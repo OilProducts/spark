@@ -683,17 +683,6 @@ fn core_runtime_paths_are_loaded_again_on_restart_and_keep_override_precedence()
     .unwrap();
     let captured = resolve_server_settings_with_executable_path(&overrides, &env, None).unwrap();
     assert_eq!(captured.flows_dir, first);
-    let original_backup = fs::read(path.with_file_name("spark.toml.v0.bak")).unwrap();
-    assert!(String::from_utf8(original_backup)
-        .unwrap()
-        .contains(first.to_str().unwrap()));
-    assert_eq!(
-        spark_storage::settings::read_settings_document(&path)
-            .unwrap()
-            .values["schema_version"]
-            .as_integer(),
-        Some(1)
-    );
     fs::write(
         &path,
         format!(

@@ -20,6 +20,7 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
         "conversation-a",
         json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 7,
             "conversation_id": "conversation-a",
             "conversation_handle": "amber-anchor",
@@ -245,6 +246,7 @@ fn conversation_service_defaults_llm_profile_and_allocates_summary_handles() {
         "conversation-legacy-defaults",
         json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 3,
             "conversation_id": "conversation-legacy-defaults",
             "project_path": project_path,
@@ -297,6 +299,7 @@ fn conversation_service_rejects_project_mismatch_and_deletes_conversation_state(
         "conversation-a",
         json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 1,
             "conversation_id": "conversation-a",
             "conversation_handle": "calm-river",

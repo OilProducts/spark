@@ -111,16 +111,6 @@ fn decode_flow_catalog(
 
     let mut catalog = BTreeMap::new();
     for (raw_flow_name, raw_entry) in flows {
-        // Catalogs written before the YAML cutover may persist entries for
-        // ".dot" flows; those names no longer resolve. Skip them rather than
-        // failing startup on old state — the next catalog write drops them.
-        if raw_flow_name.ends_with(".dot") {
-            eprintln!(
-                "warning: ignoring legacy flow catalog entry {raw_flow_name:?} in {}",
-                path.display()
-            );
-            continue;
-        }
         let entry = raw_entry.as_table().ok_or_else(|| {
             invalid_catalog(
                 &path,

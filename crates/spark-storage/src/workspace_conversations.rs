@@ -537,34 +537,6 @@ impl ConversationRepository {
             .map(|root| root.join(crate::conversation::RUNTIME_SESSION_FILE_NAME)))
     }
 
-    pub fn migrate_model_settings(&self, conversation_id: &str, project_path: &str) -> Result<()> {
-        let root = self
-            .registry
-            .project_paths(project_path)?
-            .conversations_dir
-            .join(conversation_id);
-        Self::migrate_model_settings_at_root(&root)
-    }
-
-    pub(crate) fn migrate_model_settings_at_root(root: &std::path::Path) -> Result<()> {
-        use fs2::FileExt;
-        let path = root.join("conversation.json");
-        if !path.exists() {
-            return Ok(());
-        }
-        let lock_path = root.join(".commit.lock");
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|error| StorageError::io("open conversation lock", &lock_path, error))?;
-        lock.lock_exclusive()
-            .map_err(|error| StorageError::io("lock conversation", &lock_path, error))?;
-        crate::settings::migrate_conversation_model_settings(&path)
-    }
-
     pub fn read_snapshot(
         &self,
         conversation_id: &str,
@@ -581,7 +553,6 @@ impl ConversationRepository {
         if !record_paths.conversation_json().exists() {
             return Ok(None);
         }
-        self.migrate_model_settings(conversation_id, &project_paths.project_path)?;
         let Some(mut record) = crate::conversation::read_record(&record_paths)? else {
             return Ok(None);
         };

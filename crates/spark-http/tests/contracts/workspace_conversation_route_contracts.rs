@@ -22,6 +22,7 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
         "conversation-http",
         json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 1,
             "conversation_id": "conversation-http",
             "conversation_handle": "amber-anchor",
@@ -160,21 +161,6 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
     .await;
     assert_eq!(unchanged.1, settings_response.1);
 
-    let deprecated = request_text(
-        app.clone(),
-        "GET",
-        "/workspace/api/conversations/conversation-http/events?project_path=/projects/http-app",
-        "",
-        None,
-    )
-    .await;
-    assert_eq!(deprecated.0, StatusCode::GONE);
-    assert_eq!(deprecated.2, "text/plain; charset=utf-8");
-    assert_eq!(
-        deprecated.1,
-        "Deprecated. Use /workspace/api/live/events with conversation_id and conversation_revision."
-    );
-
     let deleted = request_json(
         app,
         "DELETE",
@@ -207,6 +193,7 @@ async fn project_conversation_list_allocates_missing_summary_handles() {
         "conversation-no-handle",
         json!({
             "schema_version": 5,
+            "settings_schema_version": 1,
             "revision": 1,
             "conversation_id": "conversation-no-handle",
             "project_path": project_path,

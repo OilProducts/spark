@@ -56,9 +56,9 @@ The settings sections and dedicated profile/flow-policy editors provide explicit
 
 ## Migration boundaries
 
-Server and Desktop bootstrap run the same locked core version transition before loading persisted runtime choices. Desktop can import its platform-owned remote-access source after server bootstrap; an existing core Desktop section wins. Original core and imported source bytes are backed up before replacement. The implemented transition also backs up conversation metadata before replacement. Migrated conversations inherit model settings while preserving mode and historical activity. Accessible browser model defaults import only when the workspace has no authoritative model group. Historical run snapshots, transcripts, tasks, caches and session state remain outside settings documents.
+Server and Desktop bootstrap read `config/spark.toml` under its document lock before loading persisted runtime choices; a missing document is created with `schema_version = 1`. A core document declaring any other `schema_version`, and a `conversation.json` whose `settings_schema_version` is not 1, is rejected with an error naming the file and the version found. The earlier `ui-defaults.json` and Desktop `spark-desktop.json` sources are no longer imported; bootstrap fails with an error naming `config/ui-defaults.json` while that file exists, so delete it or move its values into `spark.toml`. Accessible browser model defaults import only when the workspace has no authoritative model group. Historical run snapshots, transcripts, tasks, caches and session state remain outside settings documents.
 
-The earlier defaults file and accessible browser defaults/layouts are imported through versioned, backed-up migrations. Do not run old and new binaries concurrently against migrated workspace metadata.
+Accessible browser defaults/layouts are imported through versioned, backed-up migrations. Do not run old and new binaries concurrently against migrated workspace metadata.
 
 Trigger definitions remain in their existing TOML files. Trigger reads include `revision`; PATCH bodies require `expected_revision`, and DELETE requires the `expected_revision` query parameter. Both use the shared per-document lock, reject stale writes with HTTP 409, and validate definition writes before atomic replacement. New definitions can only create an absent document. Runtime trigger state remains separate. CLI updates carry the revision in `--json`; deletion uses `spark trigger delete --id <id> --expected-revision <revision> --base-url <url>`. Trigger drafts retain their original revision across live changes and failed saves; Discard reloads current values.
 
@@ -93,13 +93,9 @@ per-node view state remains session state.
 
 Split/sort choices, graph layouts and browser preference migration are described below.
 
-### Home sidebar split and legacy imports
+### Home sidebar split
 
 Client preferences also store `home_sidebar_primary_split_ratio` (a finite number from 0 to 1, or omitted for automatic sizing). The home sidebar saves a drag on pointer release and keyboard adjustments on completion. The Preferences editor supports explicit Save/Discard and validates the ratio. Minimum pane heights still apply. Conversation scrolling, selected records and drafts remain session state.
-
-Bootstrap imports the flat legacy `config/ui-defaults.json` fields `llm_provider`, `llm_profile`, `llm_model`, and `reasoning_effort` into the core model group only when no authored core model group exists. Empty strings become omitted selections; a profile takes precedence over the legacy provider field. `defaults_migration_version = 1` prevents reimport. The source is removed after successful import and backup; cleanup retries on later bootstrap without reimporting authoritative settings. The backup remains at `ui-defaults.json.v0.bak`, and an existing core document is backed up before replacement. Invalid source field types fail without replacing the core or echoing source values.
-
-Conversation settings migration enumerates `workspace/projects/*/conversations/*` directly, including projects with missing or malformed registration metadata. It uses the existing conversation commit lock and changes only conversation settings metadata. It does not traverse symlinked directories. Historical turn files and nested historical metadata are preserved.
 
 ## Profile documents
 
@@ -306,8 +302,3 @@ XDG paths and Spark runtime-home defaults are not automatically forwarded. Only
 custom credential references selected by launch/flow configuration are added to
 the conventional provider allowlist. Credential values travel in the transient
 Docker process environment, not command arguments, snapshots or diagnostics.
-
-After successful defaults migration, bootstrap removes `ui-defaults.json` only
-after backup. Completed migrations retry cleanup without reimporting. A source
-recreated with different bytes gets a separate content-addressed cleanup backup;
-the original migration backup and authoritative core settings remain intact.
