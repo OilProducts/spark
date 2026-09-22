@@ -15,7 +15,7 @@ run-app: build-app
 
 [private]
 frontend-deps:
-  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest ]]; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
+  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite || ! -x frontend/node_modules/.bin/vitest ]] || ! npm --prefix frontend ls --depth=0 >/dev/null 2>&1; then echo "Installing frontend dependencies with npm ci..." >&2; npm --prefix frontend ci; fi
 
 # Developer setup for the Cargo-backed source checkout and frontend.
 setup:
