@@ -100,8 +100,8 @@ function GraphSettingsField({
         <Field className={className}>
             <FieldLabel htmlFor={htmlFor}>{label}</FieldLabel>
             {children}
-            {helper ? <FieldDescription className="text-[11px]">{helper}</FieldDescription> : null}
-            {error ? <FieldError className="text-[11px]">{error}</FieldError> : null}
+            {helper ? <FieldDescription className="text-xs">{helper}</FieldDescription> : null}
+            {error ? <FieldError className="text-xs">{error}</FieldError> : null}
         </Field>
     )
 }
@@ -159,7 +159,7 @@ export function GraphRunConfigurationSection({
                         id="graph-run-model"
                         value={model}
                         onChange={(event) => setModel(event.target.value)}
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                         placeholder="codex default"
                     />
                 </GraphSettingsField>
@@ -168,7 +168,7 @@ export function GraphRunConfigurationSection({
                         id="graph-run-working-directory"
                         value={workingDir}
                         onChange={(event) => setWorkingDir(event.target.value)}
-                        className="h-8 font-mono text-xs"
+                        className="h-8 font-mono text-sm"
                         placeholder="./test-app"
                     />
                 </GraphSettingsField>
@@ -202,7 +202,7 @@ export function GraphMetadataSection({
                         id="graph-attr-spark-title"
                         value={flowMetadata.title || ''}
                         onChange={(event) => updateFlowMetadata('title', event.target.value)}
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                         placeholder="Implement From Plan File"
                     />
                 </GraphSettingsField>
@@ -216,7 +216,7 @@ export function GraphMetadataSection({
                         value={flowMetadata.description || ''}
                         onChange={(event) => updateFlowMetadata('description', event.target.value)}
                         rows={3}
-                        className="min-h-20 px-2 py-1 text-xs"
+                        className="min-h-20 px-2 py-1 text-sm"
                         placeholder="Snapshot a plan file, implement it, and iterate until complete."
                     />
                 </GraphSettingsField>
@@ -283,7 +283,7 @@ export function GraphResultSection({
                         id="graph-attr-spark-result-node"
                         value={flowMetadata.result_node || ''}
                         onChange={(event) => updateFlowMetadata('result_node', event.target.value)}
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     >
                         <option value="">Infer from final node</option>
                         {selectableNodes.map((node) => {
@@ -306,7 +306,7 @@ export function GraphResultSection({
                             updateFlowMetadata('result_summary_enabled', checked ? 'true' : '')
                         }}
                     />
-                    <Label htmlFor="graph-attr-spark-result-summary-enabled" className="text-xs">
+                    <Label htmlFor="graph-attr-spark-result-summary-enabled" className="text-sm">
                         Summarize result
                     </Label>
                 </div>
@@ -321,7 +321,7 @@ export function GraphResultSection({
                             value={flowMetadata.result_summary_prompt || ''}
                             onChange={(event) => updateFlowMetadata('result_summary_prompt', event.target.value)}
                             rows={4}
-                            className="min-h-24 px-2 py-1 text-xs"
+                            className="min-h-24 px-2 py-1 text-sm"
                             placeholder="Use Spark's default prompt"
                         />
                     </GraphSettingsField>
@@ -352,7 +352,7 @@ export function GraphExecutionDefaultsSection({
             />
             <GraphSettingsNotice
                 data-testid="flow-metadata-help"
-                className="text-[11px]"
+                className="text-xs"
             >
                 <p>FlowDefinition defaults are used when node runtime settings omit a value.</p>
                 <p>Leave blank to omit the field from YAML output.</p>
@@ -368,7 +368,7 @@ export function GraphExecutionDefaultsSection({
                             id="graph-attr-goal"
                             value={flowMetadata.goal || ''}
                             onChange={(event) => updateFlowMetadata('goal', event.target.value)}
-                            className="h-8 text-xs"
+                            className="h-8 text-sm"
                         />
                     </GraphSettingsField>
                 </div>
@@ -388,7 +388,7 @@ export function GraphExecutionDefaultsSection({
                                 inputMode="numeric"
                                 value={flowMetadata.max_retries ?? ''}
                                 onChange={(event) => updateFlowMetadata('max_retries', event.target.value)}
-                                className="h-8 text-xs"
+                                className="h-8 text-sm"
                             />
                         </GraphSettingsField>
                         {renderFieldDiagnostics('max_retries', 'graph-field-diagnostics-max_retries')}
@@ -405,7 +405,7 @@ export function GraphExecutionDefaultsSection({
                                 value={flowMetadata.fidelity || ''}
                                 onChange={(event) => updateFlowMetadata('fidelity', event.target.value)}
                                 list="graph-fidelity-options"
-                                className="h-8 text-xs"
+                                className="h-8 text-sm"
                                 placeholder="full"
                             />
                             <datalist id="graph-fidelity-options">
@@ -464,7 +464,7 @@ export function GraphLaunchPolicySection({
                     value={launchPolicy}
                     onChange={(event) => void onLaunchPolicyChange(event.target.value as FlowLaunchPolicy)}
                     disabled={controlsDisabled}
-                    className="h-8 text-xs"
+                    className="h-8 text-sm"
                 >
                     {Object.entries(FLOW_LAUNCH_POLICY_LABELS).map(([value, label]) => (
                         <option key={value} value={value}>
@@ -481,7 +481,7 @@ export function GraphLaunchPolicySection({
                         onCheckedChange={(checked) => onExecutionLockEnabledChange(checked === true)}
                         disabled={controlsDisabled}
                     />
-                    <span className="text-xs font-medium text-foreground">Enable execution lock</span>
+                    <span className="text-sm font-medium text-foreground">Enable execution lock</span>
                 </Label>
                 <GraphSettingsField
                     label="Lock Scope"
@@ -492,7 +492,7 @@ export function GraphLaunchPolicySection({
                         id="graph-execution-lock-scope"
                         value={executionLock?.scope ?? 'project'}
                         disabled
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     >
                         <option value="project">Project</option>
                     </NativeSelect>
@@ -503,7 +503,7 @@ export function GraphLaunchPolicySection({
                         value={executionLock?.key ?? ''}
                         onChange={(event) => onExecutionLockKeyChange(event.target.value)}
                         disabled={controlsDisabled || !executionLockEnabled}
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     />
                 </GraphSettingsField>
                 <GraphSettingsField label="Conflict Policy" htmlFor="graph-execution-lock-conflict-policy">
@@ -511,7 +511,7 @@ export function GraphLaunchPolicySection({
                         id="graph-execution-lock-conflict-policy"
                         value={executionLock?.conflict_policy ?? 'queue'}
                         disabled
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     >
                         <option value="queue">Queue</option>
                     </NativeSelect>
@@ -523,7 +523,7 @@ export function GraphLaunchPolicySection({
             </div>
             <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"
-                className="text-[11px]"
+                className="text-xs"
             >
                 {launchPolicyStatusMessage}
             </GraphSettingsNotice>
@@ -559,7 +559,7 @@ export function GraphAdvancedAttrsSection({
                         data-testid="graph-advanced-toggle"
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                        className="h-8 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
                         onClick={() => setShowAdvancedFlowMetadata((current) => !current)}
                     >
                         {showAdvancedFlowMetadata ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
@@ -578,7 +578,7 @@ export function GraphAdvancedAttrsSection({
                     />
                 </div>
             ) : (
-                <GraphSettingsNotice className="text-[11px]">
+                <GraphSettingsNotice className="text-xs">
                     Extension metadata stays available for non-core FlowDefinition annotations.
                 </GraphSettingsNotice>
             )}
@@ -622,7 +622,7 @@ export function GraphLlmDefaultsSection({
                             updateFlowMetadata('llm_profile', selection.llm_profile)
                         }}
                         list="flow-llm-provider-options"
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                         placeholder={uiDefaults.llm_provider ? `Snapshot: ${uiDefaults.llm_provider}` : 'Snapshot of global default'}
                     />
                     <datalist id="flow-llm-provider-options">
@@ -637,7 +637,7 @@ export function GraphLlmDefaultsSection({
                         value={flowMetadata.llm_model || ''}
                         onChange={(event) => updateFlowMetadata('llm_model', event.target.value)}
                         list="flow-llm-model-options"
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                         placeholder={uiDefaults.llm_model ? `Snapshot: ${uiDefaults.llm_model}` : 'Snapshot of global default'}
                     />
                     <datalist id="flow-llm-model-options">
@@ -651,7 +651,7 @@ export function GraphLlmDefaultsSection({
                         id="graph-default-reasoning-effort"
                         value={flowMetadata.reasoning_effort || ''}
                         onChange={(event) => updateFlowMetadata('reasoning_effort', event.target.value)}
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     >
                         <option value="">Use global default</option>
                         <option value="low">Low</option>
@@ -667,7 +667,7 @@ export function GraphLlmDefaultsSection({
                         disabled={!canApplyDefaults}
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                        className="h-8 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
                         title={canApplyDefaults ? 'Apply current flow defaults to every node.' : 'Switch to the editor to apply defaults.'}
                     >
                         Apply To Nodes
@@ -676,7 +676,7 @@ export function GraphLlmDefaultsSection({
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                        className="h-8 px-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
                         onClick={() => {
                             updateFlowMetadata('llm_provider', uiDefaults.llm_provider)
                             updateFlowMetadata('llm_profile', uiDefaults.llm_profile)

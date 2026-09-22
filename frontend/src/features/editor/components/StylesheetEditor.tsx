@@ -107,7 +107,7 @@ export function StylesheetEditor({ value, onChange, ariaLabel, id }: StylesheetE
                 ref={highlightRef}
                 aria-hidden="true"
                 data-testid="model-stylesheet-editor-highlight"
-                className="pointer-events-none h-full w-full overflow-auto rounded-md border border-input bg-slate-950/95 px-2 py-1 text-xs leading-5 font-mono"
+                className="pointer-events-none h-full w-full overflow-auto rounded-md border border-input bg-slate-950/95 px-2 py-1 text-sm leading-5 font-mono"
             >
                 {highlightedLines.map((line, lineIndex) => (
                     <span key={`line-${lineIndex}`}>
@@ -131,7 +131,7 @@ export function StylesheetEditor({ value, onChange, ariaLabel, id }: StylesheetE
                 onScroll={handleScroll}
                 spellCheck={false}
                 aria-label={ariaLabel}
-                className="absolute inset-0 h-full w-full resize-none bg-transparent px-2 py-1 text-xs leading-5 font-mono text-transparent caret-slate-100"
+                className="absolute inset-0 h-full w-full resize-none bg-transparent px-2 py-1 text-sm leading-5 font-mono text-transparent caret-slate-100"
                 style={{ WebkitTextFillColor: 'transparent' }}
             />
         </div>

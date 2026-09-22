@@ -36,7 +36,7 @@ export function FlowBrowserPanel({
             className={cn('flex flex-col overflow-hidden', className)}
         >
             <div className="flex items-center justify-between px-5 py-2">
-                <h2 className="text-sm font-semibold tracking-tight">Saved Flows</h2>
+                <h2 className="text-base font-semibold tracking-tight">Saved Flows</h2>
                 <div className="flex items-center gap-2">
                     {onRefresh ? (
                         <Button

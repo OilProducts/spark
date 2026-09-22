@@ -128,8 +128,8 @@ export function SettingsPanel() {
         <div data-testid="settings-panel" className="min-w-0 flex-1 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
                 <div className="space-y-1">
-                    <h2 className="text-sm font-semibold text-foreground">Settings</h2>
-                    <p className="text-xs leading-5 text-muted-foreground">
+                    <h2 className="text-xl font-semibold tracking-tight text-foreground">Settings</h2>
+                    <p className="text-sm text-muted-foreground">
                         Model defaults apply to inheriting conversations on their next message.
                     </p>
                 </div>
@@ -146,7 +146,7 @@ export function SettingsPanel() {
 
                 <Card className="gap-4 py-4 shadow-sm">
                     <CardHeader className="gap-1 px-4">
-                        <h3 className="text-sm font-semibold">Model defaults (Workspace)</h3>
+                        <h3 className="text-base font-semibold">Model defaults (Workspace)</h3>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
                         <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations.</p>
@@ -174,7 +174,7 @@ export function SettingsPanel() {
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
                 <Card className="gap-4 py-4 shadow-sm">
-                    <CardHeader className="px-4"><h3 className="text-sm font-semibold">Scoped configuration</h3></CardHeader>
+                    <CardHeader className="px-4"><h3 className="text-base font-semibold">Scoped configuration</h3></CardHeader>
                     <CardContent className="space-y-3 px-4">
                         <p className="text-xs text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
                         <div className="flex flex-wrap gap-2">
@@ -188,12 +188,12 @@ export function SettingsPanel() {
                 <p className="text-xs text-muted-foreground">Server/Desktop configuration. Environment overrides take precedence over saved values.</p>
                 {getTauriInvoke() ? (
                     <Card className="gap-4 py-4 shadow-sm">
-                        <CardHeader className="gap-1 px-4"><h3 className="text-sm font-semibold">Desktop Server</h3></CardHeader>
+                        <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Desktop Server</h3></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">
                             {desktopSettings ? <>
                             <div className="flex items-center justify-between gap-4 rounded border border-border px-3 py-2">
                                 <div className="min-w-0 space-y-1">
-                                    <div className="text-xs font-medium text-foreground">Remote access</div>
+                                    <div className="text-sm font-medium text-foreground">Remote access</div>
                                     <div className="break-all text-xs text-muted-foreground">{desktopSettings.bind_host} - {desktopSettings.server_url}</div>
                                 </div>
                                 <Switch data-testid="desktop-remote-access-toggle" checked={remoteDraft ?? desktopSettings.remote_access_enabled}

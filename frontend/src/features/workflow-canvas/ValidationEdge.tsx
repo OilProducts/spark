@@ -177,7 +177,7 @@ export function ValidationEdge({
                         <div
                             data-testid="edge-diagnostic-badge"
                             onClick={handleSelect}
-                            className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}
+                            className={`rounded-full border border-border bg-background/95 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${badgeClass}`}
                             title={diagnosticsForEdge.map((diag) => diag.message).join('\n')}
                         >
                             {diagnosticsForEdge.length} {hasError ? 'Error' : hasWarning ? 'Warn' : hasInfo ? 'Info' : 'Issue'}

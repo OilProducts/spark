@@ -12,7 +12,7 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
     const profiles = useLlmProfiles()
     const invalidModel = !!editor.draft && !isModelSelectionValid(editor.draft.llm_profile || editor.draft.provider || '', editor.draft.model, profiles)
     return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="px-4"><h3 className="text-sm font-semibold">Project model defaults</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-base font-semibold">Project model defaults</h3></CardHeader>
         <CardContent className="space-y-3 px-4">
             {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="break-all text-xs text-muted-foreground">{projectPath}</p>
@@ -24,7 +24,7 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
             </> : 'Unavailable'}</p>
             <p className="text-xs">{editor.saved?.source === 'project' ? 'Project default' : 'Workspace default'}</p>
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
-                <Label className="flex items-center gap-2 text-xs"><Switch disabled={!editor.draft && !editor.saved?.effective} checked={editor.draft !== null}
+                <Label className="flex items-center gap-2 text-sm"><Switch disabled={!editor.draft && !editor.saved?.effective} checked={editor.draft !== null}
                     onCheckedChange={(checked) => editor.setDraft(checked && editor.saved?.effective ? { ...editor.saved.effective } : null)} />Override workspace model settings</Label>
                 {editor.draft && <ModelSettingsFields profiles={profiles} models={editor} activeProjectPath={projectPath} invalidModel={!!invalidModel} />}
             </fieldset>

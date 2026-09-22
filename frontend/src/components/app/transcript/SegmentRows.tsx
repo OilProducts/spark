@@ -23,7 +23,7 @@ const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
 }
 
 export const getSurfaceToneClassName = (tone: SurfaceTone) => (
-    `rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
+    `rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
 )
 
 export interface TranscriptToolCall {
@@ -134,19 +134,19 @@ export const ToolCallRow = memo(function ToolCallRow({
                     ) : (
                         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     )}
-                    <p className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         {entry.toolCall.kind === 'file_change' ? 'File change' : 'Tool call'}
                     </p>
                     <span className={getSurfaceToneClassName(statusPresentation.tone)}>
                         {statusPresentation.label}
                     </span>
-                    <p className="shrink-0 text-xs font-medium text-foreground">{entry.toolCall.title}</p>
+                    <p className="min-w-0 truncate text-sm font-medium text-foreground">{entry.toolCall.title}</p>
                     {summaryDetail ? (
-                        <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                        <p className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
                             {summaryDetail}
                         </p>
                     ) : (
-                        <p className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                             {entry.toolCall.status === 'running' ? 'Running...' : 'No additional details'}
                         </p>
                     )}
@@ -154,26 +154,26 @@ export const ToolCallRow = memo(function ToolCallRow({
                 {isExpanded ? (
                     <div className="mt-2 space-y-2">
                         {entry.toolCall.command ? (
-                            <p className="whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-foreground [overflow-wrap:anywhere]">
+                            <p className="whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
                                 {entry.toolCall.command}
                             </p>
                         ) : null}
                         {entry.toolCall.filePaths.length > 0 ? (
                             <ul className="space-y-1">
                                 {entry.toolCall.filePaths.map((path) => (
-                                    <li key={path} className="break-words font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+                                    <li key={path} className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                                         {path}
                                     </li>
                                 ))}
                             </ul>
                         ) : null}
                         {displayedOutput ? (
-                            <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-[11px] text-muted-foreground [overflow-wrap:anywhere]">
+                            <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                                 {displayedOutput}
                             </pre>
                         ) : null}
                         {hasPreviewOnly || isLoadingFullOutput || loadFullOutputError ? (
-                            <p className="text-[11px] text-muted-foreground">
+                            <p className="text-xs text-muted-foreground">
                                 {isLoadingFullOutput
                                     ? 'Loading full output...'
                                     : loadFullOutputError
@@ -224,19 +224,19 @@ export const ThinkingRow = memo(function ThinkingRow({
                         ) : (
                             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                         )}
-                        <p className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">
+                        <p className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
                             {heading}
                         </p>
                     </Button>
                 ) : (
-                    <p className="text-xs font-semibold text-foreground">{heading}</p>
+                    <p className="text-sm font-semibold text-foreground">{heading}</p>
                 )}
                 {isExpanded && details ? (
                     <div className="mt-2">
                         <ProjectConversationMarkdown content={details} />
                     </div>
                 ) : null}
-                <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
+                <p className="mt-1 text-xs opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
             </div>
         </li>
     )
@@ -288,7 +288,7 @@ export const MessageRow = memo(function MessageRow({
                 }`}
             >
                 <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">
+                    <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
                         {entry.role === 'assistant'
                             ? (entry.presentation === 'thinking' ? 'Thinking' : 'Spark')
                             : entry.role}
@@ -299,7 +299,7 @@ export const MessageRow = memo(function MessageRow({
                     <ProjectConversationMarkdown content={entry.content} enableCodeCopy={enableCopy && entry.status === 'complete'} />
                 ) : (
                     <p
-                        className={`whitespace-pre-wrap text-xs leading-5 ${
+                        className={`whitespace-pre-wrap text-sm leading-6 ${
                             entry.presentation === 'thinking' ? 'italic' : ''
                         }`}
                     >
@@ -308,7 +308,7 @@ export const MessageRow = memo(function MessageRow({
                     </p>
                 )}
                 {needsCodexLogin && <CodexReconnect />}
-                <p className="mt-1 text-[10px] opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
+                <p className="mt-1 text-xs opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
             </div>
         </li>
     )

@@ -54,12 +54,12 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     Launch Inputs
                 </p>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-xs text-muted-foreground">
                     Define the `context.*` values Spark should collect before launching this flow.
                 </p>
             </div>
             {entries.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border/80 bg-muted/10 px-3 py-2 text-[11px] text-muted-foreground">
+                <div className="rounded-md border border-dashed border-border/80 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
                     No launch inputs declared yet.
                 </div>
             ) : null}
@@ -76,7 +76,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                                 data-testid={`graph-launch-input-label-${index}`}
                                 value={entry.label}
                                 onChange={(event) => updateEntry(index, { label: event.target.value })}
-                                className="h-8 px-2 text-xs"
+                                className="h-8 px-2 text-sm"
                                 placeholder="Request Summary"
                             />
                         </Field>
@@ -86,7 +86,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                                 data-testid={`graph-launch-input-type-${index}`}
                                 value={entry.type}
                                 onChange={(event) => updateEntry(index, { type: event.target.value as LaunchInputType })}
-                                className="h-8 px-2 text-xs"
+                                className="h-8 px-2 text-sm"
                             >
                                 {LAUNCH_INPUT_TYPE_OPTIONS.map((option) => (
                                     <option key={option.value} value={option.value}>
@@ -102,7 +102,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             data-testid={`graph-launch-input-key-${index}`}
                             value={entry.key}
                             onChange={(event) => updateEntry(index, { key: event.target.value })}
-                            className="h-8 px-2 font-mono text-xs"
+                            className="h-8 px-2 font-mono text-sm"
                             placeholder="context.request.summary"
                         />
                     </Field>
@@ -113,12 +113,12 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             value={entry.description}
                             onChange={(event) => updateEntry(index, { description: event.target.value })}
                             rows={2}
-                            className="min-h-16 px-2 py-1 text-xs"
+                            className="min-h-16 px-2 py-1 text-sm"
                             placeholder="Short explanation shown in the launch form."
                         />
                     </Field>
                     <div className="flex items-center justify-between gap-3">
-                        <Label className="inline-flex items-center gap-2 text-xs font-medium text-foreground">
+                        <Label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
                             <Checkbox
                                 data-testid={`graph-launch-input-required-${index}`}
                                 checked={entry.required}
@@ -132,7 +132,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                             onClick={() => removeEntry(index)}
                             variant="outline"
                             size="xs"
-                            className="text-[11px] text-muted-foreground hover:text-foreground"
+                            className="text-xs text-muted-foreground hover:text-foreground"
                         >
                             Remove
                         </Button>
@@ -146,16 +146,16 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     onClick={addEntry}
                     variant="outline"
                     size="xs"
-                    className="h-8 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                    className="h-8 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
                 >
                     Add Launch Input
                 </Button>
                 {error ? (
-                    <p data-testid="graph-launch-inputs-error" className="text-[11px] text-destructive">
+                    <p data-testid="graph-launch-inputs-error" className="text-xs text-destructive">
                         {error}
                     </p>
                 ) : (
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-xs text-muted-foreground">
                         Keys must use the `context.*` namespace.
                     </p>
                 )}

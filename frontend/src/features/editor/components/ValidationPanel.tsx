@@ -151,7 +151,7 @@ export function ValidationPanel() {
         >
             <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Validation</div>
-                <div className="text-[11px] font-medium text-muted-foreground">
+                <div className="text-xs font-medium text-muted-foreground">
                     {hasValidationErrors ? 'Errors present' : 'Warnings only'}
                 </div>
             </div>
@@ -160,13 +160,13 @@ export function ValidationPanel() {
                     data-testid="validation-sort-select"
                     value={sortMode}
                     onChange={(event) => setSortMode(event.target.value as SortMode)}
-                    className="h-7 w-auto px-2 text-[11px]"
+                    className="h-7 w-auto px-2 text-sm"
                 >
                     <option value="severity">Sort: Severity</option>
                     <option value="line">Sort: Line</option>
                     <option value="rule">Sort: Rule</option>
                 </NativeSelect>
-                <div data-testid="validation-visible-count" className="text-[11px] text-muted-foreground">
+                <div data-testid="validation-visible-count" className="text-xs text-muted-foreground">
                     {sortedDiagnostics.length} visible
                 </div>
             </div>
@@ -178,7 +178,7 @@ export function ValidationPanel() {
                         onClick={() => setSeverityFilter(filterValue)}
                         variant={severityFilter === filterValue ? 'secondary' : 'outline'}
                         size="xs"
-                        className={`px-1.5 py-1 text-[10px] font-medium uppercase tracking-wide ${
+                        className={`px-1.5 py-1 text-xs font-medium capitalize ${
                             severityFilter === filterValue
                                 ? 'border-foreground/50 text-foreground'
                                 : 'border-border/60 bg-background text-muted-foreground hover:bg-muted/50'
@@ -207,7 +207,7 @@ export function ValidationPanel() {
                             }
                         }}
                         variant="outline"
-                        className={`h-auto w-full justify-start whitespace-normal rounded-md bg-background/85 px-2 py-1 text-left text-xs transition-colors ${
+                        className={`h-auto w-full justify-start whitespace-normal rounded-md bg-background/85 px-2 py-1 text-left text-sm transition-colors ${
                             hasDirectMapping(diag)
                                 ? 'border-border/60 hover:bg-muted'
                                 : 'border-dashed border-border/70 hover:bg-muted/60'
@@ -215,7 +215,7 @@ export function ValidationPanel() {
                     >
                         <div className="flex w-full min-w-0 items-start gap-2">
                             <span
-                                className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${
                                     severityStyles[diag.severity] || 'bg-muted text-muted-foreground'
                                 }`}
                             >
@@ -223,12 +223,12 @@ export function ValidationPanel() {
                             </span>
                             <div className="min-w-0 flex-1 break-words">
                                 <div className="text-foreground">{diag.message}</div>
-                                <div className="text-[10px] text-muted-foreground">
+                                <div className="text-xs text-muted-foreground">
                                     {diag.rule_id}
                                     {diag.line ? ` • line ${diag.line}` : ''}
                                 </div>
                                 {!hasDirectMapping(diag) ? (
-                                    <div data-testid="validation-diagnostic-fallback-hint" className="mt-1 text-[10px] text-muted-foreground">
+                                    <div data-testid="validation-diagnostic-fallback-hint" className="mt-1 text-xs text-muted-foreground">
                                         No direct canvas target. Click to open graph-level review.
                                     </div>
                                 ) : null}

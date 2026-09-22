@@ -51,17 +51,17 @@ export function AdvancedKeyValueEditor({
             data-testid={`${testIdPrefix}-extension-attrs-editor`}
             className="space-y-2 rounded-md border border-border/80 bg-muted/10 p-3"
         >
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {title}
             </p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
                 {description}
             </p>
 
             {entries.length === 0 ? (
                 <p
                     data-testid={`${testIdPrefix}-extension-attrs-empty`}
-                    className="text-[11px] text-muted-foreground"
+                    className="text-xs text-muted-foreground"
                 >
                     No extension attributes set.
                 </p>
@@ -81,7 +81,7 @@ export function AdvancedKeyValueEditor({
                                     data-testid={`${testIdPrefix}-extension-attr-key-${index}`}
                                     value={entry.key}
                                     readOnly
-                                    className="h-8 bg-muted/30 px-2 font-mono text-[11px]"
+                                    className="h-8 bg-muted/30 px-2 font-mono text-sm"
                                 />
                             </Field>
                             <Field className="gap-1">
@@ -93,7 +93,7 @@ export function AdvancedKeyValueEditor({
                                     data-testid={`${testIdPrefix}-extension-attr-value-${index}`}
                                     value={entry.value}
                                     onChange={(event) => onValueChange(entry.key, event.target.value)}
-                                    className="h-8 px-2 font-mono text-[11px]"
+                                    className="h-8 px-2 font-mono text-sm"
                                 />
                             </Field>
                             <Button
@@ -102,7 +102,7 @@ export function AdvancedKeyValueEditor({
                                 onClick={() => onRemove(entry.key)}
                                 variant="outline"
                                 size="xs"
-                                className="h-8 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="h-8 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
                             >
                                 Remove
                             </Button>
@@ -122,7 +122,7 @@ export function AdvancedKeyValueEditor({
                         data-testid={`${testIdPrefix}-extension-attr-new-key`}
                         value={newKey}
                         onChange={(event) => setNewKey(event.target.value)}
-                        className="h-8 px-2 font-mono text-[11px]"
+                        className="h-8 px-2 font-mono text-sm"
                         placeholder="x_custom_attr"
                     />
                 </Field>
@@ -135,7 +135,7 @@ export function AdvancedKeyValueEditor({
                         data-testid={`${testIdPrefix}-extension-attr-new-value`}
                         value={newValue}
                         onChange={(event) => setNewValue(event.target.value)}
-                        className="h-8 px-2 font-mono text-[11px]"
+                        className="h-8 px-2 font-mono text-sm"
                         placeholder="value"
                     />
                 </Field>
@@ -145,18 +145,18 @@ export function AdvancedKeyValueEditor({
                     disabled={!canAdd}
                     variant="outline"
                     size="xs"
-                    className="h-8 text-[11px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                    className="h-8 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
                 >
                     Add Attribute
                 </Button>
             </div>
             {hasDuplicateKey ? (
-                <p id={`${id}-duplicate-warning`} className="text-[11px] text-amber-800">
+                <p id={`${id}-duplicate-warning`} className="text-xs text-amber-800">
                     Key already exists.
                 </p>
             ) : null}
             {hasReservedKey ? (
-                <p id={`${id}-reserved-warning`} className="text-[11px] text-amber-800">
+                <p id={`${id}-reserved-warning`} className="text-xs text-amber-800">
                     Core attributes belong in dedicated controls.
                 </p>
             ) : null}

@@ -78,7 +78,7 @@ export function ProjectsSidebar({
                         <CardHeader className="gap-1 border-b border-border/60 px-4 py-4">
                             <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0 space-y-1">
-                                    <h3 className="text-sm font-semibold text-foreground">Threads</h3>
+                                    <h3 className="text-base font-semibold text-foreground">Threads</h3>
                                     <p className="text-xs leading-5 text-muted-foreground">
                                         {activeProjectPath
                                             ? `Threads for ${activeProjectLabel || 'the active project'}.`
@@ -161,16 +161,16 @@ export function ProjectsSidebar({
                                                     <div className="flex w-full min-w-0 items-center gap-2">
                                                         <FileText className={`h-3.5 w-3.5 shrink-0 ${isActiveConversation ? "text-foreground" : "text-muted-foreground"}`} />
                                                         <div className="min-w-0 flex-1">
-                                                            <span className="block truncate text-[13px] font-medium">
+                                                            <span className="block truncate text-sm font-medium">
                                                                 {conversation.title}
                                                             </span>
                                                             {conversation.conversation_handle ? (
-                                                                <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                                                                <span className="block truncate font-mono text-xs text-muted-foreground">
                                                                     {conversation.conversation_handle}
                                                                 </span>
                                                             ) : null}
                                                         </div>
-                                                        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
+                                                        <span className="ml-auto shrink-0 text-xs text-muted-foreground transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
                                                             {ageLabel}
                                                         </span>
                                                     </div>
@@ -217,7 +217,7 @@ export function ProjectsSidebar({
                     className={`flex min-h-[280px] flex-col rounded-md border border-border bg-card p-4 shadow-sm ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-hidden"}`}
                 >
                     <div className="mb-3 flex items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold text-foreground">Workflow Event Log</h3>
+                        <h3 className="text-base font-semibold text-foreground">Workflow Event Log</h3>
                         <div
                             role="group"
                             aria-label="Workflow event log scope"
@@ -229,7 +229,7 @@ export function ProjectsSidebar({
                                 aria-pressed={logScope === 'all'}
                                 onClick={() => setLogScope('all')}
                                 className={cn(
-                                    'px-2 py-0.5 text-[11px] font-medium transition-colors',
+                                    'px-2 py-0.5 text-xs font-medium transition-colors',
                                     logScope === 'all'
                                         ? 'bg-primary text-primary-foreground'
                                         : 'bg-background text-muted-foreground hover:bg-muted/60',
@@ -244,7 +244,7 @@ export function ProjectsSidebar({
                                 disabled={!activeProjectPath}
                                 onClick={() => setLogScope('active')}
                                 className={cn(
-                                    'px-2 py-0.5 text-[11px] font-medium transition-colors disabled:opacity-50',
+                                    'px-2 py-0.5 text-xs font-medium transition-colors disabled:opacity-50',
                                     logScope === 'active'
                                         ? 'bg-primary text-primary-foreground'
                                         : 'bg-background text-muted-foreground hover:bg-muted/60',
@@ -276,7 +276,7 @@ export function ProjectsSidebar({
                                             entry.kind === 'run_canceled' && 'border-l-amber-500/70',
                                         )}
                                     >
-                                        <p className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                        <p className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                                             <span>{formatConversationTimestamp(entry.timestamp)}</span>
                                             <span
                                                 data-testid="workflow-event-log-row-project"
@@ -286,7 +286,7 @@ export function ProjectsSidebar({
                                                 {formatProjectPathLabel(entry.project_path)}
                                             </span>
                                         </p>
-                                        <p className="text-xs text-foreground">{entry.message}</p>
+                                        <p className="text-sm text-foreground">{entry.message}</p>
                                     </a>
                                 </li>
                             ))}

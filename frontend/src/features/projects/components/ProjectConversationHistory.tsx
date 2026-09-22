@@ -70,7 +70,7 @@ function conversationEntryKey(entry: ConversationTimelineEntry) {
 const FinalSeparatorRow = memo(function FinalSeparatorRow({ entry }: { entry: FinalSeparatorEntry }) {
     return (
         <li className="flex justify-center">
-            <div className="flex w-full max-w-[85%] items-center gap-3 py-1 text-[11px] text-muted-foreground">
+            <div className="flex w-full max-w-[85%] items-center gap-3 py-1 text-xs text-muted-foreground">
                 <span className="h-px flex-1 bg-border" />
                 <span className="shrink-0 whitespace-nowrap">{entry.label}</span>
                 <span className="h-px flex-1 bg-border" />
@@ -84,7 +84,7 @@ const ModeChangeRow = memo(function ModeChangeRow({ entry }: { entry: ModeChange
         <li className="flex justify-center">
             <div
                 data-testid={`project-mode-change-row-${entry.id}`}
-                className="flex w-full max-w-[85%] items-center gap-3 py-1 text-[11px] text-muted-foreground"
+                className="flex w-full max-w-[85%] items-center gap-3 py-1 text-xs text-muted-foreground"
             >
                 <span className="h-px flex-1 bg-border" />
                 <span className="shrink-0 whitespace-nowrap">
@@ -101,7 +101,7 @@ const ContextCompactionRow = memo(function ContextCompactionRow({ entry }: { ent
         <li className="flex justify-center">
             <div
                 data-testid={`project-context-compaction-row-${entry.id}`}
-                className="flex w-full max-w-[85%] items-center gap-3 py-1 text-[11px] text-muted-foreground"
+                className="flex w-full max-w-[85%] items-center gap-3 py-1 text-xs text-muted-foreground"
             >
                 <span className="h-px flex-1 bg-border" />
                 <span className="shrink-0 whitespace-nowrap">
@@ -242,7 +242,7 @@ const PlanRow = memo(function PlanRow({
                 className="min-w-0 max-w-[85%] rounded-md border border-emerald-400/40 bg-emerald-50/60 px-3 py-2 text-foreground"
             >
                 <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800/80">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800/80">
                         Proposed Plan
                     </p>
                     {statusPresentation ? (
@@ -252,19 +252,19 @@ const PlanRow = memo(function PlanRow({
                     ) : null}
                 </div>
                 {entry.status === 'failed' ? (
-                    <p className="whitespace-pre-wrap break-words text-xs leading-5 [overflow-wrap:anywhere]">{content}</p>
+                    <p className="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">{content}</p>
                 ) : (
                     <ProjectConversationMarkdown content={content} enableCodeCopy />
                 )}
                 {proposedPlan ? (
-                    <div className="mt-2 space-y-2 text-[11px] text-emerald-950/75">
+                    <div className="mt-2 space-y-2 text-xs text-emerald-950/75">
                         {proposedPlan.review_note ? (
                             <p>
                                 Review note: <span className="text-foreground">{proposedPlan.review_note}</span>
                             </p>
                         ) : null}
                         {proposedPlan.written_change_request_path ? (
-                            <p className="break-all font-mono text-[10px] text-emerald-950/70">
+                            <p className="break-all font-mono text-xs text-emerald-950/70">
                                 {proposedPlan.written_change_request_path}
                             </p>
                         ) : null}
@@ -297,7 +297,7 @@ const PlanRow = memo(function PlanRow({
                                     value={reviewNoteValue}
                                     onChange={(event) => onPlanReviewNoteChange(proposedPlan.id, event.target.value)}
                                     placeholder="Optional review note"
-                                    className="h-8 border-emerald-500/20 bg-background/80 text-xs"
+                                    className="h-8 border-emerald-500/20 bg-background/80 text-sm"
                                 />
                                 <div className="flex flex-wrap items-center gap-2">
                                     <Button
@@ -331,7 +331,7 @@ const PlanRow = memo(function PlanRow({
                         ) : null}
                     </div>
                 ) : null}
-                <p className="mt-1 text-[10px] text-emerald-900/70">
+                <p className="mt-1 text-xs text-emerald-900/70">
                     {formatConversationTimestamp(entry.timestamp)}
                 </p>
             </div>

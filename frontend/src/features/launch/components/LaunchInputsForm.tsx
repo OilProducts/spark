@@ -73,7 +73,7 @@ export function LaunchInputsForm({
             >
                 <p
                     data-testid="execution-launch-inputs-title"
-                    className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    className="text-sm font-semibold text-foreground"
                 >
                     Launch Inputs
                 </p>
@@ -99,7 +99,7 @@ export function LaunchInputsForm({
             {parsedLaunchInputs.error ? (
                 <Alert
                     data-testid="execution-launch-inputs-schema-error"
-                    className="mb-3 border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive"
+                    className="mb-3 border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
                 >
                     <AlertDescription className="text-inherit">
                         {parsedLaunchInputs.error}
@@ -136,16 +136,16 @@ export function LaunchInputsForm({
                                     }`}
                                 >
                                     <div className="min-w-0">
-                                        <Label className="text-xs">
+                                        <Label className="text-sm">
                                             {entry.label}
                                         </Label>
                                         {entry.description ? (
-                                            <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                                            <p className="mt-0.5 text-xs leading-4 text-muted-foreground">
                                                 {entry.description}
                                             </p>
                                         ) : null}
                                     </div>
-                                    <p className="shrink-0 text-[10px] leading-4 text-muted-foreground">
+                                    <p className="shrink-0 text-xs leading-4 text-muted-foreground">
                                         {launchInputTypeLabel(entry.type)}
                                         {entry.required ? ' · Required' : ''}
                                     </p>
@@ -155,7 +155,7 @@ export function LaunchInputsForm({
                                         data-testid={`execution-launch-input-${entry.key}`}
                                         value={launchInputValues[entry.key] ?? ''}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        className="h-8 text-xs"
+                                        className="h-8 text-sm"
                                     />
                                 ) : entry.type === 'string[]' ? (
                                     <Textarea
@@ -163,7 +163,7 @@ export function LaunchInputsForm({
                                         value={launchInputValues[entry.key] ?? ''}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
                                         rows={2}
-                                        className="min-h-16 px-2 py-1 text-xs"
+                                        className="min-h-16 px-2 py-1 text-sm"
                                         placeholder="One item per line"
                                     />
                                 ) : entry.type === 'boolean' ? (
@@ -171,7 +171,7 @@ export function LaunchInputsForm({
                                         data-testid={`execution-launch-input-${entry.key}`}
                                         value={launchInputValues[entry.key] ?? ''}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        className="h-8 text-xs"
+                                        className="h-8 text-sm"
                                     >
                                         <option value="">Unset</option>
                                         <option value="true">True</option>
@@ -183,7 +183,7 @@ export function LaunchInputsForm({
                                         type="number"
                                         value={launchInputValues[entry.key] ?? ''}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
-                                        className="h-8 text-xs"
+                                        className="h-8 text-sm"
                                         placeholder="42"
                                     />
                                 ) : (
@@ -192,7 +192,7 @@ export function LaunchInputsForm({
                                         value={launchInputValues[entry.key] ?? ''}
                                         onChange={(event) => onInputChange(entry, event.target.value)}
                                         rows={3}
-                                        className="min-h-20 px-2 py-1 text-xs"
+                                        className="min-h-20 px-2 py-1 text-sm"
                                         placeholder='{"key":"value"}'
                                     />
                                 )}

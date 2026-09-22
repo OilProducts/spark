@@ -95,7 +95,7 @@ export function EventRow({
             data-testid="run-event-timeline-row"
             className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-1.5"
         >
-            <div className="flex items-center gap-2 text-[11px]">
+            <div className="flex items-center gap-2 text-xs">
                 <span
                     data-testid="run-event-timeline-row-type"
                     className="inline-flex shrink-0 rounded border border-border/80 bg-background px-1.5 py-0.5 font-medium text-foreground"
@@ -269,7 +269,7 @@ export function RunActivityCard({
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     {fillHeight ? <span aria-hidden className="h-0 w-0" /> : (
                         <h3
-                            className="text-sm font-semibold text-foreground"
+                            className="text-base font-semibold text-foreground"
                             title="Transcript and journal history in one chronological stream; the newest activity is at the bottom and the view follows it while a run is live. Select a graph node to focus its activity."
                         >
                             Activity
@@ -301,7 +301,7 @@ export function RunActivityCard({
                         </div>
                         <span
                             className={cn(
-                                'inline-flex rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                'inline-flex rounded border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
                                 isLive
                                     ? 'border-sky-500/40 bg-sky-500/10 text-sky-700'
                                     : 'border-border bg-muted text-muted-foreground',
@@ -375,7 +375,7 @@ export function RunActivityCard({
                             data-testid="run-event-timeline-filter-category"
                             value={timelineCategoryFilter}
                             onChange={(event) => onTimelineCategoryFilterChange(event.target.value as 'all' | TimelineEventCategory)}
-                            className="h-7 w-auto min-w-32 text-xs"
+                            className="h-7 w-auto min-w-32 text-sm"
                         >
                             <option value="all">All categories</option>
                             {Object.entries(TIMELINE_CATEGORY_LABELS).map(([category, label]) => (
@@ -387,7 +387,7 @@ export function RunActivityCard({
                             data-testid="run-event-timeline-filter-severity"
                             value={timelineSeverityFilter}
                             onChange={(event) => onTimelineSeverityFilterChange(event.target.value as 'all' | TimelineSeverity)}
-                            className="h-7 w-auto min-w-28 text-xs"
+                            className="h-7 w-auto min-w-28 text-sm"
                         >
                             <option value="all">All severities</option>
                             <option value="info">Info</option>

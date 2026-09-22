@@ -147,7 +147,7 @@ export function RunContinuationPanel({
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                    <h3 className="text-sm font-semibold text-foreground">Continue Run</h3>
+                    <h3 className="text-base font-semibold text-foreground">Continue Run</h3>
                     <p className="text-xs leading-5 text-muted-foreground">
                         Create a derived run from <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span> using inherited checkpoint context.
                     </p>
@@ -233,7 +233,7 @@ export function RunContinuationPanel({
                                 onDraftChange({ overrideFlowName: event.target.value || null })
                             }}
                             size="sm"
-                            className="w-full text-xs"
+                            className="w-full text-sm"
                         >
                             <NativeSelectOption value="">Select an installed flow…</NativeSelectOption>
                             {flowCatalog.map((flow) => (

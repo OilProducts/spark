@@ -424,12 +424,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             <div className={cn('absolute left-2 right-2 z-20 flex items-start justify-between', overlayOffsetClassName)}>
                 <div className="min-w-0">
                     {isWaiting && (
-                        <div className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                        <div className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-800">
                             Needs Input
                         </div>
                     )}
                     {isReadOnlyPreviewNode && (
-                        <div className="mt-1 rounded-full bg-slate-500/12 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                        <div className="mt-1 rounded-full bg-slate-500/12 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
                             Read-only Preview
                         </div>
                     )}
@@ -438,7 +438,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     {selected && isEditorCanvas && !isReadOnlyEditorCanvas && (
                         <button
                             onClick={openDetailsEditor}
-                            className="rounded border border-border bg-background/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                            className="rounded border border-border bg-background/90 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
                         >
                             Edit
                         </button>
@@ -447,7 +447,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         <div
                             data-testid="node-diagnostic-badge"
                             className={cn(
-                                'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                'rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
                                 hasDiagnosticError
                                     ? 'bg-destructive/15 text-destructive'
                                     : hasDiagnosticWarning
@@ -492,7 +492,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     {status !== 'idle' && (
                         <span
                             className={cn(
-                                'rounded-sm px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider',
+                                'rounded-sm px-1.5 py-0.5 text-xs font-medium uppercase tracking-wider',
                                 getStatusBadgeClassName(status),
                             )}
                         >
@@ -680,7 +680,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showAdvanced && (
                             <button
                                 onClick={() => setShowAdvanced((prev) => !prev)}
-                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
                             >
                                 {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
                             </button>
@@ -748,7 +748,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {draftToolHooksPreWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.pre" className="text-[11px] text-amber-800">
+                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.pre" className="text-xs text-amber-800">
                                                             {draftToolHooksPreWarning}
                                                         </p>
                                                     )}
@@ -763,7 +763,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {draftToolHooksPostWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.post" className="text-[11px] text-amber-800">
+                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.post" className="text-xs text-amber-800">
                                                             {draftToolHooksPostWarning}
                                                         </p>
                                                     )}
@@ -903,13 +903,13 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     <div className="mt-3 flex items-center justify-end gap-2">
                         <button
                             onClick={closeDetailsEditor}
-                            className="h-7 rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                            className="h-7 rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
                         >
                             Cancel
                         </button>
                         <button
                             onClick={saveDetails}
-                            className="h-7 rounded-md bg-primary px-2 text-[11px] font-semibold text-primary-foreground hover:bg-primary/90"
+                            className="h-7 rounded-md bg-primary px-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
                         >
                             Save
                         </button>

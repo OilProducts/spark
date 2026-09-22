@@ -387,7 +387,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                                 ? 'text-amber-800'
                                 : 'text-sky-700'
                         return (
-                            <p key={`${field}-${diag.rule_id}-${index}`} className={`text-[11px] ${severityClassName}`}>
+                            <p key={`${field}-${diag.rule_id}-${index}`} className={`text-xs ${severityClassName}`}>
                                 {diag.message}
                             </p>
                         )

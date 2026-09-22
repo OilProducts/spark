@@ -99,13 +99,13 @@ export function ProjectConversationSurface({
             >
                 <CardHeader className="gap-1 px-4">
                     <div className="flex items-center justify-between gap-3">
-                        <CardTitle className="text-sm">
+                        <CardTitle className="text-base">
                             {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
                         </CardTitle>
                         {activeProjectPath && activeChatMode ? (
                             <span
                                 data-testid="project-active-chat-mode-badge"
-                                className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                                className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
                             >
                                 {activeChatMode === 'plan' ? 'Plan mode' : 'Chat mode'}
                             </span>
@@ -182,7 +182,7 @@ export function ProjectConversationSurface({
                                 rows={4}
                             />
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                <p className="text-[11px] text-muted-foreground">
+                                <p className="text-xs text-muted-foreground">
                                     Press Enter to send. Use Shift+Enter for a new line.
                                 </p>
                                 <div className="flex flex-wrap items-center justify-end gap-2">
@@ -195,7 +195,7 @@ export function ProjectConversationSurface({
                                         onChange={(event) => onChatProviderChange(event.target.value)}
                                         disabled={controlsDisabled}
                                         size="sm"
-                                        className="max-w-[9rem] text-xs"
+                                        className="max-w-[9rem] text-sm"
                                     >
                                         {chatProviderOptions.map((option) => (
                                             <NativeSelectOption key={option.value} value={option.value}>
@@ -210,7 +210,7 @@ export function ProjectConversationSurface({
                                         onChange={(event) => onChatModelChange(event.target.value)}
                                         disabled={controlsDisabled || isChatModelSelectDisabled}
                                         size="sm"
-                                        className="max-w-[13rem] text-xs"
+                                        className="max-w-[13rem] text-sm"
                                     >
                                         {chatModelOptions.map((option) => (
                                             <NativeSelectOption key={option.value} value={option.value}>
@@ -225,7 +225,7 @@ export function ProjectConversationSurface({
                                         onChange={(event) => onChatReasoningEffortChange(event.target.value)}
                                         disabled={controlsDisabled}
                                         size="sm"
-                                        className="max-w-[9rem] text-xs"
+                                        className="max-w-[9rem] text-sm"
                                     >
                                         {chatReasoningEffortOptions.map((option) => (
                                             <NativeSelectOption key={option.value || 'default'} value={option.value}>

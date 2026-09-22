@@ -73,7 +73,7 @@ export function EdgeInspectorPanel({
                                 onChange={(event) => onPropertyChange('condition', event.target.value)}
                                 placeholder='e.g. outcome = "success"'
                             />
-                            <div data-testid="edge-condition-syntax-hints" className="space-y-1 rounded-md border border-border/80 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+                            <div data-testid="edge-condition-syntax-hints" className="space-y-1 rounded-md border border-border/80 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                                 <p>Use && to join clauses.</p>
                                 <p>{'Supported keys: outcome, preferred_label, context.<path>'}</p>
                                 <p>Operators: = or !=</p>
@@ -81,7 +81,7 @@ export function EdgeInspectorPanel({
                             {renderFieldDiagnostics('edge', 'condition', edgeFieldDiagnostics, 'edge-field-diagnostics-condition')}
                             <div
                                 data-testid="edge-condition-preview-feedback"
-                                className={`rounded-md border px-3 py-2 text-[11px] ${
+                                className={`rounded-md border px-3 py-2 text-xs ${
                                     conditionPreviewHasError
                                         ? 'border-destructive/40 bg-destructive/10 text-destructive'
                                         : conditionPreviewHasWarning

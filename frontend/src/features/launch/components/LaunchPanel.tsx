@@ -173,7 +173,7 @@ export function LaunchPanel({
         <div data-testid="launch-panel" className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
-                    <h3 className="text-sm font-semibold text-foreground">Launch Flow</h3>
+                    <h3 className="text-base font-semibold text-foreground">Launch Flow</h3>
                     <p
                         data-testid="launch-panel-target-copy"
                         className="text-xs leading-5 text-muted-foreground"
@@ -269,7 +269,7 @@ export function LaunchPanel({
 
             <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-1.5">
-                    <Label htmlFor="launch-panel-working-directory" className="text-xs">
+                    <Label htmlFor="launch-panel-working-directory" className="text-sm">
                         Working directory
                     </Label>
                     <Input
@@ -278,11 +278,11 @@ export function LaunchPanel({
                         value={workingDirectory}
                         onChange={(event) => setWorkingDirectory(event.target.value)}
                         placeholder={projectPath || undefined}
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     />
                 </div>
                 <div className="space-y-1.5">
-                    <Label htmlFor="launch-panel-model" className="text-xs">
+                    <Label htmlFor="launch-panel-model" className="text-sm">
                         Model override
                     </Label>
                     <Input
@@ -291,7 +291,7 @@ export function LaunchPanel({
                         value={model}
                         onChange={(event) => setModel(event.target.value)}
                         placeholder="Use flow/server default"
-                        className="h-8 text-xs"
+                        className="h-8 text-sm"
                     />
                 </div>
             </div>

@@ -121,8 +121,8 @@ export function TriggersPanel() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
-            <h2 className="text-sm font-semibold text-foreground">Triggers</h2>
-            <p className="text-xs leading-5 text-muted-foreground">
+            <h2 className="text-xl font-semibold tracking-tight text-foreground">Triggers</h2>
+            <p className="text-sm text-muted-foreground">
               Manage system routing, schedules, polling, flow-event automation, and shared webhook ingress.
             </p>
           </div>
@@ -170,7 +170,7 @@ export function TriggersPanel() {
             <Card className="gap-4 py-4">
               <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
                 <div>
-                  <CardTitle className="text-sm">System triggers</CardTitle>
+                  <CardTitle className="text-base">System triggers</CardTitle>
                   <div className="text-sm text-muted-foreground">Protected approval and review routing.</div>
                 </div>
                 <Button
@@ -203,10 +203,10 @@ export function TriggersPanel() {
                     <div className="w-full">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-sm font-medium">{trigger.name}</span>
-                        <span className="text-[11px] text-muted-foreground">{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
+                        <span className="text-xs text-muted-foreground">{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Badge variant="outline" className="text-[11px]">
+                        <Badge variant="outline">
                           {triggerTargetSummary(trigger, activeProjectPath)}
                         </Badge>
                         <span className="text-xs text-muted-foreground">{triggerSourceSummary(trigger)}</span>
@@ -226,7 +226,7 @@ export function TriggersPanel() {
 
             <Card className="gap-4 py-4">
               <CardHeader className="gap-1 px-4">
-                <CardTitle className="text-sm">Custom triggers</CardTitle>
+                <CardTitle className="text-base">Custom triggers</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 px-4 pt-0">
                 {status !== 'ready' && status !== 'error' ? (
@@ -248,10 +248,10 @@ export function TriggersPanel() {
                     <div className="w-full">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-sm font-medium">{trigger.name}</span>
-                        <span className="text-[11px] text-muted-foreground">{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
+                        <span className="text-xs text-muted-foreground">{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <Badge variant="outline" className="text-[11px]">
+                        <Badge variant="outline">
                           {triggerTargetSummary(trigger, activeProjectPath)}
                         </Badge>
                         <span className="text-xs text-muted-foreground">{triggerSourceSummary(trigger)}</span>
@@ -273,7 +273,7 @@ export function TriggersPanel() {
           <div className="space-y-6">
             <Card className="gap-4 py-4">
               <CardHeader className="gap-1 px-4">
-                <CardTitle className="text-sm">Create trigger</CardTitle>
+                <CardTitle className="text-base">Create trigger</CardTitle>
               </CardHeader>
               <CardContent className="px-4 pt-0">
               <TriggerEditor
@@ -299,7 +299,7 @@ export function TriggersPanel() {
             <Card className="gap-4 py-4">
               <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
                 <div>
-                  <CardTitle className="text-sm">Selected trigger</CardTitle>
+                  <CardTitle className="text-base">Selected trigger</CardTitle>
                   <div className="text-sm text-muted-foreground">
                     {selectedTrigger ? selectedTrigger.id : 'Select a trigger to inspect and edit it.'}
                   </div>

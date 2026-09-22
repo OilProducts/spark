@@ -268,7 +268,7 @@ export function RunGraphCard({
             <CardHeader className="gap-1 px-4">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     <h3
-                        className="shrink-0 whitespace-nowrap text-sm font-semibold text-foreground"
+                        className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground"
                         title="Live node states for the selected run. Click a node to focus its activity; click the background to clear the selection."
                     >
                         Run Graph

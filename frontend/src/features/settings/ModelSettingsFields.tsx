@@ -48,7 +48,7 @@ export function ModelSettingsFields({ models, activeProjectPath, invalidModel, p
                         llm_profile: selection.llm_profile || null, model: null, reasoning_effort: null })
                     setCustomModel(false)
                 }}
-                className="text-xs"
+                className="text-sm"
             >
                 <option value="">Use provider default</option>
                 {providerOptions.map((option) => {
@@ -70,7 +70,7 @@ export function ModelSettingsFields({ models, activeProjectPath, invalidModel, p
                     setCustomModel(value === 'custom')
                     if (value !== 'custom') setUiDefault('llm_model', value.replace(/^model:/, ''))
                 }}
-                className="text-xs"
+                className="text-sm"
             >
                 <option value="">Use provider default</option>
                 {modelOptions.map((option) => (
@@ -92,7 +92,7 @@ export function ModelSettingsFields({ models, activeProjectPath, invalidModel, p
                             setCustomModel(true)
                             setUiDefault('llm_model', event.target.value)
                         }}
-                        className="text-xs"
+                        className="text-sm"
                     />
                 </>
             )}
@@ -106,7 +106,7 @@ export function ModelSettingsFields({ models, activeProjectPath, invalidModel, p
                 id={`${id}-settings-default-reasoning-effort`}
                 value={uiDefaults.reasoning_effort}
                 onChange={(event) => setUiDefault('reasoning_effort', event.target.value)}
-                className="text-xs"
+                className="text-sm"
             >
                 <option value="">Use provider default</option>
                 <option value="low">Low</option>

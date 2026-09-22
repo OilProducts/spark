@@ -1437,7 +1437,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                 setRawYamlDraft(event.target.value);
                                 setRawHandoffError(null);
                             }}
-                            className="h-full w-full resize-none font-mono text-xs leading-5"
+                            className="h-full w-full resize-none font-mono text-sm leading-5"
                             spellCheck={false}
                         />
                     </div>

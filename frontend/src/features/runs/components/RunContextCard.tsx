@@ -29,11 +29,11 @@ function ContextRows({ rows }: { rows: RunContextRow[] }) {
         <>
             {rows.map((row) => (
                 <tr key={row.key} data-testid="run-context-row" className="border-t border-border/70 align-top">
-                    <td className="break-all px-3 py-2 font-mono text-xs text-foreground">{row.key}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-foreground">
+                    <td className="break-all px-3 py-2 font-mono text-sm text-foreground">{row.key}</td>
+                    <td className="px-3 py-2 font-mono text-sm text-foreground">
                         <span
                             data-testid="run-context-row-type"
-                            className="mr-2 inline-flex rounded border border-border/80 bg-muted/50 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                            className="mr-2 inline-flex rounded border border-border/80 bg-muted/50 px-1.5 py-0.5 text-xs uppercase tracking-wide text-muted-foreground"
                         >
                             {row.valueType}
                         </span>
@@ -92,7 +92,7 @@ export function RunContextCard({
                         data-testid="run-context-refresh-button"
                         variant="outline"
                         size="xs"
-                        className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        className="h-7 text-xs text-muted-foreground hover:text-foreground"
                     >
                         {isLoading ? 'Refreshing…' : 'Refresh'}
                     </Button>
@@ -102,7 +102,7 @@ export function RunContextCard({
                         data-testid="run-context-copy-button"
                         variant="outline"
                         size="xs"
-                        className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        className="h-7 text-xs text-muted-foreground hover:text-foreground"
                     >
                         Copy JSON
                     </Button>
@@ -111,7 +111,7 @@ export function RunContextCard({
                             data-testid="run-context-export-button"
                             href={contextExportHref}
                             download="run-context.json"
-                            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
                         >
                             Export JSON
                         </a>

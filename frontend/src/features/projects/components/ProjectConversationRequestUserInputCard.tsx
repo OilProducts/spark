@@ -45,7 +45,7 @@ export function ProjectConversationRequestUserInputCard({
                 data-testid={`project-request-user-input-summary-${entry.id}`}
                 className="max-w-[85%] rounded-md border border-amber-500/40 bg-amber-50/70 px-3 py-2 text-foreground"
             >
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80">
+                <p className="text-xs font-semibold uppercase tracking-wide text-amber-900/80">
                     Answered Request
                 </p>
                 <div className="mt-2 space-y-2">
@@ -53,15 +53,15 @@ export function ProjectConversationRequestUserInputCard({
                         const answer = entry.requestUserInput.answers[question.id] ?? ''
                         return (
                             <div key={question.id} className="space-y-0.5">
-                                <p className="text-xs font-medium text-foreground">{question.question}</p>
-                                <p className="text-xs text-muted-foreground">
+                                <p className="text-sm font-medium text-foreground">{question.question}</p>
+                                <p className="text-sm text-muted-foreground">
                                     {answeredSummaryValue(question, answer)}
                                 </p>
                             </div>
                         )
                     })}
                 </div>
-                <p className="mt-2 text-[10px] text-amber-900/70">
+                <p className="mt-2 text-xs text-amber-900/70">
                     {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
                 </p>
             </div>
@@ -74,10 +74,10 @@ export function ProjectConversationRequestUserInputCard({
                 data-testid={`project-request-user-input-expired-${entry.id}`}
                 className="max-w-[85%] rounded-md border border-rose-500/40 bg-rose-50/70 px-3 py-2 text-foreground"
             >
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-rose-900/80">
+                <p className="text-xs font-semibold uppercase tracking-wide text-rose-900/80">
                     Expired Request
                 </p>
-                <p className="mt-2 text-xs text-rose-950/85">
+                <p className="mt-2 text-sm text-rose-950/85">
                     The request expired before this answer could be used. Send a new message to continue.
                 </p>
                 <div className="mt-2 space-y-2">
@@ -85,15 +85,15 @@ export function ProjectConversationRequestUserInputCard({
                         const answer = entry.requestUserInput.answers[question.id] ?? ''
                         return (
                             <div key={question.id} className="space-y-0.5">
-                                <p className="text-xs font-medium text-foreground">{question.question}</p>
-                                <p className="text-xs text-muted-foreground">
+                                <p className="text-sm font-medium text-foreground">{question.question}</p>
+                                <p className="text-sm text-muted-foreground">
                                     {answer ? answeredSummaryValue(question, answer) : 'No answer submitted'}
                                 </p>
                             </div>
                         )
                     })}
                 </div>
-                <p className="mt-2 text-[10px] text-rose-900/70">
+                <p className="mt-2 text-xs text-rose-900/70">
                     {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
                 </p>
             </div>
@@ -120,7 +120,7 @@ export function ProjectConversationRequestUserInputCard({
             data-testid={`project-request-user-input-card-${entry.id}`}
             className="w-full max-w-[85%] rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-foreground"
         >
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80">
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-900/80">
                 Needs Input
             </p>
             {validationError || actionError ? (
@@ -140,10 +140,10 @@ export function ProjectConversationRequestUserInputCard({
                     return (
                         <div key={question.id} className="space-y-2">
                             <div className="space-y-0.5">
-                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-900/80">
+                                <p className="text-xs font-semibold uppercase tracking-wide text-amber-900/80">
                                     {question.header}
                                 </p>
-                                <p className="text-xs text-foreground">{question.question}</p>
+                                <p className="text-sm text-foreground">{question.question}</p>
                             </div>
                             {question.questionType === 'MULTIPLE_CHOICE' && question.options.length > 0 ? (
                                 <div className="flex flex-wrap gap-1.5">
@@ -167,7 +167,7 @@ export function ProjectConversationRequestUserInputCard({
                                                 disabled={isSubmitting}
                                                 variant="outline"
                                                 size="xs"
-                                                className={`h-7 text-[11px] ${
+                                                className={`h-7 text-xs ${
                                                     isSelected
                                                         ? 'border-amber-700 bg-amber-100 text-amber-950'
                                                         : 'border-amber-500/50 bg-white text-amber-900 hover:bg-amber-100'
@@ -193,7 +193,7 @@ export function ProjectConversationRequestUserInputCard({
                                     }}
                                     disabled={isSubmitting}
                                     placeholder={question.allowOther ? 'Or enter another answer...' : 'Type answer...'}
-                                    className="h-8 border-amber-500/40 bg-white text-[11px] text-amber-950 focus-visible:ring-amber-500/40"
+                                    className="h-8 border-amber-500/40 bg-white text-sm text-amber-950 focus-visible:ring-amber-500/40"
                                 />
                             ) : null}
                             {question.options.length > 0 ? (
@@ -202,7 +202,7 @@ export function ProjectConversationRequestUserInputCard({
                                         option.description ? (
                                             <p
                                                 key={`${question.id}-${option.label}-description`}
-                                                className="text-[10px] text-amber-900/80"
+                                                className="text-xs text-amber-900/80"
                                             >
                                                 <span className="font-medium text-amber-900">{option.label}:</span>{' '}
                                                 {option.description}
@@ -216,7 +216,7 @@ export function ProjectConversationRequestUserInputCard({
                 })}
             </div>
             <div className="mt-3 flex items-center justify-between gap-2">
-                <p className="text-[10px] text-amber-900/70">{formatConversationTimestamp(entry.timestamp)}</p>
+                <p className="text-xs text-amber-900/70">{formatConversationTimestamp(entry.timestamp)}</p>
                 <Button
                     type="button"
                     data-testid={`project-request-user-input-submit-${entry.requestUserInput.requestId}`}
@@ -224,7 +224,7 @@ export function ProjectConversationRequestUserInputCard({
                     disabled={isSubmitting}
                     variant="outline"
                     size="xs"
-                    className="h-7 border-amber-600/60 bg-white text-[11px] font-medium text-amber-950 hover:bg-amber-100"
+                    className="h-7 border-amber-600/60 bg-white text-xs font-medium text-amber-950 hover:bg-amber-100"
                 >
                     {isSubmitting ? 'Submitting...' : 'Submit'}
                 </Button>

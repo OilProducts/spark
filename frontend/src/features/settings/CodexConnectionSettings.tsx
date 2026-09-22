@@ -50,7 +50,7 @@ export function CodexConnectionControls() {
     }
 
     const disabled = busy || (!connection && !error)
-    return <div className="space-y-3 text-xs">
+    return <div className="space-y-3 text-sm">
         <p>Connect your ChatGPT account for Codex in Spark. Codex refreshes this connection automatically.</p>
         <p role="status" aria-live="polite">
             {!connection ? (error ? 'Connection unavailable.' : 'Checking connection…')
@@ -86,7 +86,7 @@ export function CodexConnectionControls() {
 
 export function CodexConnectionSettings() {
     return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="px-4"><h3 className="text-sm font-semibold">Codex connection</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-base font-semibold">Codex connection</h3></CardHeader>
         <CardContent className="px-4"><CodexConnectionControls /></CardContent>
     </Card>
 }

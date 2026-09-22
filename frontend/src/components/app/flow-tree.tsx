@@ -137,7 +137,7 @@ function FlowTreeDirectoryRow({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-full justify-start gap-2 px-3 text-[11px] font-semibold tracking-[0.08em] text-muted-foreground"
+                    className="h-8 w-full justify-start gap-2 px-3 text-xs font-semibold tracking-[0.08em] text-muted-foreground"
                     style={{ paddingLeft: `${indent}px` }}
                     title={node.path}
                 >

@@ -105,7 +105,7 @@ export function ProjectFlowRunRequestEntry({
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
                             Flow run request
                         </p>
                         <span className={getSurfaceToneClassName(statusPresentation.tone)}>
@@ -114,17 +114,17 @@ export function ProjectFlowRunRequestEntry({
                     </div>
                     <p className="text-sm font-medium text-foreground">{flowRunRequest.summary}</p>
                 </div>
-                <div className="space-y-1 text-right text-[11px] text-muted-foreground">
+                <div className="space-y-1 text-right text-xs text-muted-foreground">
                     <p className="font-mono text-foreground">{flowRunRequest.id}</p>
                     <p>Updated {formatConversationTimestamp(flowRunRequest.updated_at)}</p>
                 </div>
             </div>
-            <div className="mt-3 space-y-2 text-[11px] text-muted-foreground">
+            <div className="mt-3 space-y-2 text-xs text-muted-foreground">
                 <p>
                     Flow: <span className="font-mono text-foreground">{flowRunRequest.flow_name}</span>
                 </p>
                 {flowRunRequest.goal ? (
-                    <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 text-[11px] text-muted-foreground">
+                    <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 text-sm text-muted-foreground">
                         {flowRunRequest.goal}
                     </p>
                 ) : null}
@@ -133,7 +133,7 @@ export function ProjectFlowRunRequestEntry({
                         <p>
                             Launch context:
                         </p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-2 font-mono text-[10px] text-muted-foreground">
+                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-2 font-mono text-xs text-muted-foreground">
                             {launchContextText}
                         </pre>
                     </div>
@@ -254,7 +254,7 @@ export function ProjectFlowLaunchEntry({
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-sky-700">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
                             Flow launch
                         </p>
                         <span className={getSurfaceToneClassName(statusPresentation.tone)}>
@@ -263,24 +263,24 @@ export function ProjectFlowLaunchEntry({
                     </div>
                     <p className="text-sm font-medium text-foreground">{flowLaunch.summary}</p>
                 </div>
-                <div className="space-y-1 text-right text-[11px] text-muted-foreground">
+                <div className="space-y-1 text-right text-xs text-muted-foreground">
                     <p className="font-mono text-foreground">{flowLaunch.id}</p>
                     <p>Updated {formatConversationTimestamp(flowLaunch.updated_at)}</p>
                 </div>
             </div>
-            <div className="mt-3 space-y-2 text-[11px] text-muted-foreground">
+            <div className="mt-3 space-y-2 text-xs text-muted-foreground">
                 <p>
                     Flow: <span className="font-mono text-foreground">{flowLaunch.flow_name}</span>
                 </p>
                 {flowLaunch.goal ? (
-                    <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 text-[11px] text-muted-foreground">
+                    <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 text-sm text-muted-foreground">
                         {flowLaunch.goal}
                     </p>
                 ) : null}
                 {launchContextText ? (
                     <div className="space-y-1">
                         <p>Launch context:</p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-2 font-mono text-[10px] text-muted-foreground">
+                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-2 font-mono text-xs text-muted-foreground">
                             {launchContextText}
                         </pre>
                     </div>

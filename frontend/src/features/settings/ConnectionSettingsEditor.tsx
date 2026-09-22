@@ -7,7 +7,7 @@ import { useConnectionSettingsEditor } from './hooks/useConnectionSettingsEditor
 export function ConnectionSettingsEditor() {
     const editor = useConnectionSettingsEditor()
     return <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Server and client connections</h3></CardHeader>
+        <CardHeader><h3 className="text-base font-semibold">Server and client connections</h3></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs">Server binding changes require restart. CLI and environment overrides take precedence. Desktop uses its native remote-access control and an automatically assigned port.</p>

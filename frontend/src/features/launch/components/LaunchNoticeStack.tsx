@@ -25,7 +25,7 @@ export function LaunchNoticeStack({
             {showValidationWarningBanner ? (
                 <Alert
                     data-testid="execute-warning-banner"
-                    className="border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium leading-none text-amber-800"
+                    className="border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium leading-none text-amber-800"
                 >
                     <AlertDescription className="text-inherit">
                         Warnings present; run allowed.
@@ -35,7 +35,7 @@ export function LaunchNoticeStack({
             {runStartGitPolicyWarning ? (
                 <Alert
                     data-testid="run-start-git-policy-warning-banner"
-                    className="max-w-sm truncate border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] font-medium leading-none text-amber-800"
+                    className="max-w-sm truncate border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium leading-none text-amber-800"
                 >
                     <AlertDescription className="text-inherit">
                         {runStartGitPolicyWarning}
@@ -45,7 +45,7 @@ export function LaunchNoticeStack({
             {runStartError ? (
                 <Alert
                     data-testid="run-start-error-banner"
-                    className="max-w-sm truncate border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] font-medium leading-none text-destructive"
+                    className="max-w-sm truncate border-destructive/40 bg-destructive/10 px-2 py-1 text-xs font-medium leading-none text-destructive"
                 >
                     <AlertDescription className="text-inherit">
                         Failed to start run: {runStartError}
@@ -55,7 +55,7 @@ export function LaunchNoticeStack({
             {lastLaunchFailure ? (
                 <Alert
                     data-testid="launch-failure-diagnostics"
-                    className="max-w-sm border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+                    className="max-w-sm border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
                 >
                     <AlertDescription className="text-inherit">
                         <p className="font-medium">Last launch failure</p>

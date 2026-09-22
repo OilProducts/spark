@@ -23,7 +23,7 @@ export function ContextKeyListEditor({
         <div data-testid={testId} className="space-y-1.5 rounded-md border border-border/80 bg-muted/10 px-3 py-3">
             <div>
                 <FieldLabel htmlFor={`${id}-keys`}>{title}</FieldLabel>
-                <p id={`${id}-description`} className="mt-1 text-[11px] text-muted-foreground">{description}</p>
+                <p id={`${id}-description`} className="mt-1 text-xs text-muted-foreground">{description}</p>
             </div>
             <Field className="gap-1">
                 <Textarea
@@ -34,16 +34,16 @@ export function ContextKeyListEditor({
                     value={value}
                     onChange={(event) => onChange(event.target.value)}
                     rows={4}
-                    className="min-h-24 px-2 py-2 font-mono text-xs"
+                    className="min-h-24 px-2 py-2 font-mono text-sm"
                     placeholder="One context.* key per line"
                 />
             </Field>
             {error ? (
-                <p id={`${id}-error`} data-testid={`${testId}-error`} className="text-[11px] text-destructive">
+                <p id={`${id}-error`} data-testid={`${testId}-error`} className="text-xs text-destructive">
                     {error}
                 </p>
             ) : (
-                <p id={`${id}-help`} className="text-[11px] text-muted-foreground">One `context.*` key per line.</p>
+                <p id={`${id}-help`} className="text-xs text-muted-foreground">One `context.*` key per line.</p>
             )}
         </div>
     )

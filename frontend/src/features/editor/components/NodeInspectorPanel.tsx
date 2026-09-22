@@ -146,7 +146,7 @@ export function NodeInspectorPanel({
                                     aria-invalid={nodeFieldDiagnostics.prompt?.some((diagnostic) => diagnostic.severity === 'error') || undefined}
                                     value={(selectedNode?.data?.prompt as string) || ''}
                                     onChange={(event) => onPropertyChange('prompt', event.target.value)}
-                                    className="flex-1 resize-none font-mono text-xs"
+                                    className="flex-1 resize-none font-mono text-sm"
                                     placeholder="Enter system prompt instructions..."
                                 />
                                 {nodeFieldDiagnostics.prompt?.length ? (
@@ -185,7 +185,7 @@ export function NodeInspectorPanel({
                                     id={`${id}-tool-command`}
                                     value={(selectedNode?.data?.['tool.command'] as string) || ''}
                                     onChange={(event) => onPropertyChange('tool.command', event.target.value)}
-                                    className="font-mono text-xs"
+                                    className="font-mono text-sm"
                                     placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>
@@ -330,11 +330,11 @@ export function NodeInspectorPanel({
                                         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                                             Child Flow Linkage
                                         </p>
-                                        <p id={`${id}-child-flow-help`} className="mt-1 text-[11px] text-muted-foreground">
+                                        <p id={`${id}-child-flow-help`} className="mt-1 text-xs text-muted-foreground">
                                             Subflow nodes use this node's <code>flow_ref</code> config and optional input map.
                                         </p>
                                     </div>
-                                    <div className="space-y-1 text-[11px] text-foreground">
+                                    <div className="space-y-1 text-sm text-foreground">
                                         <p><span className="font-mono">flow_ref</span>: {((selectedNode?.data?.flow_ref as string) || '(unset)')}</p>
                                     </div>
                                     <Button
@@ -442,7 +442,7 @@ export function NodeInspectorPanel({
                                                         data-testid="node-attr-input-tool.hooks.pre"
                                                         value={(selectedNode?.data?.['tool.hooks.pre'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.hooks.pre', event.target.value)}
-                                                        className="font-mono text-xs"
+                                                        className="font-mono text-sm"
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {selectedNodeToolHookPreWarning ? (
@@ -459,7 +459,7 @@ export function NodeInspectorPanel({
                                                         data-testid="node-attr-input-tool.hooks.post"
                                                         value={(selectedNode?.data?.['tool.hooks.post'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.hooks.post', event.target.value)}
-                                                        className="font-mono text-xs"
+                                                        className="font-mono text-sm"
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {selectedNodeToolHookPostWarning ? (
@@ -475,7 +475,7 @@ export function NodeInspectorPanel({
                                                         data-testid="node-attr-input-tool.artifacts.paths"
                                                         value={(selectedNode?.data?.['tool.artifacts.paths'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.artifacts.paths', event.target.value)}
-                                                        className="font-mono text-xs"
+                                                        className="font-mono text-sm"
                                                         placeholder="e.g. dist/**,reports/*.json"
                                                     />
                                                 </div>
@@ -486,7 +486,7 @@ export function NodeInspectorPanel({
                                                         data-testid="node-attr-input-tool.artifacts.stdout"
                                                         value={(selectedNode?.data?.['tool.artifacts.stdout'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.artifacts.stdout', event.target.value)}
-                                                        className="font-mono text-xs"
+                                                        className="font-mono text-sm"
                                                         placeholder="e.g. stdout.txt"
                                                     />
                                                 </div>
@@ -497,7 +497,7 @@ export function NodeInspectorPanel({
                                                         data-testid="node-attr-input-tool.artifacts.stderr"
                                                         value={(selectedNode?.data?.['tool.artifacts.stderr'] as string) || ''}
                                                         onChange={(event) => onPropertyChange('tool.artifacts.stderr', event.target.value)}
-                                                        className="font-mono text-xs"
+                                                        className="font-mono text-sm"
                                                         placeholder="e.g. stderr.txt"
                                                     />
                                                 </div>

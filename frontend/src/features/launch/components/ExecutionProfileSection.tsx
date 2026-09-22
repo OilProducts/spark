@@ -23,7 +23,7 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
             className="grid gap-3 rounded-lg border border-border/80 bg-muted/10 p-4 md:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] md:items-end"
         >
             <div className="min-w-0 space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <p className="text-sm font-semibold text-foreground">
                     Execution profile
                 </p>
                 <p
@@ -58,7 +58,7 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
                 )}
             </div>
             <div className="space-y-1.5">
-                <Label htmlFor="execution-profile-override" className="text-xs">
+                <Label htmlFor="execution-profile-override" className="text-sm">
                     Run override
                 </Label>
                 <NativeSelect
@@ -67,7 +67,7 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
                     value={selectedProfileId}
                     onChange={(event) => setSelectedProfileId(event.target.value)}
                     size="sm"
-                    className="w-full text-xs"
+                    className="w-full text-sm"
                 >
                     <NativeSelectOption value="">
                         Project/runtime default

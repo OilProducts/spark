@@ -25,7 +25,7 @@ export function RunResultCard({
             <CardHeader className="gap-1 px-4">
                 <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
-                        <h3 className="text-sm font-semibold text-foreground">Result</h3>
+                        <h3 className="text-base font-semibold text-foreground">Result</h3>
                         <p className="text-xs leading-5 text-muted-foreground">
                             {result?.display_mode === 'summary' ? 'Summarized output' : 'Final output'}
                             {result?.source_node_id ? ` from ${result.source_node_id}` : ''}
@@ -39,7 +39,7 @@ export function RunResultCard({
                                 onClick={() => onViewSource(sourcePath)}
                                 variant="outline"
                                 size="xs"
-                                className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                                className="h-7 text-xs text-muted-foreground hover:text-foreground"
                             >
                                 Source
                             </Button>
@@ -50,7 +50,7 @@ export function RunResultCard({
                             onClick={onRefresh}
                             variant="outline"
                             size="xs"
-                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                            className="h-7 text-xs text-muted-foreground hover:text-foreground"
                         >
                             {isLoading ? 'Refreshing...' : 'Refresh'}
                         </Button>

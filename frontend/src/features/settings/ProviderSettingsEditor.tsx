@@ -10,7 +10,7 @@ const providerNames = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemin
 export function ProviderSettingsEditor() {
     const editor = useProviderSettingsEditor()
     return <Card>
-        <CardHeader><h3 className="text-sm font-semibold">Provider connections</h3></CardHeader>
+        <CardHeader><h3 className="text-base font-semibold">Provider connections</h3></CardHeader>
         <CardContent className="space-y-3">
         {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs">Credentials stay in environment variables. Environment overrides take precedence; saved connections apply to new work.</p>

@@ -113,7 +113,7 @@ export function RunArtifactsCard({
                         data-testid="run-artifact-refresh-button"
                         variant="outline"
                         size="xs"
-                        className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                        className="h-7 text-xs text-muted-foreground hover:text-foreground"
                     >
                         {isLoading ? 'Refreshing…' : 'Refresh'}
                     </Button>
@@ -158,7 +158,7 @@ export function RunArtifactsCard({
                         {groups.length > 0 ? (
                             groups.map((group) => (
                                 <section key={group.key} data-testid={`run-artifact-group-${group.key}`} className="space-y-1">
-                                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                    <h4 className="text-sm font-semibold text-foreground">
                                         {group.label}
                                     </h4>
                                     <div className="overflow-hidden rounded-md border border-border/80">
@@ -167,7 +167,7 @@ export function RunArtifactsCard({
                                                 {group.entries.map((artifact) => (
                                                     <tr key={artifact.path} data-testid="run-artifact-row" className="border-t border-border/70 first:border-t-0">
                                                         <td
-                                                            className="break-all px-3 py-1.5 font-mono text-xs text-foreground"
+                                                            className="break-all px-3 py-1.5 font-mono text-sm text-foreground"
                                                             title={artifact.path}
                                                         >
                                                             {displayPath(group, artifact.path)}
@@ -186,7 +186,7 @@ export function RunArtifactsCard({
                                                                     }}
                                                                     variant="outline"
                                                                     size="xs"
-                                                                    className="h-6 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                                                                    className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
                                                                 >
                                                                     View
                                                                 </Button>
@@ -194,7 +194,7 @@ export function RunArtifactsCard({
                                                                     data-testid="run-artifact-download-link"
                                                                     href={artifactDownloadHref(artifact.path) || undefined}
                                                                     download={artifact.path.split('/').pop() || 'artifact'}
-                                                                    className="inline-flex h-6 items-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                                                                    className="inline-flex h-6 items-center rounded-md border border-border px-2 text-xs font-medium text-muted-foreground hover:text-foreground"
                                                                 >
                                                                     Download
                                                                 </a>

@@ -147,7 +147,7 @@ function ProjectTasks({ project, selected, active }: { project: string; selected
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)
     if (!selected) return null
     return <section aria-label="Project tasks" className="flex h-full min-h-0 flex-col gap-4 p-3 lg:p-6">
-        <div className="flex shrink-0 flex-wrap gap-2 items-center"><h1 ref={boardHeading} tabIndex={-1} className="text-lg font-semibold tracking-tight">Tasks</h1>
+        <div className="flex shrink-0 flex-wrap gap-2 items-center"><h1 ref={boardHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">Tasks</h1>
             <Button type="button" disabled={busy} onClick={e => open(null, e.currentTarget)}>Create task</Button>
             <Label className="flex items-center gap-2">Search titles<Input ref={searchInput} type="search" value={search} onChange={e => filter(e.target.value, archived)} className="w-40" /></Label>
             {search && <Button variant="ghost" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear search</Button>}

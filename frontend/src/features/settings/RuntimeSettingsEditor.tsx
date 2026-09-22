@@ -7,7 +7,7 @@ import { useRuntimeSettingsEditor } from './hooks/useRuntimeSettingsEditor'
 export function RuntimeSettingsEditor() {
     const { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard } = useRuntimeSettingsEditor()
     return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="px-4"><h3 className="text-sm font-semibold">Runtime paths</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-base font-semibold">Runtime paths</h3></CardHeader>
         <CardContent className="space-y-3 px-4">
             {pending ? <p role="status">Saving or reloading settings…</p> : !saved && !error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs text-muted-foreground">Changes require restart. Leave a path empty to use its default. Command line and environment overrides take precedence.</p>

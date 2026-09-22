@@ -621,7 +621,7 @@ export function RunStream() {
             {showSaveStateIndicator ? (
                 <div
                     data-testid="global-save-state-indicator"
-                    className={`pointer-events-auto rounded-md border px-2 py-1 text-[11px] font-medium shadow-sm transition-opacity duration-1000 ${
+                    className={`pointer-events-auto rounded-md border px-2 py-1 text-xs font-medium shadow-sm transition-opacity duration-1000 ${
                         saveState === 'error'
                             ? 'border-destructive/50 bg-destructive/10 text-destructive'
                             : saveState === 'conflict'
@@ -635,7 +635,7 @@ export function RunStream() {
                     {saveStateLabel ? <span>{saveStateLabel}</span> : null}
                     {saveErrorMessage ? <span className="ml-1">- {saveErrorMessage}</span> : null}
                     {remediation ? (
-                        <p data-testid="global-save-remediation-hint" className="mt-1 text-[10px] font-normal leading-4">
+                        <p data-testid="global-save-remediation-hint" className="mt-1 text-xs font-normal leading-4">
                             {remediation.message}
                         </p>
                     ) : null}
@@ -645,7 +645,7 @@ export function RunStream() {
                             onClick={handleRetrySave}
                             variant="outline"
                             size="xs"
-                            className="mt-2 border-current bg-transparent text-[10px] hover:bg-current/10"
+                            className="mt-2 border-current bg-transparent text-xs hover:bg-current/10"
                         >
                             Retry Save
                         </Button>

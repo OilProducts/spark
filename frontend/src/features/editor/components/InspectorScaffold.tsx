@@ -29,14 +29,14 @@ export function InspectorScaffold({
         >
             <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                    <span className="rounded border border-border bg-background px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <span className="rounded border border-border bg-background px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         {scopeLabel}
                     </span>
-                    <h2 className="text-sm font-semibold tracking-tight text-foreground">{title}</h2>
+                    <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
                 </div>
                 <p className="text-xs text-muted-foreground">{description}</p>
                 {entityValue ? (
-                    <div className="rounded border border-border/80 bg-muted/20 px-2 py-1 text-[11px] text-muted-foreground">
+                    <div className="rounded border border-border/80 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
                         <span className="font-semibold text-foreground">{entityLabel || 'Selection'}:</span>{' '}
                         <span className="font-mono">{entityValue}</span>
                     </div>

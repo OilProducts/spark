@@ -133,7 +133,7 @@ export function TriggerEditor({
                         checked={form.enabled}
                         onCheckedChange={(checked) => onChange({ ...form, enabled: checked === true })}
                     />
-                    <span className="text-xs font-medium text-foreground">Enabled</span>
+                    <span className="text-sm font-medium text-foreground">Enabled</span>
                 </Label>
             </div>
 
@@ -276,7 +276,7 @@ export function TriggerEditor({
                             value={form.pollHeadersText}
                             onChange={(event) => onChange({ ...form, pollHeadersText: event.target.value })}
                             disabled={sourceConfigurationDisabled}
-                            className="min-h-24 font-mono text-xs"
+                            className="min-h-24 font-mono text-sm"
                         />
                     </TriggerField>
                 </div>
@@ -319,7 +319,7 @@ export function TriggerEditor({
                     value={form.staticContextText}
                     onChange={(event) => onChange({ ...form, staticContextText: event.target.value })}
                     disabled={protectedTrigger}
-                    className="min-h-24 font-mono text-xs"
+                    className="min-h-24 font-mono text-sm"
                 />
             </TriggerField>
         </div>

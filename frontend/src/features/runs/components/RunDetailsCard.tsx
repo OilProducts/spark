@@ -28,7 +28,7 @@ function SummarySection({
 }) {
     return (
         <section data-testid={testId} className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h4>
+            <h4 className="text-sm font-semibold text-foreground">{title}</h4>
             {children}
         </section>
     )

@@ -131,7 +131,7 @@ export function RunList({
                             <div className="truncate text-sm font-medium text-foreground" title={run.flow_name || run.run_id}>
                                 {run.flow_name || run.run_id.slice(0, 8)}
                             </div>
-                            <div className="truncate text-[11px] leading-4 text-muted-foreground">
+                            <div className="truncate text-xs leading-4 text-muted-foreground">
                                 {metaParts.length > 0 ? (
                                     <span>{metaParts.join(' · ')}</span>
                                 ) : null}
@@ -147,12 +147,12 @@ export function RunList({
                                 ) : null}
                             </div>
                             {holdsExecutionLock ? (
-                                <div className="text-[11px] font-medium text-amber-800">
+                                <div className="text-xs font-medium text-amber-800">
                                     Holding execution lock
                                 </div>
                             ) : null}
                             {queuedForExecutionLock ? (
-                                <div className="text-[11px] font-medium text-amber-800">
+                                <div className="text-xs font-medium text-amber-800">
                                     Queued for execution lock{typeof run.execution_lock?.queue_position === 'number'
                                         ? ` · position ${run.execution_lock.queue_position}`
                                         : ''}
@@ -161,7 +161,7 @@ export function RunList({
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center gap-2">
                             <span
-                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-[11px] font-semibold uppercase tracking-wide ${
+                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-xs font-semibold uppercase tracking-wide ${
                                     STATUS_STYLES[run.status] || 'bg-muted text-muted-foreground'
                                 }`}
                             >
@@ -192,7 +192,7 @@ export function RunList({
         return (
             <section key={key} data-testid={`run-list-group-${key}`} className="space-y-2">
                 <div className={cn(
-                    'flex items-center justify-between px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground',
+                    'flex items-center justify-between px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground',
                     accent,
                 )}
                 >
@@ -302,7 +302,7 @@ export function RunList({
                         {renderRunGroup('running', 'Running', runningRuns)}
                         {queuedLockGroups.map((group) => (
                             <section key={group.identity} className="space-y-2">
-                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-medium text-amber-800">
+                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-800">
                                     Queued execution lock · {group.label}
                                 </div>
                                 <div className="space-y-3">

@@ -1,4 +1,4 @@
-.conversation-markdown { min-width: 0; max-width: 100%; overflow-x: auto; overflow-wrap: anywhere; font-size: 12px; line-height: 1.65; }
+.conversation-markdown { min-width: 0; max-width: 100%; overflow-x: auto; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
 .conversation-markdown :where(p, ul, ol, blockquote, .markdown-code-block, .markdown-table):not(.markdown-diagram *) { margin-block: .5rem; }
 .conversation-markdown :where(h1, h2, h3, h4, h5, h6):not(.markdown-diagram *) { font-weight: 600; margin-block: .6rem .3rem; line-height: 1.3; }
 .conversation-markdown h1:not(.markdown-diagram *) { font-size: 1.5rem; }
@@ -12,9 +12,9 @@
 .conversation-markdown .task-list-item { list-style: none; }
 .conversation-markdown blockquote:not(.markdown-diagram *) { border-left: 2px solid hsl(var(--border)); padding-left: .75rem; }
 .conversation-markdown a:not(.markdown-diagram *) { color: hsl(var(--primary)); text-decoration: underline; }
-.conversation-markdown :not(pre) > code:not(.markdown-diagram *) { border: 1px solid hsl(var(--border)); border-radius: 3px; padding: .1rem .25rem; background: hsl(var(--background)); font-size: 11px; }
+.conversation-markdown :not(pre) > code:not(.markdown-diagram *) { border: 1px solid hsl(var(--border)); border-radius: 3px; padding: .1rem .25rem; background: hsl(var(--background)); font-size: 12px; }
 .conversation-markdown pre:not(.markdown-diagram *) { max-width: 100%; overflow-x: auto; white-space: pre; overflow-wrap: normal; padding: .75rem 2.25rem .75rem .75rem; border: 1px solid hsl(var(--border)); border-radius: 4px; background: hsl(var(--background)); }
-.conversation-markdown pre > code:not(.markdown-diagram *) { font-size: 11px; white-space: pre; overflow: visible; padding: 0; background: transparent; }
+.conversation-markdown pre > code:not(.markdown-diagram *) { font-size: 12px; white-space: pre; overflow: visible; padding: 0; background: transparent; }
 .markdown-code-block { position: relative; min-width: 0; max-width: 100%; }
 .markdown-code-copy { position: absolute; top: .25rem; right: .25rem; }
 .markdown-table { max-width: 100%; overflow-x: auto; }

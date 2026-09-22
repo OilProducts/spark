@@ -606,7 +606,7 @@ edges:
                             ? 'text-amber-800'
                             : 'text-sky-700'
                     return (
-                        <p key={`${scope}-${field}-${diag.rule_id}-${index}`} className={`text-[11px] ${severityClassName}`}>
+                        <p key={`${scope}-${field}-${diag.rule_id}-${index}`} className={`text-xs ${severityClassName}`}>
                             {diag.message}
                         </p>
                     )

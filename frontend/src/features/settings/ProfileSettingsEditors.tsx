@@ -21,7 +21,7 @@ export function LlmProfilesEditor() {
         || (profile.default_model && !profile.models.includes(profile.default_model))
         || (profile.api_key_env && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.api_key_env)))
     const change = (index: number, patch: Partial<LlmProfileSettings>) => editor.setDraft(profiles.map((profile, at) => at === index ? { ...profile, ...patch } : profile))
-    return <Card><CardHeader><h3 className="text-sm font-semibold">LLM profiles</h3></CardHeader><CardContent className="space-y-3">
+    return <Card><CardHeader><h3 className="text-base font-semibold">LLM profiles</h3></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         <p className="text-xs text-muted-foreground">Workspace profiles. Credentials remain in environment variables; only their names are saved.</p>
         <fieldset disabled={editor.pending || !editor.saved} className="space-y-4">
@@ -107,7 +107,7 @@ export function ExecutionProfilesEditor() {
     const profiles = editor.draft?.profiles ?? []
     const invalid = duplicateIds(profiles) || profiles.some((profile) => !profile.label.trim() || (profile.mode === 'local_container' && !profile.image?.trim())) || Object.values(invalidMetadata).some(Boolean)
     const change = (index: number, patch: Partial<ExecutionProfileSettings>) => editor.setDraft((draft) => draft && ({ ...draft, profiles: draft.profiles.map((profile, at) => at === index ? { ...profile, ...patch } : profile) }))
-    return <Card><CardHeader><h3 className="text-sm font-semibold">Execution profiles</h3></CardHeader><CardContent className="space-y-3">
+    return <Card><CardHeader><h3 className="text-base font-semibold">Execution profiles</h3></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         <p className="text-xs text-muted-foreground">Workspace defaults. Saved changes apply to new work; active runs retain their captured profiles.</p>
         <fieldset disabled={editor.pending || !editor.saved} className="space-y-3">

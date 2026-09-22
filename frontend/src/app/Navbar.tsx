@@ -136,7 +136,7 @@ function AttentionBell() {
                 {items.length > 0 && (
                     <span
                         data-testid="attention-bell-count"
-                        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-white"
+                        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-xs font-semibold text-white"
                     >
                         {items.length}
                     </span>
@@ -160,13 +160,13 @@ function AttentionBell() {
                             onClick={() => openItem(item)}
                             className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left hover:bg-muted"
                         >
-                            <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-600">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-amber-600">
                                 {ATTENTION_KIND_LABELS[item.kind]}
                             </span>
-                            <span className="w-full truncate text-xs">
+                            <span className="w-full truncate text-sm">
                                 {item.title || item.run_id || item.id}
                             </span>
-                            <span className="w-full truncate text-[10px] text-muted-foreground">
+                            <span className="w-full truncate text-xs text-muted-foreground">
                                 {formatProjectListLabel(item.project_path)}
                                 {item.conversation_handle ? ` · ${item.conversation_handle}` : ''}
                             </span>
@@ -309,7 +309,7 @@ export function Navbar() {
                                     <span className="truncate font-medium">
                                         {hasRegisteredProjects ? 'Choose project' : 'No projects'}
                                     </span>
-                                    <span className="truncate text-[10px] text-muted-foreground">
+                                    <span className="truncate text-xs text-muted-foreground">
                                         {activeProjectPath || 'No active project selected'}
                                     </span>
                                 </div>
@@ -324,7 +324,7 @@ export function Navbar() {
                                         <span className="truncate font-medium">
                                             {formatProjectListLabel(project.directoryPath)}
                                         </span>
-                                        <span className="truncate text-[10px] text-muted-foreground">
+                                        <span className="truncate text-xs text-muted-foreground">
                                             {project.directoryPath}
                                         </span>
                                     </div>

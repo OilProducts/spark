@@ -38,7 +38,7 @@ export function TranscriptCopyButton({ label, text }: { label: string; text: str
                 {status === 'copied' ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
             </Button>
             {status === 'failed' ? (
-                <span role="status" className="text-[10px] text-destructive">Copy failed.</span>
+                <span role="status" className="text-xs text-destructive">Copy failed.</span>
             ) : null}
         </span>
     )
