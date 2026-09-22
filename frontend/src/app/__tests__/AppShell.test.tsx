@@ -139,6 +139,7 @@ triggersSession: {
       selectedTriggerId: null,
       scopeFilter: 'all',
       revealedWebhookSecrets: {},
+      createFormOpen: false,
       newTriggerDraft: {
         form: createEmptyTriggerForm(null),
         targetBehavior: 'default',
@@ -1076,6 +1077,7 @@ describe('App shell behavior', () => {
 
     await user.click(screen.getByTestId('nav-mode-triggers'))
     expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-two')
+    await user.click(screen.getByTestId('trigger-new-button'))
     expect(screen.getByLabelText('Execution Target')).toHaveValue('active')
     expect(screen.getByText('Uses the current active project: /tmp/project-two')).toBeVisible()
 
@@ -1784,18 +1786,18 @@ describe('App shell behavior', () => {
       expect(screen.getByText('Custom route')).toBeVisible()
     })
 
-    await user.click(screen.getByText('Custom route'))
-    const nameInputs = screen.getAllByLabelText('Name')
-    await user.type(nameInputs[0], ' Draft create')
-    await user.clear(nameInputs[1])
-    await user.type(nameInputs[1], 'Custom route edited')
+    await user.click(screen.getByTestId('trigger-row-trigger-custom'))
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'Custom route edited')
+    await user.click(screen.getByTestId('trigger-new-button'))
+    await user.type(screen.getByLabelText('Name'), ' Draft create')
 
     await user.click(screen.getByTestId('nav-mode-projects'))
     await user.click(screen.getByTestId('nav-mode-triggers'))
 
-    const restoredNameInputs = screen.getAllByLabelText('Name')
-    expect(restoredNameInputs[0]).toHaveValue(' Draft create')
-    expect(restoredNameInputs[1]).toHaveValue('Custom route edited')
+    expect(screen.getByLabelText('Name')).toHaveValue(' Draft create')
+    await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
+    expect(screen.getByLabelText('Name')).toHaveValue('Custom route edited')
   })
 
   it('preserves trigger selection and drafts across active-project changes', async () => {
@@ -1846,25 +1848,21 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await waitFor(() => {
-      expect(screen.getByText('Shared route')).toBeVisible()
-    })
-
-    await user.click(screen.getByText('Shared route'))
-    const initialNameInputs = screen.getAllByLabelText('Name')
-    await user.type(initialNameInputs[0], ' Draft create')
-    await user.clear(initialNameInputs[1])
-    await user.type(initialNameInputs[1], 'Shared route edited')
+    await user.click(await screen.findByTestId('trigger-row-trigger-shared'))
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'Shared route edited')
+    await user.click(screen.getByTestId('trigger-new-button'))
+    await user.type(screen.getByLabelText('Name'), ' Draft create')
 
     act(() => {
       useStore.getState().setActiveProjectPath('/tmp/project-trigger-two')
     })
 
-    await waitFor(() => {
-      const restoredNameInputs = screen.getAllByLabelText('Name')
-      expect(restoredNameInputs[0]).toHaveValue(' Draft create')
-      expect(restoredNameInputs[1]).toHaveValue('Shared route edited')
-    })
+    // The dirty edit draft guards the project switch; keep editing and confirm both drafts survive.
+    await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByLabelText('Name')).toHaveValue(' Draft create')
+    await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
+    expect(screen.getByLabelText('Name')).toHaveValue('Shared route edited')
   })
 
   it('renders loading states before authoritative empty states for Home, Runs, and Triggers', async () => {

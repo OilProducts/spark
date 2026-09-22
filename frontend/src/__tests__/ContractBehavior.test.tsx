@@ -2221,6 +2221,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
 
     await user.click(screen.getByTestId('nav-mode-triggers'))
     expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-beta')
+    await user.click(screen.getByTestId('trigger-new-button'))
     expect(screen.getByLabelText('Execution Target')).toHaveValue('active')
     expect(screen.getByText('Uses the current active project: /tmp/project-beta')).toBeVisible()
 

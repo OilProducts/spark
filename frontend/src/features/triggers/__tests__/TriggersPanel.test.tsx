@@ -33,6 +33,7 @@ const resetTriggerState = () => {
       selectedTriggerId: null,
       scopeFilter: 'all',
       revealedWebhookSecrets: {},
+      createFormOpen: false,
       newTriggerDraft: {
         form: createEmptyTriggerForm(null),
         targetBehavior: 'default',
@@ -49,6 +50,11 @@ const renderTriggersPanel = () =>
       <TriggersPanel />
     </>,
   )
+
+const openCreateTriggerForm = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.click(screen.getByTestId('trigger-new-button'))
+  return getCreateTriggerScope()
+}
 
 const getCreateTriggerScope = () => {
   const createCard = screen.getByTestId('trigger-create-button').closest('[data-slot="card"]')
@@ -142,7 +148,7 @@ describe('TriggersPanel', () => {
     const user = userEvent.setup()
     renderTriggersPanel()
 
-    const createScope = getCreateTriggerScope()
+    const createScope = await openCreateTriggerForm(user)
     expect(within(createScope.getByLabelText('Source Type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
     await user.type(createScope.getByLabelText('Name'), 'Created schedule')
     await user.clear(createScope.getByLabelText('Target Flow'))
@@ -150,8 +156,10 @@ describe('TriggersPanel', () => {
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
-      expect(screen.getByText('Created schedule')).toBeVisible()
+      expect(screen.getByTestId('trigger-row-trigger-created')).toHaveTextContent('Created schedule')
     })
+    expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
+    expect(screen.getByDisplayValue('Created schedule')).toBeVisible()
   })
 
   it('shows shared webhook ingress details and regenerates webhook secrets', async () => {
@@ -199,7 +207,7 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     expect(screen.getByTestId('triggers-project-context-chip')).toHaveTextContent('No active project')
-    await user.click(await screen.findByText('Webhook trigger'))
+    await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
     expect(screen.getByText(/POST JSON to/i)).toBeVisible()
     expect(screen.getAllByText(/webhook-key-1/).length).toBeGreaterThan(0)
 
@@ -246,10 +254,19 @@ describe('TriggersPanel', () => {
     const user = userEvent.setup()
     renderTriggersPanel()
 
-    const createScope = getCreateTriggerScope()
-    const nameInput = createScope.getByLabelText('Name')
-    const targetFlowInput = createScope.getByLabelText('Target Flow')
-    const executionTargetSelect = createScope.getByLabelText('Execution Target')
+    let createScope = await openCreateTriggerForm(user)
+    let nameInput = createScope.getByLabelText('Name')
+    let targetFlowInput = createScope.getByLabelText('Target Flow')
+    let executionTargetSelect = createScope.getByLabelText('Execution Target')
+    const reopenCreateTriggerForm = async () => {
+      await waitFor(() => {
+        expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
+      })
+      createScope = await openCreateTriggerForm(user)
+      nameInput = createScope.getByLabelText('Name')
+      targetFlowInput = createScope.getByLabelText('Target Flow')
+      executionTargetSelect = createScope.getByLabelText('Execution Target')
+    }
 
     expect(executionTargetSelect).toHaveValue('active')
     expect(screen.getByText('Uses the current active project: /tmp/active-project')).toBeVisible()
@@ -274,6 +291,7 @@ describe('TriggersPanel', () => {
     })
     expect(postPayloads[0]?.action).toMatchObject({ project_path: '/tmp/retargeted-project' })
 
+    await reopenCreateTriggerForm()
     await user.type(nameInput, 'No project trigger')
     await user.clear(targetFlowInput)
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
@@ -295,6 +313,7 @@ describe('TriggersPanel', () => {
     })
     expect(postPayloads[1]?.action).toMatchObject({ project_path: null })
 
+    await reopenCreateTriggerForm()
     await user.type(nameInput, 'Custom target trigger')
     await user.clear(targetFlowInput)
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
@@ -338,9 +357,9 @@ describe('TriggersPanel', () => {
     const user = userEvent.setup()
     renderTriggersPanel()
 
-    const customTriggersCard = screen.getByText('Custom triggers').closest('[data-slot="card"]')
-    expect(customTriggersCard).not.toBeNull()
-    await user.click(await within(customTriggersCard as HTMLElement).findByText('Custom project trigger'))
+    const customRow = await screen.findByTestId('trigger-row-trigger-custom-project')
+    expect(customRow).toHaveTextContent('Project · custom-project')
+    await user.click(customRow)
     const selectedTriggerCard = screen.getByTestId('trigger-save-button').closest('[data-slot="card"]')
     expect(selectedTriggerCard).not.toBeNull()
     const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)
@@ -356,7 +375,7 @@ describe('TriggersPanel', () => {
     await waitFor(() => {
       expect(screen.queryByText('Custom project trigger')).not.toBeInTheDocument()
     })
-    expect(screen.getByText('Active project trigger')).toBeVisible()
+    expect(screen.getByTestId('trigger-row-trigger-active-project')).toHaveTextContent('Targets active project')
     expect(selectedTriggerScope.getByText('Target: Targets active project')).toBeVisible()
   })
 
@@ -484,6 +503,29 @@ describe('TriggersPanel', () => {
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
     expect(await screen.findByDisplayValue('External')).toBeVisible()
     expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default']).toBeUndefined()
+  })
+
+  it('hides the create form until New trigger and restores the selected trigger on cancel', async () => {
+    vi.mocked(global.fetch).mockImplementation(async () => jsonResponse([makeTrigger({ name: 'Existing' })]))
+    const user = userEvent.setup()
+    renderTriggersPanel()
+
+    expect(await screen.findByDisplayValue('Existing')).toBeVisible()
+    expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
+
+    const createScope = await openCreateTriggerForm(user)
+    expect(screen.getByText('New trigger', { selector: '[data-slot="card-title"]' })).toBeVisible()
+    expect(screen.queryByTestId('trigger-save-button')).not.toBeInTheDocument()
+    await user.type(createScope.getByLabelText('Name'), 'Draft')
+    expect(useStore.getState().triggersSession.createFormOpen).toBe(true)
+
+    await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
+    expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
+    expect(screen.getByDisplayValue('Existing')).toBeVisible()
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('trigger-default')
+
+    await openCreateTriggerForm(user)
+    expect(screen.getByDisplayValue('Draft')).toBeVisible()
   })
 
 })

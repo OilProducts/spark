@@ -94,6 +94,7 @@ export function useTriggerEditor({
     const editTriggerDraftsByTriggerId = useStore((state) => state.triggersSession.editTriggerDraftsByTriggerId)
     const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
     const setTriggersSessionEditDraft = useStore((state) => state.setTriggersSessionEditDraft)
+    const updateTriggersSession = useStore((state) => state.updateTriggersSession)
 
     const selectedTriggerForm = useMemo(
         () => (selectedTrigger ? triggerToFormState(selectedTrigger, activeProjectPath) : null),
@@ -165,6 +166,7 @@ export function useTriggerEditor({
             })
             await refreshTriggers()
             setSelectedTriggerId(created.id)
+            updateTriggersSession({ createFormOpen: false })
         } catch (nextError) {
             setError(nextError instanceof Error ? nextError.message : 'Unable to create trigger.')
         } finally {

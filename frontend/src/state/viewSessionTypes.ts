@@ -130,6 +130,7 @@ export interface TriggersSessionState {
     selectedTriggerId: string | null
     scopeFilter: 'all' | 'active'
     revealedWebhookSecrets: Record<string, string>
+    createFormOpen: boolean
     newTriggerDraft: TriggerCreateDraftState
     editTriggerDraftsByTriggerId: Record<string, TriggerEditDraftState>
 }
