@@ -626,10 +626,7 @@ edges:
             style={isNarrowViewport ? undefined : { width: `${desktopWidthPx}px` }}
         >
             <div className="px-4 pb-2 pt-4">
-                <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.2em] text-foreground">
-                    <span>{inspectorTitle}</span>
-                    <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
-                </div>
+                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-foreground">{inspectorTitle}</div>
             </div>
 
             <div className="min-h-0 flex-1 flex flex-col overflow-hidden">

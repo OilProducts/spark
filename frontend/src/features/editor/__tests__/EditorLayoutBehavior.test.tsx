@@ -684,7 +684,7 @@ describe('Editor layout behavior', () => {
       a: { x: 20, y: 30 },
       b: { x: 360, y: 210 },
     })
-    await user.click(screen.getByRole('button', { name: 'Arrange' }))
+    await user.click(screen.getByRole('button', { name: 'Auto-arrange layout' }))
 
     await waitFor(() => {
       expect(currentNodePosition('a')).toEqual({ x: 20, y: 30 })
@@ -700,7 +700,7 @@ describe('Editor layout behavior', () => {
       a: { x: 140, y: 10 },
       b: { x: 500, y: 10 },
     })
-    await user.click(screen.getByRole('button', { name: 'Reset' }))
+    await user.click(screen.getByRole('button', { name: 'Reset saved layout' }))
 
     await waitFor(() => {
       expect(removeItemSpy).toHaveBeenCalledWith(storageKeyFor('flow-a.dot').replace('spark.saved_flow_layout.v1:', 'spark.flow_layout_cache.v1:'))

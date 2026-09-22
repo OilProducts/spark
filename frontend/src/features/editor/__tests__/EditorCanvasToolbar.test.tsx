@@ -34,15 +34,16 @@ describe('EditorCanvasToolbar', () => {
         expect(screen.getByRole('group', { name: 'Layout' })).toBeInTheDocument()
         expect(screen.getByRole('group', { name: 'Actions' })).toBeInTheDocument()
 
-        screen.getByRole('button', { name: 'Arrange' }).focus()
+        screen.getByRole('button', { name: 'Auto-arrange layout' }).focus()
         await user.keyboard('{Enter}')
         expect(props.onArrange).toHaveBeenCalledOnce()
     })
 
-    it('keeps complete groups in a wrapping toolbar and hides editing actions in expanded mode', () => {
+    it('keeps the docked toolbar on one row and hides editing actions in expanded mode', () => {
         renderToolbar({ childFlowsExpanded: true, runDisabledReason: 'Save pending' })
 
-        expect(screen.getByLabelText('Canvas toolbar')).toHaveClass('flex-wrap')
+        expect(screen.getByLabelText('Canvas toolbar')).not.toHaveClass('flex-wrap')
+        expect(screen.getByRole('group', { name: 'Child flows' })).toBeInTheDocument()
         expect(screen.queryByRole('group', { name: 'Layout' })).not.toBeInTheDocument()
         expect(screen.queryByRole('button', { name: '+ Node' })).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Run' })).toBeDisabled()

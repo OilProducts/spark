@@ -1426,107 +1426,109 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     ]);
 
     return (
-        <div className="flow-surface w-full h-full relative">
-            {editorMode === 'raw' ? (
-                <div className="h-full w-full p-4">
-                    <div className="h-full rounded-lg border border-border bg-background/80 p-3">
-                        <Textarea
-                            data-testid="raw-yaml-editor"
-                            value={rawYamlDraft}
-                            onChange={(event) => {
-                                setRawYamlDraft(event.target.value);
-                                setRawHandoffError(null);
-                            }}
-                            className="h-full w-full resize-none font-mono text-sm leading-5"
-                            spellCheck={false}
-                        />
-                    </div>
-                    {rawHandoffError ? (
-                        <p data-testid="raw-yaml-handoff-error" className="mt-2 text-xs font-medium text-destructive">
-                            {rawHandoffError}
-                        </p>
-                    ) : null}
-                </div>
-            ) : (
-                flowName ? (
-                    <ReactFlow
-                        className="flow-canvas"
-                        style={{ background: 'transparent' }}
-                        nodes={nodes}
-                        edges={edges}
-                        onNodesChange={onNodesChange}
-                        onEdgesChange={onEdgesChange}
-                        onConnect={onConnect}
-                        onNodeClick={onNodeClick}
-                        onEdgeClick={onEdgeClick}
-                        onSelectionChange={onSelectionChange}
-                        nodeTypes={nodeTypes}
-                        edgeTypes={edgeTypes}
-                        nodesDraggable={!isExpandedReadOnlyPreview}
-                        nodesConnectable={!isExpandedReadOnlyPreview}
-                        elementsSelectable={!isExpandedReadOnlyPreview}
-                        defaultEdgeOptions={{
-                            type: EDGE_TYPE,
-                            className: EDGE_CLASS,
-                            interactionWidth: EDGE_INTERACTION_WIDTH,
-                            markerEnd: {
-                                type: MarkerType.ArrowClosed,
-                            },
-                        }}
-                        elevateEdgesOnSelect
-                        fitView
-                        colorMode="light"
-                        onlyRenderVisibleElements={onlyRenderVisibleElements}
-                        minZoom={0.1}
-                        maxZoom={1.5}
-                    >
-                        <Controls />
-                        <MiniMap
-                            nodeColor="hsl(var(--muted))"
-                            maskColor="hsl(var(--background)/0.5)"
-                        />
-                        <Background gap={20} size={1} color="hsl(var(--border))" />
-                    </ReactFlow>
-                ) : (
-                    <div
-                        data-testid="editor-no-flow-state"
-                        className="flex h-full items-center justify-center p-6"
-                    >
-                        <div className="max-w-md rounded-lg border border-dashed border-border bg-background/70 px-6 py-5 text-center shadow-sm">
-                            <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
-                            <p className="mt-2 text-sm text-muted-foreground">
-                                Flows are shared authoring assets. Choose one from the Flows panel.
-                            </p>
-                        </div>
-                    </div>
-                )
-            )}
-
+        <div className="flow-surface flex h-full w-full flex-col">
             {flowName && (
-                <div className="absolute left-4 top-4 z-10">
-                    <EditorCanvasToolbar
-                        mode={editorMode}
-                        childFlowsExpanded={expandChildFlows}
-                        rawHandoffPending={isRawHandoffInFlight}
-                        runDisabledReason={runDisabledReason}
-                        onSelectStructured={() => {
-                            if (editorMode === 'raw') void returnToStructuredMode()
-                        }}
-                        onSelectYaml={() => enterRawYamlMode()}
-                        onSetChildFlowsExpanded={(expanded) => setEditorExpandChildFlows(flowName, expanded)}
-                        onArrange={() => {
-                            void onAutoArrange()
-                        }}
-                        onReset={() => {
-                            void onResetSavedLayout()
-                        }}
-                        onAddNode={onAddNode}
-                        onRun={() => {
-                            flushPendingSave()
-                            setIsRunPanelOpen(true)
-                        }}
-                    />
-                    <div className="mt-2 flex max-w-[calc(100vw-2rem)] flex-wrap gap-2">
+                <EditorCanvasToolbar
+                    mode={editorMode}
+                    childFlowsExpanded={expandChildFlows}
+                    rawHandoffPending={isRawHandoffInFlight}
+                    runDisabledReason={runDisabledReason}
+                    onSelectStructured={() => {
+                        if (editorMode === 'raw') void returnToStructuredMode()
+                    }}
+                    onSelectYaml={() => enterRawYamlMode()}
+                    onSetChildFlowsExpanded={(expanded) => setEditorExpandChildFlows(flowName, expanded)}
+                    onArrange={() => {
+                        void onAutoArrange()
+                    }}
+                    onReset={() => {
+                        void onResetSavedLayout()
+                    }}
+                    onAddNode={onAddNode}
+                    onRun={() => {
+                        flushPendingSave()
+                        setIsRunPanelOpen(true)
+                    }}
+                />
+            )}
+            <div className="relative min-h-0 flex-1">
+                {editorMode === 'raw' ? (
+                    <div className="h-full w-full p-4">
+                        <div className="h-full rounded-lg border border-border bg-background/80 p-3">
+                            <Textarea
+                                data-testid="raw-yaml-editor"
+                                value={rawYamlDraft}
+                                onChange={(event) => {
+                                    setRawYamlDraft(event.target.value);
+                                    setRawHandoffError(null);
+                                }}
+                                className="h-full w-full resize-none font-mono text-sm leading-5"
+                                spellCheck={false}
+                            />
+                        </div>
+                        {rawHandoffError ? (
+                            <p data-testid="raw-yaml-handoff-error" className="mt-2 text-xs font-medium text-destructive">
+                                {rawHandoffError}
+                            </p>
+                        ) : null}
+                    </div>
+                ) : (
+                    flowName ? (
+                        <ReactFlow
+                            className="flow-canvas"
+                            style={{ background: 'transparent' }}
+                            nodes={nodes}
+                            edges={edges}
+                            onNodesChange={onNodesChange}
+                            onEdgesChange={onEdgesChange}
+                            onConnect={onConnect}
+                            onNodeClick={onNodeClick}
+                            onEdgeClick={onEdgeClick}
+                            onSelectionChange={onSelectionChange}
+                            nodeTypes={nodeTypes}
+                            edgeTypes={edgeTypes}
+                            nodesDraggable={!isExpandedReadOnlyPreview}
+                            nodesConnectable={!isExpandedReadOnlyPreview}
+                            elementsSelectable={!isExpandedReadOnlyPreview}
+                            defaultEdgeOptions={{
+                                type: EDGE_TYPE,
+                                className: EDGE_CLASS,
+                                interactionWidth: EDGE_INTERACTION_WIDTH,
+                                markerEnd: {
+                                    type: MarkerType.ArrowClosed,
+                                },
+                            }}
+                            elevateEdgesOnSelect
+                            fitView
+                            colorMode="light"
+                            onlyRenderVisibleElements={onlyRenderVisibleElements}
+                            minZoom={0.1}
+                            maxZoom={1.5}
+                        >
+                            <Controls />
+                            <MiniMap
+                                nodeColor="hsl(var(--muted))"
+                                maskColor="hsl(var(--background)/0.5)"
+                            />
+                            <Background gap={20} size={1} color="hsl(var(--border))" />
+                        </ReactFlow>
+                    ) : (
+                        <div
+                            data-testid="editor-no-flow-state"
+                            className="flex h-full items-center justify-center p-6"
+                        >
+                            <div className="max-w-md rounded-lg border border-dashed border-border bg-background/70 px-6 py-5 text-center shadow-sm">
+                                <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
+                                <p className="mt-2 text-sm text-muted-foreground">
+                                    Flows are shared authoring assets. Choose one from the Flows panel.
+                                </p>
+                            </div>
+                        </div>
+                    )
+                )}
+
+                {flowName && (
+                    <div className="absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap gap-2">
                         {showPerformanceDebug ? (
                             <>
                                 <div
@@ -1558,33 +1560,33 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             </div>
                         ) : null}
                     </div>
-                </div>
-            )}
+                )}
 
-            {flowName && editorMode === 'structured' && <ValidationPanel />}
+                {flowName && editorMode === 'structured' && <ValidationPanel />}
 
-            {flowName && editorMode === 'structured' && isRunPanelOpen ? (
-                <div
-                    data-testid="editor-run-panel"
-                    className="absolute bottom-4 right-4 top-16 z-20 flex w-[26rem] max-w-[calc(100%-2rem)] flex-col rounded-lg border border-border bg-background/95 p-4 shadow-lg"
-                >
-                    <LaunchPanel
-                        target={{
-                            flowName,
-                            loadFlowContent: () => loadCatalogFlowContent(flowName),
-                            previewSource: { kind: 'flow', flowName },
-                        }}
-                        projectPath={activeProjectPath}
-                        initialWorkingDirectory={workingDir}
-                        initialModel={model}
-                        onLaunched={() => {
-                            setIsRunPanelOpen(false);
-                            setViewMode('runs');
-                        }}
-                        onClose={() => setIsRunPanelOpen(false)}
-                    />
-                </div>
-            ) : null}
+                {flowName && editorMode === 'structured' && isRunPanelOpen ? (
+                    <div
+                        data-testid="editor-run-panel"
+                        className="absolute bottom-4 right-3 top-2 z-20 flex w-[26rem] max-w-[calc(100%-2rem)] flex-col rounded-lg border border-border bg-background/95 p-4 shadow-lg"
+                    >
+                        <LaunchPanel
+                            target={{
+                                flowName,
+                                loadFlowContent: () => loadCatalogFlowContent(flowName),
+                                previewSource: { kind: 'flow', flowName },
+                            }}
+                            projectPath={activeProjectPath}
+                            initialWorkingDirectory={workingDir}
+                            initialModel={model}
+                            onLaunched={() => {
+                                setIsRunPanelOpen(false);
+                                setViewMode('runs');
+                            }}
+                            onClose={() => setIsRunPanelOpen(false)}
+                        />
+                    </div>
+                ) : null}
+            </div>
         </div>
     );
 }
