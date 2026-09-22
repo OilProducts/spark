@@ -556,7 +556,7 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('projects-panel')).toBeVisible()
     expect(screen.getByTestId('top-nav-project-switcher')).toBeVisible()
     expect(screen.getByTestId('top-nav-project-add-button')).toBeVisible()
-    expect(screen.getByTestId('top-nav-project-clear-button')).toBeDisabled()
+    expect(screen.getByTestId('top-nav-project-settings-button')).toBeDisabled()
     expect(screen.queryByTestId('top-nav-active-flow')).not.toBeInTheDocument()
     expect(screen.queryByTestId('top-nav-run-context')).not.toBeInTheDocument()
 
@@ -855,8 +855,10 @@ describe('App shell behavior', () => {
     })
     expect(screen.getByTestId('top-nav-project-switcher')).toHaveTextContent('project-shell')
 
-    await user.click(screen.getByTestId('top-nav-project-clear-button'))
+    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    await user.click(await screen.findByTestId('top-nav-project-clear-button'))
     expect(useStore.getState().activeProjectPath).toBeNull()
+    await waitFor(() => expect(screen.queryByTestId('project-settings-dialog')).not.toBeInTheDocument())
   })
 
   it('navigates the remote browser modal and surfaces browse failures', async () => {
@@ -1706,7 +1708,8 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('top-nav-project-remove-button'))
+    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    await user.click(await screen.findByTestId('top-nav-project-remove-button'))
     await user.click(screen.getByTestId('shared-dialog-confirm'))
 
     await waitFor(() => {

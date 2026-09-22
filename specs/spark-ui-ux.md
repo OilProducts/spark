@@ -125,8 +125,7 @@ The navbar owns project switching and project management.
 It must present a persistent active-project switcher cluster with:
 - active project identity
 - project add
-- clear active project
-- remove active project
+- a project settings dialog that clears or removes the active project
 
 Navigation should preserve project framing as the operator moves from conversation to Execution and Runs whenever that framing still applies.
 Execution and Runs are project-framed views by default and should expose a compact project-context indicator near the view header.

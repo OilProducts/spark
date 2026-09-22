@@ -1294,7 +1294,13 @@ describe('Frontend contract behavior', () => {
     const projectsTab = screen.getByTestId('nav-mode-projects')
     const tasksTab = screen.getByTestId('nav-mode-tasks')
     const editorTab = screen.getByTestId('nav-mode-editor')
+    const runsTab = screen.getByTestId('nav-mode-runs')
     const triggersTab = screen.getByTestId('nav-mode-triggers')
+
+    expect(within(screen.getByTestId('view-mode-tabs')).getAllByRole('button')).toEqual([
+      projectsTab, tasksTab, editorTab, runsTab, triggersTab,
+    ])
+    expect(screen.getByTestId('nav-mode-settings')).toHaveAccessibleName('Settings')
 
     projectsTab.focus()
     expect(projectsTab).toHaveFocus()
@@ -1309,12 +1315,20 @@ describe('Frontend contract behavior', () => {
     expect(useStore.getState().viewMode).toBe('editor')
 
     await user.keyboard('{ArrowRight}')
+    expect(runsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('runs')
+
+    await user.keyboard('{ArrowRight}')
     expect(triggersTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('triggers')
 
+    await user.keyboard('{ArrowRight}')
+    expect(projectsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('home')
+
     await user.keyboard('{ArrowLeft}')
-    expect(editorTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('editor')
+    expect(triggersTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('triggers')
   })
 
   it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {
@@ -1370,7 +1384,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     render(<Navbar />)
 
     expect(screen.getByTestId('top-nav-project-add-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('top-nav-project-clear-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('top-nav-project-settings-button').className).toContain('focus-visible')
 
     cleanup()
     act(() => {

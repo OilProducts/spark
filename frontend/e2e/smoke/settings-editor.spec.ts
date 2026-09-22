@@ -410,8 +410,10 @@ for (const transition of ['switch', 'clear']) {
         await model.fill('unsaved-project-model')
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         const navigate = async () => {
-            if (transition === 'clear') await page.getByTestId('top-nav-project-clear-button').click()
-            else await selectProject(projects[1])
+            if (transition === 'clear') {
+                await page.getByTestId('top-nav-project-settings-button').click()
+                await page.getByTestId('top-nav-project-clear-button').click()
+            } else await selectProject(projects[1])
         }
         await navigate()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()

@@ -225,8 +225,8 @@ test('mobile and narrow viewport usability is preserved for core project and ope
   await expect(page.getByTestId('top-nav-active-project')).toHaveAttribute('data-responsive-layout', 'stacked')
   await expect(page.getByTestId('top-nav-project-switcher')).toBeVisible()
   await expect(page.getByTestId('top-nav-project-add-button')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-clear-button')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-remove-button')).toBeVisible()
+  await expect(page.getByTestId('top-nav-project-settings-button')).toBeVisible()
+  await expect(page.getByTestId('nav-mode-settings')).toBeVisible()
   await page.screenshot({ path: screenshotPath('13a-mobile-projects-operations.png'), fullPage: true })
 
   await page.getByTestId('nav-mode-runs').click()
@@ -247,8 +247,8 @@ test('viewport regression baselines capture desktop shell layouts for projects a
   await expect(page.getByTestId('top-nav-active-project')).toHaveAttribute('data-responsive-layout', 'inline')
   await expect(page.getByTestId('top-nav-project-switcher')).toBeVisible()
   await expect(page.getByTestId('top-nav-project-add-button')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-clear-button')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-remove-button')).toBeVisible()
+  await expect(page.getByTestId('top-nav-project-settings-button')).toBeVisible()
+  await expect(page.getByTestId('nav-mode-settings')).toBeVisible()
   await page.screenshot({ path: screenshotPath('13c-desktop-projects-operations.png'), fullPage: true })
 
   await page.getByTestId('nav-mode-runs').click()

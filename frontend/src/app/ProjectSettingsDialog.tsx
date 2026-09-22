@@ -6,6 +6,7 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog'
+import { Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -25,12 +26,16 @@ type ProjectSettingsDialogProps = {
     open: boolean
     projectPath: string | null
     onOpenChange: (open: boolean) => void
+    onClearProject: () => void
+    onRemoveProject: () => Promise<void>
 }
 
 export function ProjectSettingsDialog({
     open,
     projectPath,
     onOpenChange,
+    onClearProject,
+    onRemoveProject,
 }: ProjectSettingsDialogProps) {
     const {
         dirty,
@@ -57,7 +62,7 @@ export function ProjectSettingsDialog({
                         {projectPath || 'No active project'}
                     </DialogTitle>
                     <DialogDescription>
-                        Project settings
+                        Set this project's execution defaults, or clear or remove it from Spark.
                     </DialogDescription>
                 </DialogHeader>
                 <div className="space-y-4">
@@ -102,6 +107,43 @@ export function ProjectSettingsDialog({
                             {saveError}
                         </p>
                     ) : null}
+                    <div className="space-y-2 border-t pt-4">
+                        <p className="text-sm font-medium">Project</p>
+                        <p className="text-xs text-muted-foreground">
+                            Clearing only deselects the project. Removing deletes its Spark threads, workflow history, and runs; project files stay on disk.
+                        </p>
+                        {/* Project changes are navigation-guarded; disabled while dirty so a discard prompt cannot race this dialog closing. */}
+                        <div className="flex flex-wrap gap-2">
+                            <Button
+                                type="button"
+                                data-testid="top-nav-project-clear-button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!projectPath || dirty || isSaving}
+                                onClick={() => {
+                                    onClearProject()
+                                    onOpenChange(false)
+                                }}
+                            >
+                                <X className="h-3.5 w-3.5" />
+                                Clear active project
+                            </Button>
+                            <Button
+                                type="button"
+                                data-testid="top-nav-project-remove-button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!projectPath || dirty || isSaving}
+                                className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                                onClick={() => {
+                                    void onRemoveProject().then(() => onOpenChange(false))
+                                }}
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                                Remove project…
+                            </Button>
+                        </div>
+                    </div>
                 </div>
                 <DialogFooter>
                     <Button type="button" variant="outline" disabled={isSaving || isLoading} onClick={discard}>

@@ -2,7 +2,7 @@ import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { useStore, type ViewMode } from "@/store"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
-import { Bell, Plus, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react"
+import { Bell, Plus, Settings, SlidersHorizontal } from "lucide-react"
 // ponytail: retain the existing attention poll here; extracting it is outside the run-session migration.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { fetchPendingAttention, type AttentionItem } from "@/lib/api/attentionApi"
@@ -12,9 +12,6 @@ import { ProjectBrowserDialog } from './ProjectBrowserDialog'
 import { ProjectSettingsDialog } from './ProjectSettingsDialog'
 import { useProjectSwitcherControls } from './useProjectSwitcherControls'
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
-
-const NAV_MODE_ORDER: ViewMode[] = ['home', 'tasks', 'editor', 'triggers', 'settings', 'runs']
-const NAV_MODE_BUTTON_CLASS = 'flex-1 rounded-sm px-3 py-1.5 text-sm'
 
 const NAV_MODE_ITEMS: Array<{
     buttonTestId: string
@@ -35,21 +32,18 @@ const NAV_MODE_ITEMS: Array<{
         mode: 'editor',
     },
     {
-        buttonTestId: 'nav-mode-triggers',
-        label: 'Triggers',
-        mode: 'triggers',
-    },
-    {
-        buttonTestId: 'nav-mode-settings',
-        label: 'Settings',
-        mode: 'settings',
-    },
-    {
         buttonTestId: 'nav-mode-runs',
         label: 'Runs',
         mode: 'runs',
     },
+    {
+        buttonTestId: 'nav-mode-triggers',
+        label: 'Triggers',
+        mode: 'triggers',
+    },
 ]
+// Settings is the gear button beside the bell, reached by Tab rather than the tab strip's arrow keys.
+const NAV_MODE_ORDER: ViewMode[] = NAV_MODE_ITEMS.map((item) => item.mode)
 
 const ATTENTION_POLL_MS = 30_000
 
@@ -127,7 +121,7 @@ function AttentionBell() {
                 type="button"
                 data-testid="attention-bell"
                 variant="ghost"
-                size="xs"
+                size="icon-sm"
                 aria-label={items.length > 0 ? `${items.length} items waiting on you` : 'Nothing waiting on you'}
                 onClick={() => setOpen((previous) => !previous)}
                 className="relative"
@@ -234,161 +228,181 @@ export function Navbar() {
             ? 'Choose project'
             : 'No projects'
 
-    return (
-        <header
-            data-testid="top-nav"
-            data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-            className={`border-b bg-background shrink-0 z-50 ${isNarrowViewport
-                ? 'flex min-h-14 flex-col items-stretch gap-2 px-3 py-2'
-                : 'h-14 flex items-center justify-between px-6'
-                }`}
-        >
-            <div className={isNarrowViewport ? 'flex flex-col gap-2' : 'flex items-center gap-8'}>
-                <div className="flex items-center gap-2">
-                    <Settings2 className="w-5 h-5" />
-                    <span className="font-semibold tracking-tight">Spark</span>
-                </div>
+    const layout = isNarrowViewport ? 'stacked' : 'inline'
 
-                <div
-                    data-testid="view-mode-tabs"
-                    data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-                    className={`inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground ${isNarrowViewport ? 'w-full' : 'w-[480px]'}`}
-                >
-                    {NAV_MODE_ITEMS.map((item) => {
-                        const isActive = item.mode === 'home'
-                            ? (viewMode === 'home' || viewMode === 'projects')
-                            : viewMode === item.mode
-                        return (
-                            <Button
-                                key={item.mode}
-                                type="button"
-                                data-testid={item.buttonTestId}
-                                aria-current={isActive ? 'page' : undefined}
-                                onClick={() => setViewMode(item.mode)}
-                                onKeyDown={(event) => onViewModeKeyDown(event, item.mode)}
-                                variant={isActive ? 'secondary' : 'ghost'}
-                                className={NAV_MODE_BUTTON_CLASS}
-                            >
-                                {item.labelTestId ? (
-                                    <span data-testid={item.labelTestId}>{item.label}</span>
-                                ) : item.label}
-                            </Button>
-                        )
-                    })}
-                </div>
-            </div>
-            <AttentionBell />
-            <div
-                data-testid="top-nav-active-project"
-                data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-                className={`max-w-full ${isNarrowViewport ? 'w-full space-y-2' : 'w-[360px] space-y-1'}`}
-            >
-                <div className={`flex items-center gap-2 ${isNarrowViewport ? 'flex-wrap' : ''}`}>
-                    <Select
-                        value={projectSwitcherValue}
-                        onValueChange={(value) => {
-                            if (value === '__no-active-project__') {
-                                return
-                            }
-                            void onActivateProject(value)
-                        }}
+    const brand = (
+        <div className="flex items-center gap-2">
+            <img src="/assets/spark-app-icon.png" alt="" width={20} height={20} className="size-5" />
+            <span className="font-semibold tracking-tight">Spark</span>
+        </div>
+    )
+
+    const viewModeTabs = (
+        <div
+            data-testid="view-mode-tabs"
+            data-responsive-layout={layout}
+            className={`inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground ${isNarrowViewport ? 'grow basis-md' : 'shrink-0'}`}
+        >
+            {NAV_MODE_ITEMS.map((item) => {
+                const isActive = item.mode === 'home'
+                    ? (viewMode === 'home' || viewMode === 'projects')
+                    : viewMode === item.mode
+                return (
+                    <Button
+                        key={item.mode}
+                        type="button"
+                        data-testid={item.buttonTestId}
+                        aria-current={isActive ? 'page' : undefined}
+                        onClick={() => setViewMode(item.mode)}
+                        onKeyDown={(event) => onViewModeKeyDown(event, item.mode)}
+                        variant={isActive ? 'secondary' : 'ghost'}
+                        className={`rounded-sm px-3 py-1.5 text-sm ${isNarrowViewport ? 'flex-1' : ''}`}
                     >
-                        <SelectTrigger
-                            data-testid="top-nav-project-switcher"
-                            size="sm"
-                            title={activeProjectPath || 'No active project'}
-                            className={`${isNarrowViewport ? 'min-w-0 flex-1' : 'min-w-0 flex-1'} bg-muted/40`}
-                        >
-                            <SelectValue placeholder={hasRegisteredProjects ? 'Choose project' : 'No projects'}>
-                                {closedProjectLabel}
-                            </SelectValue>
-                        </SelectTrigger>
-                        <SelectContent align="end">
-                            <SelectItem value="__no-active-project__" title="No active project">
+                        {item.labelTestId ? (
+                            <span data-testid={item.labelTestId}>{item.label}</span>
+                        ) : item.label}
+                    </Button>
+                )
+            })}
+        </div>
+    )
+
+    const projectCluster = (
+        <div
+            data-testid="top-nav-active-project"
+            data-responsive-layout={layout}
+            className={`min-w-0 space-y-1 ${isNarrowViewport ? 'grow basis-2xs' : 'w-[360px]'}`}
+        >
+            <div className="flex items-center gap-2">
+                <Select
+                    value={projectSwitcherValue}
+                    onValueChange={(value) => {
+                        if (value === '__no-active-project__') {
+                            return
+                        }
+                        void onActivateProject(value)
+                    }}
+                >
+                    <SelectTrigger
+                        data-testid="top-nav-project-switcher"
+                        size="sm"
+                        title={activeProjectPath || 'No active project'}
+                        className="min-w-0 flex-1 bg-muted/40"
+                    >
+                        <SelectValue placeholder={hasRegisteredProjects ? 'Choose project' : 'No projects'}>
+                            {closedProjectLabel}
+                        </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                        <SelectItem value="__no-active-project__" title="No active project">
+                            <div className="flex min-w-0 flex-col">
+                                <span className="truncate font-medium">
+                                    {hasRegisteredProjects ? 'Choose project' : 'No projects'}
+                                </span>
+                                <span className="truncate text-xs text-muted-foreground">
+                                    {activeProjectPath || 'No active project selected'}
+                                </span>
+                            </div>
+                        </SelectItem>
+                        {orderedProjects.map((project) => (
+                            <SelectItem
+                                key={project.directoryPath}
+                                value={project.directoryPath}
+                                title={project.directoryPath}
+                            >
                                 <div className="flex min-w-0 flex-col">
                                     <span className="truncate font-medium">
-                                        {hasRegisteredProjects ? 'Choose project' : 'No projects'}
+                                        {formatProjectListLabel(project.directoryPath)}
                                     </span>
                                     <span className="truncate text-xs text-muted-foreground">
-                                        {activeProjectPath || 'No active project selected'}
+                                        {project.directoryPath}
                                     </span>
                                 </div>
                             </SelectItem>
-                            {orderedProjects.map((project) => (
-                                <SelectItem
-                                    key={project.directoryPath}
-                                    value={project.directoryPath}
-                                    title={project.directoryPath}
-                                >
-                                    <div className="flex min-w-0 flex-col">
-                                        <span className="truncate font-medium">
-                                            {formatProjectListLabel(project.directoryPath)}
-                                        </span>
-                                        <span className="truncate text-xs text-muted-foreground">
-                                            {project.directoryPath}
-                                        </span>
-                                    </div>
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-                    <Button
-                        data-testid="top-nav-project-add-button"
-                        type="button"
-                        onClick={() => {
-                            void onOpenProjectDirectoryChooser()
-                        }}
-                        variant="outline"
-                        size="xs"
-                    >
-                        <Plus className="h-3.5 w-3.5" />
-                        Add
-                    </Button>
-                    <Button
-                        data-testid="top-nav-project-clear-button"
-                        type="button"
-                        onClick={onClearActiveProject}
-                        variant="outline"
-                        size="xs"
-                        disabled={!activeProjectPath}
-                    >
-                        <X className="h-3.5 w-3.5" />
-                        Clear
-                    </Button>
-                    <Button
-                        data-testid="top-nav-project-settings-button"
-                        type="button"
-                        onClick={() => setProjectSettingsOpen(true)}
-                        variant="outline"
-                        size="xs"
-                        disabled={!activeProjectPath}
-                        aria-label="Project settings"
-                        title="Project settings"
-                    >
-                        <SlidersHorizontal className="h-3.5 w-3.5" />
-                    </Button>
-                    {activeProjectPath ? (
-                        <Button
-                            data-testid="top-nav-project-remove-button"
-                            type="button"
-                            onClick={() => {
-                                void onDeleteActiveProject()
-                            }}
-                            variant="outline"
-                            size="xs"
-                            className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                        >
-                            <Trash2 className="h-3.5 w-3.5" />
-                            Remove
-                        </Button>
-                    ) : null}
-                </div>
-                {projectErrorMessage ? (
-                    <p data-testid="top-nav-project-error" className="text-xs text-destructive">
-                        {projectErrorMessage}
-                    </p>
-                ) : null}
+                        ))}
+                    </SelectContent>
+                </Select>
+                <Button
+                    data-testid="top-nav-project-add-button"
+                    type="button"
+                    onClick={() => {
+                        void onOpenProjectDirectoryChooser()
+                    }}
+                    variant="outline"
+                    size="xs"
+                >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add
+                </Button>
+                <Button
+                    data-testid="top-nav-project-settings-button"
+                    type="button"
+                    onClick={() => setProjectSettingsOpen(true)}
+                    variant="outline"
+                    size="xs"
+                    disabled={!activeProjectPath}
+                    aria-label="Project settings"
+                    title="Project settings"
+                >
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                </Button>
             </div>
+            {projectErrorMessage ? (
+                <p data-testid="top-nav-project-error" className="text-xs text-destructive">
+                    {projectErrorMessage}
+                </p>
+            ) : null}
+        </div>
+    )
+
+    const globalActions = (
+        <div className="flex shrink-0 items-center gap-1">
+            <AttentionBell />
+            <Button
+                type="button"
+                data-testid="nav-mode-settings"
+                aria-label="Settings"
+                title="Settings"
+                aria-current={viewMode === 'settings' ? 'page' : undefined}
+                onClick={() => setViewMode('settings')}
+                variant={viewMode === 'settings' ? 'secondary' : 'ghost'}
+                size="icon-sm"
+            >
+                <Settings className="h-4 w-4" />
+            </Button>
+        </div>
+    )
+
+    return (
+        <header
+            data-testid="top-nav"
+            data-responsive-layout={layout}
+            className={`border-b bg-background shrink-0 z-50 ${isNarrowViewport
+                ? 'flex flex-col gap-2 px-3 py-2'
+                : 'h-14 flex items-center gap-4 px-6'
+                }`}
+        >
+            {isNarrowViewport ? (
+                <>
+                    <div className="flex items-center justify-between gap-2">
+                        {brand}
+                        {globalActions}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        {viewModeTabs}
+                        {projectCluster}
+                    </div>
+                </>
+            ) : (
+                <>
+                    <div className="flex flex-1 items-center">{brand}</div>
+                    {viewModeTabs}
+                    <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+                        {projectCluster}
+                        {globalActions}
+                    </div>
+                </>
+            )}
             <ProjectBrowserDialog
                 open={isProjectBrowserOpen}
                 currentPath={projectBrowserState?.current_path ?? null}
@@ -405,6 +419,8 @@ export function Navbar() {
                 open={projectSettingsOpen}
                 projectPath={activeProjectPath}
                 onOpenChange={setProjectSettingsOpen}
+                onClearProject={onClearActiveProject}
+                onRemoveProject={onDeleteActiveProject}
             />
         </header>
     )
