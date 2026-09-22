@@ -109,11 +109,6 @@ pub struct TranscriptTurn {
     pub app_thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_turn_id: Option<String>,
-    /// Transcript projection schema this turn was last projected/repaired
-    /// under. Absent means legacy (pre-repair) projection; repair stamps the
-    /// current version so a repaired turn is never rebuilt again.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub projection_version: Option<i64>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }

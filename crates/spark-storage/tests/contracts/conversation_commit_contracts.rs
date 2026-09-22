@@ -789,3 +789,53 @@ fn competing_mode_updates_conflict_without_changing_history_and_events_still_reb
         &winner.record.transcript.turns
     );
 }
+
+#[test]
+fn read_snapshot_derives_plan_segment_artifact_id_from_plan_record() {
+    let project_path = "/projects/plan-link";
+    let (temp, repo) = setup(project_path);
+    let mut plan_segment = segment("segment-plan-1", "turn-1", 1);
+    plan_segment.kind = "plan".to_string();
+    plan_segment.status = "complete".to_string();
+    repo.commit_conversation(
+        "conversation-plan-link",
+        project_path,
+        0,
+        vec![
+            ConversationMutation::TurnUpserted {
+                turn: assistant_turn("turn-1", "complete"),
+            },
+            ConversationMutation::SegmentUpserted {
+                segment: plan_segment,
+            },
+            ConversationMutation::ArtifactUpserted {
+                collection: ArtifactCollection::ProposedPlans,
+                artifact: json!({
+                    "id": "proposed-plan-1",
+                    "status": "pending_review",
+                    "source_segment_id": "segment-plan-1",
+                }),
+            },
+        ],
+    )
+    .expect("commit");
+
+    let snapshot = repo
+        .read_snapshot("conversation-plan-link", Some(project_path))
+        .expect("read")
+        .expect("snapshot");
+    let segment = snapshot["segments"]
+        .as_array()
+        .expect("segments")
+        .iter()
+        .find(|segment| segment["id"] == "segment-plan-1")
+        .expect("plan segment");
+    assert_eq!(segment["artifact_id"], "proposed-plan-1");
+
+    // Derived at read time only; the transcript log is not rewritten.
+    let transcript = fs::read_to_string(
+        conversation_dir(&temp, project_path, "conversation-plan-link").join("transcript.jsonl"),
+    )
+    .expect("transcript");
+    assert!(!transcript.contains("proposed-plan-1"));
+}

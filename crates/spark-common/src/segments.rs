@@ -827,10 +827,6 @@ pub fn is_singleton_lifecycle_event_kind(kind: &str) -> bool {
     SINGLETON_LIFECYCLE_EVENT_KINDS.contains(&kind)
 }
 
-pub fn singleton_lifecycle_event_kinds() -> &'static [&'static str] {
-    SINGLETON_LIFECYCLE_EVENT_KINDS
-}
-
 /// Identity is derived only from durable provider facts: app turn + item id
 /// when item-backed, app turn + kind for once-per-turn lifecycle events, and
 /// the appended provider-event sequence for repeatable itemless events. The

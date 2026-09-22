@@ -143,7 +143,7 @@ pub(crate) fn read_record(paths: &ConversationRecordPaths) -> Result<Option<Conv
         .map(|event| event.sequence)
         .max()
         .unwrap_or(0);
-    let transcript =
+    let mut transcript =
         activity.hydrate_transcript_through_event_sequence(published_event_sequence)?;
     let artifacts = ConversationArtifacts {
         event_log: read_value_array(paths.event_log_json())?,
@@ -154,6 +154,24 @@ pub(crate) fn read_record(paths: &ConversationRecordPaths) -> Result<Option<Conv
         run_recoveries: read_value_array(paths.artifact_file(ArtifactCollection::RunRecoveries))?,
         proposed_plans: read_value_array(paths.artifact_file(ArtifactCollection::ProposedPlans))?,
     };
+    // Derive the plan review link at read time from the durable plan record,
+    // so a transcript rewrite that drops a segment's `artifact_id` cannot
+    // orphan a plan from its Approve/Disapprove controls.
+    for plan in &artifacts.proposed_plans {
+        let (Some(plan_id), Some(segment_id)) = (
+            plan.get("id").and_then(Value::as_str),
+            plan.get("source_segment_id").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if let Some(segment) = transcript
+            .segments
+            .iter_mut()
+            .find(|segment| segment.id == segment_id && segment.artifact_id.is_none())
+        {
+            segment.artifact_id = Some(plan_id.to_string());
+        }
+    }
     Ok(Some(ConversationRecord {
         meta,
         transcript,

@@ -24,14 +24,13 @@ fn tool_call(id: &str, status: &str) -> Value {
     })
 }
 
-/// Reproduces the navy-hazel malformation: a terminal turn whose persisted
-/// projection carries two forever-`running` tool starts tail-appended after
-/// the final answer plus duplicate order-derived `turn_completed` lifecycle
-/// segments. Repair must converge it onto the canonical projection of the raw
-/// provider activity — corrective upserts plus tombstones, provider events
-/// untouched — and a second reopen must change nothing.
+/// The legacy malformed shape (duplicate order-derived `turn_completed`
+/// markers plus forever-`running` tool starts after the final answer) is
+/// projected as-is on reopen: no segment is removed or rebuilt, ordinary
+/// turn-boundary finalization closes the stale starts, and a second reopen
+/// changes nothing.
 #[test]
-fn reopen_repairs_malformed_terminal_projection_and_is_idempotent() {
+fn reopen_projects_legacy_malformed_terminal_turn_as_is() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let project_path = "/projects/repair-app";
@@ -182,29 +181,22 @@ fn reopen_repairs_malformed_terminal_projection_and_is_idempotent() {
         .filter(|segment| segment["turn_id"] == "turn-1")
         .collect();
 
-    // Exactly one lifecycle marker survives, under its stable identity.
-    let lifecycle: Vec<&&Value> = segments
-        .iter()
-        .filter(|segment| segment["kind"] == "agent_event")
-        .collect();
-    assert_eq!(
-        lifecycle.len(),
-        1,
-        "one turn_completed marker: {segments:#?}"
-    );
-    assert_eq!(
-        lifecycle[0]["id"],
-        "segment-agent-event-app-1-turn_completed"
-    );
+    // History is not rewritten: both legacy markers survive, nothing is
+    // tombstoned.
+    for legacy in [
+        "segment-agent-event-turn-1-turn_completed-3",
+        "segment-agent-event-turn-1-turn_completed-6",
+    ] {
+        assert!(
+            segments.iter().any(|segment| segment["id"] == legacy),
+            "{legacy} kept: {segments:#?}"
+        );
+    }
+    let transcript_raw =
+        fs::read_to_string(conversation_dir.join("transcript.jsonl")).expect("transcript");
+    assert!(!transcript_raw.contains("segment_tombstone"));
 
-    // The unmatched starts became terminal yielded work at their original
-    // stream positions, before the final answer.
-    let final_answer_order = segments
-        .iter()
-        .find(|segment| segment["id"] == "segment-assistant-app-1-msg-1")
-        .expect("final answer")["order"]
-        .as_i64()
-        .expect("order");
+    // Ordinary turn-boundary finalization closes the unmatched starts.
     for exec in ["exec-a", "exec-b"] {
         let segment = segments
             .iter()
@@ -212,49 +204,10 @@ fn reopen_repairs_malformed_terminal_projection_and_is_idempotent() {
             .unwrap_or_else(|| panic!("{exec} segment"));
         assert_eq!(segment["status"], "complete");
         assert_eq!(segment["tool_call"]["status"], "yielded");
-        assert_eq!(
-            segment["tool_call"]["completion_reason"],
-            "turn_boundary_yield"
-        );
-        assert!(segment["order"].as_i64().expect("order") < final_answer_order);
     }
 
-    // The final answer is the last user-visible segment; only the lifecycle
-    // marker may follow it.
-    let max_visible_order = segments
-        .iter()
-        .filter(|segment| segment["kind"] != "agent_event")
-        .filter_map(|segment| segment["order"].as_i64())
-        .max()
-        .expect("visible orders");
-    assert_eq!(max_visible_order, final_answer_order);
-
-    // The repaired turn is stamped so it is never rebuilt again.
-    let turn = snapshot["turns"]
-        .as_array()
-        .expect("turns")
-        .iter()
-        .find(|turn| turn["id"] == "turn-1")
-        .expect("turn");
-    assert_eq!(turn["projection_version"], 2);
-
-    // Obsolete legacy segments were removed via append-only tombstones.
-    let transcript_raw =
-        fs::read_to_string(conversation_dir.join("transcript.jsonl")).expect("transcript");
-    for legacy in [
-        "segment-agent-event-turn-1-turn_completed-3",
-        "segment-agent-event-turn-1-turn_completed-6",
-    ] {
-        assert!(
-            transcript_raw
-                .lines()
-                .any(|line| line.contains("segment_tombstone") && line.contains(legacy)),
-            "tombstone for {legacy}"
-        );
-    }
-
-    // Raw provider activity is append-only: the pre-repair bytes are an
-    // unchanged prefix of the post-repair log.
+    // Raw provider activity is append-only: the pre-reopen bytes are an
+    // unchanged prefix of the post-reopen log.
     let events_after = fs::read(conversation_dir.join("events.jsonl")).expect("events after");
     assert!(events_after.starts_with(&events_before));
 
@@ -274,11 +227,11 @@ fn reopen_repairs_malformed_terminal_projection_and_is_idempotent() {
     assert_eq!(transcript_after_reopen, transcript_before_reopen);
 }
 
-/// A failed turn's unmatched starts are evidence, not yields: repair keeps
+/// A failed turn's unmatched starts are evidence, not yields: reopen keeps
 /// them at stream position and closes them as failed with the stable
 /// missing-completion error code.
 #[test]
-fn repair_marks_unmatched_starts_failed_for_failed_turns() {
+fn reopen_marks_unmatched_starts_failed_for_failed_turns() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("spark-home");
     let project_path = "/projects/repair-failed-app";
