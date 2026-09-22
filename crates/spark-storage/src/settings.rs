@@ -90,58 +90,6 @@ pub fn update_settings_sections<'a>(
     persist(path, &document.values)
 }
 
-/// One-way transition under the same lock used by updates. A byte-for-byte backup
-/// is durable before replacement; a retry after interruption reuses that backup.
-pub fn migrate_settings_document(
-    path: &Path,
-    target_version: i64,
-    migrate: impl FnOnce(i64, &mut toml::Table) -> Result<()>,
-    validate: impl FnOnce(&toml::Table) -> Result<()>,
-) -> Result<SettingsDocument> {
-    if target_version < 1 {
-        return Err(invalid(path, "Migration versions must be positive."));
-    }
-    let _lock = lock_document(path)?;
-    let bytes = read_bytes(path)?;
-    let mut document = decode(path, bytes.as_deref())?;
-    let version = match document.values.get("schema_version") {
-        None => 0,
-        Some(toml::Value::Integer(version)) if *version >= 0 => *version,
-        _ => {
-            return Err(invalid(
-                path,
-                "schema_version must be a nonnegative integer.",
-            ))
-        }
-    };
-    if version > target_version {
-        return Err(invalid(
-            path,
-            "This configuration requires a newer Spark binary.",
-        ));
-    }
-    if version == target_version {
-        validate(&document.values)?;
-        return Ok(document);
-    }
-    migrate(version, &mut document.values)?;
-    document
-        .values
-        .insert("schema_version".into(), target_version.into());
-    validate(&document.values)?;
-    if let Some(bytes) = bytes {
-        let backup = sidecar(path, &format!(".v{version}.bak"));
-        match read_bytes(&backup)? {
-            Some(existing) if existing != bytes => {
-                return Err(invalid(path, "Migration backup differs from the original; resolve the backup before retrying."));
-            }
-            Some(_) => {}
-            None => write_atomic(&backup, &bytes)?,
-        }
-    }
-    persist(path, &document.values)
-}
-
 fn persist(path: &Path, values: &toml::Table) -> Result<SettingsDocument> {
     let text = toml::to_string_pretty(values)
         .map_err(|_| invalid(path, "Settings could not be serialized as TOML."))?;

@@ -2,9 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use spark_storage::settings::{
-    migrate_settings_document, read_settings_document, update_settings_section,
-};
+use spark_storage::settings::{read_settings_document, update_settings_section};
 use spark_storage::StorageError;
 
 fn section(value: i64) -> toml::Value {
@@ -93,36 +91,6 @@ fn malformed_documents_report_location_without_echoing_values() {
 }
 
 #[test]
-fn migration_backs_up_original_bytes_and_is_idempotent() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("spark.toml");
-    let original = "# legacy comment\n[extension]\nvalue = 1\n";
-    fs::write(&path, original).unwrap();
-    let migrated = migrate_settings_document(
-        &path,
-        1,
-        |version, values| {
-            assert_eq!(version, 0);
-            values.insert("runtime".into(), section(2));
-            Ok(())
-        },
-        |_| Ok(()),
-    )
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("spark.toml.v0.bak")).unwrap(),
-        original
-    );
-    assert_eq!(migrated.values["extension"]["value"].as_integer(), Some(1));
-    let again =
-        migrate_settings_document(&path, 1, |_, _| panic!("migration reran"), |_| Ok(())).unwrap();
-    assert_eq!(migrated.revision, again.revision);
-    assert!(migrate_settings_document(&path, 0, |_, _| Ok(()), |_| Ok(())).is_err());
-    fs::write(&path, "schema_version = 2\n").unwrap();
-    assert!(migrate_settings_document(&path, 1, |_, _| panic!("downgrade"), |_| Ok(())).is_err());
-}
-
-#[test]
 fn settings_writer_child() {
     let Some(path) = std::env::var_os("SPARK_TEST_SETTINGS_DOCUMENT") else {
         return;
@@ -162,31 +130,6 @@ fn separate_processes_cannot_overwrite_the_same_revision() {
     ];
     results.sort();
     assert_eq!(results, [0, 23]);
-}
-
-#[test]
-fn failed_migration_does_not_replace_the_document_or_an_existing_backup() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("spark.toml");
-    let backup = root.path().join("spark.toml.v0.bak");
-    fs::write(&path, "original = true\n").unwrap();
-    let before = fs::read(&path).unwrap();
-    assert!(migrate_settings_document(
-        &path,
-        1,
-        |_, _| Ok(()),
-        |_| Err(StorageError::SettingsValidation {
-            path: path.clone(),
-            reason: "invalid migration".into()
-        })
-    )
-    .is_err());
-    assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(!backup.exists());
-    fs::write(&backup, "previous original\n").unwrap();
-    assert!(migrate_settings_document(&path, 1, |_, _| Ok(()), |_| Ok(())).is_err());
-    assert_eq!(fs::read(&path).unwrap(), before);
-    assert_eq!(fs::read_to_string(&backup).unwrap(), "previous original\n");
 }
 
 #[test]
