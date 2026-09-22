@@ -7,7 +7,6 @@ import { Input } from '@/components/ui/input'
 import { RefreshCw } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { TaskDetail } from './TaskDetail'
-import { Label } from '@/components/ui/label'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { TaskEditor } from './TaskEditor'
 
@@ -149,17 +148,17 @@ function ProjectTasks({ project, selected, active }: { project: string; selected
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)
     if (!selected) return null
     return <section aria-label="Project tasks" className="flex h-full min-h-0 flex-col gap-4 p-3 lg:p-6">
-        <div className="flex shrink-0 flex-wrap gap-2 items-center"><h1 ref={boardHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">Tasks</h1>
-            <Button type="button" disabled={busy} onClick={e => open(null, e.currentTarget)}>Create task</Button>
-            <Label className="flex items-center gap-2">Search titles<Input ref={searchInput} type="search" value={search} onChange={e => filter(e.target.value, archived)} className="w-40" /></Label>
-            {search && <Button variant="ghost" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear search</Button>}
-            <Button type="button" variant="secondary" className="border border-transparent aria-pressed:border-foreground/50" aria-pressed={archived} onClick={() => filter(search, !archived)}>Show archived</Button>
-            <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh tasks</TooltipContent></Tooltip></TooltipProvider>
+        <div className="flex shrink-0 flex-wrap items-center gap-2"><h1 ref={boardHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">Tasks</h1>
+            <Input ref={searchInput} type="search" placeholder="Search titles" aria-label="Search titles" value={search} onChange={e => filter(e.target.value, archived)} className="ml-auto h-8 w-56" />
+            {search && <Button type="button" variant="ghost" size="sm" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear search</Button>}
+            <Button type="button" variant="outline" size="sm" className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>Show archived</Button>
+            <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh tasks</TooltipContent></Tooltip></TooltipProvider>
+            <Button type="button" size="sm" disabled={busy} onClick={e => open(null, e.currentTarget)}>Create task</Button>
         </div>
         {(error || loadError) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
         <div className="flex min-h-0 flex-1 gap-4">
         <div ref={boardScroll} hidden={narrow && editing !== undefined} className="min-w-0 flex-1 overflow-x-auto">
-        <div className="grid h-full min-h-0 grid-cols-[repeat(6,minmax(15rem,1fr))] gap-3">
+        <div className="grid h-full min-h-0 grid-cols-[repeat(6,minmax(11rem,1fr))] gap-3">
             {stages.map((stage, i) => {
                 const tasks = board.tasks.filter(t => t.fields.stage === stage && (archived || !t.fields.archived) && t.fields.title.toLowerCase().includes(search.toLowerCase()))
                 return <section key={stage} aria-label={labels[i]} className="flex min-h-0 flex-col rounded-md border border-border bg-muted/50 p-2">
