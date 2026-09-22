@@ -146,7 +146,7 @@ export function ProjectSettingsDialog({
                     </div>
                 </div>
                 <DialogFooter>
-                    <Button type="button" variant="outline" disabled={isSaving || isLoading} onClick={discard}>
+                    <Button aria-label="Discard project settings changes" type="button" variant="outline" disabled={isSaving || isLoading} onClick={discard}>
                         Discard
                     </Button>
                     <Button type="button" variant="outline" disabled={isSaving} onClick={() => void requestOpenChange(false)}>
@@ -155,6 +155,7 @@ export function ProjectSettingsDialog({
                     <Button
                         type="button"
                         data-testid="project-settings-save-button"
+                        aria-label={isSaving ? undefined : 'Save project settings'}
                         disabled={!canSave || !dirty}
                         onClick={() => {
                             void onSave()

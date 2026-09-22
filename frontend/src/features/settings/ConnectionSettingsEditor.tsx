@@ -34,8 +34,8 @@ export function ConnectionSettingsEditor() {
                     <p className="text-xs">Effective: {editor.saved.effective ? editor.saved.effective.client_api_base_url ?? 'http://127.0.0.1:8000' : 'Unavailable'} · {editor.saved.sources?.client_api_base_url} · Applies to new CLI commands</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
-                    <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
-                    <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+                    <Button aria-label="Save server and client connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+                    <Button aria-label="Discard server and client connections changes" variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
                 </div>
             </>}
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}

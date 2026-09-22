@@ -335,7 +335,7 @@ export function NodeInspectorPanel({
                                         </p>
                                     </div>
                                     <div className="space-y-1 text-sm text-foreground">
-                                        <p><span className="font-mono">flow_ref</span>: {((selectedNode?.data?.flow_ref as string) || '(unset)')}</p>
+                                        <p className="break-all"><span className="font-mono">flow_ref</span>: {((selectedNode?.data?.flow_ref as string) || '(unset)')}</p>
                                     </div>
                                     <Button
                                         type="button"

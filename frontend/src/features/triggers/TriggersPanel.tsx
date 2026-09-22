@@ -373,8 +373,8 @@ export function TriggersPanel() {
 
                   {externalChange ? <p role="status">This trigger changed elsewhere. Your draft is retained; discard to reload.</p> : null}
                   <div className="mt-4 flex justify-end gap-2">
-                    <Button type="button" variant="outline" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
-                    <Button
+                    <Button aria-label="Discard selected trigger changes" type="button" variant="outline" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                    <Button aria-label="Save selected trigger"
                       type="button"
                       data-testid="trigger-save-button"
                   disabled={pending || isRegenerating}

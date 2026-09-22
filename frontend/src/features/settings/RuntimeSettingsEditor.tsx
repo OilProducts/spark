@@ -25,8 +25,8 @@ export function RuntimeSettingsEditor() {
                     <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
-                    <Button disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>
-                    <Button variant="outline" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
+                    <Button aria-label="Save runtime paths" disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>
+                    <Button aria-label="Discard runtime paths changes" variant="outline" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
                 </div>
             </>}
             {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: flows {saved.active_startup.flows_dir}, runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}

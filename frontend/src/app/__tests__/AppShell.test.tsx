@@ -577,6 +577,18 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('projects-panel')).toBeVisible()
   })
 
+  it('hides the no-project tasks placeholder after leaving Tasks', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByTestId('nav-mode-tasks'))
+    expect(screen.getByText('Select a project to manage tasks.')).toBeVisible()
+
+    await user.click(screen.getByTestId('nav-mode-runs'))
+    expect(useStore.getState().viewMode).toBe('runs')
+    expect(screen.getByText('Select a project to manage tasks.')).not.toBeVisible()
+  })
+
   it('opens project settings from the navbar and saves a project execution profile default', async () => {
     const user = userEvent.setup()
     act(() => {

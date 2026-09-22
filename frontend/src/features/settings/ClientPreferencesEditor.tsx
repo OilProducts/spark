@@ -79,8 +79,8 @@ export function ClientPreferencesEditor() {
                 </Field>
             </fieldset>
             <div className="flex flex-wrap gap-2">
-                <Button disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
-                <Button variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
+                <Button aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
+                <Button variant="outline" aria-label="Discard client preferences changes" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

@@ -156,8 +156,8 @@ export function SettingsPanel() {
                         <ModelSettingsFields profiles={llmProfiles} models={models} activeProjectPath={activeProjectPath} invalidModel={!!invalidModel} />
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
-                            <Button size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
-                            <Button size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
+                            <Button aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
+                            <Button aria-label="Discard workspace model defaults changes" size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
                         </div>
                         {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
@@ -200,8 +200,8 @@ export function SettingsPanel() {
                                     disabled={isSavingDesktopSettings} onCheckedChange={setRemoteDraft} aria-label="Remote desktop server access" />
                             </div>
                             <div className="flex flex-wrap gap-2">
-                                <Button disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save</Button>
-                                <Button variant="outline" disabled={isSavingDesktopSettings || (!desktopDirty && !desktopSettingsError)} onClick={() => {
+                                <Button aria-label="Save Desktop Server settings" disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save</Button>
+                                <Button aria-label="Discard Desktop Server changes" variant="outline" disabled={isSavingDesktopSettings || (!desktopDirty && !desktopSettingsError)} onClick={() => {
                                     const invoke = getTauriInvoke()
                                     if (!invoke) return
                                     setIsSavingDesktopSettings(true)

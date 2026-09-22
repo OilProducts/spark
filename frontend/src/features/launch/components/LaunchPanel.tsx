@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
 import {
@@ -69,6 +69,16 @@ export function LaunchPanel({
     const [runStartError, setRunStartError] = useState<string | null>(null)
     const [gitPolicyWarning, setGitPolicyWarning] = useState<string | null>(null)
     const [lastLaunchFailure, setLastLaunchFailure] = useState<LaunchFailureDiagnostics | null>(null)
+    const panelRef = useRef<HTMLDivElement>(null)
+
+    // Take focus on open so Escape works immediately; hand it back to the opener on close.
+    useEffect(() => {
+        const opener = document.activeElement
+        panelRef.current?.focus()
+        return () => {
+            if (opener instanceof HTMLElement) opener.focus()
+        }
+    }, [])
 
     const parsedLaunchInputs = useMemo(
         () => parseLaunchInputDefinitions(
@@ -171,7 +181,18 @@ export function LaunchPanel({
     }
 
     return (
-        <div data-testid="launch-panel" className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        <div
+            ref={panelRef}
+            tabIndex={-1}
+            data-testid="launch-panel"
+            className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto outline-none"
+            onKeyDown={(event) => {
+                if (event.key === 'Escape' && !event.defaultPrevented && !event.nativeEvent.isComposing) {
+                    event.stopPropagation()
+                    onClose()
+                }
+            }}
+        >
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
                     <h3 className="text-base font-semibold text-foreground">Launch Flow</h3>

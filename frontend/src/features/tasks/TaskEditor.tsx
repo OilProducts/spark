@@ -54,9 +54,9 @@ export function TaskEditor({ editing, draft, latest, busy, conflict, error, unsa
             </li>)}</ol>{!editing.activity.length && <Empty className="mt-2 px-3 py-4 text-xs text-muted-foreground"><EmptyDescription>No activity yet</EmptyDescription></Empty>}</details>}
         </div>
         <footer className="flex shrink-0 flex-wrap gap-2 border-t border-border p-4">
-            <Button type="submit" disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create task'}</Button>
+            <Button type="submit" aria-label={editing && !busy ? 'Save task' : undefined} disabled={busy || Boolean(changed) || conflict}>{busy ? 'Saving…' : editing ? 'Save' : 'Create task'}</Button>
             <Button type="button" variant="secondary" disabled={busy} onClick={close}>{editing ? 'Close' : 'Cancel'}</Button>
-            <Button type="button" variant="ghost" disabled={busy} onClick={discard}>Discard</Button>
+            <Button aria-label="Discard task changes" type="button" variant="ghost" disabled={busy} onClick={discard}>Discard</Button>
         </footer>
         </form>
     </section>

@@ -29,8 +29,8 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
                     onCheckedChange={(checked) => editor.setDraft(checked && editor.saved?.effective ? { ...editor.saved.effective } : null)} />Override workspace model settings</Label>
                 {editor.draft && <ModelSettingsFields profiles={profiles} models={editor} activeProjectPath={projectPath} invalidModel={!!invalidModel} />}
             </fieldset>
-            <div className="flex flex-wrap gap-2"><Button size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
-                <Button size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button></div>
+            <div className="flex flex-wrap gap-2"><Button aria-label="Save project model defaults" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
+                <Button aria-label="Discard project model defaults changes" size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button></div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />

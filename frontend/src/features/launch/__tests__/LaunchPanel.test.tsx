@@ -190,6 +190,20 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     expect(onLaunched).not.toHaveBeenCalled()
   })
 
+  it('closes on Escape from inside the panel', async () => {
+    installLaunchFetchMock()
+    const user = userEvent.setup()
+    const { onClose } = renderLaunchPanel()
+
+    expect(screen.getByTestId('launch-panel')).toHaveFocus()
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    await user.click(await screen.findByTestId('launch-panel-working-directory-input'))
+    await user.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
   it('disables launching without an active project', async () => {
     installLaunchFetchMock()
     renderLaunchPanel({ projectPath: null })

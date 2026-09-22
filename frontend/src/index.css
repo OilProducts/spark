@@ -200,18 +200,19 @@
   }
 
   .flow-canvas .react-flow__handle {
-    width: 9px;
-    height: 9px;
-    border: 1px solid hsl(var(--border));
-    background: hsl(var(--muted-foreground));
+    width: 9px !important;
+    height: 9px !important;
+    border: 1px solid hsl(var(--border)) !important;
+    background: hsl(var(--muted-foreground)) !important;
     transition:
-      transform 120ms ease,
+      scale 120ms ease,
       background-color 120ms ease;
   }
 
+  /* `scale`, not `transform`: React Flow positions handles with transform: translate(). */
   .flow-canvas .react-flow__handle:hover {
-    transform: scale(1.12);
-    background: hsl(var(--foreground));
+    scale: 1.12;
+    background: hsl(var(--foreground)) !important;
   }
 
   .react-flow__edge.flow-edge .react-flow__edge-path {

@@ -38,7 +38,7 @@ export function InspectorScaffold({
                 {entityValue ? (
                     <div className="rounded border border-border/80 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
                         <span className="font-semibold text-foreground">{entityLabel || 'Selection'}:</span>{' '}
-                        <span className="font-mono">{entityValue}</span>
+                        <span className="font-mono break-all">{entityValue}</span>
                     </div>
                 ) : null}
             </div>

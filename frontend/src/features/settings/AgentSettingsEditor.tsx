@@ -72,8 +72,8 @@ export function AgentSettingsEditor() {
             {editor.invalid && <p id="agent-limits-error" role="alert">Use nonnegative whole numbers, a positive default timeout no greater than the maximum, and a positive window when loop detection is enabled.</p>}
         </fieldset>}
         <div className="flex flex-wrap gap-2">
-        <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
-        <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+        <Button aria-label="Save agent session limits" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+        <Button aria-label="Discard agent session limits changes" variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
         </div>
         <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
     </CardContent></Card>

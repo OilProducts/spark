@@ -481,7 +481,7 @@ describe('TriggersPanel', () => {
     expect(screen.getByDisplayValue('My draft')).toBeVisible()
     expect(save).toBeEnabled()
     expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default'].expectedRevision).toBe('revision-1')
-    await user.click(screen.getByRole('button', { name: 'Discard', exact: true }))
+    await user.click(screen.getByRole('button', { name: /^Discard/ }))
     expect(await screen.findByDisplayValue('External')).toBeVisible()
     expect(useStore.getState().triggersSession.editTriggerDraftsByTriggerId['trigger-default']).toBeUndefined()
   })

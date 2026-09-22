@@ -505,8 +505,8 @@ export function GraphLaunchPolicySection({
                 </GraphSettingsField>
             </div>
             <div className="flex gap-2">
-                <Button size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save</Button>
-                <Button size="sm" variant="outline" disabled={controlsDisabled} onClick={onDiscard}>Discard</Button>
+                <Button aria-label="Save launch policy" size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save</Button>
+                <Button aria-label="Discard launch policy changes" size="sm" variant="outline" disabled={controlsDisabled} onClick={onDiscard}>Discard</Button>
             </div>
             <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"
@@ -647,7 +647,7 @@ export function GraphLlmDefaultsSection({
                         <option value="xhigh">XHigh</option>
                     </NativeSelect>
                 </GraphSettingsField>
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                     <Button
                         type="button"
                         onClick={applyDefaultsToNodes}
