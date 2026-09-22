@@ -16,9 +16,9 @@ export type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
 
 const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
     neutral: 'bg-muted/50 text-muted-foreground',
-    info: 'bg-sky-500/15 text-sky-700',
-    success: 'bg-emerald-500/15 text-emerald-800',
-    warning: 'bg-amber-500/15 text-amber-800',
+    info: 'bg-info/15 text-info',
+    success: 'bg-success/15 text-success',
+    warning: 'bg-warning/15 text-warning',
     danger: 'bg-destructive/10 text-destructive',
 }
 

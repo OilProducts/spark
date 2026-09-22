@@ -329,7 +329,7 @@ export function RunsPanel() {
                 <div className="mb-4">
                     <Alert
                         data-testid="runs-transport-reconnect-banner"
-                        className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
+                        className="border-warning/40 bg-warning/10 px-3 py-2 text-warning"
                     >
                         <AlertDescription className="text-inherit">
                             Live run transport degraded for {degradedTransportLabels.join(' and ')}.
@@ -411,7 +411,7 @@ export function RunsPanel() {
                         {selectedRun && degradedRunPanels.length > 0 && (
                             <div
                                 data-testid="run-partial-api-failure-banner"
-                                className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-800"
+                                className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
                             >
                                 Some run detail endpoints are unavailable. Non-dependent panels remain functional.
                                 <span className="ml-1 text-xs">

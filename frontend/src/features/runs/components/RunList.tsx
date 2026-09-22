@@ -11,9 +11,9 @@ import {
 import { formatProjectPathLabel } from '@/lib/projectPaths'
 import type { RunRecord } from '../model/shared'
 import {
-    STATUS_STYLES,
     formatDuration,
     formatRunStatusLabel,
+    statusToneClassName,
 } from '../model/shared'
 
 const ACTIVE_LIST_STATUSES = new Set([
@@ -147,12 +147,12 @@ export function RunList({
                                 ) : null}
                             </div>
                             {holdsExecutionLock ? (
-                                <div className="text-xs font-medium text-amber-800">
+                                <div className="text-xs font-medium text-warning">
                                     Holding execution lock
                                 </div>
                             ) : null}
                             {queuedForExecutionLock ? (
-                                <div className="text-xs font-medium text-amber-800">
+                                <div className="text-xs font-medium text-warning">
                                     Queued for execution lock{typeof run.execution_lock?.queue_position === 'number'
                                         ? ` · position ${run.execution_lock.queue_position}`
                                         : ''}
@@ -161,9 +161,7 @@ export function RunList({
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center gap-2">
                             <span
-                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-xs font-semibold uppercase tracking-wide ${
-                                    STATUS_STYLES[run.status] || 'bg-muted text-muted-foreground'
-                                }`}
+                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-xs font-semibold uppercase tracking-wide ${statusToneClassName(run.status)}`}
                             >
                                 {formatRunStatusLabel(run)}
                             </span>
@@ -298,11 +296,11 @@ export function RunList({
                     className="min-h-0 flex-1 overflow-y-auto px-3 pb-4"
                 >
                     <div className="space-y-3">
-                        {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-sky-700')}
+                        {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-warning')}
                         {renderRunGroup('running', 'Running', runningRuns)}
                         {queuedLockGroups.map((group) => (
                             <section key={group.identity} className="space-y-2">
-                                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-800">
+                                <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
                                     Queued execution lock · {group.label}
                                 </div>
                                 <div className="space-y-3">

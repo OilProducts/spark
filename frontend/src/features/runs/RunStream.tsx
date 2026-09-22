@@ -625,9 +625,9 @@ export function RunStream() {
                         saveState === 'error'
                             ? 'border-destructive/50 bg-destructive/10 text-destructive'
                             : saveState === 'conflict'
-                                ? 'border-amber-500/50 bg-amber-500/10 text-amber-800'
+                                ? 'border-warning/50 bg-warning/10 text-warning'
                                 : saveState === 'saved'
-                                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
+                                    ? 'border-success/40 bg-success/10 text-success'
                                     : 'border-border bg-background/95 text-muted-foreground'
                     } ${shouldFadeSaveCard && fadeSavedToast ? 'opacity-0' : 'opacity-100'}`}
                     title={saveErrorMessage || undefined}

@@ -25,7 +25,7 @@ export function LaunchNoticeStack({
             {showValidationWarningBanner ? (
                 <Alert
                     data-testid="execute-warning-banner"
-                    className="border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium leading-none text-amber-800"
+                    className="border-warning/40 bg-warning/10 px-2 py-1 text-xs font-medium leading-none text-warning"
                 >
                     <AlertDescription className="text-inherit">
                         Warnings present; run allowed.
@@ -35,7 +35,7 @@ export function LaunchNoticeStack({
             {runStartGitPolicyWarning ? (
                 <Alert
                     data-testid="run-start-git-policy-warning-banner"
-                    className="max-w-sm truncate border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs font-medium leading-none text-amber-800"
+                    className="max-w-sm truncate border-warning/40 bg-warning/10 px-2 py-1 text-xs font-medium leading-none text-warning"
                 >
                     <AlertDescription className="text-inherit">
                         {runStartGitPolicyWarning}

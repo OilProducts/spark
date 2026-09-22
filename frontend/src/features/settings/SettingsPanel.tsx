@@ -213,7 +213,7 @@ export function SettingsPanel() {
                             </div>
                             {isSavingDesktopSettings && <p role="status">Saving or reloading settings…</p>}
                             {desktopMessage && <p role="status" className="text-xs">{desktopMessage}</p>}
-                            {desktopSettings.requires_restart ? <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">Restart Spark Desktop to apply the server binding change.</div> : null}
+                            {desktopSettings.requires_restart ? <div className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">Restart Spark Desktop to apply the server binding change.</div> : null}
                             </> : desktopSettingsError ? <Button variant="outline" onClick={() => { setDesktopSettingsError(null); setDesktopRetry((value) => value + 1) }}>Retry Desktop settings</Button> : <p role="status">Loading Desktop settings…</p>}
                             {desktopSettingsError ? <div role="alert" className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopSettingsError}</div> : null}
                         </CardContent>

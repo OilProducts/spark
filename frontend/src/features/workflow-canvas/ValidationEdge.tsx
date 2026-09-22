@@ -144,8 +144,8 @@ export function ValidationEdge({
     const badgeClass = hasError
         ? 'bg-destructive/15 text-destructive'
         : hasWarning
-            ? 'bg-amber-500/15 text-amber-800'
-            : 'bg-sky-500/15 text-sky-700'
+            ? 'bg-warning/15 text-warning'
+            : 'bg-info/15 text-info'
 
     return (
         <>

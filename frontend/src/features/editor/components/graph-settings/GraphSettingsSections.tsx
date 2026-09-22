@@ -111,9 +111,9 @@ const GRAPH_SETTINGS_NOTICE_TONE_CLASS_NAME: Record<
     string
 > = {
     neutral: 'border-border/70 bg-muted/20 text-muted-foreground',
-    warning: 'border-amber-500/40 bg-amber-500/10 text-amber-800',
+    warning: 'border-warning/40 bg-warning/10 text-warning',
     error: 'border-destructive/40 bg-destructive/10 text-destructive',
-    success: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800',
+    success: 'border-success/40 bg-success/10 text-success',
 }
 
 function GraphSettingsNotice({

@@ -151,12 +151,12 @@ export function AdvancedKeyValueEditor({
                 </Button>
             </div>
             {hasDuplicateKey ? (
-                <p id={`${id}-duplicate-warning`} className="text-xs text-amber-800">
+                <p id={`${id}-duplicate-warning`} className="text-xs text-warning">
                     Key already exists.
                 </p>
             ) : null}
             {hasReservedKey ? (
-                <p id={`${id}-reserved-warning`} className="text-xs text-amber-800">
+                <p id={`${id}-reserved-warning`} className="text-xs text-warning">
                     Core attributes belong in dedicated controls.
                 </p>
             ) : null}

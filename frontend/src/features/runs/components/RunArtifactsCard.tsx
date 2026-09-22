@@ -145,7 +145,7 @@ export function RunArtifactsCard({
                         {showPartialRunArtifactNote && (
                             <div
                                 data-testid="run-artifact-partial-run-note"
-                                className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800"
+                                className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
                             >
                                 <div>This run may be partial or artifacts may have been pruned.</div>
                                 {missingCoreArtifacts.length > 0 && (

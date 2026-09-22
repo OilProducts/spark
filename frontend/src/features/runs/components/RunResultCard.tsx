@@ -96,7 +96,7 @@ export function RunResultCard({
                     <div data-testid="run-result-body" className="rounded-md border border-border/80 bg-muted/20 p-3">
                         <ProjectConversationMarkdown content={result.body_markdown || ''} />
                         {result.summary_error ? (
-                            <p data-testid="run-result-summary-error" className="mt-3 text-xs text-amber-800">
+                            <p data-testid="run-result-summary-error" className="mt-3 text-xs text-warning">
                                 Summary unavailable: {result.summary_error}
                             </p>
                         ) : null}

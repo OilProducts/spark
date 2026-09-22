@@ -446,7 +446,7 @@ export function NodeInspectorPanel({
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {selectedNodeToolHookPreWarning ? (
-                                                        <p id={`${id}-pre-hook-warning`} data-testid="node-attr-warning-tool.hooks.pre" className="text-xs text-amber-800">
+                                                        <p id={`${id}-pre-hook-warning`} data-testid="node-attr-warning-tool.hooks.pre" className="text-xs text-warning">
                                                             {selectedNodeToolHookPreWarning}
                                                         </p>
                                                     ) : null}
@@ -463,7 +463,7 @@ export function NodeInspectorPanel({
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {selectedNodeToolHookPostWarning ? (
-                                                        <p id={`${id}-post-hook-warning`} data-testid="node-attr-warning-tool.hooks.post" className="text-xs text-amber-800">
+                                                        <p id={`${id}-post-hook-warning`} data-testid="node-attr-warning-tool.hooks.post" className="text-xs text-warning">
                                                             {selectedNodeToolHookPostWarning}
                                                         </p>
                                                     ) : null}

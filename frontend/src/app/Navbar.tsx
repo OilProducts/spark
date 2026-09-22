@@ -136,7 +136,7 @@ function AttentionBell() {
                 {items.length > 0 && (
                     <span
                         data-testid="attention-bell-count"
-                        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-xs font-semibold text-white"
+                        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-semibold text-warning-foreground"
                     >
                         {items.length}
                     </span>
@@ -160,7 +160,7 @@ function AttentionBell() {
                             onClick={() => openItem(item)}
                             className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left hover:bg-muted"
                         >
-                            <span className="text-xs font-semibold uppercase tracking-wide text-amber-600">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-warning">
                                 {ATTENTION_KIND_LABELS[item.kind]}
                             </span>
                             <span className="w-full truncate text-sm">

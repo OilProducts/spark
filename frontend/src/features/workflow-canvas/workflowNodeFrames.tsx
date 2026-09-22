@@ -36,40 +36,40 @@ export function getWorkflowNodeFramePalette({
     if (isWaiting) {
         return {
             fillColor: CARD_FILL,
-            strokeColor: 'rgb(217 119 6)',
-            nestedStrokeColor: 'rgba(217, 119, 6, 0.5)',
-            shadowClassName: 'drop-shadow-[0_0_10px_rgba(217,119,6,0.2)]',
+            strokeColor: 'hsl(var(--warning))',
+            nestedStrokeColor: 'hsl(var(--warning) / 0.5)',
+            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--warning)/0.2)]',
         };
     }
     if (status === 'running') {
         return {
             fillColor: CARD_FILL,
-            strokeColor: 'hsl(var(--primary))',
-            nestedStrokeColor: 'hsla(var(--primary), 0.45)',
-            shadowClassName: 'drop-shadow-[0_0_10px_hsla(var(--primary),0.2)]',
+            strokeColor: 'hsl(var(--info))',
+            nestedStrokeColor: 'hsl(var(--info) / 0.45)',
+            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--info)/0.2)]',
         };
     }
     if (status === 'failed') {
         return {
             fillColor: CARD_FILL,
             strokeColor: 'hsl(var(--destructive))',
-            nestedStrokeColor: 'hsla(var(--destructive), 0.45)',
-            shadowClassName: 'drop-shadow-[0_0_10px_hsla(var(--destructive),0.18)]',
+            nestedStrokeColor: 'hsl(var(--destructive) / 0.45)',
+            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--destructive)/0.18)]',
         };
     }
     if (status === 'success') {
         return {
             fillColor: CARD_FILL,
-            strokeColor: 'rgb(34 197 94)',
-            nestedStrokeColor: 'rgba(34, 197, 94, 0.45)',
-            shadowClassName: 'drop-shadow-[0_0_10px_rgba(34,197,94,0.16)]',
+            strokeColor: 'hsl(var(--success))',
+            nestedStrokeColor: 'hsl(var(--success) / 0.45)',
+            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--success)/0.16)]',
         };
     }
     if (selected) {
         return {
             fillColor: CARD_FILL,
             strokeColor: 'hsl(var(--foreground))',
-            nestedStrokeColor: 'hsla(var(--foreground), 0.35)',
+            nestedStrokeColor: 'hsl(var(--foreground) / 0.35)',
             shadowClassName: 'drop-shadow-[0_0_6px_rgba(15,23,42,0.15)]',
         };
     }

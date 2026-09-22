@@ -85,8 +85,8 @@ export function EdgeInspectorPanel({
                                     conditionPreviewHasError
                                         ? 'border-destructive/40 bg-destructive/10 text-destructive'
                                         : conditionPreviewHasWarning
-                                            ? 'border-amber-500/40 bg-amber-500/10 text-amber-800'
-                                            : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
+                                            ? 'border-warning/40 bg-warning/10 text-warning'
+                                            : 'border-success/40 bg-success/10 text-success'
                                 }`}
                             >
                                 {selectedEdgeConditionDiagnostics.length > 0 ? (

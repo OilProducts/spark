@@ -384,8 +384,8 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                         const severityClassName = diag.severity === 'error'
                             ? 'text-destructive'
                             : diag.severity === 'warning'
-                                ? 'text-amber-800'
-                                : 'text-sky-700'
+                                ? 'text-warning'
+                                : 'text-info'
                         return (
                             <p key={`${field}-${diag.rule_id}-${index}`} className={`text-xs ${severityClassName}`}>
                                 {diag.message}

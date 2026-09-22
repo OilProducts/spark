@@ -9,6 +9,7 @@ import {
     formatDuration,
     formatRunStatusLabel,
     formatTimestamp,
+    statusToneClassName,
 } from '../model/shared'
 import {
     formatEstimatedModelCostLabel,
@@ -18,16 +19,6 @@ import {
 
 // The run's masthead: identity, state, and actions on one line; ambient facts
 // on a second. Reference detail lives behind the inspector's Details tab.
-
-const STATUS_CHIP_STYLES: Record<string, string> = {
-    running: 'border-sky-500/40 bg-sky-500/10 text-sky-700',
-    waiting: 'border-amber-500/40 bg-amber-500/10 text-amber-800',
-    completed: 'border-green-500/40 bg-green-500/10 text-green-800',
-    failed: 'border-destructive/40 bg-destructive/10 text-destructive',
-    canceled: 'border-border bg-muted text-muted-foreground',
-    aborted: 'border-border bg-muted text-muted-foreground',
-    queued: 'border-border bg-muted text-muted-foreground',
-}
 
 export interface RunHeaderBarProps {
     run: RunRecord
@@ -54,7 +45,6 @@ export function RunHeaderBar({
     const continueAvailable = canContinueRun(run.status)
     const rerunAvailable = canContinueRun(run.status)
     const retryAvailable = canRetryRun(run.status)
-    const statusChipClass = STATUS_CHIP_STYLES[run.status] ?? 'border-border bg-muted text-muted-foreground'
     const outcomeReason = run.status === 'failed' ? formatOutcomeReason(run) : null
     const facts: Array<{ id: string; label: string; value: string }> = [
         ...(currentNodeId ? [{ id: 'node', label: 'Node', value: currentNodeId }] : []),
@@ -83,7 +73,7 @@ export function RunHeaderBar({
                 </h3>
                 <span
                     data-testid="run-header-status"
-                    className={`inline-flex rounded border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${statusChipClass}`}
+                    className={`inline-flex rounded border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${statusToneClassName(run.status)}`}
                 >
                     {formatRunStatusLabel(run)}
                 </span>
@@ -92,7 +82,7 @@ export function RunHeaderBar({
                         type="button"
                         data-testid="run-header-waiting-chip"
                         onClick={onFocusPendingQuestions}
-                        className="inline-flex rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-500/20"
+                        className="inline-flex rounded border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning hover:bg-warning/20"
                     >
                         Waiting for input{currentNodeId ? ` at ${currentNodeId}` : ''} — answer below
                     </button>

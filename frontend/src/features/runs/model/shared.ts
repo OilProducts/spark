@@ -280,29 +280,41 @@ export const TIMELINE_SEVERITY_LABELS: Record<TimelineSeverity, string> = {
     error: 'Error',
 }
 
+export type StatusTone = 'info' | 'warning' | 'success' | 'destructive' | 'muted'
+
+// Border color is inert unless the call site adds a `border` width class.
+export const TONE_STYLES: Record<StatusTone, string> = {
+    info: 'border-info/40 bg-info/10 text-info',
+    warning: 'border-warning/40 bg-warning/10 text-warning',
+    success: 'border-success/40 bg-success/10 text-success',
+    destructive: 'border-destructive/40 bg-destructive/10 text-destructive',
+    muted: 'border-border bg-muted text-muted-foreground',
+}
+
 export const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
     info: 'border-border/80 bg-background text-muted-foreground',
-    warning: 'border-amber-500/40 bg-amber-500/10 text-amber-800',
-    error: 'border-destructive/40 bg-destructive/10 text-destructive',
+    warning: TONE_STYLES.warning,
+    error: TONE_STYLES.destructive,
 }
 
 export const RUN_JOURNAL_WINDOW_SIZE = 80
 
-export const STATUS_STYLES: Record<string, string> = {
-    queued: 'bg-amber-500/15 text-amber-800',
-    running: 'bg-sky-500/15 text-sky-700',
-    completed: 'bg-green-500/15 text-green-800',
-    success: 'bg-green-500/15 text-green-800',
-    failed: 'bg-destructive/15 text-destructive',
-    fail: 'bg-destructive/15 text-destructive',
-    aborted: 'bg-amber-500/15 text-amber-800',
-    canceled: 'bg-amber-500/15 text-amber-800',
-    paused: 'bg-amber-500/15 text-amber-800',
-    pause_requested: 'bg-amber-500/15 text-amber-800',
-    abort_requested: 'bg-amber-500/15 text-amber-800',
-    cancel_requested: 'bg-amber-500/15 text-amber-800',
-    validation_error: 'bg-destructive/15 text-destructive',
+// The one place that decides which run/node status reads as which tone; unknown statuses are muted.
+const STATUS_TONES: Record<string, StatusTone> = {
+    running: 'info',
+    waiting: 'warning',
+    paused: 'warning',
+    pause_requested: 'warning',
+    abort_requested: 'warning',
+    cancel_requested: 'warning',
+    completed: 'success',
+    success: 'success',
+    failed: 'destructive',
+    fail: 'destructive',
+    validation_error: 'destructive',
 }
+
+export const statusToneClassName = (status: string) => TONE_STYLES[STATUS_TONES[status] ?? 'muted']
 
 export const STATUS_LABELS: Record<string, string> = {
     queued: 'Queued',

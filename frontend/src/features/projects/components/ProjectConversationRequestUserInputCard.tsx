@@ -43,9 +43,9 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-summary-${entry.id}`}
-                className="max-w-[85%] rounded-md border border-amber-500/40 bg-amber-50/70 px-3 py-2 text-foreground"
+                className="max-w-[85%] rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-foreground"
             >
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-900/80">
+                <p className="text-xs font-semibold uppercase tracking-wide text-warning">
                     Answered Request
                 </p>
                 <div className="mt-2 space-y-2">
@@ -61,7 +61,7 @@ export function ProjectConversationRequestUserInputCard({
                         )
                     })}
                 </div>
-                <p className="mt-2 text-xs text-amber-900/70">
+                <p className="mt-2 text-xs text-muted-foreground">
                     {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
                 </p>
             </div>
@@ -72,12 +72,12 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-expired-${entry.id}`}
-                className="max-w-[85%] rounded-md border border-rose-500/40 bg-rose-50/70 px-3 py-2 text-foreground"
+                className="max-w-[85%] rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-foreground"
             >
-                <p className="text-xs font-semibold uppercase tracking-wide text-rose-900/80">
+                <p className="text-xs font-semibold uppercase tracking-wide text-destructive">
                     Expired Request
                 </p>
-                <p className="mt-2 text-sm text-rose-950/85">
+                <p className="mt-2 text-sm text-foreground">
                     The request expired before this answer could be used. Send a new message to continue.
                 </p>
                 <div className="mt-2 space-y-2">
@@ -93,7 +93,7 @@ export function ProjectConversationRequestUserInputCard({
                         )
                     })}
                 </div>
-                <p className="mt-2 text-xs text-rose-900/70">
+                <p className="mt-2 text-xs text-muted-foreground">
                     {formatConversationTimestamp(entry.requestUserInput.submittedAt ?? entry.timestamp)}
                 </p>
             </div>
@@ -118,9 +118,9 @@ export function ProjectConversationRequestUserInputCard({
     return (
         <div
             data-testid={`project-request-user-input-card-${entry.id}`}
-            className="w-full max-w-[85%] rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-foreground"
+            className="w-full max-w-[85%] rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-foreground"
         >
-            <p className="text-xs font-semibold uppercase tracking-wide text-amber-900/80">
+            <p className="text-xs font-semibold uppercase tracking-wide text-warning">
                 Needs Input
             </p>
             {validationError || actionError ? (
@@ -140,7 +140,7 @@ export function ProjectConversationRequestUserInputCard({
                     return (
                         <div key={question.id} className="space-y-2">
                             <div className="space-y-0.5">
-                                <p className="text-xs font-semibold uppercase tracking-wide text-amber-900/80">
+                                <p className="text-xs font-semibold uppercase tracking-wide text-warning">
                                     {question.header}
                                 </p>
                                 <p className="text-sm text-foreground">{question.question}</p>
@@ -169,8 +169,8 @@ export function ProjectConversationRequestUserInputCard({
                                                 size="xs"
                                                 className={`h-7 text-xs ${
                                                     isSelected
-                                                        ? 'border-amber-700 bg-amber-100 text-amber-950'
-                                                        : 'border-amber-500/50 bg-white text-amber-900 hover:bg-amber-100'
+                                                        ? 'border-warning bg-warning/15 text-warning'
+                                                        : 'border-warning/50 bg-white text-warning hover:bg-warning/15'
                                                 }`}
                                             >
                                                 {option.label}
@@ -193,7 +193,7 @@ export function ProjectConversationRequestUserInputCard({
                                     }}
                                     disabled={isSubmitting}
                                     placeholder={question.allowOther ? 'Or enter another answer...' : 'Type answer...'}
-                                    className="h-8 border-amber-500/40 bg-white text-sm text-amber-950 focus-visible:ring-amber-500/40"
+                                    className="h-8 border-warning/40 bg-white text-sm text-foreground focus-visible:ring-warning/40"
                                 />
                             ) : null}
                             {question.options.length > 0 ? (
@@ -202,9 +202,9 @@ export function ProjectConversationRequestUserInputCard({
                                         option.description ? (
                                             <p
                                                 key={`${question.id}-${option.label}-description`}
-                                                className="text-xs text-amber-900/80"
+                                                className="text-xs text-muted-foreground"
                                             >
-                                                <span className="font-medium text-amber-900">{option.label}:</span>{' '}
+                                                <span className="font-medium text-foreground">{option.label}:</span>{' '}
                                                 {option.description}
                                             </p>
                                         ) : null
@@ -216,7 +216,7 @@ export function ProjectConversationRequestUserInputCard({
                 })}
             </div>
             <div className="mt-3 flex items-center justify-between gap-2">
-                <p className="text-xs text-amber-900/70">{formatConversationTimestamp(entry.timestamp)}</p>
+                <p className="text-xs text-muted-foreground">{formatConversationTimestamp(entry.timestamp)}</p>
                 <Button
                     type="button"
                     data-testid={`project-request-user-input-submit-${entry.requestUserInput.requestId}`}
@@ -224,7 +224,7 @@ export function ProjectConversationRequestUserInputCard({
                     disabled={isSubmitting}
                     variant="outline"
                     size="xs"
-                    className="h-7 border-amber-600/60 bg-white text-xs font-medium text-amber-950 hover:bg-amber-100"
+                    className="h-7 border-warning/60 bg-white text-xs font-medium text-warning hover:bg-warning/15"
                 >
                     {isSubmitting ? 'Submitting...' : 'Submit'}
                 </Button>

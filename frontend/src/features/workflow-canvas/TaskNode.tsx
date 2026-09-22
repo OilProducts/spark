@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { useStore } from '@/store'
 import { generateFlowYaml } from '@/lib/flowYamlUtils'
 import { useEditorGraphBridgeRef } from '@/features/editor/EditorGraphBridgeContext'
+import { statusToneClassName } from '@/features/runs/model/shared'
 
 import {
     WorkflowNodeFrame,
@@ -67,19 +68,6 @@ const FLOW_PORT_HANDLES = [
 
 type BaseWorkflowNodeProps = NodeProps & {
     defaultShape: WorkflowNodeShape
-}
-
-function getStatusBadgeClassName(status: string) {
-    if (status === 'success') {
-        return 'bg-green-500/20 text-green-600'
-    }
-    if (status === 'running') {
-        return 'bg-primary/20 text-primary'
-    }
-    if (status === 'failed') {
-        return 'bg-destructive/20 text-destructive'
-    }
-    return 'bg-muted/50 text-muted-foreground'
 }
 
 function isDefaultEnabledBoolean(value: unknown): boolean {
@@ -424,12 +412,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             <div className={cn('absolute left-2 right-2 z-20 flex items-start justify-between', overlayOffsetClassName)}>
                 <div className="min-w-0">
                     {isWaiting && (
-                        <div className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-800">
+                        <div className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-warning">
                             Needs Input
                         </div>
                     )}
                     {isReadOnlyPreviewNode && (
-                        <div className="mt-1 rounded-full bg-slate-500/12 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                        <div className="mt-1 rounded-full bg-muted px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                             Read-only Preview
                         </div>
                     )}
@@ -451,8 +439,8 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                 hasDiagnosticError
                                     ? 'bg-destructive/15 text-destructive'
                                     : hasDiagnosticWarning
-                                        ? 'bg-amber-500/15 text-amber-800'
-                                        : 'bg-sky-500/15 text-sky-700',
+                                        ? 'bg-warning/15 text-warning'
+                                        : 'bg-info/15 text-info',
                             )}
                             title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
                         >
@@ -493,7 +481,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         <span
                             className={cn(
                                 'rounded-sm px-1.5 py-0.5 text-xs font-medium uppercase tracking-wider',
-                                getStatusBadgeClassName(status),
+                                statusToneClassName(status),
                             )}
                         >
                             {status}
@@ -748,7 +736,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {draftToolHooksPreWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.pre" className="text-xs text-amber-800">
+                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.pre" className="text-xs text-warning">
                                                             {draftToolHooksPreWarning}
                                                         </p>
                                                     )}
@@ -763,7 +751,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {draftToolHooksPostWarning && (
-                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.post" className="text-xs text-amber-800">
+                                                        <p data-testid="node-toolbar-attr-warning-tool.hooks.post" className="text-xs text-warning">
                                                             {draftToolHooksPostWarning}
                                                         </p>
                                                     )}

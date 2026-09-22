@@ -246,7 +246,7 @@ export function LaunchPanel({
             {lockMetadata?.execution_lock ? (
                 <Alert
                     data-testid="execution-launch-lock-notice"
-                    className="border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-800"
+                    className="border-warning/40 bg-warning/10 px-3 py-2 text-warning"
                 >
                     <AlertDescription className="text-inherit">
                         Execution lock: {lockMetadata.execution_lock.scope} / {lockMetadata.execution_lock.key} / {lockMetadata.execution_lock.conflict_policy}. This launch policy is stored in the workspace flow catalog, not in YAML.

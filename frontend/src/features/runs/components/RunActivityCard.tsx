@@ -303,7 +303,7 @@ export function RunActivityCard({
                             className={cn(
                                 'inline-flex rounded border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
                                 isLive
-                                    ? 'border-sky-500/40 bg-sky-500/10 text-sky-700'
+                                    ? 'border-info/40 bg-info/10 text-info'
                                     : 'border-border bg-muted text-muted-foreground',
                             )}
                         >
@@ -337,7 +337,7 @@ export function RunActivityCard({
                     <div className="flex items-center gap-2">
                         <span
                             data-testid="run-activity-node-scope"
-                            className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-xs font-medium text-sky-700"
+                            className="inline-flex items-center gap-1 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-xs font-medium text-info"
                         >
                             Node: {selectedNodeId}
                             <button
@@ -345,7 +345,7 @@ export function RunActivityCard({
                                 data-testid="run-activity-node-scope-clear"
                                 aria-label="Clear node focus"
                                 onClick={onClearNodeSelection}
-                                className="ml-1 font-semibold hover:text-sky-900"
+                                className="ml-1 font-semibold hover:text-foreground"
                             >
                                 ×
                             </button>

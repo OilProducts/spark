@@ -36,9 +36,9 @@ export function RunQuestionsPanel({
     return (
         <div
             data-testid="run-pending-human-gates-panel"
-            className={`mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 ${className ?? ''}`.trim()}
+            className={`mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 ${className ?? ''}`.trim()}
         >
-            <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+            <div className="text-xs font-semibold uppercase tracking-wide text-warning">
                 Pending Questions
             </div>
             {pendingGateActionError && (
@@ -56,11 +56,11 @@ export function RunQuestionsPanel({
                     <div
                         key={group.key}
                         data-testid="run-pending-human-gate-group"
-                        className="rounded border border-amber-500/30 bg-amber-100/40 px-2 py-1.5"
+                        className="rounded border border-warning/30 bg-warning/15 px-2 py-1.5"
                     >
                         <div
                             data-testid="run-pending-human-gate-group-heading"
-                            className="text-xs font-semibold uppercase tracking-wide text-amber-800"
+                            className="text-xs font-semibold uppercase tracking-wide text-warning"
                         >
                             {group.heading}
                         </div>
@@ -73,19 +73,19 @@ export function RunQuestionsPanel({
                                     ? gateNotesByGateId[gate.questionId] ?? ''
                                     : ''
                                 return (
-                                    <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-sm text-amber-900">
+                                    <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-sm text-foreground">
                                         <div>{gate.prompt}</div>
                                         {gate.details && (
                                             <div
                                                 data-testid="run-pending-human-gate-details"
-                                                className="mt-1 max-h-72 overflow-y-auto rounded border border-amber-500/30 bg-white/70 px-2 py-1.5 text-sm text-amber-950"
+                                                className="mt-1 max-h-72 overflow-y-auto rounded border border-warning/30 bg-white/70 px-2 py-1.5 text-sm text-foreground"
                                             >
                                                 <ProjectConversationMarkdown content={gate.details} />
                                             </div>
                                         )}
                                         <div
                                             data-testid="run-pending-human-gate-item-audit"
-                                            className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-amber-900/80"
+                                            className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
                                         >
                                             <span className="font-mono">Order #{gateIndex + 1}</span>
                                             <span>Question ID: {gate.questionId ?? '—'}</span>
@@ -101,7 +101,7 @@ export function RunQuestionsPanel({
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     aria-label="Answer"
                                                     placeholder="Type answer..."
-                                                    className="h-7 min-w-[18rem] border-amber-500/40 bg-white px-2 text-sm text-amber-900 focus-visible:ring-amber-500/40"
+                                                    className="h-7 min-w-[18rem] border-warning/40 bg-white px-2 text-sm text-foreground focus-visible:ring-warning/40"
                                                 />
                                                 <Button
                                                     type="button"
@@ -112,7 +112,7 @@ export function RunQuestionsPanel({
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true || freeformAnswer.trim().length === 0}
                                                     variant="outline"
                                                     size="xs"
-                                                    className="h-7 border-amber-500/50 bg-white text-xs font-medium text-amber-900 hover:bg-amber-100"
+                                                    className="h-7 border-warning/50 bg-white text-xs font-medium text-warning hover:bg-warning/15"
                                                 >
                                                     Submit
                                                 </Button>
@@ -127,7 +127,7 @@ export function RunQuestionsPanel({
                                                     onChange={(event) => onGateNoteChange(gate.questionId!, event.target.value)}
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     placeholder="Optional note for the next step..."
-                                                    className="h-7 w-full border-amber-500/40 bg-white px-2 text-sm text-amber-900 focus-visible:ring-amber-500/40"
+                                                    className="h-7 w-full border-warning/40 bg-white px-2 text-sm text-foreground focus-visible:ring-warning/40"
                                                 />}
                                             <div className="mt-1 flex flex-wrap gap-1.5">
                                                 {gate.options.map((option) => (
@@ -141,7 +141,7 @@ export function RunQuestionsPanel({
                                                             disabled={!confirmedQuestionIds.includes(gate.questionId!) || submittingGateIds[gate.questionId!] === true}
                                                             variant="outline"
                                                             size="xs"
-                                                            className="h-6 border-amber-500/50 bg-white text-xs font-medium text-amber-900 hover:bg-amber-100"
+                                                            className="h-6 border-warning/50 bg-white text-xs font-medium text-warning hover:bg-warning/15"
                                                         >
                                                             {option.label}
                                                         </Button>
@@ -155,7 +155,7 @@ export function RunQuestionsPanel({
                                                             return (
                                                                 <div
                                                                     data-testid={`run-pending-human-gate-option-metadata-${option.value}`}
-                                                                    className="flex items-center gap-1 text-xs text-amber-900/90"
+                                                                    className="flex items-center gap-1 text-xs text-muted-foreground"
                                                                 >
                                                                     {showMultipleChoiceMetadata && option.key && <span className="font-mono">[{option.key}]</span>}
                                                                     {showMultipleChoiceMetadata && option.description && <span>{option.description}</span>}

@@ -7,8 +7,8 @@ import { NativeSelect } from '@/components/ui/native-select';
 
 const severityStyles: Record<string, string> = {
     error: 'bg-destructive/15 text-destructive',
-    warning: 'bg-amber-500/15 text-amber-800',
-    info: 'bg-sky-500/15 text-sky-700',
+    warning: 'bg-warning/15 text-warning',
+    info: 'bg-info/15 text-info',
 };
 
 type SeverityFilter = 'all' | 'error' | 'warning' | 'info';
