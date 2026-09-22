@@ -18,6 +18,7 @@ import { ConnectionSettingsEditor } from "./ConnectionSettingsEditor"
 import { RuntimeSettingsEditor } from "./RuntimeSettingsEditor"
 import { useSettingsNavigationProtection } from "./hooks/useSettingsNavigationProtection"
 import { useModelSettingsEditor } from "./hooks/useModelSettingsEditor"
+import { SaveStatus } from './SaveStatus'
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -115,7 +116,7 @@ export function SettingsPanel() {
             })
             setDesktopSettings(payload)
             setRemoteDraft(null)
-            setDesktopMessage('Desktop settings saved.')
+            setDesktopMessage('Saved.')
             setDesktopSettingsError(null)
         } catch (error) {
             setDesktopSettingsError(error instanceof Error ? error.message : 'Unable to save desktop settings.')
@@ -155,13 +156,12 @@ export function SettingsPanel() {
                         <ModelSettingsFields profiles={llmProfiles} models={models} activeProjectPath={activeProjectPath} invalidModel={!!invalidModel} />
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
-                            <Button size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save model defaults</Button>
-                            <Button size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard model changes</Button>
+                            <Button size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
+                            <Button size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
                         </div>
                         {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
-            {models.error && <p role="alert" className="text-xs text-destructive">{models.error}</p>}
-                        {models.message && <p role="status" className="text-xs">{models.message}</p>}
+                        <SaveStatus message={models.message} error={models.error} dirty={models.dirty} />
                     </CardContent>
                 </Card>
 
@@ -200,7 +200,7 @@ export function SettingsPanel() {
                                     disabled={isSavingDesktopSettings} onCheckedChange={setRemoteDraft} aria-label="Remote desktop server access" />
                             </div>
                             <div className="flex flex-wrap gap-2">
-                                <Button disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save Desktop settings</Button>
+                                <Button disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save</Button>
                                 <Button variant="outline" disabled={isSavingDesktopSettings || (!desktopDirty && !desktopSettingsError)} onClick={() => {
                                     const invoke = getTauriInvoke()
                                     if (!invoke) return
@@ -209,13 +209,12 @@ export function SettingsPanel() {
                                         setDesktopSettings(value); setRemoteDraft(null); setDesktopSettingsError(null); setDesktopMessage('')
                                     }).catch(() => setDesktopSettingsError('Unable to reload Desktop settings.'))
                                         .finally(() => setIsSavingDesktopSettings(false))
-                                }}>Discard Desktop changes</Button>
+                                }}>Discard</Button>
                             </div>
                             {isSavingDesktopSettings && <p role="status">Saving or reloading settings…</p>}
-                            {desktopMessage && <p role="status" className="text-xs">{desktopMessage}</p>}
                             {desktopSettings.requires_restart ? <div className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">Restart Spark Desktop to apply the server binding change.</div> : null}
                             </> : desktopSettingsError ? <Button variant="outline" onClick={() => { setDesktopSettingsError(null); setDesktopRetry((value) => value + 1) }}>Retry Desktop settings</Button> : <p role="status">Loading Desktop settings…</p>}
-                            {desktopSettingsError ? <div role="alert" className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{desktopSettingsError}</div> : null}
+                            <SaveStatus message={desktopMessage} error={desktopSettingsError} dirty={desktopDirty} />
                         </CardContent>
                     </Card>
                 ) : null}

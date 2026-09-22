@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { ConversationTimelineEntry } from '../model/types'
@@ -72,7 +72,7 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-expired-${entry.id}`}
-                className="max-w-[85%] rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-foreground"
+                className="max-w-[85%] rounded-md border border-destructive/50 px-3 py-2 text-foreground"
             >
                 <p className="text-xs font-semibold uppercase tracking-wide text-destructive">
                     Expired Request
@@ -124,14 +124,7 @@ export function ProjectConversationRequestUserInputCard({
                 Needs Input
             </p>
             {validationError || actionError ? (
-                <Alert
-                    data-testid={`project-request-user-input-error-${entry.id}`}
-                    className="mt-2 border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
-                >
-                    <AlertDescription className="text-inherit">
-                        {validationError ?? actionError}
-                    </AlertDescription>
-                </Alert>
+                <InlineError data-testid={`project-request-user-input-error-${entry.id}`} className="mt-2" dense>{validationError ?? actionError}</InlineError>
             ) : null}
             <div className="mt-2 space-y-3">
                 {entry.requestUserInput.questions.map((question) => {

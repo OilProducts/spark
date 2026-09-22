@@ -1,6 +1,6 @@
 import type { PendingInterviewGate, PendingInterviewGateGroup } from '../model/shared'
 import { pendingGateSemanticHint, formatTimestamp } from '../model/shared'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -42,14 +42,7 @@ export function RunQuestionsPanel({
                 Pending Questions
             </div>
             {pendingGateActionError && (
-                <Alert
-                    data-testid="run-pending-human-gate-answer-error"
-                    className="mt-2 border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
-                >
-                    <AlertDescription className="text-inherit">
-                        {pendingGateActionError}
-                    </AlertDescription>
-                </Alert>
+                <InlineError data-testid="run-pending-human-gate-answer-error" className="mt-2" dense>{pendingGateActionError}</InlineError>
             )}
             <div className="mt-2 space-y-2">
                 {groupedPendingInterviewGates.map((group) => (

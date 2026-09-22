@@ -1,5 +1,5 @@
 import type { ContextErrorState, RunContextRow } from '../model/shared'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -125,24 +125,13 @@ export function RunContextCard({
                     </div>
                 )}
                 {contextError && (
-                    <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
-                        <AlertDescription className="space-y-1 text-inherit">
-                            <div data-testid="run-context-error">{contextError.message}</div>
-                            <div data-testid="run-context-error-help" className="text-xs text-destructive/90">
-                                {contextError.help}
-                            </div>
-                        </AlertDescription>
-                    </Alert>
+                    <InlineError>
+                        <div data-testid="run-context-error">{contextError.message}</div>
+                        <div data-testid="run-context-error-help" className="mt-1 text-xs">{contextError.help}</div>
+                    </InlineError>
                 )}
                 {!contextError && status !== 'ready' ? (
-                    <Alert
-                        data-testid="run-context-loading"
-                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                    >
-                        <AlertDescription className="text-inherit">
-                            Restoring context…
-                        </AlertDescription>
-                    </Alert>
+                    <p data-testid="run-context-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring context…</p>
                 ) : null}
                 {(status === 'ready' || filteredContextRows.length > 0) && (
                     <div className="space-y-3">

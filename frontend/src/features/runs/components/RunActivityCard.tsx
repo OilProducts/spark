@@ -4,7 +4,7 @@ import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
@@ -353,20 +353,10 @@ export function RunActivityCard({
                     </div>
                 ) : null}
                 {timelineError ? (
-                    <Alert
-                        data-testid="run-event-timeline-error"
-                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
-                    >
-                        <AlertDescription className="text-inherit">{timelineError}</AlertDescription>
-                    </Alert>
+                    <InlineError data-testid="run-event-timeline-error">{timelineError}</InlineError>
                 ) : null}
                 {transcriptError && activityMode !== 'events' ? (
-                    <Alert
-                        data-testid="run-transcript-error"
-                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
-                    >
-                        <AlertDescription className="text-inherit">{transcriptError}</AlertDescription>
-                    </Alert>
+                    <InlineError data-testid="run-transcript-error">{transcriptError}</InlineError>
                 ) : null}
                 {!timelineError && showEventFilters ? (
                     <div className="flex flex-wrap items-center gap-2">

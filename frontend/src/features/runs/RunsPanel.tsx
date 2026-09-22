@@ -25,6 +25,7 @@ import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 
@@ -364,14 +365,7 @@ export function RunsPanel() {
                             </div>
                         )}
                         {showRunDetailsRestoringState && (
-                            <Alert
-                                data-testid="run-selection-restoring-state"
-                                className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                            >
-                                <AlertDescription className="text-inherit">
-                                    Restoring the selected run session…
-                                </AlertDescription>
-                            </Alert>
+                            <p data-testid="run-selection-restoring-state" className="text-sm text-muted-foreground" aria-live="polite">Restoring the selected run session…</p>
                         )}
                         {selectedRun && (
                             <RunHeaderBar
@@ -420,11 +414,11 @@ export function RunsPanel() {
                             </div>
                         )}
                         {!selectedRun && scopeMode === 'all' && !hasRuns && (
-                            <Alert className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
-                                <AlertDescription className="text-inherit">
-                                    No runs have been recorded yet.
-                                </AlertDescription>
-                            </Alert>
+                            <Empty className="text-sm text-muted-foreground">
+                                <EmptyHeader>
+                                    <EmptyDescription>No runs have been recorded yet.</EmptyDescription>
+                                </EmptyHeader>
+                            </Empty>
                         )}
                         {selectedRun && (
                             <div

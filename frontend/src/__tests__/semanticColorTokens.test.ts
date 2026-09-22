@@ -18,3 +18,17 @@ it('uses semantic color tokens instead of raw palette classes', () => {
     }
     expect(violations).toEqual([])
 })
+
+// Inline errors render through InlineError (Alert variant="destructive"); hand-rolled tinted destructive boxes are banned.
+it('keeps ad hoc destructive error boxes out of feature code', () => {
+    const srcRoot = resolve(process.cwd(), 'src')
+    const violations: string[] = []
+    for (const file of readdirSync(srcRoot, { recursive: true }) as string[]) {
+        if (!file.endsWith('.tsx') || file.replaceAll('\\', '/').startsWith('components/ui/')) continue
+        readFileSync(join(srcRoot, file), 'utf8').split('\n').forEach((line, index) => {
+            const box = line.match(/border-destructive\/\d+ bg-destructive\/\d+/)
+            if (box) violations.push(`${file}:${index + 1} ${box[0]}`)
+        })
+    }
+    expect(violations).toEqual([])
+})

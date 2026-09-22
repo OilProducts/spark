@@ -28,7 +28,7 @@ it('retains edits across late reads and failed saves', async () => {
     await act(async () => late({ ...view, revision: 'late-revision' }))
     expect(input).toHaveValue('/draft')
     vi.mocked(saveRuntimeSettings).mockRejectedValueOnce(new Error('Concurrent update.'))
-    await user.click(screen.getByRole('button', { name: 'Save runtime settings' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
     await screen.findByText('Concurrent update.')
     expect(input).toHaveValue('/draft')
     expect(saveRuntimeSettings).toHaveBeenCalledWith('revision-1', { ...view.stored, flows_dir: '/draft' })

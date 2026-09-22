@@ -11,6 +11,7 @@ import {
 import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -226,22 +227,10 @@ export function LaunchPanel({
                 </Alert>
             ) : null}
             {isLoadingPreview ? (
-                <Alert
-                    data-testid="launch-panel-preview-loading"
-                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                >
-                    <AlertDescription className="text-inherit">
-                        Loading flow preview and launch contract…
-                    </AlertDescription>
-                </Alert>
+                <p data-testid="launch-panel-preview-loading" className="text-sm text-muted-foreground" aria-live="polite">Loading flow preview and launch contract…</p>
             ) : null}
             {previewLoadError ? (
-                <Alert
-                    data-testid="launch-panel-preview-error"
-                    className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
-                >
-                    <AlertDescription className="text-inherit">{previewLoadError}</AlertDescription>
-                </Alert>
+                <InlineError data-testid="launch-panel-preview-error">{previewLoadError}</InlineError>
             ) : null}
             {lockMetadata?.execution_lock ? (
                 <Alert

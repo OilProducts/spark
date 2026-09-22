@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
 import type { LaunchInputDefinition, LaunchInputFormValues, ParsedLaunchInputDefinitions } from '@/lib/flowContracts'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -97,14 +97,7 @@ export function LaunchInputsForm({
                 ) : null}
             </div>
             {parsedLaunchInputs.error ? (
-                <Alert
-                    data-testid="execution-launch-inputs-schema-error"
-                    className="mb-3 border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-                >
-                    <AlertDescription className="text-inherit">
-                        {parsedLaunchInputs.error}
-                    </AlertDescription>
-                </Alert>
+                <InlineError data-testid="execution-launch-inputs-schema-error" className="mb-3" dense>{parsedLaunchInputs.error}</InlineError>
             ) : null}
             {!launchInputsCollapsed ? (
                 <div

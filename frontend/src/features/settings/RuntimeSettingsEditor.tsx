@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { useRuntimeSettingsEditor } from './hooks/useRuntimeSettingsEditor'
+import { SaveStatus } from './SaveStatus'
 
 export function RuntimeSettingsEditor() {
     const { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard } = useRuntimeSettingsEditor()
@@ -24,15 +25,14 @@ export function RuntimeSettingsEditor() {
                     <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
-                    <Button disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save runtime settings</Button>
-                    <Button variant="outline" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard runtime changes</Button>
+                    <Button disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>
+                    <Button variant="outline" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
                 </div>
             </>}
             {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: flows {saved.active_startup.flows_dir}, runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
             {!draft && saved?.repair_defaults && <Button variant="outline" disabled={pending} onClick={() => setDraft(saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
-            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-            {message && <p role="status" className="text-sm">{message}</p>}
+            <SaveStatus message={message} error={error} dirty={dirty} />
         </CardContent>
     </Card>
 }

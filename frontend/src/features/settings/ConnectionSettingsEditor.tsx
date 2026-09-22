@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { useConnectionSettingsEditor } from './hooks/useConnectionSettingsEditor'
+import { SaveStatus } from './SaveStatus'
 
 export function ConnectionSettingsEditor() {
     const editor = useConnectionSettingsEditor()
@@ -33,14 +34,13 @@ export function ConnectionSettingsEditor() {
                     <p className="text-xs">Effective: {editor.saved.effective ? editor.saved.effective.client_api_base_url ?? 'http://127.0.0.1:8000' : 'Unavailable'} · {editor.saved.sources?.client_api_base_url} · Applies to new CLI commands</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
-                    <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save connection settings</Button>
-                    <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard connection changes</Button>
+                    <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+                    <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
                 </div>
             </>}
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
-            {editor.error && <p role="alert">{editor.error}</p>}
-            {editor.message && <p role="status">{editor.message}</p>}
+            <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>
     </Card>
 }

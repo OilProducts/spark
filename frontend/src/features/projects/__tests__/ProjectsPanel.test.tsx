@@ -371,6 +371,7 @@ describe('ProjectsPanel', () => {
         'Choose or add a project from the navbar to view threads.',
       ),
     ).toBeVisible()
+    expect(screen.getAllByText(/Choose or add a project from the navbar/)).toHaveLength(2)
 
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()

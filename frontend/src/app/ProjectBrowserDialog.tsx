@@ -8,7 +8,8 @@ import {
     DialogHeader,
     DialogTitle,
 } from '@/components/ui/dialog'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
+import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Button } from '@/components/ui/button'
 import type { ProjectBrowseEntryResponse } from '@/lib/workspaceClient'
 
@@ -170,9 +171,7 @@ export function ProjectBrowserDialog({
                         ) : null}
 
                         {errorMessage ? (
-                            <Alert data-testid="project-browser-error" variant="destructive">
-                                <AlertDescription>{errorMessage}</AlertDescription>
-                            </Alert>
+                            <InlineError data-testid="project-browser-error">{errorMessage}</InlineError>
                         ) : null}
 
                         <div
@@ -187,9 +186,11 @@ export function ProjectBrowserDialog({
                                     Loading directories…
                                 </div>
                             ) : entries.length === 0 ? (
-                                <div className="rounded-md border border-dashed border-border/70 px-4 py-8 text-center text-sm text-muted-foreground">
-                                    No subdirectories in this location.
-                                </div>
+                                <Empty className="text-sm text-muted-foreground">
+                                    <EmptyHeader>
+                                        <EmptyDescription>No subdirectories in this location.</EmptyDescription>
+                                    </EmptyHeader>
+                                </Empty>
                             ) : (
                                 <ul className="space-y-1">
                                     {entries.map((entry) => (

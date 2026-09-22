@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { Button } from '@/components/ui/button'
+import { Empty, EmptyDescription } from '@/components/ui/empty'
+import { InlineError } from '@/components/app/inline-error'
 import { Input } from '@/components/ui/input'
 import { RefreshCw } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -154,7 +156,7 @@ function ProjectTasks({ project, selected, active }: { project: string; selected
             <Button type="button" variant="secondary" className="border border-transparent aria-pressed:border-foreground/50" aria-pressed={archived} onClick={() => filter(search, !archived)}>Show archived</Button>
             <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh tasks</TooltipContent></Tooltip></TooltipProvider>
         </div>
-        {(error || loadError) && editing === undefined && <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-foreground">{error || loadError}</p>}
+        {(error || loadError) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
         <div className="flex min-h-0 flex-1 gap-4">
         <div ref={boardScroll} hidden={narrow && editing !== undefined} className="min-w-0 flex-1 overflow-x-auto">
         <div className="grid h-full min-h-0 grid-cols-[repeat(6,minmax(15rem,1fr))] gap-3">
@@ -168,7 +170,9 @@ function ProjectTasks({ project, selected, active }: { project: string; selected
                         {task.fields.description && <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{task.fields.description}</span>}
                         {task.fields.archived && <span className="mt-2 inline-block rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>}
                     </button>)}
-                    {!tasks.length && <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : loaded ? search ? 'No matches' : 'No tasks' : 'Loading…'}</p>}
+                    {!tasks.length && (loaded && !loadError
+                        ? <Empty className="px-3 py-4 text-xs text-muted-foreground"><EmptyDescription>{search ? 'No matches' : 'No tasks'}</EmptyDescription></Empty>
+                        : <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
                     </div>
                 </section>
             })}

@@ -1,5 +1,6 @@
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
@@ -59,11 +60,7 @@ export function RunResultCard({
             </CardHeader>
             <CardContent className="space-y-3 px-4">
                 {resultError ? (
-                    <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
-                        <AlertDescription data-testid="run-result-error" className="text-inherit">
-                            {resultError}
-                        </AlertDescription>
-                    </Alert>
+                    <InlineError data-testid="run-result-error">{resultError}</InlineError>
                 ) : null}
                 {!resultError && (!result || result.state === 'pending') ? (
                     <Alert
@@ -86,11 +83,7 @@ export function RunResultCard({
                     </Alert>
                 ) : null}
                 {!resultError && result?.state === 'error' ? (
-                    <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
-                        <AlertDescription data-testid="run-result-resolution-error" className="text-inherit">
-                            {result.error || 'Result resolution failed.'}
-                        </AlertDescription>
-                    </Alert>
+                    <InlineError data-testid="run-result-resolution-error">{result.error || 'Result resolution failed.'}</InlineError>
                 ) : null}
                 {result?.state === 'ready' ? (
                     <div data-testid="run-result-body" className="rounded-md border border-border/80 bg-muted/20 p-3">

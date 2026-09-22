@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
 
 import { HomeProjectSidebar } from "./HomeProjectSidebar"
 import type { ProjectConversationSummary } from "../model/types"
-import { Alert, AlertDescription } from "@/components/ui/alert"
+import { InlineError } from "@/components/app/inline-error"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import {
@@ -79,11 +79,11 @@ export function ProjectsSidebar({
                             <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0 space-y-1">
                                     <h3 className="text-base font-semibold text-foreground">Threads</h3>
-                                    <p className="text-xs leading-5 text-muted-foreground">
-                                        {activeProjectPath
-                                            ? `Threads for ${activeProjectLabel || 'the active project'}.`
-                                            : 'Choose or add a project from the navbar to view threads.'}
-                                    </p>
+                                    {activeProjectPath ? (
+                                        <p className="text-xs leading-5 text-muted-foreground">
+                                            Threads for {activeProjectLabel || 'the active project'}.
+                                        </p>
+                                    ) : null}
                                 </div>
                                 {activeProjectPath ? (
                                     <Button
@@ -114,22 +114,13 @@ export function ProjectsSidebar({
                                     </li>
                                 ) : activeProjectConversationSummariesStatus === 'idle' || activeProjectConversationSummariesStatus === 'loading' ? (
                                     <li>
-                                        <Alert
-                                            data-testid="project-thread-list-loading"
-                                            className="border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
-                                        >
-                                            <AlertDescription className="text-inherit">
-                                                Restoring thread list…
-                                            </AlertDescription>
-                                        </Alert>
+                                        <p data-testid="project-thread-list-loading" className="text-xs text-muted-foreground" aria-live="polite">
+                                            Restoring thread list…
+                                        </p>
                                     </li>
                                 ) : activeProjectConversationSummariesStatus === 'error' && activeProjectConversationSummaries.length === 0 ? (
                                     <li>
-                                        <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                                            <AlertDescription className="text-inherit">
-                                                Unable to restore the thread list.
-                                            </AlertDescription>
-                                        </Alert>
+                                        <InlineError dense>Unable to restore the thread list.</InlineError>
                                     </li>
                                 ) : activeProjectConversationSummaries.length === 0 ? (
                                     <li>
@@ -255,11 +246,15 @@ export function ProjectsSidebar({
                         </div>
                     </div>
                     {scopedWorkflowEntries.length === 0 ? (
-                        <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                            {logScope === 'active'
-                                ? 'No workflow events recorded for this project yet.'
-                                : 'No workflow events recorded yet.'}
-                        </p>
+                        <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                            <EmptyHeader>
+                                <EmptyDescription>
+                                    {logScope === 'active'
+                                        ? 'No workflow events recorded for this project yet.'
+                                        : 'No workflow events recorded yet.'}
+                                </EmptyDescription>
+                            </EmptyHeader>
+                        </Empty>
                     ) : (
                         <ol data-testid="project-event-log-list" className="flex-1 space-y-2 overflow-y-auto pr-1">
                             {[...scopedWorkflowEntries].reverse().map((entry) => (

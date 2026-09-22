@@ -24,7 +24,7 @@ it('starts a replacement draft for invalid stored field types and requires expli
     await user.click(screen.getByRole('button', {name:'Start replacement draft with defaults'}))
     expect(writes).toHaveLength(0)
     await user.type(screen.getByLabelText('Flows directory'), '/replacement')
-    await user.click(screen.getByRole('button', {name:'Save runtime settings'}))
+    await user.click(screen.getByRole('button', {name:'Save'}))
     await waitFor(() => expect(writes).toHaveLength(1))
     expect(writes[0]).toEqual({expected_revision:'one',section:'runtime',value:{...defaults,flows_dir:'/replacement'}})
 })

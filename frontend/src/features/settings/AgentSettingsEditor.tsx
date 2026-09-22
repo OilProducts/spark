@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { useAgentSettingsEditor } from './hooks/useAgentSettingsEditor'
+import { SaveStatus } from './SaveStatus'
 
 const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum tool rounds per input', default_command_timeout_ms: 'Default command timeout (milliseconds)', max_command_timeout_ms: 'Maximum command timeout (milliseconds)', loop_detection_window: 'Loop detection window', max_subagent_depth: 'Maximum subagent depth', codex_binary: 'Codex binary', codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_binary: 'Claude binary', claude_config_dir: 'Claude configuration directory', codex_jsonrpc_trace: 'Codex JSON-RPC tracing', agent_trace: 'Agent tracing' } as const
 
@@ -71,9 +72,9 @@ export function AgentSettingsEditor() {
             {editor.invalid && <p id="agent-limits-error" role="alert">Use nonnegative whole numbers, a positive default timeout no greater than the maximum, and a positive window when loop detection is enabled.</p>}
         </fieldset>}
         <div className="flex flex-wrap gap-2">
-        <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save agent settings</Button>
-        <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard agent changes</Button>
+        <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+        <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
         </div>
-        {editor.error && <p role="alert">{editor.error}</p>}{editor.message && <p role="status">{editor.message}</p>}
+        <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
     </CardContent></Card>
 }

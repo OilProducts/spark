@@ -147,7 +147,7 @@ export function ProjectSettingsDialog({
                 </div>
                 <DialogFooter>
                     <Button type="button" variant="outline" disabled={isSaving || isLoading} onClick={discard}>
-                        Discard and reload
+                        Discard
                     </Button>
                     <Button type="button" variant="outline" disabled={isSaving} onClick={() => void requestOpenChange(false)}>
                         Cancel

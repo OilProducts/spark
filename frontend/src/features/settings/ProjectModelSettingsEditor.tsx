@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
 import { useModelSettingsEditor } from './hooks/useModelSettingsEditor'
+import { SaveStatus } from './SaveStatus'
 
 export function ProjectModelSettingsEditor({ projectPath }: { projectPath: string }) {
     const editor = useModelSettingsEditor(projectPath)
@@ -28,12 +29,11 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
                     onCheckedChange={(checked) => editor.setDraft(checked && editor.saved?.effective ? { ...editor.saved.effective } : null)} />Override workspace model settings</Label>
                 {editor.draft && <ModelSettingsFields profiles={profiles} models={editor} activeProjectPath={projectPath} invalidModel={!!invalidModel} />}
             </fieldset>
-            <div className="flex flex-wrap gap-2"><Button size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save project defaults</Button>
-                <Button size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard project changes</Button></div>
+            <div className="flex flex-wrap gap-2"><Button size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
+                <Button size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button></div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
-            {editor.error && <p role="alert" className="text-xs text-destructive">{editor.error}</p>}
-            {editor.message && <p role="status" className="text-xs">{editor.message}</p>}
+            <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>
     </Card>
 }

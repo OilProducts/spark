@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/button'
+import { InlineError } from '@/components/app/inline-error'
 import type { RunRecord } from '../model/shared'
 import {
     canCancelRun,
@@ -149,12 +150,7 @@ export function RunHeaderBar({
                 ))}
             </div>
             {outcomeReason ? (
-                <p
-                    data-testid="run-header-failure-reason"
-                    className="rounded border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-sm text-destructive"
-                >
-                    {outcomeReason}
-                </p>
+                <InlineError data-testid="run-header-failure-reason">{outcomeReason}</InlineError>
             ) : null}
         </header>
     )

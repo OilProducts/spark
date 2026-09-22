@@ -18,7 +18,7 @@ import {
     getSurfaceToneClassName,
 } from '../model/presentation'
 import { MessageRow, ThinkingRow, ToolCallRow } from '@/components/app/transcript/SegmentRows'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ProjectConversationMarkdown } from './ProjectConversationMarkdown'
@@ -427,20 +427,19 @@ export function ProjectConversationHistory({
     return (
         <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
             {isConversationHistoryLoading && !hasRenderableConversationHistory ? (
-                <Alert
-                    data-testid="project-conversation-history-loading"
-                    className="border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
-                >
-                    <AlertDescription className="text-inherit">
-                        Restoring thread history...
-                    </AlertDescription>
-                </Alert>
-            ) : !hasRenderableConversationHistory ? (
-                <p className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
-                    {activeConversationId
-                        ? 'No conversation history for this thread yet.'
-                        : 'Create or select a thread to begin chatting.'}
+                <p data-testid="project-conversation-history-loading" className="text-xs text-muted-foreground" aria-live="polite">
+                    Restoring thread history...
                 </p>
+            ) : !hasRenderableConversationHistory ? (
+                <Empty className="text-sm text-muted-foreground">
+                    <EmptyHeader>
+                        <EmptyDescription>
+                            {activeConversationId
+                                ? 'No conversation history for this thread yet.'
+                                : 'Create or select a thread to begin chatting.'}
+                        </EmptyDescription>
+                    </EmptyHeader>
+                </Empty>
             ) : (
                 <ol data-testid="project-ai-conversation-history-list" className="space-y-3">
                     {activeConversationHistory.map((entry) => {

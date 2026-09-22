@@ -1,4 +1,5 @@
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 
 import type { LaunchFailureDiagnostics } from '../model/launchTypes'
@@ -43,46 +44,35 @@ export function LaunchNoticeStack({
                 </Alert>
             ) : null}
             {runStartError ? (
-                <Alert
-                    data-testid="run-start-error-banner"
-                    className="max-w-sm truncate border-destructive/40 bg-destructive/10 px-2 py-1 text-xs font-medium leading-none text-destructive"
-                >
-                    <AlertDescription className="text-inherit">
-                        Failed to start run: {runStartError}
-                    </AlertDescription>
-                </Alert>
+                <InlineError data-testid="run-start-error-banner" className="max-w-sm truncate" dense>
+                    Failed to start run: {runStartError}
+                </InlineError>
             ) : null}
             {lastLaunchFailure ? (
-                <Alert
-                    data-testid="launch-failure-diagnostics"
-                    className="max-w-sm border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive"
-                >
-                    <AlertDescription className="text-inherit">
-                        <p className="font-medium">Last launch failure</p>
-                        <p data-testid="launch-failure-message" className="truncate">
-                            {lastLaunchFailure.message}
+                <InlineError data-testid="launch-failure-diagnostics" className="max-w-sm" title="Last launch failure" dense>
+                    <p data-testid="launch-failure-message" className="truncate">
+                        {lastLaunchFailure.message}
+                    </p>
+                    <p className="truncate">
+                        Flow source: <span className="font-mono">{lastLaunchFailure.flowSource || 'none'}</span>
+                    </p>
+                    <p>Failed at: {new Date(lastLaunchFailure.failedAt).toLocaleString()}</p>
+                    <Button
+                        data-testid="launch-retry-button"
+                        onClick={onRetry}
+                        disabled={!canRetryLaunch}
+                        size="xs"
+                        variant="outline"
+                        className="mt-1 h-7 border-destructive/40 text-destructive hover:bg-destructive/5"
+                    >
+                        Retry launch
+                    </Button>
+                    {!canRetryLaunch ? (
+                        <p data-testid="launch-retry-disabled-reason" className="mt-1">
+                            Resolve launch blockers to retry.
                         </p>
-                        <p className="truncate">
-                            Flow source: <span className="font-mono">{lastLaunchFailure.flowSource || 'none'}</span>
-                        </p>
-                        <p>Failed at: {new Date(lastLaunchFailure.failedAt).toLocaleString()}</p>
-                        <Button
-                            data-testid="launch-retry-button"
-                            onClick={onRetry}
-                            disabled={!canRetryLaunch}
-                            size="xs"
-                            variant="outline"
-                            className="mt-1 h-7 border-destructive/40 text-destructive hover:bg-destructive/5"
-                        >
-                            Retry launch
-                        </Button>
-                        {!canRetryLaunch ? (
-                            <p data-testid="launch-retry-disabled-reason" className="mt-1">
-                                Resolve launch blockers to retry.
-                            </p>
-                        ) : null}
-                    </AlertDescription>
-                </Alert>
+                    ) : null}
+                </InlineError>
             ) : null}
         </div>
     )

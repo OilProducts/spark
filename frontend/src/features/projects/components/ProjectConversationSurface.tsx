@@ -1,6 +1,6 @@
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import { HomeWorkspace } from './HomeWorkspace'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
@@ -114,15 +114,10 @@ export function ProjectConversationSurface({
                 </CardHeader>
                 <CardContent className={`space-y-3 px-4 ${isNarrowViewport ? '' : 'flex min-h-0 flex-1 flex-col'}`}>
                 {panelError ? (
-                    <Alert
-                        data-testid="project-panel-error"
-                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-                    >
-                        <AlertDescription className="text-inherit">
-                            {panelError}
-                            {isCodexAuthError(panelError) && <CodexReconnect />}
-                        </AlertDescription>
-                    </Alert>
+                    <InlineError data-testid="project-panel-error" dense>
+                        {panelError}
+                        {isCodexAuthError(panelError) && <CodexReconnect />}
+                    </InlineError>
                 ) : null}
                 {!activeProjectPath ? (
                     <Empty className={`text-sm text-muted-foreground ${isNarrowViewport ? '' : 'flex flex-1 items-center'}`}>
@@ -161,14 +156,7 @@ export function ProjectConversationSurface({
                             className="shrink-0 space-y-2 pt-1"
                         >
                             {chatModelAvailabilityMessage ? (
-                                <Alert
-                                    data-testid="project-chat-model-availability"
-                                    className="border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive"
-                                >
-                                    <AlertDescription className="text-inherit">
-                                        {chatModelAvailabilityMessage}
-                                    </AlertDescription>
-                                </Alert>
+                                <InlineError data-testid="project-chat-model-availability" dense>{chatModelAvailabilityMessage}</InlineError>
                             ) : null}
                             <Textarea
                                 id="project-ai-conversation-input"

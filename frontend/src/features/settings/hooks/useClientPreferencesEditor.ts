@@ -36,7 +36,7 @@ export function useClientPreferencesEditor() {
         setPending(true); setError(''); setMessage('')
         try {
             const value = await saveClientPreferences(saved, draft)
-            setSaved(value); setDraft(value.stored); setMessage('Client preferences saved.')
+            setSaved(value); setDraft(value.stored); setMessage('Saved.')
         } catch (error) {
             setError(error instanceof Error ? error.message : 'Unable to save client preferences.')
         } finally { setPending(false) }

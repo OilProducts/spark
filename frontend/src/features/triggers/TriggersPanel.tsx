@@ -13,7 +13,7 @@ import { useTriggersList } from "./hooks/useTriggersList"
 import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
-import { Alert, AlertDescription } from "@/components/ui/alert"
+import { InlineError } from "@/components/app/inline-error"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -160,9 +160,7 @@ export function TriggersPanel() {
         ) : null}
 
         {error ? (
-          <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
-            <AlertDescription className="text-inherit">{error}</AlertDescription>
-          </Alert>
+          <InlineError>{error}</InlineError>
         ) : null}
 
         <div className="grid gap-6 lg:grid-cols-[minmax(20rem,26rem)_minmax(0,1fr)]">
@@ -184,12 +182,7 @@ export function TriggersPanel() {
               </CardHeader>
               <CardContent className="space-y-2 px-4 pt-0">
                 {status !== 'ready' && status !== 'error' ? (
-                  <Alert
-                    data-testid="triggers-system-list-loading"
-                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                  >
-                    <AlertDescription className="text-inherit">Restoring triggers…</AlertDescription>
-                  </Alert>
+                  <p data-testid="triggers-system-list-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
                 ) : null}
                 {filteredSystemTriggers.map((trigger) => (
                   <Button
@@ -230,12 +223,7 @@ export function TriggersPanel() {
               </CardHeader>
               <CardContent className="space-y-2 px-4 pt-0">
                 {status !== 'ready' && status !== 'error' ? (
-                  <Alert
-                    data-testid="triggers-custom-list-loading"
-                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                  >
-                    <AlertDescription className="text-inherit">Restoring triggers…</AlertDescription>
-                  </Alert>
+                  <p data-testid="triggers-custom-list-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
                 ) : null}
                 {filteredCustomTriggers.map((trigger) => (
                   <Button
@@ -373,7 +361,11 @@ export function TriggersPanel() {
                           </div>
                         ))}
                         {selectedTrigger.state.recent_history.length === 0 ? (
-                          <div className="text-xs text-muted-foreground">No trigger history yet.</div>
+                          <Empty className="px-3 py-4 text-xs text-muted-foreground">
+                            <EmptyHeader>
+                              <EmptyDescription>No trigger history yet.</EmptyDescription>
+                            </EmptyHeader>
+                          </Empty>
                         ) : null}
                       </div>
                     </div>
@@ -388,7 +380,7 @@ export function TriggersPanel() {
                   disabled={pending || isRegenerating}
                       onClick={() => void onSaveSelectedTrigger()}
                     >
-                      Save trigger
+                      Save
                     </Button>
                   </div>
                 </CardContent>

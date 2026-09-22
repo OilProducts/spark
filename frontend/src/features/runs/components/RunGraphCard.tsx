@@ -22,7 +22,7 @@ import {
     nodeTypes,
     nowMs,
 } from '@/features/workflow-canvas'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
@@ -306,22 +306,10 @@ export function RunGraphCard({
                 className={fillHeight ? 'flex min-h-0 flex-1 flex-col gap-2 px-4' : 'space-y-2 px-4'}
             >
                 {graphStatus !== 'ready' && !graphError ? (
-                    <Alert
-                        data-testid="run-graph-loading"
-                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                    >
-                        <AlertDescription className="text-inherit">
-                            Restoring run graph…
-                        </AlertDescription>
-                    </Alert>
+                    <p data-testid="run-graph-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring run graph…</p>
                 ) : null}
                 {graphError ? (
-                    <Alert
-                        data-testid="run-graph-error"
-                        className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
-                    >
-                        <AlertDescription className="text-inherit">{graphError}</AlertDescription>
-                    </Alert>
+                    <InlineError data-testid="run-graph-error">{graphError}</InlineError>
                 ) : null}
                 {diagnostics.length > 0 ? (
                     <div data-testid="run-graph-diagnostics" className="rounded-md border border-border/80 bg-muted/20 p-3">

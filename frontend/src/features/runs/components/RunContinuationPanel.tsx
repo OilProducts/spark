@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -177,12 +177,7 @@ export function RunContinuationPanel({
             </div>
 
             {previewLoadError ? (
-                <Alert
-                    data-testid="run-continuation-preview-error"
-                    className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive"
-                >
-                    <AlertDescription className="text-inherit">{previewLoadError}</AlertDescription>
-                </Alert>
+                <InlineError data-testid="run-continuation-preview-error">{previewLoadError}</InlineError>
             ) : null}
 
             <LaunchNoticeStack

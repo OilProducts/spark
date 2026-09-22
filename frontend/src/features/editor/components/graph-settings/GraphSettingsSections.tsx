@@ -106,27 +106,14 @@ function GraphSettingsField({
     )
 }
 
-const GRAPH_SETTINGS_NOTICE_TONE_CLASS_NAME: Record<
-    'neutral' | 'warning' | 'error' | 'success',
-    string
-> = {
-    neutral: 'border-border/70 bg-muted/20 text-muted-foreground',
-    warning: 'border-warning/40 bg-warning/10 text-warning',
-    error: 'border-destructive/40 bg-destructive/10 text-destructive',
-    success: 'border-success/40 bg-success/10 text-success',
-}
-
 function GraphSettingsNotice({
-    tone = 'neutral',
     className,
     children,
     ...props
-}: React.ComponentProps<typeof Alert> & {
-    tone?: 'neutral' | 'warning' | 'error' | 'success'
-}) {
+}: React.ComponentProps<typeof Alert>) {
     return (
         <Alert
-            className={cn('px-3 py-2', GRAPH_SETTINGS_NOTICE_TONE_CLASS_NAME[tone], className)}
+            className={cn('border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground', className)}
             {...props}
         >
             <AlertDescription className="text-inherit">{children}</AlertDescription>
@@ -518,8 +505,8 @@ export function GraphLaunchPolicySection({
                 </GraphSettingsField>
             </div>
             <div className="flex gap-2">
-                <Button size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save launch policy</Button>
-                <Button size="sm" variant="outline" disabled={controlsDisabled} onClick={onDiscard}>Discard launch policy</Button>
+                <Button size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save</Button>
+                <Button size="sm" variant="outline" disabled={controlsDisabled} onClick={onDiscard}>Discard</Button>
             </div>
             <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"

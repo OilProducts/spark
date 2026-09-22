@@ -623,7 +623,7 @@ export function RunStream() {
                     data-testid="global-save-state-indicator"
                     className={`pointer-events-auto rounded-md border px-2 py-1 text-xs font-medium shadow-sm transition-opacity duration-1000 ${
                         saveState === 'error'
-                            ? 'border-destructive/50 bg-destructive/10 text-destructive'
+                            ? 'border-destructive/50 bg-background/95 text-destructive'
                             : saveState === 'conflict'
                                 ? 'border-warning/50 bg-warning/10 text-warning'
                                 : saveState === 'saved'

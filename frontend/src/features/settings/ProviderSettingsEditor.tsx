@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { useProviderSettingsEditor } from './hooks/useProviderSettingsEditor'
+import { SaveStatus } from './SaveStatus'
 import { providers, providerFieldError, type ProviderConnection } from './services/executionSettings'
 
 const providerNames = { openai: 'OpenAI', anthropic: 'Anthropic', gemini: 'Gemini', openrouter: 'OpenRouter', litellm: 'LiteLLM', openai_compatible: 'OpenAI compatible' }
@@ -30,12 +31,12 @@ export function ProviderSettingsEditor() {
                 })}
             </fieldset></details>)}
             <div className="flex flex-wrap gap-2">
-            <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save provider connections</Button>
-            <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard provider changes</Button>
+            <Button disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+            <Button variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
-            {editor.error && <p role="alert">{editor.error}</p>}{editor.message && <p role="status">{editor.message}</p>}
+            <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>
     </Card>
 }

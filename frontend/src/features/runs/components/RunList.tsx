@@ -1,6 +1,7 @@
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -253,9 +254,7 @@ export function RunList({
                     </Button>
                 </div>
                 {error ? (
-                    <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
-                        <AlertDescription className="text-inherit">{error}</AlertDescription>
-                    </Alert>
+                    <InlineError>{error}</InlineError>
                 ) : null}
                 {scopeMode === 'active' && !activeProjectPath ? (
                     <Alert className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
@@ -267,14 +266,7 @@ export function RunList({
             </div>
             {status !== 'ready' && status !== 'error' && runs.length === 0 ? (
                 <div className="px-4 pb-4">
-                    <Alert
-                        data-testid="run-list-loading"
-                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                    >
-                        <AlertDescription className="text-inherit">
-                            Restoring run history…
-                        </AlertDescription>
-                    </Alert>
+                    <p data-testid="run-list-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring run history…</p>
                 </div>
             ) : runs.length === 0 ? (
                 <div className="px-4 pb-4">

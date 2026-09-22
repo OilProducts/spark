@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { useClientPreferencesEditor } from './hooks/useClientPreferencesEditor'
 import type { Appearance } from '@/lib/theme'
+import { SaveStatus } from './SaveStatus'
 
 export function ClientPreferencesEditor() {
     const editor = useClientPreferencesEditor()
@@ -78,11 +79,10 @@ export function ClientPreferencesEditor() {
                 </Field>
             </fieldset>
             <div className="flex flex-wrap gap-2">
-                <Button disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save preferences</Button>
-                <Button variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard preference changes</Button>
+                <Button disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
+                <Button variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
             </div>
-            {editor.error && <p role="alert">{editor.error}</p>}
-            {editor.message && <p role="status">{editor.message}</p>}
+            <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>
     </Card>
 }

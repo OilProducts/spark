@@ -2,7 +2,7 @@ import type {
     ArtifactErrorState,
     ArtifactListEntry,
 } from '../model/shared'
-import { Alert, AlertDescription } from '@/components/ui/alert'
+import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
@@ -121,24 +121,13 @@ export function RunArtifactsCard({
             </CardHeader>
             <CardContent className="space-y-3 px-4">
                 {artifactError && (
-                    <Alert className="border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
-                        <AlertDescription className="space-y-1 text-inherit">
-                            <div data-testid="run-artifact-error">{artifactError.message}</div>
-                            <div data-testid="run-artifact-error-help" className="text-xs text-destructive/90">
-                                {artifactError.help}
-                            </div>
-                        </AlertDescription>
-                    </Alert>
+                    <InlineError>
+                        <div data-testid="run-artifact-error">{artifactError.message}</div>
+                        <div data-testid="run-artifact-error-help" className="mt-1 text-xs">{artifactError.help}</div>
+                    </InlineError>
                 )}
                 {!artifactError && status !== 'ready' ? (
-                    <Alert
-                        data-testid="run-artifact-loading"
-                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
-                    >
-                        <AlertDescription className="text-inherit">
-                            Restoring artifacts…
-                        </AlertDescription>
-                    </Alert>
+                    <p data-testid="run-artifact-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring artifacts…</p>
                 ) : null}
                 {(status === 'ready' || artifactEntries.length > 0) && (
                     <div className="space-y-3">

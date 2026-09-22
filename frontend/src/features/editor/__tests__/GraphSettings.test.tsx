@@ -75,6 +75,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
 }
 
 const wrapWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)
+const modelDefaultsCard = () => within(screen.getByRole('heading', { name: 'Model defaults (Workspace)' }).closest<HTMLElement>('[data-slot=card]')!)
 
 describe('Graph and settings behavior', () => {
   beforeEach(() => {
@@ -160,11 +161,11 @@ describe('Graph and settings behavior', () => {
     await user.selectOptions(screen.getByLabelText('Model'), 'model:claude-sonnet-4-6')
     await user.selectOptions(screen.getByLabelText('Reasoning effort'), 'xhigh')
     expect(useStore.getState().uiDefaults.llm_provider).toBe('openai')
-    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await user.click(modelDefaultsCard().getByRole('button', { name: 'Save' }))
     await screen.findByText('Saved. Applies to the next message.')
     expect(serverModels).toEqual({ provider: 'anthropic', llm_profile: null, model: 'claude-sonnet-4-6', reasoning_effort: 'xhigh' })
     await user.selectOptions(provider, 'codex')
-    await user.click(screen.getByRole('button', { name: 'Discard model changes' }))
+    await user.click(modelDefaultsCard().getByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(provider).toHaveValue('anthropic'))
   })
 
@@ -177,11 +178,11 @@ describe('Graph and settings behavior', () => {
     await user.clear(screen.getByLabelText('Custom model'))
     await user.type(screen.getByLabelText('Custom model'), 'custom:next')
     settingsRevision += 1
-    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await user.click(modelDefaultsCard().getByRole('button', { name: 'Save' }))
     await screen.findByText(/responded with HTTP 409/)
     expect(screen.getByLabelText('Custom model')).toHaveValue('custom:next')
     expect(serverModels.model).toBe('private-model')
-    await user.click(screen.getByRole('button', { name: 'Discard model changes' }))
+    await user.click(modelDefaultsCard().getByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(screen.getByLabelText('Custom model')).toHaveValue('private-model'))
   })
 
@@ -201,7 +202,7 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByLabelText('Model')).toHaveValue('')
     expect(within(screen.getByLabelText('Model')).queryByRole('option', { name: 'gpt-5.4' })).toBeNull()
     await user.selectOptions(screen.getByLabelText('Model'), 'model:team-model')
-    await user.click(screen.getByRole('button', { name: 'Save model defaults' }))
+    await user.click(modelDefaultsCard().getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(serverModels).toMatchObject({ provider: null, llm_profile: 'team', model: 'team-model' }))
   })
 
@@ -476,7 +477,7 @@ describe('Graph and settings behavior', () => {
 
     await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
-    await user.click(screen.getByRole('button', { name: 'Save launch policy' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
@@ -501,7 +502,7 @@ describe('Graph and settings behavior', () => {
     await user.click(screen.getByLabelText('Enable execution lock'))
     await user.type(screen.getByLabelText('Lock Key'), 'main-worktree-integration')
     fireEvent.blur(screen.getByLabelText('Lock Key'))
-    await user.click(screen.getByRole('button', { name: 'Save launch policy' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent(
@@ -517,19 +518,19 @@ describe('Graph and settings behavior', () => {
   it('retains a stale policy draft and reloads the catalog on Discard', async () => {
     const user = userEvent.setup()
     wrapWithFlowProvider(<GraphSettings inline />)
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Discard launch policy' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Discard' })).toBeEnabled())
     await user.selectOptions(screen.getByLabelText('Launch Policy'), 'agent_requestable')
     const fetchMock = vi.mocked(fetch)
     fetchMock.mockResolvedValueOnce(Response.json({ detail: 'Settings changed; reload before saving.' }, { status: 409 }))
-    await user.click(screen.getByRole('button', { name: 'Save launch policy' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(screen.getByTestId('graph-launch-policy-status')).toHaveTextContent('Settings changed'))
     expect(screen.getByLabelText('Launch Policy')).toHaveValue('agent_requestable')
     const request = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     expect(JSON.parse(String(request?.[1]?.body)).expected_revision).toBe('catalog-revision')
-    expect(screen.getByRole('button', { name: 'Save launch policy' })).toBeEnabled()
-    await user.click(screen.getByRole('button', { name: 'Discard launch policy' }))
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Discard' }))
     await waitFor(() => expect(screen.getByLabelText('Launch Policy')).toHaveValue('disabled'))
-    expect(screen.getByRole('button', { name: 'Save launch policy' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
   })
 
   it('does not autosave when graph attrs are replaced from hydrated state', async () => {

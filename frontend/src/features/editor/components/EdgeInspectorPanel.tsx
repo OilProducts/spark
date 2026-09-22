@@ -83,7 +83,7 @@ export function EdgeInspectorPanel({
                                 data-testid="edge-condition-preview-feedback"
                                 className={`rounded-md border px-3 py-2 text-xs ${
                                     conditionPreviewHasError
-                                        ? 'border-destructive/40 bg-destructive/10 text-destructive'
+                                        ? 'border-destructive/50 text-destructive'
                                         : conditionPreviewHasWarning
                                             ? 'border-warning/40 bg-warning/10 text-warning'
                                             : 'border-success/40 bg-success/10 text-success'
