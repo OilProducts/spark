@@ -1,6 +1,7 @@
 import { loadAndMigrateClientPreferences } from './services/clientPreferencesMigration'
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '@/store'
+import { applyTheme } from '@/lib/theme'
 import { fetchClientPreferences, saveClientPreferences, type ClientPreferences, type ClientPreferencesView } from './services/clientPreferences'
 
 export function ClientPreferencesController() {
@@ -12,6 +13,7 @@ export function ClientPreferencesController() {
         let cancelled = false
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
+            applyTheme(value.effective.appearance ?? 'system')
             useStore.setState((state) => ({
                 clientPreferencesLoaded: true,
                 clientFlowNodePositions: value.effective.flow_node_positions ?? {},

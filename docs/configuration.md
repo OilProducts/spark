@@ -87,8 +87,8 @@ Additional client fields are `show_advanced_controls`, `expand_child_flows`,
 `graph_settings_open`, `runs_scope`, and `triggers_scope`. The first three default
 to false and supply initial presentation for newly opened flows/nodes. Run scope
 defaults to `active`; trigger scope defaults to `all`. Scopes accept only `active`
-or `all`. These controls support explicit Save/Discard in Preferences, and their
-contextual toggles persist when the interaction completes. Existing per-flow and
+or `all`. `appearance` is `system` (default, follows the OS), `light` or `dark`.
+These controls support explicit Save/Discard in Preferences, and their contextual toggles persist when the interaction completes. Existing per-flow and
 per-node view state remains session state.
 
 Split/sort choices, graph layouts and browser preference migration are described below.

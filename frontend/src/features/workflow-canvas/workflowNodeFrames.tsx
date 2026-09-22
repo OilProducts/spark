@@ -22,7 +22,7 @@ type WorkflowNodeSvgFrameProps = {
     testId: string
 }
 
-const CARD_FILL = 'rgba(255, 255, 255, 0.96)';
+const CARD_FILL = 'hsl(var(--card) / 0.96)';
 
 export function getWorkflowNodeFramePalette({
     status,
@@ -76,7 +76,7 @@ export function getWorkflowNodeFramePalette({
     return {
         fillColor: CARD_FILL,
         strokeColor: 'hsl(var(--border))',
-        nestedStrokeColor: 'rgba(148, 163, 184, 0.45)',
+        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.45)',
         shadowClassName: '',
     };
 }

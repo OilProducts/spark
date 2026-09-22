@@ -78,7 +78,7 @@ export function RunQuestionsPanel({
                                         {gate.details && (
                                             <div
                                                 data-testid="run-pending-human-gate-details"
-                                                className="mt-1 max-h-72 overflow-y-auto rounded border border-warning/30 bg-white/70 px-2 py-1.5 text-sm text-foreground"
+                                                className="mt-1 max-h-72 overflow-y-auto rounded border border-warning/30 bg-background/70 px-2 py-1.5 text-sm text-foreground"
                                             >
                                                 <ProjectConversationMarkdown content={gate.details} />
                                             </div>
@@ -101,7 +101,7 @@ export function RunQuestionsPanel({
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     aria-label="Answer"
                                                     placeholder="Type answer..."
-                                                    className="h-7 min-w-[18rem] border-warning/40 bg-white px-2 text-sm text-foreground focus-visible:ring-warning/40"
+                                                    className="h-7 min-w-[18rem] border-warning/40 bg-background px-2 text-sm text-foreground focus-visible:ring-warning/40"
                                                 />
                                                 <Button
                                                     type="button"
@@ -112,7 +112,7 @@ export function RunQuestionsPanel({
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true || freeformAnswer.trim().length === 0}
                                                     variant="outline"
                                                     size="xs"
-                                                    className="h-7 border-warning/50 bg-white text-xs font-medium text-warning hover:bg-warning/15"
+                                                    className="h-7 border-warning/50 bg-background text-xs font-medium text-warning hover:bg-warning/15"
                                                 >
                                                     Submit
                                                 </Button>
@@ -127,7 +127,7 @@ export function RunQuestionsPanel({
                                                     onChange={(event) => onGateNoteChange(gate.questionId!, event.target.value)}
                                                     disabled={!confirmedQuestionIds.includes(gate.questionId) || submittingGateIds[gate.questionId] === true}
                                                     placeholder="Optional note for the next step..."
-                                                    className="h-7 w-full border-warning/40 bg-white px-2 text-sm text-foreground focus-visible:ring-warning/40"
+                                                    className="h-7 w-full border-warning/40 bg-background px-2 text-sm text-foreground focus-visible:ring-warning/40"
                                                 />}
                                             <div className="mt-1 flex flex-wrap gap-1.5">
                                                 {gate.options.map((option) => (
@@ -141,7 +141,7 @@ export function RunQuestionsPanel({
                                                             disabled={!confirmedQuestionIds.includes(gate.questionId!) || submittingGateIds[gate.questionId!] === true}
                                                             variant="outline"
                                                             size="xs"
-                                                            className="h-6 border-warning/50 bg-white text-xs font-medium text-warning hover:bg-warning/15"
+                                                            className="h-6 border-warning/50 bg-background text-xs font-medium text-warning hover:bg-warning/15"
                                                         >
                                                             {option.label}
                                                         </Button>

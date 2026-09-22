@@ -808,7 +808,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
     let payload = json!({"section":"client_preferences", "expected_revision": initial.1["preferences"]["revision"],
         "value":{"client_id":"browser-one", "preferences":{"editor_mode":"raw", "editor_sidebar_width":400,
             "show_advanced_controls":true,"expand_child_flows":true,"graph_settings_open":true,
-            "runs_scope":"all","triggers_scope":"active","home_sidebar_primary_split_ratio":0.6}}});
+            "runs_scope":"all","triggers_scope":"active","home_sidebar_primary_split_ratio":0.6,"appearance":"dark"}}});
     let saved = request_json(
         app.clone(),
         "PATCH",
@@ -824,6 +824,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         ("graph_settings_open", json!(true)),
         ("runs_scope", json!("all")),
         ("triggers_scope", json!("active")),
+        ("appearance", json!("dark")),
     ] {
         assert_eq!(saved.1["preferences"]["stored"][field], expected);
         let restarted = request_json(build_app(settings.clone()), "GET", uri, None).await;
@@ -851,6 +852,7 @@ async fn client_preferences_are_isolated_revision_checked_and_validated() {
         json!({"selected_record":"session-only"}),
         json!({"runs_scope":"unknown"}),
         json!({"triggers_scope":"unknown"}),
+        json!({"appearance":"sepia"}),
         json!({"expand_child_flows":"true"}),
     ] {
         let bad = json!({"section":"client_preferences", "expected_revision":saved.1["preferences"]["revision"],

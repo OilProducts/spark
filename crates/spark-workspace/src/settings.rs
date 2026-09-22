@@ -627,7 +627,8 @@ fn client_preferences_view(
             "run_presentation": stored.run_presentation,
             "flow_node_positions": stored.flow_node_positions,
             "flow_edge_ports": stored.flow_edge_ports,
-            "triggers_scope": stored.triggers_scope.clone().unwrap_or(spark_common::settings::PresentationScope::All)},
+            "triggers_scope": stored.triggers_scope.clone().unwrap_or(spark_common::settings::PresentationScope::All),
+            "appearance": stored.appearance.clone().unwrap_or_default()},
         "browser_migration_version": document.values.get("browser_migration_version").and_then(toml::Value::as_integer).unwrap_or(0),
         "stored": stored, "restart_fields": [], "validation_errors": [],
     }}))

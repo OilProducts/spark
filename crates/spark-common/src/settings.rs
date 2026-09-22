@@ -129,6 +129,7 @@ pub struct ClientPreferences {
     pub graph_settings_open: Option<bool>,
     pub runs_scope: Option<PresentationScope>,
     pub triggers_scope: Option<PresentationScope>,
+    pub appearance: Option<Appearance>,
     pub flow_node_positions: Option<
         std::collections::BTreeMap<String, std::collections::BTreeMap<String, LayoutPosition>>,
     >,
@@ -226,6 +227,15 @@ pub struct LayoutPosition {
 pub enum PresentationScope {
     Active,
     All,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Appearance {
+    #[default]
+    System,
+    Light,
+    Dark,
 }
 
 impl ClientPreferences {

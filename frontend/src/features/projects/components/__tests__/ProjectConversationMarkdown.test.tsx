@@ -242,7 +242,7 @@ describe('Mermaid lifecycle', () => {
         expect(await screen.findByRole('img', { name: 'Mermaid diagram' })).toBeVisible()
         expect(screen.getByText('Diagram source')).toBeVisible()
         expect(screen.getByRole('button', { name: 'Copy code' })).toBeVisible()
-        expect(initialize).toHaveBeenCalledWith({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true })
+        expect(initialize).toHaveBeenCalledWith({ startOnLoad: false, securityLevel: 'strict', suppressErrorRendering: true, theme: 'default' })
     })
 
     it('coalesces rapid updates, ignores stale success/failure and does not overlap renders', async () => {

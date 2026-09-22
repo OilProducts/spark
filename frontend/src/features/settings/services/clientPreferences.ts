@@ -1,5 +1,6 @@
 import { fetchWorkspaceJsonValidated } from '@/lib/api/apiClient'
 import { ApiSchemaError, expectObjectRecord, expectString } from '@/lib/api/shared'
+import type { Appearance } from '@/lib/theme'
 
 const ID_KEY = 'spark.client_id'
 const validId = (value: string) => /^[A-Za-z0-9_-]{1,80}$/.test(value)
@@ -56,6 +57,7 @@ export interface ClientPreferences {
     graph_settings_open?: boolean | null
     runs_scope?: 'active' | 'all' | null
     triggers_scope?: 'active' | 'all' | null
+    appearance?: Appearance | null
 }
 export interface ClientPreferencesView {
     client_id: string
@@ -116,6 +118,8 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
             if (field != null && field !== 'active' && field !== 'all') throw new ApiSchemaError(endpoint, `Invalid ${key}.`)
             if (field !== undefined) presentation[key] = field as 'active' | 'all' | null
         }
+        if (fields.appearance != null && fields.appearance !== 'system' && fields.appearance !== 'light' && fields.appearance !== 'dark') throw new ApiSchemaError(endpoint, 'Invalid appearance.')
+        if (fields.appearance !== undefined) presentation.appearance = fields.appearance as Appearance | null
         return { editor_mode: mode, editor_sidebar_width: width, ...presentation }
     }
     const effective = preferences(record.effective)

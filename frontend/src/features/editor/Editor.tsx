@@ -1484,7 +1484,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         <MiniMap
                             nodeColor="hsl(var(--muted))"
                             maskColor="hsl(var(--background)/0.5)"
-                            className="flow-minimap"
                         />
                         <Background gap={20} size={1} color="hsl(var(--border))" />
                     </ReactFlow>

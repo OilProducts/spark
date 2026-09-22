@@ -170,7 +170,7 @@ export function ProjectConversationRequestUserInputCard({
                                                 className={`h-7 text-xs ${
                                                     isSelected
                                                         ? 'border-warning bg-warning/15 text-warning'
-                                                        : 'border-warning/50 bg-white text-warning hover:bg-warning/15'
+                                                        : 'border-warning/50 bg-background text-warning hover:bg-warning/15'
                                                 }`}
                                             >
                                                 {option.label}
@@ -193,7 +193,7 @@ export function ProjectConversationRequestUserInputCard({
                                     }}
                                     disabled={isSubmitting}
                                     placeholder={question.allowOther ? 'Or enter another answer...' : 'Type answer...'}
-                                    className="h-8 border-warning/40 bg-white text-sm text-foreground focus-visible:ring-warning/40"
+                                    className="h-8 border-warning/40 bg-background text-sm text-foreground focus-visible:ring-warning/40"
                                 />
                             ) : null}
                             {question.options.length > 0 ? (
@@ -224,7 +224,7 @@ export function ProjectConversationRequestUserInputCard({
                     disabled={isSubmitting}
                     variant="outline"
                     size="xs"
-                    className="h-7 border-warning/60 bg-white text-xs font-medium text-warning hover:bg-warning/15"
+                    className="h-7 border-warning/60 bg-background text-xs font-medium text-warning hover:bg-warning/15"
                 >
                     {isSubmitting ? 'Submitting...' : 'Submit'}
                 </Button>

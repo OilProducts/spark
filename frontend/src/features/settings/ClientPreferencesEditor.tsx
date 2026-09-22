@@ -5,6 +5,7 @@ import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect } from '@/components/ui/native-select'
 import { useClientPreferencesEditor } from './hooks/useClientPreferencesEditor'
+import type { Appearance } from '@/lib/theme'
 
 export function ClientPreferencesEditor() {
     const editor = useClientPreferencesEditor()
@@ -14,6 +15,13 @@ export function ClientPreferencesEditor() {
             {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs">Preferences for this browser/Desktop client. Sidebar width applies after saving. Editor mode and graph choices are defaults for newly opened flows.</p>
             <fieldset disabled={!editor.draft || editor.pending} className="space-y-3">
+                <h4 className="text-sm font-semibold">Appearance</h4>
+                <Field><FieldLabel htmlFor="preference-appearance">Theme</FieldLabel>
+                    <NativeSelect id="preference-appearance" value={editor.draft?.appearance ?? 'system'}
+                        onChange={(event) => { const appearance = event.target.value as Appearance; editor.setDraft((draft) => draft && ({ ...draft, appearance })) }}>
+                        <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
+                    </NativeSelect>
+                </Field>
                 <h4 className="text-sm font-semibold">Editor</h4>
                 <Field><FieldLabel htmlFor="preference-editor-mode">Editor mode</FieldLabel>
                     <NativeSelect id="preference-editor-mode" value={editor.draft?.editor_mode ?? ''}
