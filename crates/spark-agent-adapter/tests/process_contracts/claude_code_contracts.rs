@@ -545,3 +545,211 @@ fn captured_native_configuration_controls_actual_claude_launch() {
     assert!(args.contains("acceptEdits"));
     assert!(!args.contains("bypassPermissions"));
 }
+
+fn answer_request(
+    request: &AgentTurnRequest,
+) -> spark_agent_adapter::AgentRequestUserInputAnswerRequest {
+    spark_agent_adapter::AgentRequestUserInputAnswerRequest {
+        conversation_id: request.conversation_id.clone(),
+        project_path: request.project_path.clone(),
+        request_id: "question-1".into(),
+        assistant_turn_id: "assistant-1".into(),
+        answers: BTreeMap::from([("question-1".into(), "Blue".into())]),
+        request_user_input: None,
+        history: Vec::new(),
+        provider: request.provider.clone(),
+        model: request.model.clone(),
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: None,
+        metadata: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn claude_code_question_round_trip_routes_answers_and_rejects_dead_requests() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question");
+    let request = agent_request(temp.path());
+    let answer = answer_request(&request);
+    let live_answer = answer.clone();
+    let output = RustLlmAgentTurnBackend::new(Client::new())
+        .run_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind != TurnStreamEventKind::RequestUserInputRequested {
+                    return;
+                }
+                assert_eq!(
+                    event.request_user_input.as_ref().unwrap()["request_id"],
+                    "question-1"
+                );
+                assert_eq!(
+                    event.request_user_input.as_ref().unwrap()["questions"][0]["id"],
+                    "question-1"
+                );
+                let backend = RustLlmAgentTurnBackend::new(Client::new());
+                let mut wrong = live_answer.clone();
+                wrong.request_id = "unrelated".into();
+                assert!(backend
+                    .answer_request_user_input(wrong)
+                    .unwrap()
+                    .thread_resume_failure
+                    .is_some());
+                let mut wrong = live_answer.clone();
+                wrong.conversation_id = "another-conversation".into();
+                assert!(backend
+                    .answer_request_user_input(wrong)
+                    .unwrap()
+                    .thread_resume_failure
+                    .is_some());
+                let delivered = backend
+                    .answer_request_user_input(live_answer.clone())
+                    .unwrap();
+                assert!(delivered.thread_resume_failure.is_none());
+                assert_eq!(
+                    delivered.events[0].source.raw_kind.as_deref(),
+                    Some("request_user_input_answer_delivered")
+                );
+                assert!(backend
+                    .answer_request_user_input(live_answer.clone())
+                    .unwrap()
+                    .thread_resume_failure
+                    .is_some());
+            })),
+        )
+        .unwrap();
+    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+    assert!(output
+        .raw_log_lines
+        .iter()
+        .any(|line| line.direction == "stdin" && line.line.contains("updatedInput")));
+    let dead = RustLlmAgentTurnBackend::new(Client::new())
+        .answer_request_user_input(answer)
+        .unwrap();
+    assert_eq!(
+        dead.thread_resume_failure.unwrap().error_code.as_deref(),
+        Some("request_user_input_not_pending")
+    );
+}
+
+#[test]
+fn claude_code_interrupt_completes_normally_and_matches_receipt_ids() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    for mode in [
+        "interrupt",
+        "interrupt-question",
+        "interrupt-wrong-id",
+        "interrupt-aborted",
+        "legacy",
+    ] {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let request = agent_request(temp.path());
+        let path = request.project_path.clone();
+        let id = request.conversation_id.clone();
+        let output = ClaudeCodeBackend::new()
+            .run_agent_turn_with_event_sink(
+                request,
+                Some(Arc::new(move |event| {
+                    let trigger = if mode == "interrupt-question" {
+                        event.kind == TurnStreamEventKind::RequestUserInputRequested
+                    } else {
+                        event.source.raw_kind.as_deref() == Some("system_init")
+                    };
+                    if trigger {
+                        assert_eq!(
+                            ClaudeCodeBackend::new().interrupt(&path, &id),
+                            mode != "legacy"
+                        );
+                    }
+                })),
+            )
+            .unwrap();
+        assert!(output
+            .events
+            .iter()
+            .any(|event| event.kind == TurnStreamEventKind::TurnCompleted));
+        assert!(output.thread_resume_failure.is_none());
+        assert!(output.events.iter().all(|event| event.error.is_none()));
+        assert_eq!(
+            output
+                .raw_log_lines
+                .iter()
+                .any(|line| line.direction == "control"),
+            mode == "interrupt-wrong-id"
+        );
+    }
+}
+
+#[test]
+fn claude_code_malformed_control_degrades_and_dead_question_cannot_resume() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    for mode in [
+        "malformed-json",
+        "malformed-request",
+        "malformed-response",
+        "dead-question",
+    ] {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let request = agent_request(temp.path());
+        let answer = answer_request(&request);
+        let output = ClaudeCodeBackend::new().run_agent_turn(request).unwrap();
+        assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+        if mode.starts_with("malformed") {
+            assert!(output
+                .raw_log_lines
+                .iter()
+                .any(|line| line.direction == "control"));
+        }
+        assert!(ClaudeCodeBackend::new()
+            .answer_request_user_input(answer)
+            .thread_resume_failure
+            .is_some());
+    }
+}
+
+#[test]
+fn claude_code_interrupt_does_not_hide_api_failures_and_process_death_expires_questions() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    for mode in ["interrupt-error", "dead-question-exit"] {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let request = agent_request(temp.path());
+        let answer = answer_request(&request);
+        let path = request.project_path.clone();
+        let id = request.conversation_id.clone();
+        let error = ClaudeCodeBackend::new()
+            .run_agent_turn_with_event_sink(
+                request,
+                Some(Arc::new(move |event| {
+                    if mode == "interrupt-error"
+                        && event.source.raw_kind.as_deref() == Some("system_init")
+                    {
+                        assert!(ClaudeCodeBackend::new().interrupt(&path, &id));
+                    }
+                })),
+            )
+            .unwrap_err();
+        assert!(error.message.contains(if mode == "interrupt-error" {
+            "error_during_execution"
+        } else {
+            "without a result event"
+        }));
+        assert_eq!(
+            ClaudeCodeBackend::new()
+                .answer_request_user_input(answer)
+                .thread_resume_failure
+                .unwrap()
+                .error_code
+                .as_deref(),
+            Some("request_user_input_not_pending")
+        );
+    }
+}

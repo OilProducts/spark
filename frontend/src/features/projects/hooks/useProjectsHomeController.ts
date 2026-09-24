@@ -9,6 +9,7 @@ import type { ModelSettings } from '@/lib/api/settingsApi'
 import {
     fetchProjectChatModelsValidated,
     submitConversationRequestUserInputValidated,
+    interruptConversationTurnValidated,
     updateConversationSettingsValidated,
     type ProjectChatModelMetadataResponse,
     type ProjectChatModelsResponse,
@@ -547,6 +548,16 @@ export function useProjectsHomeController() {
         setViewMode('runs')
     }, [scopeKey, setRunsSelectedRunIdForScope, setViewMode])
 
+    const onStopTurn = useCallback(async () => {
+        if (!activeConversationId || !activeProjectPath) return
+        try {
+            const interrupted = await interruptConversationTurnValidated(activeConversationId, activeProjectPath)
+            if (!interrupted) setPanelError('This turn is no longer running or does not support Stop.')
+        } catch (error) {
+            setPanelError(extractApiErrorMessage(error, 'Unable to stop the turn.'))
+        }
+    }, [activeConversationId, activeProjectPath, setPanelError])
+
     const onSubmitRequestUserInput = useCallback(async (requestId: string, answers: Record<string, string>) => {
         if (!activeConversationId || !activeProjectPath) {
             return
@@ -647,6 +658,7 @@ export function useProjectsHomeController() {
             conversationBodyRef,
             onSyncConversationPinnedState: syncConversationPinnedState,
             onScrollConversationToBottom: scrollConversationToBottom,
+            onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn && ['claude-code', 'claude_code'].includes(activeProjectChatProvider.trim().toLowerCase()) ? onStopTurn : undefined,
             onChatComposerSubmit,
             onChatComposerKeyDown,
             onChatDraftChange: setChatDraft,

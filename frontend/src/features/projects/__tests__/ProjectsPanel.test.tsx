@@ -833,7 +833,7 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it('disables sending while an assistant turn is still active in the conversation snapshot', async () => {
+  it.each(['codex', 'claude-code'])('disables sending during an active %s turn and wires Claude Stop', async (provider) => {
     const user = userEvent.setup()
     const sendRequests: string[] = []
 
@@ -841,6 +841,11 @@ describe('ProjectsPanel', () => {
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.endsWith('/interrupt') && init?.method === 'POST') {
+          sendRequests.push(url)
+          expect(JSON.parse(String(init.body))).toEqual({ project_path: '/tmp/chat-project' })
+          return new Response(JSON.stringify({ interrupted: true }), { status: 200 })
+        }
         if (url.includes('/workspace/api/projects/metadata')) {
           return new Response(JSON.stringify({ branch: 'main', commit: 'abc123def456' }), {
             status: 200,
@@ -870,6 +875,7 @@ describe('ProjectsPanel', () => {
             conversation_handle: 'amber-otter',
             project_path: '/tmp/chat-project',
             title: 'Active thread',
+            provider,
             created_at: '2026-03-15T14:05:00Z',
             updated_at: '2026-03-15T14:05:02Z',
             revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
@@ -954,6 +960,13 @@ describe('ProjectsPanel', () => {
     await user.click(sendButton)
 
     expect(sendRequests).toHaveLength(0)
+    if (provider === 'claude-code') {
+      await user.click(screen.getByTestId('project-chat-stop'))
+      await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/interrupt']))
+      expect(sendButton).toBeDisabled()
+    } else {
+      expect(screen.queryByTestId('project-chat-stop')).not.toBeInTheDocument()
+    }
   })
 
   it('renders assistant tool calls before the completed assistant summary for the same turn', async () => {

@@ -50,6 +50,7 @@ export {
     reviewProposedPlanValidated,
     sendConversationTurnValidated,
     submitConversationRequestUserInputValidated,
+    interruptConversationTurnValidated,
     updateConversationSettingsValidated,
     updateWorkspaceFlowLaunchPolicyValidated,
     updateTriggerValidated,

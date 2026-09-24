@@ -32,5 +32,6 @@ agent-notes.md
 /changes/*
 !/changes/CR-2026-0118-finish-the-settings-overhaul-with-targeted-corrections/
 !/changes/CR-2026-0119-preserve-containers-for-one-run-execution/
+!/changes/CR-2026-0120-cr-2026-0086-speak-the-claude-code-bidirectional-control-protocol/
 !/reports/CR-2026-0117-evaluation.md
 !/reports/CR-2026-0117-audit/

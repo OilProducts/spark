@@ -312,6 +312,10 @@ impl EnvironmentAgentTurnBackend {
 }
 
 impl AgentTurnBackend for EnvironmentAgentTurnBackend {
+    fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
+        spark_agent_adapter::ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
+    }
+
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
         self.run_turn_with_event_sink(request, None)
     }
@@ -1443,6 +1447,22 @@ impl WorkspaceConversationService {
             ),
             Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
         }
+    }
+
+    pub fn interrupt_turn(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<bool> {
+        let project_path = normalize_project_path_or_400(project_path)?;
+        self.repository()
+            .read_snapshot(conversation_id, Some(&project_path))?
+            .ok_or_else(|| {
+                WorkspaceError::NotFound(format!("Unknown conversation: {conversation_id}"))
+            })?;
+        Ok(self
+            .agent_turn_backend
+            .interrupt_turn(&project_path, conversation_id))
     }
 
     pub fn submit_request_user_input_answer(

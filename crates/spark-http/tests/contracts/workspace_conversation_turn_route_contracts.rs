@@ -1411,3 +1411,62 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::<PathBuf>::new(),
     }
 }
+
+#[tokio::test]
+async fn conversation_stop_routes_to_backend_without_completing_or_failing_turn() {
+    struct StopBackend(Arc<Mutex<Vec<(String, String)>>>);
+    impl AgentTurnBackend for StopBackend {
+        fn run_turn(&self, _: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+            unreachable!()
+        }
+        fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
+            self.0
+                .lock()
+                .unwrap()
+                .push((project_path.into(), conversation_id.into()));
+            true
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let backend = Arc::new(StopBackend(calls.clone()));
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        backend.clone(),
+    );
+    service
+        .start_turn(
+            "stop-me",
+            ConversationTurnRequest {
+                project_path: "/projects/stop".into(),
+                message: "Work".into(),
+                provider: Some("claude-code".into()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .unwrap();
+    let before = service
+        .get_snapshot("stop-me", Some("/projects/stop"))
+        .unwrap();
+    let app = build_app_with_agent_turn_backend(settings, backend);
+    let response = request_json(
+        app,
+        "POST",
+        "/workspace/api/conversations/stop-me/interrupt",
+        Some(json!({"project_path": "/projects/stop"})),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK);
+    assert_eq!(response.1, json!({"interrupted": true}));
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![("/projects/stop".into(), "stop-me".into())]
+    );
+    assert_eq!(
+        service
+            .get_snapshot("stop-me", Some("/projects/stop"))
+            .unwrap(),
+        before
+    );
+}

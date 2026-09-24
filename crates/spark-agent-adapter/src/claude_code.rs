@@ -22,6 +22,8 @@ use crate::agent::{
     AgentTurnRequest,
 };
 
+mod control;
+
 pub const CLAUDE_CODE_BACKEND: &str = "claude_code_cli";
 
 const CLAUDE_CODE_BIN_ENV: &str = "SPARK_CLAUDE_CODE_BIN";
@@ -61,6 +63,17 @@ pub struct ClaudeCodeBackend;
 impl ClaudeCodeBackend {
     pub fn new() -> Self {
         Self
+    }
+
+    pub fn answer_request_user_input(
+        &self,
+        request: crate::agent::AgentRequestUserInputAnswerRequest,
+    ) -> AgentTurnOutput {
+        control::answer(request)
+    }
+
+    pub fn interrupt(&self, project_path: &str, conversation_id: &str) -> bool {
+        control::interrupt(project_path, conversation_id)
     }
 
     pub fn run_agent_turn(
@@ -128,6 +141,10 @@ impl ClaudeCodeBackend {
             .arg("-p")
             .arg("--output-format")
             .arg("stream-json")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--permission-prompt-tool")
+            .arg("stdio")
             .arg("--include-partial-messages")
             .arg("--verbose")
             .arg("--permission-mode")
@@ -176,13 +193,13 @@ impl ClaudeCodeBackend {
             .stdin
             .take()
             .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdin"))?;
-        stdin
-            .write_all(request.prompt.as_bytes())
+        let prompt =
+            json!({"type": "user", "message": {"role": "user", "content": request.prompt}});
+        writeln!(stdin, "{prompt}")
             .and_then(|()| stdin.flush())
             .map_err(|error| {
                 ClaudeCodeError::runtime(format!("claude code prompt write failed: {error}"))
             })?;
-        drop(stdin);
 
         crate::initial_context::capture_if_configured(&request.metadata, &request.prompt).map_err(
             |error| {
@@ -209,7 +226,32 @@ impl ClaudeCodeBackend {
         let mut turn = ClaudeCodeTurnState::default();
         let mut events: Vec<TurnStreamEvent> = Vec::new();
         let mut raw_log_lines: Vec<AgentRawLogLine> = Vec::new();
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let control = control::Control::register(child, stdin, request);
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let started = std::time::Instant::now();
+        let mut initialized = false;
+        loop {
+            let line = match receiver.recv_timeout(Duration::from_millis(100)) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !initialized && started.elapsed() >= Duration::from_secs(5) {
+                        control
+                            .lock()
+                            .unwrap()
+                            .degrade("system/init timeout; using one-shot input");
+                        initialized = true;
+                    }
+                    continue;
+                }
+            };
             if line.trim().is_empty() {
                 continue;
             }
@@ -217,10 +259,58 @@ impl ClaudeCodeBackend {
                 direction: "stdout".to_string(),
                 line: line.clone(),
             });
-            let Ok(message) = serde_json::from_str::<Value>(&line) else {
+            let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
+                control.lock().unwrap().degrade("malformed JSON on stdout");
                 continue;
             };
-            for mut event in turn.ingest(&message) {
+            if message["type"] == "system" && message["subtype"] == "init" {
+                initialized = true;
+            }
+            let question = {
+                let mut control = control.lock().unwrap();
+                // 2.1.220 reports an interrupted stream as an error result.
+                // Only an acknowledged interrupt with an explicit abort reason
+                // is normal completion; genuine execution errors remain errors.
+                if control.interrupted_result(&message) {
+                    message["is_error"] = json!(false);
+                    message["subtype"] = json!("success");
+                    // Promote the latest visible text to the final answer using
+                    // its existing item id, including a block cut off mid-delta.
+                    let latest = events.iter().rev().find(|event| {
+                        event.channel == Some(TurnStreamChannel::Assistant)
+                            && matches!(
+                                event.kind,
+                                TurnStreamEventKind::ContentDelta
+                                    | TurnStreamEventKind::ContentCompleted
+                            )
+                    });
+                    let text = latest
+                        .map(|latest| {
+                            turn.last_text_item_id = latest.source.item_id.clone();
+                            if latest.kind == TurnStreamEventKind::ContentCompleted {
+                                latest.content_delta.clone().unwrap_or_default()
+                            } else {
+                                events
+                                    .iter()
+                                    .filter(|event| {
+                                        event.kind == TurnStreamEventKind::ContentDelta
+                                            && event.source.item_id == latest.source.item_id
+                                    })
+                                    .filter_map(|event| event.content_delta.as_deref())
+                                    .collect::<String>()
+                            }
+                        })
+                        .unwrap_or_default();
+                    message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
+                }
+                control.ingest(&message)
+            };
+            let mut normalized = turn.ingest(&message);
+            if let Some(mut question) = question {
+                question.source.app_thread_id = turn.session_id.clone();
+                normalized.push(question);
+            }
+            for mut event in normalized {
                 event.source.app_turn_id = Some(app_turn_id.clone());
                 if let Some(sink) = &event_sink {
                     sink(event.clone());
@@ -229,9 +319,14 @@ impl ClaudeCodeBackend {
             }
         }
 
-        let status = child.wait().map_err(|error| {
+        let mut control = control.lock().unwrap();
+        control.close();
+        raw_log_lines.append(&mut control.logs);
+        let status = control.child.wait().map_err(|error| {
             ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))
         })?;
+        drop(control);
+        let _ = reader.join();
         let stderr_lines = stderr_handle.join().unwrap_or_default();
 
         if turn.result_payload.is_none() {

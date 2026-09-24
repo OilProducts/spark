@@ -966,3 +966,16 @@ export async function reviewProposedPlanValidated(
         parseConversationSnapshotResponse,
     )
 }
+
+export async function interruptConversationTurnValidated(conversationId: string, projectPath: string): Promise<boolean> {
+    return fetchWorkspaceJsonValidated(
+        `/conversations/${encodeURIComponent(conversationId)}/interrupt`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ project_path: projectPath }) },
+        '/workspace/api/conversations/{id}/interrupt',
+        (value) => {
+            const record = asUnknownRecord(value)
+            if (typeof record?.interrupted !== 'boolean') throw new Error('Invalid interrupt response')
+            return record.interrupted
+        },
+    )
+}

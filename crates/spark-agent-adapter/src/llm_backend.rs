@@ -1013,6 +1013,10 @@ impl RustLlmAgentTurnBackend {
 }
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
+    fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
+        ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
+    }
+
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
         self.run_turn_with_event_sink(request, None)
     }
@@ -1082,13 +1086,7 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             .as_deref()
             .is_some_and(is_claude_code_provider_selector)
         {
-            return Err(AgentError {
-                message:
-                    "Claude Code does not support request-user-input answers in CLI print mode."
-                        .to_string(),
-                retryable: false,
-                raw: None,
-            });
+            return Ok(ClaudeCodeBackend::new().answer_request_user_input(request));
         }
         let continuation = match request_user_input_answer_continuation(&request) {
             Ok(continuation) => continuation,

@@ -93,6 +93,10 @@ pub struct AgentTurnOutput {
 }
 
 pub trait AgentTurnBackend: Send + Sync {
+    fn interrupt_turn(&self, _project_path: &str, _conversation_id: &str) -> bool {
+        false
+    }
+
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError>;
 
     fn run_turn_with_event_sink(

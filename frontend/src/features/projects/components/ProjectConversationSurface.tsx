@@ -43,6 +43,7 @@ interface ProjectConversationSurfaceProps {
     historyContent: ReactNode
     onSyncConversationPinnedState: () => void
     onScrollConversationToBottom: () => void
+    onStopTurn?: () => void
     onChatComposerSubmit: (event: FormEvent<HTMLFormElement>) => void
     onChatComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void
     onChatDraftChange: (value: string) => void
@@ -77,6 +78,7 @@ export function ProjectConversationSurface({
     historyContent,
     onSyncConversationPinnedState,
     onScrollConversationToBottom,
+    onStopTurn,
     onChatComposerSubmit,
     onChatComposerKeyDown,
     onChatDraftChange,
@@ -174,6 +176,7 @@ export function ProjectConversationSurface({
                                     Press Enter to send. Use Shift+Enter for a new line.
                                 </p>
                                 <div className="flex flex-wrap items-center justify-end gap-2">
+                                    {onStopTurn && <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button>}
                                     {modelSettingsSource && <span className="text-xs text-muted-foreground">{modelSettingsSource === 'conversation' ? 'Conversation override' : modelSettingsSource === 'project' ? 'Project default' : 'Workspace default'}</span>}
                                     {modelSettingsSource === 'conversation' && onUseModelDefaults && <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>}
                                     <NativeSelect

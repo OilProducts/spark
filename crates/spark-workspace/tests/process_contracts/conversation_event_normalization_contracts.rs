@@ -3505,3 +3505,188 @@ fn live_projection_is_a_canonical_fixed_point_for_recovery_replay() {
         transcript_before
     );
 }
+
+#[test]
+fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let _bin = EnvVarGuard::set(
+        "SPARK_CLAUDE_CODE_BIN",
+        env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
+    );
+    for mode in ["question", "dead-question", "interrupt-question"] {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let config = settings(temp.path());
+        let service = WorkspaceConversationService::new(config.clone());
+        let id = format!("claude-{mode}");
+        let (prepared, started) = service
+            .start_turn(
+                &id,
+                ConversationTurnRequest {
+                    project_path: project.clone(),
+                    message: "Ask me which color".into(),
+                    provider: Some("claude-code".into()),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let running = service.clone();
+        let handle = std::thread::spawn(move || {
+            running.complete_started_turn_with_progress_payloads(
+                prepared,
+                started,
+                move |payload| {
+                    if payload["type"] == "segment_upsert"
+                        && payload["segment"]["kind"] == "request_user_input"
+                    {
+                        let _ = sender.send(payload);
+                    }
+                },
+            )
+        });
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("pending question before turn completion");
+        let persisted = ConversationRepository::new(&config.data_dir)
+            .read_snapshot(&id, Some(&project))
+            .unwrap()
+            .unwrap();
+        let segment = persisted["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|segment| segment["kind"] == "request_user_input")
+            .unwrap();
+        assert_eq!(segment["request_user_input"]["status"], "pending");
+        assert_eq!(
+            segment["request_user_input"]["questions"][0]["options"][1]["label"],
+            "Blue"
+        );
+        // A fresh service reads the checkpoint and routes to the same live adapter.
+        let reopened = WorkspaceConversationService::new(config.clone());
+        if mode == "question" {
+            let answered = reopened
+                .submit_request_user_input_answer(
+                    &id,
+                    "question-1",
+                    ConversationRequestUserInputAnswerRequest {
+                        project_path: project.clone(),
+                        answers: BTreeMap::from([("question-1".into(), "Blue".into())]),
+                    },
+                )
+                .unwrap();
+            assert!(answered["segments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|segment| segment["request_user_input"]["status"] == "answered"));
+        } else if mode == "interrupt-question" {
+            assert!(reopened.interrupt_turn(&id, &project).unwrap());
+        }
+        let completed = handle.join().unwrap().unwrap();
+        let assistant = completed["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|turn| turn["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["status"], "complete");
+        if mode == "interrupt-question" {
+            assert_eq!(assistant["content"], "Stopped.");
+        }
+        if mode != "question" {
+            let expired = reopened
+                .submit_request_user_input_answer(
+                    &id,
+                    "question-1",
+                    ConversationRequestUserInputAnswerRequest {
+                        project_path: project.clone(),
+                        answers: BTreeMap::from([("question-1".into(), "Blue".into())]),
+                    },
+                )
+                .unwrap();
+            assert!(expired["segments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|segment| segment["request_user_input"]["status"] == "expired"));
+        } else {
+            assert!(completed["segments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|segment| segment["request_user_input"]["status"] == "answered"));
+            assert_eq!(assistant["status"], "complete");
+        }
+        assert!(!reopened.interrupt_turn(&id, &project).unwrap());
+    }
+}
+
+#[test]
+fn claude_stream_interrupt_error_result_completes_shortened_turn() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let _bin = EnvVarGuard::set(
+        "SPARK_CLAUDE_CODE_BIN",
+        env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
+    );
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "interrupt-aborted");
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+    let (prepared, started) = service
+        .start_turn(
+            "interrupt-stream",
+            ConversationTurnRequest {
+                project_path: project.clone(),
+                message: "Start writing".into(),
+                provider: Some("claude-code".into()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .unwrap();
+    let controller = service.clone();
+    let interrupted = std::sync::atomic::AtomicBool::new(false);
+    let completed = service
+        .complete_started_turn_with_progress_payloads(prepared, started, move |payload| {
+            if payload["type"] == "stream_delta"
+                && payload["segment"]["content"] == "Shortened turn."
+                && !interrupted.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                assert!(controller
+                    .interrupt_turn("interrupt-stream", &project)
+                    .unwrap());
+            }
+        })
+        .unwrap();
+    let assistant = completed["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["role"] == "assistant")
+        .unwrap();
+    assert_eq!(assistant["status"], "complete");
+    let text_segments = completed["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["content"] == "Shortened turn.")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        text_segments.len(),
+        1,
+        "interrupt must finish the existing streamed item"
+    );
+    assert_eq!(text_segments[0]["status"], "complete");
+}

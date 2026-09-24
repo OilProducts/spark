@@ -95,6 +95,10 @@ pub fn router() -> Router<HttpAppState> {
             get(get_conversation_segment_tool_output),
         )
         .route(
+            "/conversations/{conversation_id}/interrupt",
+            post(interrupt_conversation_turn),
+        )
+        .route(
             "/conversations/{conversation_id}/turns",
             post(send_conversation_turn),
         )
@@ -408,6 +412,38 @@ async fn send_conversation_turn(
         }
     });
     Ok(Json(started_snapshot))
+}
+
+#[derive(Deserialize)]
+struct ConversationInterruptRequest {
+    project_path: String,
+}
+
+async fn interrupt_conversation_turn(
+    State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
+    AxumPath(conversation_id): AxumPath<String>,
+    payload: Result<Json<ConversationInterruptRequest>, JsonRejection>,
+) -> ApiResult<Value> {
+    let request = json_payload(payload)?;
+    let service = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+        &run_event_observer,
+    );
+    let interrupted = tokio::task::spawn_blocking(move || {
+        service.interrupt_turn(&conversation_id, &request.project_path)
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "interrupt task failed: {error}"
+        )))
+    })??;
+    Ok(Json(json!({"interrupted": interrupted})))
 }
 
 async fn answer_conversation_request_user_input(
