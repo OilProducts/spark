@@ -163,6 +163,24 @@ impl ClaudeCodeBackend {
         if let Some(session_id) = resume_session_id {
             command.arg("--resume").arg(session_id);
         }
+        // Pinned instructions ride every spawn, resumed or not; the file lives
+        // until this turn's process has exited.
+        let instructions = metadata_string(
+            &request.metadata,
+            crate::agent::AGENT_INSTRUCTIONS_METADATA_KEY,
+        )
+        .map(|text| {
+            let mut file = tempfile::NamedTempFile::new()?;
+            file.write_all(text.as_bytes())?;
+            Ok::<_, std::io::Error>(file)
+        })
+        .transpose()
+        .map_err(|error| {
+            ClaudeCodeError::runtime(format!("claude code instructions write failed: {error}"))
+        })?;
+        if let Some(file) = &instructions {
+            command.arg("--append-system-prompt-file").arg(file.path());
+        }
         if let Some(config_dir) = match native {
             Some(config) => config.claude_config_dir.clone(),
             None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)

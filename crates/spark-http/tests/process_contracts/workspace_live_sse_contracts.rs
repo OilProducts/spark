@@ -1385,15 +1385,16 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn live_route_streams_mission_upserts_through_run_delivery() {
+async fn live_route_streams_mission_upserts_through_turn_delivery() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    // The reaction completes without a directive, which needs attention.
-    write_flow(&settings, "missions/react.yaml");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project = project_path.to_string_lossy().to_string();
-    let app = build_app(settings);
+    let app = build_app_with_agent_turn_backend(
+        settings,
+        Arc::new(StaticAgentTurnBackend::new("Starting now.")),
+    );
     let live = request(
         app.clone(),
         "GET",
@@ -1450,11 +1451,13 @@ async fn live_route_streams_mission_upserts_through_run_delivery() {
             continue;
         }
         let envelope = sse_data_json(&frame);
-        assert_eq!(envelope["type"], "mission.upsert");
+        if envelope["type"] != "mission.upsert" {
+            continue;
+        }
+        // The finished first turn leaves the mission waiting on the user.
         let mission = &envelope["payload"]["mission"];
-        if mission["runs"][0]["status"] == "completed" {
-            assert_eq!(mission["execution"]["substate"], "attention");
-            assert_eq!(mission["runs"][0]["role"], "reaction");
+        if mission["status"] == "needs_you" {
+            assert_eq!(mission["conversation_id"], json!(id));
             break;
         }
     }

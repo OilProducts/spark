@@ -260,11 +260,14 @@ impl Drop for TestServer {
 }
 
 async fn spawn_server(settings: SparkSettings) -> TestServer {
+    serve(build_app(settings)).await
+}
+
+async fn serve(app: axum::Router) -> TestServer {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind server");
     let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
-    let app = build_app(settings);
     let handle = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -352,7 +355,12 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_str().unwrap();
-    let server = spawn_server(settings.clone()).await;
+    // Mission turns run on an agent that answers without spawning a real CLI.
+    let server = serve(spark_http::build_app_with_agent_turn_backend(
+        settings.clone(),
+        std::sync::Arc::new(QuietAgent),
+    ))
+    .await;
     let payload_file = temp.path().join("mission.json");
     fs::write(
         &payload_file,
@@ -381,7 +389,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let response = client
         .patch(&url)
         .query(&[("project_path", project)])
-        .json(&json!({"revision":created["revision"],"fields":{"stage":"done"},"actor":"human"}))
+        .json(&json!({"revision":created["revision"],"fields":{"archived":true},"actor":"human"}))
         .send()
         .await
         .unwrap();
@@ -401,7 +409,8 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     );
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
     let mission: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(mission["fields"]["stage"], "done");
+    assert_eq!(mission["fields"]["archived"], true);
+    assert_eq!(mission["status"], "draft");
     assert_eq!(mission["activity"][0]["actor"], "assistant");
     assert_eq!(mission["activity"][1]["actor"], "human");
     fs::write(
@@ -441,6 +450,8 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     assert_eq!(listed["missions"][0]["fields"]["title"], "Mission from CLI");
     assert_eq!(listed.as_object().unwrap().len(), 1);
     for key in [
+        "stage",
+        "hooks",
         "priority",
         "acceptance_criteria",
         "next_action",
@@ -473,7 +484,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         );
         assert_ne!(output.status.code(), Some(0), "{key}");
     }
-    let root = spark_storage::ProjectRegistry::new(settings.data_dir)
+    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(project)
         .unwrap()
         .root;
@@ -503,24 +514,84 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let started = mission_cli(&["start"]);
-    assert_eq!(started["fields"]["stage"], "in_progress");
+    assert_eq!(started["conversation_id"], id);
     assert!(started["started_at"].is_string());
     let sent = mission_cli(&["send", "--message", "Focus on the parser"]);
     assert_eq!(sent["id"], id);
-    let events = mission_cli(&["events", "--after", "0"]);
-    let kinds: Vec<_> = events["events"]
-        .as_array()
+
+    // The mission's agent launches directly from its conversation.
+    write_flow(&settings, "work/parse.yaml");
+    spark_storage::set_flow_launch_policy(
+        &settings.config_dir,
+        "work/parse.yaml",
+        "agent_requestable",
+    )
+    .unwrap();
+    let snapshot: Value = client
+        .get(format!(
+            "{}/workspace/api/conversations/{id}",
+            server.base_url
+        ))
+        .query(&[("project_path", project)])
+        .send()
+        .await
         .unwrap()
-        .iter()
-        .map(|event| event["kind"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(kinds, ["mission.started", "human.message"]);
-    assert_eq!(
-        events["events"][1]["payload"]["message"],
-        "Focus on the parser"
+        .json()
+        .await
+        .unwrap();
+    let handle = snapshot["conversation_handle"].as_str().unwrap();
+    let output = run_spark(
+        temp.path(),
+        [
+            "convo",
+            "run-request",
+            "--conversation",
+            handle,
+            "--flow",
+            "work/parse.yaml",
+            "--summary",
+            "Parse it",
+            "--base-url",
+            &server.base_url,
+        ],
     );
-    let tail = mission_cli(&["events", "--after", "1"]);
-    assert_eq!(tail["events"].as_array().unwrap().len(), 1);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let launched: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let run_id = launched["run_id"].as_str().unwrap();
+    let mission = mission_cli(&["get"]);
+    assert_eq!(mission["runs"][0]["run_id"], run_id);
+    assert_eq!(mission["runs"][0]["summary"], "Parse it");
+
+    let closed = mission_cli(&["close", "--status", "done", "--reason", "Parser shipped"]);
+    assert_eq!(closed["status"], "closed");
+    assert_eq!(closed["closed"]["actor"], "assistant");
+    assert_eq!(closed["closed"]["reason"], "Parser shipped");
+    for removed in ["events", "pause", "resume"] {
+        let output = run_spark(
+            temp.path(),
+            [
+                "mission",
+                removed,
+                "--project",
+                project,
+                "--id",
+                id,
+                "--base-url",
+                &server.base_url,
+            ],
+        );
+        assert_ne!(output.status.code(), Some(0), "{removed}");
+    }
+}
+
+struct QuietAgent;
+impl spark_agent_adapter::AgentTurnBackend for QuietAgent {
+    fn run_turn(
+        &self,
+        _request: spark_agent_adapter::AgentTurnRequest,
+    ) -> Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError> {
+        Ok(final_answer("Understood."))
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -593,4 +664,23 @@ async fn settings_cli_validates_and_saves_through_the_real_revision_checked_rout
         latest["runtime"]["revision"],
         document["runtime"]["revision"]
     );
+}
+
+/// A final answer as a codex turn reports it.
+fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
+    static ITEMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let item = ITEMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut event = spark_common::events::TurnStreamEvent::content_delta(
+        spark_common::events::TurnStreamChannel::Assistant,
+        text,
+    );
+    event.kind = spark_common::events::TurnStreamEventKind::ContentCompleted;
+    event.phase = Some("final_answer".into());
+    event.source.app_turn_id = Some(format!("app-turn-{item}"));
+    event.source.item_id = Some(format!("item-{item}"));
+    spark_agent_adapter::AgentTurnOutput {
+        events: vec![event],
+        final_assistant_text: Some(text.into()),
+        ..Default::default()
+    }
 }

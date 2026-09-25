@@ -32,9 +32,16 @@ fn main() {
             {
                 let background =
                     env::var("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS").unwrap_or_default();
+                // The file is gone once the turn ends, so record its content.
+                let instructions = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "--append-system-prompt-file")
+                    .and_then(|pair| std::fs::read_to_string(&pair[1]).ok())
+                    .map(|text| format!("\nAPPEND_SYSTEM_PROMPT={text}"))
+                    .unwrap_or_default();
                 let _ = writeln!(
                     log,
-                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\n-- invocation --",
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}{instructions}\n-- invocation --",
                     args.join("\n")
                 );
             }

@@ -6,6 +6,7 @@ use spark_agent_adapter::{
     list_available_claude_code_models, AgentTurnBackend, AgentTurnRequest, ClaudeCodeBackend,
     ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest, CodergenBackendResponse,
     CodergenError, CodergenRuntimeMode, RustLlmAgentTurnBackend, RustLlmCodergenBackend,
+    AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::events::TurnStreamEventKind;
 use unified_llm_adapter::Client;
@@ -50,6 +51,39 @@ fn claude_code_chat_dispatch_resumes_then_retries_once_fresh() {
     assert_eq!(log.matches("-- invocation --").count(), 2);
     assert_eq!(log.matches("--resume").count(), 1);
     assert!(log.contains("sess-dead"));
+}
+
+#[test]
+fn claude_code_pins_instructions_on_every_spawn_as_a_system_prompt_file() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "resume-failure");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let mut request = agent_request(temp.path());
+    request.metadata.insert(
+        "spark.runtime.claude_code.session_id".to_string(),
+        json!("sess-dead"),
+    );
+    request.metadata.insert(
+        AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+        json!("Mission frame: pinned."),
+    );
+
+    RustLlmAgentTurnBackend::new(Client::new())
+        .run_turn(request)
+        .expect("fresh retry succeeds");
+
+    // Both the resumed spawn and the fresh retry carry the file.
+    let log = std::fs::read_to_string(log_path).expect("args log");
+    assert_eq!(log.matches("-- invocation --").count(), 2);
+    assert_eq!(log.matches("--append-system-prompt-file").count(), 2);
+    assert_eq!(
+        log.matches("APPEND_SYSTEM_PROMPT=Mission frame: pinned.")
+            .count(),
+        2
+    );
 }
 
 impl EnvVarGuard {

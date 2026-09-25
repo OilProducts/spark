@@ -234,6 +234,15 @@ export function buildConversationTimelineEntriesForTurn(
     if (turn.kind === 'mode_change') {
         return [buildModeChangeTimelineEntry(turn)]
     }
+    if (turn.kind === 'mission_notice') {
+        return [{
+            id: turn.id,
+            kind: 'final_separator',
+            role: 'system',
+            timestamp: turn.timestamp,
+            label: turn.content,
+        }]
+    }
     if (turn.role === 'assistant') {
         return buildAssistantTimelineEntries(turn, turnSegments)
     }

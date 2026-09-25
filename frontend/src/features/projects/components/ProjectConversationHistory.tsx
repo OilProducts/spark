@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react'
+import { memo, useCallback, useState, type ReactNode } from 'react'
 import { loadConversationSegmentToolOutput } from '../services/conversationArtifacts'
 import type {
     ConversationTimelineEntry,
@@ -29,6 +29,7 @@ type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
 type FinalSeparatorEntry = Extract<ConversationTimelineEntry, { kind: 'final_separator' }>
 type ModeChangeEntry = Extract<ConversationTimelineEntry, { kind: 'mode_change' }>
 type ContextCompactionEntry = Extract<ConversationTimelineEntry, { kind: 'context_compaction' }>
+type MessageEntry = Extract<ConversationTimelineEntry, { kind: 'message' }>
 
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
@@ -61,6 +62,8 @@ interface ProjectConversationHistoryProps {
         reviewNote?: string | null,
     ) => void | Promise<void>
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
+    /** Replaces the row for a user message when it returns a row. */
+    renderUserMessage?: (entry: MessageEntry, key: string) => ReactNode
 }
 
 function conversationEntryKey(entry: ConversationTimelineEntry) {
@@ -363,6 +366,7 @@ export function ProjectConversationHistory({
     onReviewFlowRunRequest,
     onReviewProposedPlan,
     onOpenFlowRun,
+    renderUserMessage,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
     const [fullToolOutputs, setFullToolOutputs] = useState<Record<string, string>>({})
@@ -551,6 +555,10 @@ export function ProjectConversationHistory({
 
                         if (entry.kind !== 'message') {
                             return null
+                        }
+                        const customRow = entry.role === 'user' ? renderUserMessage?.(entry, key) : null
+                        if (customRow) {
+                            return customRow
                         }
 
                         return (

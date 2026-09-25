@@ -226,6 +226,10 @@ impl CodexAppServerBackend {
             native,
         )?;
         client.clarification_handler = clarification_handler;
+        client.developer_instructions = metadata_string(
+            &request.metadata,
+            &[crate::agent::AGENT_INSTRUCTIONS_METADATA_KEY],
+        );
         let model = request
             .model
             .as_deref()
@@ -390,6 +394,9 @@ pub struct CodexAppServerClient {
     pending_messages: VecDeque<Value>,
     pending_responses: BTreeMap<String, VecDeque<Value>>,
     clarification_handler: Option<crate::codergen::ClarificationHandler>,
+    /// Pinned system instructions sent as `developerInstructions` on
+    /// `thread/start` and `thread/resume`.
+    developer_instructions: Option<String>,
     workflow_questions: Vec<(Value, crate::codergen::ClarificationPoll)>,
     pending_request_user_input: Option<PendingRequestUserInputResponse>,
     trace_sink: Option<CodexJsonrpcTraceSink>,
@@ -485,6 +492,7 @@ impl CodexAppServerClient {
             pending_messages: VecDeque::new(),
             pending_responses: BTreeMap::new(),
             clarification_handler: None,
+            developer_instructions: None,
             workflow_questions: Vec::new(),
             pending_request_user_input: None,
             trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
@@ -529,6 +537,9 @@ impl CodexAppServerClient {
         if self.clarification_handler.is_some() {
             params["config"] = json!({"features.default_mode_request_user_input": true});
         }
+        if let Some(instructions) = &self.developer_instructions {
+            params["developerInstructions"] = json!(instructions);
+        }
         let response = self.send_request("thread/start", Some(params))?;
         if response.get("error").is_some() {
             return Err(rpc_error("codex app-server thread/start failed", &response));
@@ -557,6 +568,9 @@ impl CodexAppServerClient {
         });
         if let Some(model) = model.and_then(non_empty) {
             params["model"] = json!(model);
+        }
+        if let Some(instructions) = &self.developer_instructions {
+            params["developerInstructions"] = json!(instructions);
         }
         let response = self.send_request("thread/resume", Some(params))?;
         if response.get("error").is_some() {

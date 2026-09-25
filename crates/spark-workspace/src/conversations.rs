@@ -227,17 +227,6 @@ pub struct ConversationDeleteResponse {
     pub project_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FlowRunRequestCreateResponse {
-    pub ok: bool,
-    pub conversation_handle: String,
-    pub conversation_id: String,
-    pub project_path: String,
-    pub turn_id: String,
-    pub flow_run_request_id: String,
-    pub segment_id: String,
-}
-
 #[derive(Clone)]
 pub struct WorkspaceConversationService {
     settings: SparkSettings,
@@ -469,16 +458,11 @@ impl WorkspaceConversationService {
         {
             for mission in missions.list(&project.project_path).unwrap_or_default() {
                 if !mission.fields.archived
-                    && mission.fields.stage != crate::missions::Stage::Done
-                    && matches!(
-                        mission.execution.substate,
-                        crate::missions::Substate::Waiting | crate::missions::Substate::Attention
-                    )
+                    && mission.status == crate::missions::MissionStatus::NeedsYou
                 {
                     items.push(json!({
                         "kind": "mission", "id": mission.id, "mission_id": mission.id,
-                        "title": mission.fields.title, "reason": mission.execution.reason,
-                        "substate": mission.execution.substate,
+                        "title": mission.fields.title,
                         "project_path": project.project_path, "updated_at": mission.updated_at,
                     }));
                 }
@@ -544,8 +528,19 @@ impl WorkspaceConversationService {
         let project_path = normalize_project_path_or_400(project_path)?;
         let repository = self.repository();
         let project_paths = repository.project_paths(&project_path)?;
+        // A mission's conversation belongs to its mission, not the Threads list.
+        let mission_ids: std::collections::HashSet<String> =
+            spark_storage::workspace_missions::MissionRepository::new(&project_paths.root)
+                .list()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|mission| mission["id"].as_str().map(str::to_string))
+                .collect();
         let mut summaries = Vec::new();
         for conversation_id in repository.list_conversation_ids_for_project(&project_path)? {
+            if mission_ids.contains(&conversation_id) {
+                continue;
+            }
             match repository.read_snapshot(&conversation_id, Some(&project_path)) {
                 Ok(Some(snapshot)) => {
                     if let Some(mut summary) = conversation_summary_from_snapshot(
@@ -1067,23 +1062,25 @@ impl WorkspaceConversationService {
                 );
             }
         }
-        let agent_prompt = if previous_app_thread_id.is_some() {
-            message.clone()
-        } else {
-            let handle = snapshot
-                .get("conversation_handle")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            format!(
-                "{}\n\nLatest user message:\n{}",
-                workspace_assistant_frame(&project_path, handle),
-                message
-            )
-        };
+        let handle = snapshot
+            .get("conversation_handle")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let instructions =
+            match crate::missions::WorkspaceMissionService::new(self.settings.clone())
+                .conversation_mission(&project_path, conversation_id)
+            {
+                Some(mission) => crate::missions::mission_frame(&mission, handle),
+                None => workspace_assistant_frame(&project_path, handle),
+            };
+        metadata.insert(
+            spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+            json!(instructions),
+        );
         let agent_turn_request = AgentTurnRequest {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
-            prompt: agent_prompt,
+            prompt: message.clone(),
             history: agent_history_from_snapshot(&snapshot, &[&user_turn_id, &assistant_turn_id]),
             provider: Some(effective_provider.clone()),
             model: effective_model.clone(),
@@ -1482,6 +1479,79 @@ impl WorkspaceConversationService {
             .interrupt_turn(&project_path, conversation_id))
     }
 
+    /// Whether the conversation has an assistant turn pending or streaming.
+    pub(crate) fn turn_in_flight(&self, conversation_id: &str, project_path: &str) -> bool {
+        matches!(
+            self.repository().read_snapshot(conversation_id, Some(project_path)),
+            Ok(Some(snapshot)) if active_assistant_turn_id(&snapshot).is_some()
+        )
+    }
+
+    /// Fails a turn a previous process left in flight; nothing will finish it.
+    pub(crate) fn abandon_active_turn(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<()> {
+        let repository = self.repository();
+        let Some(mut snapshot) = repository.read_snapshot(conversation_id, Some(project_path))?
+        else {
+            return Ok(());
+        };
+        let Some(turn_id) = active_assistant_turn_id(&snapshot) else {
+            return Ok(());
+        };
+        prepare_snapshot_core_defaults(&mut snapshot, conversation_id, project_path);
+        let base_revision = snapshot_revision(&snapshot);
+        let mut emitted_payloads = Vec::new();
+        fail_assistant_turn_and_segments(
+            &mut snapshot,
+            &turn_id,
+            "Spark restarted before this turn finished.",
+            None,
+            None,
+            true,
+            &mut emitted_payloads,
+        );
+        commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            project_path,
+            base_revision,
+            mutations_from_emitted_payloads(&emitted_payloads)?,
+        )?;
+        Ok(())
+    }
+
+    /// Appends a system notice to the transcript, creating the conversation if needed.
+    pub(crate) fn append_notice(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        content: &str,
+    ) -> WorkspaceResult<()> {
+        let repository = self.repository();
+        let base_revision = repository
+            .read_snapshot(conversation_id, Some(project_path))?
+            .map_or(0, |snapshot| snapshot_revision(&snapshot));
+        let notice = json!({
+            "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
+            "role": "system",
+            "content": content,
+            "timestamp": iso_now(),
+            "status": "complete",
+            "kind": "mission_notice",
+        });
+        commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            project_path,
+            base_revision,
+            vec![turn_mutation_from_value(&notice)?],
+        )?;
+        Ok(())
+    }
+
     pub fn submit_request_user_input_answer(
         &self,
         conversation_id: &str,
@@ -1713,13 +1783,16 @@ impl WorkspaceConversationService {
         )
     }
 
+    /// An agent's flow launch from its conversation: runs immediately when the
+    /// flow catalog lets agents launch the flow, and a mission's conversation
+    /// launches through its mission.
     pub fn create_flow_run_request_by_handle(
         &self,
         conversation_handle: &str,
         request: FlowRunRequestCreateByHandleRequest,
-    ) -> WorkspaceResult<FlowRunRequestCreateResponse> {
-        let repository = self.repository();
-        let handle_match = repository
+    ) -> WorkspaceResult<Value> {
+        let handle_match = self
+            .repository()
             .handle_repository()
             .find_conversation_by_handle(conversation_handle)?
             .ok_or_else(|| {
@@ -1727,129 +1800,39 @@ impl WorkspaceConversationService {
                     "Unknown conversation handle: {conversation_handle}. Verify the handle shown in the thread UI and try again."
                 ))
             })?;
-        let payload = normalize_flow_run_request_payload(request, "spark convo run-request")?;
-        ensure_flow_exists(&self.settings, &payload.flow_name)?;
-
-        let mut snapshot = repository
-            .read_snapshot(
-                &handle_match.conversation_id,
-                Some(&handle_match.project_path),
-            )?
-            .ok_or_else(|| {
-                WorkspaceError::NotFound(format!(
-                    "Unknown conversation handle: {conversation_handle}. Verify the handle shown in the thread UI and try again."
-                ))
-            })?;
-        prepare_snapshot_core_defaults(
-            &mut snapshot,
-            &handle_match.conversation_id,
-            &handle_match.project_path,
-        );
-        let base_revision = snapshot_revision(&snapshot);
-        // Compare normalized forms: the registry stores canonical paths while a
-        // snapshot may hold an unresolved (e.g. symlinked) spelling of the same path.
-        let handle_project_path = normalize_or_raw_project_path(&handle_match.project_path);
-        let actual_project_path =
-            snapshot_project_path(&snapshot).unwrap_or_else(|| handle_project_path.clone());
-        if actual_project_path != handle_project_path {
-            return Err(WorkspaceError::Validation(
-                "Conversation is already bound to a different project path.".to_string(),
-            ));
+        ensure_flow_exists(&self.settings, &request.flow_name)?;
+        let policy =
+            spark_storage::read_flow_launch_policy(&self.settings.config_dir, &request.flow_name)?;
+        if policy.effective_launch_policy != spark_storage::LAUNCH_POLICY_AGENT_REQUESTABLE {
+            return Err(WorkspaceError::Validation(format!(
+                "Flow {} is not agent-requestable; its launch policy is {}.",
+                policy.name, policy.effective_launch_policy
+            )));
         }
-        let parent_turn_id = artifact_owner_turn_id(&snapshot).ok_or_else(|| {
-            WorkspaceError::Validation(
-                "Conversation has no assistant turn that can own a flow run request.".to_string(),
-            )
-        })?;
-        if duplicate_flow_run_request_exists(&snapshot, &parent_turn_id, &payload) {
-            return Err(WorkspaceError::Conflict(
-                "Flow run request was not created because an identical request already exists on the latest assistant turn."
-                    .to_string(),
-            ));
+        let launch = RunLaunchRequest {
+            flow_name: request.flow_name,
+            summary: request.summary,
+            conversation_handle: Some(conversation_handle.to_string()),
+            project_path: None,
+            goal: request.goal,
+            launch_context: request.launch_context,
+            model: request.model,
+            llm_provider: request.llm_provider,
+            llm_profile: request.llm_profile,
+            reasoning_effort: request.reasoning_effort,
+            execution_profile_id: request.execution_profile_id,
+        };
+        let missions = crate::missions::WorkspaceMissionService::new(self.settings.clone());
+        match missions
+            .conversation_mission(&handle_match.project_path, &handle_match.conversation_id)
+        {
+            Some(mission) => {
+                missions.launch(&handle_match.project_path, &mission.id, launch, |launch| {
+                    self.launch_workspace_run(launch)
+                })
+            }
+            None => self.launch_workspace_run(launch),
         }
-
-        let now = iso_now();
-        let request_id = random_artifact_id("flow-run-request");
-        let segment_id = format!("segment-artifact-{request_id}");
-        let mut request_record = json!({
-            "id": request_id.clone(),
-            "created_at": now.clone(),
-            "updated_at": now.clone(),
-            "flow_name": payload.flow_name.clone(),
-            "summary": payload.summary.clone(),
-            "project_path": handle_match.project_path.clone(),
-            "conversation_id": handle_match.conversation_id.clone(),
-            "source_turn_id": parent_turn_id.clone(),
-            "status": "pending",
-            "source_segment_id": segment_id,
-        });
-        set_optional_artifact_string(&mut request_record, "goal", payload.goal.as_deref());
-        if let Some(launch_context) = payload.launch_context.as_ref() {
-            set_value(
-                &mut request_record,
-                "launch_context",
-                serde_json::to_value(launch_context).unwrap_or_else(|_| json!({})),
-            );
-        }
-        set_optional_artifact_string(&mut request_record, "model", payload.model.as_deref());
-        set_optional_artifact_string(
-            &mut request_record,
-            "llm_provider",
-            payload.llm_provider.as_deref(),
-        );
-        set_optional_artifact_string(
-            &mut request_record,
-            "llm_profile",
-            payload.llm_profile.as_deref(),
-        );
-        set_optional_artifact_string(
-            &mut request_record,
-            "reasoning_effort",
-            payload.reasoning_effort.as_deref(),
-        );
-        set_optional_artifact_string(
-            &mut request_record,
-            "execution_profile_id",
-            payload.execution_profile_id.as_deref(),
-        );
-
-        let request_segment = artifact_anchor_segment(
-            &segment_id,
-            &parent_turn_id,
-            "flow_run_request",
-            &request_id,
-            &now,
-        );
-        commit_conversation_mutations(
-            &repository,
-            &handle_match.conversation_id,
-            &handle_match.project_path,
-            base_revision,
-            vec![
-                ConversationMutation::ArtifactUpserted {
-                    collection: ArtifactCollection::FlowRunRequests,
-                    artifact: request_record,
-                },
-                segment_mutation_from_value(&request_segment)?,
-                workflow_event_mutation(
-                    format!(
-                        "Created flow run request {request_id} for {}.",
-                        payload.flow_name
-                    ),
-                    &now,
-                ),
-            ],
-        )?;
-
-        Ok(FlowRunRequestCreateResponse {
-            ok: true,
-            conversation_handle: handle_match.conversation_handle,
-            conversation_id: handle_match.conversation_id,
-            project_path: handle_match.project_path,
-            turn_id: parent_turn_id,
-            flow_run_request_id: request_id,
-            segment_id,
-        })
     }
 
     pub fn review_flow_run_request(
@@ -3258,25 +3241,6 @@ struct WorkspaceFlowStartFailure {
     detail: String,
 }
 
-fn normalize_flow_run_request_payload(
-    request: FlowRunRequestCreateByHandleRequest,
-    source_name: &str,
-) -> WorkspaceResult<NormalizedFlowRunRequestPayload> {
-    let payload = normalize_flow_run_payload_fields(
-        &request.flow_name,
-        &request.summary,
-        request.goal.as_deref(),
-        request.launch_context.as_ref(),
-        request.model.as_deref(),
-        request.llm_provider.as_deref(),
-        request.llm_profile.as_deref(),
-        request.reasoning_effort.as_deref(),
-        request.execution_profile_id.as_deref(),
-        source_name,
-    )?;
-    Ok(payload)
-}
-
 fn normalize_run_launch_request_payload(
     request: RunLaunchRequest,
 ) -> WorkspaceResult<NormalizedFlowRunRequestPayload> {
@@ -3493,25 +3457,34 @@ fn active_assistant_turn_id(snapshot: &Value) -> Option<String> {
         })
 }
 
-/// The fixed instruction frame for workspace conversation agents. Sent when a
-/// new agent thread starts; resumed threads already carry it. Without this
-/// the agent is a bare coding session that knows nothing about Spark's
-/// control surface and will improvise one from whatever it finds on disk.
+/// The fixed instruction frame for workspace conversation agents, pinned as
+/// system instructions on every turn. Without it the agent is a bare coding
+/// session that knows nothing about Spark's control surface and will improvise
+/// one from whatever it finds on disk.
 fn workspace_assistant_frame(project_path: &str, conversation_handle: &str) -> String {
     format!(
         "You are the Spark workspace assistant.\n\n\
         Spark is a workspace system that helps a user work on the active software project through conversation. Inspect the relevant project files and workspace-visible state, answer questions about the current work, and use the Spark control surface for workspace actions.\n\n\
         Treat the active project repository as the source of truth for project questions. Prefer directly observed facts over assumptions, and say plainly when something is inferred. For simple factual questions, answer directly after the minimum required inspection; do not turn them into planning theater or workflow artifacts.\n\n\
         Don't add requirements the user didn't request unless they're necessary for correctness. Keep optional implementation suggestions out of acceptance criteria.\n\n\
-        The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Installed flows are YAML files under $SPARK_HOME/flows; the flow catalog governs which of them are agent-requestable, and only those may be requested. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
-        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --file <path>`\n\
-        - `spark convo run-request --conversation {handle} ...` creates a flow run request that the user approves in this conversation before anything launches. This is the only way you start workflow runs on the user's behalf; do not launch directly even when a launch API is reachable.\n\
-        - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
-        Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.\n\n\
+        {control}\n\n\
         Conversation handle: {handle}\n\
         Project path: {project_path}",
+        control = spark_control_surface(conversation_handle),
         handle = conversation_handle,
         project_path = project_path,
+    )
+}
+
+/// How a conversation agent drives Spark, shared by the workspace and mission frames.
+pub(crate) fn spark_control_surface(conversation_handle: &str) -> String {
+    format!(
+        "The Spark control surface is the `spark` CLI from this workspace's runtime. SPARK_HOME and SPARK_API_BASE_URL are already set in your environment. Installed flows are YAML files under $SPARK_HOME/flows; the flow catalog governs which of them are agent-requestable, and only those may be launched. Run records, transcripts, and artifacts live under $SPARK_HOME/attractor/runs/<project-id>/<run-id>/ — read them there when asked about a run.\n\
+        - `spark flow list` / `spark flow describe --flow <name>` / `spark flow get --flow <name>` / `spark flow validate --file <path>`\n\
+        - `spark convo run-request --conversation {handle} --flow <name> --summary <text>` launches the flow immediately and prints its run id. This is the only way you start workflow runs.\n\
+        - `spark run retry|continue|events ...` inspect or resume existing runs.\n\n\
+        Never launch runs by other means: do not call the run APIs directly, do not invent run ids, and do not use any other Spark installation found on the filesystem (for example ~/.spark or ~/.local/bin/spark — these may be stale). If the control surface fails, report the failure instead of working around it.",
+        handle = conversation_handle,
     )
 }
 
@@ -3629,55 +3602,6 @@ fn update_artifact_at(
     {
         update(artifact);
     }
-}
-
-fn duplicate_flow_run_request_exists(
-    snapshot: &Value,
-    turn_id: &str,
-    payload: &NormalizedFlowRunRequestPayload,
-) -> bool {
-    let Some(segments) = snapshot.get("segments").and_then(Value::as_array) else {
-        return false;
-    };
-    let Some(requests) = snapshot.get("flow_run_requests").and_then(Value::as_array) else {
-        return false;
-    };
-    segments
-        .iter()
-        .filter(|segment| {
-            segment.get("turn_id").and_then(Value::as_str) == Some(turn_id)
-                && segment.get("kind").and_then(Value::as_str) == Some("flow_run_request")
-        })
-        .filter_map(|segment| segment.get("artifact_id").and_then(Value::as_str))
-        .any(|artifact_id| {
-            requests
-                .iter()
-                .find(|request| request.get("id").and_then(Value::as_str) == Some(artifact_id))
-                .map(|request| flow_run_request_matches_payload(request, payload))
-                .unwrap_or(false)
-        })
-}
-
-fn flow_run_request_matches_payload(
-    request: &Value,
-    payload: &NormalizedFlowRunRequestPayload,
-) -> bool {
-    request.get("flow_name").and_then(Value::as_str) == Some(payload.flow_name.as_str())
-        && request.get("summary").and_then(Value::as_str) == Some(payload.summary.as_str())
-        && optional_artifact_string(request, "goal") == payload.goal
-        && optional_artifact_string(request, "model") == payload.model
-        && optional_artifact_string(request, "llm_provider") == payload.llm_provider
-        && optional_artifact_string(request, "llm_profile") == payload.llm_profile
-        && optional_artifact_string(request, "reasoning_effort") == payload.reasoning_effort
-        && optional_artifact_string(request, "execution_profile_id") == payload.execution_profile_id
-        && normalized_context_object(request.get("launch_context")) == payload.launch_context
-}
-
-fn optional_artifact_string(request: &Value, key: &str) -> Option<String> {
-    request
-        .get(key)
-        .and_then(Value::as_str)
-        .and_then(non_empty_string)
 }
 
 fn copy_payload_options_to_artifact(target: &mut Value, payload: &NormalizedFlowRunRequestPayload) {
@@ -3818,19 +3742,6 @@ fn recovery_response_base(
         ("run_id".to_string(), json!(result_run_id)),
         ("status".to_string(), json!(status)),
     ])
-}
-
-fn normalized_context_object(value: Option<&Value>) -> Option<BTreeMap<String, Value>> {
-    let object = value.and_then(Value::as_object)?;
-    if object.is_empty() {
-        return None;
-    }
-    Some(
-        object
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-    )
 }
 
 fn set_optional_artifact_string(target: &mut Value, key: &str, value: Option<&str>) {

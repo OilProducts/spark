@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use spark_agent_adapter::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
     AgentRequestUserInputAnswerRequest, AgentTurnRequest, CodexAppServerBackend,
-    CodexAppServerClient, CodexAppServerTurnState,
+    CodexAppServerClient, CodexAppServerTurnState, AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
@@ -282,6 +282,71 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
             "settings": {"model": "gpt-codex-test"}
         })
     );
+}
+
+#[test]
+fn pinned_instructions_reach_codex_as_developer_instructions_on_start_and_resume() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let mut request = AgentTurnRequest {
+        conversation_id: "conversation-mission".to_string(),
+        project_path: temp.path().to_string_lossy().to_string(),
+        prompt: "Run run-1 ended completed.".to_string(),
+        history: Vec::new(),
+        provider: Some("codex".to_string()),
+        model: Some("gpt-codex-test".to_string()),
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: None,
+        metadata: BTreeMap::from([(
+            AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
+            json!("Mission frame: pinned."),
+        )]),
+    };
+    CodexAppServerBackend::new()
+        .run_agent_turn(request.clone())
+        .expect("fresh thread");
+    request.metadata.insert(
+        "spark.runtime.codex_app_server.thread_id".to_string(),
+        json!("thread-test"),
+    );
+    CodexAppServerBackend::new()
+        .run_agent_turn(request)
+        .expect("resumed thread");
+
+    let messages = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("json"))
+        .collect::<Vec<_>>();
+    for method in ["thread/start", "thread/resume"] {
+        let message = messages
+            .iter()
+            .find(|message| message["method"] == json!(method))
+            .unwrap_or_else(|| panic!("{method} sent"));
+        assert_eq!(
+            message["params"]["developerInstructions"],
+            json!("Mission frame: pinned.")
+        );
+    }
+    let turns: Vec<_> = messages
+        .iter()
+        .filter(|message| message["method"] == json!("turn/start"))
+        .collect();
+    assert_eq!(turns.len(), 2);
+    for turn in turns {
+        let params = turn["params"].to_string();
+        assert!(params.contains("Run run-1 ended completed."));
+        assert!(!params.contains("Mission frame"));
+    }
 }
 
 #[test]

@@ -2,614 +2,184 @@ use super::review_artifact_contracts::{
     seed_conversation, settings, simple_flow, write_flow, write_native_execution_profile,
 };
 use serde_json::{json, Value};
+use spark_agent_adapter::{
+    AgentError, AgentTurnBackend, AgentTurnOutput, AgentTurnRequest,
+    AGENT_INSTRUCTIONS_METADATA_KEY,
+};
 use spark_common::settings::SparkSettings;
 use spark_workspace::{
     missions::{
-        MissionEventPost, MissionMutation, MissionRecord, Role, Stage, Substate,
-        WorkspaceMissionService,
+        install_runtime, MissionEventPost, MissionMutation, MissionRecord, MissionRuntime,
+        MissionStatus, WorkspaceMissionService,
     },
-    FlowRunRequestCreateByHandleRequest, FlowRunRequestReviewRequest, WorkspaceConversationService,
-    WorkspaceError,
+    FlowRunRequestCreateByHandleRequest, WorkspaceConversationService, WorkspaceError,
 };
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 fn mutation(value: Value) -> MissionMutation {
     serde_json::from_value(value).unwrap()
 }
-fn post(kind: &str, id: Option<&str>) -> MissionEventPost {
-    serde_json::from_value(json!({"kind": kind, "id": id, "payload": {"message": "hi"}})).unwrap()
+fn message(text: &str) -> MissionEventPost {
+    serde_json::from_value(json!({"kind": "human.message", "payload": {"message": text}})).unwrap()
 }
 fn project(settings: &SparkSettings) -> String {
     std::fs::create_dir_all(&settings.project_root).unwrap();
     settings.project_root.to_str().unwrap().to_string()
 }
-
-/// A tool flow whose single node prints `stdout`, optionally mapping JSON
-/// output fields into context keys.
-fn tool_flow(command: &str, output_map: Value, env_map: Value) -> String {
-    let writes: Vec<_> = output_map.as_object().unwrap().keys().cloned().collect();
-    json!({
-        "schema_version": "1",
-        "id": "tool",
-        "nodes": {
-            "start": {"kind": "start"},
-            "work": {"kind": "tool", "config": {"kind": "tool", "command": command, "output_map": output_map, "env_map": env_map}, "contracts": {"writes_context": writes}},
-            "done": {"kind": "exit"}
-        },
-        "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "done", "condition": "outcome=success"}]
-    })
-    .to_string()
-}
-fn directive_flow(settings: &SparkSettings, name: &str, actions: Value) {
-    let output = json!({"d": {"actions": actions}}).to_string();
-    write_flow(
-        settings,
-        name,
-        &tool_flow(
-            &format!("printf '%s' '{output}'"),
-            json!({"context.mission.directive": "d"}),
-            json!({}),
-        ),
-    );
-}
-fn wait_terminal(settings: &SparkSettings, run_id: &str) -> String {
-    let store = attractor_runtime::RunStore::for_settings(settings);
+fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let status = store
-            .find_run_root(run_id)
-            .unwrap()
-            .and_then(|paths| store.read_run_record(&paths).unwrap())
-            .map(|record| attractor_runtime::normalize_run_status(&record.status))
-            .unwrap_or_default();
-        let pending = store
-            .find_run_root(run_id)
-            .unwrap()
-            .and_then(|paths| store.read_result(&paths).unwrap())
-            .is_none_or(|result| result.state == "pending");
-        if ["completed", "failed", "canceled", "validation_error"].contains(&status.as_str())
-            && !pending
-        {
-            return status;
-        }
-        assert!(Instant::now() < deadline, "run {run_id} stuck at {status}");
-        std::thread::sleep(Duration::from_millis(25));
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
-/// Waits for a run to finish and hands its state to the mission, as the
-/// server's terminal publish hook does.
-fn settle_run(service: &WorkspaceMissionService, settings: &SparkSettings, run_id: &str) {
-    wait_terminal(settings, run_id);
-    service.deliver_run_events(run_id).unwrap();
+
+/// An agent whose turns finish only when the test opens its gate; it records
+/// every request.
+#[derive(Default)]
+struct GatedAgent {
+    requests: Mutex<Vec<AgentTurnRequest>>,
+    gate: Mutex<usize>,
+    opened: Condvar,
 }
-fn run_of<'a>(mission: &'a MissionRecord, label: &str) -> &'a str {
-    &mission
-        .runs
-        .iter()
-        .rev()
-        .find(|run| run.label == label)
-        .unwrap_or_else(|| panic!("no {label} run in {:?}", mission.runs))
-        .run_id
+impl GatedAgent {
+    /// Lets the next `count` turns finish.
+    fn release(&self, count: usize) {
+        *self.gate.lock().unwrap() += count;
+        self.opened.notify_all();
+    }
+    fn prompts(&self) -> Vec<String> {
+        let requests = self.requests.lock().unwrap();
+        requests
+            .iter()
+            .map(|request| request.prompt.clone())
+            .collect()
+    }
 }
-fn launch_context(settings: &SparkSettings, run_id: &str) -> Value {
-    let store = attractor_runtime::RunStore::for_settings(settings);
-    let paths = store.find_run_root(run_id).unwrap().unwrap();
-    json!(
-        store
-            .read_run_record(&paths)
-            .unwrap()
-            .unwrap()
-            .launch_context
-    )
-}
-fn kinds(service: &WorkspaceMissionService, project: &str, id: &str) -> Vec<String> {
-    service
-        .events(project, id, 0)
-        .unwrap()
-        .into_iter()
-        .map(|event| event.kind)
-        .collect()
+impl AgentTurnBackend for GatedAgent {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.requests.lock().unwrap().push(request);
+        let mut gate = self.gate.lock().unwrap();
+        while *gate == 0 {
+            gate = self.opened.wait(gate).unwrap();
+        }
+        *gate -= 1;
+        Ok(final_answer("Noted."))
+    }
 }
 
-#[test]
-fn missions_persist_atomically_reject_stale_writers_and_support_manual_lifecycle() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let registry = spark_storage::ProjectRegistry::new(&settings.data_dir);
-    assert_eq!(registry.read_project_record(project).unwrap(), None);
-    let mut mission = service
-        .create(
+struct Harness {
+    _temp: tempfile::TempDir,
+    settings: SparkSettings,
+    project: String,
+    agent: Arc<GatedAgent>,
+    missions: WorkspaceMissionService,
+}
+impl Harness {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = settings(temp.path());
+        let project = project(&settings);
+        write_native_execution_profile(&settings);
+        let agent = Arc::new(GatedAgent::default());
+        install_runtime(
+            &settings,
+            MissionRuntime {
+                agent_turn_backend: agent.clone(),
+                publish: Arc::new(|_| {}),
+            },
+        );
+        let missions = WorkspaceMissionService::new(settings.clone());
+        Self {
+            _temp: temp,
+            settings,
             project,
-            mutation(json!({"fields":{"title":"Manual delivery"}})),
-        )
-        .unwrap();
-    assert!(mission.id.starts_with("mission-"));
-    assert_eq!(mission.fields.stage, Stage::Backlog);
-    assert_eq!(mission.fields.reaction_flow, "missions/react.yaml");
-    assert_eq!(
-        json!(mission.fields.budget),
-        json!({"concurrent_runs":4,"total_runs":25,"reactions":10})
-    );
-    for stage in ["planning", "ready", "in_progress", "review", "done"] {
-        mission = service
-            .update(
-                project,
-                &mission.id,
-                mutation(json!({"revision":mission.revision,"fields":{"stage":stage}})),
-            )
+            agent,
+            missions,
+        }
+    }
+    fn create(&self, fields: Value) -> MissionRecord {
+        self.missions
+            .create(&self.project, mutation(json!({ "fields": fields })))
+            .unwrap()
+    }
+    fn get(&self, id: &str) -> MissionRecord {
+        self.missions.get(&self.project, id).unwrap()
+    }
+    fn wait_turns(&self, count: usize) {
+        wait_for(&format!("{count} turns"), || {
+            self.agent.requests.lock().unwrap().len() >= count
+        });
+    }
+    /// Waits until the mission has no turn in flight and nothing pending.
+    fn wait_idle(&self, id: &str) {
+        wait_for("an idle mission", || {
+            self.get(id).status != MissionStatus::Running
+        });
+    }
+    fn transcript(&self, id: &str) -> Value {
+        WorkspaceConversationService::new(self.settings.clone())
+            .get_snapshot(id, Some(&self.project))
+            .unwrap()
+    }
+    fn handle(&self, id: &str) -> String {
+        self.transcript(id)["conversation_handle"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+    fn agent_requestable(&self, flow: &str, content: &str) {
+        write_flow(&self.settings, flow, content);
+        spark_storage::set_flow_launch_policy(&self.settings.config_dir, flow, "agent_requestable")
             .unwrap();
     }
-    // Moving a card launches nothing.
-    assert!(mission.runs.is_empty() && mission.started_at.is_none());
-    assert!(service.events(project, &mission.id, 0).unwrap().is_empty());
-    mission = service
-        .update(
-            project,
-            &mission.id,
-            mutation(
-                json!({"revision":mission.revision,"fields":{"stage":"planning","archived":true}}),
-            ),
-        )
-        .unwrap();
-    assert!(mission.fields.archived);
-    assert_eq!(mission.activity.len() as u64, mission.revision);
-    let before = json!(mission);
-    let outcomes = std::thread::scope(|scope| {
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let threads: Vec<_> = ["one", "two"]
-            .into_iter()
-            .map(|title| {
-                let (barrier, settings, mission) =
-                    (barrier.clone(), settings.clone(), mission.clone());
-                scope.spawn(move || {
-                    barrier.wait();
-                    WorkspaceMissionService::new(settings).update(
-                        project,
-                        &mission.id,
-                        mutation(json!({"revision":mission.revision,"fields":{"title":title}})),
-                    )
-                })
-            })
-            .collect();
-        threads
-            .into_iter()
-            .map(|t| t.join().unwrap())
-            .collect::<Vec<_>>()
+    /// The agent's `spark convo run-request` from inside its turn.
+    fn launch(&self, id: &str, flow: &str, summary: &str) -> Result<String, WorkspaceError> {
+        WorkspaceConversationService::new(self.settings.clone())
+            .create_flow_run_request_by_handle(
+                &self.handle(id),
+                FlowRunRequestCreateByHandleRequest {
+                    flow_name: flow.into(),
+                    summary: summary.into(),
+                    execution_profile_id: Some("native".into()),
+                    ..Default::default()
+                },
+            )
+            .map(|response| response["run_id"].as_str().unwrap().to_string())
+    }
+    /// Waits for a run to finish and hands its state to the mission, as the
+    /// server's terminal publish hook does.
+    fn settle(&self, run_id: &str) {
+        wait_terminal(&self.settings, run_id);
+        self.missions.deliver_run_events(run_id).unwrap();
+    }
+}
+
+fn wait_terminal(settings: &SparkSettings, run_id: &str) -> String {
+    let store = attractor_runtime::RunStore::for_settings(settings);
+    let mut status = String::new();
+    wait_for(&format!("run {run_id}"), || {
+        let paths = store.find_run_root(run_id).unwrap();
+        status = paths
+            .as_ref()
+            .and_then(|paths| store.read_run_record(paths).unwrap())
+            .map(|record| attractor_runtime::normalize_run_status(&record.status))
+            .unwrap_or_default();
+        let pending = paths
+            .and_then(|paths| store.read_result(&paths).unwrap())
+            .is_none_or(|result| result.state == "pending");
+        ["completed", "failed", "canceled", "validation_error"].contains(&status.as_str())
+            && !pending
     });
-    assert_eq!(outcomes.iter().filter(|r| r.is_ok()).count(), 1);
-    assert!(outcomes
-        .iter()
-        .any(|r| matches!(r, Err(WorkspaceError::Conflict(_)))));
-    let latest = service.get(project, &mission.id).unwrap();
-    assert_eq!(latest.revision, mission.revision + 1);
-    assert_eq!(latest.activity.last().unwrap()["before"], before["fields"]);
+    status
 }
 
-#[test]
-fn mission_records_load_existing_task_files_as_a_superset() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths(&project)
-        .unwrap();
-    let task = json!({
-        "id": "task-legacy", "project_id": root.project_id, "project_path": root.project_path,
-        "created_at": "2026-01-01", "updated_at": "2026-01-01", "revision": 1,
-        "fields": {"title": "Legacy", "description": "Kept", "stage": "ready", "archived": false},
-        "activity": [{"revision": 1, "actor": "human", "note": ""}]
-    });
-    std::fs::create_dir_all(root.root.join("tasks")).unwrap();
-    std::fs::write(root.root.join("tasks/task-legacy.json"), task.to_string()).unwrap();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let missions = service.list(&project).unwrap();
-    assert!(root.root.join("missions/task-legacy.json").exists());
-    assert!(!root.root.join("tasks").exists());
-    assert_eq!(missions.len(), 1);
-    let legacy = &missions[0];
-    assert_eq!(
-        (legacy.fields.title.as_str(), legacy.fields.stage),
-        ("Legacy", Stage::Ready)
-    );
-    assert_eq!(legacy.fields.reaction_flow, "missions/react.yaml");
-    assert_eq!(legacy.execution.substate, Substate::Idle);
-    let updated = service
-        .update(
-            &project,
-            "task-legacy",
-            mutation(json!({"revision":1,"fields":{"stage":"planning"}})),
-        )
-        .unwrap();
-    assert_eq!(updated.revision, 2);
-    assert_eq!(updated.activity.len(), 2);
-}
-
-#[test]
-fn missions_reject_system_fields_and_preserve_scope_and_attribution() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service.create(project, mutation(json!({"fields":{"title":"One","stage":"done"},"actor":"assistant","note":"Useful detail"}))).unwrap();
-    assert_eq!(mission.activity[0]["actor"], "assistant");
-    assert_eq!(mission.activity[0]["note"], "Useful detail");
-    let other = temp.path().join("other");
-    std::fs::create_dir(&other).unwrap();
-    let other = other.to_str().unwrap();
-    assert!(service.get(other, &mission.id).is_err());
-    assert!(service.get(project, "../outside").is_err());
-    assert!(service.list(other).unwrap().is_empty());
-    assert!(service
-        .post_event(other, &mission.id, post("human.message", None))
-        .is_err());
-    // Only reactions write state; the roster and inbox cursor are system-owned.
-    for key in [
-        "state",
-        "runs",
-        "execution",
-        "cursor",
-        "closed",
-        "priority",
-        "conversations",
-    ] {
-        assert!(
-            service
-                .update(
-                    project,
-                    &mission.id,
-                    mutation(json!({"revision":1,"fields":{key:null}}))
-                )
-                .is_err(),
-            "{key}"
-        );
-    }
-    assert!(service
-        .update(
-            project,
-            &mission.id,
-            mutation(json!({"revision":1,"fields":{"hooks":[{"on":"run.completed","do":{"set_state":{"markdown":"no"}}}]}}))
-        )
-        .is_err());
-    for fields in [json!({"title":"  "}), json!({"stage":"unknown"})] {
-        assert!(service
-            .create(project, mutation(json!({"fields":fields})))
-            .is_err());
-    }
-    let edited = service
-        .update(
-            project,
-            &mission.id,
-            mutation(json!({"revision":1,"yaml":"hooks:\n  - on: run.completed\n    label: build\n    do: ignore\nbudget:\n  total_runs: 3\n"})),
-        )
-        .unwrap();
-    assert_eq!(edited.fields.hooks.len(), 1);
-    assert_eq!(edited.fields.budget.total_runs, 3);
-    assert_eq!(edited.fields.budget.concurrent_runs, 4);
-    let second = service
-        .create(project, mutation(json!({"fields":{"title":"Two"}})))
-        .unwrap();
-    assert_eq!(
-        service.board(project).unwrap(),
-        json!({"missions":[edited, second]})
-    );
-}
-
-#[test]
-fn inbox_delivery_is_idempotent_and_hooks_match_in_order_with_reason_default() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    directive_flow(&settings, "missions/react.yaml", json!([]));
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(
-            project,
-            mutation(json!({"fields":{"title":"Hooks","hooks":[
-                {"on":"human.message","do":"ignore"},
-                {"on":"human.message","do":"reason"},
-                {"on":"mission.started","do":"ignore"}
-            ]}})),
-        )
-        .unwrap();
-    // Unstarted missions queue events without processing them.
-    let queued = service
-        .post_event(project, &mission.id, post("human.message", Some("m1")))
-        .unwrap();
-    assert_eq!(queued.cursor, 0);
-    let again = service
-        .post_event(project, &mission.id, post("human.message", Some("m1")))
-        .unwrap();
-    assert_eq!(service.events(project, &mission.id, 0).unwrap().len(), 1);
-    assert_eq!(again.cursor, 0);
-    assert!(service
-        .post_event(project, &mission.id, post("Bad Kind", None))
-        .is_err());
-    let started = service.start(project, &mission.id).unwrap();
-    assert_eq!(started.fields.stage, Stage::InProgress);
-    assert!(matches!(
-        service.start(project, &mission.id),
-        Err(WorkspaceError::Conflict(_))
-    ));
-    // The first matching hook (ignore) wins for both events: no reaction.
-    assert_eq!(started.cursor, 2);
-    assert!(started.runs.is_empty());
-    assert!(started.pending_events.is_empty());
-    let tail = service.events(project, &mission.id, 1).unwrap();
-    assert_eq!(tail.len(), 1);
-    assert_eq!(tail[0].kind, "mission.started");
-    // Without a matching hook an event goes to a reaction.
-    let reasoned = service
-        .post_event(project, &mission.id, post("run.signal", None))
-        .unwrap();
-    assert_eq!(reasoned.cursor, 3);
-    assert_eq!(reasoned.runs.len(), 1);
-    assert_eq!(reasoned.runs[0].role, Role::Reaction);
-    assert_eq!(reasoned.execution.substate, Substate::Reasoning);
-    assert_eq!(reasoned.reaction_events[0].kind, "run.signal");
-    let context = launch_context(&settings, &reasoned.runs[0].run_id);
-    assert_eq!(
-        context["context.spark_mission"],
-        json!({"mission_id": mission.id, "label": "reaction", "role": "reaction"})
-    );
-    assert_eq!(context["context.mission"]["title"], "Hooks");
-    assert_eq!(
-        context["context.mission"]["events"][0]["kind"],
-        "run.signal"
-    );
-}
-
-#[test]
-fn reactions_run_one_at_a_time_batch_events_and_apply_directives_in_order() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    directive_flow(
-        &settings,
-        "missions/react.yaml",
-        json!([{"set_state":{"markdown":"first"}},{"set_state":{"markdown":"second"}}]),
-    );
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(project, mutation(json!({"fields":{"title":"Batch"}})))
-        .unwrap();
-    let started = service.start(project, &mission.id).unwrap();
-    let first = started.runs[0].run_id.clone();
-    wait_terminal(&settings, &first);
-    // The first reaction has not been delivered yet, so these two queue.
-    service
-        .post_event(project, &mission.id, post("human.message", None))
-        .unwrap();
-    let queued = service
-        .post_event(project, &mission.id, post("human.message", None))
-        .unwrap();
-    assert_eq!(queued.runs.len(), 1);
-    assert_eq!(queued.pending_events.len(), 2);
-    // The next reaction will fail.
-    write_flow(
-        &settings,
-        "missions/react.yaml",
-        &tool_flow("exit 3", json!({}), json!({})),
-    );
-    service.deliver_run_events(&first).unwrap();
-    let mission = service.get(project, &mission.id).unwrap();
-    // Directive actions applied in order; reactions are the only writer of state.
-    assert_eq!(mission.state, "second");
-    assert_eq!(mission.runs.len(), 2);
-    let second = &mission.runs[1];
-    assert_eq!(second.role, Role::Reaction);
-    let batch = &launch_context(&settings, &second.run_id)["context.mission"];
-    assert_eq!(batch["events"].as_array().unwrap().len(), 2);
-    assert_eq!(batch["state"], "second");
-    // A failed reaction needs attention, keeps its batch, and is not retried.
-    settle_run(&service, &settings, &second.run_id.clone());
-    let mission = service.get(project, &mission.id).unwrap();
-    assert_eq!(mission.runs.len(), 2);
-    assert_eq!(mission.execution.substate, Substate::Attention);
-    assert_eq!(mission.pending_events.len(), 2);
-    // A human message clears attention and reacts with the accumulated batch.
-    let retried = service
-        .post_event(project, &mission.id, post("human.message", None))
-        .unwrap();
-    assert_eq!(retried.runs.len(), 3);
-    assert_eq!(retried.reaction_events.len(), 3);
-    settle_run(&service, &settings, &retried.runs[2].run_id.clone());
-    let resumed = service.resume(project, &mission.id).unwrap();
-    assert_eq!(resumed.runs.len(), 4, "Resume triggers the next reaction");
-}
-
-#[test]
-fn budgets_refuse_launches_until_raised_and_cancel_stops_owned_runs() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    write_flow(
-        &settings,
-        "work/slow.yaml",
-        &tool_flow("sleep 5", json!({}), json!({})),
-    );
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(project, mutation(json!({"fields":{"title":"Budget","budget":{"total_runs":1},"hooks":[
-            {"on":"mission.started","do":{"launch":{"flow_name":"work/slow.yaml","label":"one"}}},
-            {"on":"human.message","do":{"launch":{"flow_name":"work/slow.yaml","label":"two","context":{"context.request.note":"x"}}}}
-        ]}})))
-        .unwrap();
-    let started = service.start(project, &mission.id).unwrap();
-    assert_eq!(started.runs.len(), 1);
-    assert_eq!(started.execution.substate, Substate::Running);
-    assert_eq!(
-        launch_context(&settings, &started.runs[0].run_id)["context.spark_mission"]["role"],
-        "work"
-    );
-    let refused = service
-        .post_event(project, &mission.id, post("human.message", None))
-        .unwrap();
-    assert_eq!(refused.runs.len(), 1);
-    assert_eq!(refused.execution.substate, Substate::Waiting);
-    assert!(refused.execution.reason.contains("total_runs (1)"));
-    // Later events queue behind the refused launch.
-    let held = service
-        .post_event(project, &mission.id, post("run.signal", None))
-        .unwrap();
-    assert_eq!(held.cursor, refused.cursor);
-    let raised = service
-        .update(
-            project,
-            &mission.id,
-            mutation(json!({"revision":held.revision,"fields":{"budget":{"total_runs":5,"reactions":0}}})),
-        )
-        .unwrap();
-    assert_eq!(raised.runs.len(), 2);
-    assert_eq!(raised.runs[1].label, "two");
-    assert_eq!(
-        launch_context(&settings, &raised.runs[1].run_id)["context.request.note"],
-        "x"
-    );
-    // The queued signal falls to reason; the reaction budget refuses it.
-    assert_eq!(raised.execution.substate, Substate::Waiting);
-    assert!(raised.execution.reason.contains("reactions (0)"));
-    let canceled = service.cancel(project, &mission.id).unwrap();
-    assert_eq!(
-        canceled.closed.as_ref().map(|c| c.status),
-        Some(spark_workspace::missions::CloseStatus::Canceled)
-    );
-    assert_eq!(canceled.fields.stage, Stage::InProgress);
-    // A human cancel needs no further attention.
-    assert_eq!(canceled.execution.substate, Substate::Idle);
-    assert_eq!(canceled.execution.reason, "Canceled by human");
-    assert!(!in_attention(&settings, &mission.id));
-    for run in &canceled.runs {
-        assert_eq!(wait_terminal(&settings, &run.run_id), "canceled");
-    }
-}
-
-fn in_attention(settings: &SparkSettings, id: &str) -> bool {
-    WorkspaceConversationService::new(settings.clone())
-        .pending_attention()
+fn mission_root(settings: &SparkSettings, project: &str) -> std::path::PathBuf {
+    spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project)
         .unwrap()
-        .iter()
-        .any(|item| item["mission_id"] == id)
-}
-
-#[test]
-fn reaction_or_hook_failures_stay_in_attention_until_moved_to_done() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(
-            project,
-            mutation(json!({"fields":{"title":"Fail","hooks":[
-                {"on":"mission.started","do":"ignore"},
-                {"on":"check.failed","do":{"close":{"status":"failed","reason":"check failed"}}}
-            ]}})),
-        )
-        .unwrap();
-    service.start(project, &mission.id).unwrap();
-    let closed = service
-        .post_event(project, &mission.id, post("check.failed", None))
-        .unwrap();
-    assert_eq!(closed.execution.substate, Substate::Attention);
-    assert_eq!(closed.execution.reason, "check failed");
-    assert!(in_attention(&settings, &mission.id));
-    service
-        .update(
-            project,
-            &mission.id,
-            mutation(json!({"revision":closed.revision,"fields":{"stage":"done"}})),
-        )
-        .unwrap();
-    assert!(!in_attention(&settings, &mission.id));
-}
-
-#[test]
-fn a_failed_directive_launch_keeps_its_remaining_actions_until_resume() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    directive_flow(
-        &settings,
-        "missions/react.yaml",
-        json!([
-            {"launch":{"flow_name":"work/missing.yaml","label":"gone"}},
-            {"set_state":{"markdown":"after"}},
-            {"close":{"status":"done","reason":"finished"}}
-        ]),
-    );
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(project, mutation(json!({"fields":{"title":"Directive"}})))
-        .unwrap();
-    let started = service.start(project, &mission.id).unwrap();
-    settle_run(&service, &settings, &started.runs[0].run_id.clone());
-    let held = service.get(project, &mission.id).unwrap();
-    assert_eq!(held.execution.substate, Substate::Attention);
-    assert!(held.execution.reason.contains("Launch of gone failed"));
-    assert_eq!(held.state, "");
-    assert!(held.closed.is_none());
-    let resumed = service.resume(project, &mission.id).unwrap();
-    assert_eq!(resumed.runs.len(), 1, "the failed launch is not retried");
-    assert_eq!(resumed.state, "after");
-    assert_eq!(resumed.closed.as_ref().unwrap().reason, "finished");
-}
-
-#[test]
-fn a_budget_wait_never_replaces_attention_and_runs_after_it_clears() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    write_flow(
-        &settings,
-        "work/slow.yaml",
-        &tool_flow("sleep 2", json!({}), json!({})),
-    );
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(project, mutation(json!({"fields":{"title":"Held","budget":{"concurrent_runs":1},"hooks":[
-            {"on":"mission.started","do":{"launch":{"flow_name":"work/missing.yaml","label":"bad"}}},
-            {"on":"x.one","do":{"launch":{"flow_name":"work/slow.yaml","label":"one"}}},
-            {"on":"x.two","do":{"launch":{"flow_name":"work/slow.yaml","label":"two"}}},
-            {"on":"run.completed","do":"ignore"}
-        ]}})))
-        .unwrap();
-    let started = service.start(project, &mission.id).unwrap();
-    assert_eq!(started.execution.substate, Substate::Attention);
-    let one = service
-        .post_event(project, &mission.id, post("x.one", None))
-        .unwrap();
-    assert_eq!(one.runs.len(), 1);
-    let deferred = service
-        .post_event(project, &mission.id, post("x.two", None))
-        .unwrap();
-    assert_eq!(deferred.runs.len(), 1);
-    assert_eq!(deferred.execution.substate, Substate::Attention);
-    assert!(deferred.execution.reason.contains("Launch of bad failed"));
-    // The budget frees while attention is set: the failure stays visible.
-    settle_run(&service, &settings, &one.runs[0].run_id.clone());
-    let freed = service.get(project, &mission.id).unwrap();
-    assert_eq!(freed.runs.len(), 1);
-    assert_eq!(freed.execution.substate, Substate::Attention);
-    assert!(in_attention(&settings, &mission.id));
-    let resumed = service.resume(project, &mission.id).unwrap();
-    assert_eq!(resumed.runs.len(), 2);
-    assert_eq!(resumed.runs[1].label, "two");
-    assert_eq!(resumed.execution.substate, Substate::Running);
+        .root
 }
 
 /// Seeds a run record the mission owns, with the pending result `create_run` writes.
@@ -620,14 +190,10 @@ fn owned_run(
     run_id: &str,
     status: &str,
 ) {
-    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths(project)
-        .unwrap()
-        .root;
-    spark_storage::workspace_missions::MissionRepository::new(&root)
+    spark_storage::workspace_missions::MissionRepository::new(&mission_root(settings, project))
         .transact::<WorkspaceError>(mission_id, |value| {
             let mut value = value.unwrap();
-            value["runs"].as_array_mut().unwrap().push(json!({"run_id":run_id,"label":"work","role":"work","launched_at":"t","launched_by_event":"e","status":"running"}));
+            value["runs"].as_array_mut().unwrap().push(json!({"run_id":run_id,"flow_name":"work/seeded.yaml","summary":"Seeded work","launched_at":"t","status":"running"}));
             Ok(value)
         })
         .unwrap();
@@ -636,7 +202,7 @@ fn owned_run(
     record.launch_context = Some(
         [(
             "context.spark_mission".to_string(),
-            json!({"mission_id": mission_id, "label": "work", "role": "work"}),
+            json!({"mission_id": mission_id}),
         )]
         .into(),
     );
@@ -652,390 +218,565 @@ fn owned_run(
         .unwrap();
 }
 
-#[test]
-fn runs_ended_without_an_executor_deliver_exactly_one_terminal_event() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(
-            project,
-            mutation(
-                json!({"fields":{"title":"Orphans","budget":{"concurrent_runs":2},"hooks":[
-                    {"on":"mission.started","do":"ignore"},
-                    {"on":"run.canceled","do":"ignore"},
-                    {"on":"run.failed","do":"ignore"}
-                ]}}),
-            ),
-        )
-        .unwrap();
-    service.start(project, &mission.id).unwrap();
-    // Canceled with no executor attached: the cancel writes the result.
-    owned_run(
-        &settings,
-        project,
-        &mission.id,
-        "run-canceled",
-        "cancel_requested",
-    );
-    attractor_runtime::RuntimeControls::new(attractor_runtime::RunStore::for_settings(&settings))
-        .mark_canceled("run-canceled", "no executor")
-        .unwrap();
-    for _ in 0..2 {
-        service.deliver_run_events("run-canceled").unwrap();
-    }
-    // Failed before a restart while its result was still pending.
-    owned_run(&settings, project, &mission.id, "run-failed", "failed");
-    assert!(service.deliver_run_events("run-failed").unwrap().is_none());
-    service.recover().unwrap();
-    service.recover().unwrap();
-    let kinds = kinds(&service, project, &mission.id);
-    assert_eq!(kinds, ["mission.started", "run.canceled", "run.failed"]);
-    let mission = service.get(project, &mission.id).unwrap();
-    assert_eq!(
-        mission
-            .runs
-            .iter()
-            .map(|run| run.status.as_str())
-            .collect::<Vec<_>>(),
-        ["canceled", "failed"]
-    );
-    assert_eq!(mission.execution.substate, Substate::Idle);
-}
-
-#[test]
-fn run_state_becomes_exactly_one_event_per_signal_and_terminal_status() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    write_flow(
-        &settings,
-        "work/signal.yaml",
-        &tool_flow(
-            "printf '%s' '{\"s\":{\"progress\":50}}'",
-            json!({"context.mission.signal": "s"}),
-            json!({}),
-        ),
-    );
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(project, mutation(json!({"fields":{"title":"Signals","hooks":[
-            {"on":"mission.started","do":{"launch":{"flow_name":"work/signal.yaml","label":"sig"}}},
-            {"on":"run.signal","label":"sig","do":"ignore"},
-            {"on":"run.completed","label":"sig","status":"completed","do":{"close":{"status":"done","reason":"signaled"}}}
-        ]}})))
-        .unwrap();
-    let started = service.start(project, &mission.id).unwrap();
-    let run_id = started.runs[0].run_id.clone();
-    wait_terminal(&settings, &run_id);
-    for _ in 0..3 {
-        service.deliver_run_events(&run_id).unwrap();
-    }
-    let events = service.events(project, &mission.id, 0).unwrap();
-    let signals: Vec<_> = events.iter().filter(|e| e.kind == "run.signal").collect();
-    assert_eq!(signals.len(), 1);
-    assert_eq!(signals[0].payload, json!({"progress": 50}));
-    assert_eq!(signals[0].source, run_id);
-    assert_eq!(
-        events.iter().filter(|e| e.kind == "run.completed").count(),
-        1
-    );
-    let closed = service.get(project, &mission.id).unwrap();
-    assert_eq!(closed.fields.stage, Stage::Review);
-    assert_eq!(closed.runs[0].status, "completed");
-    // Unrelated runs deliver nothing.
-    assert!(service.deliver_run_events("run-unknown").unwrap().is_none());
-}
-
-#[test]
-fn terminal_events_wait_for_results_and_recovery_posts_missing_events() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(
-            project,
-            mutation(json!({"fields":{"title":"Recover","hooks":[
-                {"on":"mission.started","do":"ignore"},
-                {"on":"run.completed","do":{"close":{"status":"done","reason":"recovered"}}}
-            ]}})),
-        )
-        .unwrap();
-    service.start(project, &mission.id).unwrap();
-    // Simulate a run the mission launched before a restart.
-    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths(project)
-        .unwrap()
-        .root;
-    let repo = spark_storage::workspace_missions::MissionRepository::new(&root);
-    repo.transact::<WorkspaceError>(&mission.id, |value| {
-        let mut value = value.unwrap();
-        value["runs"] = json!([{"run_id":"run-owned","label":"work","role":"work","launched_at":"t","launched_by_event":"e","status":"running"}]);
-        Ok(value)
+fn tool_flow(command: &str) -> String {
+    json!({
+        "schema_version": "1",
+        "id": "tool",
+        "nodes": {
+            "start": {"kind": "start"},
+            "work": {"kind": "tool", "config": {"kind": "tool", "command": command}},
+            "done": {"kind": "exit"}
+        },
+        "edges": [{"from": "start", "to": "work"}, {"from": "work", "to": "done", "condition": "outcome=success"}]
     })
-    .unwrap();
-    let store = attractor_runtime::RunStore::for_settings(&settings);
-    let mut record = attractor_core::RunRecord::new("run-owned", project);
-    record.status = "completed".into();
-    record.launch_context = Some(
-        [(
-            "context.spark_mission".to_string(),
-            json!({"mission_id": mission.id, "label": "work", "role": "work"}),
-        )]
-        .into(),
-    );
-    let paths = store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record,
-            ..Default::default()
-        })
-        .unwrap();
-    store
-        .write_result(
-            &paths,
-            &attractor_core::RunResult::pending("run-owned", "completed"),
-        )
-        .unwrap();
-    assert!(service.deliver_run_events("run-owned").unwrap().is_none());
-    assert!(!kinds(&service, project, &mission.id).contains(&"run.completed".to_string()));
-    let mut result = attractor_core::RunResult::pending("run-owned", "completed");
-    result.state = "ready".into();
-    store.write_result(&paths, &result).unwrap();
-    let recovered = service.recover().unwrap();
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(
-        kinds(&service, project, &mission.id),
-        ["mission.started", "run.completed"]
-    );
-    let mission = service.get(project, &mission.id).unwrap();
-    assert_eq!(mission.runs[0].status, "completed");
-    assert_eq!(mission.fields.stage, Stage::Review);
-    assert!(service.recover().unwrap().is_empty());
+    .to_string()
 }
 
 #[test]
-fn mission_reaction_coordinates_labeled_runs_hooks_and_batched_failure_to_review() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    write_flow(&settings, "work/ok.yaml", simple_flow());
-    write_flow(
-        &settings,
-        "work/fail.yaml",
-        &tool_flow("exit 1", json!({}), json!({})),
-    );
-    let launch = json!({"d":{"actions":[
-        {"launch":{"flow_name":"work/ok.yaml","label":"first"}},
-        {"launch":{"flow_name":"work/fail.yaml","label":"second"}},
-        {"set_state":{"markdown":"Launched first and second"}}]}});
-    let note = json!({"d":{"actions":[{"set_state":{"markdown":"Noted the message"}}]}});
-    let finish = json!({"d":{"actions":[
-        {"set_state":{"markdown":"Second failed after follow-up completed"}},
-        {"close":{"status":"done","reason":"Handled both outcomes"}}]}});
-    let script = format!(
-        "case \"$MISSION\" in\n  *'\"kind\":\"run.failed\"'*) printf '%s' '{finish}' ;;\n  *'\"kind\":\"human.message\"'*) printf '%s' '{note}' ;;\n  *) printf '%s' '{launch}' ;;\nesac"
-    );
-    write_flow(
-        &settings,
-        "missions/react.yaml",
-        &tool_flow(
-            &script,
-            json!({"context.mission.directive": "d"}),
-            json!({"MISSION": "context.mission"}),
-        ),
-    );
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mission = service
-        .create(project, mutation(json!({"fields":{"title":"Ship it","description":"Deliver the change","hooks":[
-            {"on":"run.completed","label":"first","do":{"launch":{"flow_name":"work/ok.yaml","label":"follow-up"}}}
-        ]}})))
-        .unwrap();
-    let id = mission.id.clone();
-    let mission = service.start(project, &id).unwrap();
-    settle_run(&service, &settings, run_of(&mission, "reaction"));
-    let mission = service.get(project, &id).unwrap();
-    assert_eq!(mission.state, "Launched first and second");
-    assert_eq!(mission.execution.substate, Substate::Running);
-    settle_run(&service, &settings, run_of(&mission, "first"));
-    let mission = service.get(project, &id).unwrap();
-    // The hook, not a reaction, launched the follow-up.
-    assert_eq!(
-        mission
-            .runs
-            .iter()
-            .filter(|r| r.role == Role::Reaction)
-            .count(),
-        1
-    );
-    // A human message starts a reaction; the remaining outcomes queue behind it.
-    let mission = service
-        .post_event(project, &id, post("human.message", None))
-        .unwrap();
-    assert_eq!(mission.execution.substate, Substate::Reasoning);
-    let noting = run_of(&mission, "reaction").to_string();
-    settle_run(&service, &settings, run_of(&mission, "second"));
-    settle_run(&service, &settings, run_of(&mission, "follow-up"));
-    let mission = service.get(project, &id).unwrap();
-    assert_eq!(mission.pending_events.len(), 2);
-    settle_run(&service, &settings, &noting);
-    let mission = service.get(project, &id).unwrap();
-    let last = run_of(&mission, "reaction").to_string();
-    assert_ne!(last, noting);
-    let batch = &launch_context(&settings, &last)["context.mission"]["events"];
-    let batch_kinds: Vec<_> = batch
-        .as_array()
+fn legacy_records_load_and_unstarted_finished_cards_are_archived() {
+    let harness = Harness::new();
+    let root = mission_root(&harness.settings, &harness.project);
+    let project_id = spark_storage::ProjectRegistry::new(&harness.settings.data_dir)
+        .ensure_project_paths(&harness.project)
         .unwrap()
+        .project_id;
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    for (id, stage, started) in [
+        ("task-done", "done", Value::Null),
+        ("task-review", "review", Value::Null),
+        ("task-ready", "ready", Value::Null),
+        ("task-running", "review", json!("2026-01-01")),
+    ] {
+        let legacy = json!({
+            "id": id, "project_id": project_id, "project_path": harness.project,
+            "created_at": format!("2026-01-01 {id}"), "updated_at": "2026-01-01", "revision": 1,
+            "fields": {"title": id, "description": "Kept", "stage": stage, "archived": false,
+                "reaction_flow": "missions/react.yaml", "hooks": [{"on": "run.completed", "do": "ignore"}],
+                "budget": {"concurrent_runs": 2, "total_runs": 5, "reactions": 10}},
+            "activity": [{"revision": 1, "actor": "human", "note": ""}],
+            "state": "old state", "execution": {"substate": "attention", "reason": "held"},
+            "paused": true, "hold": {"substate": "attention", "reason": "held", "actions": [], "event": ""},
+            "pending_events": [], "reaction_events": [], "started_at": started,
+            "runs": [{"run_id": "run-old", "label": "build", "role": "reaction", "launched_at": "t", "launched_by_event": "e", "status": "completed"}],
+        });
+        std::fs::write(root.join(format!("tasks/{id}.json")), legacy.to_string()).unwrap();
+    }
+    let missions = harness.missions.list(&harness.project).unwrap();
+    assert!(root.join("missions/task-done.json").exists());
+    let archived: Vec<_> = missions
         .iter()
-        .map(|e| e["kind"].as_str().unwrap())
+        .map(|mission| (mission.id.as_str(), mission.fields.archived))
         .collect();
-    assert_eq!(batch_kinds, ["run.failed", "run.completed"]);
-    settle_run(&service, &settings, &last);
-    let mission = service.get(project, &id).unwrap();
-    assert_eq!(mission.fields.stage, Stage::Review);
-    assert_eq!(mission.state, "Second failed after follow-up completed");
     assert_eq!(
-        mission.closed.as_ref().unwrap().reason,
-        "Handled both outcomes"
+        archived,
+        [
+            ("task-done", true),
+            ("task-ready", false),
+            ("task-review", true),
+            ("task-running", false)
+        ]
     );
-    assert_eq!(mission.execution.substate, Substate::Idle);
-    // Roster, inbox, and activity agree.
-    let roster: Vec<_> = mission
+    let ready = &missions[1];
+    assert_eq!(ready.status, MissionStatus::Draft);
+    assert_eq!(
+        (
+            ready.fields.budget.concurrent_runs,
+            ready.fields.budget.total_runs
+        ),
+        (2, 5)
+    );
+    assert_eq!(ready.runs[0].run_id, "run-old");
+    let updated = harness
+        .missions
+        .update(
+            &harness.project,
+            "task-done",
+            mutation(json!({"revision": 1, "fields": {"title": "Renamed"}})),
+        )
+        .unwrap();
+    // A write drops the removed fields and keeps the archive.
+    let stored: Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("missions/task-done.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(updated.fields.archived);
+    for removed in [
+        "state",
+        "execution",
+        "paused",
+        "hold",
+        "pending_events",
+        "status",
+    ] {
+        assert!(stored.get(removed).is_none(), "{removed}");
+    }
+    assert!(stored["fields"].get("stage").is_none());
+    assert!(stored["fields"].get("hooks").is_none());
+}
+
+#[test]
+fn mutations_accept_only_editable_fields_and_reject_stale_revisions() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "One", "description": "Ship"}));
+    assert!(mission.id.starts_with("mission-"));
+    assert_eq!(mission.status, MissionStatus::Draft);
+    assert_eq!(
+        json!(mission.fields.budget),
+        json!({"concurrent_runs": 4, "total_runs": 25})
+    );
+    for key in [
+        "stage",
+        "hooks",
+        "reaction_flow",
+        "state",
+        "runs",
+        "closed",
+        "status",
+    ] {
+        assert!(
+            harness
+                .missions
+                .update(
+                    &harness.project,
+                    &mission.id,
+                    mutation(json!({"revision": 1, "fields": {key: null}}))
+                )
+                .is_err(),
+            "{key}"
+        );
+    }
+    assert!(serde_json::from_value::<MissionMutation>(json!({"yaml": "budget: {}"})).is_err());
+    let raised = harness
+        .missions
+        .update(
+            &harness.project,
+            &mission.id,
+            mutation(json!({"revision": 1, "fields": {"budget": {"total_runs": 3}}})),
+        )
+        .unwrap();
+    assert_eq!(
+        (
+            raised.fields.budget.concurrent_runs,
+            raised.fields.budget.total_runs
+        ),
+        (4, 3)
+    );
+    assert!(matches!(
+        harness.missions.update(
+            &harness.project,
+            &mission.id,
+            mutation(json!({"revision": 1, "fields": {"title": "Stale"}}))
+        ),
+        Err(WorkspaceError::Conflict(_))
+    ));
+}
+
+#[test]
+fn start_creates_the_conversation_and_pins_the_objective_outside_the_transcript() {
+    let harness = Harness::new();
+    let mission =
+        harness.create(json!({"title": "Search", "description": "Search returns documents."}));
+    let started = harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    assert_eq!(
+        started.conversation_id.as_deref(),
+        Some(mission.id.as_str())
+    );
+    assert_eq!(started.status, MissionStatus::Running);
+    assert!(matches!(
+        harness.missions.start(&harness.project, &mission.id),
+        Err(WorkspaceError::Conflict(_))
+    ));
+    harness.wait_turns(1);
+    let request = harness.agent.requests.lock().unwrap()[0].clone();
+    assert_eq!(
+        request.prompt,
+        "Objective:\nSearch returns documents.\n\nBegin work on this mission."
+    );
+    let frame = request.metadata[AGENT_INSTRUCTIONS_METADATA_KEY]
+        .as_str()
+        .unwrap();
+    assert!(frame.contains("Search returns documents."));
+    assert!(frame.contains(&format!("Mission ID: {}", mission.id)));
+    assert!(frame.contains("spark mission close"));
+    assert!(!frame.contains("approve"));
+    // The mission's thread stays out of the project's Threads list.
+    let threads = WorkspaceConversationService::new(harness.settings.clone())
+        .list_project_conversations(&harness.project)
+        .unwrap();
+    assert!(threads
+        .iter()
+        .all(|thread| thread.conversation_id != mission.id));
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
+    let turns = harness.transcript(&mission.id)["turns"].clone();
+    assert_eq!(turns.as_array().unwrap().len(), 2);
+    assert_eq!(turns[1]["status"], "complete", "{turns}");
+    assert!(!turns.to_string().contains("Spark control surface"));
+}
+
+#[test]
+fn events_during_a_turn_are_delivered_as_one_next_turn() {
+    let harness = Harness::new();
+    harness.agent_requestable("work/ok.yaml", simple_flow());
+    harness.agent_requestable("work/fail.yaml", &tool_flow("exit 1"));
+    let mission = harness.create(json!({"title": "Ship", "description": "Deliver"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    // The agent launches two runs during its first turn.
+    let first = harness
+        .launch(&mission.id, "work/ok.yaml", "Build it")
+        .unwrap();
+    let second = harness
+        .launch(&mission.id, "work/fail.yaml", "Break it")
+        .unwrap();
+    let launched = harness.get(&mission.id);
+    let roster: Vec<_> = launched
         .runs
         .iter()
-        .map(|r| (r.label.as_str(), r.status.as_str()))
+        .map(|run| {
+            (
+                run.run_id.as_str(),
+                run.flow_name.as_str(),
+                run.summary.as_str(),
+            )
+        })
         .collect();
     assert_eq!(
         roster,
         [
-            ("reaction", "completed"),
-            ("first", "completed"),
-            ("second", "failed"),
-            ("follow-up", "completed"),
-            ("reaction", "completed"),
-            ("reaction", "completed"),
+            (first.as_str(), "work/ok.yaml", "Build it"),
+            (second.as_str(), "work/fail.yaml", "Break it")
         ]
     );
-    let events = service.events(project, &id, 0).unwrap();
-    for run in &mission.runs {
-        let terminal = events
-            .iter()
-            .filter(|e| e.source == run.run_id && e.kind.starts_with("run."))
-            .count();
-        assert_eq!(terminal, 1, "{}", run.label);
-    }
-    assert_eq!(mission.cursor, events.last().unwrap().seq);
-    let notes: Vec<_> = mission
-        .activity
-        .iter()
-        .map(|a| a["note"].as_str().unwrap())
-        .collect();
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    let paths = store.find_run_root(&first).unwrap().unwrap();
+    let context = store
+        .read_run_record(&paths)
+        .unwrap()
+        .unwrap()
+        .launch_context;
     assert_eq!(
-        notes,
-        [
-            "",
-            "Started mission",
-            "Closed as done: Handled both outcomes"
-        ]
+        json!(context)["context.spark_mission"],
+        json!({"mission_id": mission.id})
+    );
+    harness.settle(&first);
+    harness.settle(&second);
+    // A typed message waits too: at most one turn is in flight.
+    harness
+        .missions
+        .post_event(
+            &harness.project,
+            &mission.id,
+            message("Prefer the smaller fix"),
+        )
+        .unwrap();
+    assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
+    harness.agent.release(2);
+    harness.wait_turns(2);
+    harness.wait_idle(&mission.id);
+    let prompts = harness.agent.prompts();
+    assert_eq!(prompts.len(), 2);
+    let lines: Vec<_> = prompts[1].split("\n\n").collect();
+    assert_eq!(lines.len(), 3, "{}", prompts[1]);
+    assert_eq!(
+        lines[0],
+        format!("Run {first} (work/ok.yaml, \"Build it\") ended completed.")
+    );
+    assert!(lines[1].starts_with(&format!(
+        "Run {second} (work/fail.yaml, \"Break it\") ended failed"
+    )));
+    assert_eq!(lines[2], "User: Prefer the smaller fix");
+    let mission = harness.get(&mission.id);
+    assert_eq!(mission.cursor, mission.event_seq);
+    assert_eq!(mission.status, MissionStatus::NeedsYou);
+    // The transcript shows both launches inline.
+    assert_eq!(
+        harness.transcript(&mission.id)["flow_launches"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
 }
 
 #[test]
-fn ordinary_run_request_requires_approval_and_launches_without_mission_integration() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.yaml", simple_flow());
-    seed_conversation(&settings, project, "conversation-task");
-    let missions = WorkspaceMissionService::new(settings.clone());
-    let mission = missions
-        .create(
-            project,
-            mutation(json!({"fields":{"title":"Approved work","stage":"ready"}})),
-        )
+fn launches_over_budget_or_outside_the_catalog_are_refused() {
+    let harness = Harness::new();
+    harness.agent_requestable("work/slow.yaml", &tool_flow("sleep 30"));
+    write_flow(&harness.settings, "work/private.yaml", simple_flow());
+    let mission = harness
+        .create(json!({"title": "Budgeted", "budget": {"concurrent_runs": 1, "total_runs": 2}}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
         .unwrap();
-    let conversations = WorkspaceConversationService::new(settings.clone());
-    let created = conversations
+    harness.wait_turns(1);
+    let refused = harness
+        .launch(&mission.id, "work/private.yaml", "Nope")
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("not agent-requestable"),
+        "{refused}"
+    );
+    harness
+        .launch(&mission.id, "work/slow.yaml", "One")
+        .unwrap();
+    let refused = harness
+        .launch(&mission.id, "work/slow.yaml", "Two")
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("concurrent_runs (1)"),
+        "{refused}"
+    );
+    assert_eq!(harness.get(&mission.id).runs.len(), 1);
+    let canceled = harness
+        .missions
+        .cancel(&harness.project, &mission.id)
+        .unwrap();
+    harness.agent.release(1);
+    assert_eq!(canceled.status, MissionStatus::Closed);
+    let refused = harness
+        .launch(&mission.id, "work/slow.yaml", "Three")
+        .unwrap_err();
+    assert!(refused.to_string().contains("closed"), "{refused}");
+}
+
+#[test]
+fn cancel_stops_owned_runs_and_closes_the_mission() {
+    let harness = Harness::new();
+    harness.agent_requestable("work/slow.yaml", &tool_flow("sleep 3"));
+    // The canceled run finishes once its short command exits.
+    let mission = harness.create(json!({"title": "Stop"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    let run = harness
+        .launch(&mission.id, "work/slow.yaml", "Long")
+        .unwrap();
+    harness.agent.release(1);
+    let canceled = harness
+        .missions
+        .cancel(&harness.project, &mission.id)
+        .unwrap();
+    let closed = canceled.closed.as_ref().unwrap();
+    assert_eq!(
+        (json!(closed.status), closed.actor.as_str()),
+        (json!("canceled"), "human")
+    );
+    assert_eq!(wait_terminal(&harness.settings, &run), "canceled");
+    harness.missions.deliver_run_events(&run).unwrap();
+    let mission = harness.get(&mission.id);
+    assert_eq!(mission.runs[0].status, "canceled");
+    assert_eq!(mission.status, MissionStatus::Closed);
+    // Nothing more is delivered once closed.
+    assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn the_agent_closes_the_mission_and_the_close_joins_the_transcript() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Close me"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    let close = serde_json::from_value(
+        json!({"status": "done", "reason": "Objective met", "actor": "assistant"}),
+    )
+    .unwrap();
+    let closed = harness
+        .missions
+        .close(&harness.project, &mission.id, close)
+        .unwrap();
+    harness.agent.release(1);
+    let record = closed.closed.as_ref().unwrap();
+    assert_eq!(
+        (record.reason.as_str(), record.actor.as_str()),
+        ("Objective met", "assistant")
+    );
+    assert_eq!(closed.status, MissionStatus::Closed);
+    wait_for("the turn to finish", || {
+        !harness.transcript(&mission.id)["turns"]
+            .to_string()
+            .contains("\"pending\"")
+    });
+    let turns = harness.transcript(&mission.id)["turns"].clone();
+    let notice = turns
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|turn| turn["kind"] == "mission_notice")
+        .unwrap();
+    assert_eq!(notice["content"], "Closed as done: Objective met");
+}
+
+#[test]
+fn derived_status_covers_each_group_including_a_run_waiting_on_a_gate() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Status"}));
+    assert_eq!(mission.status, MissionStatus::Draft);
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
+    owned_run(
+        &harness.settings,
+        &harness.project,
+        &mission.id,
+        "run-gate",
+        "running",
+    );
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    let paths = store.find_run_root("run-gate").unwrap().unwrap();
+    let mut record = store.read_run_record(&paths).unwrap().unwrap();
+    record.status = "waiting".into();
+    store.write_run_record(&paths, &record).unwrap();
+    harness.missions.deliver_run_events("run-gate").unwrap();
+    harness.wait_turns(2);
+    // A gate needs a human even while the agent is working on its news.
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
+    assert!(harness.agent.prompts()[1].contains("is waiting on a human gate"));
+    let attention = WorkspaceConversationService::new(harness.settings.clone())
+        .pending_attention()
+        .unwrap();
+    assert!(attention
+        .iter()
+        .any(|item| item["kind"] == "mission" && item["id"] == json!(mission.id)));
+    harness.agent.release(1);
+    let closed = harness
+        .missions
+        .cancel(&harness.project, &mission.id)
+        .unwrap();
+    assert_eq!(closed.status, MissionStatus::Closed);
+}
+
+#[test]
+fn recovery_fails_stale_turns_and_delivers_missing_terminal_events() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Recover"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    // A run failed before a restart while its result was still pending.
+    owned_run(
+        &harness.settings,
+        &harness.project,
+        &mission.id,
+        "run-lost",
+        "failed",
+    );
+    assert!(harness
+        .missions
+        .deliver_run_events("run-lost")
+        .unwrap()
+        .is_none());
+    harness.agent.release(1);
+    let recovered = harness.missions.recover().unwrap();
+    assert_eq!(recovered.len(), 1);
+    harness.wait_turns(2);
+    assert_eq!(
+        harness.agent.prompts()[1],
+        "Run run-lost (work/seeded.yaml, \"Seeded work\") ended failed."
+    );
+    harness.wait_idle(&mission.id);
+    let mission = harness.get(&mission.id);
+    assert_eq!(mission.runs[0].status, "failed");
+    assert_eq!(mission.status, MissionStatus::NeedsYou);
+    // A second recovery finds nothing new to deliver.
+    harness.missions.recover().unwrap();
+    assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn missions_stay_inside_their_project() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Scoped"}));
+    let other = harness._temp.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    let other = other.to_str().unwrap();
+    assert!(harness.missions.get(other, &mission.id).is_err());
+    assert!(harness
+        .missions
+        .get(&harness.project, "../outside")
+        .is_err());
+    assert!(harness.missions.list(other).unwrap().is_empty());
+    assert!(harness
+        .missions
+        .post_event(other, &mission.id, message("hi"))
+        .is_err());
+    assert!(harness.missions.start(other, &mission.id).is_err());
+    // Only typed messages may be posted.
+    let spoofed = serde_json::from_value(json!({"kind": "run.completed", "payload": {}})).unwrap();
+    assert!(harness
+        .missions
+        .post_event(&harness.project, &mission.id, spoofed)
+        .is_err());
+}
+
+#[test]
+fn ordinary_conversations_launch_directly_without_mission_integration() {
+    let harness = Harness::new();
+    harness.agent_requestable("ops/review.yaml", simple_flow());
+    seed_conversation(&harness.settings, &harness.project, "conversation-task");
+    let mission = harness.create(json!({"title": "Unrelated"}));
+    let response = WorkspaceConversationService::new(harness.settings.clone())
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
                 flow_name: "ops/review.yaml".into(),
-                summary: "Execute approved work".into(),
+                summary: "Execute work".into(),
                 execution_profile_id: Some("native".into()),
                 ..Default::default()
             },
         )
         .unwrap();
-    let snapshot = conversations
-        .review_flow_run_request(
-            "conversation-task",
-            &created.flow_run_request_id,
-            FlowRunRequestReviewRequest {
-                project_path: project.into(),
-                disposition: "approved".into(),
-                message: "Approved".into(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    let artifact = &snapshot["flow_run_requests"][0];
-    assert_eq!(artifact["status"], "launched", "{artifact}");
-    let run_id = artifact["run_id"].as_str().unwrap();
-    wait_terminal(&settings, run_id);
-    assert!(missions.deliver_run_events(run_id).unwrap().is_none());
-    let unchanged = missions.get(project, &mission.id).unwrap();
-    assert_eq!(unchanged.revision, 1);
-    assert_eq!(unchanged.fields.stage, Stage::Ready);
+    let run_id = response["run_id"].as_str().unwrap();
+    assert_eq!(response["conversation_id"], "conversation-task");
+    wait_terminal(&harness.settings, run_id);
+    assert!(harness
+        .missions
+        .deliver_run_events(run_id)
+        .unwrap()
+        .is_none());
+    assert_eq!(harness.get(&mission.id).revision, 1);
 }
 
-#[test]
-fn mission_listing_orders_creation_then_id_without_consulting_run_storage() {
-    let temp = tempfile::tempdir().unwrap();
-    let settings = settings(temp.path());
-    let project = project(&settings);
-    let project = project.as_str();
-    let service = WorkspaceMissionService::new(settings.clone());
-    let mut mission = service
-        .create(project, mutation(json!({"fields":{"title":"Seed"}})))
-        .unwrap();
-    let root = spark_storage::ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths(project)
-        .unwrap()
-        .root;
-    let repo = spark_storage::workspace_missions::MissionRepository::new(&root);
-    for (id, at) in [
-        ("mission-z", "2026-01-01"),
-        ("mission-b", "2026-01-02"),
-        ("mission-a", "2026-01-02"),
-    ] {
-        mission.id = id.into();
-        mission.created_at = at.into();
-        repo.transact::<WorkspaceError>(id, |_| Ok(serde_json::to_value(&mission).unwrap()))
-            .unwrap();
+/// A final answer as a codex turn reports it.
+fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
+    static ITEMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let item = ITEMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut event = spark_common::events::TurnStreamEvent::content_delta(
+        spark_common::events::TurnStreamChannel::Assistant,
+        text,
+    );
+    event.kind = spark_common::events::TurnStreamEventKind::ContentCompleted;
+    event.phase = Some("final_answer".into());
+    event.source.app_turn_id = Some(format!("app-turn-{item}"));
+    event.source.item_id = Some(format!("item-{item}"));
+    spark_agent_adapter::AgentTurnOutput {
+        events: vec![event],
+        final_assistant_text: Some(text.into()),
+        ..Default::default()
     }
-    let store = attractor_runtime::RunStore::for_settings(&settings);
-    let paths = store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record: attractor_core::RunRecord::new("run-unreadable", project),
-            ..Default::default()
-        })
-        .unwrap();
-    // Corrupt run metadata must have no bearing on mission reads.
-    std::fs::write(paths.run_json(), "invalid json").unwrap();
-    let ids: Vec<_> = service
-        .list(project)
-        .unwrap()
-        .into_iter()
-        .map(|mission| mission.id)
-        .collect();
-    assert_eq!(&ids[..3], &["mission-z", "mission-a", "mission-b"]);
 }

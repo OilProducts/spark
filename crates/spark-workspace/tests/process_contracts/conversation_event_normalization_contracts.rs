@@ -497,13 +497,7 @@ fn start_turn_prepares_agent_request_with_persisted_history_and_selectors() {
     let request = &prepared.agent_turn_request;
     assert_eq!(request.conversation_id, prepared.conversation_id);
     assert_eq!(request.project_path, prepared.project_path);
-    assert!(
-        request
-            .prompt
-            .ends_with("Latest user message:\nSecond question"),
-        "{}",
-        request.prompt
-    );
+    assert_eq!(request.prompt, "Second question");
     assert_eq!(request.provider.as_deref(), Some("openrouter"));
     assert_eq!(request.model.as_deref(), Some("openrouter/model"));
     assert_eq!(request.llm_profile.as_deref(), None);
@@ -664,13 +658,7 @@ fn execute_turn_runs_injected_backend_and_returns_ingested_snapshot() {
     let request = &requests[1];
     assert_eq!(request.conversation_id, "conversation-execute");
     assert_eq!(request.project_path, "/projects/execute");
-    assert!(
-        request
-            .prompt
-            .ends_with("Latest user message:\nSecond question"),
-        "{}",
-        request.prompt
-    );
+    assert_eq!(request.prompt, "Second question");
     assert_eq!(request.provider.as_deref(), Some("openrouter"));
     assert_eq!(request.model.as_deref(), Some("openrouter/model"));
     assert_eq!(request.llm_profile.as_deref(), None);
@@ -833,13 +821,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         "conversation-execute-stream-failure"
     );
     assert_eq!(stream_request.project_path, "/projects/execute-errors");
-    assert!(
-        stream_request
-            .prompt
-            .ends_with("Latest user message:\nRun the failing stream"),
-        "{}",
-        stream_request.prompt
-    );
+    assert_eq!(stream_request.prompt, "Run the failing stream");
     let stream_assistant_turn_id = stream_request.metadata["spark.workspace.assistant_turn_id"]
         .as_str()
         .expect("assistant turn id")
@@ -930,13 +912,7 @@ fn execute_turn_persists_backend_error_outputs_with_failed_shapes() {
         resume_request.conversation_id,
         "conversation-execute-resume-failure"
     );
-    assert!(
-        resume_request
-            .prompt
-            .ends_with("Latest user message:\nResume the previous thread"),
-        "{}",
-        resume_request.prompt
-    );
+    assert_eq!(resume_request.prompt, "Resume the previous thread");
     let resume_assistant_turn_id = resume_request.metadata["spark.workspace.assistant_turn_id"]
         .as_str()
         .expect("assistant turn id")

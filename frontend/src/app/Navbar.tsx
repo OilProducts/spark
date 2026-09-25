@@ -51,7 +51,7 @@ const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     run_gate: 'Run waiting for input',
     flow_run_request: 'Flow run request',
     proposed_plan: 'Plan pending review',
-    mission: 'Mission needs attention',
+    mission: 'Mission needs you',
 }
 
 function AttentionBell() {

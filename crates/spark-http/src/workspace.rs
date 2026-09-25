@@ -19,14 +19,13 @@ use spark_storage::{read_trigger_definition, DeletedProjectRecord, ProjectRecord
 use spark_workspace::conversations::{
     ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
-    FlowRunRequestCreateResponse, FlowRunRequestReviewRequest, ProposedPlanReviewRequest,
-    RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceConversationService,
+    FlowRunRequestReviewRequest, ProposedPlanReviewRequest, RunContinueRequest, RunLaunchRequest,
+    RunRetryRequest, WorkspaceConversationService,
 };
 use spark_workspace::live::{
     conversation_envelopes_after, conversation_event_envelope, conversation_snapshot_envelope,
     envelope_matches_query, initial_live_envelopes, lagged_resync_envelopes, latest_run_sequence,
-    mission_upsert_envelope, trigger_delete_envelope, trigger_upsert_envelope, validate_live_query,
-    RawLiveQuery,
+    trigger_delete_envelope, trigger_upsert_envelope, validate_live_query, RawLiveQuery,
 };
 use spark_workspace::missions::{MissionMutation, MissionRecord};
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
@@ -73,10 +72,7 @@ pub fn router() -> Router<HttpAppState> {
             "/missions/{mission_id}",
             get(get_mission).patch(update_mission),
         )
-        .route(
-            "/missions/{mission_id}/events",
-            get(list_mission_events).post(post_mission_event),
-        )
+        .route("/missions/{mission_id}/events", post(post_mission_event))
         .route("/missions/{mission_id}/{control}", post(control_mission))
         .route("/projects", get(list_projects).delete(delete_project))
         .route("/projects/register", post(register_project))
@@ -507,22 +503,18 @@ async fn create_flow_run_request_by_handle(
     State(live_hub): State<Arc<WorkspaceLiveHub>>,
     AxumPath(conversation_handle): AxumPath<String>,
     payload: Result<Json<FlowRunRequestCreateByHandleRequest>, JsonRejection>,
-) -> ApiResult<FlowRunRequestCreateResponse> {
+) -> ApiResult<Value> {
     let request = json_payload(payload)?;
-    let response = conversation_service(
+    let payload = conversation_service(
         &settings,
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
     )
     .create_flow_run_request_by_handle(&conversation_handle, request)?;
-    publish_conversation_snapshot(
-        &settings,
-        &live_hub,
-        &response.conversation_id,
-        &response.project_path,
-    );
-    Ok(Json(response))
+    publish_optional_conversation_snapshot_from_value(&settings, &live_hub, &payload);
+    publish_run_ids_from_value(&settings, &live_hub, &payload);
+    Ok(Json(payload))
 }
 
 async fn review_flow_run_request(
@@ -1436,26 +1428,17 @@ fn raw_flow_response(
     Ok(response)
 }
 
-fn mission_service(
-    settings: &SparkSettings,
-    run_event_observer: &RunEventObserverHandle,
-) -> spark_workspace::missions::WorkspaceMissionService {
-    let service = spark_workspace::missions::WorkspaceMissionService::new(settings.clone());
-    match &run_event_observer.0 {
-        Some(observer) => service.with_run_event_observer(observer.clone()),
-        None => service,
-    }
+fn mission_service(settings: &SparkSettings) -> spark_workspace::missions::WorkspaceMissionService {
+    spark_workspace::missions::WorkspaceMissionService::new(settings.clone())
 }
 
-/// Runs a blocking mission operation and publishes the resulting record.
+/// Runs a blocking mission operation; the service publishes the result.
 async fn mission_call(
-    live_hub: Arc<WorkspaceLiveHub>,
     work: impl FnOnce() -> spark_workspace::WorkspaceResult<MissionRecord> + Send + 'static,
 ) -> ApiResult<MissionRecord> {
     let mission = tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| WorkspaceError::Internal(format!("mission task failed: {error}")))??;
-    live_hub.publish(mission_upsert_envelope(&mission));
     Ok(Json(mission))
 }
 
@@ -1464,10 +1447,7 @@ async fn list_missions(
     payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    Ok(Json(
-        spark_workspace::missions::WorkspaceMissionService::new((*settings).clone())
-            .board(&query.project_path)?,
-    ))
+    Ok(Json(mission_service(&settings).board(&query.project_path)?))
 }
 async fn get_mission(
     State(settings): State<Arc<SparkSettings>>,
@@ -1476,94 +1456,55 @@ async fn get_mission(
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(payload)?;
     Ok(Json(
-        spark_workspace::missions::WorkspaceMissionService::new((*settings).clone())
-            .get(&query.project_path, &id)?,
+        mission_service(&settings).get(&query.project_path, &id)?,
     ))
 }
 async fn create_mission(
     State(settings): State<Arc<SparkSettings>>,
-    State(live_hub): State<Arc<WorkspaceLiveHub>>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     payload: Result<Json<MissionMutation>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
     let mutation = json_payload(payload)?;
-    mission_call(live_hub, move || {
-        spark_workspace::missions::WorkspaceMissionService::new((*settings).clone())
-            .create(&query.project_path, mutation)
-    })
-    .await
+    mission_call(move || mission_service(&settings).create(&query.project_path, mutation)).await
 }
 async fn update_mission(
     State(settings): State<Arc<SparkSettings>>,
-    State(live_hub): State<Arc<WorkspaceLiveHub>>,
-    State(run_event_observer): State<RunEventObserverHandle>,
     AxumPath(id): AxumPath<String>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     payload: Result<Json<MissionMutation>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
     let mutation = json_payload(payload)?;
-    mission_call(live_hub, move || {
-        mission_service(&settings, &run_event_observer).update(&query.project_path, &id, mutation)
-    })
-    .await
-}
-
-#[derive(Debug, Deserialize)]
-struct MissionEventsQuery {
-    project_path: String,
-    #[serde(default)]
-    after: u64,
-}
-async fn list_mission_events(
-    State(settings): State<Arc<SparkSettings>>,
-    AxumPath(id): AxumPath<String>,
-    payload: Result<Query<MissionEventsQuery>, QueryRejection>,
-) -> ApiResult<Value> {
-    let query = query_payload(payload)?;
-    let events = spark_workspace::missions::WorkspaceMissionService::new((*settings).clone())
-        .events(&query.project_path, &id, query.after)?;
-    Ok(Json(json!({ "events": events })))
+    mission_call(move || mission_service(&settings).update(&query.project_path, &id, mutation))
+        .await
 }
 async fn post_mission_event(
     State(settings): State<Arc<SparkSettings>>,
-    State(live_hub): State<Arc<WorkspaceLiveHub>>,
-    State(run_event_observer): State<RunEventObserverHandle>,
     AxumPath(id): AxumPath<String>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     payload: Result<Json<spark_workspace::missions::MissionEventPost>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
     let post = json_payload(payload)?;
-    mission_call(live_hub, move || {
-        mission_service(&settings, &run_event_observer).post_event(&query.project_path, &id, post)
-    })
-    .await
+    mission_call(move || mission_service(&settings).post_event(&query.project_path, &id, post))
+        .await
 }
 async fn control_mission(
     State(settings): State<Arc<SparkSettings>>,
-    State(live_hub): State<Arc<WorkspaceLiveHub>>,
-    State(run_event_observer): State<RunEventObserverHandle>,
     AxumPath((id, control)): AxumPath<(String, String)>,
     query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
     body: Bytes,
 ) -> ApiResult<MissionRecord> {
     let query = query_payload(query)?;
-    let close: spark_workspace::missions::MissionCloseRequest = if body.is_empty() {
-        Default::default()
-    } else {
-        serde_json::from_slice(&body).map_err(|error| {
-            WorkspaceError::Validation(format!("Invalid close request: {error}"))
-        })?
-    };
-    mission_call(live_hub, move || {
-        let service = mission_service(&settings, &run_event_observer);
+    let body: &[u8] = if body.is_empty() { b"{}" } else { &body };
+    let close: spark_workspace::missions::MissionCloseRequest = serde_json::from_slice(body)
+        .map_err(|error| WorkspaceError::Validation(format!("Invalid close request: {error}")))?;
+    mission_call(move || {
+        let service = mission_service(&settings);
         let project = query.project_path.as_str();
         match control.as_str() {
             "start" => service.start(project, &id),
-            "pause" => service.pause(project, &id),
-            "resume" => service.resume(project, &id),
             "cancel" => service.cancel(project, &id),
             "close" => service.close(project, &id, close),
             _ => Err(WorkspaceError::NotFound("Unknown mission control".into())),

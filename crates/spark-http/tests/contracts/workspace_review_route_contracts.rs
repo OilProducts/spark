@@ -14,13 +14,20 @@ use unified_llm_adapter::{
     Request as LlmRequest, Response, StreamEvents, Usage,
 };
 
+fn agent_requestable(settings: &SparkSettings, flow: &str, content: &str) {
+    write_flow(settings, flow, content);
+    spark_storage::set_flow_launch_policy(&settings.config_dir, flow, "agent_requestable")
+        .expect("launch policy");
+}
+
 #[tokio::test]
-async fn review_routes_create_by_handle_and_review_flow_run_requests() {
+async fn run_request_route_launches_by_handle_and_refuses_bad_requests() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/review.yaml", simple_flow());
+    agent_requestable(&settings, "ops/review.yaml", simple_flow());
+    write_flow(&settings, "ops/private.yaml", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -40,62 +47,27 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
         })),
     )
     .await;
-    assert_eq!(created.0, StatusCode::OK);
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
     assert_eq!(created.1["ok"], true);
     assert_eq!(created.1["conversation_id"], "conversation-http-review");
-    let request_id = created.1["flow_run_request_id"]
+    assert!(created.1["run_id"]
         .as_str()
-        .expect("request id");
-    let project_paths = ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths(project_path.to_str().expect("utf-8"))
-        .expect("paths");
-    let artifact_file = project_paths
-        .conversations_dir
-        .join("conversation-http-review/artifacts/flow-run-requests.json");
-    assert!(artifact_file.exists());
-    // The legacy project-level sidecar is absorbed by migration.
-    assert!(!settings
-        .projects_dir
-        .join(&project_paths.project_id)
-        .join("flow-run-requests/conversation-http-review.json")
-        .exists());
+        .expect("run id")
+        .starts_with("run-"));
+    assert!(created.1["flow_launch_id"].as_str().is_some());
 
-    let duplicate = request_json(
+    let private = request_json(
         app.clone(),
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
-        Some(json!({
-            "flow_name": "ops/review.yaml",
-            "summary": "Run implementation.",
-            "goal": "Run the tiny flow.",
-            "launch_context": {"context.review": "approved"}
-        })),
+        Some(json!({"flow_name": "ops/private.yaml", "summary": "Run"})),
     )
     .await;
-    assert_eq!(duplicate.0, StatusCode::CONFLICT);
-
-    let reviewed = request_json(
-        app.clone(),
-        "POST",
-        &format!(
-            "/workspace/api/conversations/conversation-http-review/flow-run-requests/{request_id}/review"
-        ),
-        Some(json!({
-            "project_path": project_path.to_string_lossy(),
-            "disposition": "approved",
-            "message": "Approved."
-        })),
-    )
-    .await;
-    assert_eq!(reviewed.0, StatusCode::OK);
-    let request = reviewed.1["flow_run_requests"]
-        .as_array()
-        .expect("requests")
-        .iter()
-        .find(|entry| entry["id"] == request_id)
-        .expect("request");
-    assert_eq!(request["status"], "launched");
-    assert_eq!(request["review_message"], "Approved.");
+    assert_eq!(private.0, StatusCode::BAD_REQUEST);
+    assert!(private.1["detail"]
+        .as_str()
+        .expect("detail")
+        .contains("not agent-requestable"));
 
     let unknown = request_json(
         app.clone(),
@@ -136,12 +108,12 @@ async fn review_routes_create_by_handle_and_review_flow_run_requests() {
 }
 
 #[tokio::test]
-async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_client() {
+async fn run_request_executes_codergen_through_injected_rust_llm_client() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/review-rust-boundary.yaml", codergen_flow());
+    agent_requestable(&settings, "ops/review-rust-boundary.yaml", codergen_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -162,7 +134,7 @@ async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_cli
     let app = build_app_with_rust_llm_client(settings, client);
 
     let created = request_json(
-        app.clone(),
+        app,
         "POST",
         "/workspace/api/conversations/by-handle/amber-anchor/flow-run-requests",
         Some(json!({
@@ -175,35 +147,10 @@ async fn flow_run_request_review_executes_codergen_through_injected_rust_llm_cli
         })),
     )
     .await;
-    assert_eq!(created.0, StatusCode::OK);
-    let request_id = created.1["flow_run_request_id"]
-        .as_str()
-        .expect("request id");
-
-    let reviewed = request_json(
-        app,
-        "POST",
-        &format!(
-            "/workspace/api/conversations/conversation-http-review-boundary/flow-run-requests/{request_id}/review"
-        ),
-        Some(json!({
-            "project_path": project_path.to_string_lossy(),
-            "disposition": "approved",
-            "message": "Approved."
-        })),
-    )
-    .await;
-
-    assert_eq!(reviewed.0, StatusCode::OK);
-    let request_record = reviewed.1["flow_run_requests"]
-        .as_array()
-        .expect("requests")
-        .iter()
-        .find(|entry| entry["id"] == request_id)
-        .expect("request");
-    assert_eq!(request_record["status"], "launched");
-    // The review response returns at run start; the codergen invocation
-    // happens on the detached execution thread.
+    assert_eq!(created.0, StatusCode::OK, "{}", created.1);
+    assert!(created.1["run_id"].as_str().is_some());
+    // The launch returns at run start; the codergen invocation happens on
+    // the detached execution thread.
     wait_for_codergen_calls(&calls, 1);
     let requests = calls.lock().expect("calls");
     assert_eq!(requests.len(), 1);

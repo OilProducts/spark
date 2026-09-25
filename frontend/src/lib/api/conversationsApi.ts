@@ -15,7 +15,7 @@ export interface ConversationTurnResponse {
     content: string
     timestamp: string
     status: 'pending' | 'streaming' | 'complete' | 'failed'
-    kind: 'message' | 'mode_change' | 'flow_run_request' | 'flow_launch'
+    kind: 'message' | 'mode_change' | 'mission_notice' | 'flow_run_request' | 'flow_launch'
     artifact_id?: string | null
     parent_turn_id?: string | null
     error?: string | null
@@ -249,6 +249,7 @@ function parseConversationTurnResponse(value: unknown): ConversationTurnResponse
     const kind = record.kind === 'flow_run_request'
         || record.kind === 'flow_launch'
         || record.kind === 'mode_change'
+        || record.kind === 'mission_notice'
         || record.kind === 'message'
         ? record.kind
         : 'message'

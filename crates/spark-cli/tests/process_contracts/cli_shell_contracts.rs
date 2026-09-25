@@ -1635,7 +1635,7 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
             args.extend(["--json", "-"]);
         }
         let payload = if command == "update" {
-            r#"{"revision":2,"fields":{"stage":"done","archived":true}}"#
+            r#"{"revision":2,"fields":{"archived":true}}"#
         } else {
             r#"{"fields":{"title":"Title only"}}"#
         };
@@ -1685,12 +1685,50 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
         send.body.unwrap(),
         serde_json::json!({"kind":"human.message","source":"assistant","payload":{"message":"Prefer small diffs"}})
     );
-    let events = scoped("events", &["--after", "3"]);
-    assert_eq!(events.method, HttpMethod::Get);
+    let close = scoped("close", &["--status", "done", "--reason", "Shipped"]);
+    assert_eq!(close.method, HttpMethod::Post);
     assert_eq!(
-        events.path,
-        "/workspace/api/missions/mission-1/events?project_path=%2Fp&after=3"
+        close.path,
+        "/workspace/api/missions/mission-1/close?project_path=%2Fp"
     );
+    assert_eq!(
+        close.body.unwrap(),
+        serde_json::json!({"status":"done","reason":"Shipped","actor":"assistant"})
+    );
+    for invalid in [
+        &["--status", "finished", "--reason", "x"][..],
+        &["--status", "done"][..],
+    ] {
+        let mut args = vec![
+            "spark",
+            "mission",
+            "close",
+            "--project",
+            "/p",
+            "--id",
+            "mission-1",
+            "--base-url",
+            "http://localhost:8000",
+        ];
+        args.extend_from_slice(invalid);
+        assert!(request_plan_with_args_env_and_stdin(args, &env, "").is_err());
+    }
+    for removed in ["events", "pause", "resume"] {
+        assert!(request_plan_with_args_env_and_stdin(
+            [
+                "spark",
+                "mission",
+                removed,
+                "--project",
+                "/p",
+                "--id",
+                "mission-1"
+            ],
+            &env,
+            ""
+        )
+        .is_err());
+    }
     assert!(request_plan_with_args_env_and_stdin(
         ["spark", "task", "list", "--project", "/p"],
         &env,

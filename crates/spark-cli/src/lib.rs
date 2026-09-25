@@ -1309,7 +1309,7 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             _ => Err(usage_error("Unknown command")),
         },
         "mission" => match domain_matches.subcommand_name() {
-            Some("list" | "get" | "create" | "update" | "start" | "send" | "events") => {
+            Some("list" | "get" | "create" | "update" | "start" | "send" | "close") => {
                 Ok(CommandPath {
                     domain: CommandDomain::Mission,
                 })
@@ -1384,7 +1384,7 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("update"))
                 .subcommand(clap_command_leaf("start"))
                 .subcommand(clap_command_leaf("send"))
-                .subcommand(clap_command_leaf("events")),
+                .subcommand(clap_command_leaf("close")),
         )
         .subcommand(
             Command::new("trigger")
@@ -2494,7 +2494,8 @@ fn build_mission_plan(
             "--id",
             "--json",
             "--message",
-            "--after",
+            "--status",
+            "--reason",
             "--base-url",
         ],
         &[],
@@ -2509,16 +2510,14 @@ fn build_mission_plan(
     }
     match command {
         "start" => path.push_str("/start"),
-        "send" | "events" => path.push_str("/events"),
+        "close" => path.push_str("/close"),
+        "send" => path.push_str("/events"),
         _ => {}
     }
     path.push_str(&format!(
         "?project_path={}",
         percent_encode_component(&project)
     ));
-    if let Some(after) = options.value("--after").filter(|_| command == "events") {
-        path.push_str(&format!("&after={}", percent_encode_component(after)));
-    }
     let body = match command {
         "create" | "update" => {
             require_values(&options, &["--json"])?;
@@ -2539,13 +2538,23 @@ fn build_mission_plan(
                 json!({"kind": "human.message", "source": "assistant", "payload": {"message": message}}),
             )
         }
+        "close" => {
+            let status = non_empty_value(&options, "--status", "Status is required")?;
+            if !matches!(status.as_str(), "done" | "failed" | "canceled") {
+                return Err(usage_error(
+                    "argument --status: choose done, failed, or canceled",
+                ));
+            }
+            let reason = non_empty_value(&options, "--reason", "Reason is required")?;
+            Some(json!({"status": status, "reason": reason, "actor": "assistant"}))
+        }
         "start" => Some(json!({})),
         _ => None,
     };
     Ok(ApiRequestPlan {
         method: match command {
-            "list" | "get" | "events" => HttpMethod::Get,
-            "create" | "start" | "send" => HttpMethod::Post,
+            "list" | "get" => HttpMethod::Get,
+            "create" | "start" | "send" | "close" => HttpMethod::Post,
             "update" => HttpMethod::Patch,
             _ => return Err(usage_error("Unknown command")),
         },

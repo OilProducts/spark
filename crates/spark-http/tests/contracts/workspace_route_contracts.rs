@@ -361,27 +361,239 @@ fn settings(root: &Path) -> SparkSettings {
     }
 }
 
-#[tokio::test]
-async fn mission_routes_enforce_records_revisions_inbox_and_controls() {
+/// A mission agent scripted over the real HTTP routes: its first turn launches
+/// two flows, and once both runs have reported back it closes the mission. It
+/// reads its handle, mission, and project from the pinned frame, as an agent
+/// would.
+struct ScriptedMissionAgent {
+    app: std::sync::OnceLock<axum::Router>,
+    runtime: tokio::runtime::Handle,
+    prompts: std::sync::Mutex<Vec<String>>,
+}
+impl ScriptedMissionAgent {
+    fn call(&self, method: &str, uri: &str, body: Value) -> (StatusCode, Value, String) {
+        let app = self.app.get().expect("app").clone();
+        self.runtime
+            .block_on(request_json(app, method, uri, Some(body)))
+    }
+}
+impl spark_agent_adapter::AgentTurnBackend for ScriptedMissionAgent {
+    fn run_turn(
+        &self,
+        request: spark_agent_adapter::AgentTurnRequest,
+    ) -> Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError> {
+        let frame = request.metadata[spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY]
+            .as_str()
+            .expect("pinned frame")
+            .to_string();
+        let field = |label: &str| {
+            frame
+                .lines()
+                .find_map(|line| line.strip_prefix(label))
+                .expect(label)
+                .to_string()
+        };
+        let (handle, mission, project) = (
+            field("Conversation handle: "),
+            field("Mission ID: "),
+            field("Project path: "),
+        );
+        let mut prompts = self.prompts.lock().unwrap();
+        prompts.push(request.prompt.clone());
+        let reported = prompts
+            .iter()
+            .map(|prompt| prompt.matches("Run run-").count())
+            .sum::<usize>();
+        drop(prompts);
+        let reply = if request.prompt.starts_with("Objective:") {
+            for (flow, summary) in [("work/ok.yaml", "Build it"), ("work/ok.yaml", "Test it")] {
+                let launched = self.call(
+                    "POST",
+                    &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
+                    json!({"flow_name": flow, "summary": summary}),
+                );
+                assert_eq!(launched.0, StatusCode::OK, "{}", launched.1);
+            }
+            "Launched both runs."
+        } else if reported == 2 {
+            let closed = self.call(
+                "POST",
+                &format!("/workspace/api/missions/{mission}/close?project_path={project}"),
+                json!({"status": "done", "reason": "Both runs completed", "actor": "assistant"}),
+            );
+            assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
+            "Closed the mission."
+        } else {
+            "Waiting for the other run."
+        };
+        Ok(final_answer(reply))
+    }
+}
+
+struct QuietAgent;
+impl spark_agent_adapter::AgentTurnBackend for QuietAgent {
+    fn run_turn(
+        &self,
+        _request: spark_agent_adapter::AgentTurnRequest,
+    ) -> Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError> {
+        Ok(final_answer("Understood."))
+    }
+}
+
+async fn wait_for_mission(app: &axum::Router, uri: &str, status: &str) -> Value {
+    for _ in 0..600 {
+        let mission = request_json(app.clone(), "GET", uri, None).await.1;
+        if mission["status"] == status {
+            return mission;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("mission never reached {status}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let project = temp.path().join("missions-project");
     fs::create_dir_all(&project).unwrap();
-    let app = build_app(settings);
+    fs::create_dir_all(settings.flows_dir.join("work")).unwrap();
+    fs::write(
+        settings.flows_dir.join("work/ok.yaml"),
+        "schema_version: \"1\"\nid: ok\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
+    )
+    .unwrap();
+    spark_storage::set_flow_launch_policy(
+        &settings.config_dir,
+        "work/ok.yaml",
+        "agent_requestable",
+    )
+    .unwrap();
+    let agent = std::sync::Arc::new(ScriptedMissionAgent {
+        app: std::sync::OnceLock::new(),
+        runtime: tokio::runtime::Handle::current(),
+        prompts: Default::default(),
+    });
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
+    agent.app.set(app.clone()).ok().unwrap();
+    let project = project.display().to_string();
+    let created = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/missions?project_path={project}"),
+        Some(json!({"fields": {"title": "Ship", "description": "Build and test the change."}})),
+    )
+    .await;
+    let id = created.1["id"].as_str().unwrap().to_string();
+    let at = format!("/workspace/api/missions/{id}?project_path={project}");
+    let started = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/missions/{id}/start?project_path={project}"),
+        None,
+    )
+    .await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
+    let closed = wait_for_mission(&app, &at, "closed").await;
+    assert_eq!(closed["closed"]["actor"], "assistant");
+    assert_eq!(closed["closed"]["reason"], "Both runs completed");
+    let runs = closed["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().all(|run| run["status"] == "completed"));
+
+    // The agent closed the mission inside its turn; let that turn finish.
+    let mut transcript = Value::Null;
+    for _ in 0..600 {
+        transcript = request_json(
+            app.clone(),
+            "GET",
+            &format!("/workspace/api/conversations/{id}?project_path={project}"),
+            None,
+        )
+        .await
+        .1;
+        if !transcript["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| turn["status"] == "pending" || turn["status"] == "streaming")
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let launches: Vec<_> = transcript["flow_launches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|launch| launch["run_id"].clone())
+        .collect();
+    assert_eq!(
+        launches,
+        runs.iter()
+            .map(|run| run["run_id"].clone())
+            .collect::<Vec<_>>()
+    );
+    let turns = transcript["turns"].as_array().unwrap();
+    let user_text: String = turns
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect();
+    for run in runs {
+        let run_id = run["run_id"].as_str().unwrap();
+        assert_eq!(
+            user_text.matches(&format!("Run {run_id} ")).count(),
+            1,
+            "{user_text}"
+        );
+    }
+    assert!(turns
+        .iter()
+        .filter(|turn| turn["role"] == "assistant")
+        .all(|turn| turn["status"] == "complete"));
+    assert!(turns.iter().any(|turn| turn["kind"] == "mission_notice"
+        && turn["content"] == "Closed as done: Both runs completed"));
+    // Mission conversations stay out of the Threads list.
+    let threads = request_json(
+        app,
+        "GET",
+        &format!("/workspace/api/projects/conversations?project_path={project}"),
+        None,
+    )
+    .await;
+    assert_eq!(threads.0, StatusCode::OK);
+    assert!(!threads.1.to_string().contains(&id), "{}", threads.1);
+}
+
+#[tokio::test]
+async fn mission_routes_enforce_records_revisions_messages_and_controls() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("missions-project");
+    fs::create_dir_all(&project).unwrap();
+    let app =
+        spark_http::build_app_with_agent_turn_backend(settings, std::sync::Arc::new(QuietAgent));
     let list_uri = format!("/workspace/api/missions?project_path={}", project.display());
+    let refused = request_json(
+        app.clone(),
+        "POST",
+        &list_uri,
+        Some(json!({"fields":{"title":"Hooked","hooks":[]}})),
+    )
+    .await;
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", refused.1);
     let created = request_json(
         app.clone(),
         "POST",
         &list_uri,
         Some(
-            json!({"fields":{"title":"Quick capture","hooks":[{"on":"human.message","do":"ignore"}]},"actor":"assistant","note":"Captured issue"}),
+            json!({"fields":{"title":"Quick capture"},"actor":"assistant","note":"Captured issue"}),
         ),
     )
     .await;
     assert_eq!(created.0, StatusCode::OK);
-    assert_eq!(created.1["fields"]["stage"], "backlog");
-    assert_eq!(created.1["fields"]["reaction_flow"], "missions/react.yaml");
-    assert_eq!(created.1["execution"]["substate"], "idle");
+    assert_eq!(created.1["status"], "draft");
     assert_eq!(created.1["activity"][0]["actor"], "assistant");
     let id = created.1["id"].as_str().unwrap().to_string();
     assert!(id.starts_with("mission-"));
@@ -395,10 +607,11 @@ async fn mission_routes_enforce_records_revisions_inbox_and_controls() {
         app.clone(),
         "PATCH",
         &at(""),
-        Some(json!({"revision":1,"fields":{"stage":"ready"}})),
+        Some(json!({"revision":1,"fields":{"budget":{"total_runs":3}}})),
     )
     .await;
     assert_eq!(updated.0, StatusCode::OK);
+    assert_eq!(updated.1["fields"]["budget"]["total_runs"], 3);
     let stale = request_json(
         app.clone(),
         "PATCH",
@@ -407,7 +620,7 @@ async fn mission_routes_enforce_records_revisions_inbox_and_controls() {
     )
     .await;
     assert_eq!(stale.0, StatusCode::CONFLICT);
-    for key in ["state", "runs", "cursor", "priority", "conversations"] {
+    for key in ["stage", "state", "runs", "cursor", "hooks", "reaction_flow"] {
         let rejected = request_json(
             app.clone(),
             "PATCH",
@@ -425,42 +638,48 @@ async fn mission_routes_enforce_records_revisions_inbox_and_controls() {
     let message = json!({"id":"note-1","kind":"human.message","payload":{"message":"hello"}});
     let sent = request_json(app.clone(), "POST", &at("/events"), Some(message.clone())).await;
     assert_eq!(sent.0, StatusCode::OK, "{}", sent.1);
-    request_json(app.clone(), "POST", &at("/events"), Some(message)).await;
-    let events = request_json(app.clone(), "GET", &at("/events"), None).await;
-    assert_eq!(events.1["events"].as_array().unwrap().len(), 1);
-    assert_eq!(events.1["events"][0]["source"], "human");
-    assert_eq!(events.1["events"][0]["seq"], 1);
-    let bad = request_json(
-        app.clone(),
-        "POST",
-        &at("/events"),
-        Some(json!({"payload":{}})),
-    )
-    .await;
-    assert_eq!(bad.0, StatusCode::BAD_REQUEST);
+    assert_eq!(sent.1["event_seq"], 1);
+    let again = request_json(app.clone(), "POST", &at("/events"), Some(message)).await;
+    assert_eq!(again.1["event_seq"], 1);
+    for bad in [
+        json!({"payload":{}}),
+        json!({"kind":"run.completed","payload":{}}),
+    ] {
+        let bad = request_json(app.clone(), "POST", &at("/events"), Some(bad)).await;
+        assert_eq!(bad.0, StatusCode::BAD_REQUEST);
+    }
+    // The transcript replaced the inbox read route.
+    let read = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(at("/events"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.status(), StatusCode::METHOD_NOT_ALLOWED);
 
     let started = request_json(app.clone(), "POST", &at("/start"), None).await;
     assert_eq!(started.0, StatusCode::OK, "{}", started.1);
-    assert_eq!(started.1["fields"]["stage"], "in_progress");
-    assert_eq!(started.1["cursor"], 2);
-    let tail = request_json(
-        app.clone(),
-        "GET",
-        &format!("{}&after=1", at("/events")),
-        None,
-    )
-    .await;
-    assert_eq!(tail.1["events"][0]["kind"], "mission.started");
+    assert_eq!(started.1["conversation_id"], json!(id));
+    assert_eq!(started.1["status"], "running");
     assert_eq!(
         request_json(app.clone(), "POST", &at("/start"), None)
             .await
             .0,
         StatusCode::CONFLICT
     );
-    let paused = request_json(app.clone(), "POST", &at("/pause"), None).await;
-    assert_eq!(paused.1["paused"], true);
-    let resumed = request_json(app.clone(), "POST", &at("/resume"), None).await;
-    assert_eq!(resumed.1["paused"], false);
+    for removed in ["/pause", "/resume", "/explode"] {
+        assert_eq!(
+            request_json(app.clone(), "POST", &at(removed), None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND,
+            "{removed}"
+        );
+    }
     let closed = request_json(
         app.clone(),
         "POST",
@@ -469,15 +688,10 @@ async fn mission_routes_enforce_records_revisions_inbox_and_controls() {
     )
     .await;
     assert_eq!(closed.1["closed"]["status"], "done");
-    assert_eq!(closed.1["fields"]["stage"], "review");
+    assert_eq!(closed.1["closed"]["actor"], "human");
+    assert_eq!(closed.1["status"], "closed");
     let canceled = request_json(app.clone(), "POST", &at("/cancel"), None).await;
     assert_eq!(canceled.1["closed"]["status"], "done");
-    assert_eq!(
-        request_json(app.clone(), "POST", &at("/explode"), None)
-            .await
-            .0,
-        StatusCode::NOT_FOUND
-    );
     assert_eq!(
         request_json(
             app.clone(),
@@ -1114,5 +1328,24 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
                 .unwrap()
                 .is_none());
         }
+    }
+}
+
+/// A final answer as a codex turn reports it.
+fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
+    static ITEMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let item = ITEMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut event = spark_common::events::TurnStreamEvent::content_delta(
+        spark_common::events::TurnStreamChannel::Assistant,
+        text,
+    );
+    event.kind = spark_common::events::TurnStreamEventKind::ContentCompleted;
+    event.phase = Some("final_answer".into());
+    event.source.app_turn_id = Some(format!("app-turn-{item}"));
+    event.source.item_id = Some(format!("item-{item}"));
+    spark_agent_adapter::AgentTurnOutput {
+        events: vec![event],
+        final_assistant_text: Some(text.into()),
+        ..Default::default()
     }
 }

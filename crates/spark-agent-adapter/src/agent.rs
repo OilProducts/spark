@@ -8,6 +8,11 @@ use spark_common::events::TurnStreamEvent;
 
 use crate::history::HistoryTurn;
 
+/// Metadata key for system instructions pinned to every turn of a
+/// conversation. Backends pass them as system instructions, never as prompt
+/// text, so compaction cannot drop them.
+pub const AGENT_INSTRUCTIONS_METADATA_KEY: &str = "spark.agent.instructions";
+
 pub type AgentTurnEventSink = Arc<dyn Fn(TurnStreamEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

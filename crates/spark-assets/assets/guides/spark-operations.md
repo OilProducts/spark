@@ -164,7 +164,7 @@ SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- r
   --launch-context-json '{"context.request.summary":"Inspect the checkout."}'
 ```
 
-Create a pending run request inside a conversation:
+Launch a run from a conversation (agents use this; it launches immediately, prints the run id, and shows the launch in the conversation):
 
 ```bash
 spark convo run-request \
@@ -186,6 +186,7 @@ curl -X POST \
 Notes:
 
 - `spark run launch` requires either `--conversation` or `--project`.
+- `spark convo run-request` launches only flows the flow catalog marks `agent_requestable`.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
 - Use `--model`, `--llm-provider`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply.
 - `spark run launch` and `spark convo run-request` do not take `--llm-profile`; use flow defaults such as `ui_default_llm_profile`, or use `--llm-profile` on supported recovery commands.
@@ -461,7 +462,7 @@ Operational rules:
 
 ## Project missions
 
-Missions are explicitly managed project records of an intended outcome. A mission that has not started behaves like a plain board card: inspect the queue before work and record useful issue detail in the optional plain-text description (the objective); no template or mandatory sections are needed. Do not infer or import missions from change requests automatically.
+A mission is a project objective plus a long-lived agent conversation that owns the mission's runs. A mission that has not started is a draft: record useful detail in the optional plain-text description (the objective); no template or mandatory sections are needed. Do not infer or import missions from change requests automatically.
 
 ```sh
 spark mission list --project /absolute/project
@@ -470,7 +471,7 @@ spark mission create --project /absolute/project --json mission.json
 spark mission update --project /absolute/project --id mission-ID --json - < update.json
 spark mission start --project /absolute/project --id mission-ID
 spark mission send --project /absolute/project --id mission-ID --message "Prefer the smaller fix"
-spark mission events --project /absolute/project --id mission-ID --after 0
+spark mission close --project /absolute/project --id mission-ID --status done --reason "Shipped and verified"
 ```
 
 `--json` reads a file or `-` for stdin; output is JSON. Create requires only a title:
@@ -479,20 +480,14 @@ spark mission events --project /absolute/project --id mission-ID --after 0
 {"fields":{"title":"Deliver search","description":"Search should return matching documents."},"actor":"assistant"}
 ```
 
-Updates require the revision from get/list, with only changed fields:
+Updates require the revision from get/list, with only changed fields. Editable fields are `title`, `description`, `archived`, and `budget` (`{"concurrent_runs":4,"total_runs":25}` by default):
 
 ```json
-{"revision":1,"fields":{"stage":"planning","description":"Decide which document types are in scope."},"note":"Recorded the scope question","actor":"assistant"}
+{"revision":1,"fields":{"description":"Decide which document types are in scope."},"note":"Recorded the scope question","actor":"assistant"}
 ```
 
-Stages are `backlog` (default), `planning`, `ready`, `in_progress`, `review`, and `done`. All are manually editable, including Done without a note. Reopen by selecting an earlier stage. Archive with `fields.archived: true` and restore with `false`. Optional activity notes and human/assistant attribution are retained. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID. Moving a card launches nothing; ordinary conversation run requests still require approval.
+Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID.
 
-Starting a mission is an explicit action: `spark mission start` moves it to In progress and posts `mission.started` to its inbox. From then on the mission owns runs and reacts to their events (`run.completed`, `run.failed`, `run.canceled`, `run.waiting`, `run.signal`, and `human.message`). `spark mission send` posts a `human.message`, which also clears an `attention` state and prompts the next reaction. Events are processed in order; `execution.substate` reports `idle`, `running`, `reasoning`, `waiting` (a human gate or an exhausted budget, named in `execution.reason`), or `attention` (a failed reaction or launch, or a reaction or hook closing the mission as failed or canceled). Attention holds until a human sends a message or resumes, which then applies any actions it deferred; a budget wait never replaces it. A mission a human cancels or closes shows `idle` with the close reason.
+Starting a mission creates its conversation (`conversation_id`) and sends the objective as the first turn. From then on, the mission's inbox delivers `run.completed`, `run.failed`, `run.canceled`, `run.waiting`, and `human.message` events to that conversation as new turns: one turn per batch, oldest first, at most one turn in flight. `spark mission send` posts a `human.message`. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster and carries `context.spark_mission`, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
 
-Hooks (`fields.hooks`) react mechanically, first match wins, and anything unmatched goes to a reaction run of `fields.reaction_flow` (default `missions/react.yaml`):
-
-```json
-{"revision":3,"fields":{"hooks":[{"on":"run.completed","label":"build","status":"completed","do":{"launch":{"flow_name":"software-development/review-change.yaml","label":"review","context":{"context.request.source_ref":"HEAD"}}}},{"on":"run.signal","do":"ignore"}],"budget":{"concurrent_runs":4,"total_runs":25,"reactions":10}}}
-```
-
-Hook actions are `launch`, `close` (`{"status":"done|failed|canceled","reason":"..."}`), `ignore`, and `reason`. A reaction receives `context.mission` (objective, state, runs, and the pending event batch) and ends by writing `context.mission.directive` = `{"actions":[...]}` using `launch`, `set_state` (`{"markdown":"..."}`), and `close`; only reactions write the mission `state`. Closing as done moves the card to Review for a human to finish. Runs launched by a mission carry `context.spark_mission` and may report mid-flight by writing a JSON value to `context.mission.signal`. Pause, resume, cancel, and close are available at `POST /workspace/api/missions/{id}/pause|resume|cancel|close?project_path=...`.
+`status` is derived on read: `draft` (not started), `running` (a turn or run is in flight or events are pending, and no run waits on a human gate), `needs_you` (a run waits on a human gate, or nothing is in flight or pending), or `closed`.

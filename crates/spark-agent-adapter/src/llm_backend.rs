@@ -1203,6 +1203,10 @@ fn build_agent_session_for_source(
         reasoning_effort: normalize_lower_optional(reasoning_effort.as_deref()),
     };
     let mut metadata = metadata;
+    let instructions = metadata
+        .get(crate::agent::AGENT_INSTRUCTIONS_METADATA_KEY)
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let metadata_chat_mode = normalize_optional(chat_mode.as_deref());
     let metadata_provider = normalize_optional(provider.as_deref());
     let metadata_model = normalize_optional(model.as_deref());
@@ -1274,6 +1278,12 @@ fn build_agent_session_for_source(
 
     let mut session = Session::new(profile, execution_environment, config);
     session.history = history;
+    if let Some(instructions) = instructions {
+        session.system_prompt_snapshot = format!(
+            "{}\n\n<spark_instructions>\n{instructions}\n</spark_instructions>",
+            session.system_prompt_snapshot
+        );
+    }
     Ok(session)
 }
 

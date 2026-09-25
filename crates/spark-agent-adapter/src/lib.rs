@@ -27,6 +27,7 @@ pub mod truncation;
 pub use agent::{
     AgentError, AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
+    AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 pub use claude_code::{
     claude_code_models_from_list_result, list_available_claude_code_models,

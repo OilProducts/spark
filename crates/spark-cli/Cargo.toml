@@ -23,6 +23,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 axum = "0.8"
+spark-agent-adapter = { path = "../spark-agent-adapter" }
 spark-http = { path = "../spark-http" }
 tempfile = "3.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }

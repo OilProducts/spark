@@ -13,14 +13,20 @@ use spark_workspace::{
     ProposedPlanReviewRequest, WorkspaceConversationService, WorkspaceError,
 };
 
+fn agent_requestable(settings: &SparkSettings, flow: &str) {
+    write_flow(settings, flow, simple_flow());
+    spark_storage::set_flow_launch_policy(&settings.config_dir, flow, "agent_requestable")
+        .expect("launch policy");
+}
+
 #[test]
-fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching() {
+fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.yaml", simple_flow());
+    agent_requestable(&settings, "ops/review.yaml");
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -28,71 +34,82 @@ fn by_handle_flow_run_request_creation_writes_pending_sidecar_without_launching(
     );
     let service = WorkspaceConversationService::new(settings.clone());
 
-    let created = service
+    let launched = service
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
                 flow_name: "ops/review.yaml".to_string(),
-                summary: "Run the approved review flow.".to_string(),
+                summary: "Run the review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
                 launch_context: Some(json!({"context.request.id": "REQ-1"})),
                 model: Some("gpt-5".to_string()),
                 llm_provider: Some("OpenAI".to_string()),
-                llm_profile: Some("implementation".to_string()),
+                llm_profile: None,
                 reasoning_effort: Some("HIGH".to_string()),
                 execution_profile_id: Some("native".to_string()),
             },
         )
-        .expect("created request");
+        .expect("launched");
 
-    assert!(created.ok);
-    assert_eq!(created.conversation_id, "conversation-review");
+    assert_eq!(launched["conversation_id"], "conversation-review");
+    let run_id = launched["run_id"].as_str().expect("run id");
+    assert!(run_id.starts_with("run-"));
     let snapshot = service
         .get_snapshot(
             "conversation-review",
             Some(project_path.to_str().expect("utf-8")),
         )
         .expect("snapshot");
-    let request = &snapshot["flow_run_requests"][0];
-    assert_eq!(request["status"], "pending");
-    assert_eq!(request["source_turn_id"], "turn-assistant");
-    assert_eq!(request["source_segment_id"], created.segment_id);
-    assert_eq!(request["llm_provider"], "openai");
-    assert_eq!(request["reasoning_effort"], "high");
-    assert_eq!(snapshot["segments"][0]["kind"], "flow_run_request");
-    assert_eq!(
-        snapshot["segments"][0]["artifact_id"],
-        created.flow_run_request_id
-    );
-    assert!(runs_dir_is_empty(&settings));
-
-    let duplicate = service
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".to_string(),
-                summary: "Run the approved review flow.".to_string(),
-                goal: Some("Ship the reviewed change.".to_string()),
-                launch_context: Some(json!({"context.request.id": "REQ-1"})),
-                model: Some("gpt-5".to_string()),
-                llm_provider: Some("openai".to_string()),
-                llm_profile: Some("implementation".to_string()),
-                reasoning_effort: Some("high".to_string()),
-                execution_profile_id: Some("native".to_string()),
-            },
-        )
-        .expect_err("duplicate");
-    assert!(matches!(duplicate, WorkspaceError::Conflict(_)));
+    assert_eq!(snapshot["flow_run_requests"], json!([]));
+    let launch = &snapshot["flow_launches"][0];
+    assert_eq!(launch["status"], "launched");
+    assert_eq!(launch["run_id"], run_id);
+    assert_eq!(launch["source_turn_id"], "turn-assistant");
+    assert_eq!(launch["source_segment_id"], launched["segment_id"]);
+    assert_eq!(launch["llm_provider"], "openai");
+    assert_eq!(launch["reasoning_effort"], "high");
+    assert_eq!(snapshot["segments"][0]["kind"], "flow_launch");
 }
 
 #[test]
-fn by_handle_flow_run_request_attaches_to_in_flight_assistant_turn() {
+fn by_handle_run_request_refuses_flows_agents_may_not_launch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.yaml", simple_flow());
+    write_flow(&settings, "ops/private.yaml", simple_flow());
+    seed_conversation(
+        &settings,
+        project_path.to_str().expect("utf-8"),
+        "conversation-private",
+    );
+    let service = WorkspaceConversationService::new(settings.clone());
+
+    let refused = service
+        .create_flow_run_request_by_handle(
+            "amber-anchor",
+            FlowRunRequestCreateByHandleRequest {
+                flow_name: "ops/private.yaml".to_string(),
+                summary: "Not allowed.".to_string(),
+                execution_profile_id: Some("native".to_string()),
+                ..FlowRunRequestCreateByHandleRequest::default()
+            },
+        )
+        .expect_err("refused");
+    assert!(matches!(refused, WorkspaceError::Validation(_)));
+    assert!(refused.to_string().contains("not agent-requestable"));
+    assert!(runs_dir_is_empty(&settings));
+}
+
+#[test]
+fn by_handle_run_request_attaches_to_in_flight_assistant_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    write_native_execution_profile(&settings);
+    agent_requestable(&settings, "ops/review.yaml");
     seed_conversation_with_assistant_status(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -101,157 +118,113 @@ fn by_handle_flow_run_request_attaches_to_in_flight_assistant_turn() {
     );
     let service = WorkspaceConversationService::new(settings.clone());
 
-    let created = service
+    service
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
                 flow_name: "ops/review.yaml".to_string(),
-                summary: "Run the approved review flow.".to_string(),
-                goal: None,
-                launch_context: None,
-                model: None,
-                llm_provider: None,
-                llm_profile: None,
-                reasoning_effort: None,
+                summary: "Run the review flow.".to_string(),
                 execution_profile_id: Some("native".to_string()),
+                ..FlowRunRequestCreateByHandleRequest::default()
             },
         )
-        .expect("request created during the conversation's first in-flight turn");
+        .expect("launched during the conversation's first in-flight turn");
 
-    assert!(created.ok);
     let snapshot = service
         .get_snapshot(
             "conversation-first-turn",
             Some(project_path.to_str().expect("utf-8")),
         )
         .expect("snapshot");
-    let request = &snapshot["flow_run_requests"][0];
-    assert_eq!(request["status"], "pending");
-    assert_eq!(request["source_turn_id"], "turn-assistant");
-    assert!(runs_dir_is_empty(&settings));
+    assert_eq!(snapshot["flow_launches"][0]["status"], "launched");
+    assert_eq!(
+        snapshot["flow_launches"][0]["source_turn_id"],
+        "turn-assistant"
+    );
 }
 
 #[test]
-fn flow_run_request_review_rejects_or_launches_and_records_provenance() {
+fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
     write_flow(&settings, "ops/review.yaml", simple_flow());
-    seed_conversation(
+    seed_conversation_with_requests(
         &settings,
         project_path.to_str().expect("utf-8"),
         "conversation-launch",
+        "complete",
+        json!([
+            pending_request("request-reject", "conversation-launch", &project_path, None),
+            pending_request(
+                "request-launch",
+                "conversation-launch",
+                &project_path,
+                Some("native")
+            ),
+            pending_request(
+                "request-broken",
+                "conversation-launch",
+                &project_path,
+                Some("missing-profile")
+            ),
+        ]),
     );
     let service = WorkspaceConversationService::new(settings.clone());
+    let review = |request_id: &str, disposition: &str| {
+        service
+            .review_flow_run_request(
+                "conversation-launch",
+                request_id,
+                FlowRunRequestReviewRequest {
+                    project_path: project_path.to_string_lossy().into_owned(),
+                    disposition: disposition.to_string(),
+                    message: "Reviewed.".to_string(),
+                    ..FlowRunRequestReviewRequest::default()
+                },
+            )
+            .expect("reviewed")
+    };
 
-    let rejected = service
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".to_string(),
-                summary: "Reject me.".to_string(),
-                ..FlowRunRequestCreateByHandleRequest::default()
-            },
-        )
-        .expect("created rejected");
-    let rejected_snapshot = service
-        .review_flow_run_request(
-            "conversation-launch",
-            &rejected.flow_run_request_id,
-            FlowRunRequestReviewRequest {
-                project_path: project_path.to_string_lossy().into_owned(),
-                disposition: "rejected".to_string(),
-                message: "Not this one.".to_string(),
-                ..FlowRunRequestReviewRequest::default()
-            },
-        )
-        .expect("rejected");
-    let rejected_request = request_by_id(&rejected_snapshot, &rejected.flow_run_request_id);
-    assert_eq!(rejected_request["status"], "rejected");
-    assert_eq!(rejected_request["review_message"], "Not this one.");
+    let rejected = review("request-reject", "rejected");
+    assert_eq!(
+        request_by_id(&rejected, "request-reject")["status"],
+        "rejected"
+    );
     assert!(runs_dir_is_empty(&settings));
-
-    let approved = service
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".to_string(),
-                summary: "Launch me.".to_string(),
-                goal: Some("Run the tiny flow.".to_string()),
-                launch_context: Some(json!({"context.review": "approved"})),
-                model: Some("compat-model".to_string()),
-                llm_provider: Some("codex".to_string()),
-                llm_profile: Some("implementation".to_string()),
-                reasoning_effort: Some("medium".to_string()),
-                execution_profile_id: Some("native".to_string()),
-            },
-        )
-        .expect("created approved");
-    let approved_snapshot = service
-        .review_flow_run_request(
-            "conversation-launch",
-            &approved.flow_run_request_id,
-            FlowRunRequestReviewRequest {
-                project_path: project_path.to_string_lossy().into_owned(),
-                disposition: "approved".to_string(),
-                message: "Approved for launch.".to_string(),
-                ..FlowRunRequestReviewRequest::default()
-            },
-        )
-        .expect("approved");
-    let approved_request = request_by_id(&approved_snapshot, &approved.flow_run_request_id);
-    assert_eq!(approved_request["status"], "launched");
-    assert_eq!(approved_request["review_message"], "Approved for launch.");
-    assert_eq!(approved_request["source_turn_id"], "turn-assistant");
-    assert_eq!(approved_request["flow_name"], "ops/review.yaml");
-    assert!(approved_request["run_id"]
+    let approved = review("request-launch", "approved");
+    let launched = request_by_id(&approved, "request-launch");
+    assert_eq!(launched["status"], "launched");
+    assert!(launched["run_id"]
         .as_str()
         .expect("run id")
         .starts_with("run-"));
+    let failed = review("request-broken", "approved");
+    let failed = request_by_id(&failed, "request-broken");
+    assert_eq!(failed["status"], "launch_failed");
+    assert!(!failed["launch_error"].as_str().expect("error").is_empty());
 }
 
-#[test]
-fn launch_failure_is_persisted_on_approved_flow_run_request() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
-    let project_path = temp.path().join("project");
-    fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/broken.yaml", simple_flow());
-    seed_conversation(
-        &settings,
-        project_path.to_str().expect("utf-8"),
-        "conversation-fail",
-    );
-    let service = WorkspaceConversationService::new(settings);
-
-    let created = service
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/broken.yaml".to_string(),
-                summary: "This launch should fail validation.".to_string(),
-                execution_profile_id: Some("missing-profile".to_string()),
-                ..FlowRunRequestCreateByHandleRequest::default()
-            },
-        )
-        .expect("created");
-    let snapshot = service
-        .review_flow_run_request(
-            "conversation-fail",
-            &created.flow_run_request_id,
-            FlowRunRequestReviewRequest {
-                project_path: project_path.to_string_lossy().into_owned(),
-                disposition: "approved".to_string(),
-                message: "Try it.".to_string(),
-                ..FlowRunRequestReviewRequest::default()
-            },
-        )
-        .expect("reviewed");
-    let request = request_by_id(&snapshot, &created.flow_run_request_id);
-    assert_eq!(request["status"], "launch_failed");
-    assert!(request["launch_error"].as_str().expect("error").len() > 0);
+fn pending_request(
+    id: &str,
+    conversation_id: &str,
+    project_path: &Path,
+    execution_profile_id: Option<&str>,
+) -> Value {
+    json!({
+        "id": id,
+        "created_at": "2026-01-01T00:00:01Z",
+        "updated_at": "2026-01-01T00:00:01Z",
+        "flow_name": "ops/review.yaml",
+        "summary": "Requested before launches were direct.",
+        "project_path": project_path,
+        "conversation_id": conversation_id,
+        "source_turn_id": "turn-assistant",
+        "status": "pending",
+        "execution_profile_id": execution_profile_id,
+    })
 }
 
 #[test]
@@ -387,6 +360,22 @@ fn seed_conversation_with_assistant_status(
     conversation_id: &str,
     assistant_status: &str,
 ) {
+    seed_conversation_with_requests(
+        settings,
+        project_path,
+        conversation_id,
+        assistant_status,
+        json!([]),
+    );
+}
+
+fn seed_conversation_with_requests(
+    settings: &SparkSettings,
+    project_path: &str,
+    conversation_id: &str,
+    assistant_status: &str,
+    flow_run_requests: Value,
+) {
     let registry = ProjectRegistry::new(&settings.data_dir);
     let project = registry
         .ensure_project_paths(project_path)
@@ -428,7 +417,7 @@ fn seed_conversation_with_assistant_status(
             ],
             "segments": [],
             "event_log": [],
-            "flow_run_requests": [],
+            "flow_run_requests": flow_run_requests,
             "flow_launches": [],
             "run_recoveries": [],
             "proposed_plans": []
@@ -808,22 +797,19 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
     write_flow(&settings, "ops/review.yaml", simple_flow());
-    seed_conversation(
+    seed_conversation_with_requests(
         &settings,
         project_path.to_str().expect("utf-8"),
         "conversation-attention",
+        "complete",
+        json!([pending_request(
+            "request-attention",
+            "conversation-attention",
+            &project_path,
+            None
+        )]),
     );
     let service = WorkspaceConversationService::new(settings.clone());
-    service
-        .create_flow_run_request_by_handle(
-            "amber-anchor",
-            FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".to_string(),
-                summary: "Run the review flow.".to_string(),
-                ..FlowRunRequestCreateByHandleRequest::default()
-            },
-        )
-        .expect("created request");
     seed_proposed_plan(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -872,11 +858,11 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
         .find(|item| item["kind"] == "flow_run_request")
         .expect("request item");
     assert_eq!(request["conversation_id"], "conversation-attention");
-    assert_eq!(request["title"], "Run the review flow.");
+    assert_eq!(request["title"], "Requested before launches were direct.");
 }
 
 #[test]
-fn new_thread_turn_prepends_the_assistant_frame_but_keeps_the_stored_message() {
+fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
@@ -894,33 +880,25 @@ fn new_thread_turn_prepends_the_assistant_frame_but_keeps_the_stored_message() {
         )
         .expect("start turn");
 
-    let agent_prompt = &prepared.agent_turn_request.prompt;
-    assert!(
-        agent_prompt.contains("You are the Spark workspace assistant"),
-        "agent prompt must carry the frame: {agent_prompt}"
+    assert_eq!(
+        prepared.agent_turn_request.prompt,
+        "Kick off the implement-spec workflow."
     );
-    assert!(
-        agent_prompt.contains("spark convo run-request"),
-        "frame must name the run-request control surface"
-    );
-    assert!(
-        agent_prompt.contains("do not use any other Spark installation"),
-        "frame must warn off stale installations"
-    );
-    assert!(
-        agent_prompt.contains("agent-requestable"),
-        "frame must name the catalog policy"
-    );
-    assert!(
-        agent_prompt.contains("$SPARK_HOME/attractor/runs"),
-        "frame must say where run state lives"
-    );
-    assert!(
-        agent_prompt
-            .trim_end()
-            .ends_with("Kick off the implement-spec workflow."),
-        "the user's message is the last thing the agent reads: {agent_prompt}"
-    );
+    let frame = prepared.agent_turn_request.metadata
+        [spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY]
+        .as_str()
+        .expect("pinned frame");
+    for expected in [
+        "You are the Spark workspace assistant",
+        "spark convo run-request",
+        "launches the flow immediately",
+        "do not use any other Spark installation",
+        "agent-requestable",
+        "$SPARK_HOME/attractor/runs",
+    ] {
+        assert!(frame.contains(expected), "frame lacks {expected}: {frame}");
+    }
+    assert!(!frame.contains("approve"), "{frame}");
 
     // The stored conversation turn keeps the raw user message, not the frame.
     let stored = snapshot["turns"]
@@ -933,7 +911,7 @@ fn new_thread_turn_prepends_the_assistant_frame_but_keeps_the_stored_message() {
 }
 
 #[test]
-fn resumed_thread_turn_omits_the_frame() {
+fn resumed_thread_turns_keep_the_pinned_frame_out_of_the_prompt() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
@@ -941,8 +919,7 @@ fn resumed_thread_turn_omits_the_frame() {
     let project = ProjectRegistry::new(&settings.data_dir)
         .ensure_project_paths(&project_path.to_string_lossy())
         .expect("project paths");
-    // A prior confirmed codex thread: the frame already lives in its
-    // server-side context, so a follow-up turn must not resend it.
+    // A resumed codex thread still gets the frame as pinned instructions.
     spark_storage::ConversationRepository::new(&settings.data_dir)
         .write_runtime_session(
             "conversation-resume",
@@ -972,4 +949,8 @@ fn resumed_thread_turn_omits_the_frame() {
         )
         .expect("start turn");
     assert_eq!(prepared.agent_turn_request.prompt, "Follow-up question.");
+    assert!(prepared
+        .agent_turn_request
+        .metadata
+        .contains_key(spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY));
 }

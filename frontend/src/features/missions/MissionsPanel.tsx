@@ -10,32 +10,46 @@ import { MissionDetail } from './MissionDetail'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { MissionEditor } from './MissionEditor'
 
-export const stages = ['backlog', 'planning', 'ready', 'in_progress', 'review', 'done'] as const
-export const labels = ['Backlog', 'Planning', 'Ready', 'In progress', 'Review', 'Done']
-export type Stage = typeof stages[number]
-export type Budget = { concurrent_runs: number; total_runs: number; reactions: number }
-export type Fields = { title: string; description: string; stage: Stage; archived: boolean; reaction_flow?: string; hooks?: unknown[]; budget?: Budget }
-export type Substate = 'idle' | 'running' | 'reasoning' | 'waiting' | 'attention'
-export type RosterEntry = { run_id: string; label: string; role: 'work' | 'reaction'; launched_at: string; launched_by_event: string; status: string }
-export type MissionEvent = { seq: number; id: string; at: string; kind: string; source: string; payload: unknown }
+export type Budget = { concurrent_runs: number; total_runs: number }
+export type Fields = { title: string; description: string; archived: boolean; budget?: Budget }
+export type Status = 'draft' | 'running' | 'needs_you' | 'closed'
+export type RosterEntry = { run_id: string; flow_name: string; summary: string; launched_at: string; status: string }
 export type Mission = {
     id: string; revision: number; updated_at?: string; fields: Fields; activity: { revision: number; actor: string; at: string; note: string; before?: Fields; after?: Fields }[]
-    state?: string; runs?: RosterEntry[]; execution?: { substate: Substate; reason: string }; cursor?: number; event_seq?: number
-    closed?: { status: 'done' | 'failed' | 'canceled'; reason: string; at: string } | null; started_at?: string | null; paused?: boolean
+    status?: Status; conversation_id?: string | null; runs?: RosterEntry[]; cursor?: number; event_seq?: number
+    closed?: { status: 'done' | 'failed' | 'canceled'; reason: string; at: string; actor?: string } | null; started_at?: string | null
 }
 type Draft = { editing: Mission | null; fields: Fields; conflict: boolean }
 export type Board = { missions: Mission[] }
-const empty: Fields = { title: '', description: '', stage: 'backlog', archived: false }
-export const substateLabels: Record<Substate, string> = { idle: 'Idle', running: 'Running', reasoning: 'Reasoning', waiting: 'Waiting', attention: 'Needs attention' }
+const empty: Fields = { title: '', description: '', archived: false }
+export const groups: [Status, string][] = [['needs_you', 'Needs you'], ['running', 'Running'], ['draft', 'Drafts'], ['closed', 'Closed']]
+export const statusLabels: Record<Status, string> = { needs_you: 'Needs you', running: 'Running', draft: 'Draft', closed: 'Closed' }
 const terminal = ['completed', 'failed', 'canceled', 'validation_error']
-export const inFlight = (mission: Mission) => (mission.runs ?? []).filter(run => !terminal.includes(run.status)).length
+/** One line saying why a mission is where it is. */
+export function statusLine(mission: Mission): string {
+    const runs = mission.runs ?? []
+    const inFlight = runs.filter(run => !terminal.includes(run.status)).length
+    const gate = runs.find(run => run.status === 'waiting')
+    switch (mission.status ?? 'draft') {
+        case 'draft': return 'Not started'
+        case 'running': return inFlight ? `${inFlight} run${inFlight === 1 ? '' : 's'} in flight` : 'Agent is working'
+        case 'needs_you': return gate ? `${gate.summary || gate.flow_name} is waiting on a human gate` : 'Waiting for your reply'
+        case 'closed': return `Closed as ${mission.closed?.status ?? 'done'}${mission.closed?.reason ? `: ${mission.closed.reason}` : ''}`
+    }
+}
+/** Mission timestamps are UTC `YYYY-MM-DD HH:MM:SS.fraction +00:00:00`. */
+export function formatUpdated(value = ''): string {
+    const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(value)
+    const date = match ? new Date(`${match[1]}T${match[2]}Z`) : null
+    return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : value
+}
 export class MissionConflict extends Error {}
 /** Reads with no body; posts to `action` routes; creates without an id; otherwise patches. */
 export async function request<T>(project: string, id = '', body?: unknown, action = ''): Promise<T> {
     const method = body === undefined ? undefined : action || !id ? 'POST' : 'PATCH'
     const response = await fetch(`/workspace/api/missions${id ? `/${encodeURIComponent(id)}` : ''}${action}${action.includes('?') ? '&' : '?'}project_path=${encodeURIComponent(project)}`, method ? { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : undefined)
     const value = await response.json()
-    if (response.status === 409) throw new MissionConflict('This mission changed on the server. Your edits are preserved. Refresh and reconcile the latest revision before saving.')
+    if (response.status === 409) throw new MissionConflict((action && value.detail) || 'This mission changed on the server. Your edits are preserved. Refresh and reconcile the latest revision before saving.')
     if (!response.ok) throw new Error(value.detail || 'Mission request failed')
     return value as T
 }
@@ -57,8 +71,7 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
     const drafts = useRef(new Map<string, Draft>())
     const searchInput = useRef<HTMLInputElement>(null)
     const boardScroll = useRef<HTMLDivElement>(null)
-    const laneScroll = useRef<(HTMLDivElement | null)[]>([])
-    const scrollPositions = useRef(new Map<string, number[]>())
+    const scrollPositions = useRef(new Map<string, number>())
     const boardHeading = useRef<HTMLHeadingElement>(null)
     const origin = useRef<HTMLElement | null>(null)
     const [focusRequest, setFocusRequest] = useState(0)
@@ -89,14 +102,12 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
     }
     async function refresh() { const sequence = ++refreshSequence.current; try { const value = await request<Board>(project); if (sequence === refreshSequence.current) { setBoard(value); setLoaded(true); setLoadError('') } } catch (e) { if (sequence === refreshSequence.current) setLoadError((e as Error).message) } }
     function filter(nextSearch: string, nextArchived: boolean) {
-        scrollPositions.current.set(JSON.stringify([search, archived]), [boardScroll.current?.scrollLeft ?? 0, ...laneScroll.current.map(lane => lane?.scrollTop ?? 0)])
+        scrollPositions.current.set(JSON.stringify([search, archived]), boardScroll.current?.scrollTop ?? 0)
         setSearch(nextSearch); setArchived(nextArchived)
     }
     useLayoutEffect(() => {
         const position = scrollPositions.current.get(JSON.stringify([search, archived]))
-        if (!position) return
-        if (boardScroll.current) boardScroll.current.scrollLeft = position[0]
-        laneScroll.current.forEach((lane, i) => { if (lane) lane.scrollTop = position[i + 1] })
+        if (position !== undefined && boardScroll.current) boardScroll.current.scrollTop = position
     }, [search, archived])
     function preserveDraft() {
         if (mode !== 'edit' || editing === undefined) return
@@ -148,17 +159,15 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
             await refresh()
         } catch (e) { setError((e as Error).message); if (e instanceof MissionConflict) { setConflict(true); await refresh() } } finally { setBusy(false) }
     }
-    async function changeStage(stage: Stage) {
-        const mission = latest ?? editing
-        if (busy || mode !== 'read' || !mission) return
+    async function archive(mission: Mission, value: boolean) {
+        if (busy) return
         setBusy(true); setError('')
         try {
-            const saved = await request<Mission>(project, mission.id, { revision: mission.revision, fields: { stage }, actor: 'human' })
+            const saved = await request<Mission>(project, mission.id, { revision: mission.revision, fields: { archived: value }, actor: 'human' })
             upsert(saved)
-            reset(saved)
-            await refresh()
+            if (editing?.id === saved.id && mode === 'read') reset(saved)
         } catch (e) {
-            setError(e instanceof MissionConflict ? 'This mission changed on the server. Refresh the latest version and retry your stage change.' : (e as Error).message)
+            setError(e instanceof MissionConflict ? 'This mission changed on the server. Refresh and try again.' : (e as Error).message)
             if (e instanceof MissionConflict) await refresh()
         } finally { setBusy(false) }
     }
@@ -169,6 +178,8 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
     const latest = editing ? board.missions.find(t => t.id === editing.id) : undefined
     const changed = latest && latest.revision > (editing?.revision ?? 0)
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)
+    const reading = mode === 'read' && Boolean(editing)
+    const visible = board.missions.filter(mission => (archived || !mission.fields.archived) && mission.fields.title.toLowerCase().includes(search.toLowerCase()))
     if (!selected) return null
     return <section aria-label="Project missions" className="flex h-full min-h-0 flex-col gap-4 p-3 lg:p-6">
         <div className="flex shrink-0 flex-wrap items-center gap-2"><h1 ref={boardHeading} tabIndex={-1} className="text-xl font-semibold tracking-tight">Missions</h1>
@@ -180,30 +191,28 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
         </div>
         {(error || loadError) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
         <div className="flex min-h-0 flex-1 gap-4">
-        <div ref={boardScroll} hidden={narrow && editing !== undefined} className="min-w-0 flex-1 overflow-x-auto">
-        <div className="grid h-full min-h-0 grid-cols-[repeat(6,minmax(11rem,1fr))] gap-3">
-            {stages.map((stage, i) => {
-                const missions = board.missions.filter(t => t.fields.stage === stage && (archived || !t.fields.archived) && t.fields.title.toLowerCase().includes(search.toLowerCase()))
-                return <section key={stage} aria-label={labels[i]} className="flex min-h-0 flex-col rounded-md border border-border bg-muted/50 p-2">
-                    <h2 className="flex shrink-0 items-center justify-between px-1 pb-3 pt-1 text-sm font-semibold">{labels[i]}<span aria-label={`${missions.length} matching missions`} className="text-xs font-normal text-muted-foreground">{missions.length}</span></h2>
-                    <div ref={node => { laneScroll.current[i] = node }} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-1">
-                    {missions.map(mission => <button type="button" disabled={busy} key={mission.id} data-mission-id={mission.id} aria-label={mission.fields.title} aria-pressed={editing?.id === mission.id} onClick={e => open(mission, e.currentTarget)} className={`block w-full rounded-md border p-3 text-left text-sm break-words transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === mission.id ? 'border-ring bg-accent text-accent-foreground' : 'border-border bg-card text-card-foreground hover:border-foreground/40 hover:bg-muted'}`}>
-                        <span className="line-clamp-3 font-semibold">{mission.fields.title}</span>
-                        {mission.fields.description && <span className="mt-1 line-clamp-2 text-xs text-muted-foreground">{mission.fields.description}</span>}
-                        {mission.fields.archived && <span className="mt-2 inline-block rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>}
-                        {stage === 'in_progress' && mission.started_at && mission.execution && <span className="mt-2 flex flex-wrap gap-1 text-xs">
-                            <span data-testid="mission-execution-chip" className={`rounded border px-1.5 py-0.5 ${mission.execution.substate === 'attention' ? 'border-destructive text-destructive' : 'border-border text-muted-foreground'}`}>{substateLabels[mission.execution.substate]}{mission.paused ? ' · Paused' : ''}</span>
-                            {inFlight(mission) > 0 && <span className="rounded border border-border px-1.5 py-0.5 text-muted-foreground">{inFlight(mission)} in flight</span>}
-                        </span>}
-                    </button>)}
-                    {!missions.length && (loaded && !loadError
-                        ? <Empty className="px-3 py-4 text-xs text-muted-foreground"><EmptyDescription>{search ? 'No matches' : 'No missions'}</EmptyDescription></Empty>
-                        : <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
-                    </div>
+        <div ref={boardScroll} hidden={narrow && editing !== undefined} className={`min-h-0 min-w-0 space-y-4 overflow-y-auto ${reading && !narrow ? 'w-80 shrink-0' : 'flex-1'}`}>
+            {groups.map(([status, label]) => {
+                const missions = visible.filter(mission => (mission.status ?? 'draft') === status).sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
+                if (!missions.length) return null
+                return <section key={status} aria-label={label} className="space-y-2">
+                    <h2 className="flex items-center justify-between px-1 text-sm font-semibold">{label}<span aria-label={`${missions.length} matching missions`} className="text-xs font-normal text-muted-foreground">{missions.length}</span></h2>
+                    <ul className="space-y-2">{missions.map(mission => <li key={mission.id} className="flex items-stretch gap-2">
+                        <button type="button" disabled={busy} data-mission-id={mission.id} aria-label={mission.fields.title} aria-describedby={`mission-status-${mission.id}`} aria-pressed={editing?.id === mission.id} onClick={e => open(mission, e.currentTarget)} className={`block min-w-0 flex-1 rounded-md border p-3 text-left text-sm break-words transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === mission.id ? 'border-ring bg-accent text-accent-foreground' : 'border-border bg-card text-card-foreground hover:border-foreground/40 hover:bg-muted'}`}>
+                            <span className="line-clamp-2 font-semibold">{mission.fields.title}</span>
+                            <span id={`mission-status-${mission.id}`} data-testid="mission-status-line" className={`mt-1 block text-xs ${status === 'needs_you' ? 'font-medium text-foreground' : 'text-muted-foreground'}`}>{statusLine(mission)}</span>
+                            <span className="mt-1 block text-xs text-muted-foreground">Updated <time dateTime={mission.updated_at}>{formatUpdated(mission.updated_at)}</time></span>
+                            {mission.fields.archived && <span className="mt-2 inline-block rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>}
+                        </button>
+                        {status === 'closed' && <Button type="button" variant="outline" size="sm" className="h-auto self-stretch" disabled={busy} aria-label={`${mission.fields.archived ? 'Restore' : 'Archive'} ${mission.fields.title}`} onClick={() => void archive(mission, !mission.fields.archived)}>{mission.fields.archived ? 'Restore' : 'Archive'}</Button>}
+                    </li>)}</ul>
                 </section>
             })}
-        </div></div>
-        {editing !== undefined && (mode === 'read' && editing ? <MissionDetail mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} changeStage={changeStage} onChange={upsert} /> : <MissionEditor key={editing?.id ?? 'new'} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
+            {!visible.length && (loaded && !loadError
+                ? <Empty className="px-3 py-4 text-xs text-muted-foreground"><EmptyDescription>{search ? 'No matches' : 'No missions'}</EmptyDescription></Empty>
+                : <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
+        </div>
+        {editing !== undefined && (mode === 'read' && editing ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} /> : <MissionEditor key={editing?.id ?? 'new'} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
             setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)}
         </div>
     </section>
