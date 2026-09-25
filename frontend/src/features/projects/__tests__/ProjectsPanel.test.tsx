@@ -5244,6 +5244,39 @@ describe('ProjectsPanel', () => {
     expect(turnRequests[0]).not.toHaveProperty('reasoning_effort')
   })
 
+  it('shows the Codex default model when no model default is configured', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
+        return new Response(JSON.stringify(url.includes('/workspace/api/projects/conversations') ? [] : {}), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }),
+    )
+
+    act(() => {
+      useStore.setState((state) => ({
+        ...state,
+        uiDefaults: { llm_model: '', llm_provider: 'codex', reasoning_effort: '' },
+      }))
+      useStore.getState().registerProject('/tmp/model-project')
+      useStore.getState().setActiveProjectPath('/tmp/model-project')
+    })
+
+    renderProjectsPanel()
+
+    await waitFor(() => {
+      expect(screen.getByTestId('project-ai-conversation-model-select')).toHaveValue('gpt-5.4')
+    })
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
+    expect(screen.queryByText('The saved Codex model is no longer available. Select another model.')).toBeNull()
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
+  })
+
   it('commits explicit composer settings and sends later messages without copying selectors', async () => {
     const user = userEvent.setup()
     const settingsRequests: Array<Record<string, unknown>> = []

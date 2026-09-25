@@ -248,7 +248,6 @@ export function useProjectsHomeController() {
     const profiles = useLlmProfiles()
     const effectiveModelSettings = activeConversationRecord?.model_settings_view?.effective
     const activeProjectChatProvider = pendingChatSettings ? pendingChatSettings.llm_profile || pendingChatSettings.provider || 'codex' : effectiveModelSettings?.llm_profile || storedChatProvider
-    const activeProjectChatModel = pendingChatSettings ? pendingChatSettings.model || '' : storedChatModel
     const activeProjectChatReasoningEffort = pendingChatSettings
         ? pendingChatSettings.reasoning_effort || ''
         : storedChatReasoningEffort
@@ -262,14 +261,17 @@ export function useProjectsHomeController() {
         ? chatModelsByProjectPath[activeProjectPath]
         : undefined
     const activeProjectChatModels = activeProjectChatModelsResponse?.models || []
+    const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
+    const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')
+    // An unset Codex model runs on Codex's own default, so show that model instead of an empty selection.
+    const activeProjectChatModel = (pendingChatSettings ? pendingChatSettings.model || '' : storedChatModel)
+        || (isCodexProvider ? codexModels.find((model) => model.is_default)?.id ?? '' : '')
     const chatModelOptions = useMemo(
         () => profiles.some((profile) => profile.id === activeProjectChatProvider)
             ? getModelSuggestions(activeProjectChatProvider, profiles).map((value) => ({ value, label: value }))
             : buildModelOptions(activeProjectChatModelsResponse, activeProjectChatModel, activeProjectChatProvider),
         [activeProjectChatModel, activeProjectChatModelsResponse, activeProjectChatProvider, profiles],
     )
-    const isCodexProvider = (activeProjectChatProvider || 'codex') === 'codex'
-    const codexModels = activeProjectChatModels.filter((model) => model.provider === 'codex')
     const isCodexDiscoveryUnavailable = isCodexProvider && (
         activeProjectChatModelsResponse?.providers.codex.status === 'unavailable'
         || (activeProjectChatModelsResponse?.providers.codex.status === 'available' && codexModels.length === 0)
