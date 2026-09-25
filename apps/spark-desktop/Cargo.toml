@@ -6,6 +6,7 @@ publish = false
 build = "build.rs"
 
 [lib]
+doctest = false
 name = "spark_desktop"
 path = "src/lib.rs"
 crate-type = ["staticlib", "cdylib", "rlib"]
