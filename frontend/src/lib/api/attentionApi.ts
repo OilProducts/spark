@@ -1,7 +1,7 @@
 import { asOptionalString, expectObjectRecord, expectString } from './shared'
 import { fetchWorkspaceJsonValidated } from './apiClient'
 
-export type AttentionKind = 'run_gate' | 'flow_run_request' | 'proposed_plan'
+export type AttentionKind = 'run_gate' | 'flow_run_request' | 'proposed_plan' | 'mission'
 
 export interface AttentionItem {
     kind: AttentionKind
@@ -14,7 +14,7 @@ export interface AttentionItem {
     updated_at: string
 }
 
-const ATTENTION_KINDS: ReadonlySet<string> = new Set(['run_gate', 'flow_run_request', 'proposed_plan'])
+const ATTENTION_KINDS: ReadonlySet<string> = new Set(['run_gate', 'flow_run_request', 'proposed_plan', 'mission'])
 
 function parseAttentionItems(payload: unknown, endpoint: string): AttentionItem[] {
     const record = expectObjectRecord(payload, endpoint)

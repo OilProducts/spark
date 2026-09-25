@@ -21,7 +21,7 @@ use crate::journals::journal_entries_from_events;
 use crate::paths::{validate_relative_path, RunRootPaths};
 use crate::records::{normalize_record_for_write, read_run_record, write_run_record};
 use crate::results::{
-    materialize_run_result, read_materialized_run_result, write_run_result, ResultSummaryAttempt,
+    build_run_result, read_materialized_run_result, write_run_result, ResultSummaryAttempt,
 };
 
 /// Notified with the run id after every durable run mutation (journal append,
@@ -613,11 +613,16 @@ impl RunStore {
         checkpoint: &CheckpointState,
         summary: Option<ResultSummaryAttempt>,
     ) -> Result<RunResult> {
-        materialize_run_result(paths, run_id, status, flow, checkpoint, summary)
+        let result = build_run_result(paths, run_id, status, flow, checkpoint, summary)?;
+        self.write_result(paths, &result)?;
+        Ok(result)
     }
 
     pub fn write_result(&self, paths: &RunRootPaths, result: &RunResult) -> Result<()> {
-        write_run_result(paths, result)
+        write_run_result(paths, result)?;
+        // Terminal consumers wait for the result, which lands after the final event.
+        self.notify_run_event(&paths.run_id);
+        Ok(())
     }
 
     pub fn read_result(&self, paths: &RunRootPaths) -> Result<Option<RunResult>> {

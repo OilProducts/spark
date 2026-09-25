@@ -362,85 +362,137 @@ fn settings(root: &Path) -> SparkSettings {
 }
 
 #[tokio::test]
-async fn task_routes_enforce_minimal_records_and_revision_protection() {
+async fn mission_routes_enforce_records_revisions_inbox_and_controls() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    let project = temp.path().join("tasks-project");
+    let project = temp.path().join("missions-project");
     fs::create_dir_all(&project).unwrap();
     let app = build_app(settings);
-    let list_uri = format!("/workspace/api/tasks?project_path={}", project.display());
+    let list_uri = format!("/workspace/api/missions?project_path={}", project.display());
     let created = request_json(
         app.clone(),
         "POST",
         &list_uri,
         Some(
-            json!({"fields":{"title":"Quick capture"},"actor":"assistant","note":"Captured issue"}),
+            json!({"fields":{"title":"Quick capture","hooks":[{"on":"human.message","do":"ignore"}]},"actor":"assistant","note":"Captured issue"}),
         ),
     )
     .await;
     assert_eq!(created.0, StatusCode::OK);
-    assert_eq!(
-        created.1["fields"],
-        json!({"title":"Quick capture","description":"","stage":"backlog","archived":false})
-    );
+    assert_eq!(created.1["fields"]["stage"], "backlog");
+    assert_eq!(created.1["fields"]["reaction_flow"], "missions/react.yaml");
+    assert_eq!(created.1["execution"]["substate"], "idle");
     assert_eq!(created.1["activity"][0]["actor"], "assistant");
-    let uri = format!(
-        "/workspace/api/tasks/{}?project_path={}",
-        created.1["id"].as_str().unwrap(),
-        project.display()
-    );
+    let id = created.1["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("mission-"));
+    let at = |suffix: &str| {
+        format!(
+            "/workspace/api/missions/{id}{suffix}?project_path={}",
+            project.display()
+        )
+    };
     let updated = request_json(
         app.clone(),
         "PATCH",
-        &uri,
-        Some(json!({"revision":1,"fields":{"stage":"done"}})),
+        &at(""),
+        Some(json!({"revision":1,"fields":{"stage":"ready"}})),
     )
     .await;
     assert_eq!(updated.0, StatusCode::OK);
     let stale = request_json(
         app.clone(),
         "PATCH",
-        &uri,
+        &at(""),
         Some(json!({"revision":1,"fields":{"title":"Stale"}})),
     )
     .await;
     assert_eq!(stale.0, StatusCode::CONFLICT);
-    for key in [
-        "priority",
-        "acceptance_criteria",
-        "next_action",
-        "blocked",
-        "needs_input",
-        "conversations",
-        "artifacts",
-        "runs",
-    ] {
+    for key in ["state", "runs", "cursor", "priority", "conversations"] {
         let rejected = request_json(
             app.clone(),
             "PATCH",
-            &uri,
+            &at(""),
             Some(json!({"revision":2,"fields":{key:null}})),
         )
         .await;
         assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "{key}: {}", rejected.1);
     }
-    let rejected = request_json(
+    let listed = request_json(app.clone(), "GET", &list_uri, None).await;
+    assert_eq!(listed.1, json!({"missions":[updated.1]}));
+    let fetched = request_json(app.clone(), "GET", &at(""), None).await;
+    assert_eq!(fetched.1, updated.1);
+
+    let message = json!({"id":"note-1","kind":"human.message","payload":{"message":"hello"}});
+    let sent = request_json(app.clone(), "POST", &at("/events"), Some(message.clone())).await;
+    assert_eq!(sent.0, StatusCode::OK, "{}", sent.1);
+    request_json(app.clone(), "POST", &at("/events"), Some(message)).await;
+    let events = request_json(app.clone(), "GET", &at("/events"), None).await;
+    assert_eq!(events.1["events"].as_array().unwrap().len(), 1);
+    assert_eq!(events.1["events"][0]["source"], "human");
+    assert_eq!(events.1["events"][0]["seq"], 1);
+    let bad = request_json(
         app.clone(),
         "POST",
-        &list_uri,
-        Some(json!({"fields":{"title":"No provenance"},"conversation_id":"old"})),
+        &at("/events"),
+        Some(json!({"payload":{}})),
     )
     .await;
-    assert_eq!(rejected.0, StatusCode::BAD_REQUEST);
-    let listed = request_json(app.clone(), "GET", &list_uri, None).await;
-    assert_eq!(listed.1, json!({"tasks":[updated.1]}));
-    let fetched = request_json(app.clone(), "GET", &uri, None).await;
-    assert_eq!(fetched.1, updated.1);
+    assert_eq!(bad.0, StatusCode::BAD_REQUEST);
+
+    let started = request_json(app.clone(), "POST", &at("/start"), None).await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
+    assert_eq!(started.1["fields"]["stage"], "in_progress");
+    assert_eq!(started.1["cursor"], 2);
+    let tail = request_json(
+        app.clone(),
+        "GET",
+        &format!("{}&after=1", at("/events")),
+        None,
+    )
+    .await;
+    assert_eq!(tail.1["events"][0]["kind"], "mission.started");
+    assert_eq!(
+        request_json(app.clone(), "POST", &at("/start"), None)
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    let paused = request_json(app.clone(), "POST", &at("/pause"), None).await;
+    assert_eq!(paused.1["paused"], true);
+    let resumed = request_json(app.clone(), "POST", &at("/resume"), None).await;
+    assert_eq!(resumed.1["paused"], false);
+    let closed = request_json(
+        app.clone(),
+        "POST",
+        &at("/close"),
+        Some(json!({"status":"done","reason":"Shipped"})),
+    )
+    .await;
+    assert_eq!(closed.1["closed"]["status"], "done");
+    assert_eq!(closed.1["fields"]["stage"], "review");
+    let canceled = request_json(app.clone(), "POST", &at("/cancel"), None).await;
+    assert_eq!(canceled.1["closed"]["status"], "done");
+    assert_eq!(
+        request_json(app.clone(), "POST", &at("/explode"), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request_json(
+            app.clone(),
+            "GET",
+            "/workspace/api/tasks?project_path=/tmp",
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
     let other = temp.path().join("other");
     fs::create_dir(&other).unwrap();
     let other_uri = format!(
-        "/workspace/api/tasks/{}?project_path={}",
-        created.1["id"].as_str().unwrap(),
+        "/workspace/api/missions/{id}?project_path={}",
         other.display()
     );
     assert_eq!(

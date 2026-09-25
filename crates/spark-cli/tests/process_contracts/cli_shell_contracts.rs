@@ -15,17 +15,17 @@ use spark_cli::{
 };
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,task,settings}\n",
+    "  {convo,run,flow,trigger,mission,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
-    "    task                Project task management\n",
+    "    mission             Project mission management\n",
     "    settings            Read, validate, and save workspace settings\n",
     "\n",
     "options:\n",
@@ -76,7 +76,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n\
 spark: error: unrecognized arguments: --image direct-selection\n"
     );
 }
@@ -895,7 +895,7 @@ fn flow_format_file_rejects_missing_value_before_option() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n\
 spark: error: argument --file: expected one argument\n"
     );
 }
@@ -1050,7 +1050,7 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n\
 spark: error: argument --file: not allowed with argument --flow\n"
     );
 }
@@ -1401,7 +1401,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
     assert_eq!(output.stdout, "");
     assert_eq!(
         output.stderr,
-        "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n\
+        "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n\
 spark: error: argument --goal-file: not allowed with argument --goal\n"
     );
 }
@@ -1569,17 +1569,17 @@ fn validation_error_flow_source() -> &'static str {
 }
 
 #[test]
-fn task_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
+fn mission_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
     let env = BTreeMap::new();
     let plan = request_plan_with_args_env_and_stdin(
         [
             "spark",
-            "task",
+            "mission",
             "update",
             "--project",
             "/project",
             "--id",
-            "task-123",
+            "mission-123",
             "--json",
             "-",
             "--base-url",
@@ -1616,12 +1616,12 @@ fn task_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
 }
 
 #[test]
-fn task_commands_use_project_scope_and_minimal_payloads() {
+fn mission_commands_use_project_scope_and_minimal_payloads() {
     let env = BTreeMap::new();
     for command in ["list", "get", "create", "update"] {
         let mut args = vec![
             "spark",
-            "task",
+            "mission",
             command,
             "--project",
             "/my project",
@@ -1629,7 +1629,7 @@ fn task_commands_use_project_scope_and_minimal_payloads() {
             "http://localhost:8000",
         ];
         if matches!(command, "get" | "update") {
-            args.extend(["--id", "task-123"]);
+            args.extend(["--id", "mission-123"]);
         }
         if matches!(command, "create" | "update") {
             args.extend(["--json", "-"]);
@@ -1654,6 +1654,49 @@ fn task_commands_use_project_scope_and_minimal_payloads() {
             }
         }
     }
+    let scoped = |command: &str, extra: &[&'static str]| {
+        let mut args = vec![
+            "spark",
+            "mission",
+            command,
+            "--project",
+            "/p",
+            "--id",
+            "mission-1",
+            "--base-url",
+            "http://localhost:8000",
+        ];
+        args.extend_from_slice(extra);
+        request_plan_with_args_env_and_stdin(args, &env, "").unwrap()
+    };
+    let start = scoped("start", &[]);
+    assert_eq!(start.method, HttpMethod::Post);
+    assert_eq!(
+        start.path,
+        "/workspace/api/missions/mission-1/start?project_path=%2Fp"
+    );
+    let send = scoped("send", &["--message", "Prefer small diffs"]);
+    assert_eq!(send.method, HttpMethod::Post);
+    assert_eq!(
+        send.path,
+        "/workspace/api/missions/mission-1/events?project_path=%2Fp"
+    );
+    assert_eq!(
+        send.body.unwrap(),
+        serde_json::json!({"kind":"human.message","source":"assistant","payload":{"message":"Prefer small diffs"}})
+    );
+    let events = scoped("events", &["--after", "3"]);
+    assert_eq!(events.method, HttpMethod::Get);
+    assert_eq!(
+        events.path,
+        "/workspace/api/missions/mission-1/events?project_path=%2Fp&after=3"
+    );
+    assert!(request_plan_with_args_env_and_stdin(
+        ["spark", "task", "list", "--project", "/p"],
+        &env,
+        ""
+    )
+    .is_err());
 }
 
 #[test]

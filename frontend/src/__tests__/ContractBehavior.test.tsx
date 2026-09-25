@@ -1292,13 +1292,13 @@ describe('Frontend contract behavior', () => {
     render(<Navbar />)
 
     const projectsTab = screen.getByTestId('nav-mode-projects')
-    const tasksTab = screen.getByTestId('nav-mode-tasks')
+    const missionsTab = screen.getByTestId('nav-mode-missions')
     const editorTab = screen.getByTestId('nav-mode-editor')
     const runsTab = screen.getByTestId('nav-mode-runs')
     const triggersTab = screen.getByTestId('nav-mode-triggers')
 
     expect(within(screen.getByTestId('view-mode-tabs')).getAllByRole('button')).toEqual([
-      projectsTab, tasksTab, editorTab, runsTab, triggersTab,
+      projectsTab, missionsTab, editorTab, runsTab, triggersTab,
     ])
     expect(screen.getByTestId('nav-mode-settings')).toHaveAccessibleName('Settings')
 
@@ -1307,8 +1307,8 @@ describe('Frontend contract behavior', () => {
     expect(useStore.getState().viewMode).toBe('projects')
 
     await user.keyboard('{ArrowRight}')
-    expect(tasksTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('tasks')
+    expect(missionsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('missions')
 
     await user.keyboard('{ArrowRight}')
     expect(editorTab).toHaveFocus()

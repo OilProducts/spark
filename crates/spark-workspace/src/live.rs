@@ -25,6 +25,8 @@ pub struct RawLiveQuery {
     pub triggers_project_path: Option<String>,
     pub include_workflow_log: Option<String>,
     pub include_settings: Option<String>,
+    pub include_missions: Option<String>,
+    pub missions_project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,8 @@ pub struct LiveQuery {
     pub triggers_project_path: Option<String>,
     pub include_workflow_log: bool,
     pub include_settings: bool,
+    pub include_missions: bool,
+    pub missions_project_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -131,6 +135,8 @@ pub fn validate_live_query(raw: RawLiveQuery) -> WorkspaceResult<LiveQuery> {
         triggers_project_path,
         include_workflow_log,
         include_settings: parse_bool(raw.include_settings.as_deref()),
+        include_missions: parse_bool(raw.include_missions.as_deref()),
+        missions_project_path: normalize_project_path_opt(raw.missions_project_path.as_deref())?,
     })
 }
 
@@ -440,6 +446,13 @@ pub fn envelope_matches_query(envelope: &LiveEnvelope, query: &LiveQuery) -> boo
                 Some(expected) => envelope.project_path.as_deref() == Some(expected),
                 None => true,
             }
+        }
+        "mission" => {
+            query.include_missions
+                && query
+                    .missions_project_path
+                    .as_deref()
+                    .is_none_or(|expected| envelope.project_path.as_deref() == Some(expected))
         }
         // The workflow log is a global, all-project feed by design.
         "workflow_log" => query.include_workflow_log,
@@ -965,7 +978,29 @@ pub fn lagged_resync_envelopes(query: &LiveQuery) -> Vec<LiveEnvelope> {
             REASON,
         ));
     }
+    if query.include_missions {
+        envelopes.push(resync_required(
+            "mission",
+            None,
+            query.missions_project_path.clone(),
+            REASON,
+        ));
+    }
     envelopes
+}
+
+pub fn mission_upsert_envelope(mission: &crate::missions::MissionRecord) -> LiveEnvelope {
+    LiveEnvelope {
+        event_type: "mission.upsert".to_string(),
+        project_path: Some(mission.project_path.clone()),
+        resource: LiveResource {
+            kind: "mission".to_string(),
+            id: Some(mission.id.clone()),
+        },
+        cursor: None,
+        payload: json!({ "mission": mission }),
+        reason: None,
+    }
 }
 
 fn resync_required(

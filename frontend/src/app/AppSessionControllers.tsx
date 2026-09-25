@@ -317,6 +317,7 @@ export function WorkspaceLiveEventsController() {
         || runsListSession.runs.length > 0
         || runsListSession.scopeMode !== 'active'
     const includeTriggers = viewMode === 'triggers'
+    const missionsProjectPath = viewMode === 'missions' ? activeProjectPath : null
     const conversationProjectPath = activeConversationId ? activeProjectPath : null
     const runsProjectPath = includeRunsOverview && runsListSession.scopeMode === 'active'
         ? activeProjectPath
@@ -366,6 +367,10 @@ export function WorkspaceLiveEventsController() {
                 params.set('triggers_project_path', triggersProjectPath)
             }
         }
+        if (missionsProjectPath) {
+            params.set('include_missions', 'true')
+            params.set('missions_project_path', missionsProjectPath)
+        }
         // The workflow event log is a global, always-on feed for the Home pane.
         params.set('include_workflow_log', 'true')
         params.set('include_settings', 'true')
@@ -375,6 +380,7 @@ export function WorkspaceLiveEventsController() {
         conversationProjectPath,
         includeRunsOverview,
         includeTriggers,
+        missionsProjectPath,
         runsProjectPath,
         selectedRunLiveReady,
         selectedRunId,
@@ -479,11 +485,21 @@ export function WorkspaceLiveEventsController() {
                         window.dispatchEvent(new CustomEvent('spark:runs-overview-resync-required', {
                             detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
                         }))
+                    } else if (envelope.resource?.kind === 'mission') {
+                        window.dispatchEvent(new CustomEvent('spark:mission-live-event', {
+                            detail: { projectPath: envelope.project_path ?? activeProjectPath, mission: null },
+                        }))
                     } else if (envelope.resource?.kind === 'trigger') {
                         window.dispatchEvent(new CustomEvent('spark:triggers-resync-required', {
                             detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
                         }))
                     }
+                    return
+                }
+                if (envelope.type === 'mission.upsert' && envelope.resource?.kind === 'mission') {
+                    window.dispatchEvent(new CustomEvent('spark:mission-live-event', {
+                        detail: { projectPath: envelope.project_path ?? activeProjectPath, mission: payload.mission },
+                    }))
                     return
                 }
                 if (envelope.type === 'run.upsert') {

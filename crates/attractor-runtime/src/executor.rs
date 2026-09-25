@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use attractor_core::{
     AttractorContext, CheckpointState, ContextMap, DotAttribute, FailureKind, FlowDefinition,
     FlowNode, LaunchContext, Outcome, OutcomeStatus, RoutingEdge, RunManifest, RunRecord,
-    RunResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -27,7 +26,7 @@ use crate::events::{
     stage_started_event,
 };
 use crate::records::{mark_record_canceled, mark_record_paused, write_run_record};
-use crate::results::{failed_run_result, result_summary_request, write_run_result};
+use crate::results::{canceled_run_result, failed_run_result, result_summary_request};
 use crate::retry::{coerce_retry_exhausted_outcome, retry_policy_for_node, should_retry_attempt};
 use crate::routing::{
     is_conditional_node, is_exit_node, outgoing_routing_edges, resolve_start_node,
@@ -1711,7 +1710,7 @@ fn finalize_failed<E: NodeExecutor>(
             run_result_summary(node_executor, &prompt, flow, context, paths, record, run_id);
         (prompt, attempt)
     });
-    write_run_result(paths, &failed_run_result(run_id, &failure_reason, summary))?;
+    store.write_result(paths, &failed_run_result(run_id, &failure_reason, summary))?;
     Ok(PipelineExecutionResult {
         status: "failed".to_string(),
         current_node: current_node.to_string(),
@@ -1813,16 +1812,7 @@ fn finalize_canceled(
         paths,
         log_event(run_id, "Pipeline Canceled: aborted_by_user"),
     )?;
-    write_run_result(
-        paths,
-        &RunResult {
-            run_id: run_id.to_string(),
-            status: "canceled".to_string(),
-            state: "error".to_string(),
-            error: Some(last_error.to_string()),
-            ..RunResult::default()
-        },
-    )?;
+    store.write_result(paths, &canceled_run_result(run_id, last_error))?;
     Ok(PipelineExecutionResult {
         status: "canceled".to_string(),
         current_node: current_node.to_string(),

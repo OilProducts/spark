@@ -36,17 +36,17 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,task,settings} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,task,settings}\n",
+    "  {convo,run,flow,trigger,mission,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
-    "    task                Project task management\n",
+    "    mission             Project mission management\n",
     "    settings            Read, validate, and save workspace settings\n",
     "\n",
     "options:\n",
@@ -100,7 +100,7 @@ enum CommandDomain {
     Run,
     Flow,
     Trigger,
-    Task,
+    Mission,
     Settings,
 }
 
@@ -233,7 +233,7 @@ fn run_agent_shell(
             Ok(plan) => execute_request_plan(&plan),
             Err(output) => output,
         },
-        CommandDomain::Task | CommandDomain::Trigger | CommandDomain::Settings => {
+        CommandDomain::Mission | CommandDomain::Trigger | CommandDomain::Settings => {
             match build_request_plan(args, env, stdin) {
                 Ok(plan) => execute_request_plan(&plan),
                 Err(output) => output,
@@ -274,7 +274,7 @@ fn build_request_plan(
         CommandDomain::Run => build_run_plan(args, env, stdin),
         CommandDomain::Flow => build_flow_plan(args, env),
         CommandDomain::Trigger => build_trigger_plan(args, env, stdin),
-        CommandDomain::Task => build_task_plan(args, env, stdin),
+        CommandDomain::Mission => build_mission_plan(args, env, stdin),
         CommandDomain::Settings => build_settings_plan(args, env, stdin),
     }
 }
@@ -1308,10 +1308,12 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             }),
             _ => Err(usage_error("Unknown command")),
         },
-        "task" => match domain_matches.subcommand_name() {
-            Some("list" | "get" | "create" | "update") => Ok(CommandPath {
-                domain: CommandDomain::Task,
-            }),
+        "mission" => match domain_matches.subcommand_name() {
+            Some("list" | "get" | "create" | "update" | "start" | "send" | "events") => {
+                Ok(CommandPath {
+                    domain: CommandDomain::Mission,
+                })
+            }
             _ => Err(usage_error("Unknown command")),
         },
         "trigger" => match domain_matches.subcommand_name() {
@@ -1332,7 +1334,7 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
         return CommandOutput::stdout(0, TOP_LEVEL_HELP);
     };
     match domain {
-        "convo" | "run" | "flow" | "trigger" | "task" | "settings" => {
+        "convo" | "run" | "flow" | "trigger" | "mission" | "settings" => {
             usage_error("Unknown command")
         }
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
@@ -1375,11 +1377,14 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("set")),
         )
         .subcommand(
-            Command::new("task")
+            Command::new("mission")
                 .subcommand(clap_command_leaf("list"))
                 .subcommand(clap_command_leaf("get"))
                 .subcommand(clap_command_leaf("create"))
-                .subcommand(clap_command_leaf("update")),
+                .subcommand(clap_command_leaf("update"))
+                .subcommand(clap_command_leaf("start"))
+                .subcommand(clap_command_leaf("send"))
+                .subcommand(clap_command_leaf("events")),
         )
         .subcommand(
             Command::new("trigger")
@@ -2476,7 +2481,7 @@ fn is_help_arg(value: &str) -> bool {
     value == "-h" || value == "--help"
 }
 
-fn build_task_plan(
+fn build_mission_plan(
     args: &[String],
     env: &impl Environment,
     stdin: &mut RuntimeStdin,
@@ -2484,44 +2489,67 @@ fn build_task_plan(
     let command = args.get(1).map(String::as_str).unwrap_or("");
     let options = parse_api_options(
         &args[2..],
-        &["--project", "--id", "--json", "--base-url"],
+        &[
+            "--project",
+            "--id",
+            "--json",
+            "--message",
+            "--after",
+            "--base-url",
+        ],
         &[],
         PositionalMode::None,
     )?;
     require_values(&options, &["--project"])?;
     let project = non_empty_value(&options, "--project", "Project is required")?;
-    let mut path = "/workspace/api/tasks".to_string();
-    if matches!(command, "get" | "update") {
-        let id = non_empty_value(&options, "--id", "Task ID is required")?;
+    let mut path = "/workspace/api/missions".to_string();
+    if command != "list" && command != "create" {
+        let id = non_empty_value(&options, "--id", "Mission ID is required")?;
         path.push_str(&format!("/{}", percent_encode_component(&id)));
+    }
+    match command {
+        "start" => path.push_str("/start"),
+        "send" | "events" => path.push_str("/events"),
+        _ => {}
     }
     path.push_str(&format!(
         "?project_path={}",
         percent_encode_component(&project)
     ));
-    let body = if matches!(command, "create" | "update") {
-        require_values(&options, &["--json"])?;
-        let mut body = read_required_json_object(
-            options.value("--json").unwrap_or_default(),
-            "Task payload",
-            stdin,
-        )
-        .map_err(|e| json_error(e, EXIT_GENERAL_FAILURE))?;
-        if body.get("actor").is_none() {
-            body["actor"] = json!("assistant");
+    if let Some(after) = options.value("--after").filter(|_| command == "events") {
+        path.push_str(&format!("&after={}", percent_encode_component(after)));
+    }
+    let body = match command {
+        "create" | "update" => {
+            require_values(&options, &["--json"])?;
+            let mut body = read_required_json_object(
+                options.value("--json").unwrap_or_default(),
+                "Mission payload",
+                stdin,
+            )
+            .map_err(|e| json_error(e, EXIT_GENERAL_FAILURE))?;
+            if body.get("actor").is_none() {
+                body["actor"] = json!("assistant");
+            }
+            Some(body)
         }
-        Some(body)
-    } else {
-        None
+        "send" => {
+            let message = non_empty_value(&options, "--message", "Message is required")?;
+            Some(
+                json!({"kind": "human.message", "source": "assistant", "payload": {"message": message}}),
+            )
+        }
+        "start" => Some(json!({})),
+        _ => None,
     };
     Ok(ApiRequestPlan {
         method: match command {
-            "list" | "get" => HttpMethod::Get,
-            "create" => HttpMethod::Post,
+            "list" | "get" | "events" => HttpMethod::Get,
+            "create" | "start" | "send" => HttpMethod::Post,
             "update" => HttpMethod::Patch,
             _ => return Err(usage_error("Unknown command")),
         },
-        base_url: resolve_base_url(&options, "spark task", env)?,
+        base_url: resolve_base_url(&options, "spark mission", env)?,
         path,
         body,
         text: false,

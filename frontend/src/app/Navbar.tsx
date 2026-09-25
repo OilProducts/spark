@@ -25,7 +25,7 @@ const NAV_MODE_ITEMS: Array<{
         labelTestId: 'nav-mode-home',
         mode: 'home',
     },
-    { buttonTestId: 'nav-mode-tasks', label: 'Tasks', mode: 'tasks' },
+    { buttonTestId: 'nav-mode-missions', label: 'Missions', mode: 'missions' },
     {
         buttonTestId: 'nav-mode-editor',
         label: 'Editor',
@@ -51,6 +51,7 @@ const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
     run_gate: 'Run waiting for input',
     flow_run_request: 'Flow run request',
     proposed_plan: 'Plan pending review',
+    mission: 'Mission needs attention',
 }
 
 function AttentionBell() {
@@ -107,6 +108,10 @@ function AttentionBell() {
         if (item.kind === 'run_gate' && item.run_id) {
             setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), item.run_id)
             setViewMode('runs')
+            return
+        }
+        if (item.kind === 'mission') {
+            setViewMode('missions')
             return
         }
         if (item.conversation_id && item.project_path) {

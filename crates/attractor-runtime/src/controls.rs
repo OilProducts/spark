@@ -809,6 +809,10 @@ impl RuntimeControls {
                 Some(last_error.to_string()),
             ),
         )?;
+        self.store.write_result(
+            &bundle.paths,
+            &crate::results::canceled_run_result(run_id, last_error),
+        )?;
         Ok(RuntimeControlStatus {
             status: "canceled".to_string(),
             pipeline_id: run_id.to_string(),

@@ -346,24 +346,24 @@ fn settings(root: &Path) -> SparkSettings {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
+async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_str().unwrap();
     let server = spawn_server(settings.clone()).await;
-    let payload_file = temp.path().join("task.json");
+    let payload_file = temp.path().join("mission.json");
     fs::write(
         &payload_file,
-        json!({"fields":{"title":"Task from CLI","description":"First line\nSecond line"}})
+        json!({"fields":{"title":"Mission from CLI","description":"First line\nSecond line"}})
             .to_string(),
     )
     .unwrap();
     let output = run_spark(
         temp.path(),
         [
-            "task",
+            "mission",
             "create",
             "--project",
             project,
@@ -377,7 +377,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
     let created: Value = serde_json::from_slice(&output.stdout).unwrap();
     let id = created["id"].as_str().unwrap();
     let client = reqwest::Client::new();
-    let url = format!("{}/workspace/api/tasks/{id}", server.base_url);
+    let url = format!("{}/workspace/api/missions/{id}", server.base_url);
     let response = client
         .patch(&url)
         .query(&[("project_path", project)])
@@ -389,7 +389,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
     let output = run_spark(
         temp.path(),
         [
-            "task",
+            "mission",
             "get",
             "--project",
             project,
@@ -400,10 +400,10 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
         ],
     );
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let task: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(task["fields"]["stage"], "done");
-    assert_eq!(task["activity"][0]["actor"], "assistant");
-    assert_eq!(task["activity"][1]["actor"], "human");
+    let mission: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(mission["fields"]["stage"], "done");
+    assert_eq!(mission["activity"][0]["actor"], "assistant");
+    assert_eq!(mission["activity"][1]["actor"], "human");
     fs::write(
         &payload_file,
         json!({"revision":1,"fields":{"title":"Stale overwrite"}}).to_string(),
@@ -412,7 +412,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
     let output = run_spark(
         temp.path(),
         [
-            "task",
+            "mission",
             "update",
             "--project",
             project,
@@ -428,7 +428,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
     let output = run_spark(
         temp.path(),
         [
-            "task",
+            "mission",
             "list",
             "--project",
             project,
@@ -437,8 +437,8 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
         ],
     );
     let listed: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(listed["tasks"][0]["revision"], 2);
-    assert_eq!(listed["tasks"][0]["fields"]["title"], "Task from CLI");
+    assert_eq!(listed["missions"][0]["revision"], 2);
+    assert_eq!(listed["missions"][0]["fields"]["title"], "Mission from CLI");
     assert_eq!(listed.as_object().unwrap().len(), 1);
     for key in [
         "priority",
@@ -449,6 +449,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
         "conversations",
         "artifacts",
         "runs",
+        "state",
     ] {
         fs::write(
             &payload_file,
@@ -458,7 +459,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
         let output = run_spark(
             temp.path(),
             [
-                "task",
+                "mission",
                 "update",
                 "--project",
                 project,
@@ -477,7 +478,7 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
         .unwrap()
         .root;
     assert_eq!(
-        spark_storage::workspace_tasks::TaskRepository::new(&root)
+        spark_storage::workspace_missions::MissionRepository::new(&root)
             .read(id)
             .unwrap()
             .unwrap()["activity"]
@@ -486,6 +487,40 @@ async fn task_cli_and_ui_http_share_revisions_and_durable_records() {
             .len(),
         2
     );
+    let mission_cli = |args: &[&str]| {
+        let mut argv = vec!["mission"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&[
+            "--project",
+            project,
+            "--id",
+            id,
+            "--base-url",
+            &server.base_url,
+        ]);
+        let output = run_spark(temp.path(), argv);
+        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let started = mission_cli(&["start"]);
+    assert_eq!(started["fields"]["stage"], "in_progress");
+    assert!(started["started_at"].is_string());
+    let sent = mission_cli(&["send", "--message", "Focus on the parser"]);
+    assert_eq!(sent["id"], id);
+    let events = mission_cli(&["events", "--after", "0"]);
+    let kinds: Vec<_> = events["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["mission.started", "human.message"]);
+    assert_eq!(
+        events["events"][1]["payload"]["message"],
+        "Focus on the parser"
+    );
+    let tail = mission_cli(&["events", "--after", "1"]);
+    assert_eq!(tail["events"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

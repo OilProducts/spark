@@ -83,6 +83,16 @@ pub fn failed_run_result(
     result
 }
 
+pub fn canceled_run_result(run_id: &str, last_error: &str) -> RunResult {
+    RunResult {
+        run_id: run_id.to_string(),
+        status: "canceled".to_string(),
+        state: "error".to_string(),
+        error: Some(last_error.to_string()),
+        ..RunResult::default()
+    }
+}
+
 pub fn read_materialized_run_result(paths: &RunRootPaths) -> Result<Option<RunResult>> {
     let Some(mut result) = read_json_optional::<RunResult>(paths.result_json())? else {
         return Ok(None);
@@ -102,7 +112,9 @@ pub fn write_run_result(paths: &RunRootPaths, result: &RunResult) -> Result<()> 
     Ok(())
 }
 
-pub fn materialize_run_result(
+/// Builds the terminal result for a finished run; callers persist it through
+/// `RunStore::write_result`, which notifies run-event observers.
+pub fn build_run_result(
     paths: &RunRootPaths,
     run_id: &str,
     status: &str,
@@ -121,7 +133,6 @@ pub fn materialize_run_result(
             summary_prompt: Some(prompt),
             ..RunResult::default()
         };
-        write_run_result(paths, &result)?;
         return Ok(result);
     }
     let summary_failure = match summary {
@@ -145,7 +156,6 @@ pub fn materialize_run_result(
             ..RunResult::default()
         },
     };
-    write_run_result(paths, &result)?;
     Ok(result)
 }
 

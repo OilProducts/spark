@@ -1,0 +1,37 @@
+schema_version: '1'
+id: mission_react
+title: Mission Reaction
+description: Decide how a mission responds to a batch of inbox events and write a directive for the mission coordinator.
+goal: Read the mission objective, current state, run roster, and pending events, then decide the next actions.
+defaults:
+  llm_provider: codex
+  llm_model: gpt-6-astra
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  react:
+    kind: agent_task
+    label: React
+    config:
+      kind: agent_task
+      prompt: 'You coordinate a mission. context.mission holds its id, title, objective, current state summary (markdown), runs (the roster of owned runs with label, role, and status), and events (the batch of inbox events to react to, oldest first). Inspect the repository and run results only as far as needed to decide. Then choose the next actions toward the objective: launch work runs, record a new state summary, and close the mission when the objective is met or cannot be met. Always write a state summary that a human can read to understand progress. Available actions: {"launch": {"flow_name": "<flow path such as software-development/implement-change.yaml>", "label": "<short unique label>", "context": {"context.<key>": <value>}}}, {"set_state": {"markdown": "<replacement state summary>"}}, and {"close": {"status": "done|failed|canceled", "reason": "<why>"}}. If you need a human decision, ask for clarification before writing the directive. Respond with ONLY a JSON status envelope whose context_updates set context.mission.directive to {"actions": [...]} with actions applied in order.'
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.mission
+      writes_context:
+      - context.mission.directive
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+- from: start
+  to: react
+- from: react
+  to: done
+  condition: outcome=success

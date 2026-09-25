@@ -1384,6 +1384,82 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_route_streams_mission_upserts_through_run_delivery() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    // The reaction completes without a directive, which needs attention.
+    write_flow(&settings, "missions/react.yaml");
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().to_string();
+    let app = build_app(settings);
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?include_missions=true&missions_project_path={}",
+            url_encode(&project)
+        ),
+        None,
+    )
+    .await;
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+    let base = format!(
+        "/workspace/api/missions?project_path={}",
+        url_encode(&project)
+    );
+    let created = json_body(
+        request(
+            app.clone(),
+            "POST",
+            &base,
+            Some(json!({"fields": {"title": "Live mission"}})),
+        )
+        .await,
+    )
+    .await;
+    let id = created["id"].as_str().expect("mission id").to_string();
+    let upsert = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    assert_eq!(upsert["type"], "mission.upsert");
+    assert_eq!(upsert["resource"], json!({"kind": "mission", "id": id}));
+    assert_eq!(
+        upsert["payload"]["mission"]["fields"]["title"],
+        "Live mission"
+    );
+    let started = request(
+        app.clone(),
+        "POST",
+        &format!(
+            "/workspace/api/missions/{id}/start?project_path={}",
+            url_encode(&project)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(started.status(), StatusCode::OK);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "mission never settled"
+        );
+        let frame = next_sse_chunk(&mut live_stream).await;
+        if !frame.contains("data: ") {
+            continue;
+        }
+        let envelope = sse_data_json(&frame);
+        assert_eq!(envelope["type"], "mission.upsert");
+        let mission = &envelope["payload"]["mission"];
+        if mission["runs"][0]["status"] == "completed" {
+            assert_eq!(mission["execution"]["substate"], "attention");
+            assert_eq!(mission["runs"][0]["role"], "reaction");
+            break;
+        }
+    }
+}
+
 #[tokio::test]
 async fn live_route_streams_source_activation_trigger_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");

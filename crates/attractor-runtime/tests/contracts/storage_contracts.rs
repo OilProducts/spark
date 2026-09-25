@@ -791,3 +791,50 @@ fn terminal_child_lock_metadata_is_normalized_on_read_and_write() {
         }
     }
 }
+
+#[test]
+fn every_terminal_result_write_notifies_run_event_observers() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let observed = seen.clone();
+    let store = store(&temp).with_run_event_observer(std::sync::Arc::new(move |run_id: &str| {
+        observed.lock().unwrap().push(run_id.to_string())
+    }));
+    let project_path = temp.path().join("Project Notify");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let paths = store
+        .create_run(CreateRunRequest {
+            record: record("run-failed", &project_path.to_string_lossy()),
+            ..CreateRunRequest::default()
+        })
+        .expect("create run");
+    seen.lock().unwrap().clear();
+    // A failed run's result lands after pipeline_failed and must still notify.
+    store
+        .write_result(
+            &paths,
+            &attractor_runtime::failed_run_result("run-failed", "boom", None),
+        )
+        .expect("write failed result");
+    assert_eq!(*seen.lock().unwrap(), ["run-failed"]);
+
+    let mut record = record("run-orphan", &project_path.to_string_lossy());
+    record.status = "cancel_requested".to_string();
+    store
+        .create_run(CreateRunRequest {
+            record,
+            ..CreateRunRequest::default()
+        })
+        .expect("create run");
+    seen.lock().unwrap().clear();
+    attractor_runtime::RuntimeControls::new(store.clone())
+        .mark_canceled("run-orphan", "no executor")
+        .expect("mark canceled");
+    let paths = store.find_run_root("run-orphan").unwrap().unwrap();
+    let result = store.read_result(&paths).unwrap().expect("result");
+    assert_eq!(
+        (result.status.as_str(), result.state.as_str()),
+        ("canceled", "error")
+    );
+    assert!(seen.lock().unwrap().iter().any(|id| id == "run-orphan"));
+}

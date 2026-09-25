@@ -145,6 +145,12 @@ fn build_app_with_live_hub(
             service = service.with_run_event_observer(observer);
         }
         let _ = service.recover_interrupted_runs();
+        let mut missions =
+            spark_workspace::missions::WorkspaceMissionService::new((*state.settings).clone());
+        if let Some(observer) = state.run_event_observer.0.clone() {
+            missions = missions.with_run_event_observer(observer);
+        }
+        let _ = missions.recover();
     }
     Router::new()
         .route("/", get(serve_index))
@@ -1144,11 +1150,20 @@ fn publish_terminal_run_trigger_events(
     run_event_observer: Option<attractor_api::RunEventObserver>,
 ) {
     let mut service = WorkspaceTriggerService::new(settings.clone());
-    if let Some(observer) = run_event_observer {
+    if let Some(observer) = run_event_observer.clone() {
         service = service.with_run_event_observer(observer);
     }
     if let Ok(outcomes) = service.emit_terminal_flow_event_for_run(run_id) {
         publish_trigger_activation_outcomes(settings, live_hub, outcomes);
+    }
+    // Mission delivery rides the observed publish path only, so every run a
+    // mission launches is itself observed and reports back.
+    if let Some(observer) = run_event_observer {
+        let missions = spark_workspace::missions::WorkspaceMissionService::new(settings.clone())
+            .with_run_event_observer(observer);
+        if let Ok(Some(mission)) = missions.deliver_run_events(run_id) {
+            live_hub.publish(spark_workspace::live::mission_upsert_envelope(&mission));
+        }
     }
 }
 

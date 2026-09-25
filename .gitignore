@@ -33,5 +33,7 @@ agent-notes.md
 !/changes/CR-2026-0118-finish-the-settings-overhaul-with-targeted-corrections/
 !/changes/CR-2026-0119-preserve-containers-for-one-run-execution/
 !/changes/CR-2026-0120-cr-2026-0086-speak-the-claude-code-bidirectional-control-protocol/
+!/changes/CR-2026-0121-missions-supersede-tasks-with-event-driven-coordination/
+!/changes/CR-2026-0122-fix-mission-delivery-and-coordination-defects/
 !/reports/CR-2026-0117-evaluation.md
 !/reports/CR-2026-0117-audit/

@@ -7,7 +7,7 @@ import { SettingsPanel } from "@/features/settings"
 import { TriggersPanel } from "@/features/triggers"
 import { useStore } from "@/store"
 import { DialogProvider } from "@/components/app/dialog-controller"
-import { TasksPanel } from "@/features/tasks/TasksPanel"
+import { MissionsPanel } from "@/features/missions/MissionsPanel"
 function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isHomeMode = viewMode === 'home' || viewMode === 'projects'
@@ -59,7 +59,7 @@ function App() {
           >
             <TriggersPanel />
           </div>
-          <div hidden={viewMode !== 'tasks'} className="absolute inset-0"><TasksPanel active={viewMode === 'tasks'} /></div>
+          <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
           {isSettingsMode ? (
             <SettingsPanel />
           ) : null}

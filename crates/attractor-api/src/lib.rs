@@ -1257,6 +1257,10 @@ impl AttractorApiService {
             record.last_error = diagnostic.clone();
             record.ended_at = Some(attractor_runtime::utc_timestamp());
         });
+        if let Ok(Some(paths)) = store.find_run_root(run_id) {
+            let result = attractor_runtime::failed_run_result(run_id, &diagnostic, None);
+            let _ = store.write_result(&paths, &result);
+        }
     }
 
     /// Resume a run in a detached thread from its persisted record and checkpoint.
@@ -1379,7 +1383,7 @@ impl AttractorApiService {
             attractor_runtime::pipeline_failed_event(run_id, current_node, error, 0),
         );
         let result = attractor_runtime::failed_run_result(run_id, error, None);
-        let _ = attractor_runtime::write_run_result(&bundle.paths, &result);
+        let _ = store.write_result(&bundle.paths, &result);
     }
 
     /// Runs a prepared pipeline on a dedicated background thread, honoring

@@ -463,9 +463,26 @@ impl WorkspaceConversationService {
             }
         }
         let repository = self.repository();
+        let missions = crate::missions::WorkspaceMissionService::new(self.settings.clone());
         for project in
             ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
         {
+            for mission in missions.list(&project.project_path).unwrap_or_default() {
+                if !mission.fields.archived
+                    && mission.fields.stage != crate::missions::Stage::Done
+                    && matches!(
+                        mission.execution.substate,
+                        crate::missions::Substate::Waiting | crate::missions::Substate::Attention
+                    )
+                {
+                    items.push(json!({
+                        "kind": "mission", "id": mission.id, "mission_id": mission.id,
+                        "title": mission.fields.title, "reason": mission.execution.reason,
+                        "substate": mission.execution.substate,
+                        "project_path": project.project_path, "updated_at": mission.updated_at,
+                    }));
+                }
+            }
             for conversation_id in
                 repository.list_conversation_ids_for_project(&project.project_path)?
             {

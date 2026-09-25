@@ -614,6 +614,13 @@ fn parent_node_without_parent_run_is_stably_rejected() {
             record.outcome_reason_code.as_deref(),
             Some("recovery_missing_lineage")
         );
+        // A terminal result replaces the pending one so consumers see the end.
+        let paths = store.find_run_root("broken-lineage").unwrap().unwrap();
+        let result = store.read_result(&paths).unwrap().expect("result");
+        assert_eq!(
+            (result.status.as_str(), result.state.as_str()),
+            ("failed", "error")
+        );
     }
 }
 
@@ -687,6 +694,12 @@ fn cancel_finalizes_an_orphaned_run_immediately() {
         .map(|record| attractor_runtime::normalize_run_status(&record.status))
         .unwrap_or_default();
     assert_eq!(status, "canceled", "no executor needed to finalize");
+    let paths = store.find_run_root("run-orphan-cancel").unwrap().unwrap();
+    let result = store.read_result(&paths).unwrap().expect("result");
+    assert_eq!(
+        (result.status.as_str(), result.state.as_str()),
+        ("canceled", "error")
+    );
 }
 
 #[test]

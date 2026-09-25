@@ -2,7 +2,7 @@
 
 This guide is the packaged control-surface reference for agents operating Spark through its CLI and HTTP API.
 
-Use it for launch, inspection, human-gate, and trigger tasks. OpenAPI remains the exhaustive schema source:
+Use it for launch, inspection, human-gate, trigger, and mission tasks. OpenAPI remains the exhaustive schema source:
 
 - Attractor: `/attractor/docs`, `/attractor/openapi.json`
 - Workspace: `/workspace/docs`, `/workspace/openapi.json`
@@ -459,15 +459,18 @@ Operational rules:
 - Source checkouts should use `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- init` and `SPARK_HOME=~/.spark-dev cargo run -p spark-server --bin spark-server -- serve --port 8010` instead of mutating a stable packaged runtime.
 - Packaged container workflows use `compose.package.yaml` and keep host-visible runtime state under the configured Spark home volume.
 
-## Project tasks
+## Project missions
 
-Tasks are explicitly managed project records. Inspect the queue before work and record useful issue detail in the optional plain-text description; no template or mandatory sections are needed. Do not infer or import tasks from change requests automatically.
+Missions are explicitly managed project records of an intended outcome. A mission that has not started behaves like a plain board card: inspect the queue before work and record useful issue detail in the optional plain-text description (the objective); no template or mandatory sections are needed. Do not infer or import missions from change requests automatically.
 
 ```sh
-spark task list --project /absolute/project
-spark task get --project /absolute/project --id task-ID
-spark task create --project /absolute/project --json task.json
-spark task update --project /absolute/project --id task-ID --json - < update.json
+spark mission list --project /absolute/project
+spark mission get --project /absolute/project --id mission-ID
+spark mission create --project /absolute/project --json mission.json
+spark mission update --project /absolute/project --id mission-ID --json - < update.json
+spark mission start --project /absolute/project --id mission-ID
+spark mission send --project /absolute/project --id mission-ID --message "Prefer the smaller fix"
+spark mission events --project /absolute/project --id mission-ID --after 0
 ```
 
 `--json` reads a file or `-` for stdin; output is JSON. Create requires only a title:
@@ -482,6 +485,14 @@ Updates require the revision from get/list, with only changed fields:
 {"revision":1,"fields":{"stage":"planning","description":"Decide which document types are in scope."},"note":"Recorded the scope question","actor":"assistant"}
 ```
 
-Stages are `backlog` (default), `planning`, `ready`, `in_progress`, `review`, and `done`. All are manually editable, including Done without a note. Reopen by selecting an earlier stage. Archive with `fields.archived: true` and restore with `false`. Optional activity notes and human/assistant attribution are retained. On a revision conflict, reread and reconcile; never blindly retry stale edits.
+Stages are `backlog` (default), `planning`, `ready`, `in_progress`, `review`, and `done`. All are manually editable, including Done without a note. Reopen by selecting an earlier stage. Archive with `fields.archived: true` and restore with `false`. Optional activity notes and human/assistant attribution are retained. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID. Moving a card launches nothing; ordinary conversation run requests still require approval.
 
-Listing returns only `tasks`, ordered by creation time then ID. Tasks have no resource associations or run integration. Stage changes launch nothing; ordinary conversation run requests still require approval.
+Starting a mission is an explicit action: `spark mission start` moves it to In progress and posts `mission.started` to its inbox. From then on the mission owns runs and reacts to their events (`run.completed`, `run.failed`, `run.canceled`, `run.waiting`, `run.signal`, and `human.message`). `spark mission send` posts a `human.message`, which also clears an `attention` state and prompts the next reaction. Events are processed in order; `execution.substate` reports `idle`, `running`, `reasoning`, `waiting` (a human gate or an exhausted budget, named in `execution.reason`), or `attention` (a failed reaction or launch, or a reaction or hook closing the mission as failed or canceled). Attention holds until a human sends a message or resumes, which then applies any actions it deferred; a budget wait never replaces it. A mission a human cancels or closes shows `idle` with the close reason.
+
+Hooks (`fields.hooks`) react mechanically, first match wins, and anything unmatched goes to a reaction run of `fields.reaction_flow` (default `missions/react.yaml`):
+
+```json
+{"revision":3,"fields":{"hooks":[{"on":"run.completed","label":"build","status":"completed","do":{"launch":{"flow_name":"software-development/review-change.yaml","label":"review","context":{"context.request.source_ref":"HEAD"}}}},{"on":"run.signal","do":"ignore"}],"budget":{"concurrent_runs":4,"total_runs":25,"reactions":10}}}
+```
+
+Hook actions are `launch`, `close` (`{"status":"done|failed|canceled","reason":"..."}`), `ignore`, and `reason`. A reaction receives `context.mission` (objective, state, runs, and the pending event batch) and ends by writing `context.mission.directive` = `{"actions":[...]}` using `launch`, `set_state` (`{"markdown":"..."}`), and `close`; only reactions write the mission `state`. Closing as done moves the card to Review for a human to finish. Runs launched by a mission carry `context.spark_mission` and may report mid-flight by writing a JSON value to `context.mission.signal`. Pause, resume, cancel, and close are available at `POST /workspace/api/missions/{id}/pause|resume|cancel|close?project_path=...`.
