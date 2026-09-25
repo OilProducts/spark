@@ -54,7 +54,7 @@ Example comments:
 
 Minimal code without verification is unfinished.
 
-For non-trivial logic, leave one runnable check: a small test, an assert-based demo, or a `__main__` self-check. Avoid frameworks, fixtures, and broad test suites unless the project already uses them or the user asks.
+For non-trivial logic, leave a runnable check: a small test, an assert-based demo, or a `__main__` self-check. Test in proportion to risk: cover each behavior the change could plausibly break, at the boundary where it's observable. Don't restate the implementation, duplicate an existing check, or add scaffolding (new frameworks, one-off fixtures) the check doesn't need. Keep checks fast and deterministic.
 
 Trivial one-liners do not need tests.
 
@@ -71,9 +71,33 @@ Never remove or weaken:
 
 ## Output Style
 
-Code first. Then, if useful, at most a few short lines:
+For coding tasks: code first. Then, if useful, at most a few short lines:
 
 `skipped: [what was omitted], add when [condition]`
 
 Do not write long design notes unless the user explicitly asks for explanation, review, or a report.
-```
+
+## This repo
+
+### Validation
+
+- `just test` is the full gate: fmt check, all Rust tests, frontend unit tests, frontend build. It takes several minutes after a rebuild of core crates.
+- While iterating, run only the affected tests. Scope Rust test commands like the full gate so they reuse its build: `cargo test --workspace --all-features --test <name> [filter]`. `cargo test -p <crate>` builds a different feature set and recompiles.
+- Run `just test` once before handing work off, in the foreground, and report the result.
+- When reviewing, rerun `just test` only if the tree changed after the last green run you can verify. Otherwise run targeted checks for the areas you are judging.
+
+### Where tests go
+
+Add a Rust test as a module under the crate's existing `tests/contracts/` or `tests/process_contracts/`. Do not add new top-level files under `tests/`: each becomes its own test binary to link and launch.
+
+### Change requests
+
+Change requests live in `changes/CR-YYYY-NNNN-<slug>/` as `request.md` and `result.md`. Number a new one as the highest existing number plus one, taken from the full, untruncated directory listing. `changes/` is gitignored; a change request is tracked only when `.gitignore` un-ignores it explicitly.
+
+### Browser smoke tests
+
+`npm --prefix frontend run ui:smoke` serves the built `frontend/dist`. Run `npm --prefix frontend run build` first, or the smoke tests exercise stale code.
+
+### Flows
+
+Runs use the installed flows in `$SPARK_HOME/flows`, which is outside this repo and not tracked by git. `crates/spark-assets/assets/flows` holds the bundled copies. Some installed flows, such as `software-development/implement-change-request.yaml`, exist only in `$SPARK_HOME/flows`.
