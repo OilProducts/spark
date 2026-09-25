@@ -171,6 +171,14 @@ impl ClaudeCodeBackend {
         } {
             command.env("CLAUDE_CONFIG_DIR", config_dir);
         }
+        // A turn ends at the first result, which kills anything the agent
+        // backgrounded, so commands must run in the foreground. Long gates such
+        // as `just test` exceed Claude Code's 10-minute foreground cap.
+        // ponytail: fixed 1h cap; make it configurable if a gate needs longer.
+        command
+            .env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")
+            .env("BASH_DEFAULT_TIMEOUT_MS", "3600000")
+            .env("BASH_MAX_TIMEOUT_MS", "3600000");
 
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {

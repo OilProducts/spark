@@ -198,6 +198,8 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         "--verbose",
         "--permission-mode",
         "--model",
+        // Backgrounded commands die with the turn, so the CLI must not offer them.
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1",
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }

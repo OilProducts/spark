@@ -30,7 +30,13 @@ fn main() {
                 .append(true)
                 .open(&log_path)
             {
-                let _ = writeln!(log, "{}\n-- invocation --", args.join("\n"));
+                let background =
+                    env::var("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS").unwrap_or_default();
+                let _ = writeln!(
+                    log,
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\n-- invocation --",
+                    args.join("\n")
+                );
             }
         }
     }
