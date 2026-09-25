@@ -18,7 +18,6 @@ const STARTER_FLOW_NAMES: &[&str] = &[
     "software-development/audit-codebase.yaml",
     "software-development/design-change.yaml",
     "software-development/implement-change.yaml",
-    "software-development/integrate-ready-branches.yaml",
     "software-development/investigate-bug.yaml",
     "software-development/merge-change.yaml",
     "software-development/review-change.yaml",
@@ -264,6 +263,41 @@ fn implement_milestone_reviews_before_expensive_validation_and_blocks_invalid_st
         .edges
         .iter()
         .any(|edge| edge.from == "validate_item_plan" && edge.to == "extract_items"));
+}
+
+#[test]
+fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() {
+    for name in [
+        "software-development/audit-codebase.yaml",
+        "software-development/design-change.yaml",
+        "software-development/investigate-bug.yaml",
+        "software-development/run-retrospective.yaml",
+    ] {
+        let asset = flows::load_starter_flow(name).expect("analysis flow");
+        let flow = attractor_dsl::parse_flow_definition(asset.text().expect("utf-8 flow"))
+            .expect("valid analysis flow");
+        assert!(
+            !flow.nodes.values().any(|node| {
+                let kind = serde_json::to_value(&node.kind).unwrap();
+                kind == "human_gate" || kind == "subflow"
+            }),
+            "{name} must end with its result"
+        );
+    }
+    let asset = flows::load_starter_flow("software-development/investigate-bug.yaml")
+        .expect("investigate bug flow");
+    let flow = attractor_dsl::parse_flow_definition(asset.text().expect("utf-8 flow"))
+        .expect("valid investigate bug flow");
+    for (from, to, condition) in [
+        ("propose_plan", "verify_plan", "outcome=success"),
+        ("verify_plan", "done", "outcome=success"),
+        ("verify_plan", "propose_plan", "outcome=fail"),
+    ] {
+        assert!(flow
+            .edges
+            .iter()
+            .any(|edge| edge.from == from && edge.to == to && edge.condition == condition));
+    }
 }
 
 #[test]

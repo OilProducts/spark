@@ -73,6 +73,10 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <section aria-label="Objective" className="sticky top-0 z-10 border-b border-border bg-card p-4">
                 <h3 className="text-xs font-medium text-muted-foreground">Objective</h3>
                 <p tabIndex={0} className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.description || 'No objective'}</p>
+                {mission.playbook
+                    ? <details className="mt-2"><summary className="cursor-pointer rounded-sm text-xs text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Playbook: <span className="font-medium text-foreground">{mission.playbook.name}</span></summary>
+                        <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">{mission.playbook.text}</p></details>
+                    : mission.fields.playbook && <p className="mt-2 text-xs text-muted-foreground">Playbook: <span className="font-medium text-foreground">{mission.fields.playbook}</span></p>}
             </section>
             {status !== 'draft' && mission.conversation_id && <div className="p-4"><MissionTranscript mission={mission} project={project} /></div>}
         </div>

@@ -12,7 +12,7 @@ const mission = (id: string, title: string, status: string, day: number, extra: 
 })
 const missions = [
   mission('mission-draft', 'Draft the importer', 'draft', 10),
-  mission('mission-running', 'Ship search ranking with a title long enough to wrap onto a second line', 'running', 12, { runs: [{ run_id: 'run-build', flow_name: 'software-development/implement-change.yaml', summary: 'Implement ranking', launched_at: 't', status: 'running' }] }),
+  mission('mission-running', 'Ship search ranking with a title long enough to wrap onto a second line', 'running', 12, { runs: [{ run_id: 'run-build', flow_name: 'software-development/implement-change.yaml', summary: 'Implement ranking', launched_at: 't', status: 'running' }], playbook: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }),
   mission('mission-gate', 'Review the ranking change', 'needs_you', 11, { runs: [{ run_id: 'run-review', flow_name: 'software-development/review-change.yaml', summary: 'Review ranking', launched_at: 't', status: 'waiting' }] }),
   mission('mission-closed', 'Retire the old index', 'closed', 9, { closed: { status: 'done', reason: 'Old index removed', at: at(9), actor: 'assistant' } }),
 ]
@@ -37,6 +37,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
     const loading = new Promise<void>(resolve => { release = resolve })
     await page.route('**/workspace/api/missions?**', async route => { await loading; return route.fulfill({ json: { missions } }) })
     await page.route('**/workspace/api/conversations/mission-*?**', route => route.fulfill({ json: transcript }))
+    await page.route('**/workspace/api/playbooks', route => route.fulfill({ json: [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }))
     await gotoWithRegisteredProject(page, project)
     await page.evaluate(theme => document.documentElement.classList.toggle('dark', theme === 'dark'), theme)
     await page.getByTestId('nav-mode-missions').click()
@@ -64,6 +65,9 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
     const pinnedY = (await objective.boundingBox())!.y
     await detail.getByText('The build completed. Should I launch a review next?').scrollIntoViewIfNeeded()
     expect((await objective.boundingBox())!.y).toBe(pinnedY)
+    await objective.getByText('bug-report').click()
+    await expect(objective.getByText('Reproduce the defect first.')).toBeVisible()
+    await objective.getByText('bug-report').click()
     if (width < 1024) await expect(row).toBeHidden()
     await page.screenshot({ animations: 'disabled', path: test.info().outputPath('transcript.png') })
     await detail.getByRole('button', { name: 'Mission actions' }).click()
@@ -84,6 +88,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
     await page.getByRole('menuitem', { name: 'Edit' }).click()
     await expect(detail.getByLabel('Title', { exact: true })).toBeFocused()
     await expect(detail.getByRole('button', { name: 'Save mission', exact: true })).toBeInViewport()
+    await expect(detail.getByLabel('Playbook').getByRole('option', { name: 'Bug report' })).toBeAttached()
     await page.screenshot({ animations: 'disabled', path: test.info().outputPath('editor.png') })
     await page.keyboard.press('Escape')
     await expect(detail).toBeHidden()

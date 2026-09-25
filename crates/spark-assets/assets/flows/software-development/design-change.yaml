@@ -1,8 +1,8 @@
 schema_version: '1'
 id: design_change
 title: Design Change
-description: Propose competing approaches to a goal in parallel, judge them on evidence and minimality, and on human approval implement the winner in an isolated worktree.
-goal: Propose competing approaches to a goal in parallel, judge them on evidence and minimality, and on human approval implement the winner in an isolated worktree.
+description: Propose competing approaches to a goal in parallel and judge them on evidence and minimality. The run ends with the judged winning approach.
+goal: Propose competing approaches to a goal in parallel and judge them on evidence and minimality. The run ends with the judged winning approach.
 inputs:
 - key: context.request.objective
   label: Objective
@@ -92,20 +92,6 @@ nodes:
     label: Join Proposals
     config:
       kind: fan_in
-  approve_design:
-    kind: human_gate
-    label: Approve Design
-    config:
-      kind: human_gate
-      prompt: 'Review the judged recommendation and its rationale in this run. Approve to implement it in an isolated worktree, send the proposers back for another round, or stop with the design recorded.'
-  implement:
-    kind: subflow
-    label: Implement Design
-    config:
-      kind: subflow
-      flow_ref: implement-change.yaml
-      input_map:
-        context.request.objective: context.design.task
   done:
     kind: exit
     label: Done
@@ -130,20 +116,5 @@ edges:
 - from: fan_in
   to: judge
 - from: judge
-  to: approve_design
-  condition: outcome=success
-- from: approve_design
-  to: implement
-  label: Implement Recommendation
-  condition: preferred_label=Implement Recommendation
-- from: approve_design
-  to: propose
-  label: Revise Proposals
-  condition: preferred_label=Revise Proposals
-- from: approve_design
-  to: done
-  label: Design Only
-  condition: preferred_label=Design Only
-- from: implement
   to: done
   condition: outcome=success

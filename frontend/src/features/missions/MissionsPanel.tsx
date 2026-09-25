@@ -11,13 +11,16 @@ import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { MissionEditor } from './MissionEditor'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
-export type Fields = { title: string; description: string; archived: boolean; budget?: Budget }
+export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
+export type Playbook = { name: string; title: string; description: string; text?: string }
 export type Status = 'draft' | 'running' | 'needs_you' | 'closed'
 export type RosterEntry = { run_id: string; flow_name: string; summary: string; launched_at: string; status: string }
 export type Mission = {
     id: string; revision: number; updated_at?: string; fields: Fields; activity: { revision: number; actor: string; at: string; note: string; before?: Fields; after?: Fields }[]
     status?: Status; conversation_id?: string | null; runs?: RosterEntry[]; cursor?: number; event_seq?: number
     closed?: { status: 'done' | 'failed' | 'canceled'; reason: string; at: string; actor?: string } | null; started_at?: string | null
+    /** The playbook as it was on Start. */
+    playbook?: Playbook | null
 }
 type Draft = { editing: Mission | null; fields: Fields; conflict: boolean }
 export type Board = { missions: Mission[] }

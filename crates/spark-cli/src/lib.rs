@@ -36,17 +36,18 @@ pub const EXIT_NOT_FOUND: i32 = 3;
 pub const DEFAULT_API_BASE_URL: &str = spark_common::source_checkout::DEFAULT_API_BASE_URL;
 
 const TOP_LEVEL_HELP: &str = concat!(
-    "usage: spark [-h] {convo,run,flow,trigger,mission,settings} ...\n",
+    "usage: spark [-h] {convo,run,flow,trigger,mission,playbook,settings} ...\n",
     "\n",
     "Spark agent CLI\n",
     "\n",
     "positional arguments:\n",
-    "  {convo,run,flow,trigger,mission,settings}\n",
+    "  {convo,run,flow,trigger,mission,playbook,settings}\n",
     "    convo               Conversation-scoped artifact commands\n",
     "    run                 Direct execution commands\n",
     "    flow                Flow discovery and validation\n",
     "    trigger             Workspace trigger management\n",
     "    mission             Project mission management\n",
+    "    playbook            Mission playbook discovery\n",
     "    settings            Read, validate, and save workspace settings\n",
     "\n",
     "options:\n",
@@ -101,6 +102,7 @@ enum CommandDomain {
     Flow,
     Trigger,
     Mission,
+    Playbook,
     Settings,
 }
 
@@ -233,12 +235,13 @@ fn run_agent_shell(
             Ok(plan) => execute_request_plan(&plan),
             Err(output) => output,
         },
-        CommandDomain::Mission | CommandDomain::Trigger | CommandDomain::Settings => {
-            match build_request_plan(args, env, stdin) {
-                Ok(plan) => execute_request_plan(&plan),
-                Err(output) => output,
-            }
-        }
+        CommandDomain::Mission
+        | CommandDomain::Playbook
+        | CommandDomain::Trigger
+        | CommandDomain::Settings => match build_request_plan(args, env, stdin) {
+            Ok(plan) => execute_request_plan(&plan),
+            Err(output) => output,
+        },
         CommandDomain::Flow => run_flow_domain(args, env, stdin),
     }
 }
@@ -275,6 +278,7 @@ fn build_request_plan(
         CommandDomain::Flow => build_flow_plan(args, env),
         CommandDomain::Trigger => build_trigger_plan(args, env, stdin),
         CommandDomain::Mission => build_mission_plan(args, env, stdin),
+        CommandDomain::Playbook => build_playbook_plan(args, env),
         CommandDomain::Settings => build_settings_plan(args, env, stdin),
     }
 }
@@ -1316,6 +1320,12 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             }
             _ => Err(usage_error("Unknown command")),
         },
+        "playbook" => match domain_matches.subcommand_name() {
+            Some("list" | "get") => Ok(CommandPath {
+                domain: CommandDomain::Playbook,
+            }),
+            _ => Err(usage_error("Unknown command")),
+        },
         "trigger" => match domain_matches.subcommand_name() {
             Some("list" | "describe" | "create" | "update" | "delete") => Ok(CommandPath {
                 domain: CommandDomain::Trigger,
@@ -1334,7 +1344,7 @@ fn legacy_command_path_error(args: &[String]) -> CommandOutput {
         return CommandOutput::stdout(0, TOP_LEVEL_HELP);
     };
     match domain {
-        "convo" | "run" | "flow" | "trigger" | "mission" | "settings" => {
+        "convo" | "run" | "flow" | "trigger" | "mission" | "playbook" | "settings" => {
             usage_error("Unknown command")
         }
         _ => usage_error(format!("argument domain: invalid choice: '{}'", domain)),
@@ -1385,6 +1395,11 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("start"))
                 .subcommand(clap_command_leaf("send"))
                 .subcommand(clap_command_leaf("close")),
+        )
+        .subcommand(
+            Command::new("playbook")
+                .subcommand(clap_command_leaf("list"))
+                .subcommand(clap_command_leaf("get")),
         )
         .subcommand(
             Command::new("trigger")
@@ -2561,6 +2576,30 @@ fn build_mission_plan(
         base_url: resolve_base_url(&options, "spark mission", env)?,
         path,
         body,
+        text: false,
+    })
+}
+
+fn build_playbook_plan(
+    args: &[String],
+    env: &impl Environment,
+) -> Result<ApiRequestPlan, CommandOutput> {
+    let options = parse_api_options(
+        &args[2..],
+        &["--name", "--base-url"],
+        &[],
+        PositionalMode::None,
+    )?;
+    let mut path = "/workspace/api/playbooks".to_string();
+    if args.get(1).map(String::as_str) == Some("get") {
+        let name = non_empty_value(&options, "--name", "Playbook name is required")?;
+        path.push_str(&format!("/{}", percent_encode_component(&name)));
+    }
+    Ok(ApiRequestPlan {
+        method: HttpMethod::Get,
+        base_url: resolve_base_url(&options, "spark playbook", env)?,
+        path,
+        body: None,
         text: false,
     })
 }

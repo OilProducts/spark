@@ -684,3 +684,71 @@ fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
         ..Default::default()
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_str().unwrap();
+    fs::create_dir_all(settings.data_dir.join("playbooks")).unwrap();
+    fs::write(
+        settings.data_dir.join("playbooks/bug-report.md"),
+        "---\ntitle: Bug report\ndescription: Fix a bug.\n---\n\nReproduce, then fix.\n",
+    )
+    .unwrap();
+    let server = serve(spark_http::build_app_with_agent_turn_backend(
+        settings.clone(),
+        std::sync::Arc::new(QuietAgent),
+    ))
+    .await;
+    let spark = |args: &[&str]| {
+        let mut argv = args.to_vec();
+        argv.extend_from_slice(&["--base-url", &server.base_url]);
+        run_spark(temp.path(), argv)
+    };
+
+    let output = spark(&["playbook", "list"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        json!([{"name":"bug-report","title":"Bug report","description":"Fix a bug."}])
+    );
+    let output = spark(&["playbook", "get", "--name", "bug-report"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let playbook: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(playbook["text"], "Reproduce, then fix.");
+
+    let payload_file = temp.path().join("mission.json");
+    fs::write(
+        &payload_file,
+        json!({"fields":{"title":"Fix it","playbook":"bug-report"}}).to_string(),
+    )
+    .unwrap();
+    let create = [
+        "mission",
+        "create",
+        "--project",
+        project,
+        "--json",
+        payload_file.to_str().unwrap(),
+    ];
+    let output = spark(&create);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(created["fields"]["playbook"], "bug-report");
+
+    fs::write(
+        &payload_file,
+        json!({"fields":{"title":"Fix it","playbook":"missing"}}).to_string(),
+    )
+    .unwrap();
+    let output = spark(&create);
+    assert_ne!(output.status.code(), Some(0));
+    assert!(
+        stderr(&output).contains("Unknown playbook `missing`"),
+        "{}",
+        stderr(&output)
+    );
+}

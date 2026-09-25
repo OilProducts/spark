@@ -480,7 +480,7 @@ spark mission close --project /absolute/project --id mission-ID --status done --
 {"fields":{"title":"Deliver search","description":"Search should return matching documents."},"actor":"assistant"}
 ```
 
-Updates require the revision from get/list, with only changed fields. Editable fields are `title`, `description`, `archived`, and `budget` (`{"concurrent_runs":4,"total_runs":25}` by default):
+Updates require the revision from get/list, with only changed fields. Editable fields are `title`, `description`, `archived`, `budget` (`{"concurrent_runs":4,"total_runs":25}` by default), and `playbook` (see below; fixed once the mission starts):
 
 ```json
 {"revision":1,"fields":{"description":"Decide which document types are in scope."},"note":"Recorded the scope question","actor":"assistant"}
@@ -489,5 +489,22 @@ Updates require the revision from get/list, with only changed fields. Editable f
 Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID.
 
 Starting a mission creates its conversation (`conversation_id`) and sends the objective as the first turn. From then on, the mission's inbox delivers `run.completed`, `run.failed`, `run.canceled`, `run.waiting`, and `human.message` events to that conversation as new turns: one turn per batch, oldest first, at most one turn in flight. `spark mission send` posts a `human.message`. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster and carries `context.spark_mission`, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
+
+### Playbooks
+
+A playbook is named, reusable guidance for a kind of mission: `$SPARK_HOME/playbooks/<name>.md`, Markdown with YAML frontmatter (`title`, `description`) and free-form instructions in the body. `spark-server init` seeds the bundled playbooks, such as `bug-report`, updating unmodified copies and keeping edited ones. The mission agent follows a playbook as the broad shape of the work, decides each step from run results and logs, and departs from it when the evidence calls for it.
+
+```sh
+spark playbook list
+spark playbook get --name bug-report
+```
+
+To run a playbook against an issue, list the playbooks, create a mission with the playbook and the issue as its objective, and start it:
+
+```json
+{"fields":{"title":"Fix dropped parser input","description":"<the issue>","playbook":"bug-report"},"actor":"assistant"}
+```
+
+Create rejects an unknown playbook. On start, the mission snapshots the playbook into its record (`playbook`: name, title, description, and text), so later edits to the file do not change it, and the agent's pinned instructions include the playbook text after the objective.
 
 `status` is derived on read: `draft` (not started), `running` (a turn or run is in flight or events are pending, and no run waits on a human gate), `needs_you` (a run waits on a human gate, or nothing is in flight or pending), or `closed`.

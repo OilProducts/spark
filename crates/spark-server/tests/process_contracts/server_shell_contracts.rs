@@ -201,13 +201,59 @@ fn init_creates_runtime_layout_flows_and_catalog() {
         catalog
             .matches("launch_policy = \"agent_requestable\"")
             .count(),
-        12
+        11
     );
     assert!(catalog.contains("[flows.\"math-research/explore-conjecture.yaml\".execution_lock]"));
     assert!(catalog.contains("key = \"math-research\""));
     assert!(catalog.contains("[flows.\"software-development/merge-change.yaml\".execution_lock]"));
     assert!(catalog.contains("key = \"software-development-integration\""));
     assert!(!catalog.contains("software-development/workers/"));
+}
+
+#[test]
+fn init_seeds_playbooks_updating_unmodified_copies_and_keeping_edits() {
+    let env = BTreeMap::new();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let data_dir = temp.path().join("spark-home");
+    let init = || {
+        let output = run_with_args_and_env(
+            [
+                "spark-server",
+                "init",
+                "--data-dir",
+                data_dir.to_str().expect("utf-8 data dir"),
+                "--flows-dir",
+                temp.path().join("flows").to_str().expect("utf-8 flows dir"),
+            ],
+            &env,
+        );
+        assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    };
+    init();
+    let playbooks = data_dir.join("playbooks");
+    let bug_report = playbooks.join("bug-report.md");
+    let packaged = fs::read_to_string(&bug_report).expect("seeded bug report playbook");
+    assert!(packaged.starts_with("---\ntitle: Bug report\n"));
+
+    // An unmodified copy of an older packaged version is updated.
+    let old_packaged = "---\ntitle: Old\n---\nOld.\n";
+    fs::write(&bug_report, old_packaged).expect("old packaged playbook");
+    let manifest_path = playbooks.join(".packaged-playbook-hashes.json");
+    let mut manifest: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(&manifest_path).expect("playbook manifest"))
+            .expect("manifest json");
+    manifest.insert(
+        "bug-report.md".into(),
+        format!("{:x}", Sha256::digest(old_packaged)),
+    );
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).expect("manifest");
+    init();
+    assert_eq!(fs::read_to_string(&bug_report).unwrap(), packaged);
+
+    // An edited copy is kept.
+    fs::write(&bug_report, "edited\n").expect("user edit");
+    init();
+    assert_eq!(fs::read_to_string(&bug_report).unwrap(), "edited\n");
 }
 
 #[test]

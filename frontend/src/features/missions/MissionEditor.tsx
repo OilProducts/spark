@@ -1,11 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription } from '@/components/ui/empty'
 import { InlineError } from '@/components/app/inline-error'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
-import type { Mission, Fields } from './MissionsPanel'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import type { Mission, Fields, Playbook } from './MissionsPanel'
 
 type Props = {
     editing: Mission | null; draft: Fields; latest?: Mission
@@ -24,6 +25,14 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
     const title = useRef<HTMLInputElement>(null)
     useEffect(() => { title.current?.focus({ preventScroll: true }) }, [focusRequest])
     const changed = latest && latest.revision > (editing?.revision ?? 0)
+    const [playbooks, setPlaybooks] = useState<Playbook[]>([])
+    const started = Boolean(editing?.started_at)
+    useEffect(() => {
+        if (started) return
+        let disposed = false
+        void fetch('/workspace/api/playbooks').then(response => response.ok ? response.json() : []).then(value => { if (!disposed && Array.isArray(value)) setPlaybooks(value) }).catch(() => {})
+        return () => { disposed = true }
+    }, [started])
     return <section aria-label="Mission details" className={`flex min-h-0 min-w-0 flex-col rounded-md border border-border bg-card ${narrow ? 'w-full' : 'w-[28rem] shrink-0'}`} onKeyDown={e => {
         if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && !busy) { e.stopPropagation(); close() }
     }}>
@@ -43,6 +52,11 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
             <fieldset disabled={busy} className="grid min-w-0 gap-4">
                 <Label className="grid gap-2">Title<Input ref={title} required value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} /></Label>
                 <Label className="grid gap-2">Objective<Textarea className="min-h-32" value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></Label>
+                {!started && <Label className="grid gap-2">Playbook<NativeSelect className="w-full" value={draft.playbook ?? ''} onChange={e => setDraft({ ...draft, playbook: e.target.value || null })}>
+                    <NativeSelectOption value="">None</NativeSelectOption>
+                    {draft.playbook && !playbooks.some(p => p.name === draft.playbook) && <NativeSelectOption value={draft.playbook}>{draft.playbook}</NativeSelectOption>}
+                    {playbooks.map(p => <NativeSelectOption key={p.name} value={p.name} title={p.description}>{p.title || p.name}</NativeSelectOption>)}
+                </NativeSelect></Label>}
             </fieldset>
             {editing && <div className="border-t border-border pt-4"><Button type="button" variant="secondary" disabled={busy || Boolean(changed) || conflict} onClick={() => void archive()}>{editing.fields.archived ? 'Restore mission' : 'Archive mission'}</Button></div>}
             {editing && <details className="border-t border-border pt-4"><summary className="cursor-pointer rounded-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Activity</summary><ol className="mt-2 space-y-3">{(latest ?? editing).activity.map(a => <li key={a.revision} className="border-b border-border pb-3">

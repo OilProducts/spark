@@ -1,8 +1,8 @@
 schema_version: '1'
 id: audit_codebase
 title: Audit Codebase
-description: Sweep the repository through parallel audit lenses, adversarially verify the findings, and on human approval fix the backlog one isolated change at a time.
-goal: Sweep the repository through parallel audit lenses, adversarially verify the findings, and on human approval fix the backlog one isolated change at a time.
+description: Sweep the repository through parallel audit lenses and adversarially verify the findings. The run ends with the verified findings and an ordered fix backlog.
+goal: Sweep the repository through parallel audit lenses and adversarially verify the findings. The run ends with the verified findings and an ordered fix backlog.
 inputs:
 - key: context.request.objective
   label: Audit Focus
@@ -101,34 +101,6 @@ nodes:
       writes_context:
       - context.audit.summary
       - context.audit.backlog
-  approve_fixes:
-    kind: human_gate
-    label: Approve Fixes
-    config:
-      kind: human_gate
-      prompt: 'Review the audit summary and the ordered fix backlog in this run. Approve to implement the backlog one isolated change at a time, or stop with the report recorded.'
-  pick_next_fix:
-    kind: agent_task
-    label: Pick Next Fix
-    config:
-      kind: agent_task
-      prompt: 'Decide the next backlog task to implement, without changing any files. Read the ordered tasks in context.audit.backlog and the already-dispatched entries in context.audit.completed (absent means none). Choose the first backlog task not yet in completed. Respond with ONLY a JSON status envelope: when a task remains, set preferred_label to "Fix" and context_updates for context.next.task (the full self-contained task statement) and context.audit.completed (the previous completed list plus this task); when every task is dispatched, set preferred_label to "Done" and context_updates for context.audit.completed unchanged.'
-    contracts:
-      response: status_envelope
-      reads_context:
-      - context.audit.backlog
-      - context.audit.completed
-      writes_context:
-      - context.next.task
-      - context.audit.completed
-  fix:
-    kind: subflow
-    label: Implement Fix
-    config:
-      kind: subflow
-      flow_ref: implement-change.yaml
-      input_map:
-        context.request.objective: context.next.task
   done:
     kind: exit
     label: Done
@@ -160,24 +132,5 @@ edges:
   to: report
   condition: outcome=success
 - from: report
-  to: approve_fixes
-  condition: outcome=success
-- from: approve_fixes
-  to: pick_next_fix
-  label: Fix Findings
-  condition: preferred_label=Fix Findings
-- from: approve_fixes
   to: done
-  label: Report Only
-  condition: preferred_label=Report Only
-- from: pick_next_fix
-  to: fix
-  label: Fix
-  condition: outcome=success && preferred_label=Fix
-- from: pick_next_fix
-  to: done
-  label: Done
-  condition: outcome=success && preferred_label=Done
-- from: fix
-  to: pick_next_fix
   condition: outcome=success

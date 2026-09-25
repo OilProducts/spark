@@ -14,6 +14,7 @@ use include_dir::{include_dir, Dir, DirEntry};
 static FRONTEND_DIST: Dir<'_> = include_dir!("$SPARK_FRONTEND_DIST_DIR");
 static STARTER_FLOWS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/flows");
 static GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/guides");
+static PLAYBOOKS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/playbooks");
 static ROOT_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../assets");
 static MODEL_CATALOG_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -352,6 +353,23 @@ pub mod guides {
 
     pub fn spark_operations_guide() -> Option<ResourceFile> {
         load_guide(SPARK_OPERATIONS_GUIDE_NAME)
+    }
+}
+
+/// Bundled mission playbooks: `(file name, Markdown text)`, sorted by name.
+pub mod playbooks {
+    pub fn assets() -> Vec<(String, String)> {
+        let mut assets: Vec<(String, String)> = super::PLAYBOOKS
+            .files()
+            .filter_map(|file| {
+                Some((
+                    file.path().to_str()?.to_string(),
+                    file.contents_utf8()?.to_string(),
+                ))
+            })
+            .collect();
+        assets.sort();
+        assets
     }
 }
 

@@ -15,7 +15,7 @@ use spark_storage::{workspace_missions::MissionRepository, ProjectRegistry};
 use std::sync::Arc;
 
 const TERMINAL_RUN_STATUSES: &[&str] = &["completed", "failed", "validation_error", "canceled"];
-const EDITABLE_FIELDS: &[&str] = &["title", "description", "archived", "budget"];
+const EDITABLE_FIELDS: &[&str] = &["title", "description", "archived", "budget", "playbook"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -41,6 +41,8 @@ pub struct MissionFields {
     pub description: String,
     pub archived: bool,
     pub budget: Budget,
+    /// Name of an installed playbook the mission follows.
+    pub playbook: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +164,9 @@ pub struct MissionRecord {
     pub closed: Option<Closed>,
     #[serde(default)]
     pub started_at: Option<String>,
+    /// The playbook as it was on Start, so later edits to its file do not change the mission.
+    #[serde(default)]
+    pub playbook: Option<crate::playbooks::Playbook>,
     /// Derived on read; never stored.
     #[serde(default, skip_deserializing)]
     pub status: MissionStatus,
@@ -391,8 +396,13 @@ impl WorkspaceMissionService {
             let before = serde_json::to_value(&mission.fields).unwrap();
             let mut fields = before.clone();
             for (key, value) in &mutation.fields { fields[key] = value.clone(); }
-            let fields: MissionFields = decode(fields)?;
+            let mut fields: MissionFields = decode(fields)?;
             if fields.title.trim().is_empty() { return Err(invalid("Mission title is required")); }
+            fields.playbook = fields.playbook.filter(|name| !name.trim().is_empty());
+            if fields.playbook != mission.fields.playbook {
+                if mission.started_at.is_some() { return Err(invalid("A started mission keeps its playbook")); }
+                if let Some(name) = &fields.playbook { crate::playbooks::get(&self.settings, name).map_err(|e| invalid(e.to_string()))?; }
+            }
             mission.fields = fields;
             mission.record_activity(&mutation.actor, &mutation.note, before);
             Ok(stored(&mission))
@@ -502,6 +512,13 @@ impl WorkspaceMissionService {
             if mission.closed.is_some() {
                 return Err(WorkspaceError::Conflict("Mission is closed".into()));
             }
+            mission.playbook = match &mission.fields.playbook {
+                Some(name) => Some(
+                    crate::playbooks::get(&self.settings, name)
+                        .map_err(|e| invalid(e.to_string()))?,
+                ),
+                None => None,
+            };
             mission.started_at = Some(now());
             mission.conversation_id = Some(mission.id.clone());
             mission.note("human", "Started mission");
@@ -511,6 +528,8 @@ impl WorkspaceMissionService {
                 &mission.fields.description
             };
             let begin = format!("Objective:\n{objective}\n\nBegin work on this mission.");
+            // The first turn's frame is built from the stored record.
+            repo.write(&mission.id, &stored(mission))?;
             self.deliver_pending(repo, mission, Some(begin))
         })
     }
@@ -891,6 +910,7 @@ pub(crate) fn mission_frame(mission: &MissionRecord, handle: &str) -> String {
         "You are the agent for a Spark mission. You own this mission's work until it is closed.\n\n\
         Mission title: {title}\n\
         Objective:\n{objective}\n\n\
+        {playbook}\
         Work in the project directly, and launch Spark flows when a flow fits the work. Every run you launch reports back to this conversation: when runs complete, fail, are canceled, or wait on a human gate, you receive a new turn listing them. Never poll or sleep waiting for runs; end your turn instead. Launches count against the mission budget ({concurrent} concurrent runs, {total} runs in total); a refused launch names the limit it hit.\n\n\
         When the objective is met or cannot be met, close the mission: `spark mission close --project {project} --id {id} --status done|failed|canceled --reason <text>`. When only the user can decide something, ask and end your turn; their reply arrives as a new turn.\n\n\
         {control}\n\n\
@@ -899,6 +919,11 @@ pub(crate) fn mission_frame(mission: &MissionRecord, handle: &str) -> String {
         Project path: {project}",
         title = mission.fields.title,
         objective = mission.fields.description,
+        playbook = mission.playbook.as_ref().map_or(String::new(), |playbook| format!(
+            "Playbook ({name}): the broad shape of this kind of mission. Decide each step from run results and logs, and depart from it when the evidence calls for it.\n{text}\n\n",
+            name = playbook.name,
+            text = playbook.text,
+        )),
         concurrent = budget.concurrent_runs,
         total = budget.total_runs,
         project = mission.project_path,

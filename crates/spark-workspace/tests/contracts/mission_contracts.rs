@@ -402,6 +402,8 @@ fn start_creates_the_conversation_and_pins_the_objective_outside_the_transcript(
     assert!(frame.contains(&format!("Mission ID: {}", mission.id)));
     assert!(frame.contains("spark mission close"));
     assert!(!frame.contains("approve"));
+    assert!(!frame.contains("Playbook"));
+    assert!(started.playbook.is_none());
     // The mission's thread stays out of the project's Threads list.
     let threads = WorkspaceConversationService::new(harness.settings.clone())
         .list_project_conversations(&harness.project)
@@ -416,6 +418,69 @@ fn start_creates_the_conversation_and_pins_the_objective_outside_the_transcript(
     assert_eq!(turns.as_array().unwrap().len(), 2);
     assert_eq!(turns[1]["status"], "complete", "{turns}");
     assert!(!turns.to_string().contains("Spark control surface"));
+}
+
+#[test]
+fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
+    let harness = Harness::new();
+    let playbooks = harness.settings.data_dir.join("playbooks");
+    std::fs::create_dir_all(&playbooks).unwrap();
+    let file = playbooks.join("bug-report.md");
+    std::fs::write(
+        &file,
+        "---\ntitle: Bug report\ndescription: Fix a bug.\n---\n\nReproduce first.\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        harness.missions.create(
+            &harness.project,
+            mutation(json!({"fields": {"title": "Fix", "playbook": "missing"}}))
+        ),
+        Err(WorkspaceError::Validation(message)) if message.contains("Unknown playbook `missing`")
+    ));
+    let mission = harness.create(
+        json!({"title": "Fix", "description": "Parser drops input.", "playbook": "bug-report"}),
+    );
+    let started = harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    let snapshot = started.playbook.clone().unwrap();
+    assert_eq!(
+        (snapshot.name.as_str(), snapshot.text.as_str()),
+        ("bug-report", "Reproduce first.")
+    );
+    // Later edits to the file do not change a started mission.
+    std::fs::write(&file, "---\ntitle: Bug report\n---\n\nSkip everything.\n").unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    assert_eq!(harness.get(&mission.id).playbook, Some(snapshot));
+    harness
+        .missions
+        .post_event(&harness.project, &mission.id, message("Continue"))
+        .unwrap();
+    harness.wait_turns(2);
+    for request in harness.agent.requests.lock().unwrap().iter() {
+        let frame = request.metadata[AGENT_INSTRUCTIONS_METADATA_KEY]
+            .as_str()
+            .unwrap();
+        let objective = frame.find("Parser drops input.").unwrap();
+        let playbook = frame.find("Playbook (bug-report)").unwrap();
+        assert!(objective < playbook && frame.contains("Reproduce first."));
+        assert!(!frame.contains("Skip everything."));
+    }
+    harness.agent.release(1);
+    assert!(matches!(
+        harness.missions.update(
+            &harness.project,
+            &mission.id,
+            mutation(
+                json!({"revision": harness.get(&mission.id).revision, "fields": {"playbook": null}})
+            )
+        ),
+        Err(WorkspaceError::Validation(_))
+    ));
 }
 
 #[test]

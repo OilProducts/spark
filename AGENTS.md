@@ -100,4 +100,4 @@ Change requests live in `changes/CR-YYYY-NNNN-<slug>/` as `request.md` and `resu
 
 ### Flows
 
-Runs use the installed flows in `$SPARK_HOME/flows`, which is outside this repo and not tracked by git. `crates/spark-assets/assets/flows` holds the bundled copies. Some installed flows, such as `software-development/implement-change-request.yaml`, exist only in `$SPARK_HOME/flows`.
+Runs use the installed flows in `$SPARK_HOME/flows`, which is outside this repo and not tracked by git. `crates/spark-assets/assets/flows` holds the bundled copies. Installed flows can differ from, or exist without, a bundled copy.

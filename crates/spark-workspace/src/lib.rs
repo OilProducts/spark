@@ -42,3 +42,4 @@ pub use workflow_log::{
     workflow_log_tail_envelopes, WorkflowLogEntry, WORKFLOW_LOG_TAIL_LIMIT,
 };
 pub mod missions;
+pub mod playbooks;

@@ -385,7 +385,23 @@ pub fn initialize_runtime_with_options(
     .map_err(|error| error.to_string())?;
     validate_settings(&settings).map_err(|error| error.to_string())?;
 
-    let result = seed_starter_flows(&settings.flows_dir, options.force)?;
+    let flows = spark_assets::flows::starter_flow_assets()
+        .map_err(|error| format!("Packaged flow assets are unavailable: {error:?}"))?
+        .into_iter()
+        .map(|asset| (asset.name, asset.content))
+        .collect();
+    let result = seed_packaged_files(
+        &settings.flows_dir,
+        flows,
+        ".packaged-flow-hashes.json",
+        options.force,
+    )?;
+    seed_packaged_files(
+        &settings.data_dir.join("playbooks"),
+        spark_assets::playbooks::assets(),
+        ".packaged-playbook-hashes.json",
+        options.force,
+    )?;
     spark_storage::seed_default_flow_catalog(&settings.config_dir)
         .map_err(|error| error.to_string())?;
     Ok((settings, result))
@@ -848,22 +864,23 @@ fn run_serve_process(
     })
 }
 
-fn seed_starter_flows(
+/// Writes packaged `(relative name, content)` files into `flows_dir`: creates
+/// missing ones, updates unmodified installed copies, and keeps local edits.
+fn seed_packaged_files(
     flows_dir: &Path,
+    assets: Vec<(String, String)>,
+    hash_manifest: &str,
     force: bool,
 ) -> std::result::Result<SeedStarterFlowsResult, String> {
-    let assets = spark_assets::flows::starter_flow_assets()
-        .map_err(|error| format!("Packaged flow assets are unavailable: {error:?}"))?;
     fs::create_dir_all(flows_dir).map_err(|source| {
         format!(
-            "Unable to create flows directory {}: {source}",
+            "Unable to create directory {}: {source}",
             flows_dir.display()
         )
     })?;
 
     use sha2::{Digest, Sha256};
-    const HASH_MANIFEST: &str = ".packaged-flow-hashes.json";
-    let manifest_path = flows_dir.join(HASH_MANIFEST);
+    let manifest_path = flows_dir.join(hash_manifest);
     let prior_hashes = fs::read_to_string(&manifest_path)
         .ok()
         .and_then(|text| {
@@ -875,26 +892,25 @@ fn seed_starter_flows(
     let mut updated = Vec::new();
     let mut skipped = Vec::new();
 
-    for asset in assets {
-        let relative_name = asset.name;
+    for (relative_name, content) in assets {
         let target_path = flows_dir.join(&relative_name);
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent).map_err(|source| {
                 format!(
-                    "Unable to create flow parent directory {}: {source}",
+                    "Unable to create parent directory {}: {source}",
                     parent.display()
                 )
             })?;
         }
 
-        let packaged_hash = format!("{:x}", Sha256::digest(asset.content.as_bytes()));
+        let packaged_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
         let existed = target_path.exists();
         if existed && !force {
             let current_hash = fs::read(&target_path)
                 .map(|content| format!("{:x}", Sha256::digest(content)))
                 .map_err(|source| {
                     format!(
-                        "Unable to read starter flow {}: {source}",
+                        "Unable to read installed file {}: {source}",
                         target_path.display()
                     )
                 })?;
@@ -917,9 +933,9 @@ fn seed_starter_flows(
             }
         }
 
-        fs::write(&target_path, asset.content).map_err(|source| {
+        fs::write(&target_path, content).map_err(|source| {
             format!(
-                "Unable to write starter flow {}: {source}",
+                "Unable to write packaged file {}: {source}",
                 target_path.display()
             )
         })?;
@@ -940,7 +956,7 @@ fn seed_starter_flows(
         &manifest_path,
         serde_json::to_vec_pretty(&next_hashes).map_err(|e| e.to_string())?,
     )
-    .map_err(|e| format!("Unable to write packaged flow hash manifest: {e}"))?;
+    .map_err(|e| format!("Unable to write packaged hash manifest: {e}"))?;
 
     Ok(SeedStarterFlowsResult {
         flows_dir: flows_dir.to_path_buf(),

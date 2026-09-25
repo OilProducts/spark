@@ -74,6 +74,8 @@ pub fn router() -> Router<HttpAppState> {
         )
         .route("/missions/{mission_id}/events", post(post_mission_event))
         .route("/missions/{mission_id}/{control}", post(control_mission))
+        .route("/playbooks", get(list_playbooks))
+        .route("/playbooks/{name}", get(get_playbook))
         .route("/projects", get(list_projects).delete(delete_project))
         .route("/projects/register", post(register_project))
         .route("/projects/state", patch(update_project_state))
@@ -1440,6 +1442,18 @@ async fn mission_call(
         .await
         .map_err(|error| WorkspaceError::Internal(format!("mission task failed: {error}")))??;
     Ok(Json(mission))
+}
+
+async fn list_playbooks(
+    State(settings): State<Arc<SparkSettings>>,
+) -> ApiResult<Vec<spark_workspace::playbooks::Playbook>> {
+    Ok(Json(spark_workspace::playbooks::list(&settings)?))
+}
+async fn get_playbook(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath(name): AxumPath<String>,
+) -> ApiResult<spark_workspace::playbooks::Playbook> {
+    Ok(Json(spark_workspace::playbooks::get(&settings, &name)?))
 }
 
 async fn list_missions(

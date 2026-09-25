@@ -203,7 +203,6 @@ fn default_catalog_seed_registers_default_flows_and_locks() {
             "software-development/audit-codebase.yaml".to_string(),
             "software-development/design-change.yaml".to_string(),
             "software-development/implement-change.yaml".to_string(),
-            "software-development/integrate-ready-branches.yaml".to_string(),
             "software-development/investigate-bug.yaml".to_string(),
             "software-development/merge-change.yaml".to_string(),
             "software-development/review-change.yaml".to_string(),

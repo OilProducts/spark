@@ -1,8 +1,8 @@
 schema_version: '1'
 id: run_retrospective
 title: Run Retrospective
-description: Diagnose why a Spark run went wrong from its recorded artifacts, adversarially verify the diagnosis, and on human approval implement the recommended fix.
-goal: Diagnose why a Spark run went wrong from its recorded artifacts, adversarially verify the diagnosis, and on human approval implement the recommended fix.
+description: Diagnose why a Spark run went wrong from its recorded artifacts, adversarially verify the diagnosis, and recommend a fix. The run ends with the verified diagnosis and recommended fix.
+goal: Diagnose why a Spark run went wrong from its recorded artifacts, adversarially verify the diagnosis, and recommend a fix. The run ends with the verified diagnosis and recommended fix.
 inputs:
 - key: context.request.run_id
   label: Run ID
@@ -88,20 +88,6 @@ nodes:
       - context.retro.recommendations
       - context.retro.task
       - context.retro.actionable
-  approve_fix:
-    kind: human_gate
-    label: Approve Fix
-    config:
-      kind: human_gate
-      prompt: 'Review the verified diagnosis and recommendations in this run. Approve implementing the repository fix in an isolated worktree, or stop with the retrospective recorded (choose this when the fix lives outside this repository).'
-  implement:
-    kind: subflow
-    label: Implement Fix
-    config:
-      kind: subflow
-      flow_ref: implement-change.yaml
-      input_map:
-        context.request.objective: context.retro.task
   done:
     kind: exit
     label: Done
@@ -126,21 +112,5 @@ edges:
   label: Gaps Found
   condition: outcome=fail
 - from: recommend
-  to: approve_fix
-  label: Actionable
-  condition: outcome=success && context.retro.actionable=true
-- from: recommend
-  to: done
-  label: Report Only
-  condition: outcome=success && context.retro.actionable=false
-- from: approve_fix
-  to: implement
-  label: Apply Fix
-  condition: preferred_label=Apply Fix
-- from: approve_fix
-  to: done
-  label: Report Only
-  condition: preferred_label=Report Only
-- from: implement
   to: done
   condition: outcome=success

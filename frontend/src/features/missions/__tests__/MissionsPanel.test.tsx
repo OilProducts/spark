@@ -23,6 +23,7 @@ beforeEach(() => {
             return { ok: true, json: async () => task }
         }
         if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
+        if (url === '/workspace/api/playbooks') return { ok: true, json: async () => [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }
         return { ok: true, json: async () => ({ missions: [task] }) }
     }))
 })
@@ -264,6 +265,27 @@ it('creates with only a title, keeps the saved mission open and resets its basel
     expect(task.fields.title).toBe('Quick capture')
     expect(calls).toHaveLength(1)
     expect(calls[0].body.revision).toBeUndefined()
+})
+
+it('creates with a picked playbook and shows it under the objective with its text expandable', async () => {
+    render(<MissionsPanel active />)
+    fireEvent.click(screen.getByRole('button', { name: 'Create mission' }))
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Fix parser' } })
+    expect(screen.getByLabelText('Playbook')).toHaveValue('')
+    await screen.findByRole('option', { name: 'Bug report' })
+    fireEvent.change(screen.getByLabelText('Playbook'), { target: { value: 'bug-report' } })
+    fireEvent.click(editor().getByRole('button', { name: 'Create mission' }))
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0].body.fields).toMatchObject({ title: 'Fix parser', playbook: 'bug-report' })
+    await waitFor(() => expect(within(detail().getByRole('region', { name: 'Objective' })).getByText('bug-report')).toBeInTheDocument())
+
+    task = mission({ status: 'running', conversation_id: 'task-new', started_at: 't', playbook: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce first.' } })
+    act(() => { window.dispatchEvent(new CustomEvent('spark:mission-live-event', { detail: { projectPath: '/project', mission: task } })) })
+    const objective = within(detail().getByRole('region', { name: 'Objective' }))
+    const text = await objective.findByText('Reproduce first.')
+    expect(text).not.toBeVisible()
+    fireEvent.click(objective.getByText('bug-report'))
+    expect(text).toBeVisible()
 })
 
 it('preserves a new draft on Cancel', async () => {

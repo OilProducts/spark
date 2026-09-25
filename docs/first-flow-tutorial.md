@@ -42,4 +42,4 @@ SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- r
 
 - Flow definition reference: [crates/spark-assets/assets/guides/flow-definition-authoring.md](../crates/spark-assets/assets/guides/flow-definition-authoring.md)
 - Operations guide: [crates/spark-assets/assets/guides/spark-operations.md](../crates/spark-assets/assets/guides/spark-operations.md)
-- Change-request flow: [crates/spark-assets/assets/flows/software-development/implement-change-request.yaml](../crates/spark-assets/assets/flows/software-development/implement-change-request.yaml)
+- Change flow: [crates/spark-assets/assets/flows/software-development/implement-change.yaml](../crates/spark-assets/assets/flows/software-development/implement-change.yaml)

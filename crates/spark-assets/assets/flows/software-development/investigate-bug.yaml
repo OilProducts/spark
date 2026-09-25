@@ -1,8 +1,8 @@
 schema_version: '1'
 id: investigate_bug
 title: Investigate Bug
-description: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and on human approval implement it in an isolated worktree.
-goal: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and on human approval implement it in an isolated worktree.
+description: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and adversarially verify the plan. The run ends with the verified diagnosis and plan.
+goal: Investigate a reported defect, adversarially verify the diagnosis, propose a repair plan, and adversarially verify the plan. The run ends with the verified diagnosis and plan.
 inputs:
 - key: context.request.objective
   label: Bug Report
@@ -68,7 +68,7 @@ nodes:
     label: Propose Repair Plan
     config:
       kind: agent_task
-      prompt: 'Turn the verified diagnosis (context.investigation.summary, context.investigation.root_cause, context.investigation.evidence) into one decision-complete repair plan without changing any files. The plan must state: the bounded objective of the fix, the target paths, explicit acceptance criteria including a regression check that reproduces the original defect, compatibility constraints, and the truthful validation command (use context.request.validation_command when provided, otherwise discover it from the repository). Prefer the smallest coherent fix over redesign. If the human gate previously routed back here, incorporate its guidance: the reviewer''s note arrives as the human.gate.note context value. Respond with ONLY a JSON status envelope whose context_updates set context.plan.objective (a self-contained task statement an implementer can execute without reading this run) and context.plan.validation_command.'
+      prompt: 'Turn the verified diagnosis (context.investigation.summary, context.investigation.root_cause, context.investigation.evidence) into one decision-complete repair plan without changing any files. The plan must state: the bounded objective of the fix, the target paths, explicit acceptance criteria including a regression check that reproduces the original defect, compatibility constraints, and the truthful validation command (use context.request.validation_command when provided, otherwise discover it from the repository). Prefer the smallest coherent fix over redesign. If context.review.required_changes is present, it lists gaps a verifier found in your previous plan; close them. Respond with ONLY a JSON status envelope whose context_updates set context.plan.objective (a self-contained task statement an implementer can execute without reading this run) and context.plan.validation_command.'
     contracts:
       response: status_envelope
       reads_context:
@@ -76,26 +76,29 @@ nodes:
       - context.investigation.root_cause
       - context.investigation.evidence
       - context.request.validation_command
-      - human.gate.label
-      - human.gate.note
+      - context.review.required_changes
       writes_context:
       - context.plan.objective
       - context.plan.validation_command
-  approve_plan:
-    kind: human_gate
-    label: Approve Repair Plan
+  verify_plan:
+    kind: agent_task
+    label: Verify Repair Plan
     config:
-      kind: human_gate
-      prompt: 'Review the verified diagnosis and proposed repair plan in this run. Approve to implement the fix in an isolated worktree, request a revised plan, or stop with the investigation recorded.'
-  implement:
-    kind: subflow
-    label: Implement Fix
-    config:
-      kind: subflow
-      flow_ref: implement-change.yaml
-      input_map:
-        context.request.objective: context.plan.objective
-        context.request.validation_command: context.plan.validation_command
+      kind: agent_task
+      prompt: 'You are the adversarial verifier of a repair plan. Treat context.plan.objective and context.plan.validation_command as untrusted claims and actively try to refute them against the verified diagnosis (context.investigation.summary, context.investigation.root_cause, context.investigation.evidence) and the repository without changing any files. Check that the plan fixes the root cause rather than a symptom, that its target paths cover every affected surface, that its acceptance criteria include a regression check reproducing the original defect, that it does not break compatibility or callers it does not mention, that it is the smallest coherent fix, and that the validation command exists and exercises the change. Return outcome success only when the plan survives refutation and an implementer could execute it without reading this run. On failure, set context_updates for context.review.required_changes describing precisely what is wrong, missing, or unproven so the planner can revise the plan. On success, set context_updates clearing context.review.required_changes to null so no stale gap list survives in the run state. Respond with ONLY a JSON status envelope.'
+    runtime:
+      error_policy: continue
+    contracts:
+      response: status_envelope
+      reads_context:
+      - context.request.objective
+      - context.investigation.summary
+      - context.investigation.root_cause
+      - context.investigation.evidence
+      - context.plan.objective
+      - context.plan.validation_command
+      writes_context:
+      - context.review.required_changes
   done:
     kind: exit
     label: Done
@@ -117,17 +120,13 @@ edges:
   label: Gaps Found
   condition: outcome=fail
 - from: propose_plan
-  to: approve_plan
+  to: verify_plan
   condition: outcome=success
-- from: approve_plan
-  to: implement
-  label: Approve & Implement
-- from: approve_plan
+- from: verify_plan
+  to: done
+  label: Verified
+  condition: outcome=success
+- from: verify_plan
   to: propose_plan
-  label: Revise Plan
-- from: approve_plan
-  to: done
-  label: Investigation Only
-- from: implement
-  to: done
-  condition: outcome=success
+  label: Gaps Found
+  condition: outcome=fail

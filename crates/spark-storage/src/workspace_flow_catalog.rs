@@ -32,7 +32,6 @@ pub const DEFAULT_AGENT_REQUESTABLE_FLOWS: &[&str] = &[
     "software-development/audit-codebase.yaml",
     "software-development/design-change.yaml",
     "software-development/implement-change.yaml",
-    "software-development/integrate-ready-branches.yaml",
     "software-development/investigate-bug.yaml",
     "software-development/merge-change.yaml",
     "software-development/review-change.yaml",
@@ -349,15 +348,12 @@ pub fn seed_default_flow_catalog(config_dir: impl AsRef<Path>) -> Result<Vec<Str
                         conflict_policy: EXECUTION_LOCK_CONFLICT_POLICY_QUEUE.to_string(),
                     })
                 } else {
-                    matches!(
-                        *flow_name,
-                        "software-development/merge-change.yaml"
-                            | "software-development/integrate-ready-branches.yaml"
-                    )
-                    .then(|| FlowExecutionLockConfig {
-                        scope: EXECUTION_LOCK_SCOPE_PROJECT.to_string(),
-                        key: "software-development-integration".to_string(),
-                        conflict_policy: EXECUTION_LOCK_CONFLICT_POLICY_QUEUE.to_string(),
+                    (*flow_name == "software-development/merge-change.yaml").then(|| {
+                        FlowExecutionLockConfig {
+                            scope: EXECUTION_LOCK_SCOPE_PROJECT.to_string(),
+                            key: "software-development-integration".to_string(),
+                            conflict_policy: EXECUTION_LOCK_CONFLICT_POLICY_QUEUE.to_string(),
+                        }
                     })
                 },
             },

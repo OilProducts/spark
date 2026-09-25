@@ -895,6 +895,7 @@ fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
         "do not use any other Spark installation",
         "agent-requestable",
         "$SPARK_HOME/attractor/runs",
+        "spark playbook list",
     ] {
         assert!(frame.contains(expected), "frame lacks {expected}: {frame}");
     }
