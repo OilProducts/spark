@@ -3,7 +3,7 @@ import { fetchProjectChatModelsValidated, type ProjectChatModelsResponse } from 
 import { ApiHttpError } from '@/lib/api/shared'
 
 type Discovery = { projectPath: string | null; payload?: ProjectChatModelsResponse; failed?: boolean }
-type Entry = { value: Discovery | null; listeners: Set<() => void>; refresh: () => void }
+type Entry = { value: Discovery | null; listeners: Set<() => void>; refresh: (event?: Event) => void }
 const projects = new Map<string, Entry>()
 
 export function useModelOptions(projectPath: string | null) {
@@ -13,7 +13,9 @@ export function useModelOptions(projectPath: string | null) {
         let entry = projects.get(scope)
         if (!entry) {
             let revision = 0
-            const created: Entry = { value: null, listeners: new Set(), refresh: () => {
+            const created: Entry = { value: null, listeners: new Set(), refresh: (event) => {
+                const detail = (event as CustomEvent | undefined)?.detail
+                if (detail?.payload?.section && !['providers', 'llm_profiles', 'agents', 'codex'].includes(detail.payload.section)) return
                 const request = ++revision
                 created.value = null
                 created.listeners.forEach((notify) => notify())
@@ -32,7 +34,7 @@ export function useModelOptions(projectPath: string | null) {
             } }
             entry = created
             projects.set(scope, entry)
-            window.addEventListener('spark:codex-connected', entry.refresh)
+            window.addEventListener('spark:settings-live-event', entry.refresh)
             entry.refresh()
         }
         const notify = () => render((version) => version + 1)
@@ -43,7 +45,7 @@ export function useModelOptions(projectPath: string | null) {
             // Keep the in-flight request across React StrictMode's effect replay.
             queueMicrotask(() => {
                 if (entry.listeners.size) return
-                window.removeEventListener('spark:codex-connected', entry.refresh)
+                window.removeEventListener('spark:settings-live-event', entry.refresh)
                 projects.delete(scope)
             })
         }

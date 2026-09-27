@@ -2,10 +2,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use serde_json::json;
-use unified_llm_adapter::model_discovery::AnthropicModelCache;
+use unified_llm_adapter::model_discovery::ProviderModelCache;
 use unified_llm_adapter::{
-    AdapterError, ModelCatalog, NativeCompleteRequest, NativeCompleteResponse,
-    NativeCompleteTransport, ProviderConfig,
+    AdapterError, NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport,
+    ProviderConfig,
 };
 
 struct Transport {
@@ -51,17 +51,21 @@ fn anthropic_discovery_maps_efforts_paginates_and_caches_per_configuration() {
         json!({"data": [{"id": "haiku", "display_name": "Live Haiku", "capabilities": {"effort": {"low": {"supported": false}}}}], "has_more": false, "last_id": "haiku"}),
     );
     let transport = mock_transport(vec![first.clone(), second.clone(), first, second]);
-    let mut cache = AnthropicModelCache::default();
+    let mut cache = ProviderModelCache::default();
     let mut config = config();
-    let models = cache.models(Some(&config), &transport);
-    assert_eq!(models[0].display_name, "Live Opus");
+    let models = cache.models(&config, &transport).unwrap();
+    assert_eq!(models[0].info.display_name, "Live Opus");
+    assert_eq!(models[0].info.context_window, Some(200000));
     assert_eq!(
-        models[0].reasoning_efforts,
+        models[0].info.reasoning_efforts,
         ["low", "high", "max", "future"]
     );
-    assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
-    assert!(models[1].reasoning_efforts.is_empty());
-    assert_eq!(models, cache.models(Some(&config), &transport));
+    assert_eq!(
+        models[0].info.default_reasoning_effort.as_deref(),
+        Some("high")
+    );
+    assert!(models[1].info.reasoning_efforts.is_empty());
+    assert_eq!(models, cache.models(&config, &transport).unwrap());
     {
         let requests = transport.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -72,37 +76,166 @@ fn anthropic_discovery_maps_efforts_paginates_and_caches_per_configuration() {
         assert!(requests[1].url.contains("after_id=opus%2Fid"));
     }
     config.api_key = Some("rotated".into());
-    assert_eq!(models, cache.models(Some(&config), &transport));
+    assert_eq!(models, cache.models(&config, &transport).unwrap());
     assert_eq!(transport.requests.lock().unwrap().len(), 4);
 }
 
 #[test]
-fn anthropic_discovery_falls_back_without_a_key_and_caches_failed_discovery() {
-    let fallback = ModelCatalog::development().list_models(Some("anthropic"));
-    let mut cache = AnthropicModelCache::default();
+fn discovery_caches_failures_without_catalog_fallback() {
+    let mut cache = ProviderModelCache::default();
     let transport = mock_transport(vec![NativeCompleteResponse {
         status: 401,
         headers: Default::default(),
-        body: json!({"error": "unauthorized"}),
+        body: json!({"error": "unauthorized key"}),
     }]);
-    assert_eq!(cache.models(None, &transport), fallback);
-    assert_eq!(
-        cache.models(Some(&ProviderConfig::default()), &transport),
-        fallback
-    );
-    assert!(transport.requests.lock().unwrap().is_empty());
-    assert_eq!(cache.models(Some(&config()), &transport), fallback);
-    assert_eq!(cache.models(Some(&config()), &transport), fallback);
+    let error = cache.models(&config(), &transport).unwrap_err();
+    assert!(error.contains("401"));
+    assert!(error.contains("unauthorized [redacted]"));
+    assert_eq!(cache.models(&config(), &transport).unwrap_err(), error);
     assert_eq!(transport.requests.lock().unwrap().len(), 1);
     for body in [
         json!({}),
-        json!({"data": [], "has_more": false}),
         json!({"data": [], "has_more": true, "last_id": null}),
+        json!({"data": [{"id":""}]}),
     ] {
         let transport = mock_transport(vec![NativeCompleteResponse::ok(body)]);
-        assert_eq!(
-            AnthropicModelCache::default().models(Some(&config()), &transport),
-            fallback
-        );
+        assert!(ProviderModelCache::default()
+            .models(&config(), &transport)
+            .is_err());
     }
+    let transport = mock_transport(vec![NativeCompleteResponse::ok(json!({"data": []}))]);
+    assert!(ProviderModelCache::default()
+        .models(&config(), &transport)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn discovery_filters_and_uses_live_then_notes_then_unverified_levels() {
+    let cases = [
+        (
+            "openai",
+            json!({"data": [
+                {"id":"gpt-5.2"}, {"id":"future-model"}, {"id":"text-embedding-3-small"}, {"id":"omni-moderation-latest"},
+                {"id":"text-moderation-latest"}, {"id":"whisper-1"}, {"id":"tts-1"}, {"id":"dall-e-3"}, {"id":"gpt-image-1"},
+                {"id":"gpt-realtime"}, {"id":"gpt-audio"}, {"id":"gpt-4o-audio-preview"}, {"id":"gpt-4o-mini-realtime-preview"},
+                {"id":"gpt-4o-transcribe"}, {"id":"gpt-4o-mini-transcribe"}, {"id":"gpt-4o-mini-tts"}, {"id":"sora-2"}
+            ]}),
+            vec!["gpt-5.2", "future-model"],
+        ),
+        (
+            "gemini",
+            json!({"models": [
+                {"name":"models/gemini-3.1-pro-preview", "supportedGenerationMethods":["generateContent"], "thinking":true},
+                {"name":"models/future", "supportedGenerationMethods":["generateContent"], "thinking":true},
+                {"name":"models/gemini-3-flash-preview", "supportedGenerationMethods":["generateContent"], "thinking":false},
+                {"name":"models/embedding", "supportedGenerationMethods":["embedContent"], "thinking":true}
+            ]}),
+            vec!["gemini-3.1-pro-preview", "future", "gemini-3-flash-preview"],
+        ),
+        (
+            "openrouter",
+            json!({"data": [
+                {"id":"openai/gpt-5.2", "reasoning":{"supported_efforts":["future", "low"], "default_effort":"future"}},
+                {"id":"unknown"}, {"id":"empty", "reasoning":{"supported_efforts":[]}}
+            ]}),
+            vec!["openai/gpt-5.2", "unknown", "empty"],
+        ),
+        (
+            "litellm",
+            json!({"data": [{"id":"gpt-5.2"}, {"id":"live", "reasoning":{"supported_efforts":["high"], "default_effort":"high"}}]}),
+            vec!["gpt-5.2", "live"],
+        ),
+    ];
+    for (provider, body, ids) in cases {
+        let config = ProviderConfig {
+            provider: provider.into(),
+            ..config()
+        };
+        let transport = mock_transport(vec![NativeCompleteResponse::ok(body)]);
+        let models = ProviderModelCache::default()
+            .models(&config, &transport)
+            .unwrap();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.info.id.as_str())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        match provider {
+            "openai" | "gemini" => {
+                let notes = unified_llm_adapter::get_model_info(ids[0]).unwrap();
+                assert_eq!(models[0].info.reasoning_efforts, notes.reasoning_efforts);
+                assert_eq!(
+                    models[0].info.input_cost_per_million,
+                    notes.input_cost_per_million
+                );
+                assert_eq!(models[0].info.aliases, notes.aliases);
+                assert!(!models[0].reasoning_unverified);
+                assert!(models[1].reasoning_unverified);
+                if provider == "gemini" {
+                    assert!(models[2].info.reasoning_efforts.is_empty());
+                }
+            }
+            "openrouter" => {
+                assert_eq!(models[0].info.reasoning_efforts, ["future", "low"]);
+                assert_eq!(
+                    models[0].info.default_reasoning_effort.as_deref(),
+                    Some("future")
+                );
+                assert!(!models[0].reasoning_unverified);
+                assert!(models[1].reasoning_unverified);
+                assert!(models[2].info.reasoning_efforts.is_empty());
+            }
+            "litellm" => {
+                assert!(models[0].info.reasoning_efforts.is_empty());
+                assert!(!models[0].reasoning_unverified);
+                assert_eq!(models[1].info.reasoning_efforts, ["high"]);
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn discovery_preserves_callable_alias_and_gemini_pagination() {
+    let notes = unified_llm_adapter::list_models(Some("openai"))
+        .into_iter()
+        .find(|model| !model.aliases.is_empty())
+        .unwrap();
+    let alias = &notes.aliases[0];
+    let transport = mock_transport(vec![NativeCompleteResponse::ok(
+        json!({"data":[{"id":alias}]}),
+    )]);
+    let models = ProviderModelCache::default()
+        .models(
+            &ProviderConfig {
+                provider: "openai".into(),
+                ..config()
+            },
+            &transport,
+        )
+        .unwrap();
+    assert_eq!(&models[0].info.id, alias);
+    assert_eq!(
+        models[0].info.input_cost_per_million,
+        notes.input_cost_per_million
+    );
+    let transport = mock_transport(vec![
+        NativeCompleteResponse::ok(json!({"models":[], "nextPageToken":"page/2"})),
+        NativeCompleteResponse::ok(json!({"models":[]})),
+    ]);
+    ProviderModelCache::default()
+        .models(
+            &ProviderConfig {
+                provider: "gemini".into(),
+                ..config()
+            },
+            &transport,
+        )
+        .unwrap();
+    assert!(transport.requests.lock().unwrap()[1]
+        .url
+        .contains("pageToken=page%2F2"));
 }

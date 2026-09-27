@@ -181,7 +181,7 @@ fn build_app_with_live_hub(
 
 #[derive(Clone)]
 pub(crate) struct HttpAppState {
-    codex_connection: Arc<Mutex<spark_agent_adapter::codex_app_server::auth::CodexConnection>>,
+    codex_connection: Arc<Mutex<codex_auth::ConnectionState>>,
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
     runtime_handler_runner_factory: attractor_api::RuntimeHandlerRunnerFactory,
@@ -254,6 +254,9 @@ impl WorkspaceLiveHub {
         project_path: Option<String>,
         revision: serde_json::Value,
     ) {
+        if scope == "workspace" {
+            spark_workspace::models::invalidate_model_discovery(section);
+        }
         self.publish(LiveEnvelope {
             event_type: "settings.changed".into(),
             project_path,

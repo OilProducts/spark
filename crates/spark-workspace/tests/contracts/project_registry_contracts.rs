@@ -134,7 +134,7 @@ fn project_service_metadata_returns_null_git_fields_for_non_repo() {
 }
 
 /// Keeps chat-model tests hermetic: claude-code discovery fails fast and
-/// falls back to the static aliases instead of probing an installed CLI.
+/// reports unavailable instead of probing an installed CLI.
 fn pin_claude_code_bin_to_missing() {
     std::env::set_var(
         "SPARK_CLAUDE_CODE_BIN",
@@ -176,22 +176,13 @@ default_model = "local-model"
     );
     assert_eq!(workspace["models"], response["models"]);
     let models = response["models"].as_array().expect("models array");
-    assert!(models
+    assert!(!models
         .iter()
-        .any(|model| model["provider"] == "openai" && model["id"] == "gpt-5.2"));
-    assert!(models
-        .iter()
-        .any(|model| model["provider"] == "anthropic" && model["id"] == "claude-sonnet-4-5"));
-    assert!(models
-        .iter()
-        .any(|model| model["provider"] == "gemini" && model["id"] == "gemini-3.1-pro-preview"));
-    // Discovery is pinned to a missing CLI, so claude-code falls back to the
-    // static aliases rather than offering a blank provider.
-    for alias in ["opus", "sonnet", "haiku"] {
-        assert!(models
-            .iter()
-            .any(|model| model["provider"] == "claude-code" && model["id"] == alias));
-    }
+        .any(|model| model["provider"] == "claude-code"));
+    assert_eq!(
+        response["providers"]["claude-code"]["status"],
+        "unavailable"
+    );
     let configured = models
         .iter()
         .find(|model| model["id"] == "local-model")
@@ -518,23 +509,6 @@ reasoning_efforts = ["low"]
     let response =
         spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap();
     let models = response["models"].as_array().unwrap();
-    for catalog in unified_llm_adapter::list_models(None)
-        .into_iter()
-        .filter(|model| model.provider != "anthropic")
-    {
-        let model = models
-            .iter()
-            .find(|model| model["id"] == catalog.id && model["provider"] == catalog.provider)
-            .unwrap();
-        assert_eq!(
-            model["supported_reasoning_efforts"],
-            json!(catalog.reasoning_efforts)
-        );
-        assert_eq!(
-            model["default_reasoning_effort"],
-            json!(catalog.default_reasoning_effort)
-        );
-    }
     for (profile, levels) in [
         ("local", vec!["minimal", "high"]),
         ("other", vec![]),

@@ -1,6 +1,5 @@
 use spark_common::agent_settings::NativeAgentSettings;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,28 +7,42 @@ use spark_common::settings::SparkSettings;
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
 
-static ANTHROPIC_MODELS_CACHE: Mutex<
-    Option<unified_llm_adapter::model_discovery::AnthropicModelCache>,
+static PROVIDER_MODELS_CACHE: Mutex<
+    Option<unified_llm_adapter::model_discovery::ProviderModelCache>,
 > = Mutex::new(None);
-
 const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
+type NativeModelCache = Vec<(NativeAgentSettings, Result<Vec<ChatModelMetadata>, String>)>;
+static CODEX_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
+static CLAUDE_CODE_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
 
-/// The codex model list comes from a spawned app-server process, so it is
-/// cached briefly; the installed model set changes on codex upgrades, not
-/// per request.
-const CODEX_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
-static CODEX_MODELS_CACHE: Mutex<Option<(Instant, NativeAgentSettings, Vec<ChatModelMetadata>)>> =
-    Mutex::new(None);
-
-/// Claude Code models come from the CLI's stdio control protocol, cached on
-/// the same rationale as codex. Discovery failures (CLI missing, logged out,
-/// probe timeout) fall back to the static aliases — valid `--model` values —
-/// so a transient failure never blanks the picker. The resolved list is
-/// cached either way so a broken CLI is not re-probed per request.
-const CLAUDE_CODE_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
-static CLAUDE_CODE_MODELS_CACHE: Mutex<
-    Option<(Instant, NativeAgentSettings, Vec<ChatModelMetadata>)>,
-> = Mutex::new(None);
+pub fn invalidate_model_discovery(section: &str) {
+    match section {
+        "providers" | "llm_profiles" => {
+            if let Some(cache) = PROVIDER_MODELS_CACHE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_mut()
+            {
+                cache.clear();
+            }
+        }
+        "agents" => {
+            CODEX_MODELS_CACHE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+            CLAUDE_CODE_MODELS_CACHE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clear();
+        }
+        "codex" => CODEX_MODELS_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear(),
+        _ => {}
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatModelMetadata {
@@ -41,6 +54,8 @@ pub struct ChatModelMetadata {
     pub is_default: bool,
     pub supported_reasoning_efforts: Vec<String>,
     pub default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub reasoning_unverified: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +90,28 @@ pub fn chat_models_with_codex_result(
             },
         ),
     };
-    models.extend(claude_code_chat_models(&native_configuration(settings)?));
+    let mut providers = serde_json::Map::new();
+    providers.insert("codex".into(), serde_json::json!(codex_status));
+    let mut add = |provider: &str, result: Result<Vec<ChatModelMetadata>, String>| {
+        let status = match result {
+            Ok(discovered) => {
+                models.extend(discovered);
+                ChatModelProviderStatus {
+                    status: "available".into(),
+                    error: None,
+                }
+            }
+            Err(error) => ChatModelProviderStatus {
+                status: "unavailable".into(),
+                error: Some(error),
+            },
+        };
+        providers.insert(provider.into(), serde_json::json!(status));
+    };
+    add(
+        "claude-code",
+        claude_code_chat_models(&native_configuration(settings)?),
+    );
     let configuration = spark_storage::settings::read_execution_configuration(
         &settings.config_dir,
         &spark_common::paths::ProcessEnvironment,
@@ -86,29 +122,25 @@ pub fn chat_models_with_codex_result(
             .execution_environment(&std::env::vars().collect()),
         None,
     );
-    let anthropic = ANTHROPIC_MODELS_CACHE
+    let mut cache = PROVIDER_MODELS_CACHE
         .lock()
-        .ok()
-        .map(|mut cache| {
-            cache.get_or_insert_with(Default::default).models(
-                environment.providers.get("anthropic"),
-                &unified_llm_adapter::NativeHttpTransport::new(),
-            )
-        })
-        .unwrap_or_else(|| unified_llm_adapter::list_models(Some("anthropic")));
-    models.extend(
-        public_unified_chat_models()
-            .into_iter()
-            .filter(|model| model.provider != "anthropic"),
-    );
-    models.extend(anthropic.into_iter().map(unified_chat_model));
+        .unwrap_or_else(|error| error.into_inner());
+    for provider in ["anthropic", "openai", "gemini", "openrouter", "litellm"] {
+        if let Some(config) = environment.providers.get(provider) {
+            add(
+                provider,
+                cache
+                    .get_or_insert_with(Default::default)
+                    .models(config, &unified_llm_adapter::NativeHttpTransport::new())
+                    .map(|models| models.into_iter().map(unified_chat_model).collect()),
+            );
+        }
+    }
     models.extend(configured_profile_chat_models(settings)?);
     Ok(serde_json::json!({
         "models": models,
         "provider_reasoning_efforts": unified_llm_adapter::ModelCatalog::development().provider_reasoning_efforts,
-        "providers": {
-            "codex": codex_status,
-        },
+        "providers": providers,
     }))
 }
 
@@ -125,40 +157,20 @@ pub fn native_configuration(settings: &SparkSettings) -> WorkspaceResult<NativeA
     Ok(configuration.agents.native)
 }
 
-fn claude_code_chat_models(native: &NativeAgentSettings) -> Vec<ChatModelMetadata> {
-    if let Ok(cache) = CLAUDE_CODE_MODELS_CACHE.lock() {
-        if let Some((fetched_at, captured, models)) = cache.as_ref() {
-            if captured == native && fetched_at.elapsed() < CLAUDE_CODE_MODELS_CACHE_TTL {
-                return models.clone();
-            }
-        }
+fn claude_code_chat_models(native: &NativeAgentSettings) -> Result<Vec<ChatModelMetadata>, String> {
+    let mut cache = CLAUDE_CODE_MODELS_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some((_, result)) = cache.iter().find(|(captured, _)| captured == native) {
+        return result.clone();
     }
-    let models = spark_agent_adapter::claude_code::list_available_claude_code_models_with_settings(
+    let result = spark_agent_adapter::claude_code::list_available_claude_code_models_with_settings(
         Some(native),
     )
     .map(claude_code_chat_models_from_metadata)
-    .ok()
-    .filter(|models| !models.is_empty())
-    .unwrap_or_else(claude_code_static_alias_models);
-    if let Ok(mut cache) = CLAUDE_CODE_MODELS_CACHE.lock() {
-        *cache = Some((Instant::now(), native.clone(), models.clone()));
-    }
-    models
-}
-
-fn claude_code_static_alias_models() -> Vec<ChatModelMetadata> {
-    ["opus", "sonnet", "haiku"]
-        .into_iter()
-        .map(|id| ChatModelMetadata {
-            llm_profile: None,
-            provider: "claude-code".to_string(),
-            id: id.to_string(),
-            display: id.to_string(),
-            is_default: false,
-            supported_reasoning_efforts: Vec::new(),
-            default_reasoning_effort: None,
-        })
-        .collect()
+    .map_err(|error| error.message);
+    cache.push((native.clone(), result.clone()));
+    result
 }
 
 pub fn claude_code_chat_models_from_metadata(
@@ -167,6 +179,7 @@ pub fn claude_code_chat_models_from_metadata(
     metadata
         .into_iter()
         .map(|model| ChatModelMetadata {
+            reasoning_unverified: false,
             llm_profile: None,
             provider: "claude-code".to_string(),
             // The blank id is the catalog's `default` pseudo-entry: no
@@ -184,22 +197,19 @@ pub fn claude_code_chat_models_from_metadata(
 /// Codex models come from the local install itself (`model/list`), so the
 /// chooser only offers what codex will actually serve.
 fn codex_chat_models(native: &NativeAgentSettings) -> Result<Vec<ChatModelMetadata>, String> {
-    if let Ok(cache) = CODEX_MODELS_CACHE.lock() {
-        if let Some((fetched_at, captured, models)) = cache.as_ref() {
-            if captured == native && fetched_at.elapsed() < CODEX_MODELS_CACHE_TTL {
-                return Ok(models.clone());
-            }
-        }
+    let mut cache = CODEX_MODELS_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some((_, result)) = cache.iter().find(|(captured, _)| captured == native) {
+        return result.clone();
     }
-    let live = spark_agent_adapter::codex_app_server::list_available_codex_models_with_settings(
+    let result = spark_agent_adapter::codex_app_server::list_available_codex_models_with_settings(
         Some(native),
     )
     .map(codex_chat_models_from_metadata)
-    .map_err(|error| format!("Codex model discovery failed: {error}"))?;
-    if let Ok(mut cache) = CODEX_MODELS_CACHE.lock() {
-        *cache = Some((Instant::now(), native.clone(), live.clone()));
-    }
-    Ok(live)
+    .map_err(|error| format!("Codex model discovery failed: {error}"));
+    cache.push((native.clone(), result.clone()));
+    result
 }
 
 pub fn codex_chat_models_from_metadata(
@@ -210,6 +220,7 @@ pub fn codex_chat_models_from_metadata(
         .into_iter()
         .enumerate()
         .map(|(index, model)| ChatModelMetadata {
+            reasoning_unverified: false,
             llm_profile: None,
             provider: "codex".to_string(),
             display: model.display,
@@ -227,19 +238,6 @@ pub fn codex_chat_models_from_metadata(
                 .or_else(|| Some("medium".to_string())),
             id: model.id,
         })
-        .collect()
-}
-
-pub fn public_unified_chat_models() -> Vec<ChatModelMetadata> {
-    unified_llm_adapter::list_models(None)
-        .into_iter()
-        .filter(|model| {
-            matches!(
-                model.provider.as_str(),
-                "openai" | "anthropic" | "gemini" | "openrouter" | "litellm"
-            )
-        })
-        .map(unified_chat_model)
         .collect()
 }
 
@@ -269,6 +267,7 @@ fn configured_profile_chat_models(
         };
         for model in profile_models.iter().filter_map(Value::as_str) {
             models.push(ChatModelMetadata {
+                reasoning_unverified: false,
                 llm_profile: Some(profile_id.to_string()),
                 provider: provider.to_string(),
                 id: model.to_string(),
@@ -286,8 +285,12 @@ fn configured_profile_chat_models(
     Ok(models)
 }
 
-fn unified_chat_model(model: unified_llm_adapter::ModelInfo) -> ChatModelMetadata {
+fn unified_chat_model(
+    discovered: unified_llm_adapter::model_discovery::DiscoveredModel,
+) -> ChatModelMetadata {
+    let model = discovered.info;
     ChatModelMetadata {
+        reasoning_unverified: discovered.reasoning_unverified,
         llm_profile: None,
         provider: model.provider,
         id: model.id,

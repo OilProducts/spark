@@ -34,6 +34,7 @@ export interface ProjectChatModelMetadataResponse {
     display: string
     is_default: boolean
     supported_reasoning_efforts: string[]
+    reasoning_unverified?: boolean
     default_reasoning_effort?: string | null
 }
 
@@ -41,6 +42,7 @@ export interface ProjectChatModelsResponse {
     models: ProjectChatModelMetadataResponse[]
     provider_reasoning_efforts?: Record<string, string[]>
     providers: {
+        [provider: string]: ProjectChatModelProviderStatusResponse
         codex: ProjectChatModelProviderStatusResponse
     }
 }
@@ -204,6 +206,7 @@ function parseProjectChatModelMetadataResponse(
                 .filter((entry) => entry.trim().length > 0)
             : [],
         default_reasoning_effort: asOptionalNullableString(record.default_reasoning_effort),
+        ...(record.reasoning_unverified === true ? { reasoning_unverified: true } : {}),
     }
 }
 
@@ -216,15 +219,17 @@ export function parseProjectChatModelsResponse(
         throw new ApiSchemaError(endpoint, 'Expected "models" to be an array.')
     }
     const providers = expectObjectRecord(record.providers, endpoint)
-    const codex = expectObjectRecord(providers.codex, endpoint)
-    const codexStatus = expectString(codex.status, endpoint, 'providers.codex.status')
-    if (codexStatus !== 'available' && codexStatus !== 'unavailable') {
-        throw new ApiSchemaError(endpoint, 'Expected Codex provider status to be "available" or "unavailable".')
-    }
-    const codexError = codex.error
-    if (codexError !== null && typeof codexError !== 'string') {
-        throw new ApiSchemaError(endpoint, 'Expected Codex provider error to be a string or null.')
-    }
+    expectObjectRecord(providers.codex, endpoint)
+    const statuses: ProjectChatModelsResponse['providers'] = Object.fromEntries(Object.entries(providers).map(([provider, value]) => {
+        const entry = expectObjectRecord(value, endpoint)
+        if (entry.status !== 'available' && entry.status !== 'unavailable') {
+            throw new ApiSchemaError(endpoint, 'Expected provider status to be "available" or "unavailable".')
+        }
+        if (entry.error !== null && typeof entry.error !== 'string') {
+            throw new ApiSchemaError(endpoint, 'Expected provider error to be a string or null.')
+        }
+        return [provider, { status: entry.status, error: entry.error }]
+    })) as ProjectChatModelsResponse['providers']
     return {
         ...(record.provider_reasoning_efforts && typeof record.provider_reasoning_efforts === 'object' ? {
             provider_reasoning_efforts: Object.fromEntries(Object.entries(record.provider_reasoning_efforts).map(([provider, efforts]) =>
@@ -233,12 +238,7 @@ export function parseProjectChatModelsResponse(
         models: record.models
             .map((entry) => parseProjectChatModelMetadataResponse(entry, endpoint))
             .filter((entry): entry is ProjectChatModelMetadataResponse => entry !== null),
-        providers: {
-            codex: {
-                status: codexStatus,
-                error: codexError,
-            },
-        },
+        providers: statuses,
     }
 }
 

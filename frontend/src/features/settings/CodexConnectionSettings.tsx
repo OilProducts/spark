@@ -29,7 +29,6 @@ export function CodexConnectionControls() {
             void codexConnectionRequest('status', controller.signal).then((next) => {
                 if (controller.signal.aborted) return
                 setConnection(next)
-                if (next.status === 'connected') window.dispatchEvent(new Event('spark:codex-connected'))
             }).catch((error: unknown) => {
                 if (!controller.signal.aborted) setError(error instanceof Error ? error.message : 'Unable to check sign-in. Check the connection to try again.')
             })
@@ -43,7 +42,6 @@ export function CodexConnectionControls() {
         try {
             const next = await codexConnectionRequest(action)
             setConnection(next)
-            if (next.status === 'connected') window.dispatchEvent(new Event('spark:codex-connected'))
         } catch (error) {
             setError(error instanceof Error ? error.message : 'Unable to connect Codex.')
         } finally { setBusy(false) }
