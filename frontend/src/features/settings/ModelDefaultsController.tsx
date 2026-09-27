@@ -11,7 +11,7 @@ export function ModelDefaultsController() {
                 if (cancelled) return
                 if (!effective) { setError('Workspace model defaults are invalid. Repair them in Settings.'); return }
                 useStore.getState().setUiDefaults({ llm_provider: effective.provider ?? '', llm_profile: effective.llm_profile ?? '',
-                    llm_model: effective.model ?? '', reasoning_effort: effective.reasoning_effort ?? '' })
+                    llm_model: effective.model ?? '', reasoning_effort: effective.reasoning_effort ?? '', thinking: effective.thinking == null ? '' : String(effective.thinking), thinking_budget_tokens: effective.thinking_budget_tokens == null ? '' : String(effective.thinking_budget_tokens), reasoning_mode: effective.reasoning_mode == null ? '' : String(effective.reasoning_mode), reasoning_summary: effective.reasoning_summary == null ? '' : String(effective.reasoning_summary) })
                 setError('')
             }).catch((error: unknown) => { if (!cancelled) setError(error instanceof Error ? error.message : 'Unable to load workspace model defaults.') })
         }

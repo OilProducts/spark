@@ -540,6 +540,19 @@ fn anthropic_messages_body(
     if !request.metadata.is_empty() {
         body.insert("metadata".to_string(), json!(request.metadata));
     }
+    if let Some(thinking) = request.thinking.as_deref() {
+        body.insert(
+            "thinking".into(),
+            match thinking {
+                "adaptive" => json!({"type": "adaptive"}),
+                "off" => json!({"type": "disabled"}),
+                "budget" => {
+                    json!({"type": "enabled", "budget_tokens": request.thinking_budget_tokens})
+                }
+                value => json!({"type": value}),
+            },
+        );
+    }
     if let Some(options) = active_options {
         if let Some(thinking) = options.get("thinking") {
             if thinking.is_object() {

@@ -66,6 +66,16 @@ pub struct FlowDefaults {
     pub llm_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "spark_common::settings::deserialize_thinking_budget")]
+    pub thinking_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
+
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
 }
@@ -78,6 +88,10 @@ impl FlowDefaults {
             && self.llm_profile.is_none()
             && self.llm_model.is_none()
             && self.reasoning_effort.is_none()
+            && self.thinking.is_none()
+            && self.thinking_budget_tokens.is_none()
+            && self.reasoning_mode.is_none()
+            && self.reasoning_summary.is_none()
             && self.extensions.is_empty()
     }
 }
@@ -275,6 +289,15 @@ pub struct ExecutionConfig {
     pub llm_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "spark_common::settings::deserialize_thinking_budget")]
+    pub thinking_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -400,6 +423,22 @@ impl FlowDefinition {
         if let Some(value) = self.defaults.reasoning_effort.as_deref() {
             insert_string_attr(&mut graph_attrs, "ui_default_reasoning_effort", value);
         }
+        if let Some(value) = self.defaults.thinking.as_deref() {
+            insert_string_attr(&mut graph_attrs, "thinking", value);
+        }
+        if let Some(value) = self.defaults.thinking_budget_tokens {
+            insert_string_attr(
+                &mut graph_attrs,
+                "thinking_budget_tokens",
+                &value.to_string(),
+            );
+        }
+        if let Some(value) = self.defaults.reasoning_mode.as_deref() {
+            insert_string_attr(&mut graph_attrs, "reasoning_mode", value);
+        }
+        if let Some(value) = self.defaults.reasoning_summary.as_deref() {
+            insert_string_attr(&mut graph_attrs, "reasoning_summary", value);
+        }
         if !self.inputs.is_empty() {
             if let Ok(value) = serde_json::to_string(&self.inputs) {
                 insert_string_attr(&mut graph_attrs, "spark.launch_inputs", &value);
@@ -430,6 +469,35 @@ impl FlowDefinition {
 
     pub fn diagnostics(&self) -> Vec<FlowDiagnostic> {
         let mut diagnostics = Vec::new();
+        for (node_id, thinking, budget, mode, summary) in std::iter::once((
+            None,
+            self.defaults.thinking.as_deref(),
+            self.defaults.thinking_budget_tokens,
+            self.defaults.reasoning_mode.as_deref(),
+            self.defaults.reasoning_summary.as_deref(),
+        ))
+        .chain(self.nodes.iter().filter_map(|(id, node)| {
+            node.execution.as_ref().map(|v| {
+                (
+                    Some(id),
+                    v.thinking.as_deref(),
+                    v.thinking_budget_tokens,
+                    v.reasoning_mode.as_deref(),
+                    v.reasoning_summary.as_deref(),
+                )
+            })
+        })) {
+            if let Err(message) = spark_common::settings::validate_reasoning_control_fields(
+                thinking, budget, mode, summary,
+            ) {
+                diagnostics.push(FlowDiagnostic {
+                    rule_id: "reasoning_controls".into(),
+                    message,
+                    node_id: node_id.cloned(),
+                    edge: None,
+                });
+            }
+        }
         if self.id.trim().is_empty() {
             diagnostics.push(diagnostic("flow_id", "flow id must be non-empty"));
         }
@@ -689,6 +757,18 @@ fn runtime_dot_node(node_id: &str, node: &FlowNode) -> DotNode {
         }
         if let Some(value) = execution.reasoning_effort.as_deref() {
             insert_string_attr(&mut attrs, "reasoning_effort", value);
+        }
+        if let Some(value) = execution.thinking.as_deref() {
+            insert_string_attr(&mut attrs, "thinking", value);
+        }
+        if let Some(value) = execution.thinking_budget_tokens {
+            insert_string_attr(&mut attrs, "thinking_budget_tokens", &value.to_string());
+        }
+        if let Some(value) = execution.reasoning_mode.as_deref() {
+            insert_string_attr(&mut attrs, "reasoning_mode", value);
+        }
+        if let Some(value) = execution.reasoning_summary.as_deref() {
+            insert_string_attr(&mut attrs, "reasoning_summary", value);
         }
     }
     if let Some(NodeConfig::HumanGate { decisions, .. }) = node.config.as_ref() {

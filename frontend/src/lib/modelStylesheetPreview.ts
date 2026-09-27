@@ -1,4 +1,6 @@
-export type ModelProperty = 'llm_model' | 'llm_provider' | 'llm_profile' | 'reasoning_effort'
+import { validateGraphAttrValue } from './graphAttrValidation'
+
+export type ModelProperty = 'llm_model' | 'llm_provider' | 'llm_profile' | 'reasoning_effort' | 'thinking' | 'thinking_budget_tokens' | 'reasoning_mode' | 'reasoning_summary'
 export type ModelValueSource = 'node' | 'stylesheet' | 'graph_default' | 'system_default'
 
 export interface StylesheetPreviewNodeInput {
@@ -9,6 +11,11 @@ export interface StylesheetPreviewNodeInput {
     llm_provider?: string
     llm_profile?: string
     reasoning_effort?: string
+    thinking?: string
+    thinking_budget_tokens?: string
+    reasoning_mode?: string
+    reasoning_summary?: string
+
 }
 
 export interface StylesheetGraphDefaults {
@@ -16,6 +23,11 @@ export interface StylesheetGraphDefaults {
     llm_provider?: string
     llm_profile?: string
     reasoning_effort?: string
+    thinking?: string
+    thinking_budget_tokens?: string
+    reasoning_mode?: string
+    reasoning_summary?: string
+
 }
 
 export interface EffectivePreviewValue {
@@ -47,8 +59,7 @@ interface ParsedRule {
     order: number
 }
 
-const ALLOWED_PROPERTIES = new Set<ModelProperty>(['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort'])
-const ALLOWED_REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh'])
+const ALLOWED_PROPERTIES = new Set<ModelProperty>(['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort', 'thinking', 'thinking_budget_tokens', 'reasoning_mode', 'reasoning_summary'])
 const CLASS_NAME_RE = /^[a-z0-9-]+$/
 const NODE_ID_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const SHAPE_SELECTOR_RE = /^[A-Za-z][A-Za-z0-9_]*$/
@@ -58,8 +69,13 @@ const SYSTEM_DEFAULTS: Record<ModelProperty, string> = {
     llm_provider: '',
     llm_profile: '',
     reasoning_effort: 'high',
+    thinking: '',
+    thinking_budget_tokens: '',
+    reasoning_mode: '',
+    reasoning_summary: '',
+
 }
-const MODEL_PROPERTIES: ModelProperty[] = ['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort']
+const MODEL_PROPERTIES: ModelProperty[] = ['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort', 'thinking', 'thinking_budget_tokens', 'reasoning_mode', 'reasoning_summary']
 
 export function resolveModelStylesheetPreview(
     stylesheet: string,
@@ -101,6 +117,11 @@ export function resolveModelStylesheetPreview(
             llm_provider: resolveEffectiveValue('llm_provider', node, candidates, graphDefaults),
             llm_profile: resolveEffectiveValue('llm_profile', node, candidates, graphDefaults),
             reasoning_effort: resolveEffectiveValue('reasoning_effort', node, candidates, graphDefaults),
+            thinking: resolveEffectiveValue('thinking', node, candidates, graphDefaults),
+            thinking_budget_tokens: resolveEffectiveValue('thinking_budget_tokens', node, candidates, graphDefaults),
+            reasoning_mode: resolveEffectiveValue('reasoning_mode', node, candidates, graphDefaults),
+            reasoning_summary: resolveEffectiveValue('reasoning_summary', node, candidates, graphDefaults),
+
         }
 
         return {
@@ -208,10 +229,8 @@ function parseProperties(body: string): Partial<Record<ModelProperty, string>> |
         if (!ALLOWED_PROPERTIES.has(key) || value === null || value === '') {
             return null
         }
-        if (key === 'reasoning_effort' && !ALLOWED_REASONING_EFFORTS.has(value)) {
-            return null
-        }
 
+        if (validateGraphAttrValue(key, value)) return null
         properties[key] = value
     }
 

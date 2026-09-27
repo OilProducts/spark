@@ -927,7 +927,14 @@ fn compatible_effort_requires_declaration_but_does_not_validate_provider_values(
                     ..OpenAICompatibleRequestConfig::new("key")
                 };
                 let result = build_openai_compatible_chat_request(provider, &request, config);
-                if !declared && effort.is_some() {
+                if provider == "openrouter" {
+                    let body = result.unwrap().body;
+                    assert_eq!(
+                        body.pointer("/reasoning/effort").and_then(Value::as_str),
+                        effort
+                    );
+                    assert!(body.get("reasoning_effort").is_none());
+                } else if !declared && effort.is_some() {
                     let error = result.unwrap_err();
                     assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
                     assert!(error

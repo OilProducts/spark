@@ -31,7 +31,7 @@ describe('workspace model defaults migration', () => {
         const fetch = vi.fn().mockResolvedValue(response(group))
         vi.stubGlobal('fetch', fetch)
         const view = await loadAndMigrateModelDefaults()
-        expect(view.effective).toEqual(group)
+        expect(view.effective).toEqual({ ...group, thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null })
         expect(fetch).toHaveBeenCalledTimes(1)
         expect(localStorage.getItem(`${legacy}.v0.bak`)).not.toBeNull()
     })

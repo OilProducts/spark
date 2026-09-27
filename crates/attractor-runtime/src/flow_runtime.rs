@@ -43,6 +43,10 @@ const CORE_NODE_EXTENSION_KEYS: &[&str] = &[
     "options",
     "prompt",
     "reasoning_effort",
+    "thinking",
+    "thinking_budget_tokens",
+    "reasoning_mode",
+    "reasoning_summary",
     "retry_policy",
     "retry_target",
     "shape",
@@ -310,6 +314,18 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
         if let Some(value) = execution.reasoning_effort.as_deref() {
             insert_authored_string_attr(&mut attrs, "reasoning_effort", value);
         }
+        if let Some(value) = execution.thinking.as_deref() {
+            insert_authored_string_attr(&mut attrs, "thinking", value);
+        }
+        if let Some(value) = execution.thinking_budget_tokens {
+            insert_authored_string_attr(&mut attrs, "thinking_budget_tokens", &value.to_string());
+        }
+        if let Some(value) = execution.reasoning_mode.as_deref() {
+            insert_authored_string_attr(&mut attrs, "reasoning_mode", value);
+        }
+        if let Some(value) = execution.reasoning_summary.as_deref() {
+            insert_authored_string_attr(&mut attrs, "reasoning_summary", value);
+        }
     }
     for (key, value) in &node.context {
         if !is_core_node_attr_key(key) {
@@ -371,14 +387,16 @@ pub fn flow_graph_for_handler_compat(flow: &FlowDefinition) -> DotGraph {
             }
         })
         .collect();
-    DotGraph {
+    let mut graph = DotGraph {
         graph_id: flow.id.clone(),
         graph_attrs,
         nodes,
         edges,
         defaults: DotScopeDefaults::default(),
         subgraphs: Vec::new(),
-    }
+    };
+    attractor_dsl::GraphTransform::apply(&attractor_dsl::ModelStylesheetTransform, &mut graph);
+    graph
 }
 
 pub fn graph_attrs_for_handler(flow: &FlowDefinition) -> BTreeMap<String, DotAttribute> {
@@ -405,6 +423,18 @@ pub fn graph_attrs_for_handler(flow: &FlowDefinition) -> BTreeMap<String, DotAtt
     }
     if let Some(value) = flow.defaults.reasoning_effort.as_deref() {
         insert_string_attr(&mut attrs, "ui_default_reasoning_effort", value);
+    }
+    if let Some(value) = flow.defaults.thinking.as_deref() {
+        insert_string_attr(&mut attrs, "thinking", value);
+    }
+    if let Some(value) = flow.defaults.thinking_budget_tokens {
+        insert_string_attr(&mut attrs, "thinking_budget_tokens", &value.to_string());
+    }
+    if let Some(value) = flow.defaults.reasoning_mode.as_deref() {
+        insert_string_attr(&mut attrs, "reasoning_mode", value);
+    }
+    if let Some(value) = flow.defaults.reasoning_summary.as_deref() {
+        insert_string_attr(&mut attrs, "reasoning_summary", value);
     }
     if !flow.inputs.is_empty() {
         if let Ok(value) = serde_json::to_string(&flow.inputs) {
@@ -513,6 +543,15 @@ fn typed_node_attr_text(node: &FlowNode, key: &str) -> Option<String> {
         "llm_profile" => node.execution.as_ref()?.llm_profile.clone(),
         "llm_model" => node.execution.as_ref()?.llm_model.clone(),
         "reasoning_effort" => node.execution.as_ref()?.reasoning_effort.clone(),
+        "thinking" => node.execution.as_ref()?.thinking.clone(),
+        "thinking_budget_tokens" => node
+            .execution
+            .as_ref()?
+            .thinking_budget_tokens
+            .map(|v| v.to_string()),
+        "reasoning_mode" => node.execution.as_ref()?.reasoning_mode.clone(),
+        "reasoning_summary" => node.execution.as_ref()?.reasoning_summary.clone(),
+
         "tool.command" => match node.config.as_ref()? {
             NodeConfig::Tool { command, .. } => Some(command.clone()),
             _ => None,

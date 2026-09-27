@@ -15,6 +15,11 @@ const GRAPH_ATTR_STRING_KEYS: (keyof GraphAttrs)[] = [
     'llm_provider',
     'llm_profile',
     'reasoning_effort',
+    'thinking',
+    'thinking_budget_tokens',
+    'reasoning_mode',
+    'reasoning_summary',
+
 ]
 
 export const GRAPH_FIDELITY_OPTIONS = [
@@ -45,6 +50,10 @@ export const normalizeGraphAttrValue = (key: keyof GraphAttrs, value: string): s
 }
 
 export const validateGraphAttrValue = (key: keyof GraphAttrs, value: string): string | null => {
+    if (value && key === 'thinking_budget_tokens' && (!/^\d+$/.test(value) || Number(value) < 1024)) return 'thinking_budget_tokens must be an integer of at least 1024.'
+    const choices: Partial<Record<keyof GraphAttrs, string[]>> = { thinking: ['adaptive', 'off', 'budget'], reasoning_mode: ['standard', 'pro'], reasoning_summary: ['auto', 'concise', 'detailed'] }
+    if (value && choices[key] && !choices[key]!.includes(value)) return `Invalid ${key}.`
+
     if (key === 'max_retries') {
         if (!value) return null
         if (!/^\d+$/.test(value)) {

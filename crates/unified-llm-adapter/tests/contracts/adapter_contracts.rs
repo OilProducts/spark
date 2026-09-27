@@ -358,6 +358,7 @@ fn request_tool_structured_output_observation() -> Value {
         metadata: BTreeMap::from([("run_id".to_string(), json!("run-1"))]),
         timeout: None,
         abort_signal: None,
+        ..Default::default()
     };
     let tool_call = ToolCall {
         id: "call-1".to_string(),

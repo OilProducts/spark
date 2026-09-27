@@ -210,11 +210,71 @@ fn enrich(provider: &str, id: &str, live: &Value) -> DiscoveredModel {
         supports_vision: false,
         reasoning_efforts: vec![],
         default_reasoning_effort: None,
+        supported_thinking: vec![],
+        supported_reasoning_modes: vec![],
+        supported_reasoning_summaries: vec![],
         max_output: None,
         input_cost_per_million: None,
         output_cost_per_million: None,
         aliases: vec![],
     });
+    // Notes enrich only provider-listed IDs. Never infer controls across providers.
+    if provider != info.provider || matches!(provider, "gemini" | "litellm" | "openai_compatible") {
+        info.supported_thinking.clear();
+        info.supported_reasoning_modes.clear();
+        info.supported_reasoning_summaries.clear();
+    }
+    if provider == "anthropic" {
+        // Spark notes from the thinking guide. Opus 5 can reject off above high;
+        // leave that model/effort combination to the provider, like other settings.
+        if matches!(
+            id,
+            "claude-opus-5"
+                | "claude-sonnet-5"
+                | "claude-opus-4-8"
+                | "claude-opus-4-7"
+                | "claude-sonnet-4-6"
+        ) {
+            info.supported_thinking.push("off".into());
+        }
+        if let Some(types) = live.pointer("/capabilities/thinking/types") {
+            let off = types
+                .pointer("/disabled/supported")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| info.supported_thinking.iter().any(|v| v == "off"));
+            info.supported_thinking = [("adaptive", "adaptive"), ("enabled", "budget")]
+                .into_iter()
+                .filter(|(key, _)| types[*key]["supported"] == true)
+                .map(|(_, value)| value.to_string())
+                .collect();
+            if off {
+                info.supported_thinking.push("off".into());
+            }
+        }
+    } else if provider == "openrouter" {
+        info.supported_thinking.clear();
+        info.supported_reasoning_modes.clear();
+        info.supported_reasoning_summaries.clear();
+        if let Some(reasoning) = live.get("reasoning").filter(|v| v.is_object()) {
+            if reasoning["mandatory"] != true {
+                info.supported_thinking.push("off".into());
+            }
+            if reasoning["supports_max_tokens"] == true && !id.starts_with("google/") {
+                info.supported_thinking.push("budget".into());
+            }
+        }
+    }
+    // Spark notes: the reasoning guide documents these callable GPT-5.6 IDs.
+    // These notes enrich live entries only; they never add catalog models.
+    if provider == "openai"
+        && matches!(
+            id,
+            "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna"
+        )
+    {
+        info.supported_reasoning_modes = vec!["standard".into(), "pro".into()];
+        info.supported_reasoning_summaries = vec!["auto".into(), "detailed".into()];
+    }
     // Preserve the provider's callable ID even when it matched a catalog alias.
     info.id = id.into();
     info.provider = provider.into();

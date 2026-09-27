@@ -468,7 +468,21 @@ where
     }
 
     let mut body = chat_completions_body(&provider, request, active_options, &mut warnings)?;
-    if let Some(effort) = &request.reasoning_effort {
+    if provider == "openrouter" {
+        let mut reasoning = serde_json::Map::new();
+        if let Some(effort) = &request.reasoning_effort {
+            reasoning.insert("effort".into(), json!(effort));
+        }
+        if let Some(thinking) = &request.thinking {
+            reasoning.insert("enabled".into(), json!(thinking != "off"));
+        }
+        if let Some(budget) = request.thinking_budget_tokens {
+            reasoning.insert("max_tokens".into(), json!(budget));
+        }
+        if !reasoning.is_empty() {
+            body.insert("reasoning".into(), json!(reasoning));
+        }
+    } else if let Some(effort) = &request.reasoning_effort {
         if config.reasoning_efforts.is_empty() {
             return Err(invalid_request_error(&provider, "Explicit reasoning_effort requires declared levels in the llm-profiles.toml profile setting reasoning_efforts (or provider reasoning_efforts configuration)"));
         }

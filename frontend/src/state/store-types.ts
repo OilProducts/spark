@@ -64,6 +64,11 @@ export interface FlowDefinitionMetadata {
     llm_provider?: string
     llm_profile?: string
     reasoning_effort?: string
+    thinking?: string
+    thinking_budget_tokens?: string
+    reasoning_mode?: string
+    reasoning_summary?: string
+
 }
 
 export type GraphAttrs = FlowDefinitionMetadata
@@ -98,6 +103,10 @@ export interface UiDefaults {
     llm_provider: string
     llm_profile: string
     reasoning_effort: string
+    thinking?: string
+    thinking_budget_tokens?: string
+    reasoning_mode?: string
+    reasoning_summary?: string
 }
 
 export interface RouteState {

@@ -679,13 +679,18 @@ fn openai_responses_body(request: &Request) -> Result<Value, AdapterError> {
     if !request.metadata.is_empty() {
         body.insert("metadata".to_string(), json!(request.metadata));
     }
+    for (key, value) in [
+        ("mode", &request.reasoning_mode),
+        ("summary", &request.reasoning_summary),
+    ] {
+        if let Some(value) = value {
+            body.entry("reasoning".to_string())
+                .or_insert_with(|| json!({}))[key] = json!(value);
+        }
+    }
     if let Some(reasoning_effort) = non_empty(request.reasoning_effort.as_deref()) {
-        body.insert(
-            "reasoning".to_string(),
-            json!({
-                "effort": reasoning_effort,
-            }),
-        );
+        body.entry("reasoning".to_string())
+            .or_insert_with(|| json!({}))["effort"] = json!(reasoning_effort);
     }
     if let Some(response_format) = request.response_format.as_ref() {
         body.insert(

@@ -934,3 +934,15 @@ describe('flowCanvasShared', () => {
         expect(yaml).not.toContain('Child Flow Preview')
     })
 })
+
+it('serializes and clears reasoning controls in node execution and graph defaults', () => {
+    const controls = { thinking: 'budget', thinking_budget_tokens: '2048', reasoning_mode: 'pro', reasoning_summary: 'detailed' }
+    const nodes = [{ id: 'work', position: { x: 0, y: 0 }, data: { shape: 'box', prompt: 'hello', ...controls } }]
+    const yaml = generateFlowYaml('reasoning.yaml', nodes, [], controls, {})
+    const flow = loadYaml(yaml) as { defaults: Record<string, unknown>; nodes: { work: { execution?: Record<string, unknown> } } }
+    expect(flow.defaults).toMatchObject({ ...controls, thinking_budget_tokens: 2048 })
+    expect(flow.nodes.work.execution).toMatchObject({ ...controls, thinking_budget_tokens: 2048 })
+    const cleared = { thinking: '', thinking_budget_tokens: '', reasoning_mode: '', reasoning_summary: '' }
+    const updated = generateFlowYaml('reasoning.yaml', [{ ...nodes[0], data: { ...nodes[0].data, ...cleared } }], [], cleared, { flow })
+    for (const field of Object.keys(controls)) expect(updated).not.toContain(`${field}:`)
+})

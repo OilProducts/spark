@@ -178,6 +178,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         const defaultProfile = flowMetadata.llm_profile || uiDefaults.llm_profile || ''
         const defaultProvider = defaultProfile ? '' : (flowMetadata.llm_provider || uiDefaults.llm_provider || '')
         const defaultReasoning = flowMetadata.reasoning_effort || uiDefaults.reasoning_effort || ''
+        const defaultThinking = flowMetadata.thinking || uiDefaults.thinking || ''
 
         const currentNodes = readNodes()
         if (currentNodes.length === 0) return
@@ -190,6 +191,13 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 llm_provider: defaultProvider,
                 llm_profile: defaultProfile,
                 reasoning_effort: defaultReasoning,
+                thinking: defaultThinking,
+                thinking_budget_tokens: defaultThinking === 'budget'
+                    ? flowMetadata.thinking_budget_tokens || uiDefaults.thinking_budget_tokens || ''
+                    : '',
+                reasoning_mode: flowMetadata.reasoning_mode || uiDefaults.reasoning_mode || '',
+                reasoning_summary: flowMetadata.reasoning_summary || uiDefaults.reasoning_summary || '',
+
             },
         }))
 

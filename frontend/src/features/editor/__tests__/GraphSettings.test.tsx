@@ -162,7 +162,7 @@ describe('Graph and settings behavior', () => {
     expect(useStore.getState().uiDefaults.llm_provider).toBe('openai')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved. Applies to the next message.')
-    expect(serverModels).toEqual({ provider: 'anthropic', llm_profile: null, model: 'claude-sonnet-4-6', reasoning_effort: 'xhigh' })
+    expect(serverModels).toEqual({ provider: 'anthropic', llm_profile: null, model: 'claude-sonnet-4-6', reasoning_effort: 'xhigh', thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null })
     await chooseModel(user, 'Codex', 'gpt-5.5')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Discard/ }))
     await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6'))
@@ -303,6 +303,45 @@ describe('Graph and settings behavior', () => {
     expect(screen.queryByTestId('graph-model-stylesheet-editor')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-scoped-defaults-section')).not.toBeInTheDocument()
     expect(screen.queryByTestId('graph-subgraphs-section')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    { graphThinking: 'off', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'off', expectedBudget: null },
+    { graphThinking: 'adaptive', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'adaptive', expectedBudget: null },
+    { graphThinking: '', workspaceThinking: '', graphBudget: '', expectedThinking: '', expectedBudget: null },
+    { graphThinking: '', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
+    { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '', expectedThinking: 'budget', expectedBudget: 2048 },
+    { graphThinking: 'budget', workspaceThinking: 'budget', graphBudget: '4096', expectedThinking: 'budget', expectedBudget: 4096 },
+  ])('Apply To Nodes resolves thinking and budget: $graphThinking / $workspaceThinking / $graphBudget', async ({
+    graphThinking, workspaceThinking, graphBudget, expectedThinking, expectedBudget,
+  }) => {
+    const user = userEvent.setup()
+    useStore.setState({
+      flowMetadata: { thinking: graphThinking, thinking_budget_tokens: graphBudget },
+      uiDefaults: { ...useStore.getState().uiDefaults, thinking: workspaceThinking, thinking_budget_tokens: workspaceThinking ? '2048' : '' },
+    })
+    render(
+      <ReactFlowProvider initialNodes={[{
+        id: 'review', position: { x: 0, y: 0 },
+        data: { label: 'Review', thinking: 'budget', thinking_budget_tokens: '8192' },
+      }]}>
+        <GraphSettings inline />
+      </ReactFlowProvider>,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Apply To Nodes' }))
+
+    await waitFor(() => {
+      const request = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
+      expect(request).toBeDefined()
+      const { content } = JSON.parse(String(request![1]?.body))
+      const nodeYaml = content.slice(content.indexOf('\nnodes:'))
+      expect(nodeYaml).toContain('\nnodes:\n  review:')
+      if (expectedThinking) expect(nodeYaml).toContain(`thinking: ${expectedThinking}`)
+      else expect(nodeYaml).not.toContain('thinking:')
+      if (expectedBudget === null) expect(nodeYaml).not.toContain('thinking_budget_tokens:')
+      else expect(nodeYaml).toContain(`thinking_budget_tokens: ${expectedBudget}`)
+    })
   })
 
   it('surfaces FlowDefinition title and description fields without leaking them into extension attrs', async () => {

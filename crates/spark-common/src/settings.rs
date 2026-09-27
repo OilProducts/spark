@@ -324,6 +324,11 @@ pub struct ModelSettings {
     pub llm_profile: Option<String>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub thinking: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_thinking_budget")]
+    pub thinking_budget_tokens: Option<u64>,
+    pub reasoning_mode: Option<String>,
+    pub reasoning_summary: Option<String>,
 }
 
 impl Default for ModelSettings {
@@ -333,6 +338,10 @@ impl Default for ModelSettings {
             llm_profile: None,
             model: None,
             reasoning_effort: None,
+            thinking: None,
+            thinking_budget_tokens: None,
+            reasoning_mode: None,
+            reasoning_summary: None,
         }
     }
 }
@@ -349,8 +358,73 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
+pub fn deserialize_thinking_budget<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_u64()
+        .filter(|v| *v >= 1024)
+        .map(Some)
+        .ok_or_else(|| {
+            serde::de::Error::custom("thinking_budget_tokens must be an integer of at least 1024")
+        })
+}
+
+pub fn validate_reasoning_control_fields(
+    thinking: Option<&str>,
+    budget: Option<u64>,
+    mode: Option<&str>,
+    summary: Option<&str>,
+) -> std::result::Result<(), String> {
+    for (field, value, allowed) in [
+        ("thinking", thinking, &["adaptive", "off", "budget"][..]),
+        ("reasoning_mode", mode, &["standard", "pro"][..]),
+        (
+            "reasoning_summary",
+            summary,
+            &["auto", "concise", "detailed"][..],
+        ),
+    ] {
+        if value.is_some_and(|value| !allowed.contains(&value)) {
+            return Err(format!("{field} must be one of: {}", allowed.join(", ")));
+        }
+    }
+    if budget.is_some_and(|budget| budget < 1024) {
+        return Err("thinking_budget_tokens must be an integer of at least 1024".into());
+    }
+    Ok(())
+}
+
+pub fn validate_reasoning_controls(
+    thinking: Option<&str>,
+    budget: Option<u64>,
+    mode: Option<&str>,
+    summary: Option<&str>,
+) -> std::result::Result<(), String> {
+    validate_reasoning_control_fields(thinking, budget, mode, summary)?;
+    if thinking == Some("budget") {
+        if !budget.is_some_and(|budget| budget >= 1024) {
+            return Err("thinking_budget_tokens must be an integer of at least 1024 when thinking is budget".into());
+        }
+    } else if budget.is_some() {
+        return Err("thinking_budget_tokens must be null unless thinking is budget".into());
+    }
+    Ok(())
+}
+
 impl ModelSettings {
     pub fn validate(&self) -> Result<()> {
+        validate_reasoning_controls(
+            self.thinking.as_deref(),
+            self.thinking_budget_tokens,
+            self.reasoning_mode.as_deref(),
+            self.reasoning_summary.as_deref(),
+        )
+        .map_err(SparkCommonError::SettingsValidation)?;
         if self.provider.is_some() == self.llm_profile.is_some() {
             return Err(SparkCommonError::SettingsValidation(
                 "Select exactly one provider or LLM profile.".into(),

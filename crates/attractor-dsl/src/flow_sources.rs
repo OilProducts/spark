@@ -173,8 +173,39 @@ pub fn load_flow_content(
 
 pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
     let flow = FlowDefinition::from_yaml_str(source).map_err(flow_definition_error)?;
-    flow.validate().map_err(flow_definition_error)?;
+    validate_flow_definition(&flow).map_err(flow_definition_error)?;
     Ok(flow.normalize())
+}
+
+pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinitionError> {
+    flow.validate()?;
+    let diagnostics: Vec<_> = crate::validate_graph(&flow.to_runtime_dot_graph())
+        .into_iter()
+        .filter(|d| {
+            matches!(
+                d.rule_id.as_str(),
+                "reasoning_controls" | "stylesheet_syntax"
+            )
+        })
+        .map(|d| FlowDiagnostic {
+            rule_id: d.rule_id,
+            message: d.message,
+            node_id: d.node_id,
+            edge: None,
+        })
+        .collect();
+    if !diagnostics.is_empty() {
+        return Err(FlowDefinitionError {
+            count: diagnostics.len(),
+            detail: diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
+            diagnostics,
+        });
+    }
+    Ok(())
 }
 
 pub fn read_named_flow_source(

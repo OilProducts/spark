@@ -380,3 +380,49 @@ fn turn_stream_events_round_trip_and_validate_content_channel() {
         "custom"
     );
 }
+
+#[test]
+fn reasoning_settings_are_nullable_backward_compatible_and_field_validated() {
+    use spark_common::settings::ModelSettings;
+    let old: ModelSettings =
+        serde_json::from_value(serde_json::json!({"provider":"openai"})).unwrap();
+    old.validate().unwrap();
+    let value = serde_json::to_value(&old).unwrap();
+    for field in [
+        "thinking",
+        "thinking_budget_tokens",
+        "reasoning_mode",
+        "reasoning_summary",
+    ] {
+        assert!(value[field].is_null());
+    }
+    let valid = serde_json::json!({"provider":"anthropic", "thinking":"budget", "thinking_budget_tokens":1024,"reasoning_mode":"pro","reasoning_summary":"detailed"});
+    let settings: ModelSettings = serde_json::from_value(valid.clone()).unwrap();
+    settings.validate().unwrap();
+    let restored: ModelSettings =
+        serde_json::from_value(serde_json::to_value(settings.clone()).unwrap()).unwrap();
+    assert_eq!(settings, restored);
+    for (field, bad) in [
+        ("thinking", serde_json::json!("enabled")),
+        ("reasoning_mode", serde_json::json!("fast")),
+        ("reasoning_summary", serde_json::json!("none")),
+        ("thinking_budget_tokens", serde_json::json!(100)),
+        ("thinking_budget_tokens", serde_json::json!(1024.5)),
+        ("thinking_budget_tokens", serde_json::json!(-1)),
+        ("thinking_budget_tokens", serde_json::Value::Null),
+    ] {
+        let mut value = valid.clone();
+        value[field] = bad;
+        let result = serde_json::from_value::<ModelSettings>(value)
+            .map_err(|e| e.to_string())
+            .and_then(|s| s.validate().map_err(|e| e.to_string()));
+        assert!(result.unwrap_err().contains(field));
+    }
+    let mut invalid = restored;
+    invalid.thinking = None;
+    assert!(invalid
+        .validate()
+        .unwrap_err()
+        .to_string()
+        .contains("thinking_budget_tokens"));
+}

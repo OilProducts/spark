@@ -57,7 +57,13 @@
         "high",
         "xhigh"
       ],
-      "default_reasoning_effort": "none"
+      "default_reasoning_effort": "none",
+      "supported_thinking": [],
+      "supported_reasoning_modes": [],
+      "supported_reasoning_summaries": [
+        "auto",
+        "detailed"
+      ]
     },
     "sonnet_alias": {
       "id": "claude-sonnet-4-5",
@@ -74,7 +80,13 @@
         "claude-sonnet",
         "claude-sonnet-4.5"
       ],
-      "reasoning_efforts": []
+      "reasoning_efforts": [],
+      "supported_thinking": [
+        "budget",
+        "off"
+      ],
+      "supported_reasoning_modes": [],
+      "supported_reasoning_summaries": []
     }
   },
   "provenance": {

@@ -271,6 +271,16 @@ impl CodexAppServerBackend {
             &request.prompt,
             model.as_deref(),
             request.reasoning_effort.as_deref(),
+            request
+                .metadata
+                .get("spark.execution.reasoning")
+                .or_else(|| {
+                    request
+                        .metadata
+                        .get("spark.execution.settings")
+                        .and_then(|v| v.get("model_settings"))
+                })
+                .and_then(|v| v["reasoning_summary"].as_str()),
             request.chat_mode.as_deref(),
             Some(&request.project_path),
             steering,
@@ -656,6 +666,7 @@ impl CodexAppServerClient {
             prompt,
             model,
             reasoning_effort,
+            None,
             chat_mode,
             cwd,
             steering,
@@ -672,6 +683,7 @@ impl CodexAppServerClient {
         prompt: &str,
         model: Option<&str>,
         reasoning_effort: Option<&str>,
+        reasoning_summary: Option<&str>,
         chat_mode: Option<&str>,
         cwd: Option<&str>,
         steering: Option<SessionSteeringHandle>,
@@ -705,11 +717,9 @@ impl CodexAppServerClient {
         if let Some(effort) = normalize_reasoning_effort(reasoning_effort)? {
             params["effort"] = json!(effort);
         }
-        // Turns that do not specify a summary level fall back to codex's own
-        // default (auto), bypassing model_reasoning_summary from config.toml;
-        // request detailed reasoning summaries explicitly so summary bodies
-        // come through instead of headline-only entries.
-        params["summary"] = json!(REASONING_SUMMARY_LEVEL);
+        if let Some(summary) = reasoning_summary {
+            params["summary"] = json!(summary);
+        }
         if let Some(path) = capture_path {
             let turn_input = params
                 .pointer("/input/0/text")
@@ -2609,11 +2619,6 @@ fn extract_plan_text_from_item(item: &Map<String, Value>) -> Option<String> {
     })
 }
 
-/// The reasoning summary level requested on every turn. Without an explicit
-/// value codex applies its own turn default instead of the configured
-/// model_reasoning_summary.
-const REASONING_SUMMARY_LEVEL: &str = "detailed";
-
 /// Extracts the summary part texts from a completed reasoning item. Returns
 /// None for non-reasoning items; reasoning items whose summary is empty yield
 /// no completion events.
@@ -2702,12 +2707,9 @@ fn normalize_reasoning_effort(value: Option<&str>) -> Result<Option<String>, Cod
     let Some(value) = value.and_then(non_empty) else {
         return Ok(None);
     };
-    let normalized = value.to_ascii_lowercase();
-    if matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
-        return Ok(Some(normalized));
-    }
-    Err(CodexAppServerError::configuration(
-        "reasoning_effort must be blank or one of: low, medium, high, xhigh",
+    Ok(Some(
+        crate::config::validate_reasoning_effort(value)
+            .map_err(CodexAppServerError::configuration)?,
     ))
 }
 

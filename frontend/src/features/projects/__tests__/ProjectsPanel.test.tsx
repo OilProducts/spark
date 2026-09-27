@@ -5437,7 +5437,7 @@ describe('ProjectsPanel', () => {
 
   it.each([false, true])('serializes custom edits with revision checks and delayed saves (conflict: %s)', async (conflict) => {
     const user = userEvent.setup()
-    const initial = { provider: 'codex', llm_profile: null, model: null as string | null, reasoning_effort: 'low' }
+    const initial = { provider: 'codex', llm_profile: null, model: null as string | null, reasoning_effort: 'low', thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null }
     let effective = { ...initial }
     let revision = 1
     const requests: { expected_revision: string; model_settings: typeof initial }[] = []
@@ -5512,7 +5512,7 @@ describe('ProjectsPanel', () => {
         provider: 'claude-code', model: 'final-model', reasoning_effort: 'high',
       } })
       await act(async () => { saves[3]() })
-      expect(effective).toEqual({ provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high' })
+      expect(effective).toEqual({ provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high', thinking: null, thinking_budget_tokens: null, reasoning_mode: null, reasoning_summary: null })
       expect(requests.map((request) => request.expected_revision)).toEqual(['1', '2', '3', '4'])
     }
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('final-model · High')

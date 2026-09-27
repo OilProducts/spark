@@ -1721,7 +1721,8 @@ fn build_llm_request(
             reasoning_effort: selection.reasoning_effort.clone(),
             metadata,
             ..Request::default()
-        },
+        }
+        .with_reasoning_settings(),
         llm_profile: selected_profile_id,
         reasoning_effort: selection.reasoning_effort,
         provider_profile_selector,

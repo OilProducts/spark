@@ -9,6 +9,7 @@ doctest = false
 path = "src/lib.rs"
 
 [dependencies]
+spark-common = { path = "../spark-common" }
 attractor-core = { path = "../attractor-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

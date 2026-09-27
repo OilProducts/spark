@@ -601,6 +601,7 @@ impl WorkspaceConversationService {
                 llm_profile: profile.map(str::to_owned),
                 model: None,
                 reasoning_effort: None,
+                ..ModelSettings::default()
             };
             if profile.is_some() {
                 group.provider = None;

@@ -58,6 +58,7 @@ fn canonical_public_surface_round_trips_with_legacy_aliases() {
         provider_options: BTreeMap::from([("openai".to_string(), json!({"trace": true}))]),
         timeout: None,
         abort_signal: None,
+        ..Default::default()
     };
     let legacy_request: LlmRequest = request.clone();
 
@@ -6221,6 +6222,7 @@ fn empty_request() -> Request {
         provider_options: BTreeMap::new(),
         timeout: None,
         abort_signal: None,
+        ..Default::default()
     }
 }
 

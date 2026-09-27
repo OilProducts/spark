@@ -156,6 +156,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftLlmModel, setDraftLlmModel] = useState<string>((data.llm_model as string) || '')
     const [draftLlmProvider, setDraftLlmProvider] = useState<string>((data.llm_provider as string) || '')
     const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
+    const [draftReasoningControls, setDraftReasoningControls] = useState({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
     const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
     const projectPath = useStore((state) => state.activeProjectPath)
     const [draftAutoStatus, setDraftAutoStatus] = useState<boolean>(
@@ -314,6 +315,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
         setDraftLlmProvider((data.llm_provider as string) || '')
         setDraftLlmProfile((data.llm_profile as string) || '')
         setDraftReasoningEffort((data.reasoning_effort as string) || '')
+        setDraftReasoningControls({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
         setDraftAutoStatus(data.auto_status === true || data.auto_status === 'true')
         setDraftAllowPartial(data.allow_partial === true || data.allow_partial === 'true')
         setDraftManagerPollInterval((data['manager.poll_interval'] as string) || '')
@@ -366,6 +368,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             llm_provider: draftLlmProvider,
             llm_profile: draftLlmProfile,
             reasoning_effort: draftReasoningEffort,
+            ...draftReasoningControls,
             auto_status: draftAutoStatus,
             allow_partial: draftAllowPartial,
             'manager.poll_interval': draftManagerPollInterval,
@@ -818,14 +821,15 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                 {visibility.showLlmSettings && (
                                     <div className="nodrag nowheel">
                                         <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
-                                            inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null }}
+                                            inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}
                                             value={{ provider: draftLlmProvider || null, llm_profile: draftLlmProfile || null,
-                                                model: draftLlmModel || null, reasoning_effort: draftReasoningEffort || null }}
+                                                model: draftLlmModel || null, reasoning_effort: draftReasoningEffort || null, ...draftReasoningControls }}
                                             onChange={(value) => {
                                                 setDraftLlmProvider(value.provider || '')
                                                 setDraftLlmProfile(value.llm_profile || '')
                                                 setDraftLlmModel(value.model || '')
                                                 setDraftReasoningEffort(value.reasoning_effort || '')
+                                                setDraftReasoningControls({thinking: value.thinking ?? null, thinking_budget_tokens: value.thinking_budget_tokens ?? null, reasoning_mode: value.reasoning_mode ?? null, reasoning_summary: value.reasoning_summary ?? null})
                                             }} />
                                     </div>
                                 )}

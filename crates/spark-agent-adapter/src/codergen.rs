@@ -760,6 +760,38 @@ impl CodergenHandler {
         write_stage_file(stage_dir.as_deref(), "prompt.md", &prompt)?;
         let resolution_inputs = resolution_inputs_for_request(&request);
         let mut metadata = request.metadata.clone();
+        let mut reasoning = metadata
+            .get("spark.execution.settings")
+            .and_then(|v| v.get("model_settings"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if attr_text(&request.node.attrs, "thinking").is_some_and(|v| v != "budget") {
+            reasoning["thinking_budget_tokens"] = Value::Null;
+        }
+        for key in [
+            "thinking",
+            "thinking_budget_tokens",
+            "reasoning_mode",
+            "reasoning_summary",
+        ] {
+            if let Some(value) = attr_text(&request.node.attrs, key).filter(|v| !v.is_empty()) {
+                reasoning[key] = if key == "thinking_budget_tokens" {
+                    json!(value.parse::<u64>().map_err(|_| CodergenError::Backend(
+                        "thinking_budget_tokens must be an integer".into()
+                    ))?)
+                } else {
+                    json!(value)
+                };
+            }
+        }
+        spark_common::settings::validate_reasoning_controls(
+            reasoning["thinking"].as_str(),
+            reasoning["thinking_budget_tokens"].as_u64(),
+            reasoning["reasoning_mode"].as_str(),
+            reasoning["reasoning_summary"].as_str(),
+        )
+        .map_err(CodergenError::Backend)?;
+        metadata.insert("spark.execution.reasoning".into(), reasoning);
         if let Some(stage_dir) = stage_dir.as_ref() {
             metadata.insert(
                 crate::initial_context::INITIAL_CONTEXT_PATH_METADATA_KEY.to_string(),

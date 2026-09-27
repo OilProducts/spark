@@ -28,6 +28,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const discovery = useModelOptions(projectPath)
     const [open, setOpen] = useState(false)
     const [search, setSearch] = useState('')
+    const [budgetInput, setBudgetInput] = useState<string | null>(null)
     const [active, setActive] = useState(-1)
     const input = useRef<HTMLInputElement>(null)
     const unavailable = (provider: string) => !!discovery && (discovery.failed || discovery.payload?.providers[provider]?.status === 'unavailable')
@@ -76,7 +77,8 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const supported = effortSelection.efforts
     const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
     const commit = (choice: typeof choices[number], close: boolean) => {
-        onChange({ provider: choice.provider, llm_profile: choice.llm_profile, model: choice.model, reasoning_effort: value.reasoning_effort })
+        setBudgetInput(null)
+        onChange({ ...value, provider: choice.provider, llm_profile: choice.llm_profile, model: choice.model, reasoning_effort: value.reasoning_effort })
         if (close) setOpen(false)
     }
     const option = (choice: typeof choices[number], index: number) => <button key={`${choice.groupIndex}:${choice.model}`} type="button"
@@ -138,10 +140,29 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                     {[null, ...allEfforts].map(effort => <Button key={effort ?? 'default'} type="button" size="sm" variant="ghost" disabled={effortLocked} className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={value.reasoning_effort === effort}
                         onClick={() => {
                             const selection = highlighted ?? value
-                            onChange({ provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model, reasoning_effort: effort })
+                            onChange({ ...value, provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model, reasoning_effort: effort })
                             setOpen(false)
                         }}>{effort ? `${effortLabel(effort)}${supported.includes(effort) ? '' : ' (custom)'}` : 'Default'}</Button>)}
                 </div>
+                {([
+                    ['thinking', 'Thinking', effortSelection.meta?.supported_thinking],
+                    ['reasoning_mode', 'Mode', effortSelection.meta?.supported_reasoning_modes],
+                    ['reasoning_summary', 'Summary', effortSelection.meta?.supported_reasoning_summaries],
+                ] as const).map(([field, label, options]) => options?.length ? <div key={field} role="group" aria-label={label} className="mt-2 flex shrink-0 flex-wrap gap-1 border-t pt-2">
+                    <span className="w-full text-xs text-muted-foreground">{label}</span>
+                    {(field === 'reasoning_mode' ? options : [null, ...options]).map(option => <Button key={option ?? 'default'} type="button" size="sm" variant="ghost"
+                        disabled={effortLocked} aria-pressed={(value[field] ?? (field === 'reasoning_mode' ? 'standard' : null)) === option}
+                        onClick={() => {
+                            const selection = highlighted ?? value
+                            setBudgetInput(null)
+                            onChange({ ...value, provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model,
+                                [field]: option,
+                                ...(field === 'thinking' ? { thinking_budget_tokens: option === 'budget' ? value.thinking_budget_tokens ?? 1024 : null } : {}) })
+                        }}>{option ? effortLabel(option) : 'Default'}</Button>)}
+                    {field === 'thinking' && value.thinking === 'budget' && <Input type="number" aria-label="Thinking budget tokens" min={1024} step={1}
+                        disabled={effortLocked} value={budgetInput ?? value.thinking_budget_tokens ?? 1024} onBlur={() => setBudgetInput(null)}
+                        onChange={event => { setBudgetInput(event.target.value); const tokens = event.target.valueAsNumber; if (Number.isInteger(tokens) && tokens >= 1024) onChange({ ...value, thinking_budget_tokens: tokens }) }} />}
+                </div> : null)}
             </Popover.Content></Popover.Portal>
         </Popover.Root>
         {invalidModel && <p id={`${id}-error`} role="alert">Choose a compatible model for this provider or profile.</p>}

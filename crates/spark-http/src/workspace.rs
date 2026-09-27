@@ -1007,10 +1007,20 @@ async fn patch_settings(
     payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = payload
-        .map_err(|_| {
-            WorkspaceError::Validation(
-                "Invalid settings update; check section, revision, and field types.".into(),
-            )
+        .map_err(|error| {
+            let detail = error.body_text();
+            let field = [
+                "thinking_budget_tokens",
+                "thinking",
+                "reasoning_mode",
+                "reasoning_summary",
+            ]
+            .into_iter()
+            .find(|field| detail.contains(field));
+            WorkspaceError::Validation(match field {
+                Some(field) => format!("Invalid {field}; check its value and type."),
+                None => "Invalid settings update; check section, revision, and field types.".into(),
+            })
         })?
         .0;
     let (scope, section, project_path) = match &request.section {
@@ -1078,10 +1088,20 @@ async fn validate_settings_update(
     payload: Result<Json<spark_workspace::settings::WorkspaceSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = payload
-        .map_err(|_| {
-            WorkspaceError::Validation(
-                "Invalid settings update; check section, revision, and field types.".into(),
-            )
+        .map_err(|error| {
+            let detail = error.body_text();
+            let field = [
+                "thinking_budget_tokens",
+                "thinking",
+                "reasoning_mode",
+                "reasoning_summary",
+            ]
+            .into_iter()
+            .find(|field| detail.contains(field));
+            WorkspaceError::Validation(match field {
+                Some(field) => format!("Invalid {field}; check its value and type."),
+                None => "Invalid settings update; check section, revision, and field types.".into(),
+            })
         })?
         .0;
     spark_workspace::settings::validate_workspace_settings_update(&settings, &request)?;

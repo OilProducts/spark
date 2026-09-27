@@ -239,3 +239,62 @@ fn discovery_preserves_callable_alias_and_gemini_pagination() {
         .url
         .contains("pageToken=page%2F2"));
 }
+
+#[test]
+fn reasoning_controls_use_live_capabilities_then_notes_without_adding_models() {
+    for (provider, entries, expected) in [
+        (
+            "anthropic",
+            json!([
+                {"id":"claude-opus-4-6", "capabilities":{"thinking":{"types":{"adaptive":{"supported":true},"enabled":{"supported":false}}}}},
+                {"id":"claude-opus-5-5", "capabilities":{"thinking":{"types":{"adaptive":{"supported":true}}}}},
+                {"id":"unknown", "capabilities":{"thinking":{"types":{"enabled":{"supported":true},"disabled":{"supported":true}}}}}
+            ]),
+            vec![
+                vec!["adaptive", "off"],
+                vec!["adaptive"],
+                vec!["budget", "off"],
+            ],
+        ),
+        (
+            "openrouter",
+            json!([
+                {"id":"optional", "reasoning":{"mandatory":false,"supports_max_tokens":true}},
+                {"id":"required", "reasoning":{"mandatory":true}},
+                {"id":"unknown"}
+            ]),
+            vec![vec!["off", "budget"], vec![], vec![]],
+        ),
+    ] {
+        let mut cfg = config();
+        cfg.provider = provider.into();
+        let transport = mock_transport(vec![NativeCompleteResponse::ok(json!({"data":entries}))]);
+        let models = ProviderModelCache::default()
+            .models(&cfg, &transport)
+            .unwrap();
+        assert_eq!(models.len(), expected.len());
+        for (model, expected) in models.iter().zip(expected) {
+            assert_eq!(model.info.supported_thinking, expected);
+            assert!(model.info.supported_reasoning_modes.is_empty());
+            assert!(model.info.supported_reasoning_summaries.is_empty());
+        }
+    }
+    let mut cfg = config();
+    cfg.provider = "openai".into();
+    let transport = mock_transport(vec![NativeCompleteResponse::ok(
+        json!({"data":[{"id":"gpt-6-astra"},{"id":"gpt-5.6-sol"},{"id":"unknown"}]}),
+    )]);
+    let models = ProviderModelCache::default()
+        .models(&cfg, &transport)
+        .unwrap();
+    assert_eq!(models.len(), 3);
+    for model in &models[..2] {
+        assert_eq!(model.info.supported_reasoning_modes, ["standard", "pro"]);
+        assert_eq!(
+            model.info.supported_reasoning_summaries,
+            ["auto", "detailed"]
+        );
+    }
+    assert!(models[2].info.supported_reasoning_modes.is_empty());
+    assert!(models[2].info.supported_reasoning_summaries.is_empty());
+}
