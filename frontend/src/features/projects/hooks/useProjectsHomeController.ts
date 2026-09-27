@@ -51,6 +51,8 @@ function buildConversationHistoryRevisionKey(history: ConversationTimelineEntry[
     }
 }
 
+const INHERITED_MODEL_SETTINGS: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
+
 export function useProjectsHomeController() {
     const upsertProjectRegistryEntry = useStore((state) => state.upsertProjectRegistryEntry)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
@@ -172,6 +174,7 @@ export function useProjectsHomeController() {
         model: storedChatModel || null,
         reasoning_effort: storedChatReasoningEffort || null,
     }, [pendingChatSettings, effectiveModelSettings, activeConversationRecord, uiDefaults.llm_profile, storedChatProvider, storedChatModel, storedChatReasoningEffort])
+    const editableModelSettings = pendingChatSettings ?? activeConversationRecord?.model_settings_view?.stored ?? INHERITED_MODEL_SETTINGS
     const discovery = useModelOptions(activeProjectPath)
     const activeProjectChatModelsResponse = discovery?.payload
     const activeProjectChatModels = activeProjectChatModelsResponse?.models || []
@@ -464,8 +467,10 @@ export function useProjectsHomeController() {
             activeProjectLabel,
             activeProjectPath,
             activeChatMode,
-            modelSettings: currentModelSettings,
-            inheritedModelSettings,
+            // The picker edits what this conversation stores; effective settings would hide inheritance.
+            modelSettings: editableModelSettings,
+            // While nothing is stored, the conversation's effective settings are what it inherits.
+            inheritedModelSettings: editableModelSettings === INHERITED_MODEL_SETTINGS ? currentModelSettings : inheritedModelSettings,
             defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
             chatModelAvailabilityMessage,

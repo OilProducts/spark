@@ -5338,6 +5338,7 @@ describe('ProjectsPanel', () => {
             chat_mode: 'chat',
             model: (body.model_settings as Record<string, unknown>).model,
             reasoning_effort: (body.model_settings as Record<string, unknown>).reasoning_effort,
+            settings: { models: { scope: 'conversation', revision: String(updateIndex), stored: body.model_settings, effective: body.model_settings, source: 'conversation' } },
             title: 'New thread',
             created_at: '2026-04-16T18:10:00Z',
             updated_at: `2026-04-16T18:10:0${updateIndex}Z`,
@@ -5555,10 +5556,13 @@ describe('ProjectsPanel', () => {
     })
     renderProjectsPanel()
     await screen.findByRole('button', { name: /Model: Default: model-one/ })
-    await chooseEffort(user, 'High')
-    await waitFor(() => expect(requests).toHaveLength(1))
-    expect(requests[0]).toMatchObject({model_settings:{...group,reasoning_effort:'high'}})
+    // Inheriting the profile group leaves no effort to set until a model is chosen.
+    await openPicker(user)
+    expect(screen.getByRole('button', { name: 'High', exact: true })).toBeDisabled()
     await chooseModel(user, 'openai_compatible / team', 'model-two')
+    await waitFor(() => expect(requests).toHaveLength(1))
+    expect(requests[0]).toMatchObject({model_settings:{...group,model:'model-two',reasoning_effort:null}})
+    await chooseEffort(user, 'High')
     await waitFor(() => expect(requests).toHaveLength(2))
     expect(requests[1]).toMatchObject({model_settings:{...group,model:'model-two',reasoning_effort:'high'}})
     await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
@@ -5570,7 +5574,7 @@ describe('ProjectsPanel', () => {
     await screen.findByRole('button', { name: /Model: Default: model-one/ })
     await chooseModel(user, 'openai_compatible / manual', 'manual-model')
     await waitFor(() => expect(requests).toHaveLength(5))
-    expect(requests[4]).toMatchObject({model_settings:{provider:null,llm_profile:'manual',model:'manual-model',reasoning_effort:'low'}})
+    expect(requests[4]).toMatchObject({model_settings:{provider:null,llm_profile:'manual',model:'manual-model',reasoning_effort:null}})
   })
 
   it('shows each thread’s own project chat model and effort when switching threads', async () => {

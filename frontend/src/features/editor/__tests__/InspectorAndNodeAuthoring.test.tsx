@@ -309,7 +309,7 @@ describe('Accessible node inspector fields', () => {
       ['Manager Actions', 'manager.actions'], ['Manager Steer Cooldown', 'manager.steer_cooldown']]],
   ])('edits named %s fields, including advanced settings', (kind, fields) => {
     const props = panelProps(kind)
-    render(<NodeInspectorPanel {...props} />)
+    const view = render(<NodeInspectorPanel {...props} />)
     for (const [name, key] of [['Label', 'label'], ...fields]) {
       fireEvent.change(screen.getByRole('textbox', { name, exact: true }), { target: { value: 'edited' } })
       expect(props.onPropertyChange).toHaveBeenCalledWith(key, 'edited')
@@ -321,6 +321,8 @@ describe('Accessible node inspector fields', () => {
       fireEvent.click(within(screen.getByRole('group', { name: 'openai', exact: true })).getByRole('option', { name: 'gpt-5.5' }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('llm_provider', 'openai')
       expect(props.onPropertyChange).toHaveBeenCalledWith('llm_model', 'gpt-5.5')
+      // Effort applies to an explicitly chosen model, so the node must hold the choice first.
+      view.rerender(<NodeInspectorPanel {...props} selectedNode={{ ...props.selectedNode!, data: { ...props.selectedNode!.data, llm_provider: 'openai', llm_model: 'gpt-5.5' } }} />)
       fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('reasoning_effort', 'high')
       for (const [name, key] of [['Goal Gate', 'goal_gate'], ['Auto Status', 'auto_status'], ['Allow Partial', 'allow_partial']]) {

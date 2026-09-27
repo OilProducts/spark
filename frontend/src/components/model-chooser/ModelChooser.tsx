@@ -74,6 +74,9 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const custom = !!query && !rows.some(row => row.model.toLowerCase() === query || row.label.toLowerCase() === query)
     const choices = [...rows, ...(custom ? [{ groupIndex: -1, provider: context.profile ? null : context.provider, llm_profile: context.profile, model: search.trim(), label: `Use "${search.trim()}" as a custom model`, isDefault: false }] : [])]
     const highlighted = choices[active]
+    // The API inherits a whole model group, so an inherited choice has no effort of its own:
+    // setting one would silently pin today's inherited model. Choose a model first.
+    const effortLocked = !value.provider && !value.llm_profile && !highlighted
     const efforts = (highlighted ? resolve({ ...highlighted, reasoning_effort: null }).meta : resolved.meta)?.supported_reasoning_efforts
     const supported = efforts ?? standardEfforts
     const allEfforts = [...new Set([...supported, ...(value.reasoning_effort ? [value.reasoning_effort] : [])])]
@@ -135,10 +138,10 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                     {custom && option(choices[choices.length - 1], choices.length - 1)}
                 </div>
                 <div role="group" aria-label="Reasoning effort" className="mt-2 flex shrink-0 flex-wrap gap-1 border-t border-border pt-2">
-                    <span className="w-full text-xs text-muted-foreground">Reasoning effort</span>
-                    {[null, ...allEfforts].map(effort => <Button key={effort ?? 'default'} type="button" size="sm" variant="ghost" className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={value.reasoning_effort === effort}
+                    <span className="w-full text-xs text-muted-foreground">{effortLocked ? 'Effort follows the default. Choose a model to set it.' : 'Reasoning effort'}</span>
+                    {[null, ...allEfforts].map(effort => <Button key={effort ?? 'default'} type="button" size="sm" variant="ghost" disabled={effortLocked} className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={value.reasoning_effort === effort}
                         onClick={() => {
-                            const selection = highlighted ?? (effort ? { ...effective, provider: effective.llm_profile ? null : effective.provider || 'codex' } : value)
+                            const selection = highlighted ?? value
                             onChange({ provider: selection.provider, llm_profile: selection.llm_profile, model: selection.model, reasoning_effort: effort })
                             setOpen(false)
                         }}>{effort ? `${effortLabel(effort)}${supported.includes(effort) ? '' : ' (custom)'}` : 'Default'}</Button>)}

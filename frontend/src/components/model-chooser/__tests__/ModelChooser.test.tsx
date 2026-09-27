@@ -185,30 +185,20 @@ it('retains only Default and a custom saved effort when support is explicitly em
 })
 
 
-it.each([
-    { inherited: undefined, expected: initial, label: 'Default: Discovered · Low', effort: 'Ultra' },
-    { inherited: { ...initial, model: 'other', reasoning_effort: 'medium' }, expected: { ...initial, model: 'other' }, label: 'Other · Medium', effort: 'Medium' },
-    { inherited: { ...initial, provider: 'anthropic', model: 'parent-model', reasoning_effort: 'low' }, expected: { ...initial, provider: 'anthropic', model: 'parent-model' }, label: 'parent-model · High', effort: 'High' },
-    { inherited: { ...initial, provider: null, llm_profile: 'team', model: 'team-two', reasoning_effort: 'low' }, expected: { ...initial, provider: null, llm_profile: 'team', model: 'team-two' }, label: 'team-two · High', effort: 'High' },
-])('commits the displayed inherited selection atomically after clearing: $label', async ({ inherited, expected, effort }) => {
-    const user = userEvent.setup(), onChange = vi.fn()
-    render(<Editor value={{ ...initial, model: 'discovered', reasoning_effort: 'high' }} inherited={inherited} onChange={onChange} />)
-    await user.click(await screen.findByRole('button', { name: 'Model: Discovered · High' }))
-    await user.click(screen.getByRole('button', { name: /Use default/ }))
-    expect(onChange).toHaveBeenCalledExactlyOnceWith({ provider: null, llm_profile: null, model: null, reasoning_effort: null })
-    await user.click(screen.getByRole('button', { name: /^Model:/ }))
-    await user.click(screen.getByRole('button', { name: effort, exact: true }))
-    expect(onChange).toHaveBeenCalledTimes(2)
-    expect(onChange).toHaveBeenLastCalledWith({ ...expected, reasoning_effort: effort.toLowerCase() })
-    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
-})
-
-it('keeps a cleared selection inherited when choosing Default effort', async () => {
+it('locks effort while inheriting and sets it only with an explicitly chosen model', async () => {
     const user = userEvent.setup(), onChange = vi.fn()
     const cleared = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
     render(<Editor value={cleared} inherited={{ ...initial, provider: 'anthropic', model: 'parent-model', reasoning_effort: 'high' }} onChange={onChange} />)
-    await user.click(screen.getByRole('button', { name: /^Model:/ }))
-    await user.click(screen.getByRole('button', { name: 'Default', exact: true }))
-    expect(onChange).toHaveBeenCalledExactlyOnceWith(cleared)
-    expect(screen.getByRole('button', { name: 'Model: Default: parent-model · High' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Model: Default: parent-model · High' }))
+    const effort = within(screen.getByRole('group', { name: 'Reasoning effort' }))
+    expect(effort.getByText('Effort follows the default. Choose a model to set it.')).toBeInTheDocument()
+    expect(effort.getAllByRole('button').every(button => (button as HTMLButtonElement).disabled)).toBe(true)
+    await user.keyboard('{ArrowDown}')
+    const first = effort.getAllByRole('button')[1]
+    expect(first).toBeEnabled()
+    await user.click(first)
+    const chosen = onChange.mock.lastCall![0]
+    expect(chosen).toMatchObject({ reasoning_effort: first.textContent!.toLowerCase(), model: expect.any(String) })
+    expect(chosen.provider ?? chosen.llm_profile).toBeTruthy()
+    expect(chosen.model).not.toBe('parent-model')
 })
