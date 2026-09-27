@@ -1,3 +1,4 @@
+import { chooseModel, customModel, openPicker } from '@/components/model-chooser/__tests__/picker'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -10,7 +11,7 @@ import { SettingsPanel } from '../SettingsPanel'
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), saveModelSettings: vi.fn() }))
 vi.mock('../services/clientPreferences', async (original) => ({ ...await original<object>(), fetchClientPreferences: vi.fn() }))
-vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [{ id: 'team', label: 'Team models', models: ['team-one'], default_model: 'team-one' }] }))
+vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [{ id: 'team', label: 'Team models', provider: 'openai_compatible', models: ['team-one'], default_model: 'team-one' }] }))
 vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: vi.fn() }))
 vi.mock('../CodexConnectionSettings', () => ({ CodexConnectionSettings: () => null }))
 vi.mock('../ProviderSettingsEditor', () => ({ ProviderSettingsEditor: () => null }))
@@ -33,7 +34,7 @@ afterEach(() => cleanup())
 it('has local default selection, semantic headings, keyboard tabs, and mounted hidden panels', async () => {
     const user = userEvent.setup()
     const view = render(<DialogProvider><SettingsPanel /></DialogProvider>)
-    await waitFor(() => expect(card('Model defaults (Workspace)').getByLabelText('Provider or profile')).toBeEnabled())
+    await waitFor(() => expect(card('Model defaults (Workspace)').getByRole('button', { name: /^Model:/ })).toBeEnabled())
     const first = screen.getByRole('tab', { name: 'Models & accounts' })
     expect(first).toHaveAttribute('aria-selected', 'true')
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
@@ -44,7 +45,7 @@ it('has local default selection, semantic headings, keyboard tabs, and mounted h
     expect(screen.getByRole('tab', { name: 'Preferences' })).toHaveFocus()
     expect(screen.getByRole('heading', { name: 'Client preferences', level: 3 })).toBeVisible()
     for (const name of ['Editor', 'Layout', 'Runs & triggers']) expect(screen.getByRole('heading', { name, level: 4 })).toBeVisible()
-    expect(screen.getByLabelText('Provider or profile')).not.toBeVisible()
+    expect(screen.getByLabelText(/^Model:/)).not.toBeVisible()
     await user.keyboard('{End}')
     expect(screen.getByRole('tab', { name: 'System' })).toHaveFocus()
     view.unmount()
@@ -89,25 +90,25 @@ it('shares discovery fallback, profiles, custom values and compatibility with pr
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('saved-model')
     expect(project.queryByLabelText('Model')).toBeNull()
     await user.click(project.getByRole('switch'))
-    const selectors = screen.getAllByLabelText('Provider or profile')
+    const selectors = screen.getAllByRole('button', { name: /^Model:/ })
     expect(new Set(selectors.map((select) => select.id)).size).toBe(2)
     for (const editor of [workspace, project]) {
-        expect(editor.getByText('Model discovery unavailable. Using suggestions.')).toBeVisible()
-        expect(editor.getByLabelText('Custom model')).toHaveValue('saved-model')
-        await user.selectOptions(editor.getByLabelText('Provider or profile'), 'team')
-        expect(editor.getByRole('option', { name: 'Team models (team)' })).toHaveValue('team')
-        await user.selectOptions(editor.getByLabelText('Model'), 'custom')
-        await user.type(editor.getByLabelText('Custom model'), 'incompatible')
-        expect(editor.getByLabelText('Custom model')).toHaveAccessibleDescription('Choose a compatible model for this provider or profile.')
+        expect(editor.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-model')
+        await openPicker(user, editor)
+        expect(screen.getAllByText('Model discovery unavailable. Using suggestions.').length).toBeGreaterThan(0)
+        await user.keyboard('{Escape}')
+        await chooseModel(user, 'openai_compatible / Team models', 'team-one', editor)
+        await customModel(user, 'incompatible', editor)
+        expect(editor.getByRole('button', { name: /^Model:/ })).toHaveAccessibleDescription('Choose a compatible model for this provider or profile.')
         expect(editor.getByRole('button', { name: /^Save/ })).toBeDisabled()
-        await user.selectOptions(editor.getByLabelText('Model'), 'model:team-one')
+        await chooseModel(user, 'openai_compatible / Team models', 'team-one', editor)
         expect(editor.getByRole('button', { name: /^Save/ })).toBeEnabled()
     }
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('saved-model')
     await user.click(screen.getByRole('tab', { name: 'System' }))
     await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
-    expect(project.getByLabelText('Model')).toHaveValue('model:team-one')
-    expect(workspace.getByLabelText('Model')).toHaveValue('model:team-one')
+    expect(project.getByRole('button', { name: /^Model:/ })).toHaveTextContent('team-one')
+    expect(workspace.getByRole('button', { name: /^Model:/ })).toHaveTextContent('team-one')
 })
 
 it('keeps hidden requests mounted and blocks navigation before another dirty editor can offer discard', async () => {
@@ -120,7 +121,7 @@ it('keeps hidden requests mounted and blocks navigation before another dirty edi
     await waitFor(() => expect(screen.getByLabelText('Editor sidebar width (pixels)')).toBeEnabled())
     await user.type(screen.getByLabelText('Editor sidebar width (pixels)'), '400')
     await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
-    await user.selectOptions(card('Model defaults (Workspace)').getByLabelText('Provider or profile'), 'anthropic')
+    await chooseModel(user, 'anthropic', 'claude-sonnet-4-6', card('Model defaults (Workspace)'))
     await user.click(card('Model defaults (Workspace)').getByRole('button', { name: /^Save/ }))
     await user.click(screen.getByRole('tab', { name: 'Execution' }))
     await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
@@ -132,7 +133,7 @@ it('keeps hidden requests mounted and blocks navigation before another dirty edi
     await act(async () => reject(new Error('Save conflict')))
     await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
     expect(screen.getByText('Save conflict')).toBeVisible()
-    expect(card('Model defaults (Workspace)').getByLabelText('Provider or profile')).toHaveValue('anthropic')
+    expect(card('Model defaults (Workspace)').getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6')
 })
 
 it('uses discovered suggestions in both editors and displays inherited saved profile labels and defaults', async () => {
@@ -146,10 +147,26 @@ it('uses discovered suggestions in both editors and displays inherited saved pro
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('Team models team · Model: team-one · Reasoning effort: low')
     await user.click(project.getByRole('switch'))
     for (const editor of [card('Model defaults (Workspace)'), project]) {
-        await user.selectOptions(editor.getByLabelText('Provider or profile'), 'codex')
-        expect(editor.getByRole('option', { name: 'discovered' })).toBeVisible()
-        await user.selectOptions(editor.getByLabelText('Model'), 'model:discovered')
-        expect(editor.getByLabelText('Model')).toHaveValue('model:discovered')
+        await chooseModel(user, 'Codex', 'Discovered', editor)
+        expect(editor.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Discovered')
     }
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('Team models team')
+})
+
+it.each([false, true])('resolves reset from the parent instead of the saved override (project: %s)', async projectScope => {
+    const user = userEvent.setup()
+    const workspace = { provider: 'anthropic', llm_profile: null, model: 'workspace-parent', reasoning_effort: 'low' }
+    const override = { provider: 'anthropic', llm_profile: null, model: 'saved-override', reasoning_effort: 'high' }
+    vi.mocked(fetchModelSettings).mockImplementation(async path => ({ scope: path ? 'project' : 'workspace', source: path ? 'project' : 'workspace', revision: 'one',
+        stored: path || !projectScope ? override : workspace, effective: path || !projectScope ? override : workspace }))
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered', is_default: true, default_reasoning_effort: 'medium' }], providers: { codex: { status: 'available', error: null } } } })
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    const scope = card(projectScope ? 'Project model defaults' : 'Model defaults (Workspace)')
+    await waitFor(() => expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-override · High'))
+    await openPicker(user, scope)
+    const expected = projectScope ? 'workspace-parent · Low' : 'Discovered · Medium'
+    const reset = screen.getByRole('button', { name: /^Use default ·/ })
+    expect(reset).toHaveTextContent(`Use default · ${expected}`)
+    await user.click(reset)
+    expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent(`Default: ${expected}`)
 })

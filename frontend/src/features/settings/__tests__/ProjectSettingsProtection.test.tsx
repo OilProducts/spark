@@ -1,3 +1,4 @@
+import { customModel } from '@/components/model-chooser/__tests__/picker'
 import { useState } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -38,8 +39,7 @@ it.each(['switch', 'switch_and_leave', 'clear', 'remove', 'hydrate', 'rename'] a
     render(<DialogProvider><Models /></DialogProvider>)
     await waitFor(() => expect(screen.getByRole('switch')).toBeEnabled())
     await user.click(screen.getByRole('switch'))
-    await user.selectOptions(screen.getByLabelText('Model'), 'custom')
-    await user.type(screen.getByLabelText('Custom model'), 'unsaved-model')
+    await customModel(user, 'unsaved-model')
     const navigate = () => {
         const state = useStore.getState()
         if (transition === 'switch') state.setActiveProjectPath('/project-two')
@@ -53,7 +53,7 @@ it.each(['switch', 'switch_and_leave', 'clear', 'remove', 'hydrate', 'rename'] a
     await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
     expect(useStore.getState().activeProjectPath).toBe('/project-one')
     expect(useStore.getState().viewMode).toBe('settings')
-    expect(screen.getByLabelText('Custom model')).toHaveValue('unsaved-model')
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('unsaved-model')
     await act(async () => navigate())
     await user.click(await screen.findByRole('button', { name: 'Discard and leave' }))
     await waitFor(() => expect(useStore.getState().activeProjectPath).not.toBe('/project-one'))

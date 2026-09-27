@@ -1,3 +1,5 @@
+import userEvent from '@testing-library/user-event'
+import { chooseModel, chooseEffort } from '@/components/model-chooser/__tests__/picker'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
@@ -186,6 +188,22 @@ describe('TaskNode', () => {
             expect(screen.getByTestId('workflow-node-frame-house')).toBeInTheDocument()
         })
         expect(screen.queryByText('Node Properties')).not.toBeInTheDocument()
+    })
+
+    it('shows graph inheritance and saves an atomic model and effort draft in the canvas toolbar', async () => {
+        const user = userEvent.setup()
+        useStore.setState({ activeProjectPath: null, flowMetadata: { llm_provider: 'openai', llm_model: 'graph-model', reasoning_effort: 'high' } })
+        renderWithFlowProvider(<SingleNodeHarness node={{ id: 'task', type: 'task', selected: true,
+            position: { x: 0, y: 0 }, data: { label: 'Task', kind: 'agent_task', shape: 'box', config: { kind: 'agent_task' } } }} />)
+        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
+        await user.click(screen.getByRole('button', { name: 'Show Advanced' }))
+        expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default: graph-model · High')
+        await chooseModel(user, 'anthropic', 'claude-sonnet-4-6')
+        await chooseEffort(user, 'Low')
+        expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6 · Low')
+        await user.click(screen.getByText('Save', { selector: 'button' }))
+        fireEvent.click(screen.getByText('Edit', { selector: 'button' }))
+        expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6 · Low')
     })
 
     it('does not expose handler type drift warnings in the node toolbar', async () => {

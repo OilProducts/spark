@@ -9,7 +9,7 @@ import {
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
 import { NodeInspectorPanel } from '@/features/editor/components/NodeInspectorPanel'
 import { applyNodePropertyChangeToData } from '@/features/editor/Sidebar'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/lib/useLlmProfiles', () => ({
@@ -317,12 +317,11 @@ describe('Accessible node inspector fields', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Node Kind' }), { target: { value: 'tool' } })
     expect(props.onPropertyChange).toHaveBeenCalledWith('kind', 'tool')
     if (kind === 'agent_task') {
-      fireEvent.change(screen.getByRole('combobox', { name: 'Provider or profile' }), { target: { value: 'openai' } })
+      fireEvent.click(screen.getByRole('button', { name: /^Model:/ }))
+      fireEvent.click(within(screen.getByRole('group', { name: 'openai', exact: true })).getByRole('option', { name: 'gpt-5.5' }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('llm_provider', 'openai')
-      fireEvent.change(screen.getByRole('combobox', { name: 'Model', exact: true }), { target: { value: 'custom' } })
-      fireEvent.change(screen.getByRole('textbox', { name: 'Custom model' }), { target: { value: 'my-model' } })
-      expect(props.onPropertyChange).toHaveBeenCalledWith('llm_model', 'my-model')
-      fireEvent.change(screen.getByRole('combobox', { name: 'Reasoning effort' }), { target: { value: 'high' } })
+      expect(props.onPropertyChange).toHaveBeenCalledWith('llm_model', 'gpt-5.5')
+      fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
       expect(props.onPropertyChange).toHaveBeenCalledWith('reasoning_effort', 'high')
       for (const [name, key] of [['Goal Gate', 'goal_gate'], ['Auto Status', 'auto_status'], ['Allow Partial', 'allow_partial']]) {
         fireEvent.click(screen.getByRole('checkbox', { name }))

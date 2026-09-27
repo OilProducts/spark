@@ -1,3 +1,4 @@
+import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -71,6 +72,7 @@ export function useProjectsHomeController() {
     const isNarrowViewport = useNarrowViewport()
     const activeProjectScope = activeProjectPath ? projectSessionsByPath[activeProjectPath] : null
     const activeConversationId = activeProjectScope?.conversationId ?? null
+    const inheritedModelSettings = useInheritedModelSettings(activeProjectPath)
     const {
         applyConversationSnapshot,
         commitConversationCache,
@@ -463,6 +465,7 @@ export function useProjectsHomeController() {
             activeProjectPath,
             activeChatMode,
             modelSettings: currentModelSettings,
+            inheritedModelSettings,
             defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
             chatModelAvailabilityMessage,

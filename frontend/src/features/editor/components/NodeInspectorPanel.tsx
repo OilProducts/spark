@@ -97,6 +97,7 @@ export function NodeInspectorPanel({
 }: NodeInspectorPanelProps) {
     const id = useId()
     const projectPath = useStore((state) => state.activeProjectPath)
+    const flowMetadata = useStore((state) => state.flowMetadata)
     const selectedJoinPolicy = (selectedNode?.data?.join_policy as string) || 'wait_all'
     return (
         <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
@@ -540,6 +541,7 @@ export function NodeInspectorPanel({
 
                                 {visibility.showLlmSettings ? (
                                     <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
+                                            inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null }}
                                         value={{ provider: (selectedNode?.data?.llm_provider as string) || null,
                                             llm_profile: (selectedNode?.data?.llm_profile as string) || null,
                                             model: (selectedNode?.data?.llm_model as string) || null,

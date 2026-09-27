@@ -1,4 +1,4 @@
-import { parseModelSettingsView, type ModelSettings, type ModelSettingsView } from './settingsApi'
+import { modelSettingsForApi, parseModelSettingsView, type ModelSettings, type ModelSettingsView } from './settingsApi'
 import {
     ApiSchemaError,
     asOptionalNullableString,
@@ -894,7 +894,7 @@ export async function updateConversationSettingsValidated(
         {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, model_settings: modelSettingsForApi(payload.model_settings) }),
         },
         '/workspace/api/conversations/{id}/settings',
         parseConversationSnapshotResponse,

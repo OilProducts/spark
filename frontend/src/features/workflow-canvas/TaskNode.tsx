@@ -1,4 +1,4 @@
-const EMPTY_GRAPH_ATTRS = {}
+const EMPTY_GRAPH_ATTRS: Record<string, string> = {}
 const EMPTY_DIAGNOSTICS: Record<string, import('@/store').DiagnosticEntry[]> = {}
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow } from '@xyflow/react'
@@ -818,6 +818,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                 {visibility.showLlmSettings && (
                                     <div className="nodrag nowheel">
                                         <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
+                                            inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null }}
                                             value={{ provider: draftLlmProvider || null, llm_profile: draftLlmProfile || null,
                                                 model: draftLlmModel || null, reasoning_effort: draftReasoningEffort || null }}
                                             onChange={(value) => {

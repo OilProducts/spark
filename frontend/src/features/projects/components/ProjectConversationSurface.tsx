@@ -21,6 +21,7 @@ interface ProjectConversationSurfaceProps {
     activeChatMode: ConversationChatMode | null
     defaultModel?: string
     modelSettings: ModelSettings
+    inheritedModelSettings?: ModelSettings
     onModelSettingsChange: (value: ModelSettings) => void
     chatModelAvailabilityMessage: string | null
     hasRenderableConversationHistory: boolean
@@ -49,6 +50,7 @@ export function ProjectConversationSurface({
     activeChatMode,
     defaultModel,
     modelSettings,
+    inheritedModelSettings,
     onModelSettingsChange,
     chatModelAvailabilityMessage,
     hasRenderableConversationHistory,
@@ -157,7 +159,7 @@ export function ProjectConversationSurface({
                                     {onStopTurn && <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button>}
                                     {modelSettingsSource && <span className="text-xs text-muted-foreground">{modelSettingsSource === 'conversation' ? 'Conversation override' : modelSettingsSource === 'project' ? 'Project default' : 'Workspace default'}</span>}
                                     {modelSettingsSource === 'conversation' && onUseModelDefaults && <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>}
-                                    <ModelChooser value={modelSettings} onChange={onModelSettingsChange}
+                                    <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
                                         projectPath={activeProjectPath} inheritLabel="Provider default"
                                         layout="compact" disabled={controlsDisabled} />
                                     {defaultModel && <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span>}
