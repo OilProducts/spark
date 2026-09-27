@@ -5,7 +5,7 @@ import { DialogProvider } from '@/components/app/dialog-controller'
 import { SettingsPanel } from '../SettingsPanel'
 
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [] }))
-vi.mock('../hooks/useModelDiscovery', () => ({ useModelDiscovery: () => null }))
+vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: () => null }))
 vi.mock('../hooks/useWorkspaceSettings', () => ({ useWorkspaceSettings: () => ({ workspaceSettings: null, settingsError: null }) }))
 vi.mock('../hooks/useModelSettingsEditor', () => ({ useModelSettingsEditor: () => ({ saved: null, draft: null, pending: false, dirty: false, error: '', message: '', setDraft: vi.fn(), save: vi.fn(), discard: vi.fn() }) }))
 vi.mock('../RuntimeSettingsEditor', () => ({ RuntimeSettingsEditor: () => null }))

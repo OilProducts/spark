@@ -10,25 +10,18 @@ import {
     EmptyDescription,
     EmptyHeader,
 } from '@/components/ui/empty'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
+import type { ModelSettings } from '@/lib/api/settingsApi'
 import { Textarea } from '@/components/ui/textarea'
 import type { ConversationChatMode } from '@/lib/workspaceClient'
-
-export interface ProjectChatSelectOption {
-    value: string
-    label: string
-}
 
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
     activeChatMode: ConversationChatMode | null
-    activeChatProvider: string
-    activeChatModel: string
-    activeChatReasoningEffort: string
-    chatModelOptions: ProjectChatSelectOption[]
-    chatProviderOptions: ProjectChatSelectOption[]
-    chatReasoningEffortOptions: ProjectChatSelectOption[]
+    defaultModel?: string
+    modelSettings: ModelSettings
+    onModelSettingsChange: (value: ModelSettings) => void
     chatModelAvailabilityMessage: string | null
     hasRenderableConversationHistory: boolean
     isConversationPinnedToBottom: boolean
@@ -36,7 +29,6 @@ interface ProjectConversationSurfaceProps {
     chatDraft: string
     chatSendButtonLabel: string
     isChatInputDisabled: boolean
-    isChatModelSelectDisabled: boolean
     isChatSendDisabled: boolean
     panelError: string | null
     conversationBodyRef: RefObject<HTMLDivElement | null>
@@ -47,9 +39,6 @@ interface ProjectConversationSurfaceProps {
     onChatComposerSubmit: (event: FormEvent<HTMLFormElement>) => void
     onChatComposerKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void
     onChatDraftChange: (value: string) => void
-    onChatModelChange: (value: string) => void
-    onChatProviderChange: (value: string) => void
-    onChatReasoningEffortChange: (value: string) => void
     modelSettingsSource?: 'workspace' | 'project' | 'conversation'
     onUseModelDefaults?: () => void
 }
@@ -58,12 +47,9 @@ export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
     activeChatMode,
-    activeChatProvider,
-    activeChatModel,
-    activeChatReasoningEffort,
-    chatModelOptions,
-    chatProviderOptions,
-    chatReasoningEffortOptions,
+    defaultModel,
+    modelSettings,
+    onModelSettingsChange,
     chatModelAvailabilityMessage,
     hasRenderableConversationHistory,
     isConversationPinnedToBottom,
@@ -71,7 +57,6 @@ export function ProjectConversationSurface({
     chatDraft,
     chatSendButtonLabel,
     isChatInputDisabled,
-    isChatModelSelectDisabled,
     isChatSendDisabled,
     panelError,
     conversationBodyRef,
@@ -82,17 +67,10 @@ export function ProjectConversationSurface({
     onChatComposerSubmit,
     onChatComposerKeyDown,
     onChatDraftChange,
-    onChatModelChange,
-    onChatProviderChange,
-    onChatReasoningEffortChange,
     modelSettingsSource,
     onUseModelDefaults,
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
-    const selectedModelValue = chatModelOptions.some((option) => option.value === activeChatModel)
-        ? activeChatModel
-        : ''
-
     return (
         <HomeWorkspace className={isNarrowViewport ? 'space-y-4' : 'h-full'}>
             <Card
@@ -179,51 +157,10 @@ export function ProjectConversationSurface({
                                     {onStopTurn && <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button>}
                                     {modelSettingsSource && <span className="text-xs text-muted-foreground">{modelSettingsSource === 'conversation' ? 'Conversation override' : modelSettingsSource === 'project' ? 'Project default' : 'Workspace default'}</span>}
                                     {modelSettingsSource === 'conversation' && onUseModelDefaults && <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>}
-                                    <NativeSelect
-                                        aria-label="Project chat provider"
-                                        data-testid="project-ai-conversation-provider-select"
-                                        value={activeChatProvider || 'codex'}
-                                        onChange={(event) => onChatProviderChange(event.target.value)}
-                                        disabled={controlsDisabled}
-                                        size="sm"
-                                        className="max-w-[9rem] text-sm"
-                                    >
-                                        {chatProviderOptions.map((option) => (
-                                            <NativeSelectOption key={option.value} value={option.value}>
-                                                {option.label}
-                                            </NativeSelectOption>
-                                        ))}
-                                    </NativeSelect>
-                                    <NativeSelect
-                                        aria-label="Project chat model"
-                                        data-testid="project-ai-conversation-model-select"
-                                        value={selectedModelValue}
-                                        onChange={(event) => onChatModelChange(event.target.value)}
-                                        disabled={controlsDisabled || isChatModelSelectDisabled}
-                                        size="sm"
-                                        className="max-w-[13rem] text-sm"
-                                    >
-                                        {chatModelOptions.map((option) => (
-                                            <NativeSelectOption key={option.value} value={option.value}>
-                                                {option.label}
-                                            </NativeSelectOption>
-                                        ))}
-                                    </NativeSelect>
-                                    <NativeSelect
-                                        aria-label="Project chat reasoning effort"
-                                        data-testid="project-ai-conversation-reasoning-effort-select"
-                                        value={activeChatReasoningEffort}
-                                        onChange={(event) => onChatReasoningEffortChange(event.target.value)}
-                                        disabled={controlsDisabled}
-                                        size="sm"
-                                        className="max-w-[9rem] text-sm"
-                                    >
-                                        {chatReasoningEffortOptions.map((option) => (
-                                            <NativeSelectOption key={option.value || 'default'} value={option.value}>
-                                                {option.label}
-                                            </NativeSelectOption>
-                                        ))}
-                                    </NativeSelect>
+                                    <ModelChooser value={modelSettings} onChange={onModelSettingsChange}
+                                        projectPath={activeProjectPath} inheritLabel="Provider default"
+                                        layout="compact" disabled={controlsDisabled} />
+                                    {defaultModel && <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span>}
                                     <Button
                                         data-testid="project-ai-conversation-send-button"
                                         type="submit"

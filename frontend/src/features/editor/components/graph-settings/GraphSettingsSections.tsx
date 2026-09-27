@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { ExtensionAttrEntry } from '@/lib/extensionAttrs'
 import type { LaunchInputDefinition } from '@/lib/flowContracts'
 import { GRAPH_FIDELITY_OPTIONS } from '@/lib/graphAttrValidation'
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection, type LlmProfileMetadata } from '@/lib/llmSuggestions'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import type { FlowDefinitionMetadata, FlowMetadataErrors, UiDefaults } from '@/store'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -575,20 +575,18 @@ export function GraphAdvancedAttrsSection({
 
 interface GraphLlmDefaultsSectionProps {
     canApplyDefaults: boolean
-    flowProviderFallback: string
     flowMetadata: FlowDefinitionMetadata
     uiDefaults: UiDefaults
-    llmProfiles: LlmProfileMetadata[]
+    projectPath: string | null
     applyDefaultsToNodes: () => void
     updateFlowMetadata: (key: keyof FlowDefinitionMetadata, value: string) => void
 }
 
 export function GraphLlmDefaultsSection({
     canApplyDefaults,
-    flowProviderFallback,
     flowMetadata,
     uiDefaults,
-    llmProfiles,
+    projectPath,
     applyDefaultsToNodes,
     updateFlowMetadata,
 }: GraphLlmDefaultsSectionProps) {
@@ -599,54 +597,15 @@ export function GraphLlmDefaultsSection({
                 description="Flow-local LLM defaults layered on top of the current global snapshot."
             />
             <div className="space-y-3">
-                <GraphSettingsField label="Default LLM Provider" htmlFor="graph-default-llm-provider">
-                    <Input
-                        id="graph-default-llm-provider"
-                        value={flowMetadata.llm_profile || flowMetadata.llm_provider || ''}
-                        onChange={(event) => {
-                            const selection = splitLlmSelection(event.target.value, llmProfiles)
-                            updateFlowMetadata('llm_provider', selection.llm_provider)
-                            updateFlowMetadata('llm_profile', selection.llm_profile)
-                        }}
-                        list="flow-llm-provider-options"
-                        className="h-8 text-sm"
-                        placeholder={uiDefaults.llm_provider ? `Snapshot: ${uiDefaults.llm_provider}` : 'Snapshot of global default'}
-                    />
-                    <datalist id="flow-llm-provider-options">
-                        {getLlmSelectionOptions(llmProfiles).map((provider) => (
-                            <option key={provider} value={provider} />
-                        ))}
-                    </datalist>
-                </GraphSettingsField>
-                <GraphSettingsField label="Default LLM Model" htmlFor="graph-default-llm-model">
-                    <Input
-                        id="graph-default-llm-model"
-                        value={flowMetadata.llm_model || ''}
-                        onChange={(event) => updateFlowMetadata('llm_model', event.target.value)}
-                        list="flow-llm-model-options"
-                        className="h-8 text-sm"
-                        placeholder={uiDefaults.llm_model ? `Snapshot: ${uiDefaults.llm_model}` : 'Snapshot of global default'}
-                    />
-                    <datalist id="flow-llm-model-options">
-                        {getModelSuggestions(flowMetadata.llm_profile || flowProviderFallback, llmProfiles).map((modelOption) => (
-                            <option key={modelOption} value={modelOption} />
-                        ))}
-                    </datalist>
-                </GraphSettingsField>
-                <GraphSettingsField label="Default Reasoning Effort" htmlFor="graph-default-reasoning-effort">
-                    <NativeSelect
-                        id="graph-default-reasoning-effort"
-                        value={flowMetadata.reasoning_effort || ''}
-                        onChange={(event) => updateFlowMetadata('reasoning_effort', event.target.value)}
-                        className="h-8 text-sm"
-                    >
-                        <option value="">Use global default</option>
-                        <option value="low">Low</option>
-                        <option value="medium">Medium</option>
-                        <option value="high">High</option>
-                        <option value="xhigh">XHigh</option>
-                    </NativeSelect>
-                </GraphSettingsField>
+                <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"
+                    value={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null,
+                        model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null }}
+                    onChange={(value) => {
+                        updateFlowMetadata('llm_provider', value.provider || '')
+                        updateFlowMetadata('llm_profile', value.llm_profile || '')
+                        updateFlowMetadata('llm_model', value.model || '')
+                        updateFlowMetadata('reasoning_effort', value.reasoning_effort || '')
+                    }} />
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <Button
                         type="button"

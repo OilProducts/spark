@@ -1,5 +1,5 @@
 import { isModelSelectionValid } from '@/lib/llmSuggestions'
-import { ModelSettingsFields } from './ModelSettingsFields'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ProviderSettingsEditor } from "./ProviderSettingsEditor"
 import { CodexConnectionSettings } from "./CodexConnectionSettings"
@@ -153,7 +153,7 @@ export function SettingsPanel() {
                         <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations.</p>
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
                         {models.pending ? <p role="status">Saving or reloading settings…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
-                        <ModelSettingsFields profiles={llmProfiles} models={models} activeProjectPath={activeProjectPath} invalidModel={!!invalidModel} />
+                        <ModelChooser value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={models.setDraft} projectPath={activeProjectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
                             <Button aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>

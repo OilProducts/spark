@@ -1334,7 +1334,7 @@ describe('Frontend contract behavior', () => {
   it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {
     renderGraphSettings([], [])
 
-    expect(screen.getByLabelText('Model')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Model', exact: true })).toBeVisible()
     expect(screen.getByLabelText('Working Directory')).toBeVisible()
     expect(screen.getByLabelText('Title')).toBeVisible()
     expect(screen.getByLabelText('Description')).toBeVisible()
@@ -1350,9 +1350,9 @@ describe('Frontend contract behavior', () => {
     expect(screen.queryByLabelText('Model Stylesheet')).not.toBeInTheDocument()
     expect(screen.getByTestId('graph-extension-attr-new-key')).toBeVisible()
     expect(screen.getByTestId('graph-extension-attr-new-value')).toBeVisible()
-    expect(screen.getByLabelText('Default LLM Provider')).toBeVisible()
-    expect(screen.getByLabelText('Default LLM Model')).toBeVisible()
-    expect(screen.getByLabelText('Default Reasoning Effort')).toBeVisible()
+    expect(screen.getByLabelText('Provider or profile')).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Model', exact: true })).toBeVisible()
+    expect(screen.getByLabelText('Reasoning effort')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Apply To Nodes' }).className).toContain('focus-visible')
     expect(screen.getByRole('button', { name: 'Reset From Global' }).className).toContain('focus-visible')
 
@@ -2446,9 +2446,9 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     expect(screen.getByText('Thread ID')).toBeVisible()
     expect(screen.getByText('Class')).toBeVisible()
     expect(screen.getByText('Timeout')).toBeVisible()
-    expect(screen.getByText('LLM Model')).toBeVisible()
-    expect(screen.getByText('LLM Provider')).toBeVisible()
-    expect(screen.getByText('Reasoning Effort')).toBeVisible()
+    expect(screen.getByText('Model')).toBeVisible()
+    expect(screen.getByText('Provider or profile')).toBeVisible()
+    expect(screen.getByText('Reasoning effort')).toBeVisible()
     expect(screen.getByText('Auto Status')).toBeVisible()
     expect(screen.getByText('Allow Partial')).toBeVisible()
 

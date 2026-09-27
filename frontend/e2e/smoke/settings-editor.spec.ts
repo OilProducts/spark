@@ -523,11 +523,11 @@ test('conversation effort and model edits preserve an inherited profile; selecti
         await page.getByTestId('top-nav-project-switcher').click()
         await page.getByRole('option').filter({hasText:project}).click()
         await page.getByRole('button', {name:new RegExp(`Open thread ${title}`)}).click()
-        const provider = page.getByTestId('project-ai-conversation-provider-select')
+        const provider = page.getByLabel('Provider or profile', { exact: true })
         await expect(provider).toHaveValue(id)
-        await page.getByTestId('project-ai-conversation-reasoning-effort-select').selectOption('high')
+        await page.getByLabel('Reasoning effort', { exact: true }).selectOption('high')
         await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:null,reasoning_effort:'high'})
-        await page.getByTestId('project-ai-conversation-model-select').selectOption('model-two')
+        await page.getByLabel('Model', { exact: true }).selectOption('model:model-two')
         await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:'model-two',reasoning_effort:'high'})
         await provider.selectOption('claude-code')
         await expect.poll(async () => (await conversation()).settings.models.stored.provider).toBe('claude-code')
@@ -662,3 +662,82 @@ for (const width of [1440, 390]) {
         await expect(models).toHaveAttribute('aria-selected', 'true')
     })
 }
+
+
+test('chat coalesces rapid custom model edits against real backend revisions', async ({ page }, testInfo) => {
+    const project = testInfo.outputPath('chat-model-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    const conversationPath = '/workspace/api/conversations/cr0125-browser-chat'
+    const initial = { provider: 'codex', llm_profile: null, model: null, reasoning_effort: 'low' }
+    const created = await page.request.put(`${conversationPath}/settings`, { data: {
+        project_path: project, expected_revision: '0', model_settings: initial,
+    } })
+    expect(created.ok()).toBeTruthy()
+    const snapshot = await created.json()
+    const read = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
+    await page.goto('/')
+    await page.getByTestId('top-nav-project-switcher').click()
+    await page.getByRole('option').filter({ hasText: project }).click()
+    await page.getByRole('button', { name: new RegExp(`Open thread ${snapshot.title}`) }).click()
+    const requests: { expected_revision: string; model_settings: unknown }[] = []
+    const statuses: number[] = []
+    const releases: (() => void)[] = []
+    // Forward every save to Rust unchanged; hold only its response to force overlapping edits.
+    await page.route(`**${conversationPath}/settings`, async (route) => {
+        requests.push(route.request().postDataJSON())
+        const response = await route.fetch()
+        statuses.push(response.status())
+        await new Promise<void>((resolve) => releases.push(resolve))
+        await route.fulfill({ response })
+    })
+    const release = async () => {
+        await expect.poll(() => releases.length).toBe(1)
+        const response = page.waitForResponse((response) => response.url().endsWith(`${conversationPath}/settings`))
+        releases.shift()!()
+        await (await response).finished()
+    }
+    const model = page.getByLabel('Model', { exact: true })
+    const custom = page.getByLabel('Custom model', { exact: true })
+    await model.selectOption('custom')
+    await custom.pressSequentially('my-model')
+    await expect(custom).toHaveValue('my-model')
+    expect(requests).toHaveLength(1)
+    await release()
+    await expect.poll(() => requests.length).toBe(2)
+    expect(requests[1].model_settings).toMatchObject({ model: 'my-model' })
+    await release()
+    await expect.poll(async () => (await read()).settings.models.stored.model).toBe('my-model')
+    await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
+
+    await custom.pressSequentially('-discard')
+    await custom.fill('')
+    await expect(custom).toHaveValue('')
+    expect(requests).toHaveLength(3)
+    await release()
+    await expect.poll(() => requests.length).toBe(4)
+    expect(requests[3].model_settings).toMatchObject({ model: null })
+    await release()
+    await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
+    await expect.poll(async () => (await read()).settings.models.stored.model).toBeNull()
+
+    await page.getByLabel('Provider or profile', { exact: true }).selectOption('claude-code')
+    await model.selectOption('custom')
+    await custom.pressSequentially('final-model')
+    await page.getByLabel('Reasoning effort', { exact: true }).selectOption('high')
+    expect(requests).toHaveLength(5)
+    await release()
+    await expect.poll(() => requests.length).toBe(6)
+    await release()
+    await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
+    const final = { provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
+    await expect.poll(async () => (await read()).settings.models.stored).toEqual(final)
+    expect(statuses).toEqual([200, 200, 200, 200, 200, 200])
+    expect(requests.map((request) => request.expected_revision)).toEqual(
+        Array.from({ length: 6 }, (_, index) => String(snapshot.revision + index)),
+    )
+    await page.reload()
+    await expect(custom).toHaveValue('final-model')
+    await expect(page.getByLabel('Provider or profile', { exact: true })).toHaveValue('claude-code')
+    await expect(page.getByLabel('Reasoning effort', { exact: true })).toHaveValue('high')
+})

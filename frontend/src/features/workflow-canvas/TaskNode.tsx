@@ -5,8 +5,7 @@ import { Handle, NodeToolbar, Position, type Node, type NodeProps, useReactFlow 
 
 import { saveFlowContent } from '@/lib/flowPersistence'
 import { getToolHookCommandWarning } from '@/lib/graphAttrValidation'
-import { useLlmProfiles } from '@/lib/useLlmProfiles'
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from '@/lib/llmSuggestions'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { getHandlerType, getNodeFieldVisibility } from '@/lib/nodeVisibility'
 import {
     WORKFLOW_NODE_SHAPE_OPTIONS,
@@ -158,7 +157,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftLlmProvider, setDraftLlmProvider] = useState<string>((data.llm_provider as string) || '')
     const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
     const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
-    const llmProfiles = useLlmProfiles()
+    const projectPath = useStore((state) => state.activeProjectPath)
     const [draftAutoStatus, setDraftAutoStatus] = useState<boolean>(
         data.auto_status === true || data.auto_status === 'true',
     )
@@ -817,51 +816,17 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     </>
                                 )}
                                 {visibility.showLlmSettings && (
-                                    <>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">LLM Model</label>
-                                                <input
-                                                    value={draftLlmModel}
-                                                    onChange={(event) => setDraftLlmModel(event.target.value)}
-                                                    list={`llm-model-options-${id}`}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                                <datalist id={`llm-model-options-${id}`}>
-                                                    {getModelSuggestions(draftLlmProfile || draftLlmProvider, llmProfiles).map((model) => (
-                                                        <option key={model} value={model} />
-                                                    ))}
-                                                </datalist>
-                                            </div>
-                                            <div className="space-y-1">
-                                                <label className="text-xs font-medium text-foreground">LLM Provider</label>
-                                                <input
-                                                    value={draftLlmProfile || draftLlmProvider}
-                                                    onChange={(event) => {
-                                                        const selection = splitLlmSelection(event.target.value, llmProfiles)
-                                                        setDraftLlmProvider(selection.llm_provider)
-                                                        setDraftLlmProfile(selection.llm_profile)
-                                                    }}
-                                                    list={`llm-provider-options-${id}`}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                />
-                                                <datalist id={`llm-provider-options-${id}`}>
-                                                    {getLlmSelectionOptions(llmProfiles).map((provider) => (
-                                                        <option key={provider} value={provider} />
-                                                    ))}
-                                                </datalist>
-                                            </div>
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-medium text-foreground">Reasoning Effort</label>
-                                            <input
-                                                value={draftReasoningEffort}
-                                                onChange={(event) => setDraftReasoningEffort(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                                                placeholder="high"
-                                            />
-                                        </div>
-                                    </>
+                                    <div className="nodrag nowheel">
+                                        <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
+                                            value={{ provider: draftLlmProvider || null, llm_profile: draftLlmProfile || null,
+                                                model: draftLlmModel || null, reasoning_effort: draftReasoningEffort || null }}
+                                            onChange={(value) => {
+                                                setDraftLlmProvider(value.provider || '')
+                                                setDraftLlmProfile(value.llm_profile || '')
+                                                setDraftLlmModel(value.model || '')
+                                                setDraftReasoningEffort(value.reasoning_effort || '')
+                                            }} />
+                                    </div>
                                 )}
                                 {visibility.showGeneralAdvanced && (
                                     <div className="flex items-center gap-4">

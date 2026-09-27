@@ -299,7 +299,7 @@ describe('Accessible node inspector fields', () => {
   it.each([
     ['agent_task', [['Prompt Instruction', 'prompt'], ['Max Retries', 'max_retries'], ['Timeout', 'timeout'],
       ['Retry Target', 'retry_target'], ['Fallback Retry Target', 'fallback_retry_target'], ['Fidelity', 'fidelity'],
-      ['Thread ID', 'thread_id'], ['Class', 'class'], ['Reasoning Effort', 'reasoning_effort']]],
+      ['Thread ID', 'thread_id'], ['Class', 'class']]],
     ['tool', [['Tool Command', 'tool.command'], ['Pre Hook Override', 'tool.hooks.pre'],
       ['Post Hook Override', 'tool.hooks.post'], ['Artifact Paths', 'tool.artifacts.paths'],
       ['Stdout Artifact', 'tool.artifacts.stdout'], ['Stderr Artifact', 'tool.artifacts.stderr']]],
@@ -317,10 +317,13 @@ describe('Accessible node inspector fields', () => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Node Kind' }), { target: { value: 'tool' } })
     expect(props.onPropertyChange).toHaveBeenCalledWith('kind', 'tool')
     if (kind === 'agent_task') {
-      for (const [name, key] of [['LLM Model', 'llm_model'], ['LLM Provider', 'llm_provider']]) {
-        fireEvent.change(screen.getByRole('combobox', { name }), { target: { value: 'custom' } })
-        expect(props.onPropertyChange).toHaveBeenCalledWith(key, 'custom')
-      }
+      fireEvent.change(screen.getByRole('combobox', { name: 'Provider or profile' }), { target: { value: 'openai' } })
+      expect(props.onPropertyChange).toHaveBeenCalledWith('llm_provider', 'openai')
+      fireEvent.change(screen.getByRole('combobox', { name: 'Model', exact: true }), { target: { value: 'custom' } })
+      fireEvent.change(screen.getByRole('textbox', { name: 'Custom model' }), { target: { value: 'my-model' } })
+      expect(props.onPropertyChange).toHaveBeenCalledWith('llm_model', 'my-model')
+      fireEvent.change(screen.getByRole('combobox', { name: 'Reasoning effort' }), { target: { value: 'high' } })
+      expect(props.onPropertyChange).toHaveBeenCalledWith('reasoning_effort', 'high')
       for (const [name, key] of [['Goal Gate', 'goal_gate'], ['Auto Status', 'auto_status'], ['Allow Partial', 'allow_partial']]) {
         fireEvent.click(screen.getByRole('checkbox', { name }))
         expect(props.onPropertyChange).toHaveBeenCalledWith(key, true)

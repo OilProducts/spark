@@ -5,13 +5,13 @@ import { DialogProvider } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
 import { fetchModelSettings, saveModelSettings } from '@/lib/api/settingsApi'
 import { fetchClientPreferences } from '../services/clientPreferences'
-import { useModelDiscovery } from '../hooks/useModelDiscovery'
+import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { SettingsPanel } from '../SettingsPanel'
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), saveModelSettings: vi.fn() }))
 vi.mock('../services/clientPreferences', async (original) => ({ ...await original<object>(), fetchClientPreferences: vi.fn() }))
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [{ id: 'team', label: 'Team models', models: ['team-one'], default_model: 'team-one' }] }))
-vi.mock('../hooks/useModelDiscovery', () => ({ useModelDiscovery: vi.fn() }))
+vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: vi.fn() }))
 vi.mock('../CodexConnectionSettings', () => ({ CodexConnectionSettings: () => null }))
 vi.mock('../ProviderSettingsEditor', () => ({ ProviderSettingsEditor: () => null }))
 vi.mock('../AgentSettingsEditor', () => ({ AgentSettingsEditor: () => null }))
@@ -26,7 +26,7 @@ beforeEach(() => {
     useStore.setState({ viewMode: 'settings', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
     vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel }))
     vi.mocked(fetchClientPreferences).mockResolvedValue({ client_id: 'browser-test', revision: 'one', stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288 } })
-    vi.mocked(useModelDiscovery).mockReturnValue({ projectPath: '/project', failed: true })
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', failed: true })
 })
 afterEach(() => cleanup())
 
@@ -139,7 +139,7 @@ it('uses discovered suggestions in both editors and displays inherited saved pro
     const user = userEvent.setup()
     const effective = { provider: null, llm_profile: 'team', model: null, reasoning_effort: 'low' }
     vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : effective, effective }))
-    vi.mocked(useModelDiscovery).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered' }], providers: { codex: { status: 'available', error: null } } } })
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered' }], providers: { codex: { status: 'available', error: null } } } })
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
     const project = card('Project model defaults')
     await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())

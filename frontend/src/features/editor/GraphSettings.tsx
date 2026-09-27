@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNodes, useReactFlow } from '@xyflow/react'
 import { useStore, type DiagnosticEntry } from '@/store'
 import { generateFlowYaml } from '@/lib/flowYamlUtils'
-import { useLlmProfiles } from '@/lib/useLlmProfiles'
 import { extractDebugErrorSummary, recordFlowLoadDebug } from '@/lib/flowLoadDebug'
 import { resolveGraphFieldDiagnostics } from '@/lib/inspectorFieldDiagnostics'
 import { toExtensionAttrEntries } from '@/lib/extensionAttrs'
@@ -99,8 +98,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         window.addEventListener('spark:settings-live-event', refresh)
         return () => window.removeEventListener('spark:settings-live-event', refresh)
     }, [catalogDirty, launchPolicySaveState])
-    const llmProfiles = useLlmProfiles()
-    const flowProviderFallback = flowMetadata.llm_provider || uiDefaults.llm_provider || ''
+    const projectPath = useStore((state) => state.activeProjectPath)
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
     const flowMetadataExtensionEntries = useMemo(
@@ -484,10 +482,9 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 />
                 <GraphLlmDefaultsSection
                     canApplyDefaults={canApplyDefaults}
-                    flowProviderFallback={flowProviderFallback}
                     flowMetadata={flowMetadata}
                     uiDefaults={uiDefaults}
-                    llmProfiles={llmProfiles}
+                    projectPath={projectPath}
                     applyDefaultsToNodes={applyDefaultsToNodes}
                     updateFlowMetadata={updateFlowMetadata}
                 />
