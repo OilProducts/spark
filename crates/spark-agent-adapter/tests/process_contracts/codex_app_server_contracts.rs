@@ -275,6 +275,8 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
         .find(|message| message["method"] == json!("turn/start"))
         .expect("turn/start payload");
     assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
+    // No summary was chosen, so Spark's detailed default is sent explicitly.
+    assert_eq!(turn_start["params"]["summary"], json!("detailed"));
     assert_eq!(
         turn_start["params"]["collaborationMode"],
         json!({

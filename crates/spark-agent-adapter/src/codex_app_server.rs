@@ -52,6 +52,8 @@ pub fn configure_codex_api_base_url(url: impl Into<String>) -> Result<(), String
 }
 const COLLABORATION_MODE_DEFAULT: &str = "default";
 const COLLABORATION_MODE_PLAN: &str = "plan";
+/// Reasoning summary level sent when a turn does not choose one.
+const DEFAULT_REASONING_SUMMARY: &str = "detailed";
 const STDERR_DIAGNOSTIC_MAX_LINES: usize = 50;
 
 pub fn configure_codex_spark_home(path: impl Into<PathBuf>) -> Result<(), String> {
@@ -717,9 +719,10 @@ impl CodexAppServerClient {
         if let Some(effort) = normalize_reasoning_effort(reasoning_effort)? {
             params["effort"] = json!(effort);
         }
-        if let Some(summary) = reasoning_summary {
-            params["summary"] = json!(summary);
-        }
+        // Without an explicit level Codex falls back to its own default (auto),
+        // bypassing model_reasoning_summary in config.toml, so Spark's default
+        // stays detailed summaries; an explicitly chosen level wins.
+        params["summary"] = json!(reasoning_summary.unwrap_or(DEFAULT_REASONING_SUMMARY));
         if let Some(path) = capture_path {
             let turn_input = params
                 .pointer("/input/0/text")
