@@ -369,15 +369,9 @@ fn codex_chat_models_map_live_metadata_and_synthesize_a_default() {
     assert!(mapped[0].is_default);
     assert!(!mapped[1].is_default);
     assert_eq!(mapped[0].supported_reasoning_efforts, vec!["low", "medium"]);
-    // Missing effort metadata falls back to the full ladder + medium.
-    assert_eq!(
-        mapped[1].supported_reasoning_efforts,
-        vec!["low", "medium", "high", "xhigh", "max", "ultra"]
-    );
-    assert_eq!(
-        mapped[1].default_reasoning_effort.as_deref(),
-        Some("medium")
-    );
+    // Missing effort metadata stays missing: the picker offers only Default.
+    assert!(mapped[1].supported_reasoning_efforts.is_empty());
+    assert_eq!(mapped[1].default_reasoning_effort, None);
 }
 
 #[test]

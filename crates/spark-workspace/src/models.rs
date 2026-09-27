@@ -10,7 +10,6 @@ use crate::errors::{WorkspaceError, WorkspaceResult};
 static PROVIDER_MODELS_CACHE: Mutex<
     Option<unified_llm_adapter::model_discovery::ProviderModelCache>,
 > = Mutex::new(None);
-const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 type NativeModelCache = Vec<(NativeAgentSettings, Result<Vec<ChatModelMetadata>, String>)>;
 static CODEX_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
 static CLAUDE_CODE_MODELS_CACHE: Mutex<NativeModelCache> = Mutex::new(Vec::new());
@@ -225,17 +224,9 @@ pub fn codex_chat_models_from_metadata(
             provider: "codex".to_string(),
             display: model.display,
             is_default: model.is_default || (!has_default && index == 0),
-            supported_reasoning_efforts: if model.supported_reasoning_efforts.is_empty() {
-                REASONING_EFFORTS
-                    .iter()
-                    .map(|effort| effort.to_string())
-                    .collect()
-            } else {
-                model.supported_reasoning_efforts
-            },
-            default_reasoning_effort: model
-                .default_reasoning_effort
-                .or_else(|| Some("medium".to_string())),
+            // Report only what Codex reports: no levels means Default only.
+            supported_reasoning_efforts: model.supported_reasoning_efforts,
+            default_reasoning_effort: model.default_reasoning_effort,
             id: model.id,
         })
         .collect()
