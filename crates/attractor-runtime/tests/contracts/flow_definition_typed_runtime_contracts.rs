@@ -1631,3 +1631,93 @@ fn executor_fails_run_when_failure_routing_exceeds_node_entry_limit() {
         4
     );
 }
+
+#[test]
+fn persisted_cancellation_while_final_node_is_blocked_wins_over_completion() {
+    // Exercise all completion callers: dead end, successful exit, and failed goal gate.
+    for (with_exit, failed_goal) in [(false, false), (true, false), (true, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let store = RunStore::for_runs_dir(temp.path());
+        let mut flow = linear_flow(FlowNode {
+            kind: NodeKind::AgentTask,
+            config: Some(NodeConfig::AgentTask {
+                prompt: "blocked".into(),
+            }),
+            runtime: Some(NodeRuntimeConfig {
+                goal_gate: failed_goal,
+                ..NodeRuntimeConfig::default()
+            }),
+            ..FlowNode::default()
+        });
+        if !with_exit {
+            flow.nodes.remove("done");
+            flow.edges.retain(|edge| edge.from != "task");
+        }
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let executor_store = store.clone();
+        let record = RunRecord::new("cancel-final-node", temp.path().to_string_lossy());
+        let worker = std::thread::spawn(move || {
+            // No control probe: completion must honor the persisted control channel itself.
+            PipelineExecutor::new(move |request: NodeExecutionRequest| {
+                if request.node_id == "task" {
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .unwrap();
+                    if failed_goal {
+                        return Ok(Outcome::new(OutcomeStatus::Fail));
+                    }
+                }
+                Ok(Outcome::new(OutcomeStatus::Success))
+            })
+            .execute(ExecuteRunRequest {
+                store: executor_store,
+                record,
+                flow,
+                flow_source: None,
+                flow_definition_json: None,
+                launch_context: LaunchContext::empty(),
+                runtime_context: ContextMap::new(),
+                max_steps: None,
+                start: Default::default(),
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        let accepted = attractor_runtime::RuntimeControls::new(store.clone())
+            .request_cancel("cancel-final-node")
+            .unwrap();
+        assert_eq!(accepted.status, "cancel_requested");
+        release_tx.send(()).unwrap();
+        let result = worker.join().unwrap().unwrap();
+        assert_eq!(
+            result.status, "canceled",
+            "with_exit={with_exit}, failed_goal={failed_goal}"
+        );
+        assert_eq!(result.failure_reason, "aborted_by_user");
+        let paths = store.find_run_root("cancel-final-node").unwrap().unwrap();
+        let record = store.read_run_record(&paths).unwrap().unwrap();
+        assert_eq!(record.status, "canceled");
+        assert!(record.ended_at.is_some());
+        assert_eq!(
+            store.read_result(&paths).unwrap().unwrap().status,
+            "canceled"
+        );
+        let events = store.read_raw_events(&paths).unwrap();
+        let terminal = events
+            .iter()
+            .filter(|event| event.event_type == "runtime")
+            .last()
+            .unwrap();
+        assert_eq!(terminal.payload["status"], "canceled");
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "PipelineFailed"
+                && event.payload["error"] == "aborted_by_user"));
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "PipelineCompleted"));
+    }
+}

@@ -1605,6 +1605,25 @@ fn finalize_completed<E: NodeExecutor>(
         context,
         retry_counts,
     )?;
+    // Cancellation is persisted while a node runs; every completion route must honor it.
+    if store
+        .read_run_record(paths)?
+        .is_some_and(|record| record.status == "cancel_requested")
+    {
+        return finalize_canceled(
+            store,
+            paths,
+            run_id,
+            record,
+            current_node,
+            completed_nodes,
+            context,
+            retry_counts,
+            node_outcomes,
+            route_trace,
+            "aborted_by_user",
+        );
+    }
     record.status = "completed".to_string();
     record.outcome = Some(outcome.to_string());
     record.outcome_reason_code = outcome_reason_code.clone();

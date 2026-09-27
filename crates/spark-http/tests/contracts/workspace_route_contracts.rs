@@ -430,12 +430,31 @@ impl spark_agent_adapter::AgentTurnBackend for ScriptedMissionAgent {
     }
 }
 
-struct QuietAgent;
-impl spark_agent_adapter::AgentTurnBackend for QuietAgent {
+#[derive(Default)]
+struct GatedAgent {
+    released: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+impl GatedAgent {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+impl spark_agent_adapter::AgentTurnBackend for GatedAgent {
     fn run_turn(
         &self,
         _request: spark_agent_adapter::AgentTurnRequest,
     ) -> Result<spark_agent_adapter::AgentTurnOutput, spark_agent_adapter::AgentError> {
+        let (released, _) = self
+            .opened
+            .wait_timeout_while(
+                self.released.lock().unwrap(),
+                std::time::Duration::from_secs(60),
+                |released| !*released,
+            )
+            .unwrap();
+        assert!(*released, "mission agent gate was never released");
         Ok(final_answer("Understood."))
     }
 }
@@ -572,8 +591,8 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     let settings = settings(temp.path());
     let project = temp.path().join("missions-project");
     fs::create_dir_all(&project).unwrap();
-    let app =
-        spark_http::build_app_with_agent_turn_backend(settings, std::sync::Arc::new(QuietAgent));
+    let agent = std::sync::Arc::new(GatedAgent::default());
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
     let list_uri = format!("/workspace/api/missions?project_path={}", project.display());
     let refused = request_json(
         app.clone(),
@@ -665,6 +684,9 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     assert_eq!(started.0, StatusCode::OK, "{}", started.1);
     assert_eq!(started.1["conversation_id"], json!(id));
     assert_eq!(started.1["status"], "running");
+    agent.release();
+    let idle = wait_for_mission(&app, &at(""), "needs_you").await;
+    assert_eq!(idle["status"], "needs_you");
     assert_eq!(
         request_json(app.clone(), "POST", &at("/start"), None)
             .await
