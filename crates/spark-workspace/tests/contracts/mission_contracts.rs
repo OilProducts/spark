@@ -882,3 +882,60 @@ fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
         ..Default::default()
     }
 }
+
+#[test]
+fn mission_reasoning_settings_are_validated_and_captured_for_turns() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title":"Reasoning"}));
+    let conversations = WorkspaceConversationService::new(harness.settings.clone());
+    let group = json!({"provider":"openai", "model":"future", "thinking":"budget", "thinking_budget_tokens":2048, "reasoning_mode":"pro", "reasoning_summary":"detailed"});
+    let saved = conversations
+        .update_conversation_settings(
+            &mission.id,
+            serde_json::from_value(json!({
+                "project_path":harness.project, "expected_revision":"0", "model_settings":group
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    for field in [
+        "thinking",
+        "thinking_budget_tokens",
+        "reasoning_mode",
+        "reasoning_summary",
+    ] {
+        assert_eq!(
+            saved["settings"]["models"]["effective"][field],
+            group[field]
+        );
+        let mut bad = group.clone();
+        bad[field] = if field == "thinking_budget_tokens" {
+            json!(null)
+        } else {
+            json!("invalid")
+        };
+        let rejected = conversations.update_conversation_settings(&mission.id, serde_json::from_value(json!({
+            "project_path":harness.project, "expected_revision":saved["settings"]["models"]["revision"], "model_settings":bad
+        })).unwrap());
+        assert!(rejected.unwrap_err().to_string().contains(field));
+    }
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    {
+        let requests = harness.agent.requests.lock().unwrap();
+        let captured = &requests[0].metadata["spark.execution.settings"]["model_settings"];
+        for field in [
+            "thinking",
+            "thinking_budget_tokens",
+            "reasoning_mode",
+            "reasoning_summary",
+        ] {
+            assert_eq!(captured[field], group[field]);
+        }
+    }
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+}

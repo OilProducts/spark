@@ -6,13 +6,16 @@ use attractor_core::{
 use serde_json::{Number, Value};
 
 const DEFAULT_MAX_RETRIES_KEY: &str = "default_max_retries";
-const ALLOWED_STYLE_PROPERTIES: [&str; 4] = [
+const ALLOWED_STYLE_PROPERTIES: [&str; 8] = [
     "llm_model",
     "llm_provider",
     "llm_profile",
     "reasoning_effort",
+    "thinking",
+    "thinking_budget_tokens",
+    "reasoning_mode",
+    "reasoning_summary",
 ];
-const ALLOWED_REASONING_EFFORTS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 const NODE_OUTCOMES_KEY: &str = "_attractor.node_outcomes";
 const RUNTIME_RETRY_NODE_ID_KEY: &str = "_attractor.runtime.retry.node_id";
 const RUNTIME_RETRY_ATTEMPT_KEY: &str = "_attractor.runtime.retry.attempt";
@@ -314,7 +317,7 @@ impl GraphTransform for ModelStylesheetTransform {
         let (rules, stylesheet_line) = match graph.graph_attrs.get("model_stylesheet") {
             Some(attr) => match &attr.value {
                 DotValue::String(value) if !value.trim().is_empty() => {
-                    (parse_style_rules(value), attr.line)
+                    (parse_style_rules(value), attr.line.max(1))
                 }
                 _ => (Vec::new(), 0),
             },
@@ -525,13 +528,32 @@ fn apply_style_rules_to_node(
             continue;
         }
 
+        // A more specific non-budget thinking choice clears a lower-scope budget.
+        if property == "thinking_budget_tokens"
+            && node
+                .attrs
+                .get("thinking")
+                .is_some_and(|v| dot_value_text(&v.value) != "budget")
+            && (node.explicit_attr_keys.contains("thinking")
+                || (candidates.contains_key("thinking") && !candidates.contains_key(property)))
+        {
+            node.attrs.remove(property);
+            continue;
+        }
         let Some((value, line)) = candidates
             .get(property)
             .map(|(_, _, value)| (value.clone(), stylesheet_line))
             .or_else(|| graph_defaults.get(property).cloned())
             .or_else(|| {
-                (!node.attrs.contains_key(property))
-                    .then(|| (system_model_default(property).to_string(), 0))
+                (!node.attrs.contains_key(property)
+                    && !matches!(
+                        property,
+                        "thinking"
+                            | "thinking_budget_tokens"
+                            | "reasoning_mode"
+                            | "reasoning_summary"
+                    ))
+                .then(|| (system_model_default(property).to_string(), 0))
             })
         else {
             continue;
@@ -591,11 +613,7 @@ fn parse_style_rules(stylesheet: &str) -> Vec<StyleRule> {
                 rule_is_valid = false;
                 break;
             };
-            if !ALLOWED_STYLE_PROPERTIES.contains(&key)
-                || value.is_empty()
-                || (key == "reasoning_effort"
-                    && !ALLOWED_REASONING_EFFORTS.contains(&value.as_str()))
-            {
+            if !ALLOWED_STYLE_PROPERTIES.contains(&key) || value.is_empty() {
                 rule_is_valid = false;
                 break;
             }
@@ -716,7 +734,12 @@ fn graph_default_model_attrs(graph: &DotGraph) -> BTreeMap<String, (String, usiz
         let Some(attr) = graph.graph_attrs.get(property) else {
             continue;
         };
-        if attr.line == 0 {
+        if attr.line == 0
+            && !matches!(
+                property,
+                "thinking" | "thinking_budget_tokens" | "reasoning_mode" | "reasoning_summary"
+            )
+        {
             continue;
         }
         let value = dot_value_text(&attr.value).trim().to_string();

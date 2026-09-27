@@ -399,6 +399,14 @@ pub struct FanInRankingRequest {
     pub llm_profile: String,
     #[serde(default)]
     pub reasoning_effort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1015,7 +1023,7 @@ impl RuntimeHandlerRunner {
                 ),
             ]);
             if let Some(configuration) = runtime.context.get("internal.execution_configuration_snapshot") {
-                metadata.insert("spark.execution.settings".into(), json!({"configuration": configuration}));
+                metadata.insert("spark.execution.settings".into(), json!({"configuration": configuration, "model_settings": runtime.context.get("internal.model_defaults_snapshot").and_then(|v| v.get("reasoning_controls").or_else(|| v.get("group")))}));
             }
             if let Some(root) = execution_root.as_ref() {
                 metadata.insert("spark.runtime.execution_root".to_string(), json!(root));
@@ -2129,11 +2137,27 @@ impl RuntimeHandlerRunner {
         if !runtime.prompt.trim().is_empty() {
             if let Some(ranker) = self.fan_in_ranker.as_ref() {
                 let resolution = fan_in_llm_resolution_inputs(&runtime);
+                let attrs = &runtime.handler_graph.nodes[&runtime.node_id].attrs;
+                let defaults = runtime
+                    .context
+                    .get("internal.model_defaults_snapshot")
+                    .and_then(|v| v.get("reasoning_controls").or_else(|| v.get("group")));
+                let control = |key: &str| {
+                    attr_text(attrs, key)
+                        .or_else(|| defaults.and_then(|v| v[key].as_str()).map(str::to_string))
+                };
                 let request = FanInRankingRequest {
                     node_id: runtime.node_id.clone(),
                     prompt: runtime.prompt.clone(),
                     context: runtime.context.clone(),
                     candidates: candidates.clone(),
+                    thinking: control("thinking"),
+                    thinking_budget_tokens: attr_text(attrs, "thinking_budget_tokens")
+                        .and_then(|v| v.parse().ok())
+                        .or_else(|| defaults.and_then(|v| v["thinking_budget_tokens"].as_u64()))
+                        .filter(|_| control("thinking").as_deref() == Some("budget")),
+                    reasoning_mode: control("reasoning_mode"),
+                    reasoning_summary: control("reasoning_summary"),
                     provider: resolve_effective_llm_provider(&resolution, &runtime.context),
                     model: resolve_effective_llm_model(&resolution, &runtime.context),
                     llm_profile: resolve_effective_llm_profile(&resolution, &runtime.context)

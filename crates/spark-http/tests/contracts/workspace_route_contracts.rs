@@ -1276,7 +1276,7 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
         for group in [
             "provider='nonexistent-provider'",
             "provider='openai'\nmodel='claude-sonnet-4-5'",
-            "provider='codex'\nreasoning_effort='invalid'",
+            "provider='codex'\nthinking='invalid'",
             "llm_profile='missing'",
             "provider='openai_compatible'",
         ] {
@@ -1694,4 +1694,77 @@ async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
         .0,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn reasoning_controls_round_trip_and_validate_at_settings_scopes() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = settings(temp.path());
+    spark_storage::ProjectRegistry::new(&config.data_dir)
+        .register_project("/projects/reasoning")
+        .unwrap();
+    let app = build_app(config);
+    let group = json!({"provider":"openai", "model":"future-model", "thinking":"budget", "thinking_budget_tokens":2048, "reasoning_mode":"pro", "reasoning_summary":"concise"});
+    for (scope, query) in [
+        ("models", ""),
+        ("project_models", "?project_path=/projects/reasoning"),
+        (
+            "conversation_models",
+            "?project_path=/projects/reasoning&conversation_id=reasoning-chat",
+        ),
+    ] {
+        let uri = format!("/workspace/api/settings{query}");
+        let initial = request_json(app.clone(), "GET", &uri, None).await;
+        let value = if scope == "models" {
+            group.clone()
+        } else if scope == "project_models" {
+            json!({"project_path":"/projects/reasoning", "model_settings":group})
+        } else {
+            json!({"project_path":"/projects/reasoning", "conversation_id":"reasoning-chat", "model_settings":group})
+        };
+        let saved = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":scope,"expected_revision":initial.1["models"]["revision"],"value":value}))).await;
+        assert_eq!(saved.0, StatusCode::OK, "{scope}: {}", saved.1);
+        let read = request_json(app.clone(), "GET", &uri, None).await;
+        for field in [
+            "thinking",
+            "thinking_budget_tokens",
+            "reasoning_mode",
+            "reasoning_summary",
+        ] {
+            assert_eq!(
+                read.1["models"]["effective"][field], group[field],
+                "{scope}: {field}"
+            );
+        }
+        for field in [
+            "thinking",
+            "thinking_budget_tokens",
+            "reasoning_mode",
+            "reasoning_summary",
+        ] {
+            let mut bad = value.clone();
+            let target = if scope == "models" {
+                &mut bad
+            } else {
+                &mut bad["model_settings"]
+            };
+            target[field] = if field == "thinking_budget_tokens" {
+                json!(1)
+            } else {
+                json!("invalid")
+            };
+            let rejected = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":scope,"expected_revision":read.1["models"]["revision"],"value":bad}))).await;
+            assert_eq!(
+                rejected.0,
+                StatusCode::BAD_REQUEST,
+                "{scope}: {}",
+                rejected.1
+            );
+            assert!(
+                rejected.1.to_string().contains(field),
+                "{scope}: {}",
+                rejected.1
+            );
+        }
+    }
 }

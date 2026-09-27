@@ -51,6 +51,11 @@ export const CORE_FLOW_METADATA_KEYS = new Set<string>([
     'llm_provider',
     'llm_profile',
     'reasoning_effort',
+    'thinking',
+    'thinking_budget_tokens',
+    'reasoning_mode',
+    'reasoning_summary',
+
 ])
 
 export const FLOW_LAUNCH_POLICY_LABELS: Record<FlowLaunchPolicy, string> = {
@@ -598,14 +603,19 @@ export function GraphLlmDefaultsSection({
             />
             <div className="space-y-3">
                 <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"
-                    inherited={{ provider: uiDefaults.llm_provider || null, llm_profile: uiDefaults.llm_profile || null, model: uiDefaults.llm_model || null, reasoning_effort: uiDefaults.reasoning_effort || null }}
+                    inherited={{ provider: uiDefaults.llm_provider || null, llm_profile: uiDefaults.llm_profile || null, model: uiDefaults.llm_model || null, reasoning_effort: uiDefaults.reasoning_effort || null, thinking: uiDefaults.thinking || null, thinking_budget_tokens: Number(uiDefaults.thinking_budget_tokens) || null, reasoning_mode: uiDefaults.reasoning_mode || null, reasoning_summary: uiDefaults.reasoning_summary || null }}
                     value={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null,
-                        model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null }}
+                        model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}
                     onChange={(value) => {
                         updateFlowMetadata('llm_provider', value.provider || '')
                         updateFlowMetadata('llm_profile', value.llm_profile || '')
                         updateFlowMetadata('llm_model', value.model || '')
                         updateFlowMetadata('reasoning_effort', value.reasoning_effort || '')
+                        updateFlowMetadata('thinking', value.thinking == null ? '' : String(value.thinking))
+                        updateFlowMetadata('thinking_budget_tokens', value.thinking_budget_tokens == null ? '' : String(value.thinking_budget_tokens))
+                        updateFlowMetadata('reasoning_mode', value.reasoning_mode == null ? '' : String(value.reasoning_mode))
+                        updateFlowMetadata('reasoning_summary', value.reasoning_summary == null ? '' : String(value.reasoning_summary))
+
                     }} />
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <Button
@@ -629,6 +639,11 @@ export function GraphLlmDefaultsSection({
                             updateFlowMetadata('llm_profile', uiDefaults.llm_profile)
                             updateFlowMetadata('llm_model', uiDefaults.llm_model)
                             updateFlowMetadata('reasoning_effort', uiDefaults.reasoning_effort)
+                            updateFlowMetadata('thinking', uiDefaults.thinking || '')
+                            updateFlowMetadata('thinking_budget_tokens', uiDefaults.thinking_budget_tokens || '')
+                            updateFlowMetadata('reasoning_mode', uiDefaults.reasoning_mode || '')
+                            updateFlowMetadata('reasoning_summary', uiDefaults.reasoning_summary || '')
+
                         }}
                     >
                         Reset From Global

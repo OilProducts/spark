@@ -13,7 +13,7 @@ pub use attractor_core::{
 pub use flow_sources::{
     canonicalize_flow_yaml, ensure_flows_dir, flow_name_from_path, inject_flow_goal,
     load_flow_content, normalize_flow_name, parse_flow_definition, read_named_flow_source,
-    resolve_flow_path, FlowSourceError, NamedFlowSource,
+    resolve_flow_path, validate_flow_definition, FlowSourceError, NamedFlowSource,
 };
 pub use transforms::{
     apply_graph_transforms, apply_graph_transforms_with_extra, build_transform_pipeline,

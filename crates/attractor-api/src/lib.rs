@@ -1763,6 +1763,17 @@ impl AttractorApiService {
         record.llm_provider = selected_provider.clone();
         record.llm_profile = selected_profile.clone();
         record.reasoning_effort = selected_reasoning_effort.clone();
+        record.thinking = use_defaults.then(|| defaults.thinking.clone()).flatten();
+        record.thinking_budget_tokens = use_defaults
+            .then(|| defaults.thinking_budget_tokens.clone())
+            .flatten();
+        record.reasoning_mode = use_defaults
+            .then(|| defaults.reasoning_mode.clone())
+            .flatten();
+        record.reasoning_summary = use_defaults
+            .then(|| defaults.reasoning_summary.clone())
+            .flatten();
+
         record.spec_id = trimmed_option(request.spec_id.as_deref());
         record.plan_id = trimmed_option(request.plan_id.as_deref());
         record.root_run_id = Some(run_id.clone());
@@ -1791,7 +1802,7 @@ impl AttractorApiService {
         runtime_context.insert(
             "internal.model_defaults_snapshot".into(),
             json!({
-                "group": defaults, "source": defaults_source,
+                "group": defaults, "source": defaults_source, "reasoning_controls": if use_defaults { json!(defaults) } else { json!({}) },
             }),
         );
         runtime_context.insert(

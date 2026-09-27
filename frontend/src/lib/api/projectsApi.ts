@@ -34,6 +34,10 @@ export interface ProjectChatModelMetadataResponse {
     display: string
     is_default: boolean
     supported_reasoning_efforts: string[]
+    supported_thinking?: string[]
+    supported_reasoning_modes?: string[]
+    supported_reasoning_summaries?: string[]
+
     reasoning_unverified?: boolean
     default_reasoning_effort?: string | null
 }
@@ -206,6 +210,10 @@ function parseProjectChatModelMetadataResponse(
                 .filter((entry) => entry.trim().length > 0)
             : [],
         default_reasoning_effort: asOptionalNullableString(record.default_reasoning_effort),
+        ...(Array.isArray(record.supported_thinking) ? { supported_thinking: record.supported_thinking.filter((v): v is string => typeof v === "string") } : {}),
+        ...(Array.isArray(record.supported_reasoning_modes) ? { supported_reasoning_modes: record.supported_reasoning_modes.filter((v): v is string => typeof v === "string") } : {}),
+        ...(Array.isArray(record.supported_reasoning_summaries) ? { supported_reasoning_summaries: record.supported_reasoning_summaries.filter((v): v is string => typeof v === "string") } : {}),
+
         ...(record.reasoning_unverified === true ? { reasoning_unverified: true } : {}),
     }
 }

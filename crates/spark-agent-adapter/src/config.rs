@@ -87,12 +87,15 @@ pub fn validate_provider(value: &str) -> Result<String, String> {
 }
 
 pub fn validate_reasoning_effort(value: &str) -> Result<String, String> {
-    let normalized = value.trim().to_lowercase();
-    if normalized.is_empty() || matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
-        Ok(normalized)
-    } else {
-        Err("Reasoning effort must be blank or one of: low, medium, high, xhigh.".to_string())
-    }
+    let value = value.trim();
+    let normalized = value.to_ascii_lowercase();
+    Ok(
+        if matches!(normalized.as_str(), "low" | "medium" | "high" | "xhigh") {
+            normalized
+        } else {
+            value.to_string()
+        },
+    )
 }
 
 /// Resolve persisted defaults and apply the same domain validation used by settings edits.

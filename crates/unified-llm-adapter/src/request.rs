@@ -857,6 +857,15 @@ pub struct Request {
     pub stop_sequences: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
+
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
     #[serde(default)]
@@ -881,6 +890,11 @@ impl Default for Request {
             max_tokens: None,
             stop_sequences: Vec::new(),
             reasoning_effort: None,
+            thinking: None,
+            thinking_budget_tokens: None,
+            reasoning_mode: None,
+            reasoning_summary: None,
+
             metadata: BTreeMap::new(),
             provider_options: BTreeMap::new(),
             timeout: None,
@@ -890,6 +904,21 @@ impl Default for Request {
 }
 
 impl Request {
+    pub fn with_reasoning_settings(mut self) -> Self {
+        let settings = self.metadata.get("spark.execution.reasoning").or_else(|| {
+            self.metadata
+                .get("spark.execution.settings")
+                .and_then(|v| v.get("model_settings"))
+        });
+        if let Some(settings) = settings {
+            self.thinking = settings["thinking"].as_str().map(str::to_string);
+            self.thinking_budget_tokens = settings["thinking_budget_tokens"].as_u64();
+            self.reasoning_mode = settings["reasoning_mode"].as_str().map(str::to_string);
+            self.reasoning_summary = settings["reasoning_summary"].as_str().map(str::to_string);
+        }
+        self
+    }
+
     pub fn new(model: impl Into<String>, messages: Vec<Message>) -> Self {
         Self {
             model: model.into(),

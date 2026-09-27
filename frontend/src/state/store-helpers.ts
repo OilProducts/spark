@@ -50,6 +50,11 @@ const STRING_GRAPH_ATTR_KEYS: (keyof GraphAttrs)[] = [
     'llm_provider',
     'llm_profile',
     'reasoning_effort',
+    'thinking',
+    'thinking_budget_tokens',
+    'reasoning_mode',
+    'reasoning_summary',
+
 ]
 
 const MAX_RETRIES_KEY: keyof GraphAttrs = 'max_retries'

@@ -77,6 +77,11 @@ const FLOW_METADATA_CORE_KEYS = new Set([
     'llm_provider',
     'llm_profile',
     'reasoning_effort',
+    'thinking',
+    'thinking_budget_tokens',
+    'reasoning_mode',
+    'reasoning_summary',
+
 ])
 const NODE_EXTENSION_CORE_KEYS = new Set([
     'kind',
@@ -104,6 +109,11 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'llm_provider',
     'llm_profile',
     'reasoning_effort',
+    'thinking',
+    'thinking_budget_tokens',
+    'reasoning_mode',
+    'reasoning_summary',
+
 ])
 const EDGE_EXTENSION_CORE_KEYS = new Set(['label', 'condition', 'weight', 'transition', 'extensions'])
 const VALID_NODE_KINDS = new Set([
@@ -275,8 +285,8 @@ function enrichNodeAttrsFromTypedPayload(
 
     const execution = asRecord(attrs.execution)
     if (execution) {
-        ;(['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort'] as const).forEach((key) => {
-            if (typeof execution[key] === 'string') {
+        ;(['llm_model', 'llm_provider', 'llm_profile', 'reasoning_effort', 'thinking', 'thinking_budget_tokens', 'reasoning_mode', 'reasoning_summary'] as const).forEach((key) => {
+            if (typeof execution[key] === 'string' || typeof execution[key] === 'number') {
                 attrs[key] = execution[key]
             }
         })
@@ -351,6 +361,11 @@ function flowMetadataFromFlow(flow: CanonicalFlowDefinition | null, graphMetadat
         if (typeof defaults.llm_provider === 'string') metadata.llm_provider = defaults.llm_provider
         if (typeof defaults.llm_profile === 'string') metadata.llm_profile = defaults.llm_profile
         if (typeof defaults.reasoning_effort === 'string') metadata.reasoning_effort = defaults.reasoning_effort
+        if (defaults.thinking != null) metadata.thinking = String(defaults.thinking)
+        if (defaults.thinking_budget_tokens != null) metadata.thinking_budget_tokens = String(defaults.thinking_budget_tokens)
+        if (defaults.reasoning_mode != null) metadata.reasoning_mode = String(defaults.reasoning_mode)
+        if (defaults.reasoning_summary != null) metadata.reasoning_summary = String(defaults.reasoning_summary)
+
     }
     DEPRECATED_DOT_METADATA_KEYS.forEach((key) => {
         delete metadata[key]
@@ -616,6 +631,11 @@ function flowDefaultsFromAttrs(attrs: CanonicalAttrMap, baseDefaults?: Record<st
         llm_provider: readStringAttr(attrs, 'llm_provider') || baseDefaults?.llm_provider,
         llm_profile: readStringAttr(attrs, 'llm_profile') || baseDefaults?.llm_profile,
         reasoning_effort: readStringAttr(attrs, 'reasoning_effort') || baseDefaults?.reasoning_effort,
+        thinking: 'thinking' in attrs ? readStringAttr(attrs, 'thinking') || undefined : baseDefaults?.thinking,
+        thinking_budget_tokens: 'thinking_budget_tokens' in attrs ? attrs.thinking_budget_tokens == null || attrs.thinking_budget_tokens === '' ? undefined : Number(attrs.thinking_budget_tokens) : baseDefaults?.thinking_budget_tokens,
+        reasoning_mode: 'reasoning_mode' in attrs ? readStringAttr(attrs, 'reasoning_mode') || undefined : baseDefaults?.reasoning_mode,
+        reasoning_summary: 'reasoning_summary' in attrs ? readStringAttr(attrs, 'reasoning_summary') || undefined : baseDefaults?.reasoning_summary,
+
     })
 }
 
@@ -634,6 +654,11 @@ function executionFromAttrs(attrs: CanonicalAttrMap, baseExecution?: Record<stri
         llm_provider: readStringAttr(attrs, 'llm_provider') || baseExecution?.llm_provider,
         llm_profile: readStringAttr(attrs, 'llm_profile') || baseExecution?.llm_profile,
         reasoning_effort: readStringAttr(attrs, 'reasoning_effort') || baseExecution?.reasoning_effort,
+        thinking: 'thinking' in attrs ? readStringAttr(attrs, 'thinking') || undefined : baseExecution?.thinking,
+        thinking_budget_tokens: 'thinking_budget_tokens' in attrs ? attrs.thinking_budget_tokens == null || attrs.thinking_budget_tokens === '' ? undefined : Number(attrs.thinking_budget_tokens) : baseExecution?.thinking_budget_tokens,
+        reasoning_mode: 'reasoning_mode' in attrs ? readStringAttr(attrs, 'reasoning_mode') || undefined : baseExecution?.reasoning_mode,
+        reasoning_summary: 'reasoning_summary' in attrs ? readStringAttr(attrs, 'reasoning_summary') || undefined : baseExecution?.reasoning_summary,
+
     })
 }
 

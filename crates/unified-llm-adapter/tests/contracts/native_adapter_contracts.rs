@@ -1562,3 +1562,83 @@ fn tool(name: &str) -> Tool {
     )
     .unwrap()
 }
+
+#[test]
+fn provider_native_reasoning_controls_serialize_and_omit_without_model_filtering() {
+    use unified_llm_adapter::native::{
+        build_anthropic_messages_request, build_openai_responses_request,
+    };
+    use unified_llm_adapter::{
+        build_openai_compatible_chat_request, OpenAICompatibleRequestConfig,
+    };
+    let mut request = Request::new("unknown-future-model", vec![Message::user("hello")]);
+    let config = NativeRequestConfig::default();
+    assert!(build_anthropic_messages_request(&request, config.clone())
+        .unwrap()
+        .body
+        .get("thinking")
+        .is_none());
+    assert!(build_openai_responses_request(&request, config.clone())
+        .unwrap()
+        .body
+        .get("reasoning")
+        .is_none());
+    for (thinking, expected) in [
+        ("adaptive", json!({"type":"adaptive"})),
+        ("off", json!({"type":"disabled"})),
+        ("budget", json!({"type":"enabled", "budget_tokens":2048})),
+    ] {
+        request.thinking = Some(thinking.into());
+        request.thinking_budget_tokens = (thinking == "budget").then_some(2048);
+        assert_eq!(
+            build_anthropic_messages_request(&request, config.clone())
+                .unwrap()
+                .body["thinking"],
+            expected
+        );
+    }
+    request
+        .provider_options
+        .insert("anthropic".into(), json!({"thinking":{"type":"adaptive"}}));
+    assert_eq!(
+        build_anthropic_messages_request(&request, config.clone())
+            .unwrap()
+            .body["thinking"],
+        json!({"type":"adaptive"})
+    );
+    request.provider_options.clear();
+    request.reasoning_mode = Some("pro".into());
+    request.reasoning_summary = Some("concise".into());
+    request.reasoning_effort = Some("future".into());
+    assert_eq!(
+        build_openai_responses_request(&request, config)
+            .unwrap()
+            .body["reasoning"],
+        json!({"mode":"pro", "summary":"concise", "effort":"future"})
+    );
+    request.thinking = Some("off".into());
+    request.thinking_budget_tokens = None;
+    let router = OpenAICompatibleRequestConfig::default();
+    assert_eq!(
+        build_openai_compatible_chat_request("openrouter", &request, router.clone())
+            .unwrap()
+            .body["reasoning"]["enabled"],
+        false
+    );
+    request.thinking = Some("budget".into());
+    request.thinking_budget_tokens = Some(2048);
+    assert_eq!(
+        build_openai_compatible_chat_request("openrouter", &request, router.clone())
+            .unwrap()
+            .body["reasoning"]["max_tokens"],
+        2048
+    );
+    let plain = Request::new("unknown-future-model", vec![Message::user("hello")]);
+    assert!(
+        build_openai_compatible_chat_request("openrouter", &plain, router)
+            .unwrap()
+            .body
+            .get("reasoning")
+            .is_none()
+    );
+}

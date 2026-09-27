@@ -10,6 +10,7 @@ fn selection(provider: &str, model: Option<&str>) -> ModelSettings {
         llm_profile: None,
         model: model.map(Into::into),
         reasoning_effort: None,
+        ..ModelSettings::default()
     }
 }
 

@@ -385,6 +385,7 @@ impl Session {
             abort_signal: Some(self.abort_signal()),
             ..Request::default()
         }
+        .with_reasoning_settings()
     }
 
     pub fn context_usage_estimate(&self, request: &Request) -> Option<ContextUsageEstimate> {

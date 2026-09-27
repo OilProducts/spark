@@ -34,8 +34,11 @@ const ALLOWED_STYLESHEET_PROPERTIES: &[&str] = &[
     "llm_provider",
     "llm_profile",
     "reasoning_effort",
+    "thinking",
+    "thinking_budget_tokens",
+    "reasoning_mode",
+    "reasoning_summary",
 ];
-const ALLOWED_REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];
 const PROTECTED_EXECUTION_CONTEXT_PREFIX: &str = "_attractor.runtime.execution_";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +333,51 @@ pub fn validate_graph(graph: &DotGraph) -> Vec<Diagnostic> {
     diagnostics.extend(validate_known_types(graph));
     diagnostics.extend(validate_prompt_on_llm_nodes(graph));
     diagnostics.extend(validate_stylesheet(graph));
+    let resolved = crate::transforms::apply_graph_transforms(graph);
+    // Validate every declaration even when overridden, then check resolved combinations.
+    for (id, attrs, resolved_controls) in std::iter::once((None, &graph.graph_attrs, false))
+        .chain(
+            graph
+                .nodes
+                .iter()
+                .map(|(id, node)| (Some(id), &node.attrs, false)),
+        )
+        .chain(
+            resolved
+                .nodes
+                .iter()
+                .map(|(id, node)| (Some(id), &node.attrs, true)),
+        )
+    {
+        let text = |key| attrs.get(key).map(attr_text);
+        let thinking = text("thinking");
+        let budget = text("thinking_budget_tokens");
+        let mode = text("reasoning_mode");
+        let summary = text("reasoning_summary");
+        let result = if budget.as_ref().is_some_and(|v| v.parse::<u64>().is_err()) {
+            Err("thinking_budget_tokens must be an integer of at least 1024".into())
+        } else {
+            let validate = if resolved_controls {
+                spark_common::settings::validate_reasoning_controls
+            } else {
+                spark_common::settings::validate_reasoning_control_fields
+            };
+            validate(
+                thinking.as_deref(),
+                budget.and_then(|v| v.parse().ok()),
+                mode.as_deref(),
+                summary.as_deref(),
+            )
+        };
+        if let Err(message) = result {
+            let mut diagnostic =
+                Diagnostic::new("reasoning_controls", DiagnosticSeverity::Error, message);
+            if let Some(id) = id {
+                diagnostic = diagnostic.with_node(id);
+            }
+            diagnostics.push(diagnostic);
+        }
+    }
     diagnostics.extend(validate_tool_handler_attrs(graph));
     diagnostics.extend(validate_parallel_join_attrs(graph, &out_degree));
     diagnostics.extend(validate_execution_context_write_authority(graph));
@@ -1138,16 +1186,21 @@ fn lint_stylesheet_syntax(stylesheet: &str, line: usize) -> Vec<Diagnostic> {
                     );
                     continue;
                 };
-                if key == "reasoning_effort" && !ALLOWED_REASONING_EFFORTS.contains(&value.as_str())
-                {
-                    diagnostics.push(
-                        Diagnostic::new(
-                            "stylesheet_syntax",
-                            DiagnosticSeverity::Error,
-                            "reasoning_effort must be one of: low, medium, high, xhigh",
-                        )
-                        .with_line(line),
-                    );
+                let invalid = match key {
+                    "thinking" => !["adaptive", "off", "budget"].contains(&value.as_str()),
+                    "thinking_budget_tokens" => !value.parse::<u64>().is_ok_and(|v| v >= 1024),
+                    "reasoning_mode" => !["standard", "pro"].contains(&value.as_str()),
+                    "reasoning_summary" => {
+                        !["auto", "concise", "detailed"].contains(&value.as_str())
+                    }
+                    _ => false,
+                };
+                if invalid {
+                    diagnostics.push(Diagnostic::new(
+                        "reasoning_controls",
+                        DiagnosticSeverity::Error,
+                        format!("invalid {key}"),
+                    ));
                 }
             }
         }

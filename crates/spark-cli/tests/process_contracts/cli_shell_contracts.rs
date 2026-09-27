@@ -992,6 +992,64 @@ fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
 }
 
 #[test]
+fn flow_validate_file_checks_stylesheet_controls_and_inherited_budgets() {
+    let temp_dir = temp_dir("flow-validate-reasoning");
+    let flow_path = temp_dir.join("flow.yaml");
+    for (stylesheet, valid) in [
+        ("* { reasoning_mode: fast; }", false),
+        ("* { thinking: invalid; }", false),
+        ("* { thinking_budget_tokens: 12; }", false),
+        ("* { reasoning_summary: none; }", false),
+        ("* { thinking: off; thinking_budget_tokens: 2048; }", false),
+        (
+            "* { thinking: budget; thinking_budget_tokens: 2048; }",
+            true,
+        ),
+    ] {
+        let source = serde_json::json!({"schema_version":"1", "id":"flow",
+            "defaults":{"thinking":"budget", "thinking_budget_tokens":2048},
+            "metadata":{"model_stylesheet":stylesheet},
+            "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
+            "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
+        });
+        fs::write(&flow_path, source.to_string()).unwrap();
+        let output = run_with_args_and_env(
+            [
+                "spark",
+                "flow",
+                "validate",
+                "--file",
+                flow_path.to_str().unwrap(),
+            ],
+            &BTreeMap::new(),
+        );
+        assert_eq!(output.exit_code, 0);
+        let payload: Value = serde_json::from_str(&output.stdout).unwrap();
+        assert_eq!(
+            payload["status"],
+            if valid { "ok" } else { "validation_error" },
+            "{payload}"
+        );
+        assert_eq!(
+            payload["diagnostics"].as_array().unwrap().is_empty(),
+            valid,
+            "{payload}"
+        );
+        if !valid {
+            assert!(
+                payload["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|d| d["rule_id"] == "reasoning_controls"),
+                "{payload}"
+            );
+        }
+    }
+    fs::remove_dir_all(temp_dir).unwrap();
+}
+
+#[test]
 fn flow_validate_file_text_renders_diagnostics() {
     let temp_dir = temp_dir("flow-validate-text");
     let flow_path = temp_dir.join("validation-error-flow.yaml");

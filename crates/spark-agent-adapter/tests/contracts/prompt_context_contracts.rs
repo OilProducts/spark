@@ -523,3 +523,138 @@ impl ProviderAdapter for RecordingAdapter {
         ))
     }
 }
+
+#[test]
+fn reasoning_controls_resolve_flow_stylesheets_and_reach_session_requests() {
+    use spark_agent_adapter::{
+        CodergenBackend, CodergenBackendOutput, CodergenBackendRequest, CodergenError,
+        CodergenHandler, CodergenRequest,
+    };
+    struct Capture;
+    impl CodergenBackend for Capture {
+        fn run(
+            &mut self,
+            request: CodergenBackendRequest,
+        ) -> Result<CodergenBackendOutput, CodergenError> {
+            assert_eq!(request.reasoning_effort.as_deref(), Some("ultra"));
+            let environment =
+                ExecutionEnvironment::local(std::env::temp_dir()).with_metadata(request.metadata);
+            let session = Session::new(
+                create_openai_profile("future"),
+                environment,
+                SessionConfig::default(),
+            );
+            let request = session.build_request("system");
+            assert_eq!(request.thinking.as_deref(), Some("budget"));
+            assert_eq!(request.thinking_budget_tokens, Some(4096));
+            assert_eq!(request.reasoning_mode.as_deref(), Some("pro"));
+            assert_eq!(request.reasoning_summary.as_deref(), Some("detailed"));
+            Ok(CodergenBackendOutput::text("done"))
+        }
+    }
+    let source = json!({"schema_version":"1", "id":"flow",
+        "defaults":{"reasoning_mode":"standard"},
+        "metadata":{"model_stylesheet":"* { thinking: budget; thinking_budget_tokens: 2048; reasoning_effort: ultra; reasoning_summary: detailed; }"},
+        "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"reasoning_mode":"pro", "thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
+        "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
+    });
+    let flow = attractor_dsl::parse_flow_definition(&source.to_string()).unwrap();
+    let graph = flow.to_runtime_dot_graph();
+    let diagnostics = attractor_dsl::validate_graph(&graph);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.severity == attractor_dsl::DiagnosticSeverity::Error),
+        "{diagnostics:?}"
+    );
+    let graph = attractor_dsl::apply_graph_transforms(&graph);
+    let request: CodergenRequest = serde_json::from_value(
+        json!({"node_id":"work", "node": graph.nodes["work"], "graph":graph, "context":{}}),
+    )
+    .unwrap();
+    CodergenHandler::with_backend(Capture)
+        .execute(request)
+        .unwrap();
+    let mut off = source.clone();
+    off["nodes"]["work"]["execution"]["thinking"] = json!("off");
+    off["nodes"]["work"]["execution"]
+        .as_object_mut()
+        .unwrap()
+        .remove("thinking_budget_tokens");
+    let off = attractor_dsl::parse_flow_definition(&off.to_string()).unwrap();
+    let off = attractor_dsl::apply_graph_transforms(&off.to_runtime_dot_graph());
+    assert!(!off.nodes["work"]
+        .attrs
+        .contains_key("thinking_budget_tokens"));
+    for invalid in [
+        "thinking: invalid",
+        "thinking_budget_tokens: 12",
+        "reasoning_mode: fast",
+        "reasoning_summary: none",
+    ] {
+        let mut source = source.clone();
+        source["metadata"]["model_stylesheet"] = json!(format!("* {{ {invalid}; }}"));
+        let flow: attractor_core::FlowDefinition = serde_json::from_value(source).unwrap();
+        assert!(
+            attractor_dsl::validate_graph(&flow.to_runtime_dot_graph())
+                .iter()
+                .any(|d| d.rule_id == "reasoning_controls"),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn flow_parser_validates_declarations_and_resolved_reasoning_combinations() {
+    let source = json!({"schema_version":"1", "id":"flow",
+        "metadata":{"model_stylesheet":"* { thinking: budget; thinking_budget_tokens: 2048; }"},
+        "nodes":{"start":{"kind":"start"}, "work":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"hello"}, "execution":{"thinking_budget_tokens":4096}}, "end":{"kind":"exit"}},
+        "edges":[{"from":"start","to":"work"},{"from":"work","to":"end"}]
+    });
+    attractor_dsl::parse_flow_definition(&source.to_string()).unwrap();
+    for (execution, stylesheet, defaults, field) in [
+        (
+            json!({"thinking":"off", "thinking_budget_tokens":4096}),
+            "* { thinking: budget; thinking_budget_tokens: 2048; }",
+            json!({}),
+            "thinking_budget_tokens",
+        ),
+        (
+            json!({"thinking":"budget"}),
+            "",
+            json!({}),
+            "thinking_budget_tokens",
+        ),
+        (
+            json!({"thinking_budget_tokens":4096}),
+            "",
+            json!({}),
+            "thinking_budget_tokens",
+        ),
+        (
+            json!({"reasoning_mode":"fast"}),
+            "* { reasoning_mode: pro; }",
+            json!({}),
+            "reasoning_mode",
+        ),
+        (
+            json!({}),
+            "* { reasoning_mode: pro; }",
+            json!({"reasoning_mode":"fast"}),
+            "reasoning_mode",
+        ),
+        (
+            json!({"thinking_budget_tokens":12}),
+            "* { thinking: budget; thinking_budget_tokens: 2048; }",
+            json!({}),
+            "thinking_budget_tokens",
+        ),
+    ] {
+        let mut invalid = source.clone();
+        invalid["nodes"]["work"]["execution"] = execution;
+        invalid["metadata"]["model_stylesheet"] = json!(stylesheet);
+        invalid["defaults"] = defaults;
+        let error = attractor_dsl::parse_flow_definition(&invalid.to_string()).unwrap_err();
+        assert!(error.to_string().contains(field), "{error}");
+    }
+}

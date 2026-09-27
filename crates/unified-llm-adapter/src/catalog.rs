@@ -15,6 +15,13 @@ pub struct ModelInfo {
     pub reasoning_efforts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub supported_thinking: Vec<String>,
+    #[serde(default)]
+    pub supported_reasoning_modes: Vec<String>,
+    #[serde(default)]
+    pub supported_reasoning_summaries: Vec<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

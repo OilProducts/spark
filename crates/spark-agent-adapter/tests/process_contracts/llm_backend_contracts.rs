@@ -303,10 +303,16 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
             repair_attempt: None,
             runtime_mode: Default::default(),
             project_path: Some(temp.path().to_path_buf()),
-            metadata: BTreeMap::from([(
-                "spark.runtime.initial_context_path".to_string(),
-                json!(capture_path.to_string_lossy().to_string()),
-            )]),
+            metadata: BTreeMap::from([
+                (
+                    "spark.execution.reasoning".into(),
+                    json!({"reasoning_summary":"concise"}),
+                ),
+                (
+                    "spark.runtime.initial_context_path".to_string(),
+                    json!(capture_path.to_string_lossy().to_string()),
+                ),
+            ]),
         })
         .expect("codergen output");
 
@@ -341,7 +347,7 @@ fn codergen_backend_routes_codex_selector_through_app_server() {
         .expect("thread/start payload");
     assert_eq!(thread_start["params"]["ephemeral"], json!(true));
     assert_eq!(turn_start["params"]["effort"], json!("high"));
-    assert_eq!(turn_start["params"]["summary"], json!("detailed"));
+    assert_eq!(turn_start["params"]["summary"], json!("concise"));
     assert!(turn_start["params"].get("reasoningEffort").is_none());
     assert_eq!(turn_start["params"]["model"], json!("gpt-codex-test"));
     assert_eq!(

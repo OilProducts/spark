@@ -90,6 +90,15 @@ pub struct GenerateRequest {
     pub stop_sequences: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_summary: Option<String>,
+
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
     #[serde(default)]
@@ -123,6 +132,11 @@ impl Default for GenerateRequest {
             max_tokens: None,
             stop_sequences: Vec::new(),
             reasoning_effort: None,
+            thinking: None,
+            thinking_budget_tokens: None,
+            reasoning_mode: None,
+            reasoning_summary: None,
+
             metadata: BTreeMap::new(),
             provider_options: BTreeMap::new(),
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
@@ -152,6 +166,11 @@ impl From<Request> for GenerateRequest {
             max_tokens: request.max_tokens,
             stop_sequences: request.stop_sequences,
             reasoning_effort: request.reasoning_effort,
+            thinking: request.thinking,
+            thinking_budget_tokens: request.thinking_budget_tokens,
+            reasoning_mode: request.reasoning_mode,
+            reasoning_summary: request.reasoning_summary,
+
             metadata: request.metadata,
             provider_options: request.provider_options,
             max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
@@ -1527,6 +1546,11 @@ fn build_generate_request(
             max_tokens: input.max_tokens,
             stop_sequences: input.stop_sequences,
             reasoning_effort: input.reasoning_effort,
+            thinking: input.thinking,
+            thinking_budget_tokens: input.thinking_budget_tokens,
+            reasoning_mode: input.reasoning_mode,
+            reasoning_summary: input.reasoning_summary,
+
             metadata,
             provider_options: input.provider_options,
             timeout: input.timeout,

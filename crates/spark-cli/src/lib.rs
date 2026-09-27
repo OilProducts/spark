@@ -1855,7 +1855,7 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     let mut response = match FlowDefinition::from_yaml_str(&raw_content) {
         Ok(flow) => {
             let flow = flow.normalize();
-            match flow.validate() {
+            match attractor_dsl::validate_flow_definition(&flow) {
                 Ok(()) => object_from_value(flow_definition_preview_payload(&flow)),
                 Err(error) => flow_definition_error_payload(&error, "validation_error"),
             }

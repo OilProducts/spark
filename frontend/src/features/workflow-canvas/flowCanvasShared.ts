@@ -178,6 +178,11 @@ function buildHydratedNode(
         llm_provider: typeof node.attrs.llm_provider === 'string' ? node.attrs.llm_provider : '',
         llm_profile: typeof node.attrs.llm_profile === 'string' ? node.attrs.llm_profile : '',
         reasoning_effort: typeof node.attrs.reasoning_effort === 'string' ? node.attrs.reasoning_effort : '',
+        ...(node.attrs.thinking != null ? { thinking: node.attrs.thinking } : {}),
+        ...(node.attrs.thinking_budget_tokens != null ? { thinking_budget_tokens: node.attrs.thinking_budget_tokens } : {}),
+        ...(node.attrs.reasoning_mode != null ? { reasoning_mode: node.attrs.reasoning_mode } : {}),
+        ...(node.attrs.reasoning_summary != null ? { reasoning_summary: node.attrs.reasoning_summary } : {}),
+
         'manager.poll_interval': typeof node.attrs['manager.poll_interval'] === 'string'
             ? node.attrs['manager.poll_interval']
             : '',

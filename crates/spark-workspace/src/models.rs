@@ -54,6 +54,13 @@ pub struct ChatModelMetadata {
     pub supported_reasoning_efforts: Vec<String>,
     pub default_reasoning_effort: Option<String>,
     #[serde(default)]
+    pub supported_thinking: Vec<String>,
+    #[serde(default)]
+    pub supported_reasoning_modes: Vec<String>,
+    #[serde(default)]
+    pub supported_reasoning_summaries: Vec<String>,
+
+    #[serde(default)]
     pub reasoning_unverified: bool,
 }
 
@@ -189,6 +196,9 @@ pub fn claude_code_chat_models_from_metadata(
             // The adapter passes the chosen effort as `--effort`.
             supported_reasoning_efforts: model.supported_efforts,
             default_reasoning_effort: None,
+            supported_thinking: vec![],
+            supported_reasoning_modes: vec![],
+            supported_reasoning_summaries: vec![],
         })
         .collect()
 }
@@ -227,6 +237,9 @@ pub fn codex_chat_models_from_metadata(
             // Report only what Codex reports: no levels means Default only.
             supported_reasoning_efforts: model.supported_reasoning_efforts,
             default_reasoning_effort: model.default_reasoning_effort,
+            supported_thinking: vec![],
+            supported_reasoning_modes: vec![],
+            supported_reasoning_summaries: vec!["auto".into(), "concise".into(), "detailed".into()],
             id: model.id,
         })
         .collect()
@@ -270,6 +283,9 @@ fn configured_profile_chat_models(
                     .and_then(|value| serde_json::from_value(value).ok())
                     .unwrap_or_default(),
                 default_reasoning_effort: None,
+                supported_thinking: vec![],
+                supported_reasoning_modes: vec![],
+                supported_reasoning_summaries: vec![],
             });
         }
     }
@@ -289,5 +305,8 @@ fn unified_chat_model(
         is_default: false,
         supported_reasoning_efforts: model.reasoning_efforts,
         default_reasoning_effort: model.default_reasoning_effort,
+        supported_thinking: model.supported_thinking,
+        supported_reasoning_modes: model.supported_reasoning_modes,
+        supported_reasoning_summaries: model.supported_reasoning_summaries,
     }
 }

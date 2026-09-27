@@ -162,7 +162,8 @@ fn capture_configuration(payload: &mut Value) -> Result<(), Value> {
     let project_path = payload["project_path"].as_str().unwrap_or(".");
     let (models, _) = crate::config::read_project_model_defaults(&settings, project_path)
         .map_err(|error| error_payload("invalid_configuration", error, false))?;
-    if omitted(&payload["provider"]) && omitted(&payload["llm_profile"]) {
+    let inherits = omitted(&payload["provider"]) && omitted(&payload["llm_profile"]);
+    if inherits {
         payload["provider"] = json!(models.provider);
         payload["llm_profile"] = json!(models.llm_profile);
         if omitted(&payload["model"]) {
@@ -172,9 +173,13 @@ fn capture_configuration(payload: &mut Value) -> Result<(), Value> {
             payload["reasoning_effort"] = json!(models.reasoning_effort);
         }
     }
+    let mut model_settings = if inherits { json!(models) } else { json!({}) };
+    for key in ["provider", "llm_profile", "model", "reasoning_effort"] {
+        model_settings[key] = payload[key].clone();
+    }
     payload["metadata"]["spark.execution.settings"] = json!({
         "configuration": configuration, "llm_profiles": profiles,
-        "model_settings": {"provider": payload["provider"], "llm_profile": payload["llm_profile"], "model": payload["model"], "reasoning_effort": payload["reasoning_effort"]}
+        "model_settings": model_settings
     });
     Ok(())
 }
@@ -247,7 +252,7 @@ mod settings_tests {
             for group in [
                 "provider='nonexistent-provider'",
                 "provider='openai'\nmodel='claude-sonnet-4-5'",
-                "provider='codex'\nreasoning_effort='invalid'",
+                "provider='codex'\nthinking='invalid'",
                 "llm_profile='missing'",
                 "provider='openai_compatible'",
             ] {
