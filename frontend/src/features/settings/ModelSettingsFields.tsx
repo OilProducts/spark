@@ -6,7 +6,7 @@ import { NativeSelect } from '@/components/ui/native-select'
 import { useModelDiscovery } from './hooks/useModelDiscovery'
 import type { useModelSettingsEditor } from './hooks/useModelSettingsEditor'
 
-export function ModelSettingsFields({ models, activeProjectPath, invalidModel, profiles: llmProfiles }: { profiles: LlmProfileMetadata[]; models: ReturnType<typeof useModelSettingsEditor>; activeProjectPath: string | null; invalidModel: boolean }) {
+export function ModelSettingsFields({ models, activeProjectPath, invalidModel, profiles: llmProfiles }: { profiles: LlmProfileMetadata[]; models: Pick<ReturnType<typeof useModelSettingsEditor>, 'draft' | 'setDraft'>; activeProjectPath: string | null; invalidModel: boolean }) {
     const id = useId()
     const uiDefaults = {
         llm_provider: models.draft?.provider ?? '', llm_profile: models.draft?.llm_profile ?? '',

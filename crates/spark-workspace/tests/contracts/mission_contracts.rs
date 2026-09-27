@@ -12,7 +12,8 @@ use spark_workspace::{
         install_runtime, MissionEventPost, MissionMutation, MissionRecord, MissionRuntime,
         MissionStatus, WorkspaceMissionService,
     },
-    FlowRunRequestCreateByHandleRequest, WorkspaceConversationService, WorkspaceError,
+    ConversationSettingsUpdate, FlowRunRequestCreateByHandleRequest, WorkspaceConversationService,
+    WorkspaceError,
 };
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -418,6 +419,42 @@ fn start_creates_the_conversation_and_pins_the_objective_outside_the_transcript(
     assert_eq!(turns.as_array().unwrap().len(), 2);
     assert_eq!(turns[1]["status"], "complete", "{turns}");
     assert!(!turns.to_string().contains("Spark control surface"));
+}
+
+#[test]
+fn a_model_set_on_a_draft_missions_conversation_runs_its_turns() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Search"}));
+    // The UI addresses a draft's conversation by the mission id.
+    let conversations = WorkspaceConversationService::new(harness.settings.clone());
+    conversations
+        .update_conversation_settings(
+            &mission.id,
+            ConversationSettingsUpdate {
+                project_path: harness.project.clone(),
+                provider: Some("claude-code".into()),
+                model: Some("opus".into()),
+                expected_revision: Some("0".into()),
+                ..ConversationSettingsUpdate::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Draft);
+    let threads = conversations
+        .list_project_conversations(&harness.project)
+        .unwrap();
+    assert!(threads
+        .iter()
+        .all(|thread| thread.conversation_id != mission.id));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    let request = harness.agent.requests.lock().unwrap()[0].clone();
+    assert_eq!(request.model.as_deref(), Some("opus"));
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
 }
 
 #[test]

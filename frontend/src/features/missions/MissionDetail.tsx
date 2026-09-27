@@ -8,12 +8,18 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { MissionConflict, request, statusLabels, statusLine, type Budget, type Mission } from './MissionsPanel'
 import { MissionTranscript } from './MissionTranscript'
+import { ModelSettingsFields } from '@/features/settings/ModelSettingsFields'
+import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { ApiHttpError } from '@/lib/api/shared'
+import { fetchConversationSnapshotValidated, updateConversationSettingsValidated } from '@/lib/api/conversationsApi'
+import type { ModelSettings } from '@/lib/api/settingsApi'
 
 type Props = {
     mission: Mission; project: string; busy: boolean; error: string; narrow: boolean; focusRequest: number
     edit: () => void; close: () => void; archive: (value: boolean) => Promise<void>; onChange: (mission: Mission) => void
 }
 const defaultBudget: Budget = { concurrent_runs: 4, total_runs: 25 }
+const inheritedModel: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
 const menuItem = 'relative flex cursor-default select-none items-center rounded-sm px-2 py-1.5 text-sm outline-none focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50'
 
 /** The mission's transcript: the pinned objective, the conversation, and the reply box. */
@@ -24,6 +30,28 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [actionError, setActionError] = useState('')
     const [reply, setReply] = useState('')
     const [budget, setBudget] = useState<Budget | null>(null)
+    const [model, setModel] = useState<{ revision: number; draft: ModelSettings | null } | null>(null)
+    const profiles = useLlmProfiles()
+    // A mission's conversation id is the mission id, so a draft's model can be set before Start.
+    const conversationId = mission.conversation_id ?? mission.id
+    async function openModel() {
+        setActionError('')
+        try {
+            const snapshot = await fetchConversationSnapshotValidated(conversationId, project)
+            setModel({ revision: snapshot.revision, draft: snapshot.model_settings_view?.effective ?? inheritedModel })
+        } catch (e) {
+            if (e instanceof ApiHttpError && e.status === 404) setModel({ revision: 0, draft: inheritedModel })
+            else setActionError((e as Error).message)
+        }
+    }
+    async function saveModel() {
+        if (!model || disabled) return
+        setPending(true); setActionError('')
+        try {
+            await updateConversationSettingsValidated(conversationId, { project_path: project, expected_revision: String(model.revision), model_settings: model.draft })
+            setModel(null)
+        } catch (e) { setActionError((e as Error).message) } finally { setPending(false) }
+    }
     const status = mission.status ?? 'draft'
     const closed = status === 'closed'
     const disabled = busy || pending
@@ -51,6 +79,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                 <DropdownMenu.Portal>
                     <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
                         <DropdownMenu.Item className={menuItem} onSelect={edit}>Edit</DropdownMenu.Item>
+                        <DropdownMenu.Item className={menuItem} disabled={closed} onSelect={() => void openModel()}>Model</DropdownMenu.Item>
                         <DropdownMenu.Item className={menuItem} onSelect={() => setBudget(mission.fields.budget ?? defaultBudget)}>Budget</DropdownMenu.Item>
                         <DropdownMenu.Item className={menuItem} disabled={closed} onSelect={() => void control('cancel')}>Cancel mission</DropdownMenu.Item>
                         <DropdownMenu.Item className={menuItem} disabled={closed} onSelect={() => void control('close', { status: 'done' })}>Close mission</DropdownMenu.Item>
@@ -68,6 +97,12 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <Label className="grid gap-2">Concurrent runs<Input type="number" min={1} required disabled={disabled} value={budget.concurrent_runs} onChange={e => setBudget({ ...budget, concurrent_runs: Number(e.target.value) })} /></Label>
             <Label className="grid gap-2">Total runs<Input type="number" min={1} required disabled={disabled} value={budget.total_runs} onChange={e => setBudget({ ...budget, total_runs: Number(e.target.value) })} /></Label>
             <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save budget</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setBudget(null)}>Cancel</Button></div>
+        </form>}
+        {model && <form aria-label="Model" className="grid shrink-0 gap-3 border-b border-border p-4" onSubmit={e => { e.preventDefault(); void saveModel() }}>
+            <ModelSettingsFields profiles={profiles} activeProjectPath={project} invalidModel={false}
+                models={{ draft: model.draft, setDraft: next => setModel(current => current && ({ ...current, draft: typeof next === 'function' ? next(current.draft) : next })) }} />
+            <p className="text-xs text-muted-foreground">Applies from the mission's next turn.</p>
+            <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save model</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setModel(null)}>Cancel</Button></div>
         </form>}
         <div className="min-h-0 flex-1 overflow-y-auto text-sm">
             <section aria-label="Objective" className="sticky top-0 z-10 border-b border-border bg-card p-4">

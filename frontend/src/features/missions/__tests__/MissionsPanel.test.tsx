@@ -17,6 +17,7 @@ beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
         if (init?.body) {
             const body = JSON.parse(String(init.body)); calls.push({ url, body })
+            if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
             if (init.method === 'PATCH' && body.revision !== task.revision) return { ok: false, status: 409, json: async () => ({ detail: 'Conflict' }) }
             if (init.method === 'POST' && !url.includes('/missions/')) task = { ...task, id: 'task-new', revision: 1, fields: { ...task.fields, ...body.fields } }
             else if (body.fields) task = { ...task, revision: task.revision + 1, fields: { ...task.fields, ...body.fields } }
@@ -135,6 +136,20 @@ it('drives cancel, close, archive, and budget from the header menu', async () =>
     menu('Archive')
     await waitFor(() => expect(task.fields.archived).toBe(true))
     await waitFor(() => expect(detail().getByText('Archived')).toBeInTheDocument())
+})
+
+it('sets a draft mission\'s model on its conversation before Start', async () => {
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    menu('Model')
+    const form = within(await detail().findByRole('form', { name: 'Model' }))
+    fireEvent.change(form.getByLabelText('Provider or profile'), { target: { value: 'claude-code' } })
+    fireEvent.change(form.getByLabelText('Model'), { target: { value: 'custom' } })
+    fireEvent.change(form.getByLabelText('Custom model'), { target: { value: 'opus' } })
+    fireEvent.change(form.getByLabelText('Reasoning effort'), { target: { value: 'high' } })
+    fireEvent.click(form.getByRole('button', { name: 'Save model' }))
+    await waitFor(() => expect(detail().queryByRole('form', { name: 'Model' })).not.toBeInTheDocument())
+    expect(calls.at(-1)).toEqual({ url: '/workspace/api/conversations/task-1/settings', body: { project_path: '/project', expected_revision: '0', model_settings: { provider: 'claude-code', llm_profile: null, model: 'opus', reasoning_effort: 'high' } } })
 })
 
 it('starts a clean pane with its own transcript when another mission is selected', async () => {
