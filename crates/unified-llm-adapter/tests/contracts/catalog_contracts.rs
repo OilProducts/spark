@@ -247,9 +247,10 @@ fn catalog_effort_levels_drive_capabilities_and_keep_defaults_within_model_level
         catalog.provider_reasoning_efforts["openai"],
         ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     );
-    assert!(!catalog
-        .provider_reasoning_efforts
-        .contains_key("openrouter"));
+    assert_eq!(
+        catalog.provider_reasoning_efforts["openrouter"],
+        ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    );
     let mut models = serde_json::to_value(catalog.list_models(Some("openai"))).unwrap();
     models[0]["reasoning_efforts"] = json!([]);
     let parsed = ModelCatalog::from_json(&models.to_string()).unwrap();

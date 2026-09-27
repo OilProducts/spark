@@ -26,7 +26,7 @@ pub use flows::{
     WorkspaceFlowLaunchPolicyUpdate, WorkspaceFlowRaw, WorkspaceFlowService, WorkspaceFlowSummary,
 };
 pub use live::{LiveCursor, LiveEnvelope, LiveQuery, LiveResource, RawLiveQuery};
-pub use models::{chat_models, public_unified_chat_models};
+pub use models::chat_models;
 pub use projects::{
     BrowseEntry, BrowseResponse, ProjectMetadata, ProjectRegistrationRequest, ProjectStateUpdate,
     WorkspaceProjectService,

@@ -92,7 +92,7 @@ describe('Graph and settings behavior', () => {
             ? input.toString()
             : input.url
         const method = init?.method ?? 'GET'
-        if (url.includes('/chat-models')) return Response.json({ models: [], providers: { codex: { status: 'available', error: null } }, provider_reasoning_efforts: { openai: ['low', 'medium', 'high', 'xhigh'], anthropic: ['low', 'medium', 'high', 'xhigh', 'max'] } })
+        if (url.includes('/chat-models')) return Response.json({ models: [{ provider: 'anthropic', id: 'claude-sonnet-4-6', supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }, { provider: 'codex', id: 'gpt-5.5' }, { provider: 'openai', id: 'gpt-5.3', supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'] }], providers: { codex: { status: 'available', error: null } }, provider_reasoning_efforts: { openai: ['low', 'medium', 'high', 'xhigh'], anthropic: ['low', 'medium', 'high', 'xhigh', 'max'] } })
         if (url.endsWith('/workspace/api/settings')) {
           if (method === 'PATCH') {
             const body = JSON.parse(String(init?.body))
@@ -232,10 +232,10 @@ describe('Graph and settings behavior', () => {
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
     await openPicker(userEvent.setup())
-    await screen.findAllByText('Model discovery unavailable. Using suggestions.')
+    await screen.findAllByText(/Model discovery unavailable\./)
     expect(useStore.getState().uiDefaults).toEqual(saved)
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(saved.llm_model)
-    if (failure === 'rejected') expect(screen.getAllByRole('option', { name: 'gpt-5.4' })[0]).toBeVisible()
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
   })
 
   it.each([false, true])('ignores stale discovery responses (rejected: %s)', async (rejectOld) => {
@@ -259,7 +259,7 @@ describe('Graph and settings behavior', () => {
     expect(screen.queryByText('Loading models…')).toBeNull()
     act(() => useStore.setState({ activeProjectPath: null }))
     expect(screen.queryByRole('option', { name: 'current-model' })).toBeNull()
-    expect(screen.getAllByRole('option', { name: 'gpt-5.4' })[0]).toBeVisible()
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
     expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
   })
 

@@ -27,7 +27,7 @@ beforeEach(() => {
     useStore.setState({ viewMode: 'settings', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
     vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel }))
     vi.mocked(fetchClientPreferences).mockResolvedValue({ client_id: 'browser-test', revision: 'one', stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288 } })
-    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', failed: true })
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', failed: true, payload: { models: [], providers: { codex: { status: 'unavailable', error: 'offline' } } } })
 })
 afterEach(() => cleanup())
 
@@ -95,7 +95,7 @@ it('shares discovery fallback, profiles, custom values and compatibility with pr
     for (const editor of [workspace, project]) {
         expect(editor.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-model')
         await openPicker(user, editor)
-        expect(screen.getAllByText('Model discovery unavailable. Using suggestions.').length).toBeGreaterThan(0)
+        expect(screen.getAllByText(/Model discovery unavailable\./).length).toBeGreaterThan(0)
         await user.keyboard('{Escape}')
         await chooseModel(user, 'openai_compatible / Team models', 'team-one', editor)
         await customModel(user, 'incompatible', editor)
@@ -113,6 +113,7 @@ it('shares discovery fallback, profiles, custom values and compatibility with pr
 
 it('keeps hidden requests mounted and blocks navigation before another dirty editor can offer discard', async () => {
     const user = userEvent.setup()
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'anthropic', id: 'claude-sonnet-4-6', display: 'claude-sonnet-4-6', is_default: false, supported_reasoning_efforts: [] }], providers: { codex: { status: 'unavailable', error: 'offline' }, anthropic: { status: 'available', error: null } } } })
     let reject!: (error: Error) => void
     vi.mocked(saveModelSettings).mockReturnValue(new Promise((_, fail) => { reject = fail }))
     render(<DialogProvider><SettingsPanel /></DialogProvider>)

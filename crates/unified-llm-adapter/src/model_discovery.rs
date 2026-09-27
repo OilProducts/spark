@@ -1,8 +1,6 @@
-//! Anthropic is the native provider that publishes per-model effort capabilities.
+//! Provider lists establish availability; the bundled catalog only enriches listed IDs.
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, Instant};
 
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
@@ -10,79 +8,93 @@ use crate::{
     ProviderConfig,
 };
 
-#[derive(Default)]
-pub struct AnthropicModelCache {
-    cached: Option<(Instant, ProviderConfig, Vec<ModelInfo>)>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveredModel {
+    pub info: ModelInfo,
+    pub reasoning_unverified: bool,
 }
 
-impl AnthropicModelCache {
-    /// Cache failures as catalog results too, so a broken endpoint is not probed on every picker open.
+#[derive(Default)]
+pub struct ProviderModelCache {
+    cached: Vec<(ProviderConfig, Result<Vec<DiscoveredModel>, String>)>,
+}
+
+impl ProviderModelCache {
+    pub fn clear(&mut self) {
+        self.cached.clear();
+    }
+
+    /// The caller serializes discovery and invalidation, including failed requests.
     pub fn models(
         &mut self,
-        config: Option<&ProviderConfig>,
+        config: &ProviderConfig,
         transport: &dyn NativeCompleteTransport,
-    ) -> Vec<ModelInfo> {
-        let fallback = || ModelCatalog::development().list_models(Some("anthropic"));
-        let Some(config) = config.filter(|config| {
-            config
-                .api_key
-                .as_ref()
-                .is_some_and(|key| !key.trim().is_empty())
-        }) else {
-            return fallback();
-        };
-        if let Some((time, previous, models)) = &self.cached {
-            if previous == config && time.elapsed() < Duration::from_secs(300) {
-                return models.clone();
-            }
+    ) -> Result<Vec<DiscoveredModel>, String> {
+        if let Some((_, result)) = self.cached.iter().find(|(previous, _)| previous == config) {
+            return result.clone();
         }
-        let models = discover(config, transport).unwrap_or_else(fallback);
-        self.cached = Some((Instant::now(), config.clone(), models.clone()));
-        models
+        let result = discover(config, transport).map_err(|error| {
+            // Provider errors may echo credentials. Never send those back to the picker.
+            match config.api_key.as_deref().filter(|key| !key.is_empty()) {
+                Some(key) => error.replace(key, "[redacted]"),
+                None => error,
+            }
+        });
+        self.cached.push((config.clone(), result.clone()));
+        result
     }
-}
-
-#[derive(Deserialize)]
-struct ModelsPage {
-    data: Vec<DiscoveredModel>,
-    has_more: bool,
-    last_id: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct DiscoveredModel {
-    id: String,
-    display_name: String,
-    #[serde(default)]
-    capabilities: Value,
-    max_input_tokens: Option<i64>,
-    max_tokens: Option<i64>,
 }
 
 fn discover(
     config: &ProviderConfig,
     transport: &dyn NativeCompleteTransport,
-) -> Option<Vec<ModelInfo>> {
+) -> Result<Vec<DiscoveredModel>, String> {
+    let provider = config.provider.as_str();
     let base = config
         .base_url
         .as_deref()
-        .unwrap_or("https://api.anthropic.com")
+        .unwrap_or("https://api.anthropic.com/v1")
         .trim_end_matches('/');
-    let base = base.strip_suffix("/v1").unwrap_or(base);
-    let mut url = reqwest::Url::parse(&format!("{base}/v1/models")).ok()?;
-    url.query_pairs_mut().append_pair("limit", "1000");
+    let base = base.strip_suffix("/responses").unwrap_or(base);
+    let mut url = reqwest::Url::parse(base).map_err(|error| error.to_string())?;
+    url.set_path(&format!("{}/models", url.path().trim_end_matches('/')));
+    let mut headers = BTreeMap::new();
+    if let Some(key) = &config.api_key {
+        match provider {
+            "anthropic" => {
+                headers.insert("x-api-key".into(), key.clone());
+            }
+            "gemini" => {
+                headers.insert("x-goog-api-key".into(), key.clone());
+            }
+            _ => {
+                headers.insert("Authorization".into(), format!("Bearer {key}"));
+            }
+        }
+    }
+    if provider == "anthropic" {
+        headers.insert("anthropic-version".into(), "2023-06-01".into());
+        url.query_pairs_mut().append_pair("limit", "1000");
+    }
+    for (option, header) in [
+        ("organization", "OpenAI-Organization"),
+        ("project", "OpenAI-Project"),
+        ("HTTP-Referer", "HTTP-Referer"),
+        ("X-Title", "X-Title"),
+    ] {
+        if let Some(value) = config.options.get(option) {
+            headers.insert(header.into(), value.clone());
+        }
+    }
     let mut models = Vec::new();
     let mut cursors = BTreeSet::new();
     loop {
         let response = transport
             .complete(NativeCompleteRequest {
-                provider: "anthropic".into(),
+                provider: provider.into(),
                 method: "GET".into(),
                 url: url.to_string(),
-                headers: BTreeMap::from([
-                    ("x-api-key".into(), config.api_key.clone()?),
-                    ("anthropic-version".into(), "2023-06-01".into()),
-                ]),
+                headers: headers.clone(),
                 timeout: AdapterTimeout {
                     request: 10.0,
                     ..AdapterTimeout::default()
@@ -90,78 +102,204 @@ fn discover(
                 abort_signal: None,
                 body: json!(null),
             })
-            .ok()?;
+            .map_err(|error| format!("{provider} model discovery failed: {error}"))?;
         if !(200..300).contains(&response.status) {
-            return None;
+            return Err(format!(
+                "{provider} model discovery failed (HTTP {}): {}",
+                response.status, response.body
+            ));
         }
-        let page: ModelsPage = serde_json::from_value(response.body).ok()?;
-        for model in page.data {
-            if model.id.trim().is_empty() {
-                return None;
+        let field = if provider == "gemini" {
+            "models"
+        } else {
+            "data"
+        };
+        let entries = response.body[field]
+            .as_array()
+            .ok_or_else(|| format!("{provider} model discovery: missing {field} array"))?;
+        for model in entries {
+            let id = model[if provider == "gemini" { "name" } else { "id" }]
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| format!("{provider} model discovery: missing model ID"))?;
+            let id = if provider == "gemini" {
+                id.strip_prefix("models/").unwrap_or(id)
+            } else {
+                id
+            };
+            if provider == "openai" && !supports_responses(id) {
+                continue;
             }
-            let catalog = ModelCatalog::development().get_model_info(&model.id);
-            let efforts = model.capabilities.get("effort").and_then(Value::as_object);
-            let mut reasoning_efforts = Vec::new();
-            if let Some(efforts) = efforts {
-                // Known provider ordering first; retain future published levels too.
-                for level in ModelCatalog::development().provider_reasoning_efforts["anthropic"]
-                    .iter()
-                    .map(String::as_str)
-                    .chain(efforts.keys().map(String::as_str))
-                {
+            if provider == "gemini"
+                && !model["supportedGenerationMethods"]
+                    .as_array()
+                    .is_some_and(|methods| methods.iter().any(|method| method == "generateContent"))
+            {
+                continue;
+            }
+            models.push(enrich(provider, id, model));
+        }
+        let cursor = match provider {
+            "anthropic" if response.body["has_more"] == true => Some((
+                "after_id",
+                response.body["last_id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or("Anthropic model discovery: missing pagination cursor")?,
+            )),
+            "gemini" => response.body["nextPageToken"]
+                .as_str()
+                .filter(|token| !token.is_empty())
+                .map(|token| ("pageToken", token)),
+            _ => None,
+        };
+        let Some((key, cursor)) = cursor else {
+            break;
+        };
+        if !cursors.insert(cursor.to_string()) {
+            return Err(format!(
+                "{provider} model discovery: repeated pagination cursor"
+            ));
+        }
+        url.query_pairs_mut().clear().append_pair(key, cursor);
+        if provider == "anthropic" {
+            url.query_pairs_mut().append_pair("limit", "1000");
+        }
+    }
+    Ok(models)
+}
+
+fn supports_responses(id: &str) -> bool {
+    // ponytail: OpenAI's Model object has no capability field. Filter documented non-Responses ID prefixes; extend when new families ship.
+    ![
+        "text-embedding-",
+        "text-moderation-",
+        "omni-moderation-",
+        "whisper-",
+        "tts-",
+        "dall-e-",
+        "gpt-image-",
+        "chatgpt-image-",
+        "gpt-realtime",
+        "gpt-audio",
+        "gpt-transcribe",
+        "gpt-live-transcribe",
+        "gpt-4o-realtime",
+        "gpt-4o-mini-realtime",
+        "gpt-4o-audio",
+        "gpt-4o-mini-audio",
+        "gpt-4o-transcribe",
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-tts",
+        "gpt-4o-mini-tts",
+        "sora-",
+    ]
+    .iter()
+    .any(|prefix| id.starts_with(prefix))
+}
+
+fn enrich(provider: &str, id: &str, live: &Value) -> DiscoveredModel {
+    let catalog = ModelCatalog::development();
+    let notes = catalog.get_model_info(id);
+    let mut info = notes.clone().unwrap_or_else(|| ModelInfo {
+        id: id.into(),
+        provider: provider.into(),
+        display_name: id.into(),
+        context_window: None,
+        supports_tools: false,
+        supports_vision: false,
+        reasoning_efforts: vec![],
+        default_reasoning_effort: None,
+        max_output: None,
+        input_cost_per_million: None,
+        output_cost_per_million: None,
+        aliases: vec![],
+    });
+    // Preserve the provider's callable ID even when it matched a catalog alias.
+    info.id = id.into();
+    info.provider = provider.into();
+    info.display_name = live["display_name"]
+        .as_str()
+        .or_else(|| live["displayName"].as_str())
+        .or_else(|| live["name"].as_str().filter(|_| provider != "gemini"))
+        .unwrap_or(&info.display_name)
+        .into();
+    info.context_window = live["max_input_tokens"]
+        .as_i64()
+        .or_else(|| live["inputTokenLimit"].as_i64())
+        .or(info.context_window);
+    info.max_output = live["max_tokens"]
+        .as_i64()
+        .or_else(|| live["outputTokenLimit"].as_i64())
+        .or(info.max_output);
+    info.supports_tools = live
+        .pointer("/capabilities/function_calling/supported")
+        .and_then(Value::as_bool)
+        .unwrap_or(info.supports_tools);
+    info.supports_vision = live
+        .pointer("/capabilities/image_input/supported")
+        .and_then(Value::as_bool)
+        .unwrap_or(info.supports_vision);
+    let levels = catalog
+        .provider_reasoning_efforts
+        .get(provider)
+        .cloned()
+        .unwrap_or_default();
+    let live_efforts = if provider == "anthropic" {
+        live.pointer("/capabilities/effort")
+            .and_then(Value::as_object)
+            .map(|efforts| {
+                let mut result = Vec::new();
+                for level in levels.iter().chain(efforts.keys()) {
                     if efforts
                         .get(level)
-                        .and_then(|value| value.get("supported"))
-                        .and_then(Value::as_bool)
+                        .and_then(|value| value["supported"].as_bool())
                         == Some(true)
-                        && !reasoning_efforts.iter().any(|value| value == level)
+                        && !result.contains(level)
                     {
-                        reasoning_efforts.push(level.to_string());
+                        result.push(level.clone());
                     }
                 }
-            }
-            let default_reasoning_effort = catalog
-                .as_ref()
-                .and_then(|model| model.default_reasoning_effort.clone())
-                .filter(|effort| reasoning_efforts.contains(effort));
-            models.push(ModelInfo {
-                id: model.id,
-                provider: "anthropic".into(),
-                display_name: model.display_name,
-                context_window: model.max_input_tokens,
-                max_output: model.max_tokens,
-                supports_tools: model
-                    .capabilities
-                    .pointer("/function_calling/supported")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                supports_vision: model
-                    .capabilities
-                    .pointer("/image_input/supported")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false),
-                reasoning_efforts,
-                default_reasoning_effort,
-                input_cost_per_million: catalog
-                    .as_ref()
-                    .and_then(|model| model.input_cost_per_million),
-                output_cost_per_million: catalog
-                    .as_ref()
-                    .and_then(|model| model.output_cost_per_million),
-                aliases: catalog.map(|model| model.aliases).unwrap_or_default(),
-            });
+                result
+            })
+    } else if matches!(provider, "openrouter" | "litellm") {
+        live.get("reasoning")
+            .and_then(Value::as_object)
+            .map(|reasoning| match reasoning.get("supported_efforts") {
+                Some(Value::Null) if provider == "openrouter" => levels.clone(),
+                Some(Value::Array(efforts)) => efforts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                _ => Vec::new(),
+            })
+    } else {
+        None
+    };
+    let mut reasoning_unverified = false;
+    if provider == "gemini" && live["thinking"] != true {
+        info.reasoning_efforts.clear();
+    } else if let Some(efforts) = live_efforts {
+        info.reasoning_efforts = efforts;
+        if let Some(default) = live
+            .pointer("/reasoning/default_effort")
+            .and_then(Value::as_str)
+        {
+            info.default_reasoning_effort = Some(default.into());
         }
-        if !page.has_more {
-            break;
-        }
-        let cursor = page.last_id.filter(|id| !id.is_empty())?;
-        if !cursors.insert(cursor.clone()) {
-            return None;
-        }
-        url.query_pairs_mut()
-            .clear()
-            .append_pair("limit", "1000")
-            .append_pair("after_id", &cursor);
+    } else if provider == "litellm" {
+        // /v1/models is OpenAI-compatible and documents no effort levels. Keep profile-declared levels on profile entries instead of guessing from proxy aliases.
+        info.reasoning_efforts.clear();
+    } else if notes.is_none() {
+        info.reasoning_efforts = levels;
+        reasoning_unverified = !info.reasoning_efforts.is_empty();
     }
-    (!models.is_empty()).then_some(models)
+    info.default_reasoning_effort = info
+        .default_reasoning_effort
+        .filter(|effort| info.reasoning_efforts.contains(effort));
+    DiscoveredModel {
+        info,
+        reasoning_unverified,
+    }
 }

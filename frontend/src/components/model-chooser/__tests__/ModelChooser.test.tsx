@@ -140,10 +140,10 @@ it('shares loading, failed discovery and refresh across StrictMode choosers', as
     await user.click(screen.getAllByRole('button', { name: /Model:/ })[0])
     expect(screen.getByText('Loading models…')).toBeInTheDocument()
     await act(async () => reject(new Error('offline')))
-    expect(within(screen.getByRole('group', { name: 'Codex', exact: true })).getByText('Model discovery unavailable. Using suggestions.')).toBeInTheDocument()
-    expect(within(screen.getByRole('group', { name: 'Codex', exact: true })).getByRole('option', { name: 'gpt-5.5' })).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'Codex', exact: true })).getByText('Model discovery unavailable. offline')).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'Codex', exact: true })).queryByRole('option')).not.toBeInTheDocument()
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue(catalog)
-    act(() => window.dispatchEvent(new Event('spark:codex-connected')))
+    act(() => window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'codex' } } })))
     await screen.findByRole('option', { name: 'Discovered' })
     expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(2)
 })
@@ -154,7 +154,7 @@ it('keeps projects isolated and ignores pre-refresh responses', async () => {
     vi.mocked(fetchProjectChatModelsValidated).mockReturnValueOnce(new Promise((done) => { resolve = done }))
     const view = render(<Editor projectPath="/one" />)
     await user.click(screen.getByRole('button', { name: /Model:/ }))
-    act(() => window.dispatchEvent(new Event('spark:codex-connected')))
+    act(() => window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'codex' } } })))
     await screen.findByRole('option', { name: 'Discovered' })
     await act(async () => resolve({ ...catalog, models: [] }))
     expect(screen.getByRole('option', { name: 'Discovered' })).toBeInTheDocument()
@@ -237,4 +237,32 @@ it('keeps declarations separate for profiles sharing a provider and model', asyn
     expect(screen.getByRole('button', { name: 'Minimal', exact: true })).toBeInTheDocument()
     await user.click(within(screen.getByRole('group', { name: 'openai_compatible / second' })).getByRole('option'))
     expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
+})
+
+it('lists only discovered providers, retains unavailable errors, and marks fallback efforts unverified', async () => {
+    vi.mocked(useLlmProfiles).mockReturnValue([])
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        providers: { codex: { status: 'unavailable', error: 'CLI missing' }, openai: { status: 'unavailable', error: 'HTTP 401' }, gemini: { status: 'available', error: null } },
+        models: [{ provider: 'gemini', id: 'new', display: 'New', is_default: false, supported_reasoning_efforts: ['high'], reasoning_unverified: true }],
+    })
+    const user = userEvent.setup()
+    render(<Editor value={{ ...initial, provider: 'gemini', model: 'new' }} />)
+    await user.click(await screen.findByRole('button', { name: 'Model: New · Default effort' }))
+    expect(screen.queryByRole('group', { name: 'anthropic' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'openrouter' })).not.toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'openai', exact: true })).getByRole('status')).toHaveTextContent('HTTP 401')
+    expect(within(screen.getByRole('group', { name: 'openai', exact: true })).queryByRole('option')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByText('Provider levels; unverified for this model.')).toBeInTheDocument()
+})
+
+it('fetches once per project for each affected settings event and ignores unrelated saves', async () => {
+    render(<StrictMode><Editor /><Editor layout="compact" /></StrictMode>)
+    await waitFor(() => expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(1))
+    for (const [index, section] of ['providers', 'llm_profiles', 'agents', 'codex'].entries()) {
+        act(() => window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section } } })))
+        await waitFor(() => expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(index + 2))
+    }
+    act(() => window.dispatchEvent(new CustomEvent('spark:settings-live-event', { detail: { payload: { section: 'preferences' } } })))
+    expect(fetchProjectChatModelsValidated).toHaveBeenCalledTimes(5)
 })

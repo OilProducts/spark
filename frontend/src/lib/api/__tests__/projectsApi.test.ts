@@ -28,6 +28,7 @@ describe('projectsApi parsing', () => {
     const payload = parseProjectChatModelsResponse({
       providers: {
         codex: { status: 'available', error: null },
+        anthropic: { status: 'unavailable', error: 'HTTP 401' },
       },
       provider_reasoning_efforts: { openai: ['none', 'minimal', 'high', 42] },
       models: [
@@ -53,5 +54,6 @@ describe('projectsApi parsing', () => {
     ])
     expect(payload.provider_reasoning_efforts).toEqual({ openai: ['none', 'minimal', 'high'] })
     expect(payload.providers.codex).toEqual({ status: 'available', error: null })
+    expect(payload.providers.anthropic).toEqual({ status: 'unavailable', error: 'HTTP 401' })
   })
 })

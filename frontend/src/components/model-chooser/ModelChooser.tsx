@@ -1,6 +1,5 @@
 import { useState, useId, useRef } from 'react'
 import { Popover } from 'radix-ui'
-import { getModelSuggestions, LLM_PROVIDER_OPTIONS } from '@/lib/llmSuggestions'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -31,9 +30,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const [search, setSearch] = useState('')
     const [active, setActive] = useState(-1)
     const input = useRef<HTMLInputElement>(null)
-    const unavailable = (provider: string) => !!discovery && (discovery.failed ||
-        provider === 'codex' && discovery.payload?.providers.codex.status === 'unavailable' ||
-        ['codex', 'claude-code'].includes(provider) && !discovery.payload?.models.some(model => model.provider === provider))
+    const unavailable = (provider: string) => !!discovery && (discovery.failed || discovery.payload?.providers[provider]?.status === 'unavailable')
     const metadata = (provider: string | null, model: string | null) => !unavailable(provider || '')
         ? discovery?.payload?.models.find(entry => entry.provider === provider && !entry.llm_profile && (model ? entry.id === model : entry.is_default)) : undefined
     const resolve = (settings: ModelSettings) => {
@@ -43,7 +40,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
         const meta = profile ? discovery?.payload?.models.find(entry => entry.llm_profile === profile.id && entry.id === model) : metadata(provider, model)
         const fallback = !profile && !!model && !meta ? discovery?.payload?.provider_reasoning_efforts?.[provider] : undefined
         const efforts = profile ? profile.reasoning_efforts ?? [] : meta?.supported_reasoning_efforts ?? fallback ?? []
-        return { model: meta?.display || model || meta?.id, effort: settings.reasoning_effort || meta?.default_reasoning_effort, meta, efforts, unverified: !!fallback?.length }
+        return { model: meta?.display || model || meta?.id, effort: settings.reasoning_effort || meta?.default_reasoning_effort, meta, efforts, unverified: meta?.reasoning_unverified || !!fallback?.length }
     }
     const defaults = resolve(inherited ?? { ...empty, provider: value.provider, llm_profile: value.llm_profile })
     const effective = {
@@ -56,23 +53,20 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     const resolved = resolve(effective)
     const describe = (entry: ReturnType<typeof resolve>) => entry.model
         ? `${entry.model} · ${entry.effort ? effortLabel(entry.effort) : 'Default effort'}` : inheritLabel
-    const providers = [...new Set([...LLM_PROVIDER_OPTIONS, ...profiles.map(profile => profile.provider), value.provider].filter((entry): entry is string => !!entry))]
+    const providers = [...new Set([...Object.keys(discovery?.payload?.providers ?? {}), ...(discovery?.payload?.models.map(model => model.provider) ?? []), ...profiles.map(profile => profile.provider)])]
     const groups = providers.flatMap(provider => {
         const discovered = unavailable(provider) ? [] : discovery?.payload?.models.filter(model => model.provider === provider && !model.llm_profile) ?? []
-        const models = discovered.length ? discovered.map(model => model.id) : getModelSuggestions(provider === 'codex' ? 'openai' : provider === 'claude-code' ? 'anthropic' : provider)
-        return [{ provider, profile: null as string | null, label: providerLabel(provider), models },
+        return [...(discovery?.payload?.providers[provider] || discovered.length ? [{ provider, profile: null as string | null, label: providerLabel(provider), models: discovered.map(model => model.id) }] : []),
             ...profiles.filter(profile => profile.provider === provider).map(profile => ({ provider, profile: profile.id, label: profile.label || profile.id, models: profile.models }))]
     })
     const query = search.trim().toLowerCase()
-    const rows = groups.flatMap((group, groupIndex) => [...new Set([...group.models,
-        ...(value.model && (group.profile ? group.profile === value.llm_profile : !value.llm_profile && group.provider === value.provider) ? [value.model] : []),
-    ])].map(model => ({
+    const rows = groups.flatMap((group, groupIndex) => [...new Set(group.models)].map(model => ({
         groupIndex, provider: group.profile ? null : group.provider, llm_profile: group.profile, model,
         label: metadata(group.provider, model)?.display || model,
         isDefault: group.profile ? profiles.find(profile => profile.id === group.profile)?.default_model === model : metadata(group.provider, model)?.is_default,
     }))).filter(row => [row.model, row.label, groups[row.groupIndex].provider, providerLabel(groups[row.groupIndex].provider), groups[row.groupIndex].label, row.llm_profile].some(text => text?.toLowerCase().includes(query)))
     const context = groups.find(group => value.llm_profile ? group.profile === value.llm_profile : group.provider === value.provider && !group.profile) || groups[0]
-    const custom = !!query && !rows.some(row => row.model.toLowerCase() === query || row.label.toLowerCase() === query)
+    const custom = !!context && (!!context.profile || !unavailable(context.provider)) && !!query && !rows.some(row => row.model.toLowerCase() === query || row.label.toLowerCase() === query)
     const choices = [...rows, ...(custom ? [{ groupIndex: -1, provider: context.profile ? null : context.provider, llm_profile: context.profile, model: search.trim(), label: `Use "${search.trim()}" as a custom model`, isDefault: false }] : [])]
     const highlighted = choices[active]
     // The API inherits a whole model group, so an inherited choice has no effort of its own:
@@ -128,10 +122,10 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                 <div id={`${id}-list`} role="listbox" aria-label="Models" className="min-h-0 max-h-[min(45vh,20rem)] overflow-y-auto">
                     {groups.map((group, index) => {
                         const entries = rows.filter(row => row.groupIndex === index)
-                        if (!entries.length) return null
+                        if (!entries.length && (group.profile || !unavailable(group.provider))) return null
                         return <div key={`${group.provider}:${group.profile}`} role="group" aria-label={`${providerLabel(group.provider)}${group.profile ? ` / ${group.label}` : ''}`}>
                             <div className="px-2 pt-3 pb-1 text-xs font-medium text-muted-foreground">{providerLabel(group.provider)}{group.profile ? ` / ${group.label}` : ''}
-                                {!group.profile && unavailable(group.provider) && <span role="status" className="block">Model discovery unavailable. Using suggestions.</span>}
+                                {!group.profile && unavailable(group.provider) && <span role="status" className="block">Model discovery unavailable. {discovery?.payload?.providers[group.provider]?.error}</span>}
                             </div>
                             {entries.map(choice => option(choice, choices.indexOf(choice)))}
                         </div>

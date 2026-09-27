@@ -1352,29 +1352,337 @@ fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
 
 #[tokio::test]
 async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
+    use futures_util::StreamExt;
+    use std::io::{BufRead, Write};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+    use std::time::Duration;
+
+    const CHILD: &str = "SPARK_REACHABLE_MODELS_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "workspace_route_contracts::chat_model_route_exposes_efforts_with_or_without_a_project", "--nocapture"])
+            .env_clear().env(CHILD, "1").env("SPARK_FIXTURE_KEY", "fixture-secret").output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
-    let app = build_app(settings(temp.path()));
-    for uri in [
-        "/workspace/api/projects/chat-models",
-        "/workspace/api/projects/chat-models?project_path=%2Fproject",
-    ] {
-        let (status, body, _) = request_json(app.clone(), "GET", uri, None).await;
-        assert_eq!(status, StatusCode::OK);
-        let astra = body["models"]
+    let mut settings = settings(temp.path());
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    std::env::set_var(
+        "SPARK_CODEX_APP_SERVER_BIN",
+        binaries.join("spark-agent-fake-codex-app-server"),
+    );
+    std::env::set_var(
+        "SPARK_CLAUDE_CODE_BIN",
+        binaries.join("spark-agent-fake-claude-code"),
+    );
+    let codex_log = temp.path().join("codex.log");
+    let claude_log = temp.path().join("claude.log");
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_LOG", &codex_log);
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_LOG", &claude_log);
+    let runtime = temp.path().join("codex-runtime");
+    settings.agents.native.codex_runtime_root = Some(runtime.to_string_lossy().into());
+    let app = build_app(settings);
+    let live = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/workspace/api/live/events?include_settings=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(live.status(), StatusCode::OK);
+    let mut events = live.into_body().into_data_stream();
+    assert_eq!(events.next().await.unwrap().unwrap(), ": keepalive\n\n");
+    let uri = "/workspace/api/projects/chat-models";
+    let initial = request_json(app.clone(), "GET", uri, None).await;
+    assert_eq!(initial.0, StatusCode::OK, "{}", initial.1);
+    for provider in ["anthropic", "openai", "gemini", "openrouter", "litellm"] {
+        assert!(initial.1["providers"].get(provider).is_none());
+        assert!(!initial.1["models"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|model| model["id"] == "gpt-6-astra" && model["provider"] == "openai")
-            .unwrap();
+            .any(|model| model["provider"] == provider));
+    }
+    let count_native = || {
+        let codex = fs::read_to_string(&codex_log)
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains("model/list"))
+            .count();
+        let claude = fs::read_to_string(&claude_log)
+            .unwrap()
+            .lines()
+            .filter(|line| *line == "-- invocation --")
+            .count();
+        (codex, claude)
+    };
+    assert_eq!(count_native(), (1, 1));
+    for _ in 0..3 {
+        let status =
+            request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
+        assert_eq!(status.0, StatusCode::OK);
+        assert_eq!(status.1["status"], "disconnected");
         assert_eq!(
-            astra["supported_reasoning_efforts"],
-            json!(["low", "medium", "high", "xhigh", "max"])
+            initial.1,
+            request_json(app.clone(), "GET", uri, None).await.1
         );
-        assert_eq!(
-            body["provider_reasoning_efforts"]["gemini"],
-            json!(["minimal", "low", "medium", "high"])
+        assert_eq!(count_native(), (1, 1));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), events.next())
+                .await
+                .is_err()
         );
     }
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let counts = Arc::new(Mutex::new(
+        std::collections::BTreeMap::<String, usize>::new(),
+    ));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_counts = counts.clone();
+    let server_stop = stop.clone();
+    let server = std::thread::spawn(move || {
+        while !server_stop.load(Ordering::Relaxed) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(stream) => stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            let path = headers.split_whitespace().nth(1).unwrap();
+            let provider = path.split('/').nth(1).unwrap();
+            let count = {
+                let mut counts = server_counts.lock().unwrap();
+                let count = counts.entry(provider.into()).or_default();
+                *count += 1;
+                *count
+            };
+            let auth = match provider {
+                "anthropic" => "x-api-key: fixture-secret",
+                "gemini" => "x-goog-api-key: fixture-secret",
+                _ => "authorization: bearer fixture-secret",
+            };
+            if provider != "litellm" {
+                assert!(headers.to_lowercase().contains(auth), "{headers}");
+            }
+            assert!(path.contains(if provider == "gemini" {
+                "/v1beta/models"
+            } else {
+                "/v1/models"
+            }));
+            let (status, body) = match provider {
+                "anthropic" => (
+                    200,
+                    json!({"data":[{"id":"claude-opus-4-6", "display_name":"Live Opus", "capabilities":{"effort":{"low":{"supported":true}}}}], "has_more":false}),
+                ),
+                "openai" => (
+                    200,
+                    json!({"data":[{"id":"gpt-6-astra"}, {"id":"text-embedding-3-small"}]}),
+                ),
+                "gemini" => (
+                    200,
+                    json!({"models":[{"name":"models/gemini-3.1-pro-preview", "thinking":false, "supportedGenerationMethods":["generateContent"]}, {"name":"models/embed", "supportedGenerationMethods":["embedContent"]}]}),
+                ),
+                "openrouter" if count == 1 => (401, json!({"error":"fixture unauthorized"})),
+                "openrouter" => (
+                    200,
+                    json!({"data":[{"id":"live-router", "reasoning":{"supported_efforts":["high"], "default_effort":"high"}}]}),
+                ),
+                "litellm" => (200, json!({"data":[{"id":"proxy-model"}]})),
+                _ => panic!("unexpected provider {provider}"),
+            };
+            let body = body.to_string();
+            write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let providers: serde_json::Map<String, Value> = ["anthropic", "openai", "gemini", "openrouter", "litellm"].into_iter().map(|provider| {
+        (provider.into(), json!({"base_url":format!("http://{address}/{provider}"), "api_key_env": if provider == "litellm" { "MISSING_OPTIONAL_KEY" } else { "SPARK_FIXTURE_KEY" }}))
+    }).collect();
+    let view = request_json(app.clone(), "GET", "/workspace/api/settings", None)
+        .await
+        .1;
+    let saved = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":"providers", "expected_revision":view["providers"]["revision"], "value": providers}))).await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let event = String::from_utf8(event.to_vec()).unwrap();
+    assert!(event.contains("settings.changed"), "{event}");
+    let first = request_json(app.clone(), "GET", uri, None).await.1;
+    assert_eq!(first["providers"]["openrouter"]["status"], "unavailable");
+    assert!(first["providers"]["openrouter"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("401"));
+    assert!(!first.to_string().contains("fixture-secret"));
+    let models = first["models"].as_array().unwrap();
+    assert!(!models.iter().any(|model| model["provider"] == "openrouter"
+        || model["id"] == "text-embedding-3-small"
+        || model["id"] == "embed"));
+    assert_eq!(
+        models
+            .iter()
+            .find(|model| model["provider"] == "gemini")
+            .unwrap()["supported_reasoning_efforts"],
+        json!([])
+    );
+    assert_eq!(
+        models
+            .iter()
+            .find(|model| model["provider"] == "openai")
+            .unwrap()["supported_reasoning_efforts"],
+        json!(["low", "medium", "high", "xhigh", "max"])
+    );
+    assert_eq!(
+        first,
+        request_json(
+            app.clone(),
+            "GET",
+            "/workspace/api/projects/chat-models?project_path=%2Fproject",
+            None
+        )
+        .await
+        .1
+    );
+    assert!(counts.lock().unwrap().values().all(|count| *count == 1));
+    assert_eq!(count_native(), (1, 1));
+    for (index, section) in ["providers", "llm_profiles", "agents"]
+        .into_iter()
+        .enumerate()
+    {
+        let view = request_json(app.clone(), "GET", "/workspace/api/settings", None)
+            .await
+            .1;
+        let saved = request_json(app.clone(), "PATCH", "/workspace/api/settings", Some(json!({"section":section, "expected_revision":view[section]["revision"], "value":view[section]["stored"]}))).await;
+        assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+        let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let event = String::from_utf8(event.to_vec()).unwrap();
+        assert!(event.contains("settings.changed"), "{event}");
+        let refreshed = request_json(app.clone(), "GET", uri, None).await.1;
+        assert_eq!(refreshed["providers"]["openrouter"]["status"], "available");
+        assert_eq!(
+            refreshed,
+            request_json(app.clone(), "GET", uri, None).await.1
+        );
+        let expected = if section == "agents" { 3 } else { index + 2 };
+        assert!(
+            counts
+                .lock()
+                .unwrap()
+                .values()
+                .all(|count| *count == expected),
+            "{:?}",
+            counts
+        );
+        assert_eq!(
+            count_native(),
+            if section == "agents" { (2, 2) } else { (1, 1) }
+        );
+    }
+    // Completion refreshes without depending on the dialog's status polling.
+    let login = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/codex/login",
+        Some(json!({"method":"browser"})),
+    )
+    .await;
+    assert_eq!(login.0, StatusCode::OK, "{}", login.1);
+    for _ in 0..100 {
+        let status =
+            request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
+        if status.1["status"] == "connected" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for _ in 0..2 {
+        request_json(app.clone(), "GET", uri, None).await;
+    }
+    assert_eq!(count_native(), (3, 2));
+    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let event = String::from_utf8(event.to_vec()).unwrap();
+    assert!(event.contains("settings.changed"), "{event}");
+    assert!(event.contains("\"section\":\"codex\""), "{event}");
+    request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
+    request_json(app.clone(), "GET", uri, None).await;
+    assert_eq!(count_native(), (3, 2));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.next())
+            .await
+            .is_err()
+    );
+    // An externally completed sign-out is observed by the existing connection check.
+    fs::remove_file(runtime.join(".codex/fake-login-complete")).unwrap();
+    request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
+    for _ in 0..2 {
+        request_json(app.clone(), "GET", uri, None).await;
+    }
+    assert_eq!(count_native(), (4, 2));
+    let event = tokio::time::timeout(Duration::from_secs(2), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let event = String::from_utf8(event.to_vec()).unwrap();
+    assert!(event.contains("settings.changed"), "{event}");
+    assert!(event.contains("\"section\":\"codex\""), "{event}");
+    request_json(app.clone(), "GET", "/workspace/api/codex/connection", None).await;
+    request_json(app.clone(), "GET", uri, None).await;
+    assert_eq!(count_native(), (4, 2));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), events.next())
+            .await
+            .is_err()
+    );
+    assert!(counts.lock().unwrap().values().all(|count| *count == 3));
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
     assert_eq!(
         request_json(
             app,

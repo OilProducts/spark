@@ -151,6 +151,16 @@ impl CodexConnection {
         native: &NativeAgentSettings,
         method: CodexLoginMethod,
     ) -> Result<CodexConnectionStatus, CodexAppServerError> {
+        self.start_login_with_completion(working_dir, native, method, |_| {})
+    }
+
+    pub fn start_login_with_completion(
+        &mut self,
+        working_dir: &Path,
+        native: &NativeAgentSettings,
+        method: CodexLoginMethod,
+        completed: impl FnOnce(&CodexConnectionStatus) + Send + 'static,
+    ) -> Result<CodexConnectionStatus, CodexAppServerError> {
         if let Some(pending) = &self.pending {
             let status = pending.status.lock().map_err(|_| state_error())?.clone();
             if status.status == "pending" {
@@ -197,6 +207,7 @@ impl CodexConnection {
                 client.wait_for_login(&login_id, &worker_cancelled, Duration::from_secs(600));
             let status = result
                 .unwrap_or_else(|error| CodexConnectionStatus::disconnected(Some(error.message)));
+            completed(&status);
             if let Ok(mut current) = worker_status.lock() {
                 *current = status;
             }

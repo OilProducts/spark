@@ -61,7 +61,7 @@ const availableCodexModelsResponse = () => new Response(JSON.stringify({
     is_default: true,
     supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh'],
     default_reasoning_effort: 'medium',
-  }],
+  }, { provider: 'claude-code', id: 'claude-opus-4-6', display: 'claude-opus-4-6', supported_reasoning_efforts: [] }],
 }), {
   status: 200,
   headers: { 'Content-Type': 'application/json' },
@@ -5537,7 +5537,7 @@ describe('ProjectsPanel', () => {
       const url = resolveRequestUrl(input)
       let response: unknown = {}
       if (url.includes('/llm-profiles')) response = { profiles: [{id:'team', provider:'openai_compatible', models:['model-one','model-two'], reasoning_efforts:['high'], default_model:'model-one', configured:false}, {id:'manual',provider:'openai_compatible',models:['manual-model'],configured:false}] }
-      else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null}}, models:[] }
+      else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null}, 'claude-code':{status:'available',error:null}}, models:[{provider:'claude-code',id:'claude-opus-4-6',supported_reasoning_efforts:[]}] }
       else if (url.includes('/projects/metadata')) response = {branch:'main',commit:'abc123'}
       else if (url.includes('/projects/conversations')) response = [snapshot()]
       else if (url.includes('/conversations/profile-thread')) {
@@ -5760,8 +5760,8 @@ describe('ProjectsPanel', () => {
     expect(screen.getByRole('button', { name: /^Model:/ })).toBeEnabled()
     await openPicker(user)
     const codex = within(screen.getByRole('group', { name: 'Codex', exact: true }))
-    expect(codex.getByText('Model discovery unavailable. Using suggestions.')).toBeVisible()
-    expect(codex.getByRole('option', { name: 'gpt-5.5' })).toBeInTheDocument()
+    expect(codex.getByRole('status')).toHaveTextContent('Codex model discovery failed: app-server exited')
+    expect(codex.queryByRole('option')).not.toBeInTheDocument()
     expect(codex.queryByRole('option', { name: 'gpt-5.2-codex' })).not.toBeInTheDocument()
     await user.keyboard('{Escape}')
 

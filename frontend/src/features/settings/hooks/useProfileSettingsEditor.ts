@@ -31,7 +31,6 @@ export function useProfileSettingsEditor<T>(section: ProfileSection, parse: (val
         try {
             const view = await profileSettingsRequest(section, parse, { revision: saved.revision, value: draft })
             setSaved(view); setDraft(view.stored); setMessage('Saved. New work uses these settings.')
-            window.dispatchEvent(new Event('spark:settings-live-event'))
         } catch (error) { setError(error instanceof Error ? error.message : 'Unable to save profiles. Your draft is retained.') }
         finally { setPending(false) }
     }
