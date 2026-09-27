@@ -142,10 +142,8 @@ pub fn claude_code_chat_models_from_metadata(
             is_default: model.id.is_empty(),
             id: model.id,
             display: model.display,
-            // The CLI backend only passes --model; it has no way to apply a
-            // reasoning effort, so none is advertised even when the catalog
-            // reports effort support.
-            supported_reasoning_efforts: Vec::new(),
+            // The adapter passes the chosen effort as `--effort`.
+            supported_reasoning_efforts: model.supported_efforts,
             default_reasoning_effort: None,
         })
         .collect()

@@ -160,6 +160,9 @@ impl ClaudeCodeBackend {
         if let Some(model) = request.model.as_deref().and_then(non_empty) {
             command.arg("--model").arg(model);
         }
+        if let Some(effort) = request.reasoning_effort.as_deref().and_then(non_empty) {
+            command.arg("--effort").arg(effort);
+        }
         if let Some(session_id) = resume_session_id {
             command.arg("--resume").arg(session_id);
         }
@@ -401,6 +404,8 @@ impl ClaudeCodeBackend {
 pub struct ClaudeCodeModelMetadata {
     pub id: String,
     pub display: String,
+    /// Effort levels the model accepts; empty when it reports none.
+    pub supported_efforts: Vec<String>,
 }
 
 const MODEL_DISCOVERY_REQUEST_ID: &str = "spark-model-discovery";
@@ -551,9 +556,21 @@ pub fn claude_code_models_from_list_result(result: &Value) -> Vec<ClaudeCodeMode
                 .and_then(Value::as_str)
                 .and_then(non_empty)
                 .unwrap_or(value);
+            let supported_efforts = entry
+                .get("supportedEffortLevels")
+                .and_then(Value::as_array)
+                .map(|levels| {
+                    levels
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
             Some(ClaudeCodeModelMetadata {
                 id: id.to_string(),
                 display: display.to_string(),
+                supported_efforts,
             })
         })
         .collect()

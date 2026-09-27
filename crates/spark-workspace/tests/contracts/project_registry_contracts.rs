@@ -382,15 +382,17 @@ fn codex_chat_models_map_live_metadata_and_synthesize_a_default() {
 }
 
 #[test]
-fn claude_code_chat_models_map_catalog_metadata_without_effort_support() {
+fn claude_code_chat_models_map_catalog_metadata_with_effort_support() {
     let mapped = spark_workspace::models::claude_code_chat_models_from_metadata(vec![
         spark_agent_adapter::ClaudeCodeModelMetadata {
             id: String::new(),
             display: "Default (recommended)".to_string(),
+            supported_efforts: vec![],
         },
         spark_agent_adapter::ClaudeCodeModelMetadata {
             id: "claude-fable-5[1m]".to_string(),
             display: "Fable".to_string(),
+            supported_efforts: vec!["low".to_string(), "max".to_string()],
         },
     ]);
     assert_eq!(mapped.len(), 2);
@@ -400,11 +402,12 @@ fn claude_code_chat_models_map_catalog_metadata_without_effort_support() {
     assert_eq!(mapped[0].display, "Default (recommended)");
     assert!(!mapped[1].is_default);
     assert_eq!(mapped[1].id, "claude-fable-5[1m]");
-    // The CLI backend cannot apply reasoning effort, so none is advertised.
+    // Catalog effort levels pass through; the adapter applies them as --effort.
+    assert!(mapped[0].supported_reasoning_efforts.is_empty());
+    assert_eq!(mapped[1].supported_reasoning_efforts, ["low", "max"]);
     assert!(mapped
         .iter()
-        .all(|model| model.supported_reasoning_efforts.is_empty()
-            && model.default_reasoning_effort.is_none()));
+        .all(|model| model.default_reasoning_effort.is_none()));
 }
 
 #[test]

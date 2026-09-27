@@ -237,6 +237,30 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }
+    // No effort was requested, so the CLI keeps its own default.
+    assert!(!args.contains("--effort"), "unexpected --effort in: {args}");
+}
+
+#[test]
+fn claude_code_backend_passes_the_requested_effort_to_the_cli() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let mut request = agent_request(temp.path());
+    request.reasoning_effort = Some("high".to_string());
+
+    ClaudeCodeBackend::new()
+        .run_agent_turn(request)
+        .expect("turn");
+
+    let args = std::fs::read_to_string(&log_path).expect("args log");
+    assert!(
+        args.contains("--effort\nhigh\n"),
+        "missing --effort high in: {args}"
+    );
 }
 
 #[test]
@@ -477,14 +501,17 @@ fn claude_code_model_discovery_queries_catalog_over_stdio_and_maps_default_to_bl
             ClaudeCodeModelMetadata {
                 id: String::new(),
                 display: "Default (recommended)".to_string(),
+                supported_efforts: vec![],
             },
             ClaudeCodeModelMetadata {
                 id: "claude-fable-5[1m]".to_string(),
                 display: "Fable".to_string(),
+                supported_efforts: vec!["low".to_string(), "high".to_string()],
             },
             ClaudeCodeModelMetadata {
                 id: "sonnet".to_string(),
                 display: "Sonnet".to_string(),
+                supported_efforts: vec![],
             },
         ],
     );

@@ -88,6 +88,7 @@ fn main() {
                                         "value": "claude-fable-5[1m]",
                                         "displayName": "Fable",
                                         "supportsEffort": true,
+                                        "supportedEffortLevels": ["low", "high"],
                                     },
                                     {"value": "sonnet", "displayName": "Sonnet"},
                                 ]},
