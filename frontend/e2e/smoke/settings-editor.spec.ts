@@ -1,8 +1,15 @@
+import { chooseModel, customModel, chooseEffort, openPicker } from '../fixtures/model-picker'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
+
+test.beforeEach(async ({ page }) => {
+    await page.route('**/workspace/api/projects/chat-models**', route => route.fulfill({
+        json: { models: [], providers: { codex: { status: 'unavailable', error: 'Smoke fixture' } } },
+    }))
+})
 
 const card = (page: Page, name: string) => page.locator('[data-slot=card]').filter({ has: page.getByRole('heading', { name, exact: true }) })
 
@@ -63,31 +70,30 @@ test('workspace model defaults require Save and survive reload; dirty drafts sur
     const original = (await read()).models.effective
     await page.goto('/')
     await page.getByTestId('nav-mode-settings').click()
-    const provider = page.getByLabel('Provider or profile', { exact: true })
+    const provider = page.getByRole('button', { name: /^Model:/ })
     await expect(provider).toBeEnabled()
     const other = await context.newPage()
     try {
-        await provider.selectOption('claude-code')
+        await chooseModel(page, 'anthropic', 'claude-opus-4-6')
         expect((await read()).models.effective).toEqual(original)
         await card(page, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
         await expect(page.getByText('Saved. Applies to the next message.', { exact: true })).toBeVisible()
         await page.reload()
-        await expect(provider).toHaveValue('claude-code')
-        await page.getByLabel('Model', { exact: true }).selectOption('custom')
-        await page.getByLabel('Custom model', { exact: true }).fill('retained-draft')
+        await expect(provider).toContainText('claude-opus-4-6')
+        await customModel(page, 'retained-draft')
         await other.goto('/')
         await other.getByTestId('nav-mode-settings').click()
-        await expect(other.getByLabel('Provider or profile', { exact: true })).toBeEnabled()
-        await other.getByLabel('Provider or profile', { exact: true }).selectOption('codex')
+        await expect(other.getByRole('button', { name: /^Model:/ })).toBeEnabled()
+        await chooseModel(other, 'openai', 'gpt-5.5')
         await card(other, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
         await expect(other.getByText('Saved. Applies to the next message.', { exact: true })).toBeVisible()
         await expect(page.getByText('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.', { exact: true })).toBeVisible()
-        await expect(page.getByLabel('Custom model', { exact: true })).toHaveValue('retained-draft')
+        await expect(provider).toContainText('retained-draft')
         await card(page, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
         await expect(page.getByText('Settings changed since this document was read. Reload before saving.', { exact: false })).toBeVisible()
-        await expect(page.getByLabel('Custom model', { exact: true })).toHaveValue('retained-draft')
+        await expect(provider).toContainText('retained-draft')
         await card(page, 'Model defaults (Workspace)').getByRole('button', { name: /^Discard\b/ }).click()
-        await expect(provider).toHaveValue('codex')
+        await expect(provider).toContainText('gpt-5.5')
     } finally {
         const current = await read()
         const restored = await page.request.patch('/workspace/api/settings', { data: { expected_revision: current.models.revision, section: 'models', value: original } })
@@ -407,9 +413,8 @@ for (const transition of ['switch', 'clear']) {
         await page.getByTestId('nav-mode-settings').click()
         await page.getByRole('switch', { name: 'Override workspace model settings' }).click()
         const projectCard = page.locator('[data-slot=card]').filter({ has: page.getByRole('heading', { name: 'Project model defaults', exact: true, includeHidden: true }) })
-        await projectCard.getByLabel('Model', { exact: true }).selectOption('custom')
-        const model = projectCard.getByLabel('Custom model', { exact: true })
-        await model.fill('unsaved-project-model')
+        await customModel(page, 'unsaved-project-model', projectCard)
+        const model = projectCard.getByRole('button', { name: /^Model:/, includeHidden: true })
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         const navigate = async () => {
             if (transition === 'clear') {
@@ -419,7 +424,7 @@ for (const transition of ['switch', 'clear']) {
         }
         await navigate()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
-        await expect(model).toHaveValue('unsaved-project-model')
+        await expect(model).toContainText('unsaved-project-model')
         await expect(model).toBeHidden()
         await expect(switcher).toHaveAttribute('title', projects[0])
         const read = async () => (await page.request.get(`/workspace/api/settings?project_path=${encodeURIComponent(projects[0])}`)).json()
@@ -523,17 +528,32 @@ test('conversation effort and model edits preserve an inherited profile; selecti
         await page.getByTestId('top-nav-project-switcher').click()
         await page.getByRole('option').filter({hasText:project}).click()
         await page.getByRole('button', {name:new RegExp(`Open thread ${title}`)}).click()
-        const provider = page.getByLabel('Provider or profile', { exact: true })
-        await expect(provider).toHaveValue(id)
-        await page.getByLabel('Reasoning effort', { exact: true }).selectOption('high')
+        const provider = page.getByRole('button', { name: /^Model:/ })
+        await expect(provider).toContainText('model-one')
+        await chooseEffort(page, 'High')
         await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:null,reasoning_effort:'high'})
-        await page.getByLabel('Model', { exact: true }).selectOption('model:model-two')
+        await chooseModel(page, `openai_compatible / ${id}`, 'model-two')
         await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:'model-two',reasoning_effort:'high'})
-        await provider.selectOption('claude-code')
-        await expect.poll(async () => (await conversation()).settings.models.stored.provider).toBe('claude-code')
-        await page.getByRole('button', {name:'Use defaults',exact:true}).click()
+        await chooseModel(page, 'anthropic', 'claude-opus-4-6')
+        await expect.poll(async () => (await conversation()).settings.models.stored.provider).toBe('anthropic')
+        await expect(provider).toContainText('claude-opus-4-6 · High')
+        await openPicker(page)
+        await expect(page.getByRole('button', { name: /^Use default ·/ })).toHaveText('Use default · model-one · Low')
+        let releaseReset!: () => void
+        const resetGate = new Promise<void>(resolve => { releaseReset = resolve })
+        await page.route(`**${conversationPath}/settings`, async route => { await resetGate; await route.continue() })
+        await page.getByRole('button', { name: /^Use default ·/ }).click()
+        try {
+            await expect(provider).toHaveText('Default: model-one · Low⌄')
+            expect((await conversation()).settings.models.stored.provider).toBe('anthropic')
+            await chooseEffort(page, 'High')
+            await expect(provider).toContainText('model-one · High')
+        } finally { releaseReset() }
+        await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({ provider: null, llm_profile: id, model: null, reasoning_effort: 'high' })
+        await openPicker(page)
+        await page.getByRole('button', { name: /^Use default ·/ }).click()
         await expect.poll(async () => (await conversation()).settings.models.stored).toBeNull()
-        await expect(provider).toHaveValue(id)
+        await expect(provider).toContainText('model-one · Low')
         expect((await conversation()).turns).toEqual([])
     } finally {
         const current = await conversation()
@@ -697,47 +717,146 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
         releases.shift()!()
         await (await response).finished()
     }
-    const model = page.getByLabel('Model', { exact: true })
-    const custom = page.getByLabel('Custom model', { exact: true })
-    await model.selectOption('custom')
-    await custom.pressSequentially('my-model')
-    await expect(custom).toHaveValue('my-model')
-    expect(requests).toHaveLength(1)
-    await release()
-    await expect.poll(() => requests.length).toBe(2)
-    expect(requests[1].model_settings).toMatchObject({ model: 'my-model' })
+    const model = page.getByRole('button', { name: /^Model:/ })
+    await openPicker(page)
+    await page.getByRole('combobox', { name: 'Search models' }).fill('my-model')
+    expect(requests).toHaveLength(0)
+    await page.getByRole('option', { name: 'Use "my-model" as a custom model' }).click()
+    await page.keyboard.press('Escape')
+    await expect(model).toContainText('my-model')
     await release()
     await expect.poll(async () => (await read()).settings.models.stored.model).toBe('my-model')
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
 
-    await custom.pressSequentially('-discard')
-    await custom.fill('')
-    await expect(custom).toHaveValue('')
-    expect(requests).toHaveLength(3)
+    await chooseModel(page, 'anthropic', 'claude-opus-4-6')
+    await customModel(page, 'final-model')
+    await chooseEffort(page, 'High')
+    expect(requests).toHaveLength(2)
     await release()
-    await expect.poll(() => requests.length).toBe(4)
-    expect(requests[3].model_settings).toMatchObject({ model: null })
-    await release()
-    await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
-    await expect.poll(async () => (await read()).settings.models.stored.model).toBeNull()
-
-    await page.getByLabel('Provider or profile', { exact: true }).selectOption('claude-code')
-    await model.selectOption('custom')
-    await custom.pressSequentially('final-model')
-    await page.getByLabel('Reasoning effort', { exact: true }).selectOption('high')
-    expect(requests).toHaveLength(5)
-    await release()
-    await expect.poll(() => requests.length).toBe(6)
+    await expect.poll(() => requests.length).toBe(3)
     await release()
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
-    const final = { provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
+    const final = { provider: 'anthropic', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
     await expect.poll(async () => (await read()).settings.models.stored).toEqual(final)
-    expect(statuses).toEqual([200, 200, 200, 200, 200, 200])
+    expect(statuses).toEqual([200, 200, 200])
     expect(requests.map((request) => request.expected_revision)).toEqual(
-        Array.from({ length: 6 }, (_, index) => String(snapshot.revision + index)),
+        Array.from({ length: 3 }, (_, index) => String(snapshot.revision + index)),
     )
     await page.reload()
-    await expect(custom).toHaveValue('final-model')
-    await expect(page.getByLabel('Provider or profile', { exact: true })).toHaveValue('claude-code')
-    await expect(page.getByLabel('Reasoning effort', { exact: true })).toHaveValue('high')
+    await expect(model).toContainText('final-model · High')
+})
+
+test('picker default persists workspace and project resets', async ({ page }, testInfo) => {
+    const project = testInfo.outputPath('picker-reset-project')
+    mkdirSync(project, { recursive: true })
+    const read = async (scoped = false) => (await page.request.get('/workspace/api/settings' + (scoped ? `?project_path=${encodeURIComponent(project)}` : ''))).json()
+    const original = (await read()).models
+    await page.route('**/workspace/api/projects/chat-models**', route => route.fulfill({ json: {
+        providers: { codex: { status: 'available', error: null } },
+        models: [{ provider: 'codex', id: 'discovery-default', display: 'Discovery default', is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }],
+    } }))
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    try {
+        await page.goto('/')
+        await page.getByTestId('top-nav-project-switcher').click()
+        await page.getByRole('option').filter({ hasText: project }).click()
+        await page.getByTestId('nav-mode-settings').click()
+        for (const scoped of [false, true]) {
+            const scope = card(page, scoped ? 'Project model defaults' : 'Model defaults (Workspace)')
+            if (scoped) {
+                const response = await page.request.patch('/workspace/api/settings', { data: { section: 'models', expected_revision: (await read()).models.revision,
+                    value: { provider: 'anthropic', llm_profile: null, model: 'workspace-parent', reasoning_effort: 'low' } } })
+                expect(response.ok()).toBeTruthy()
+                await page.reload()
+                await page.getByTestId('nav-mode-settings').click()
+                await page.getByRole('switch', { name: 'Override workspace model settings' }).click()
+            }
+            await chooseModel(page, 'anthropic', 'claude-opus-4-6', scope)
+            await openPicker(page, scope)
+            await page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true }).click()
+            await customModel(page, 'picker-reset-custom', scope)
+            await scope.getByRole('button', { name: /^Save/ }).click()
+            await expect.poll(async () => (await read(scoped)).models.stored.model).toBe('picker-reset-custom')
+            const expected = scoped ? 'workspace-parent · Low' : 'Discovery default · Medium'
+            await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText('picker-reset-custom · High')
+            await openPicker(page, scope)
+            await expect(page.getByRole('button', { name: /^Use default ·/ })).toHaveText(`Use default · ${expected}`)
+            await page.getByRole('button', { name: /^Use default ·/ }).click()
+            await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText(`Default: ${expected}`)
+            await openPicker(page, scope)
+            await page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true }).click()
+            const saved = page.waitForResponse(response => response.url().endsWith('/workspace/api/settings') && response.request().method() === 'PATCH')
+            await scope.getByRole('button', { name: /^Save/ }).click()
+            expect((await saved).status()).toBe(200)
+            const withEffort = scoped
+                ? { provider: 'anthropic', model: 'workspace-parent', reasoning_effort: 'high' }
+                : { provider: 'codex', llm_profile: null, model: null, reasoning_effort: 'high' }
+            await expect.poll(async () => (await read(scoped)).models.stored).toEqual(withEffort)
+            await page.reload()
+            await page.getByTestId('nav-mode-settings').click()
+            await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText(scoped ? 'workspace-parent · High' : 'Discovery default · High')
+            await openPicker(page, scope)
+            await page.getByRole('button', { name: /^Use default ·/ }).click()
+            await scope.getByRole('button', { name: /^Save/ }).click()
+            await expect.poll(async () => (await read(scoped)).models.stored).toEqual(scoped ? null : { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null })
+            if (scoped) await page.getByRole('switch', { name: 'Override workspace model settings' }).click()
+            await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText(expected)
+            if (scoped) await scope.getByRole('button', { name: /^Discard/ }).click()
+        }
+        await page.reload()
+        await page.getByTestId('nav-mode-settings').click()
+        await expect(page.getByRole('switch', { name: 'Override workspace model settings' })).not.toBeChecked()
+    } finally {
+        await page.request.patch('/workspace/api/settings', { data: { section: 'models', expected_revision: (await read()).models.revision, value: original.stored ?? original.effective } })
+    }
+})
+
+test('mission picker default persists through the real conversation backend', async ({ page }, testInfo) => {
+    const project = testInfo.outputPath('mission-picker-reset')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    const settings = await (await page.request.get(`/workspace/api/settings?project_path=${encodeURIComponent(project)}`)).json()
+    const parent = { provider: 'anthropic', llm_profile: null, model: 'project-parent', reasoning_effort: 'low' }
+    expect((await page.request.patch('/workspace/api/settings', { data: { section: 'project_models', expected_revision: settings.models.revision,
+        value: { project_path: project, model_settings: parent } } })).ok()).toBeTruthy()
+    const response = await page.request.post(`/workspace/api/missions?project_path=${encodeURIComponent(project)}`, { data: { fields: { title: 'Picker reset mission', description: 'Reset model', archived: false }, actor: 'human' } })
+    expect(response.ok(), await response.text()).toBeTruthy()
+    const mission = await response.json()
+    const read = async () => (await page.request.get(`/workspace/api/conversations/${mission.id}?project_path=${encodeURIComponent(project)}`)).json()
+    await page.goto('/')
+    await page.getByTestId('top-nav-project-switcher').click()
+    await page.getByRole('option').filter({ hasText: project }).click()
+    await page.getByTestId('nav-mode-missions').click()
+    await page.getByRole('button', { name: 'Picker reset mission', exact: true }).click()
+    const detail = page.getByRole('region', { name: 'Mission details' })
+    const openModel = async () => {
+        await detail.getByRole('button', { name: 'Mission actions' }).click()
+        await page.getByRole('menuitem', { name: 'Model', exact: true }).click()
+    }
+    await openModel()
+    await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('project-parent · Low')
+    await customModel(page, 'mission-custom', detail)
+    await chooseEffort(page, 'High')
+    await detail.getByRole('button', { name: 'Save model', exact: true }).click()
+    await expect.poll(async () => (await read()).settings.models.stored.model).toBe('mission-custom')
+    await openModel()
+    await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('mission-custom · High')
+    await openPicker(page, detail)
+    await expect(page.getByRole('button', { name: /^Use default ·/ })).toHaveText('Use default · project-parent · Low')
+    await page.getByRole('button', { name: /^Use default ·/ }).click()
+    await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('Default: project-parent · Low')
+    await chooseEffort(page, 'High')
+    await detail.getByRole('button', { name: 'Save model', exact: true }).click()
+    await expect.poll(async () => (await read()).settings.models.stored).toEqual({ ...parent, reasoning_effort: 'high' })
+    await expect(detail.getByRole('button', { name: 'Save model', exact: true })).toHaveCount(0)
+    await openModel()
+    await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('project-parent · High')
+    await openPicker(page, detail)
+    await page.getByRole('button', { name: /^Use default ·/ }).click()
+    await detail.getByRole('button', { name: 'Save model', exact: true }).click()
+    await expect.poll(async () => (await read()).settings.models.stored).toBeNull()
+    await expect(detail.getByRole('button', { name: 'Save model', exact: true })).toHaveCount(0)
+    await openModel()
+    await expect(detail.getByRole('button', { name: /^Model:/ })).toContainText('project-parent · Low')
+    expect((await read()).turns).toEqual([])
 })

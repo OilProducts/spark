@@ -171,6 +171,11 @@ export interface ModelSettings {
     reasoning_effort: string | null
 }
 
+// A cleared picker group uses the API's reset representation.
+export function modelSettingsForApi(value: ModelSettings | null | undefined) {
+    return value && Object.values(value).every(field => field === null) ? null : value
+}
+
 export interface ModelSettingsView {
     scope: 'workspace' | 'project' | 'conversation'
     revision: string
@@ -205,7 +210,7 @@ export function saveModelSettings(revision: string, value: ModelSettings | null,
     return fetchWorkspaceJsonValidated('/settings', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ expected_revision: revision, section: projectPath ? 'project_models' : 'models',
-            value: projectPath ? { project_path: projectPath, model_settings: value } : value }),
+            value: projectPath ? { project_path: projectPath, model_settings: modelSettingsForApi(value) } : (modelSettingsForApi(value) ?? { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }) }),
     }, '/workspace/api/settings', parseModelSettingsView)
 }
 

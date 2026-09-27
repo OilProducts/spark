@@ -1,3 +1,4 @@
+import { customModel } from '../fixtures/model-picker'
 import { expect, test } from '@playwright/test'
 import { gotoWithRegisteredProject, stubProjectMetadata } from '../fixtures/smoke-helpers'
 
@@ -75,12 +76,8 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
     await page.screenshot({ animations: 'disabled', path: test.info().outputPath('menu.png') })
     await page.getByRole('menuitem', { name: 'Model', exact: true }).click()
     const modelForm = detail.getByRole('form', { name: 'Model', exact: true })
-    await expect(modelForm.getByLabel('Provider or profile')).toBeVisible()
-    await expect(modelForm.getByLabel('Model', { exact: true })).toHaveValue('')
-    await expect(modelForm.getByLabel('Reasoning effort')).toBeVisible()
-    await expect(modelForm.getByRole('option', { name: 'Project default' })).toHaveCount(3)
-    await modelForm.getByLabel('Model', { exact: true }).selectOption('custom')
-    await modelForm.getByLabel('Custom model').fill('mission-custom-model')
+    await expect(modelForm.getByRole('button', { name: /^Model:/ })).toContainText('Default:')
+    await customModel(page, 'mission-custom-model', modelForm)
     await modelForm.getByRole('button', { name: 'Cancel', exact: true }).click()
     await detail.getByRole('button', { name: 'Mission actions' }).click()
     await page.getByRole('menuitem', { name: 'Budget' }).click()

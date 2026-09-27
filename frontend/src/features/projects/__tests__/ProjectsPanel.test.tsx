@@ -1,3 +1,4 @@
+import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { HomeSessionController } from '@/app/AppSessionControllers'
@@ -5225,8 +5226,8 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('model:gpt-5.4-mini')
-      expect(screen.getByLabelText('Reasoning effort', { exact: true })).toHaveValue('high')
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4.mini/i)
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('High')
     })
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Use the default chat controls.')
@@ -5270,7 +5271,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('')
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Default:')
       expect(screen.getByText('Provider default: gpt-5.4')).toBeVisible()
     })
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
@@ -5400,26 +5401,15 @@ describe('ProjectsPanel', () => {
 
     renderProjectsPanel()
 
-    const modelSelect = await screen.findByLabelText('Model', { exact: true })
-    await waitFor(() => {
-      expect(within(modelSelect).getByRole('option', { name: 'gpt-5.4-mini' })).toBeInTheDocument()
-    })
-    await user.selectOptions(modelSelect, 'model:gpt-5.4-mini')
-
-    await waitFor(() => {
-      expect(settingsRequests).toHaveLength(1)
-      expect(modelSelect).toHaveValue('model:gpt-5.4-mini')
-    })
-
-    const updatedEffortSelect = screen.getByLabelText('Reasoning effort', { exact: true })
-    expect(within(updatedEffortSelect).getByRole('option', { name: 'Medium' })).toBeInTheDocument()
-    expect(within(updatedEffortSelect).queryByRole('option', { name: 'High' })).not.toBeInTheDocument()
-    await user.selectOptions(updatedEffortSelect, 'medium')
-
-    await waitFor(() => {
-      expect(settingsRequests).toHaveLength(2)
-      expect(screen.getByLabelText('Reasoning effort', { exact: true })).toHaveValue('medium')
-    })
+    await openPicker(user)
+    await user.click(await screen.findByRole('option', { name: 'GPT-5.4 Mini' }))
+    await waitFor(() => expect(settingsRequests).toHaveLength(1))
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('GPT-5.4 Mini')
+    expect(screen.getByRole('button', { name: 'Medium', exact: true })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'High', exact: true })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Medium', exact: true }))
+    await waitFor(() => expect(settingsRequests).toHaveLength(2))
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Medium')
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Continue with selected settings.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
@@ -5488,59 +5478,40 @@ describe('ProjectsPanel', () => {
     await screen.findByText('Provider default: gpt-5.4')
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Hello')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
-    await user.selectOptions(screen.getByLabelText('Reasoning effort', { exact: true }), 'high')
+    await chooseEffort(user, 'High')
     expect(requests[0].model_settings).toEqual({ ...initial, reasoning_effort: 'high' })
     await act(async () => { saves[0]() })
-    expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('')
-    await user.selectOptions(screen.getByLabelText('Model', { exact: true }), 'custom')
-    const custom = screen.getByLabelText('Custom model', { exact: true })
-    expect(custom).toHaveValue('')
-    await user.type(custom, 'old')
-    expect(custom).toHaveValue('old')
-    await user.clear(custom)
-    expect(custom).toHaveValue('')
+    await openPicker(user)
+    await user.type(screen.getByRole('combobox', { name: 'Search models' }), 'my-model')
+    expect(requests).toHaveLength(1)
+    await user.click(screen.getByRole('option', { name: 'Use "my-model" as a custom model' }))
+    await user.keyboard('{Escape}')
     expect(requests).toHaveLength(2)
+    expect(requests[1]).toMatchObject({ expected_revision: '2', model_settings: { model: 'my-model' } })
     await act(async () => { saves[1]() })
-    expect(custom).toHaveValue('')
-    expect(requests[2]).toMatchObject({ expected_revision: '3', model_settings: { model: null } })
-    await act(async () => { saves[2]() })
-    expect(effective.model).toBeNull()
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
-
-    await user.type(custom, 'my-model')
-    expect(custom).toHaveValue('my-model')
-    expect(requests).toHaveLength(4)
-    expect(requests[3]).toMatchObject({ expected_revision: '4', model_settings: { model: 'm' } })
-    await act(async () => { saves[3]() })
-    expect(custom).toHaveValue('my-model')
-    expect(requests[4]).toMatchObject({ expected_revision: '5', model_settings: { model: 'my-model' } })
-    await act(async () => { saves[4]() })
     expect(effective.model).toBe('my-model')
-    expect(custom).toHaveValue('my-model')
     expect(screen.getByTestId('project-chat-model-availability')).toHaveTextContent('The saved Codex model is no longer available. Select another model.')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
 
-    await user.selectOptions(screen.getByLabelText('Provider or profile', { exact: true }), 'claude-code')
-    await user.selectOptions(screen.getByLabelText('Model', { exact: true }), 'custom')
-    await user.type(screen.getByLabelText('Custom model', { exact: true }), 'final-model')
-    await user.selectOptions(screen.getByLabelText('Reasoning effort', { exact: true }), 'high')
-    expect(requests).toHaveLength(6)
+    await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
+    await customModel(user, 'final-model')
+    await chooseEffort(user, 'High')
+    expect(requests).toHaveLength(3)
     if (conflict) revision += 1 // Another client wins while our request is in flight.
-    await act(async () => { saves[5]() })
+    await act(async () => { saves[2]() })
     if (conflict) {
       expect(await screen.findByText('Settings changed since this document was read. Reload before saving.')).toBeInTheDocument()
-      expect(requests).toHaveLength(6)
+      expect(requests).toHaveLength(3)
       expect(effective.model).toBe('my-model')
     } else {
-      expect(requests[6]).toMatchObject({ expected_revision: '7', model_settings: {
+      expect(requests[3]).toMatchObject({ expected_revision: '4', model_settings: {
         provider: 'claude-code', model: 'final-model', reasoning_effort: 'high',
       } })
-      await act(async () => { saves[6]() })
+      await act(async () => { saves[3]() })
       expect(effective).toEqual({ provider: 'claude-code', llm_profile: null, model: 'final-model', reasoning_effort: 'high' })
-      expect(requests.map((request) => request.expected_revision)).toEqual(['1', '2', '3', '4', '5', '6', '7'])
+      expect(requests.map((request) => request.expected_revision)).toEqual(['1', '2', '3', '4'])
     }
-    expect(screen.getByLabelText('Custom model', { exact: true })).toHaveValue('final-model')
-    expect(screen.getByLabelText('Reasoning effort', { exact: true })).toHaveValue('high')
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('final-model · High')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeEnabled()
   })
 
@@ -5583,24 +5554,23 @@ describe('ProjectsPanel', () => {
       useStore.getState().setConversationId('profile-thread')
     })
     renderProjectsPanel()
-    const provider = screen.getByLabelText('Provider or profile', { exact: true })
-    await waitFor(() => expect(provider).toHaveValue('team'))
-    await user.selectOptions(screen.getByLabelText('Reasoning effort', { exact: true }), 'high')
+    await screen.findByRole('button', { name: /Model: Default: model-one/ })
+    await chooseEffort(user, 'High')
     await waitFor(() => expect(requests).toHaveLength(1))
     expect(requests[0]).toMatchObject({model_settings:{...group,reasoning_effort:'high'}})
-    await user.selectOptions(screen.getByLabelText('Model', { exact: true }), 'model:model-two')
+    await chooseModel(user, 'openai_compatible / team', 'model-two')
     await waitFor(() => expect(requests).toHaveLength(2))
     expect(requests[1]).toMatchObject({model_settings:{...group,model:'model-two',reasoning_effort:'high'}})
-    await user.selectOptions(provider, 'claude-code')
+    await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
     await waitFor(() => expect(requests).toHaveLength(3))
-    expect(requests[2]).toMatchObject({model_settings:{provider:'claude-code',llm_profile:null,model:null,reasoning_effort:null}})
+    expect(requests[2]).toMatchObject({model_settings:{provider:'claude-code',llm_profile:null,model:'claude-opus-4-6',reasoning_effort:'high'}})
     await user.click(await screen.findByRole('button', {name:'Use defaults'}))
     await waitFor(() => expect(requests).toHaveLength(4))
     expect(requests[3]).toHaveProperty('model_settings', null)
-    await waitFor(() => expect(provider).toHaveValue('team'))
-    await user.selectOptions(provider, 'manual')
+    await screen.findByRole('button', { name: /Model: Default: model-one/ })
+    await chooseModel(user, 'openai_compatible / manual', 'manual-model')
     await waitFor(() => expect(requests).toHaveLength(5))
-    expect(requests[4]).toMatchObject({model_settings:{provider:null,llm_profile:'manual',model:'manual-model',reasoning_effort:null}})
+    expect(requests[4]).toMatchObject({model_settings:{provider:null,llm_profile:'manual',model:'manual-model',reasoning_effort:'low'}})
   })
 
   it('shows each thread’s own project chat model and effort when switching threads', async () => {
@@ -5722,15 +5692,15 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('model:gpt-5.4')
-      expect(screen.getByLabelText('Reasoning effort', { exact: true })).toHaveValue('high')
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4/i)
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('High')
     })
 
     await user.click(await screen.findByRole('button', { name: /Open thread Mini model thread/i }))
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Model', { exact: true })).toHaveValue('model:gpt-5.4-mini')
-      expect(screen.getByLabelText('Reasoning effort', { exact: true })).toHaveValue('low')
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(/gpt-5.4.mini/i)
+      expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Low')
     })
   })
 
@@ -5780,13 +5750,13 @@ describe('ProjectsPanel', () => {
 
     const availability = await screen.findByTestId('project-chat-model-availability')
     expect(availability).toHaveTextContent('Codex model discovery failed: app-server exited')
-    const modelSelect = screen.getByLabelText('Model', { exact: true })
-    expect(modelSelect).toBeEnabled()
-    expect(screen.getByText('Model discovery unavailable. Using suggestions.')).toBeVisible()
-    expect(within(modelSelect).getByRole('option', { name: 'Custom model…' })).toBeInTheDocument()
-    expect(within(modelSelect).getByRole('option', { name: 'gpt-5.5' })).toBeInTheDocument()
-    expect(within(modelSelect).queryByRole('option', { name: 'gpt-5.2-codex' })).not.toBeInTheDocument()
-    expect(screen.getByLabelText('Provider or profile', { exact: true })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /^Model:/ })).toBeEnabled()
+    await openPicker(user)
+    const codex = within(screen.getByRole('group', { name: 'Codex', exact: true }))
+    expect(codex.getByText('Model discovery unavailable. Using suggestions.')).toBeVisible()
+    expect(codex.getByRole('option', { name: 'gpt-5.5' })).toBeInTheDocument()
+    expect(codex.queryByRole('option', { name: 'gpt-5.2-codex' })).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Keep this draft.')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()

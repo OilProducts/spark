@@ -1,3 +1,4 @@
+import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useEffect, useRef, useState } from 'react'
 import { DropdownMenu } from 'radix-ui'
 import { MoreHorizontal, X } from 'lucide-react'
@@ -32,6 +33,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [model, setModel] = useState<{ revision: number; draft: ModelSettings | null } | null>(null)
     // A mission's conversation id is the mission id, so a draft's model can be set before Start.
     const conversationId = mission.conversation_id ?? mission.id
+    const inherited = useInheritedModelSettings(project)
     async function openModel() {
         setActionError('')
         try {
@@ -97,7 +99,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save budget</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setBudget(null)}>Cancel</Button></div>
         </form>}
         {model && <form aria-label="Model" className="grid shrink-0 gap-3 border-b border-border p-4" onSubmit={e => { e.preventDefault(); void saveModel() }}>
-            <ModelChooser projectPath={project} inheritLabel="Project default" disabled={disabled}
+            <ModelChooser inherited={inherited} projectPath={project} inheritLabel="Project default" disabled={disabled}
                 value={model.draft ?? inheritedModel} onChange={draft => setModel(current => current && ({ ...current, draft }))} />
             <p className="text-xs text-muted-foreground">Applies from the mission's next turn.</p>
             <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save model</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setModel(null)}>Cancel</Button></div>

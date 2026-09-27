@@ -1,3 +1,4 @@
+import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
@@ -149,24 +150,21 @@ describe('Graph and settings behavior', () => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps model edits local until explicit Save and clears incompatible fields on provider changes', async () => {
+  it('keeps atomic model and effort edits local until explicit Save', async () => {
     const user = userEvent.setup()
     useStore.setState({ activeProjectPath: null })
     render(<SettingsPanel />)
-    const provider = await screen.findByLabelText('Provider or profile')
-    await waitFor(() => expect(provider).toBeEnabled())
-    await user.selectOptions(provider, 'anthropic')
-    expect(screen.getByLabelText('Model')).toHaveValue('')
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toBeEnabled())
+    await chooseModel(user, 'anthropic', 'claude-sonnet-4-6')
     expect(serverModels.provider).toBe('openai')
-    await user.selectOptions(screen.getByLabelText('Model'), 'model:claude-sonnet-4-6')
-    await user.selectOptions(screen.getByLabelText('Reasoning effort'), 'xhigh')
+    await chooseEffort(user, 'XHigh')
     expect(useStore.getState().uiDefaults.llm_provider).toBe('openai')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Save/ }))
     await screen.findByText('Saved. Applies to the next message.')
     expect(serverModels).toEqual({ provider: 'anthropic', llm_profile: null, model: 'claude-sonnet-4-6', reasoning_effort: 'xhigh' })
-    await user.selectOptions(provider, 'codex')
+    await chooseModel(user, 'Codex', 'gpt-5.5')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Discard/ }))
-    await waitFor(() => expect(provider).toHaveValue('anthropic'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6'))
   })
 
   it('keeps custom model drafts through failed saves and reloads persisted values on Discard', async () => {
@@ -174,16 +172,15 @@ describe('Graph and settings behavior', () => {
     useStore.setState({ activeProjectPath: null })
     serverModels = { provider: 'openai', llm_profile: null, model: 'private-model', reasoning_effort: 'high' }
     render(<SettingsPanel />)
-    await waitFor(() => expect(screen.getByLabelText('Custom model')).toBeEnabled())
-    await user.clear(screen.getByLabelText('Custom model'))
-    await user.type(screen.getByLabelText('Custom model'), 'custom:next')
+    await screen.findByRole('button', { name: /Model: private-model/ })
+    await customModel(user, 'custom:next')
     settingsRevision += 1
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Save/ }))
     await screen.findByText(/responded with HTTP 409/)
-    expect(screen.getByLabelText('Custom model')).toHaveValue('custom:next')
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('custom:next')
     expect(serverModels.model).toBe('private-model')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Discard/ }))
-    await waitFor(() => expect(screen.getByLabelText('Custom model')).toHaveValue('private-model'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('private-model'))
   })
 
   it('uses configured profile models and saves mutually exclusive provider/profile selectors', async () => {
@@ -196,12 +193,7 @@ describe('Graph and settings behavior', () => {
       return originalFetch(input, init)
     }))
     render(<SettingsPanel />)
-    await waitFor(() => expect(screen.getByLabelText('Provider or profile')).toBeEnabled())
-    await screen.findByRole('option', { name: 'team' })
-    await user.selectOptions(screen.getByLabelText('Provider or profile'), 'team')
-    expect(screen.getByLabelText('Model')).toHaveValue('')
-    expect(within(screen.getByLabelText('Model')).queryByRole('option', { name: 'gpt-5.4' })).toBeNull()
-    await user.selectOptions(screen.getByLabelText('Model'), 'model:team-model')
+    await chooseModel(user, 'openai_compatible / team', 'team-model')
     await user.click(modelDefaultsCard().getByRole('button', { name: /^Save/ }))
     await waitFor(() => expect(serverModels).toMatchObject({ provider: null, llm_profile: 'team', model: 'team-model' }))
   })
@@ -214,19 +206,16 @@ describe('Graph and settings behavior', () => {
       ? new Promise<Response>((done) => { resolve = done }) : originalFetch(input, init)))
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
-    const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
-    expect(await modelSettings.findByText('Loading models…')).toHaveAttribute('role', 'status')
+    await openPicker(user)
+    expect(screen.getByText('Loading models…')).toHaveAttribute('role', 'status')
     await act(async () => resolve(Response.json({ models: [
       { provider: 'openai', id: 'discovered-openai', display: 'OpenAI' },
       { provider: 'anthropic', id: 'discovered-anthropic', display: 'Anthropic' },
     ], providers: { codex: { status: 'available', error: null } } })))
-    expect(modelSettings.queryByRole('status')).toBeNull()
+    expect(screen.queryByText('Loading models…')).toBeNull()
     expect(useStore.getState().uiDefaults).toEqual(saved)
-    expect(await screen.findByRole('option', { name: 'discovered-openai' })).toBeVisible()
-    expect(screen.queryByRole('option', { name: 'discovered-anthropic' })).toBeNull()
-    await user.selectOptions(screen.getByLabelText('Provider or profile'), 'anthropic')
-    expect(screen.queryByRole('option', { name: 'discovered-openai' })).toBeNull()
-    await user.selectOptions(screen.getByLabelText('Model'), 'model:discovered-anthropic')
+    expect(await screen.findByRole('option', { name: 'OpenAI' })).toBeVisible()
+    await user.click(screen.getByRole('option', { name: 'Anthropic' }))
     expect(serverModels.model).toBe('gpt-5.3')
   })
 
@@ -241,11 +230,11 @@ describe('Graph and settings behavior', () => {
     if (failure === 'unavailable') serverModels.provider = 'codex'
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
-    const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
-    await waitFor(() => expect(modelSettings.getByRole('status')).toHaveTextContent('Model discovery unavailable. Using suggestions.'))
+    await openPicker(userEvent.setup())
+    await screen.findAllByText('Model discovery unavailable. Using suggestions.')
     expect(useStore.getState().uiDefaults).toEqual(saved)
-    expect(screen.getByLabelText('Custom model')).toHaveValue(saved.llm_model)
-    if (failure === 'rejected') expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent(saved.llm_model)
+    if (failure === 'rejected') expect(screen.getAllByRole('option', { name: 'gpt-5.4' })[0]).toBeVisible()
   })
 
   it.each([false, true])('ignores stale discovery responses (rejected: %s)', async (rejectOld) => {
@@ -254,7 +243,6 @@ describe('Graph and settings behavior', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).includes('/chat-models')
       ? new Promise<Response>((resolve, reject) => { requests.push({ resolve, reject }) }) : originalFetch(input, init)))
     render(<SettingsPanel />)
-    const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
     await waitFor(() => expect(requests).toHaveLength(1))
     act(() => useStore.setState({ activeProjectPath: '/tmp/next-project' }))
     expect(requests).toHaveLength(2)
@@ -264,12 +252,13 @@ describe('Graph and settings behavior', () => {
       if (rejectOld) requests[0].reject(new Error('old failure'))
       else requests[0].resolve(payload('stale-model'))
     })
+    await openPicker(userEvent.setup())
     expect(await screen.findByRole('option', { name: 'current-model' })).toBeVisible()
     expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull()
-    expect(modelSettings.queryByRole('status')).toBeNull()
+    expect(screen.queryByText('Loading models…')).toBeNull()
     act(() => useStore.setState({ activeProjectPath: null }))
     expect(screen.queryByRole('option', { name: 'current-model' })).toBeNull()
-    expect(screen.getByRole('option', { name: 'gpt-5.4' })).toBeVisible()
+    expect(screen.getAllByRole('option', { name: 'gpt-5.4' })[0]).toBeVisible()
     expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
   })
 
@@ -297,8 +286,9 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('FlowDefinition defaults')
     expect(screen.getByRole('button', { name: 'Apply To Nodes' })).toBeEnabled()
-    const graphReasoningSelect = screen.getByLabelText('Reasoning effort') as HTMLSelectElement
-    expect(graphReasoningSelect.querySelector('option[value="xhigh"]')).toBeTruthy()
+    await openPicker(user)
+    expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
+    await user.keyboard('{Escape}')
 
     const fidelityInput = screen.getByPlaceholderText('full')
     await user.clear(fidelityInput)

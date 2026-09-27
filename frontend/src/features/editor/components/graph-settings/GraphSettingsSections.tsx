@@ -598,6 +598,7 @@ export function GraphLlmDefaultsSection({
             />
             <div className="space-y-3">
                 <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"
+                    inherited={{ provider: uiDefaults.llm_provider || null, llm_profile: uiDefaults.llm_profile || null, model: uiDefaults.llm_model || null, reasoning_effort: uiDefaults.reasoning_effort || null }}
                     value={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null,
                         model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null }}
                     onChange={(value) => {
