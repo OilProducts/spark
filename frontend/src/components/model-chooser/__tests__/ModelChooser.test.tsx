@@ -27,7 +27,7 @@ function Editor({ value = initial, inherited, projectPath = '/project', onChange
 }
 beforeEach(() => {
     vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue(catalog)
-    vi.mocked(useLlmProfiles).mockReturnValue([{ id: 'team', label: 'Team', provider: 'openai', configured: true, models: ['team-one', 'team-two'] }])
+    vi.mocked(useLlmProfiles).mockReturnValue([{ id: 'team', label: 'Team', provider: 'openai', configured: true, models: ['team-one', 'team-two'], reasoning_efforts: ['high'] }])
 })
 afterEach(async () => { cleanup(); await Promise.resolve(); vi.resetAllMocks() })
 
@@ -75,8 +75,8 @@ it('commits a custom model only on selection and retains unsupported saved effor
     expect(onChange).not.toHaveBeenCalled()
     await user.click(screen.getByRole('option', { name: 'Use "my-model" as a custom model' }))
     expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...initial, model: 'my-model', reasoning_effort: 'future' })
-    await user.click(screen.getByRole('button', { name: 'High', exact: true }))
-    expect(onChange).toHaveBeenLastCalledWith({ ...initial, model: 'my-model', reasoning_effort: 'high' })
+    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Model: my-model · Future' })).toBeInTheDocument()
 })
 
 it('uses highlighted metadata, selects with Enter and restores focus on Escape', async () => {
@@ -98,11 +98,11 @@ it('uses highlighted metadata, selects with Enter and restores focus on Escape',
     expect(onChange).toHaveBeenCalledTimes(1)
 })
 
-it('uses provider metadata for profile models and respects known empty effort support', async () => {
+it('uses declared profile efforts and respects known empty effort support', async () => {
     const user = userEvent.setup()
-    vi.mocked(useLlmProfiles).mockReturnValue([{ id: 'team', provider: 'codex', configured: true, models: ['discovered'], default_model: 'discovered' }])
+    vi.mocked(useLlmProfiles).mockReturnValue([{ id: 'team', provider: 'codex', configured: true, models: ['discovered'], default_model: 'discovered', reasoning_efforts: ['ultra'] }])
     render(<Editor value={{ ...initial, provider: null, llm_profile: 'team' }} />)
-    await user.click(await screen.findByRole('button', { name: /Default: Discovered/ }))
+    await user.click(await screen.findByRole('button', { name: /Default: discovered/ }))
     expect(screen.getByRole('button', { name: 'Ultra' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'High' })).not.toBeInTheDocument()
     await user.click(within(screen.getByRole('group', { name: 'Claude Code', exact: true })).getByRole('option'))
@@ -117,7 +117,7 @@ it('does not resolve a profile without a default to an unrelated provider model'
     await waitFor(() => expect(fetchProjectChatModelsValidated).toHaveBeenCalledOnce())
     await user.click(screen.getByRole('button', { name: 'Model: Default: Graph default' }))
     expect(within(screen.getByRole('group', { name: 'Codex / team' })).getByRole('option', { name: 'profile-only' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'High', exact: true })).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
 })
 
 it('preserves disabled and invalid styling and message', async () => {
@@ -177,11 +177,11 @@ it('clears saved effort to the explicit provider default even with inherited set
     expect(onChange).toHaveBeenLastCalledWith({ ...initial, provider: 'claude-code', model: 'claude-discovered' })
 })
 
-it('retains only Default and a custom saved effort when support is explicitly empty', async () => {
+it('offers only Default when support is empty while retaining the stored effort', async () => {
     const user = userEvent.setup()
     render(<Editor value={{ ...initial, provider: 'claude-code', model: 'claude-discovered', reasoning_effort: 'high' }} />)
     await user.click(await screen.findByRole('button', { name: 'Model: Claude · High' }))
-    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button').map(button => button.textContent)).toEqual(['Default', 'High (custom)'])
+    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button').map(button => button.textContent)).toEqual(['Default'])
 })
 
 
@@ -201,4 +201,40 @@ it('locks effort while inheriting and sets it only with an explicitly chosen mod
     expect(chosen).toMatchObject({ reasoning_effort: first.textContent!.toLowerCase(), model: expect.any(String) })
     expect(chosen.provider ?? chosen.llm_profile).toBeTruthy()
     expect(chosen.model).not.toBe('parent-model')
+})
+
+it('uses model levels and provider fallbacks without replacing known empty levels', async () => {
+    const user = userEvent.setup()
+    vi.mocked(fetchProjectChatModelsValidated).mockResolvedValue({
+        ...catalog,
+        provider_reasoning_efforts: { openai: ['none', 'minimal', 'high'] },
+        models: [...catalog.models,
+            { provider: 'openai', id: 'known', display: 'Known', is_default: false, supported_reasoning_efforts: ['none', 'minimal'], default_reasoning_effort: 'none' },
+            { provider: 'openai', id: 'empty', display: 'Empty', is_default: false, supported_reasoning_efforts: [] },
+        ],
+    })
+    render(<Editor value={{ ...initial, provider: 'openai', model: 'known' }} />)
+    await user.click(await screen.findByRole('button', { name: 'Model: Known · None' }))
+    const buttons = () => within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button').map(button => button.textContent)
+    expect(buttons()).toEqual(['Default', 'None', 'Minimal'])
+    await user.click(screen.getByRole('option', { name: 'Empty', exact: true }))
+    expect(buttons()).toEqual(['Default'])
+    expect(screen.queryByText(/unverified/)).not.toBeInTheDocument()
+    await user.type(screen.getByRole('combobox'), 'unlisted')
+    await user.click(screen.getByRole('option', { name: 'Use "unlisted" as a custom model' }))
+    expect(buttons()).toEqual(['Default', 'None', 'Minimal', 'High'])
+    expect(screen.getByText('Provider levels; unverified for this model.')).toBeInTheDocument()
+})
+
+it('keeps declarations separate for profiles sharing a provider and model', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useLlmProfiles).mockReturnValue([
+        { id: 'first', provider: 'openai_compatible', configured: true, models: ['shared'], reasoning_efforts: ['minimal'] },
+        { id: 'second', provider: 'openai_compatible', configured: true, models: ['shared'] },
+    ])
+    render(<Editor value={{ ...initial, provider: null, llm_profile: 'first', model: 'shared' }} />)
+    await user.click(screen.getByRole('button', { name: /Model:/ }))
+    expect(screen.getByRole('button', { name: 'Minimal', exact: true })).toBeInTheDocument()
+    await user.click(within(screen.getByRole('group', { name: 'openai_compatible / second' })).getByRole('option'))
+    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
 })

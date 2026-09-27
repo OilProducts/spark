@@ -567,7 +567,11 @@ fn gemini_generate_content_body(request: &Request) -> Result<Value, AdapterError
         .map(|object| !object.is_empty())
         .unwrap_or(false)
     {
-        deep_insert(&mut generation_config, portable_generation_config);
+        deep_insert_with_recursive_keys(
+            &mut generation_config,
+            portable_generation_config,
+            &["thinkingConfig"],
+        );
         body.insert("generationConfig".to_string(), generation_config);
     }
 
@@ -763,6 +767,12 @@ fn gemini_tool_config(
 }
 fn gemini_generation_config_from_request(request: &Request) -> Value {
     let mut generation_config = Map::new();
+    if let Some(effort) = &request.reasoning_effort {
+        generation_config.insert(
+            "thinkingConfig".to_string(),
+            json!({"thinkingLevel": effort}),
+        );
+    }
     if let Some(temperature) = request.temperature {
         generation_config.insert("temperature".to_string(), json!(temperature));
     }

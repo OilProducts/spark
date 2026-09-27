@@ -2,15 +2,15 @@ import { useEffect, useState } from 'react'
 import { fetchProjectChatModelsValidated, type ProjectChatModelsResponse } from '@/lib/api/projectsApi'
 import { ApiHttpError } from '@/lib/api/shared'
 
-type Discovery = { projectPath: string; payload?: ProjectChatModelsResponse; failed?: boolean }
+type Discovery = { projectPath: string | null; payload?: ProjectChatModelsResponse; failed?: boolean }
 type Entry = { value: Discovery | null; listeners: Set<() => void>; refresh: () => void }
 const projects = new Map<string, Entry>()
 
 export function useModelOptions(projectPath: string | null) {
+    const scope = projectPath ?? ''
     const [, render] = useState(0)
     useEffect(() => {
-        if (!projectPath) return
-        let entry = projects.get(projectPath)
+        let entry = projects.get(scope)
         if (!entry) {
             let revision = 0
             const created: Entry = { value: null, listeners: new Set(), refresh: () => {
@@ -31,7 +31,7 @@ export function useModelOptions(projectPath: string | null) {
                 })
             } }
             entry = created
-            projects.set(projectPath, entry)
+            projects.set(scope, entry)
             window.addEventListener('spark:codex-connected', entry.refresh)
             entry.refresh()
         }
@@ -44,9 +44,9 @@ export function useModelOptions(projectPath: string | null) {
             queueMicrotask(() => {
                 if (entry.listeners.size) return
                 window.removeEventListener('spark:codex-connected', entry.refresh)
-                projects.delete(projectPath)
+                projects.delete(scope)
             })
         }
-    }, [projectPath])
-    return projectPath ? projects.get(projectPath)?.value ?? null : null
+    }, [projectPath, scope])
+    return projects.get(scope)?.value ?? null
 }

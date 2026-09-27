@@ -15,6 +15,7 @@ beforeEach(() => {
     snapshot = conversation([])
     useStore.setState({ activeProjectPath: '/project', viewMode: 'missions' })
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes('/chat-models')) return { ok: true, json: async () => ({ models: [{ provider: 'claude-code', id: 'opus', display: 'Opus', is_default: true, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'unavailable', error: null } } }) }
         if (init?.body) {
             const body = JSON.parse(String(init.body)); calls.push({ url, body })
             if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
@@ -144,9 +145,7 @@ it('sets a draft mission\'s model on its conversation before Start', async () =>
     menu('Model')
     const form = within(await detail().findByRole('form', { name: 'Model' }))
     fireEvent.click(form.getByRole('button', { name: /^Model:/ }))
-    fireEvent.click(within(screen.getByRole('group', { name: 'Claude Code', exact: true })).getByRole('option', { name: 'claude-opus-4-6' }))
-    fireEvent.change(screen.getByRole('combobox', { name: 'Search models' }), { target: { value: 'opus' } })
-    fireEvent.click(screen.getByRole('option', { name: 'Use "opus" as a custom model' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Opus' }))
     fireEvent.click(screen.getByRole('button', { name: 'High', exact: true }))
     fireEvent.click(form.getByRole('button', { name: 'Save model' }))
     await waitFor(() => expect(detail().queryByRole('form', { name: 'Model' })).not.toBeInTheDocument())

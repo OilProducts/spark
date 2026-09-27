@@ -22,6 +22,7 @@ export async function fetchLlmProfiles(): Promise<LlmProfileMetadata[]> {
             id: typeof entry.id === 'string' ? entry.id : '',
             label: typeof entry.label === 'string' ? entry.label : null,
             provider: typeof entry.provider === 'string' ? entry.provider : '',
+            reasoning_efforts: Array.isArray(entry.reasoning_efforts) ? entry.reasoning_efforts.filter((effort: unknown): effort is string => typeof effort === 'string') : [],
             models: Array.isArray(entry.models) ? entry.models.filter((model: unknown): model is string => typeof model === 'string') : [],
             default_model: typeof entry.default_model === 'string' ? entry.default_model : null,
             configured: entry.configured === true,

@@ -79,6 +79,8 @@ pub struct OpenAICompatibleRequestConfig {
     #[serde(default)]
     pub require_api_key: bool,
     #[serde(default)]
+    pub reasoning_efforts: Vec<String>,
+    #[serde(default)]
     pub timeout: AdapterTimeout,
 }
 
@@ -89,6 +91,7 @@ impl Default for OpenAICompatibleRequestConfig {
             base_url: None,
             default_headers: BTreeMap::new(),
             require_api_key: false,
+            reasoning_efforts: Vec::new(),
             timeout: AdapterTimeout::default(),
         }
     }
@@ -128,6 +131,11 @@ impl From<&ProviderConfig> for OpenAICompatibleRequestConfig {
             base_url: config.base_url.clone(),
             default_headers,
             require_api_key,
+            reasoning_efforts: config
+                .options
+                .get("reasoning_efforts")
+                .and_then(|value| serde_json::from_str(value).ok())
+                .unwrap_or_default(),
             timeout: AdapterTimeout::default(),
         }
     }
@@ -460,6 +468,12 @@ where
     }
 
     let mut body = chat_completions_body(&provider, request, active_options, &mut warnings)?;
+    if let Some(effort) = &request.reasoning_effort {
+        if config.reasoning_efforts.is_empty() {
+            return Err(invalid_request_error(&provider, "Explicit reasoning_effort requires declared levels in the llm-profiles.toml profile setting reasoning_efforts (or provider reasoning_efforts configuration)"));
+        }
+        body.insert("reasoning_effort".to_string(), json!(effort));
+    }
     if stream {
         body.insert("stream".to_string(), json!(true));
     }
@@ -522,12 +536,6 @@ fn chat_completions_body(
             "response_format".to_string(),
             chat_response_format(response_format),
         );
-    }
-    if request.reasoning_effort.is_some() {
-        warnings.push(unsupported_warning(
-            "unsupported_reasoning_effort",
-            "OpenAI-compatible Chat Completions ignores reasoning_effort; use the native OpenAI Responses adapter for Responses reasoning controls",
-        ));
     }
 
     if let Some(options) = active_options {

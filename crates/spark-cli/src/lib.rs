@@ -1777,9 +1777,7 @@ fn build_flow_payload(
         body.insert("llm_provider".to_string(), json!(value.to_lowercase()));
     }
     insert_trimmed(&mut body, options, "--llm-profile", "llm_profile");
-    if let Some(value) = trimmed_option(options, "--reasoning-effort") {
-        body.insert("reasoning_effort".to_string(), json!(value.to_lowercase()));
-    }
+    insert_trimmed(&mut body, options, "--reasoning-effort", "reasoning_effort");
     insert_trimmed(
         &mut body,
         options,

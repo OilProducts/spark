@@ -349,7 +349,7 @@ impl RustLlmCodergenBackend {
         request: CodergenBackendRequest,
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let profile = normalize_optional(request.llm_profile.as_deref());
-        let reasoning_effort = normalize_lower_optional(request.reasoning_effort.as_deref());
+        let reasoning_effort = normalize_optional(request.reasoning_effort.as_deref());
         let metadata_response_contract =
             normalize_optional(Some(request.response_contract.as_str()));
         let mut metadata = request.metadata.clone();
@@ -538,7 +538,15 @@ fn codergen_agent_turn_request(request: &CodergenBackendRequest) -> AgentTurnReq
             .as_deref()
             .and_then(non_empty)
             .map(str::to_string),
-        reasoning_effort: normalize_lower_optional(request.reasoning_effort.as_deref()),
+        reasoning_effort: normalize_optional(request.reasoning_effort.as_deref()).map(|value| {
+            if is_codex_provider_selector(&request.provider)
+                || is_claude_code_provider_selector(&request.provider)
+            {
+                value.to_ascii_lowercase()
+            } else {
+                value
+            }
+        }),
         chat_mode: Some("agent".to_string()),
         metadata,
     }
@@ -1200,7 +1208,7 @@ fn build_agent_session_for_source(
         provider: normalize_request_provider_selector(provider.as_deref().unwrap_or("")),
         model: normalize_model_selector(model.as_deref()),
         llm_profile: normalize_optional(llm_profile.as_deref()),
-        reasoning_effort: normalize_lower_optional(reasoning_effort.as_deref()),
+        reasoning_effort: normalize_optional(reasoning_effort.as_deref()),
     };
     let mut metadata = metadata;
     let instructions = metadata
@@ -1800,10 +1808,6 @@ fn normalize_model_selector(model: Option<&str>) -> Option<String> {
 
 fn normalize_optional(value: Option<&str>) -> Option<String> {
     value.and_then(|value| non_empty(value).map(str::to_string))
-}
-
-fn normalize_lower_optional(value: Option<&str>) -> Option<String> {
-    normalize_optional(value).map(|value| value.to_ascii_lowercase())
 }
 
 fn non_empty(value: &str) -> Option<&str> {

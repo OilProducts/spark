@@ -52,7 +52,7 @@ fn llm_resolution_applies_launch_before_fallback_and_omits_model_placeholder() {
     );
     assert_eq!(
         resolve_effective_reasoning_effort(&inputs, &context).as_deref(),
-        Some("medium")
+        Some("MEDIUM")
     );
 }
 

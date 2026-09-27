@@ -25,7 +25,11 @@
     },
     "gemini_models": [
       "gemini-3.1-pro-preview",
-      "gemini-3-flash-preview"
+      "gemini-3-flash-preview",
+      "gemini-3.8-flash",
+      "gemini-3.7-flash",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash-lite"
     ],
     "native_capability_latest": {
       "anthropic_reasoning": "claude-opus-4-6",
@@ -33,37 +37,44 @@
       "openai_tools": "gpt-5.2"
     },
     "openai_latest": {
+      "id": "gpt-5.2",
+      "provider": "openai",
+      "display_name": "GPT-5.2",
+      "context_window": 1047576,
+      "max_output": 128000,
+      "supports_tools": true,
+      "supports_vision": true,
+      "input_cost_per_million": 1.75,
+      "output_cost_per_million": 14.0,
       "aliases": [
         "gpt-5.2-2025-12-11",
         "gpt5.2"
       ],
-      "context_window": 1047576,
-      "display_name": "GPT-5.2",
-      "id": "gpt-5.2",
-      "input_cost_per_million": 1.75,
-      "max_output": 128000,
-      "output_cost_per_million": 14.0,
-      "provider": "openai",
-      "supports_reasoning": true,
-      "supports_tools": true,
-      "supports_vision": true
+      "reasoning_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "default_reasoning_effort": "none"
     },
     "sonnet_alias": {
+      "id": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "display_name": "Claude Sonnet 4.5",
+      "context_window": 200000,
+      "max_output": 64000,
+      "supports_tools": true,
+      "supports_vision": true,
+      "input_cost_per_million": 3.0,
+      "output_cost_per_million": 15.0,
       "aliases": [
         "sonnet",
         "claude-sonnet",
         "claude-sonnet-4.5"
       ],
-      "context_window": 200000,
-      "display_name": "Claude Sonnet 4.5",
-      "id": "claude-sonnet-4-5",
-      "input_cost_per_million": 3.0,
-      "max_output": 64000,
-      "output_cost_per_million": 15.0,
-      "provider": "anthropic",
-      "supports_reasoning": true,
-      "supports_tools": true,
-      "supports_vision": true
+      "reasoning_efforts": []
     }
   },
   "provenance": {

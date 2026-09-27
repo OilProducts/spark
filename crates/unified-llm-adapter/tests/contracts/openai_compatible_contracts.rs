@@ -294,7 +294,10 @@ fn compatible_adapter_complete_translates_response_usage_errors_and_warnings() {
         }),
     })]));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(OpenAICompatibleAdapter::openai_compatible(
-        OpenAICompatibleRequestConfig::new("compatible-key"),
+        OpenAICompatibleRequestConfig {
+            reasoning_efforts: vec!["high".into()],
+            ..OpenAICompatibleRequestConfig::new("compatible-key")
+        },
         transport.clone(),
     ));
     let client = Client::from_adapters([adapter], Some("openai_compatible")).unwrap();
@@ -345,7 +348,7 @@ fn compatible_adapter_complete_translates_response_usage_errors_and_warnings() {
         .iter()
         .filter_map(|warning| warning.code.as_deref())
         .collect::<Vec<_>>();
-    assert!(warning_codes.contains(&"unsupported_reasoning_effort"));
+    assert_eq!(captured.body["reasoning_effort"], "high");
     assert!(warning_codes.contains(&"unsupported_responses_tool"));
     assert!(warning_codes.contains(&"unsupported_responses_option"));
     assert!(warning_codes.contains(&"unsupported_reasoning_token_visibility"));
@@ -901,4 +904,46 @@ fn tool_call(id: &str, name: &str, arguments: Value) -> ToolCall {
 
 fn sse(payload: Value) -> String {
     format!("data: {}\n\n", serde_json::to_string(&payload).unwrap())
+}
+
+#[test]
+fn compatible_effort_requires_declaration_but_does_not_validate_provider_values() {
+    for provider in ["openai_compatible", "openrouter", "litellm"] {
+        for declared in [false, true] {
+            for effort in [None, Some("future-effort")] {
+                let request = Request {
+                    model: "custom-model".into(),
+                    messages: vec![Message::user("hello")],
+                    reasoning_effort: effort.map(str::to_string),
+                    ..Request::default()
+                };
+                let config = OpenAICompatibleRequestConfig {
+                    base_url: Some("http://localhost:4000/v1".into()),
+                    reasoning_efforts: if declared {
+                        vec!["high".into()]
+                    } else {
+                        vec![]
+                    },
+                    ..OpenAICompatibleRequestConfig::new("key")
+                };
+                let result = build_openai_compatible_chat_request(provider, &request, config);
+                if !declared && effort.is_some() {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind, AdapterErrorKind::InvalidRequest);
+                    assert!(error
+                        .message
+                        .contains("llm-profiles.toml profile setting reasoning_efforts"));
+                } else {
+                    assert_eq!(
+                        result
+                            .unwrap()
+                            .body
+                            .get("reasoning_effort")
+                            .and_then(Value::as_str),
+                        effort
+                    );
+                }
+            }
+        }
+    }
 }

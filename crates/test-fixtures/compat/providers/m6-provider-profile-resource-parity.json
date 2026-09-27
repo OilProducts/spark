@@ -33,9 +33,9 @@
       "codex_alias": "gpt-5.2-codex",
       "provider_counts": {
         "anthropic": 2,
-        "gemini": 2,
+        "gemini": 6,
         "litellm": 0,
-        "openai": 3,
+        "openai": 7,
         "openrouter": 0
       }
     },
@@ -50,7 +50,8 @@
             "local-small",
             "local-large"
           ],
-          "provider": "openai_compatible"
+          "provider": "openai_compatible",
+          "reasoning_efforts": []
         },
         {
           "configured": true,
@@ -60,7 +61,8 @@
           "models": [
             "no-key-model"
           ],
-          "provider": "openai_compatible"
+          "provider": "openai_compatible",
+          "reasoning_efforts": []
         }
       ],
       "without_process_env": [
@@ -73,7 +75,8 @@
             "local-small",
             "local-large"
           ],
-          "provider": "openai_compatible"
+          "provider": "openai_compatible",
+          "reasoning_efforts": []
         },
         {
           "configured": true,
@@ -83,7 +86,8 @@
           "models": [
             "no-key-model"
           ],
-          "provider": "openai_compatible"
+          "provider": "openai_compatible",
+          "reasoning_efforts": []
         }
       ]
     },

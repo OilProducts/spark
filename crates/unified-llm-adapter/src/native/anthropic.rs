@@ -562,6 +562,10 @@ fn anthropic_messages_body(
             }
         }
     }
+    if let Some(effort) = &request.reasoning_effort {
+        body.entry("output_config".to_string())
+            .or_insert_with(|| json!({}))["effort"] = json!(effort);
+    }
     if let Some(system) = anthropic_system_payload(system_blocks) {
         body.insert("system".to_string(), system);
     }

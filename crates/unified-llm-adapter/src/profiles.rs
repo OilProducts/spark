@@ -11,7 +11,7 @@ use crate::errors::{AdapterError, AdapterErrorKind};
 use crate::openai_compatible::OpenAICompatibleRequestConfig;
 
 pub const PROFILE_CONFIG_FILE: &str = "llm-profiles.toml";
-const SUPPORTED_PROFILE_PROVIDERS: &[&str] = &["openai_compatible"];
+const SUPPORTED_PROFILE_PROVIDERS: &[&str] = &["openai_compatible", "openrouter", "litellm"];
 const SUPPORTED_PROFILE_KEYS: &[&str] = &[
     "api_key_env",
     "base_url",
@@ -19,6 +19,7 @@ const SUPPORTED_PROFILE_KEYS: &[&str] = &[
     "label",
     "models",
     "provider",
+    "reasoning_efforts",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -52,6 +53,8 @@ pub struct LlmProfile {
     pub provider: String,
     pub base_url: String,
     pub models: Vec<String>,
+    #[serde(default)]
+    pub reasoning_efforts: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,6 +99,7 @@ impl LlmProfile {
     ) -> Result<OpenAICompatibleRequestConfig, LlmProfileConfigurationError> {
         Ok(OpenAICompatibleRequestConfig {
             api_key: self.api_key_with_env(env)?,
+            reasoning_efforts: self.reasoning_efforts.clone(),
             base_url: Some(self.base_url.clone()),
             require_api_key: self.api_key_env.is_some(),
             ..OpenAICompatibleRequestConfig::default()
@@ -108,6 +112,7 @@ impl LlmProfile {
             "label": self.label,
             "provider": self.provider,
             "models": self.models,
+            "reasoning_efforts": self.reasoning_efforts,
             "default_model": self.default_model,
             "configured": self.configured(env),
         })
@@ -267,7 +272,7 @@ fn parse_profile(
     .to_lowercase();
     if !SUPPORTED_PROFILE_PROVIDERS.contains(&provider.as_str()) {
         return Err(LlmProfileConfigurationError::new(format!(
-            "LLM profile '{profile_id}' has unsupported provider '{provider}'; supported providers: openai_compatible."
+            "LLM profile '{profile_id}' has unsupported provider '{provider}'; supported providers: openai_compatible, openrouter, litellm."
         )));
     }
 
@@ -323,11 +328,26 @@ fn parse_profile(
         }
     }
 
+    let reasoning_efforts = match raw.get("reasoning_efforts") {
+        None => Vec::new(),
+        Some(value) => value
+            .as_array()
+            .ok_or_else(|| {
+                LlmProfileConfigurationError::new(
+                    "LLM profile reasoning_efforts must be a list of non-empty strings.",
+                )
+            })?
+            .iter()
+            .map(|value| require_non_empty_text(value, "LLM profile reasoning_efforts entry"))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+
     Ok(LlmProfile {
         id: profile_id.to_string(),
         provider,
         base_url,
         models,
+        reasoning_efforts,
         label: optional_text(raw.get("label"))?,
         api_key_env: optional_text(raw.get("api_key_env"))?,
         default_model,
@@ -341,7 +361,7 @@ fn reject_unknown_profile_keys(
     for key in raw.keys() {
         if !SUPPORTED_PROFILE_KEYS.contains(&key.as_str()) {
             return Err(LlmProfileConfigurationError::new(format!(
-                "LLM profile '{profile_id}' has unsupported key '{key}'; supported keys: api_key_env, base_url, default_model, label, models, provider."
+                "LLM profile '{profile_id}' has unsupported key '{key}'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts."
             )));
         }
     }

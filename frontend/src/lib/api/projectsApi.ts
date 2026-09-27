@@ -28,6 +28,7 @@ export interface ProjectMetadataResponse {
 }
 
 export interface ProjectChatModelMetadataResponse {
+    llm_profile?: string | null
     provider: string
     id: string
     display: string
@@ -38,6 +39,7 @@ export interface ProjectChatModelMetadataResponse {
 
 export interface ProjectChatModelsResponse {
     models: ProjectChatModelMetadataResponse[]
+    provider_reasoning_efforts?: Record<string, string[]>
     providers: {
         codex: ProjectChatModelProviderStatusResponse
     }
@@ -188,6 +190,7 @@ function parseProjectChatModelMetadataResponse(
     }
     return {
         id: record.id,
+        ...(typeof record.llm_profile === 'string' ? { llm_profile: record.llm_profile } : {}),
         provider: typeof record.provider === 'string' && record.provider.trim().length > 0
             ? record.provider
             : 'codex',
@@ -198,7 +201,7 @@ function parseProjectChatModelMetadataResponse(
         supported_reasoning_efforts: Array.isArray(record.supported_reasoning_efforts)
             ? record.supported_reasoning_efforts
                 .filter((entry): entry is string => typeof entry === 'string')
-                .filter((entry) => ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(entry))
+                .filter((entry) => entry.trim().length > 0)
             : [],
         default_reasoning_effort: asOptionalNullableString(record.default_reasoning_effort),
     }
@@ -223,6 +226,10 @@ export function parseProjectChatModelsResponse(
         throw new ApiSchemaError(endpoint, 'Expected Codex provider error to be a string or null.')
     }
     return {
+        ...(record.provider_reasoning_efforts && typeof record.provider_reasoning_efforts === 'object' ? {
+            provider_reasoning_efforts: Object.fromEntries(Object.entries(record.provider_reasoning_efforts).map(([provider, efforts]) =>
+                [provider, Array.isArray(efforts) ? efforts.filter((effort): effort is string => typeof effort === 'string' && effort.trim().length > 0) : []])),
+        } : {}),
         models: record.models
             .map((entry) => parseProjectChatModelMetadataResponse(entry, endpoint))
             .filter((entry): entry is ProjectChatModelMetadataResponse => entry !== null),
@@ -302,9 +309,9 @@ export async function fetchProjectMetadataValidated(directory: string): Promise<
     )
 }
 
-export async function fetchProjectChatModelsValidated(projectPath: string): Promise<ProjectChatModelsResponse> {
+export async function fetchProjectChatModelsValidated(projectPath: string | null): Promise<ProjectChatModelsResponse> {
     return fetchWorkspaceJsonValidated(
-        `/projects/chat-models?project_path=${encodeURIComponent(projectPath)}`,
+        projectPath ? `/projects/chat-models?project_path=${encodeURIComponent(projectPath)}` : '/projects/chat-models',
         undefined,
         '/workspace/api/projects/chat-models',
         parseProjectChatModelsResponse,

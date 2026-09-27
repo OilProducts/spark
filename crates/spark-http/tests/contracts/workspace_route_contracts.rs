@@ -1349,3 +1349,41 @@ fn final_answer(text: &str) -> spark_agent_adapter::AgentTurnOutput {
         ..Default::default()
     }
 }
+
+#[tokio::test]
+async fn chat_model_route_exposes_efforts_with_or_without_a_project() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = build_app(settings(temp.path()));
+    for uri in [
+        "/workspace/api/projects/chat-models",
+        "/workspace/api/projects/chat-models?project_path=%2Fproject",
+    ] {
+        let (status, body, _) = request_json(app.clone(), "GET", uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let astra = body["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == "gpt-6-astra" && model["provider"] == "openai")
+            .unwrap();
+        assert_eq!(
+            astra["supported_reasoning_efforts"],
+            json!(["low", "medium", "high", "xhigh", "max"])
+        );
+        assert_eq!(
+            body["provider_reasoning_efforts"]["gemini"],
+            json!(["minimal", "low", "medium", "high"])
+        );
+    }
+    assert_eq!(
+        request_json(
+            app,
+            "GET",
+            "/workspace/api/projects/chat-models?project_path=",
+            None
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+}

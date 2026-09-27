@@ -41,7 +41,7 @@ fn llm_resolution_preserves_node_launch_fallback_order_and_reasoning_rule() {
     );
     assert_eq!(
         resolve_effective_reasoning_effort(&inputs, &context).as_deref(),
-        Some("medium")
+        Some("Medium")
     );
 }
 

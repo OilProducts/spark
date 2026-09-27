@@ -29,12 +29,13 @@ describe('projectsApi parsing', () => {
       providers: {
         codex: { status: 'available', error: null },
       },
+      provider_reasoning_efforts: { openai: ['none', 'minimal', 'high', 42] },
       models: [
         {
           id: 'gpt-5.4',
           display: 'GPT-5.4',
           is_default: true,
-          supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'unknown'],
+          supported_reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'unknown'],
           default_reasoning_effort: 'medium',
         },
       ],
@@ -46,10 +47,11 @@ describe('projectsApi parsing', () => {
         id: 'gpt-5.4',
         display: 'GPT-5.4',
         is_default: true,
-        supported_reasoning_efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+        supported_reasoning_efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'unknown'],
         default_reasoning_effort: 'medium',
       },
     ])
+    expect(payload.provider_reasoning_efforts).toEqual({ openai: ['none', 'minimal', 'high'] })
     expect(payload.providers.codex).toEqual({ status: 'available', error: null })
   })
 })

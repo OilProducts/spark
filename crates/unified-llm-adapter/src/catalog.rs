@@ -11,7 +11,10 @@ pub struct ModelInfo {
     pub context_window: Option<i64>,
     pub supports_tools: bool,
     pub supports_vision: bool,
-    pub supports_reasoning: bool,
+    #[serde(default)]
+    pub reasoning_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -25,12 +28,25 @@ pub struct ModelInfo {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelCatalog {
     models: Vec<ModelInfo>,
+    #[serde(default)]
+    pub provider_reasoning_efforts: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl ModelCatalog {
     pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
-        let models: Vec<ModelInfo> = serde_json::from_str(text)?;
-        Ok(Self { models })
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum CatalogInput {
+            Catalog(ModelCatalog),
+            Models(Vec<ModelInfo>),
+        }
+        Ok(match serde_json::from_str(text)? {
+            CatalogInput::Catalog(catalog) => catalog,
+            CatalogInput::Models(models) => Self {
+                models,
+                provider_reasoning_efforts: Default::default(),
+            },
+        })
     }
 
     pub fn development() -> &'static Self {
@@ -98,7 +114,7 @@ fn model_supports(model: &ModelInfo, capability: Option<&str>) -> bool {
     match normalize(capability).trim_start_matches("supports_") {
         "tools" => model.supports_tools,
         "vision" => model.supports_vision,
-        "reasoning" => model.supports_reasoning,
+        "reasoning" => !model.reasoning_efforts.is_empty(),
         "structured" | "structured_output" => model.supports_tools,
         _ => false,
     }

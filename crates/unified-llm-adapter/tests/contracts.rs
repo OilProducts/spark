@@ -20,3 +20,6 @@ mod provider_utils_contracts;
 mod public_surface_contracts;
 #[path = "contracts/runtime_boundary_contracts.rs"]
 mod runtime_boundary_contracts;
+
+#[path = "contracts/model_discovery_contracts.rs"]
+mod model_discovery_contracts;

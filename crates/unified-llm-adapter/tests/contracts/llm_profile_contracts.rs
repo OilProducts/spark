@@ -52,6 +52,7 @@ models = ["no-key"]
                 "provider": "openai_compatible",
                 "models": ["local-small", "local-large"],
                 "default_model": "local-large",
+                "reasoning_efforts": [],
                 "configured": true,
             }),
             json!({
@@ -60,6 +61,7 @@ models = ["no-key"]
                 "provider": "openai_compatible",
                 "models": ["no-key"],
                 "default_model": null,
+                "reasoning_efforts": [],
                 "configured": true,
             }),
         ]
@@ -234,7 +236,7 @@ provider = "anthropic"
 base_url = "http://localhost"
 models = ["claude"]
 "#,
-        "LLM profile 'bad' has unsupported provider 'anthropic'; supported providers: openai_compatible.",
+        "LLM profile 'bad' has unsupported provider 'anthropic'; supported providers: openai_compatible, openrouter, litellm.",
     );
     assert_profile_error(
         r#"[profiles.bad]
@@ -289,7 +291,7 @@ base_url = "http://localhost"
 models = ["one"]
 headers = { "X-Debug" = "true" }
 "#,
-        "LLM profile 'bad' has unsupported key 'headers'; supported keys: api_key_env, base_url, default_model, label, models, provider.",
+        "LLM profile 'bad' has unsupported key 'headers'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts.",
     );
     assert_profile_error(
         r#"[profiles.""]
@@ -397,4 +399,38 @@ fn replacing_file_profile_capture_removes_deleted_routes_without_mutating_active
             .as_deref(),
         Some("original-model")
     );
+}
+
+#[test]
+fn compatible_profiles_declare_ordered_efforts_for_all_three_providers() {
+    for provider in ["openai_compatible", "openrouter", "litellm"] {
+        for levels in ["", "reasoning_efforts = ['minimal', 'custom']"] {
+            let raw: toml::value::Table = format!("[profiles.team]\nprovider='{provider}'\nbase_url='http://localhost:4000/v1'\nmodels=['custom']\n{levels}\n").parse().unwrap();
+            let profile = unified_llm_adapter::profiles::parse_llm_profiles(&raw)
+                .unwrap()
+                .remove("team")
+                .unwrap();
+            let expected = if levels.is_empty() {
+                vec![]
+            } else {
+                vec!["minimal", "custom"]
+            };
+            assert_eq!(profile.reasoning_efforts, expected);
+            let config = profile
+                .openai_compatible_request_config_with_env(&BTreeMap::<String, String>::new())
+                .unwrap();
+            assert_eq!(config.reasoning_efforts, expected);
+            assert_eq!(
+                profile.to_public_value(&BTreeMap::<String, String>::new())["reasoning_efforts"],
+                json!(expected)
+            );
+        }
+    }
+    for levels in ["'high'", "[1]", "['']"] {
+        let raw: toml::value::Table = format!("[profiles.team]\nprovider='openai_compatible'\nbase_url='http://localhost:4000/v1'\nmodels=['custom']\nreasoning_efforts={levels}\n").parse().unwrap();
+        assert!(unified_llm_adapter::profiles::parse_llm_profiles(&raw)
+            .unwrap_err()
+            .to_string()
+            .contains("reasoning_efforts"));
+    }
 }

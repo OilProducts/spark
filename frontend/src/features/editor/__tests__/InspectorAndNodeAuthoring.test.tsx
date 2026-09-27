@@ -12,6 +12,10 @@ import { applyNodePropertyChangeToData } from '@/features/editor/Sidebar'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('@/components/model-chooser/useModelOptions', () => ({
+    useModelOptions: () => ({ projectPath: null, payload: { models: [{ provider: 'openai', id: 'gpt-5.5', display: 'gpt-5.5', is_default: false, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'available', error: null } } } }),
+}))
+
 vi.mock('@/lib/useLlmProfiles', () => ({
   useLlmProfiles: () => [],
 }))
