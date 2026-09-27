@@ -371,7 +371,7 @@ pub(crate) fn apply_model_info(profile: &mut ProviderProfile, model_info: &Model
     profile
         .capabilities
         .entry("reasoning".to_string())
-        .or_insert(model_info.supports_reasoning);
+        .or_insert(!model_info.reasoning_efforts.is_empty());
     profile
         .capabilities
         .entry("vision".to_string())

@@ -5496,7 +5496,10 @@ describe('ProjectsPanel', () => {
 
     await chooseModel(user, 'Claude Code', 'claude-opus-4-6')
     await customModel(user, 'final-model')
-    await chooseEffort(user, 'High')
+    // Unknown Claude Code models have no advertised effort; the stored High remains unchanged.
+    await openPicker(user)
+    expect(within(screen.getByRole('group', { name: 'Reasoning effort' })).getAllByRole('button')).toHaveLength(1)
+    await user.keyboard('{Escape}')
     expect(requests).toHaveLength(3)
     if (conflict) revision += 1 // Another client wins while our request is in flight.
     await act(async () => { saves[2]() })
@@ -5533,7 +5536,7 @@ describe('ProjectsPanel', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
       let response: unknown = {}
-      if (url.includes('/llm-profiles')) response = { profiles: [{id:'team', provider:'openai_compatible', models:['model-one','model-two'], default_model:'model-one', configured:false}, {id:'manual',provider:'openai_compatible',models:['manual-model'],configured:false}] }
+      if (url.includes('/llm-profiles')) response = { profiles: [{id:'team', provider:'openai_compatible', models:['model-one','model-two'], reasoning_efforts:['high'], default_model:'model-one', configured:false}, {id:'manual',provider:'openai_compatible',models:['manual-model'],configured:false}] }
       else if (url.includes('/projects/chat-models')) response = { providers:{codex:{status:'unavailable',error:null}}, models:[] }
       else if (url.includes('/projects/metadata')) response = {branch:'main',commit:'abc123'}
       else if (url.includes('/projects/conversations')) response = [snapshot()]

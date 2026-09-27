@@ -8,6 +8,10 @@ use spark_common::settings::SparkSettings;
 
 use crate::errors::{WorkspaceError, WorkspaceResult};
 
+static ANTHROPIC_MODELS_CACHE: Mutex<
+    Option<unified_llm_adapter::model_discovery::AnthropicModelCache>,
+> = Mutex::new(None);
+
 const REASONING_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max", "ultra"];
 
 /// The codex model list comes from a spawned app-server process, so it is
@@ -22,8 +26,6 @@ static CODEX_MODELS_CACHE: Mutex<Option<(Instant, NativeAgentSettings, Vec<ChatM
 /// probe timeout) fall back to the static aliases — valid `--model` values —
 /// so a transient failure never blanks the picker. The resolved list is
 /// cached either way so a broken CLI is not re-probed per request.
-// ponytail: second copy of the codex model-cache pattern; extract a shared
-// helper when a third provider needs one.
 const CLAUDE_CODE_MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
 static CLAUDE_CODE_MODELS_CACHE: Mutex<
     Option<(Instant, NativeAgentSettings, Vec<ChatModelMetadata>)>,
@@ -32,6 +34,8 @@ static CLAUDE_CODE_MODELS_CACHE: Mutex<
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatModelMetadata {
     pub provider: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_profile: Option<String>,
     pub id: String,
     pub display: String,
     pub is_default: bool,
@@ -72,10 +76,36 @@ pub fn chat_models_with_codex_result(
         ),
     };
     models.extend(claude_code_chat_models(&native_configuration(settings)?));
-    models.extend(public_unified_chat_models());
+    let configuration = spark_storage::settings::read_execution_configuration(
+        &settings.config_dir,
+        &spark_common::paths::ProcessEnvironment,
+    )?;
+    let environment = unified_llm_adapter::ProviderEnvironment::from_env_map(
+        &configuration
+            .providers
+            .execution_environment(&std::env::vars().collect()),
+        None,
+    );
+    let anthropic = ANTHROPIC_MODELS_CACHE
+        .lock()
+        .ok()
+        .map(|mut cache| {
+            cache.get_or_insert_with(Default::default).models(
+                environment.providers.get("anthropic"),
+                &unified_llm_adapter::NativeHttpTransport::new(),
+            )
+        })
+        .unwrap_or_else(|| unified_llm_adapter::list_models(Some("anthropic")));
+    models.extend(
+        public_unified_chat_models()
+            .into_iter()
+            .filter(|model| model.provider != "anthropic"),
+    );
+    models.extend(anthropic.into_iter().map(unified_chat_model));
     models.extend(configured_profile_chat_models(settings)?);
     Ok(serde_json::json!({
         "models": models,
+        "provider_reasoning_efforts": unified_llm_adapter::ModelCatalog::development().provider_reasoning_efforts,
         "providers": {
             "codex": codex_status,
         },
@@ -120,6 +150,7 @@ fn claude_code_static_alias_models() -> Vec<ChatModelMetadata> {
     ["opus", "sonnet", "haiku"]
         .into_iter()
         .map(|id| ChatModelMetadata {
+            llm_profile: None,
             provider: "claude-code".to_string(),
             id: id.to_string(),
             display: id.to_string(),
@@ -136,6 +167,7 @@ pub fn claude_code_chat_models_from_metadata(
     metadata
         .into_iter()
         .map(|model| ChatModelMetadata {
+            llm_profile: None,
             provider: "claude-code".to_string(),
             // The blank id is the catalog's `default` pseudo-entry: no
             // --model flag, the CLI picks.
@@ -178,6 +210,7 @@ pub fn codex_chat_models_from_metadata(
         .into_iter()
         .enumerate()
         .map(|(index, model)| ChatModelMetadata {
+            llm_profile: None,
             provider: "codex".to_string(),
             display: model.display,
             is_default: model.is_default || (!has_default && index == 0),
@@ -206,14 +239,7 @@ pub fn public_unified_chat_models() -> Vec<ChatModelMetadata> {
                 "openai" | "anthropic" | "gemini" | "openrouter" | "litellm"
             )
         })
-        .map(|model| ChatModelMetadata {
-            provider: model.provider,
-            id: model.id,
-            display: model.display_name,
-            is_default: false,
-            supported_reasoning_efforts: reasoning_efforts(model.supports_reasoning),
-            default_reasoning_effort: default_reasoning_effort(model.supports_reasoning),
-        })
+        .map(unified_chat_model)
         .collect()
 }
 
@@ -243,11 +269,16 @@ fn configured_profile_chat_models(
         };
         for model in profile_models.iter().filter_map(Value::as_str) {
             models.push(ChatModelMetadata {
+                llm_profile: Some(profile_id.to_string()),
                 provider: provider.to_string(),
                 id: model.to_string(),
                 display: format!("{label} / {model}"),
                 is_default: default_model == Some(model),
-                supported_reasoning_efforts: Vec::new(),
+                supported_reasoning_efforts: profile
+                    .get("reasoning_efforts")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default(),
                 default_reasoning_effort: None,
             });
         }
@@ -255,17 +286,14 @@ fn configured_profile_chat_models(
     Ok(models)
 }
 
-fn reasoning_efforts(supported: bool) -> Vec<String> {
-    if supported {
-        REASONING_EFFORTS
-            .iter()
-            .map(|value| (*value).to_string())
-            .collect()
-    } else {
-        Vec::new()
+fn unified_chat_model(model: unified_llm_adapter::ModelInfo) -> ChatModelMetadata {
+    ChatModelMetadata {
+        llm_profile: None,
+        provider: model.provider,
+        id: model.id,
+        display: model.display_name,
+        is_default: false,
+        supported_reasoning_efforts: model.reasoning_efforts,
+        default_reasoning_effort: model.default_reasoning_effort,
     }
-}
-
-fn default_reasoning_effort(supported: bool) -> Option<String> {
-    supported.then(|| "medium".to_string())
 }

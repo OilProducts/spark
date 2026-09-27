@@ -74,6 +74,7 @@ api_key_env = "SPARK_TEST_ABSENT_LLM_PROFILE_KEY"
                     "provider": "openai_compatible",
                     "models": ["local-small", "local-large"],
                     "default_model": "local-large",
+                    "reasoning_efforts": [],
                     "configured": true,
                 },
                 {
@@ -82,6 +83,7 @@ api_key_env = "SPARK_TEST_ABSENT_LLM_PROFILE_KEY"
                     "provider": "openai_compatible",
                     "models": ["keyed"],
                     "default_model": null,
+                    "reasoning_efforts": [],
                     "configured": false,
                 },
             ]
@@ -110,7 +112,7 @@ models = ["claude"]
     assert_eq!(response.status_code, 400);
     assert_eq!(
         response.body,
-        json!({"detail": "LLM profile 'bad' has unsupported provider 'anthropic'; supported providers: openai_compatible."})
+        json!({"detail": "LLM profile 'bad' has unsupported provider 'anthropic'; supported providers: openai_compatible, openrouter, litellm."})
     );
 }
 

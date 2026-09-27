@@ -726,7 +726,7 @@ fn guide_model_icon_and_provider_template_resources_are_available() {
     assert_eq!(catalog.source(), ResourceSource::Packaged);
     let parsed: serde_json::Value =
         serde_json::from_str(models::model_catalog_json()).expect("model catalog json");
-    let catalog_entries = parsed.as_array().expect("model catalog array");
+    let catalog_entries = parsed["models"].as_array().expect("model catalog array");
     assert!(catalog_entries.len() > 5);
     assert!(catalog_entries.iter().any(|entry| {
         entry["id"] == "gpt-5.2-codex"

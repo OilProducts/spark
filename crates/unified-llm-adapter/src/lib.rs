@@ -16,6 +16,7 @@ pub mod events;
 pub mod generation;
 pub mod http_transport;
 pub mod middleware;
+pub mod model_discovery;
 pub mod native;
 pub mod openai_compatible;
 pub mod profiles;

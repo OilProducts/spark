@@ -77,7 +77,7 @@ nodes:
     execution:
       llm_provider: OpenAI
       llm_model: gpt-runtime-text
-      reasoning_effort: HIGH
+      reasoning_effort: FutureEffort
 "#,
     )
     .expect("flow parses")
@@ -139,7 +139,7 @@ nodes:
         request.messages,
         vec![Message::user("Summarize Rust evidence")]
     );
-    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("FutureEffort"));
     assert_eq!(request.metadata["spark.runtime.source"], json!("codergen"));
     assert_eq!(
         request.metadata["spark.runtime.provider_selector"],

@@ -12,6 +12,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('@/components/model-chooser/useModelOptions', () => ({
+    useModelOptions: () => ({ projectPath: null, payload: { models: [{ provider: 'anthropic', id: 'claude-sonnet-4-6', display: 'claude-sonnet-4-6', is_default: false, supported_reasoning_efforts: ['low', 'high'] }], providers: { codex: { status: 'available', error: null } } } }),
+}))
+
 vi.mock('@/lib/flowPersistence', async (importOriginal) => {
     const actual = await importOriginal<typeof import('@/lib/flowPersistence')>()
     return {

@@ -82,7 +82,6 @@ fn compatible_providers_complete_on_chat_completions_path_with_warnings_and_usag
         assert_warning_codes(
             &response,
             [
-                "unsupported_reasoning_effort",
                 "unsupported_responses_tool",
                 "unsupported_responses_option",
                 "unsupported_reasoning_token_visibility",
@@ -160,13 +159,7 @@ fn compatible_providers_stream_chat_completions_events_and_usage() {
                 .and_then(|rate_limit| rate_limit.requests_remaining),
             Some(6)
         );
-        assert_warning_codes(
-            &accumulated,
-            [
-                "unsupported_reasoning_effort",
-                "unsupported_reasoning_token_visibility",
-            ],
-        );
+        assert_warning_codes(&accumulated, ["unsupported_reasoning_token_visibility"]);
     }
 }
 
@@ -268,6 +261,7 @@ fn compatible_provider_model_resolution_requires_explicit_or_profile_default_mod
     let profile_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(OpenAICompatibleAdapter::openai_compatible(
             OpenAICompatibleRequestConfig {
+                reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
                 base_url: Some("https://profiles.example/custom/responses".to_string()),
                 ..OpenAICompatibleRequestConfig::default()
             },
@@ -463,6 +457,7 @@ impl CompatibleProvider {
         match self {
             Self::OpenAICompatible => Arc::new(OpenAICompatibleAdapter::openai_compatible(
                 OpenAICompatibleRequestConfig {
+                    reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
                     api_key: Some(format!("{}-key", self.name())),
                     base_url: Some("https://compatible.example/custom/responses".to_string()),
                     require_api_key: true,
@@ -473,6 +468,7 @@ impl CompatibleProvider {
             Self::OpenRouter => Arc::new(
                 OpenRouterAdapter::new(
                     OpenAICompatibleRequestConfig {
+                        reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
                         api_key: Some(format!("{}-key", self.name())),
                         require_api_key: true,
                         ..OpenAICompatibleRequestConfig::default()
@@ -484,6 +480,7 @@ impl CompatibleProvider {
             Self::LiteLLM => Arc::new(
                 LiteLLMAdapter::new(
                     OpenAICompatibleRequestConfig {
+                        reasoning_efforts: vec!["low".into(), "medium".into(), "high".into()],
                         api_key: Some(format!("{}-key", self.name())),
                         base_url: Some("https://litellm.example/proxy/responses".to_string()),
                         ..OpenAICompatibleRequestConfig::default()

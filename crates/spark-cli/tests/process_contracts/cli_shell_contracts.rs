@@ -159,7 +159,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "--llm-profile",
             "implementation",
             "--reasoning-effort",
-            "HIGH",
+            "FutureEffort",
             "--execution-profile",
             "local-dev",
             "--base-url",
@@ -192,7 +192,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "llm_profile": "implementation",
             "llm_provider": "openai",
             "model": "gpt-5",
-            "reasoning_effort": "high",
+            "reasoning_effort": "FutureEffort",
             "summary": "Run the approved scope"
         })
     );
@@ -272,7 +272,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "llm_provider": "anthropic",
             "model": "gpt-5.3",
             "project_path": "/tmp/project",
-            "reasoning_effort": "low",
+            "reasoning_effort": "LOW",
             "summary": "Launch directly"
         })
     );

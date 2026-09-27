@@ -17,7 +17,8 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
     assert_eq!(gpt.max_output, Some(128_000));
     assert!(gpt.supports_tools);
     assert!(gpt.supports_vision);
-    assert!(gpt.supports_reasoning);
+    assert!(!gpt.reasoning_efforts.is_empty());
+    assert_eq!(gpt.default_reasoning_effort.as_deref(), Some("none"));
     assert_eq!(gpt.input_cost_per_million, Some(1.75));
     assert_eq!(gpt.output_cost_per_million, Some(14.0));
     assert!(gpt.aliases.contains(&"gpt5.2".to_string()));
@@ -27,7 +28,15 @@ fn public_catalog_api_exposes_model_metadata_and_filters_capabilities() {
             .into_iter()
             .map(|model| model.id)
             .collect::<Vec<_>>(),
-        vec!["gpt-5.2", "gpt-5.2-mini", "gpt-5.2-codex"]
+        vec![
+            "gpt-5.2",
+            "gpt-5.2-mini",
+            "gpt-5.2-codex",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.5"
+        ]
     );
     assert_eq!(
         get_latest_model("openai", Some("supports_tools"))
@@ -68,7 +77,7 @@ fn latest_model_defaults_are_native_provider_only_even_if_resource_contains_comp
                 "max_output": 64000,
                 "supports_tools": true,
                 "supports_vision": true,
-                "supports_reasoning": true,
+                "reasoning_efforts": ["high"],
                 "input_cost_per_million": null,
                 "output_cost_per_million": null,
                 "aliases": ["openrouter-sonnet"]
@@ -81,7 +90,7 @@ fn latest_model_defaults_are_native_provider_only_even_if_resource_contains_comp
                 "max_output": null,
                 "supports_tools": true,
                 "supports_vision": false,
-                "supports_reasoning": false,
+                "reasoning_efforts": [],
                 "input_cost_per_million": null,
                 "output_cost_per_million": null,
                 "aliases": []
@@ -94,7 +103,7 @@ fn latest_model_defaults_are_native_provider_only_even_if_resource_contains_comp
                 "max_output": null,
                 "supports_tools": false,
                 "supports_vision": false,
-                "supports_reasoning": false,
+                "reasoning_efforts": [],
                 "input_cost_per_million": null,
                 "output_cost_per_million": null,
                 "aliases": []
@@ -128,7 +137,7 @@ fn catalog_structured_output_capability_uses_tool_capable_defaults() {
                 "max_output": null,
                 "supports_tools": false,
                 "supports_vision": true,
-                "supports_reasoning": true,
+                "reasoning_efforts": ["high"],
                 "input_cost_per_million": null,
                 "output_cost_per_million": null,
                 "aliases": []
@@ -141,7 +150,7 @@ fn catalog_structured_output_capability_uses_tool_capable_defaults() {
                 "max_output": null,
                 "supports_tools": true,
                 "supports_vision": false,
-                "supports_reasoning": false,
+                "reasoning_efforts": [],
                 "input_cost_per_million": null,
                 "output_cost_per_million": null,
                 "aliases": []
@@ -209,4 +218,46 @@ impl ProviderAdapter for EchoModelAdapter {
     fn stream(&self, _request: Request) -> Result<StreamEvents, unified_llm_adapter::AdapterError> {
         Ok(stream_events(Vec::new().into_iter()))
     }
+}
+
+#[test]
+fn catalog_effort_levels_drive_capabilities_and_keep_defaults_within_model_levels() {
+    let catalog = ModelCatalog::development();
+    for model in catalog.list_models(None) {
+        if let Some(default) = model.default_reasoning_effort {
+            assert!(model.reasoning_efforts.contains(&default), "{}", model.id);
+        }
+    }
+    assert_eq!(
+        get_model_info("gpt-6-astra").unwrap().reasoning_efforts,
+        ["low", "medium", "high", "xhigh", "max"]
+    );
+    assert_eq!(
+        get_model_info("gemini-3.8-flash")
+            .unwrap()
+            .default_reasoning_effort
+            .as_deref(),
+        Some("medium")
+    );
+    assert!(get_model_info("claude-sonnet-4-5")
+        .unwrap()
+        .reasoning_efforts
+        .is_empty());
+    assert_eq!(
+        catalog.provider_reasoning_efforts["openai"],
+        ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    );
+    assert!(!catalog
+        .provider_reasoning_efforts
+        .contains_key("openrouter"));
+    let mut models = serde_json::to_value(catalog.list_models(Some("openai"))).unwrap();
+    models[0]["reasoning_efforts"] = json!([]);
+    let parsed = ModelCatalog::from_json(&models.to_string()).unwrap();
+    assert_eq!(
+        parsed
+            .get_latest_model("openai", Some("reasoning"))
+            .unwrap()
+            .id,
+        "gpt-5.2-codex"
+    );
 }

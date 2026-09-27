@@ -599,11 +599,13 @@ fn configured_profile_adapter(
     env: &impl LlmProfileEnvironment,
 ) -> Result<Arc<dyn ProviderAdapter>, AdapterError> {
     match profile.provider.as_str() {
-        "openai_compatible" => Ok(Arc::new(OpenAICompatibleAdapter::new(
-            "openai_compatible",
-            profile.openai_compatible_request_config_with_env(env)?,
-            Arc::new(NativeHttpTransport::new()),
-        )?)),
+        "openai_compatible" | "openrouter" | "litellm" => {
+            Ok(Arc::new(OpenAICompatibleAdapter::new(
+                &profile.provider,
+                profile.openai_compatible_request_config_with_env(env)?,
+                Arc::new(NativeHttpTransport::new()),
+            )?))
+        }
         other => Err(configuration_error(format!(
             "LLM profile '{}' has unsupported provider '{other}'",
             profile.id

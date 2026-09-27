@@ -19,7 +19,6 @@ interface ModelChooserProps {
     invalidModel?: boolean
 }
 
-const standardEfforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
 const effortLabel = (effort: string) => effort === 'xhigh' ? 'XHigh' : effort.charAt(0).toUpperCase() + effort.slice(1)
 const providerLabel = (provider: string) => provider === 'codex' ? 'Codex' : provider === 'claude-code' ? 'Claude Code' : provider
 const empty: ModelSettings = { provider: null, llm_profile: null, model: null, reasoning_effort: null }
@@ -36,13 +35,15 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
         provider === 'codex' && discovery.payload?.providers.codex.status === 'unavailable' ||
         ['codex', 'claude-code'].includes(provider) && !discovery.payload?.models.some(model => model.provider === provider))
     const metadata = (provider: string | null, model: string | null) => !unavailable(provider || '')
-        ? discovery?.payload?.models.find(entry => entry.provider === provider && (model ? entry.id === model : entry.is_default)) : undefined
+        ? discovery?.payload?.models.find(entry => entry.provider === provider && !entry.llm_profile && (model ? entry.id === model : entry.is_default)) : undefined
     const resolve = (settings: ModelSettings) => {
         const profile = profiles.find(entry => entry.id === settings.llm_profile)
         const provider = profile?.provider || settings.provider || 'codex'
         const model = settings.model || profile?.default_model || null
-        const meta = profile && !model ? undefined : metadata(provider, model)
-        return { model: meta?.display || model || meta?.id, effort: settings.reasoning_effort || meta?.default_reasoning_effort, meta }
+        const meta = profile ? discovery?.payload?.models.find(entry => entry.llm_profile === profile.id && entry.id === model) : metadata(provider, model)
+        const fallback = !profile && !!model && !meta ? discovery?.payload?.provider_reasoning_efforts?.[provider] : undefined
+        const efforts = profile ? profile.reasoning_efforts ?? [] : meta?.supported_reasoning_efforts ?? fallback ?? []
+        return { model: meta?.display || model || meta?.id, effort: settings.reasoning_effort || meta?.default_reasoning_effort, meta, efforts, unverified: !!fallback?.length }
     }
     const defaults = resolve(inherited ?? { ...empty, provider: value.provider, llm_profile: value.llm_profile })
     const effective = {
@@ -57,7 +58,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
         ? `${entry.model} · ${entry.effort ? effortLabel(entry.effort) : 'Default effort'}` : inheritLabel
     const providers = [...new Set([...LLM_PROVIDER_OPTIONS, ...profiles.map(profile => profile.provider), value.provider].filter((entry): entry is string => !!entry))]
     const groups = providers.flatMap(provider => {
-        const discovered = unavailable(provider) ? [] : discovery?.payload?.models.filter(model => model.provider === provider) ?? []
+        const discovered = unavailable(provider) ? [] : discovery?.payload?.models.filter(model => model.provider === provider && !model.llm_profile) ?? []
         const models = discovered.length ? discovered.map(model => model.id) : getModelSuggestions(provider === 'codex' ? 'openai' : provider === 'claude-code' ? 'anthropic' : provider)
         return [{ provider, profile: null as string | null, label: providerLabel(provider), models },
             ...profiles.filter(profile => profile.provider === provider).map(profile => ({ provider, profile: profile.id, label: profile.label || profile.id, models: profile.models }))]
@@ -77,9 +78,9 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
     // The API inherits a whole model group, so an inherited choice has no effort of its own:
     // setting one would silently pin today's inherited model. Choose a model first.
     const effortLocked = !value.provider && !value.llm_profile && !highlighted
-    const efforts = (highlighted ? resolve({ ...highlighted, reasoning_effort: null }).meta : resolved.meta)?.supported_reasoning_efforts
-    const supported = efforts ?? standardEfforts
-    const allEfforts = [...new Set([...supported, ...(value.reasoning_effort ? [value.reasoning_effort] : [])])]
+    const effortSelection = highlighted ? resolve({ ...highlighted, reasoning_effort: null }) : resolved
+    const supported = effortSelection.efforts
+    const allEfforts = [...new Set([...supported, ...(supported.length && value.reasoning_effort ? [value.reasoning_effort] : [])])]
     const commit = (choice: typeof choices[number], close: boolean) => {
         onChange({ provider: choice.provider, llm_profile: choice.llm_profile, model: choice.model, reasoning_effort: value.reasoning_effort })
         if (close) setOpen(false)
@@ -139,6 +140,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                 </div>
                 <div role="group" aria-label="Reasoning effort" className="mt-2 flex shrink-0 flex-wrap gap-1 border-t border-border pt-2">
                     <span className="w-full text-xs text-muted-foreground">{effortLocked ? 'Effort follows the default. Choose a model to set it.' : 'Reasoning effort'}</span>
+                    {effortSelection.unverified && <span className="w-full text-xs text-muted-foreground">Provider levels; unverified for this model.</span>}
                     {[null, ...allEfforts].map(effort => <Button key={effort ?? 'default'} type="button" size="sm" variant="ghost" disabled={effortLocked} className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={value.reasoning_effort === effort}
                         onClick={() => {
                             const selection = highlighted ?? value

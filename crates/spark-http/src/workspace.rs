@@ -173,7 +173,7 @@ struct BrowseQuery {
 
 #[derive(Debug, Deserialize)]
 struct ChatModelsQuery {
-    project_path: String,
+    project_path: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -776,10 +776,16 @@ async fn project_chat_models(
     payload: Result<Query<ChatModelsQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
     let query = query_payload(payload)?;
-    WorkspaceProjectService::new((*settings).clone())
-        .chat_models(&query.project_path)
-        .map(Json)
-        .map_err(Into::into)
+    let models = tokio::task::spawn_blocking(move || {
+        WorkspaceProjectService::new((*settings).clone()).chat_models(query.project_path.as_deref())
+    })
+    .await
+    .map_err(|error| {
+        WorkspaceApiError(WorkspaceError::Internal(format!(
+            "model discovery task failed: {error}"
+        )))
+    })??;
+    Ok(Json(models))
 }
 
 async fn list_triggers(

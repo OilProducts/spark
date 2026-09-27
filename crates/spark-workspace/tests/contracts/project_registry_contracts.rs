@@ -163,10 +163,18 @@ default_model = "local-model"
     )
     .expect("profiles");
 
-    let response = WorkspaceProjectService::new(settings)
-        .chat_models("/projects/my-app")
+    let service = WorkspaceProjectService::new(settings);
+    assert!(service.chat_models(Some("")).is_err());
+    let workspace = service.chat_models(None).expect("workspace models");
+    let response = service
+        .chat_models(Some("/projects/my-app"))
         .expect("models");
 
+    assert_eq!(
+        workspace["provider_reasoning_efforts"],
+        response["provider_reasoning_efforts"]
+    );
+    assert_eq!(workspace["models"], response["models"]);
     let models = response["models"].as_array().expect("models array");
     assert!(models
         .iter()
@@ -474,4 +482,193 @@ fn missing_project_profile_lookup_keeps_native_fallback_without_registration() {
     assert_eq!(response.body["status"], "started", "{:?}", response.body);
     assert_eq!(response.body["execution_profile_id"], "native");
     assert!(!registry.projects_root().exists());
+}
+
+#[test]
+fn chat_models_expose_catalog_defaults_fallbacks_and_profile_specific_levels() {
+    pin_claude_code_bin_to_missing();
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    fs::write(
+        settings.config_dir.join("llm-profiles.toml"),
+        r#"
+[profiles.local]
+provider = "openai_compatible"
+base_url = "http://localhost:4000/v1"
+models = ["shared"]
+reasoning_efforts = ["minimal", "high"]
+[profiles.other]
+provider = "openai_compatible"
+base_url = "http://localhost:4001/v1"
+models = ["shared"]
+[profiles.router]
+provider = "openrouter"
+base_url = "https://openrouter.ai/api/v1"
+models = ["remote"]
+reasoning_efforts = ["high"]
+[profiles.proxy]
+provider = "litellm"
+base_url = "http://localhost:4002/v1"
+models = ["remote"]
+reasoning_efforts = ["low"]
+"#,
+    )
+    .unwrap();
+    let response =
+        spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap();
+    let models = response["models"].as_array().unwrap();
+    for catalog in unified_llm_adapter::list_models(None)
+        .into_iter()
+        .filter(|model| model.provider != "anthropic")
+    {
+        let model = models
+            .iter()
+            .find(|model| model["id"] == catalog.id && model["provider"] == catalog.provider)
+            .unwrap();
+        assert_eq!(
+            model["supported_reasoning_efforts"],
+            json!(catalog.reasoning_efforts)
+        );
+        assert_eq!(
+            model["default_reasoning_effort"],
+            json!(catalog.default_reasoning_effort)
+        );
+    }
+    for (profile, levels) in [
+        ("local", vec!["minimal", "high"]),
+        ("other", vec![]),
+        ("router", vec!["high"]),
+        ("proxy", vec!["low"]),
+    ] {
+        let model = models
+            .iter()
+            .find(|model| model["llm_profile"] == profile)
+            .unwrap();
+        assert_eq!(model["supported_reasoning_efforts"], json!(levels));
+    }
+    assert_eq!(
+        response["provider_reasoning_efforts"]["gemini"],
+        json!(["minimal", "low", "medium", "high"])
+    );
+    assert!(response["provider_reasoning_efforts"]
+        .get("openai_compatible")
+        .is_none());
+}
+
+#[test]
+fn chat_models_discovery_uses_resolved_configuration_and_invalidates_cache() {
+    use std::io::{BufRead, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    const CHILD: &str = "SPARK_DISCOVERY_CONFIGURATION_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "project_registry_contracts::chat_models_discovery_uses_resolved_configuration_and_invalidates_cache",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .env("SPARK_TEST_ANTHROPIC_KEY", "configured-secret")
+            .env("SPARK_TEST_OTHER_KEY", "changed-secret")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert!(std::env::var_os("ANTHROPIC_API_KEY").is_none());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).unwrap();
+    for (id, key_env, secret, efforts) in [
+        (
+            "live-first",
+            "SPARK_TEST_ANTHROPIC_KEY",
+            "configured-secret",
+            vec!["low", "high"],
+        ),
+        (
+            "live-changed",
+            "SPARK_TEST_OTHER_KEY",
+            "changed-secret",
+            vec!["medium"],
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        fs::write(
+            settings.config_dir.join("spark.toml"),
+            format!(
+                "[providers.anthropic]\nbase_url='http://{address}/v1'\napi_key_env='{key_env}'\n"
+            ),
+        )
+        .unwrap();
+        let capabilities: serde_json::Map<String, Value> = efforts
+            .iter()
+            .map(|level| (level.to_string(), json!({"supported": true})))
+            .collect();
+        let response = json!({"data": [{"id": id, "display_name": "Live model", "capabilities": {"effort": capabilities}}], "has_more": false}).to_string();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(stream) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("No discovery request: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                assert!(reader.read_line(&mut line).unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            assert!(headers.starts_with("GET /v1/models?limit=1000 HTTP/1.1\r\n"));
+            assert!(headers
+                .to_ascii_lowercase()
+                .contains(&format!("x-api-key: {secret}\r\n")));
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+        });
+        let response =
+            spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap();
+        server.join().unwrap();
+        let models: Vec<_> = response["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|model| model["provider"] == "anthropic")
+            .collect();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], id);
+        assert_eq!(models[0]["display"], "Live model");
+        assert_eq!(models[0]["supported_reasoning_efforts"], json!(efforts));
+        assert!(!response.to_string().contains(secret));
+        // The endpoint is now closed: repeated discovery must use the cached live metadata.
+        assert_eq!(
+            spark_workspace::models::chat_models_with_codex_result(&settings, Ok(vec![])).unwrap(),
+            response
+        );
+    }
 }

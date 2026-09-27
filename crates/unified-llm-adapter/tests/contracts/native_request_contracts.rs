@@ -2017,3 +2017,40 @@ fn relative_dot_path(cwd: &Path, path: &Path) -> String {
 fn encode_base64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
+
+#[test]
+fn native_effort_fields_are_optional_and_preserve_unlisted_values() {
+    for provider in ["openai", "anthropic", "gemini"] {
+        for effort in [None, Some("future-effort")] {
+            let mut request = Request {
+                model: "custom-model".into(),
+                provider: Some(provider.into()),
+                messages: vec![Message::user("hello")],
+                reasoning_effort: effort.map(str::to_string),
+                ..Request::default()
+            };
+            if provider == "anthropic" {
+                request.provider_options.insert(
+                    provider.into(),
+                    json!({
+                        "thinking": {"type": "enabled", "budget_tokens": 1024},
+                        "output_config": {"format": {"type": "json_schema"}}
+                    }),
+                );
+            }
+            let built =
+                build_native_complete_request(provider, &request, NativeRequestConfig::new("key"))
+                    .unwrap();
+            let pointer = match provider {
+                "openai" => "/reasoning/effort",
+                "anthropic" => "/output_config/effort",
+                _ => "/generationConfig/thinkingConfig/thinkingLevel",
+            };
+            assert_eq!(built.body.pointer(pointer).and_then(Value::as_str), effort);
+            if provider == "anthropic" {
+                assert_eq!(built.body["thinking"]["budget_tokens"], 1024);
+                assert_eq!(built.body["output_config"]["format"]["type"], "json_schema");
+            }
+        }
+    }
+}

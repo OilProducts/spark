@@ -148,6 +148,9 @@ fn execute_stream_request(
 }
 
 fn request_body(request: &NativeCompleteRequest) -> Result<Vec<u8>, AdapterError> {
+    if request.method == "GET" && request.body.is_null() {
+        return Ok(Vec::new());
+    }
     serde_json::to_vec(&request.body).map_err(|error| {
         AdapterError::provider(
             AdapterErrorKind::Configuration,

@@ -247,7 +247,7 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
         request.messages,
         vec![Message::user("Write the runtime note")]
     );
-    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("HIGH"));
     assert_eq!(
         request.metadata["spark.runtime.backend"],
         json!("rust_unified_llm_adapter")
@@ -261,7 +261,7 @@ fn codergen_backend_enters_rust_unified_llm_adapter_boundary() {
     assert!(!request.metadata.contains_key("spark.runtime.llm_profile"));
     assert_eq!(
         request.metadata["spark.runtime.reasoning_effort"],
-        json!("high")
+        json!("HIGH")
     );
     assert_eq!(
         request.metadata["spark.runtime.response_contract"],
@@ -594,7 +594,7 @@ fn codergen_backend_agent_mode_uses_rust_session_boundary() {
     assert_eq!(completion.payload["provider"], json!("openai_compatible"));
     assert_eq!(completion.payload["model_selector"], json!("agent-model"));
     assert_eq!(completion.payload["model"], json!("agent-model"));
-    assert_eq!(completion.payload["reasoning_effort"], json!("high"));
+    assert_eq!(completion.payload["reasoning_effort"], json!("HIGH"));
     assert_eq!(
         completion.payload["response_contract"],
         json!("status_envelope")
@@ -1405,10 +1405,10 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
         request.provider_options,
         BTreeMap::from([(
             "openai".to_string(),
-            json!({"reasoning": {"effort": "high"}})
+            json!({"reasoning": {"effort": "HIGH"}})
         )])
     );
-    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("HIGH"));
     assert_eq!(request.metadata["caller"], json!("workspace"));
     assert_eq!(
         request.metadata["spark.runtime.source"],
@@ -1419,7 +1419,7 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
     assert!(!request.metadata.contains_key("spark.runtime.llm_profile"));
     assert_eq!(
         request.metadata["spark.runtime.reasoning_effort"],
-        json!("high")
+        json!("HIGH")
     );
     assert_eq!(
         request.metadata["spark.runtime.conversation_id"],
@@ -1604,7 +1604,7 @@ fn agent_turn_backend_answers_request_user_input_through_rust_session_lifecycle(
     assert_eq!(request.metadata["spark.runtime.chat_mode"], json!("agent"));
     assert_eq!(
         request.metadata["spark.runtime.reasoning_effort"],
-        json!("high")
+        json!("HIGH")
     );
     assert_eq!(request.metadata["caller"], json!("workspace"));
 }
@@ -2171,12 +2171,12 @@ fn agent_turn_backend_keys_openai_provider_options_by_native_profile_for_configu
     assert_eq!(request.provider.as_deref(), Some("openai"));
     assert_eq!(request.model, "gpt-team");
     assert!(request.messages[0].text().contains("OpenAI coding agent"));
-    assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(request.reasoning_effort.as_deref(), Some("HIGH"));
     assert_eq!(
         request.provider_options,
         BTreeMap::from([(
             "openai".to_string(),
-            json!({"reasoning": {"effort": "high"}})
+            json!({"reasoning": {"effort": "HIGH"}})
         )])
     );
     assert_eq!(request.metadata["spark.runtime.provider"], json!("openai"));
@@ -3057,4 +3057,142 @@ fn agent_codergen_streams_a_prefix_of_the_output_events() {
         output.events.last().expect("terminal").event_type,
         "rust_agent_adapter_request_completed",
     );
+}
+
+#[test]
+fn chat_and_workflow_preserve_unlisted_effort_through_compatible_provider_dispatch() {
+    use unified_llm_adapter::{
+        NativeCompleteRequest, NativeCompleteResponse, NativeCompleteTransport,
+        NativeStreamResponse, OpenAICompatibleAdapter, OpenAICompatibleRequestConfig,
+        RUNTIME_LAUNCH_REASONING_EFFORT_KEY,
+    };
+
+    #[derive(Default)]
+    struct CaptureTransport(Mutex<Vec<NativeCompleteRequest>>);
+
+    impl NativeCompleteTransport for CaptureTransport {
+        fn complete(
+            &self,
+            request: NativeCompleteRequest,
+        ) -> Result<NativeCompleteResponse, AdapterError> {
+            self.0.lock().unwrap().push(request);
+            Ok(NativeCompleteResponse::ok(json!({
+                "id": "reply", "model": "custom-model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "Done"},
+                             "finish_reason": "stop"}]
+            })))
+        }
+
+        fn stream(
+            &self,
+            request: NativeCompleteRequest,
+        ) -> Result<NativeStreamResponse, AdapterError> {
+            self.0.lock().unwrap().push(request);
+            Ok(NativeStreamResponse::ok([json!({
+                "id": "reply", "model": "custom-model",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Done"},
+                             "finish_reason": "stop"}]
+            })]))
+        }
+    }
+
+    let transport = Arc::new(CaptureTransport::default());
+    let adapter = Arc::new(OpenAICompatibleAdapter::openai_compatible(
+        OpenAICompatibleRequestConfig {
+            base_url: Some("https://compatible.example/v1".to_string()),
+            reasoning_efforts: vec!["low".to_string(), "high".to_string()],
+            ..Default::default()
+        },
+        transport.clone(),
+    ));
+    let client = Client::new()
+        .with_llm_profile_adapter(
+            "implementation",
+            ActiveLlmProfile::new("openai_compatible", Some("custom-model".to_string())),
+            adapter,
+        )
+        .unwrap();
+    let backend = RustLlmAgentTurnBackend::new(client.clone());
+    backend
+        .run_turn(AgentTurnRequest {
+            conversation_id: "effort-case".to_string(),
+            project_path: "/repo".to_string(),
+            prompt: "Reply".to_string(),
+            history: Vec::new(),
+            provider: None,
+            model: None,
+            llm_profile: Some("implementation".to_string()),
+            reasoning_effort: Some("FutureEffort".to_string()),
+            chat_mode: Some("chat".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .unwrap();
+
+    let mut handler =
+        spark_agent_adapter::CodergenHandler::with_backend(RustLlmCodergenBackend::new(client));
+    // Exercise node, launch, and fallback resolution in both workflow execution modes.
+    for source in ["node", "launch", "fallback"] {
+        let context = if source == "launch" {
+            BTreeMap::from([(
+                RUNTIME_LAUNCH_REASONING_EFFORT_KEY.to_string(),
+                json!("FutureEffort"),
+            )])
+        } else {
+            BTreeMap::new()
+        };
+        for runtime_mode in ["text_only", "agent"] {
+            let mut attrs = BTreeMap::new();
+            for (key, value) in [
+                ("prompt", "Reply"),
+                ("llm_provider", "implementation"),
+                ("codergen.runtime_mode", runtime_mode),
+                (
+                    "reasoning_effort",
+                    if source == "node" { "FutureEffort" } else { "" },
+                ),
+            ] {
+                if !value.is_empty() {
+                    attrs.insert(
+                        key.to_string(),
+                        attractor_core::DotAttribute {
+                            key: key.to_string(),
+                            value: attractor_core::DotValue::String(value.to_string()),
+                            value_type: attractor_core::DotValueType::String,
+                            line: 1,
+                        },
+                    );
+                }
+            }
+            let node = attractor_core::DotNode {
+                node_id: "effort-case".to_string(),
+                attrs,
+                line: 1,
+                declaration_order: 0,
+                explicit_attr_keys: Default::default(),
+            };
+            handler
+                .execute(spark_agent_adapter::CodergenRequest {
+                    node_id: node.node_id.clone(),
+                    node,
+                    graph: serde_json::from_value(json!({"graph_id": "effort-case"})).unwrap(),
+                    context: context.clone(),
+                    logs_root: None,
+                    fallback_provider: None,
+                    fallback_model: None,
+                    fallback_profile: None,
+                    fallback_reasoning_effort: (source == "fallback")
+                        .then(|| "FutureEffort".to_string()),
+                    project_path: None,
+                    metadata: BTreeMap::new(),
+                })
+                .unwrap();
+        }
+    }
+
+    let requests = transport.0.lock().unwrap();
+    assert_eq!(requests.len(), 7);
+    for request in requests.iter() {
+        assert_eq!(request.body["model"], "custom-model");
+        assert_eq!(request.body["reasoning_effort"], "FutureEffort");
+    }
 }

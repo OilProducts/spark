@@ -205,7 +205,12 @@ pub fn resolve_effective_reasoning_effort(
         launch_reasoning.as_deref(),
         inputs.fallback_reasoning_effort.as_deref(),
     ])
-    .map(|value| value.to_lowercase())
+    .map(
+        |value| match resolve_effective_llm_provider(inputs, context).as_str() {
+            "codex" | "claude-code" | "claude_code" => value.to_lowercase(),
+            _ => value,
+        },
+    )
 }
 
 fn first_text<'a>(values: impl IntoIterator<Item = Option<&'a str>>) -> Option<String> {
@@ -265,7 +270,7 @@ fn model_satisfies(model: &ModelInfo, capabilities: ModelCapabilities) -> bool {
     if capabilities.vision && !model.supports_vision {
         return false;
     }
-    if capabilities.reasoning && !model.supports_reasoning {
+    if capabilities.reasoning && model.reasoning_efforts.is_empty() {
         return false;
     }
     if capabilities.structured_output && !model.supports_tools {

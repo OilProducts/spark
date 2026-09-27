@@ -246,8 +246,10 @@ impl WorkspaceProjectService {
         })
     }
 
-    pub fn chat_models(&self, project_path: &str) -> WorkspaceResult<Value> {
-        let _ = normalize_project_path_or_400(project_path)?;
+    pub fn chat_models(&self, project_path: Option<&str>) -> WorkspaceResult<Value> {
+        if let Some(project_path) = project_path {
+            let _ = normalize_project_path_or_400(project_path)?;
+        }
         crate::models::chat_models(&self.settings)
     }
 

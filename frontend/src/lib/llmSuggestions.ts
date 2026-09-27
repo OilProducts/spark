@@ -7,6 +7,7 @@ export interface LlmProfileMetadata {
     label?: string | null
     provider: string
     models: string[]
+    reasoning_efforts?: string[]
     default_model?: string | null
     configured: boolean
 }

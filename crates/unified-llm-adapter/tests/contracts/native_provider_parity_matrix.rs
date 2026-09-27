@@ -634,7 +634,7 @@ impl NativeProvider {
                 assert_eq!(captured.body["generationConfig"]["topK"], json!(32));
                 assert_eq!(
                     captured.body["generationConfig"]["thinkingConfig"],
-                    json!({"includeThoughts": true})
+                    json!({"includeThoughts": true, "thinkingLevel": "high"})
                 );
                 assert_eq!(
                     captured.body["generationConfig"]["responseMimeType"],

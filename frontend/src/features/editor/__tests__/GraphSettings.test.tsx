@@ -92,6 +92,7 @@ describe('Graph and settings behavior', () => {
             ? input.toString()
             : input.url
         const method = init?.method ?? 'GET'
+        if (url.includes('/chat-models')) return Response.json({ models: [], providers: { codex: { status: 'available', error: null } }, provider_reasoning_efforts: { openai: ['low', 'medium', 'high', 'xhigh'], anthropic: ['low', 'medium', 'high', 'xhigh', 'max'] } })
         if (url.endsWith('/workspace/api/settings')) {
           if (method === 'PATCH') {
             const body = JSON.parse(String(init?.body))
