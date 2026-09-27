@@ -11,7 +11,7 @@ import { ProjectModelSettingsEditor } from '../ProjectModelSettingsEditor'
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), fetchProjectExecutionSettings: vi.fn(), saveModelSettings: vi.fn() }))
 vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), fetchWorkspaceSettingsValidated: vi.fn(), updateProjectStateValidated: vi.fn() }))
-vi.mock('../hooks/useModelDiscovery', () => ({ useModelDiscovery: () => null }))
+vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: () => null }))
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [] }))
 
 beforeEach(() => {

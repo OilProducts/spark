@@ -1,8 +1,8 @@
+import { useStore } from '@/store'
 import { useId, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
-import { useLlmProfiles } from '@/lib/useLlmProfiles'
-import { getLlmSelectionOptions, getModelSuggestions, splitLlmSelection } from '@/lib/llmSuggestions'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import type { DiagnosticEntry } from '@/store'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -96,9 +96,7 @@ export function NodeInspectorPanel({
     renderFieldDiagnostics,
 }: NodeInspectorPanelProps) {
     const id = useId()
-    const llmProfiles = useLlmProfiles()
-    const selectedProfile = (selectedNode?.data?.llm_profile as string) || ''
-    const selectedProvider = (selectedNode?.data?.llm_provider as string) || ''
+    const projectPath = useStore((state) => state.activeProjectPath)
     const selectedJoinPolicy = (selectedNode?.data?.join_policy as string) || 'wait_all'
     return (
         <div className="flex-1 overflow-y-auto px-5 pb-5 pt-3">
@@ -541,51 +539,17 @@ export function NodeInspectorPanel({
                                 ) : null}
 
                                 {visibility.showLlmSettings ? (
-                                    <>
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div className="space-y-1.5">
-                                                <Label htmlFor={`${id}-llm-model`}>LLM Model</Label>
-                                                <Input
-                                                    id={`${id}-llm-model`}
-                                                    value={(selectedNode?.data?.llm_model as string) || ''}
-                                                    onChange={(event) => onPropertyChange('llm_model', event.target.value)}
-                                                    list={`${id}-llm-model-options`}
-                                                />
-                                                <datalist id={`${id}-llm-model-options`}>
-                                                    {getModelSuggestions(selectedProfile || selectedProvider, llmProfiles).map((model) => (
-                                                        <option key={model} value={model} />
-                                                    ))}
-                                                </datalist>
-                                            </div>
-                                            <div className="space-y-1.5">
-                                                <Label htmlFor={`${id}-llm-provider`}>LLM Provider</Label>
-                                                <Input
-                                                    id={`${id}-llm-provider`}
-                                                    value={((selectedNode?.data?.llm_profile as string) || (selectedNode?.data?.llm_provider as string)) || ''}
-                                                    onChange={(event) => {
-                                                        const selection = splitLlmSelection(event.target.value, llmProfiles)
-                                                        onPropertyChange('llm_provider', selection.llm_provider)
-                                                        onPropertyChange('llm_profile', selection.llm_profile)
-                                                    }}
-                                                    list={`${id}-llm-provider-options`}
-                                                />
-                                                <datalist id={`${id}-llm-provider-options`}>
-                                                    {getLlmSelectionOptions(llmProfiles).map((provider) => (
-                                                        <option key={provider} value={provider} />
-                                                    ))}
-                                                </datalist>
-                                            </div>
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor={`${id}-reasoning-effort`}>Reasoning Effort</Label>
-                                            <Input
-                                                id={`${id}-reasoning-effort`}
-                                                value={(selectedNode?.data?.reasoning_effort as string) || ''}
-                                                onChange={(event) => onPropertyChange('reasoning_effort', event.target.value)}
-                                                placeholder="high"
-                                            />
-                                        </div>
-                                    </>
+                                    <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
+                                        value={{ provider: (selectedNode?.data?.llm_provider as string) || null,
+                                            llm_profile: (selectedNode?.data?.llm_profile as string) || null,
+                                            model: (selectedNode?.data?.llm_model as string) || null,
+                                            reasoning_effort: (selectedNode?.data?.reasoning_effort as string) || null }}
+                                        onChange={(value) => {
+                                            onPropertyChange('llm_provider', value.provider || '')
+                                            onPropertyChange('llm_profile', value.llm_profile || '')
+                                            onPropertyChange('llm_model', value.model || '')
+                                            onPropertyChange('reasoning_effort', value.reasoning_effort || '')
+                                        }} />
                                 ) : null}
 
                                 {visibility.showGeneralAdvanced ? (

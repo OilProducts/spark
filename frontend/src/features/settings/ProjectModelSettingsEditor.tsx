@@ -1,5 +1,5 @@
 import { isModelSelectionValid } from '@/lib/llmSuggestions'
-import { ModelSettingsFields } from './ModelSettingsFields'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -27,7 +27,7 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
                 <Label className="flex items-center gap-2 text-sm"><Switch disabled={!editor.draft && !editor.saved?.effective} checked={editor.draft !== null}
                     onCheckedChange={(checked) => editor.setDraft(checked && editor.saved?.effective ? { ...editor.saved.effective } : null)} />Override workspace model settings</Label>
-                {editor.draft && <ModelSettingsFields profiles={profiles} models={editor} activeProjectPath={projectPath} invalidModel={!!invalidModel} />}
+                {editor.draft && <ModelChooser value={editor.draft!} onChange={editor.setDraft} projectPath={projectPath} inheritLabel="Workspace default" invalidModel={!!invalidModel} />}
             </fieldset>
             <div className="flex flex-wrap gap-2"><Button aria-label="Save project model defaults" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
                 <Button aria-label="Discard project model defaults changes" size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button></div>

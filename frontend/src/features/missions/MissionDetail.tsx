@@ -8,8 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { MissionConflict, request, statusLabels, statusLine, type Budget, type Mission } from './MissionsPanel'
 import { MissionTranscript } from './MissionTranscript'
-import { ModelSettingsFields } from '@/features/settings/ModelSettingsFields'
-import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { ApiHttpError } from '@/lib/api/shared'
 import { fetchConversationSnapshotValidated, updateConversationSettingsValidated } from '@/lib/api/conversationsApi'
 import type { ModelSettings } from '@/lib/api/settingsApi'
@@ -31,7 +30,6 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [reply, setReply] = useState('')
     const [budget, setBudget] = useState<Budget | null>(null)
     const [model, setModel] = useState<{ revision: number; draft: ModelSettings | null } | null>(null)
-    const profiles = useLlmProfiles()
     // A mission's conversation id is the mission id, so a draft's model can be set before Start.
     const conversationId = mission.conversation_id ?? mission.id
     async function openModel() {
@@ -99,8 +97,8 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save budget</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setBudget(null)}>Cancel</Button></div>
         </form>}
         {model && <form aria-label="Model" className="grid shrink-0 gap-3 border-b border-border p-4" onSubmit={e => { e.preventDefault(); void saveModel() }}>
-            <ModelSettingsFields profiles={profiles} activeProjectPath={project} invalidModel={false}
-                models={{ draft: model.draft, setDraft: next => setModel(current => current && ({ ...current, draft: typeof next === 'function' ? next(current.draft) : next })) }} />
+            <ModelChooser projectPath={project} inheritLabel="Project default" disabled={disabled}
+                value={model.draft ?? inheritedModel} onChange={draft => setModel(current => current && ({ ...current, draft }))} />
             <p className="text-xs text-muted-foreground">Applies from the mission's next turn.</p>
             <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save model</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setModel(null)}>Cancel</Button></div>
         </form>}

@@ -153,7 +153,7 @@ describe('Graph and settings behavior', () => {
     const user = userEvent.setup()
     useStore.setState({ activeProjectPath: null })
     render(<SettingsPanel />)
-    const provider = screen.getByLabelText('Provider or profile')
+    const provider = await screen.findByLabelText('Provider or profile')
     await waitFor(() => expect(provider).toBeEnabled())
     await user.selectOptions(provider, 'anthropic')
     expect(screen.getByLabelText('Model')).toHaveValue('')
@@ -215,7 +215,7 @@ describe('Graph and settings behavior', () => {
     const saved = useStore.getState().uiDefaults
     render(<SettingsPanel />)
     const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
-    expect(modelSettings.getByText('Loading models…')).toHaveAttribute('role', 'status')
+    expect(await modelSettings.findByText('Loading models…')).toHaveAttribute('role', 'status')
     await act(async () => resolve(Response.json({ models: [
       { provider: 'openai', id: 'discovered-openai', display: 'OpenAI' },
       { provider: 'anthropic', id: 'discovered-anthropic', display: 'Anthropic' },
@@ -255,6 +255,7 @@ describe('Graph and settings behavior', () => {
       ? new Promise<Response>((resolve, reject) => { requests.push({ resolve, reject }) }) : originalFetch(input, init)))
     render(<SettingsPanel />)
     const modelSettings = within(screen.getByText('Model defaults (Workspace)').closest<HTMLElement>('[data-slot="card"]')!)
+    await waitFor(() => expect(requests).toHaveLength(1))
     act(() => useStore.setState({ activeProjectPath: '/tmp/next-project' }))
     expect(requests).toHaveLength(2)
     const payload = (id: string) => Response.json({ models: [{ provider: 'openai', id, display: id }], providers: { codex: { status: 'available', error: null } } })
@@ -296,7 +297,7 @@ describe('Graph and settings behavior', () => {
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
     expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('FlowDefinition defaults')
     expect(screen.getByRole('button', { name: 'Apply To Nodes' })).toBeEnabled()
-    const graphReasoningSelect = screen.getByLabelText('Default Reasoning Effort') as HTMLSelectElement
+    const graphReasoningSelect = screen.getByLabelText('Reasoning effort') as HTMLSelectElement
     expect(graphReasoningSelect.querySelector('option[value="xhigh"]')).toBeTruthy()
 
     const fidelityInput = screen.getByPlaceholderText('full')
