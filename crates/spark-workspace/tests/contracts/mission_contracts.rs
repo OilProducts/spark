@@ -654,8 +654,17 @@ fn launches_over_budget_or_outside_the_catalog_are_refused() {
 #[test]
 fn cancel_stops_owned_runs_and_closes_the_mission() {
     let harness = Harness::new();
-    harness.agent_requestable("work/slow.yaml", &tool_flow("sleep 3"));
-    // The canceled run finishes once its short command exits.
+    let release = harness._temp.path().join("release-canceled-run");
+    let entered = harness._temp.path().join("entered-canceled-run");
+    // Keep the tool in flight until cancellation; expire the gate if the test fails.
+    harness.agent_requestable(
+        "work/slow.yaml",
+        &tool_flow(&format!(
+            "touch '{}'; for i in $(seq 1 600); do [ -f '{}' ] && exit 0; sleep 0.1; done; exit 1",
+            entered.display(),
+            release.display()
+        )),
+    );
     let mission = harness.create(json!({"title": "Stop"}));
     harness
         .missions
@@ -665,6 +674,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     let run = harness
         .launch(&mission.id, "work/slow.yaml", "Long")
         .unwrap();
+    wait_for("the tool to enter its gate", || entered.exists());
     harness.agent.release(1);
     let canceled = harness
         .missions
@@ -675,6 +685,10 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
         (json!(closed.status), closed.actor.as_str()),
         (json!("canceled"), "human")
     );
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    let bundle = store.read_run_bundle(&run).unwrap().unwrap();
+    assert_eq!(bundle.record.unwrap().status, "cancel_requested");
+    std::fs::write(&release, b"go").unwrap();
     assert_eq!(wait_terminal(&harness.settings, &run), "canceled");
     harness.missions.deliver_run_events(&run).unwrap();
     let mission = harness.get(&mission.id);

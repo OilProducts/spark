@@ -12,7 +12,7 @@ A mission is now an objective plus a long-lived agent conversation. Start create
 
 Reactions, stages, hooks, holds, pause/resume, run signals and the events GET/CLI are removed.
 
-The work is uncommitted in the working tree, alongside CR-2026-0121 and CR-2026-0122, and ships internally with missions.
+The feature ships internally with missions, alongside CR-2026-0121 and CR-2026-0122.
 
 ## Validation
 
@@ -40,3 +40,24 @@ Run on 2026-09-25:
 - A roster entry stays `waiting` until its run ends, so a run that resumes after its gate is answered keeps the mission in Needs you (ponytail in `missions.rs`).
 - The transcript refetches the full snapshot on each live event on top of the 2s poll while running. Debounce it or subscribe it to the live stream if that load becomes a problem.
 - `.gitignore` does not un-ignore this change request.
+
+
+## Cancellation and test-race repair (2026-09-27)
+
+For mission `mission-c5505392-f161-43f0-ac0d-12e8572513dd`:
+
+- The HTTP mission contract gates its agent until the Start response's `running` assertion, then releases it and explicitly checks `needs_you`. Existing assertions remain.
+- The workspace cancel contract waits for its tool to enter a release-file gate, asserts mission closure and persisted `cancel_requested`, then releases the tool and checks terminal cancellation. The gate expires after 600 polls if the test fails.
+- `finalize_completed` rereads the persisted record before setting completion, propagates read errors, and delegates `cancel_requested` to the existing canceled finalizer. This covers the dead-end, successful-exit, and unsatisfied-goal-gate completion callers.
+- A channel-gated runtime contract covers all three callers: cancellation is accepted while the last task is blocked, then the released executor must return canceled, persist the canceled record and result, emit canceled runtime status and the existing cancellation `PipelineFailed` event, and never emit `PipelineCompleted`.
+
+Verification logs are retained at `/tmp/mission-c5505392-verification/`:
+
+- `regression-before.log`: expected failure, exit 101; old completion returned `completed` instead of `canceled` after accepting cancellation.
+- `regression-after.log`: regression passed for all three completion callers.
+- `http-targeted.log` and `workspace-targeted.log`: both repaired mission contracts passed.
+- Targeted commands used `cargo test --workspace --all-features --test contracts <test-name>`.
+- Full validation: three sequential foreground `just test` runs all exited 0 (`just-test-1.log`: 221.4s; `just-test-2.log`: 200.9s; `just-test-3.log`: 204.0s). Each passed formatting, all Rust tests, 83 frontend test files / 628 tests, and the frontend production build. No unexpected test failures occurred.
+- `git diff --check`: passed. Log SHA-256 hashes and the final diff hash are retained in `manifest.json` beside the logs.
+
+Branch: `spark/implement-change/run-18d9491766f288a8`. Base commit: `700ec614c11b0959dbb2c5ab0133243a086e01b3`. The reviewed repair is committed on this branch. `/tmp/mission-c5505392-verification/committed-handoff.json` records the exact commit, committed file hashes, and association with the original verification manifest. Only this result documentation changed after review; executable source and tests match the verified diff, so the existing verification remains applicable. The original manifest and logs are preserved unchanged.
