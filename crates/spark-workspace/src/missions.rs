@@ -382,6 +382,7 @@ impl WorkspaceMissionService {
         {
             return Err(invalid(format!("Mission field `{key}` is not editable")));
         }
+        let mut updated = None;
         let value = MissionRepository::new(&scope.root).transact::<WorkspaceError>(id, |previous| {
             let now = now();
             let mut mission = match previous {
@@ -401,11 +402,31 @@ impl WorkspaceMissionService {
                 if mission.started_at.is_some() { return Err(invalid("A started mission keeps its playbook")); }
                 if let Some(name) = &fields.playbook { crate::playbooks::get(&self.settings, name).map_err(|e| invalid(e.to_string()))?; }
             }
+            // A running agent's pinned instructions do not follow later edits (Codex
+            // keeps a thread's first instructions), so the user's edits reach it as a turn.
+            if !create && mutation.actor == "human" && mission.started_at.is_some() && mission.closed.is_none() {
+                let mut changes = Map::new();
+                if fields.title != mission.fields.title { changes.insert("title".into(), json!(fields.title)); }
+                if fields.description != mission.fields.description { changes.insert("objective".into(), json!(fields.description)); }
+                if fields.budget != mission.fields.budget { changes.insert("budget".into(), json!(fields.budget)); }
+                if !changes.is_empty() { updated = Some(Value::Object(changes)); }
+            }
             mission.fields = fields;
             mission.record_activity(&mutation.actor, &mutation.note, before);
             Ok(stored(&mission))
         })?;
         let mission = self.with_status(decode_record(value)?);
+        if let Some(payload) = updated {
+            let post = MissionEventPost {
+                id: Some(format!("{}:updated:{}", mission.id, mission.revision)),
+                kind: "mission.updated".into(),
+                source: Some("human".into()),
+                payload,
+            };
+            return self.with_mission(project, id, |repo, mission| {
+                Self::append(repo, mission, post, "human").map(|_| ())
+            });
+        }
         self.publish(&mission);
         Ok(mission)
     }
@@ -894,6 +915,25 @@ fn render_event(mission: &MissionRecord, event: &MissionEvent) -> String {
     }
     if event.kind == "run.question" {
         return format!("Run question: {payload}");
+    }
+    if event.kind == "mission.updated" {
+        let mut lines = vec![
+            "The user updated this mission; these replace the values in your instructions."
+                .to_string(),
+        ];
+        if let Some(title) = payload["title"].as_str() {
+            lines.push(format!("Title: {title}"));
+        }
+        if let Some(objective) = payload["objective"].as_str() {
+            lines.push(format!("Objective:\n{objective}"));
+        }
+        if let Some(budget) = payload.get("budget") {
+            lines.push(format!(
+                "Budget: {} concurrent runs, {} runs in total.",
+                budget["concurrent_runs"], budget["total_runs"]
+            ));
+        }
+        return lines.join("\n");
     }
     let run = mission.runs.iter().find(|run| run.run_id == event.source);
     let flow = run

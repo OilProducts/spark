@@ -1331,3 +1331,60 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     harness.wait_idle(&mission.id);
     assert!(harness.agent.prompts()[2].contains("ended completed"));
 }
+
+#[test]
+fn human_edits_to_a_started_mission_reach_the_agent_as_a_turn() {
+    let harness = Harness::new();
+    let mission =
+        harness.create(json!({"title": "Search", "description": "Search returns documents."}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+
+    // The agent editing its own mission does not wake it.
+    let revision = harness.get(&mission.id).revision;
+    harness
+        .missions
+        .update(
+            &harness.project,
+            &mission.id,
+            mutation(json!({"revision": revision, "actor": "assistant", "fields": {"description": "Agent note."}})),
+        )
+        .unwrap();
+    assert_eq!(harness.agent.requests.lock().unwrap().len(), 1);
+
+    let revision = harness.get(&mission.id).revision;
+    harness
+        .missions
+        .update(
+            &harness.project,
+            &mission.id,
+            mutation(json!({"revision": revision, "fields": {
+                "description": "Search returns ranked documents.",
+                "budget": {"concurrent_runs": 2, "total_runs": 9},
+            }})),
+        )
+        .unwrap();
+    harness.wait_turns(2);
+    let prompt = harness.agent.prompts()[1].clone();
+    assert!(
+        prompt.contains("replace the values in your instructions"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Objective:\nSearch returns ranked documents."),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Budget: 2 concurrent runs, 9 runs in total."),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("Title:"), "{prompt}");
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    assert_eq!(harness.agent.requests.lock().unwrap().len(), 2);
+}
