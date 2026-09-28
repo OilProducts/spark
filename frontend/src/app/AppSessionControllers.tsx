@@ -518,7 +518,8 @@ export function WorkspaceLiveEventsController() {
                                 runId,
                                 segment: record?.segment && typeof record.segment === 'object'
                                     ? { ...(record.segment as Record<string, unknown>), node_id: payload.node_id,
-                                        attempt: payload.attempt, latest_sequence: record.source_event_sequence,
+                                        stage_index: payload.stage_index, attempt: payload.attempt,
+                                        latest_sequence: record.source_event_sequence,
                                         source_scope: runId === payload.run_id ? 'root' : payload.source_scope,
                                         source_run_id: payload.run_id }
                                     : null,

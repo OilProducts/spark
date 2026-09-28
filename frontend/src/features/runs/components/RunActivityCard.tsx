@@ -20,7 +20,7 @@ import type {
     TimelineEventEntry,
     TimelineSeverity,
 } from '../model/shared'
-import { buildRunTranscriptGroups } from '../model/transcriptModel'
+import { buildRunTranscriptGroups, timestampMs } from '../model/transcriptModel'
 import type { RunTranscriptGroup } from '../model/transcriptModel'
 import { RunTranscriptGroupSection, useTranscriptExpansion } from './RunTranscriptGroups'
 import {
@@ -42,10 +42,10 @@ const ACTIVITY_MODE_OPTIONS: Array<{ value: RunActivityMode; label: string }> = 
 const MAX_RENDERED_ACTIVITY_ROWS = 150
 
 type ActivityRow =
-    | { kind: 'transcript'; sequence: number; group: RunTranscriptGroup }
+    | { kind: 'transcript'; time: number; group: RunTranscriptGroup }
     | {
         kind: 'event'
-        sequence: number
+        time: number
         event: GroupedTimelineEntry['events'][number]
         correlationLabel: string | null
     }
@@ -188,7 +188,7 @@ export function RunActivityCard({
         const rows: ActivityRow[] = []
         if (activityMode !== 'events') {
             for (const group of transcriptGroups) {
-                rows.push({ kind: 'transcript', sequence: group.latestSequence, group })
+                rows.push({ kind: 'transcript', time: group.latestTime, group })
             }
         }
         if (activityMode !== 'transcript') {
@@ -202,7 +202,7 @@ export function RunActivityCard({
                     }
                     rows.push({
                         kind: 'event',
-                        sequence: event.sequence,
+                        time: timestampMs(event.receivedAt),
                         event,
                         correlationLabel,
                     })
@@ -211,8 +211,12 @@ export function RunActivityCard({
         }
         // Chronological, like a log: the live edge is the bottom. A growing
         // node keeps appending there, and a newly started node lands there
-        // too, so following the run means watching one place.
-        rows.sort((left, right) => left.sequence - right.sequence)
+        // too, so following the run means watching one place. Transcript
+        // and journal sequences are separate streams, so order on time.
+        rows.sort((left, right) => (
+            left.time - right.time
+            || (left.kind === 'event' && right.kind === 'event' ? left.event.sequence - right.event.sequence : 0)
+        ))
         return rows
     }, [activityMode, transcriptGroups, scopedTimelineGroups])
 
@@ -244,7 +248,7 @@ export function RunActivityCard({
         setFollowing(true)
     }, [setFollowing])
     const liveEdgeSignature = renderedRows.length > 0
-        ? `${renderedRows.length}:${renderedRows[renderedRows.length - 1].sequence}:${transcriptSegments.length}`
+        ? `${renderedRows.length}:${renderedRows[renderedRows.length - 1].time}:${transcriptSegments.length}`
         : ''
     useEffect(() => {
         const list = listRef.current
@@ -454,7 +458,7 @@ export function RunActivityCard({
                                 row.kind === 'transcript'
                                     ? (
                                         <RunTranscriptGroupSection
-                                            key={`transcript-${row.group.turnId}`}
+                                            key={`transcript-${row.group.key}`}
                                             group={row.group}
                                             expansion={expansion}
                                         />

@@ -1120,6 +1120,7 @@ export function pipelineArtifactHref(pipelineId: string, artifactPath: string, d
 
 export interface RunTranscriptSegment extends ConversationSegmentResponse {
     node_id: string | null
+    stage_index: number
     attempt: number
     latest_sequence: number
     source_scope: 'root' | 'child'
@@ -1143,6 +1144,7 @@ export function parseRunTranscriptSegment(value: unknown): RunTranscriptSegment 
     return {
         ...base,
         node_id: asOptionalNullableString(record.node_id) ?? null,
+        stage_index: typeof record.stage_index === 'number' ? record.stage_index : 0,
         attempt: typeof record.attempt === 'number' ? record.attempt : 0,
         latest_sequence: typeof record.latest_sequence === 'number' ? record.latest_sequence : 0,
         source_scope: record.source_scope === 'child' ? 'child' : 'root',
@@ -1167,6 +1169,7 @@ async function fetchExecutionSegments(execution: NodeExecutionResponse, sourceSc
         return [{
             ...segment,
             node_id: execution.node_id,
+            stage_index: execution.stage_index,
             attempt: execution.attempt,
             latest_sequence: typeof record.source_event_sequence === 'number' ? record.source_event_sequence : 0,
             source_scope: sourceScope,

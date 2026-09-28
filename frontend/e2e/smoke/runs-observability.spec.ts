@@ -617,3 +617,132 @@ test('run artifact browser handles missing files and partial run states for item
   await artifactPanel.scrollIntoViewIfNeeded()
   await artifactPanel.screenshot({ path: screenshotPath('08o-runs-panel-artifact-missing-partial.png') })
 })
+
+test('run activity shows one labeled transcript group per visit of a repeated node, before and after a live update', async ({ page }) => {
+  const projectPath = `/tmp/ui-smoke-project-runs-visits-${Date.now()}`
+  const run = buildSmokeRun(projectPath, {
+    run_id: `run-visits-${Date.now()}`,
+    flow_name: 'LoopFlow',
+    status: 'running',
+    outcome: null,
+    ended_at: null,
+  })
+  const segment = (content: string, at: string) => ({
+    id: 'final-response',
+    turn_id: 'response',
+    order: 1,
+    kind: 'assistant_message',
+    role: 'assistant',
+    status: 'complete',
+    timestamp: at,
+    updated_at: at,
+    content,
+  })
+  const transcripts: Record<string, unknown> = {
+    '1-0': segment('First verdict: needs changes.', '2026-03-03T12:00:10Z'),
+    '3-0': segment('Second verdict: streaming.', '2026-03-03T12:00:30Z'),
+  }
+
+  await installMockEventSource(page)
+  await stubRunSummary(page, run)
+  await page.route(`**/attractor/pipelines/${run.run_id}`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        pipeline_id: run.run_id,
+        ...run,
+        completed_nodes: [],
+        progress: { current_node: null, completed_count: 0 },
+        executions: ['1-0', '3-0'].map((identity) => ({
+          run_id: run.run_id,
+          node_id: 'evaluate',
+          stage_index: Number(identity.split('-')[0]),
+          attempt: 0,
+          status: null,
+        })),
+      }),
+    })
+  })
+  await page.route(`**/attractor/pipelines/${run.run_id}/executions/evaluate/*/transcript`, async (route) => {
+    const identity = new URL(route.request().url()).pathname.split('/').at(-2) ?? ''
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ records: [{ type: 'segment_upsert', source_event_sequence: 1, segment: transcripts[identity] }] }),
+    })
+  })
+  await page.route(`**/attractor/pipelines/${run.run_id}/journal**`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        pipeline_id: run.run_id,
+        entries: [
+          buildSmokeJournalEntry(3, {
+            kind: 'stage', raw_type: 'StageStarted', summary: 'Stage evaluate started (second visit)',
+            node_id: 'evaluate', stage_index: 3, emitted_at: '2026-03-03T12:00:20Z',
+          }),
+          buildSmokeJournalEntry(2, {
+            kind: 'stage', raw_type: 'StageCompleted', summary: 'Stage evaluate completed (first visit)',
+            node_id: 'evaluate', stage_index: 1, emitted_at: '2026-03-03T12:00:15Z',
+          }),
+        ],
+        oldest_sequence: 2,
+        newest_sequence: 3,
+        has_older: false,
+      }),
+    })
+  })
+
+  await openRunsForSmokeTest(page, projectPath)
+  await page.getByTestId('run-inspector-tab-activity').click()
+  await page.getByTestId('run-activity-mode-all').click()
+  const list = page.getByTestId('run-activity-list')
+  const groups = list.getByTestId('run-transcript-group')
+  const expectVisitsInOrder = async (secondContent: string) => {
+    await expect(groups).toHaveCount(2)
+    await expect(groups.nth(0)).toContainText('evaluate — visit 1')
+    await expect(groups.nth(0)).toContainText('First verdict: needs changes.')
+    await expect(groups.nth(1)).toContainText('evaluate — visit 2')
+    await expect(groups.nth(1)).toContainText(secondContent)
+    await expect(list.locator('> *')).toHaveText([
+      /First verdict/,
+      /Stage evaluate completed \(first visit\)/,
+      /Stage evaluate started \(second visit\)/,
+      new RegExp(secondContent),
+    ])
+  }
+  await expectVisitsInOrder('Second verdict: streaming.')
+
+  await page.evaluate(({ runId }) => {
+    ;(globalThis as typeof globalThis & {
+      __runEventSourceController?: {
+        emitLatest(pattern: string, payload: unknown): void
+      }
+    }).__runEventSourceController?.emitLatest('/workspace/api/live/events', {
+      type: 'conversation.segment_upsert',
+      resource: { kind: 'node_execution', id: `${runId}:evaluate:3-0` },
+      payload: {
+        run_id: runId,
+        presentation_run_id: runId,
+        source_scope: 'root',
+        node_id: 'evaluate',
+        stage_index: 3,
+        attempt: 0,
+        record: {
+          type: 'segment_upsert',
+          source_event_sequence: 2,
+          segment: {
+            id: 'final-response', turn_id: 'response', order: 1, kind: 'assistant_message', role: 'assistant',
+            status: 'complete', timestamp: '2026-03-03T12:00:30Z', updated_at: '2026-03-03T12:00:40Z',
+            content: 'Second verdict: approved.',
+          },
+        },
+      },
+    })
+  }, { runId: run.run_id })
+
+  await expectVisitsInOrder('Second verdict: approved.')
+  await page.screenshot({ path: screenshotPath('08d-runs-panel-activity-visits.png'), fullPage: true })
+})
