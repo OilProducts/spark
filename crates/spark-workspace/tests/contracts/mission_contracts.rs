@@ -738,7 +738,7 @@ fn the_agent_closes_the_mission_and_the_close_joins_the_transcript() {
 }
 
 #[test]
-fn derived_status_covers_each_group_including_a_run_waiting_on_a_gate() {
+fn derived_status_covers_each_group_including_a_run_waiting_on_recovery() {
     let harness = Harness::new();
     let mission = harness.create(json!({"title": "Status"}));
     assert_eq!(mission.status, MissionStatus::Draft);
@@ -763,19 +763,21 @@ fn derived_status_covers_each_group_including_a_run_waiting_on_a_gate() {
     let paths = store.find_run_root("run-gate").unwrap().unwrap();
     let mut record = store.read_run_record(&paths).unwrap().unwrap();
     record.status = "waiting".into();
+    record.outcome_reason_code = Some("recovery_decision_required".into());
     store.write_run_record(&paths, &record).unwrap();
     harness.missions.deliver_run_events("run-gate").unwrap();
     harness.wait_turns(2);
-    // A gate needs a human even while the agent is working on its news.
-    assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
-    assert!(harness.agent.prompts()[1].contains("is waiting on a human gate"));
+    // An active turn can handle the wait before escalating to the user.
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    assert!(harness.agent.prompts()[1].contains("is waiting on a recovery decision"));
     let attention = WorkspaceConversationService::new(harness.settings.clone())
         .pending_attention()
         .unwrap();
     assert!(attention
         .iter()
         .any(|item| item["kind"] == "mission" && item["id"] == json!(mission.id)));
-    harness.agent.release(1);
     let closed = harness
         .missions
         .cancel(&harness.project, &mission.id)
@@ -952,4 +954,378 @@ fn mission_reasoning_settings_are_validated_and_captured_for_turns() {
     }
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
+}
+
+#[test]
+fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Shared question IDs"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    for root in ["root-a", "root-b"] {
+        owned_run(
+            &harness.settings,
+            &harness.project,
+            &mission.id,
+            root,
+            "running",
+        );
+    }
+    for (index, (id, root)) in [
+        ("child-a", "root-a"),
+        ("child-b", "root-a"),
+        ("root-a", "root-a"),
+        ("root-b", "root-b"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if id != root {
+            let mut record = attractor_core::RunRecord::new(id, &harness.project);
+            record.parent_run_id = Some(root.into());
+            record.root_run_id = Some(root.into());
+            record.status = "waiting".into();
+            store
+                .create_run(attractor_runtime::CreateRunRequest {
+                    record,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let paths = store.find_run_root(id).unwrap().unwrap();
+        store
+            .append_event(
+                &paths,
+                attractor_runtime::human_gate_pending_event(
+                    id,
+                    "gate-0",
+                    "gate",
+                    "work",
+                    "Proceed?",
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events(id).unwrap();
+        harness.wait_turns(index + 2);
+        let prompt = &harness.agent.prompts()[index + 1];
+        assert!(prompt.contains(&format!("\"run_id\":\"{id}\"")), "{prompt}");
+        assert!(prompt.contains("\"question_id\":\"gate-0\""), "{prompt}");
+        assert!(harness.missions.deliver_run_events(id).unwrap().is_none());
+        assert!(harness.missions.deliver_run_events(root).unwrap().is_none());
+        assert_eq!(harness.get(&mission.id).event_seq, (index + 1) as u64);
+        harness.agent.release(1);
+        harness.wait_idle(&mission.id);
+    }
+}
+
+#[test]
+fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
+    for status in ["canceled", "failed", "validation_error", "completed"] {
+        let harness = Harness::new();
+        harness.agent_requestable("work/next.yaml", simple_flow());
+        let mission = harness.create(json!({
+            "title": "Continue after termination", "budget": {"concurrent_runs": 1}
+        }));
+        harness
+            .missions
+            .start(&harness.project, &mission.id)
+            .unwrap();
+        harness.wait_turns(1);
+        owned_run(
+            &harness.settings,
+            &harness.project,
+            &mission.id,
+            "root",
+            "running",
+        );
+        let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+        let mut record = attractor_core::RunRecord::new("child", &harness.project);
+        record.parent_run_id = Some("root".into());
+        record.root_run_id = Some("root".into());
+        record.status = "waiting".into();
+        let child = store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &child,
+                attractor_runtime::human_gate_pending_event(
+                    "child",
+                    "gate-0",
+                    "gate",
+                    "work",
+                    "Proceed?",
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events("child").unwrap();
+        assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+        assert!(harness
+            .launch(&mission.id, "work/next.yaml", "Blocked")
+            .unwrap_err()
+            .to_string()
+            .contains("concurrent_runs (1)"));
+        let root = store.find_run_root("root").unwrap().unwrap();
+        let mut record = store.read_run_record(&root).unwrap().unwrap();
+        record.status = status.into();
+        store.write_run_record(&root, &record).unwrap();
+        let mut result = attractor_core::RunResult::pending("root", status);
+        result.state = "completed".into();
+        store.write_result(&root, &result).unwrap();
+        // A gate first observed after termination must not create another actionable question.
+        store
+            .append_event(
+                &child,
+                attractor_runtime::human_gate_pending_event(
+                    "child",
+                    "gate-1",
+                    "gate",
+                    "work",
+                    "Obsolete question",
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events("child").unwrap();
+        let reconciled = harness.get(&mission.id);
+        assert_eq!(reconciled.runs[0].status, status);
+        assert_eq!(reconciled.event_seq, 2);
+        assert!(harness
+            .missions
+            .deliver_run_events("root")
+            .unwrap()
+            .is_none());
+        let next = harness
+            .launch(&mission.id, "work/next.yaml", "Continue")
+            .unwrap();
+        harness.settle(&next);
+        harness.agent.release(1);
+        harness.wait_turns(2);
+        assert!(!harness.agent.prompts()[1].contains("Obsolete question"));
+        harness.agent.release(1);
+        harness.wait_idle(&mission.id);
+    }
+}
+
+#[test]
+fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_answers() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Questions"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    owned_run(
+        &harness.settings,
+        &harness.project,
+        &mission.id,
+        "root",
+        "running",
+    );
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    for (id, parent) in [("child", "root"), ("grandchild", "child")] {
+        let mut record = attractor_core::RunRecord::new(id, &harness.project);
+        record.parent_run_id = Some(parent.into());
+        record.root_run_id = Some("root".into());
+        record.status = "running".into();
+        store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let paths = store.find_run_root("grandchild").unwrap().unwrap();
+    let options =
+        vec![json!({"label":"Ship it", "value":"ship", "description":"Publish the result"})];
+    store
+        .append_event(
+            &paths,
+            attractor_runtime::human_gate_pending_event(
+                "grandchild",
+                "q-1",
+                "approval",
+                "work",
+                "Ready to publish?",
+                None,
+                options.clone(),
+            ),
+        )
+        .unwrap();
+    harness.missions.deliver_run_events("grandchild").unwrap();
+    harness.wait_turns(2);
+    harness.missions.deliver_run_events("grandchild").unwrap();
+    harness.missions.deliver_run_events("root").unwrap();
+    assert_eq!(harness.get(&mission.id).event_seq, 1);
+    assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
+    let prompt = &harness.agent.prompts()[1];
+    for content in [
+        "q-1",
+        "grandchild",
+        "root",
+        "approval",
+        "Ready to publish?",
+        "Ship it",
+        "ship",
+        "Publish the result",
+    ] {
+        assert!(prompt.contains(content), "missing {content}: {prompt}");
+    }
+    let frame = harness.agent.requests.lock().unwrap()[1].metadata[AGENT_INSTRUCTIONS_METADATA_KEY]
+        .to_string();
+    assert!(frame.contains("Never guess an answer"));
+    assert!(frame.contains("relay their reply"));
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
+    let attention = WorkspaceConversationService::new(harness.settings.clone())
+        .pending_attention()
+        .unwrap();
+    assert!(attention
+        .iter()
+        .any(|item| item["kind"] == "mission" && item["id"] == mission.id));
+    harness
+        .missions
+        .post_event(&harness.project, &mission.id, message("Ship it"))
+        .unwrap();
+    harness.wait_turns(3);
+    assert!(harness.agent.prompts()[2].contains("Ship it"));
+    let response = attractor_api::AttractorApiService::new(harness.settings.clone())
+        .answer_pipeline_question(
+            "grandchild",
+            "q-1",
+            serde_json::from_value(json!({"selected_value":"ship"})).unwrap(),
+        );
+    assert_eq!(response.status_code, 200);
+    harness.missions.deliver_run_events("grandchild").unwrap();
+    assert_eq!(harness.get(&mission.id).runs[0].status, "running");
+    assert_eq!(harness.get(&mission.id).event_seq, 2);
+    harness.agent.release(1);
+    wait_for("reply turn completion", || {
+        harness.transcript(&mission.id)["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|turn| turn["status"] != "streaming" && turn["status"] != "pending")
+    });
+    assert_eq!(harness.get(&mission.id).status, MissionStatus::Running);
+    let root = store.find_run_root("root").unwrap().unwrap();
+    let mut record = store.read_run_record(&root).unwrap().unwrap();
+    record.status = "completed".into();
+    store.write_run_record(&root, &record).unwrap();
+    let mut result = attractor_core::RunResult::pending("root", "completed");
+    result.state = "completed".into();
+    store.write_result(&root, &result).unwrap();
+    harness.missions.deliver_run_events("root").unwrap();
+    harness.wait_turns(4);
+    assert!(harness.agent.prompts()[3].contains("ended completed"));
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+}
+
+#[test]
+fn answering_a_live_child_gate_resumes_the_run_tree() {
+    let harness = Harness::new();
+    harness.agent_requestable(
+        "work/parent.yaml",
+        &json!({
+            "schema_version":"1", "id":"parent",
+            "nodes": {
+                "start":{"kind":"start"},
+                "child":{"kind":"subflow","config":{"kind":"subflow","flow_ref":"child.yaml"}},
+                "done":{"kind":"exit"}
+            },
+            "edges":[{"from":"start","to":"child"},{"from":"child","to":"done"}]
+        })
+        .to_string(),
+    );
+    write_flow(
+        &harness.settings,
+        "work/child.yaml",
+        &json!({
+            "schema_version":"1", "id":"child",
+            "nodes": {
+                "start":{"kind":"start"},
+                "gate":{"kind":"human_gate","config":{"kind":"human_gate","prompt":"Proceed?"}},
+                "done":{"kind":"exit"}
+            },
+            "edges":[{"from":"start","to":"gate"},{"from":"gate","to":"done","label":"Proceed"}]
+        })
+        .to_string(),
+    );
+    let mission = harness.create(json!({"title":"Live gate"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    let launched = WorkspaceConversationService::new_with_runtime_handler_runner_factory(
+        harness.settings.clone(),
+        Arc::new(|| attractor_runtime::RuntimeHandlerRunner::new().with_blocking_human_gates()),
+    )
+    .create_flow_run_request_by_handle(
+        &harness.handle(&mission.id),
+        FlowRunRequestCreateByHandleRequest {
+            flow_name: "work/parent.yaml".into(),
+            summary: "Handle child gate".into(),
+            execution_profile_id: Some("native".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let root = launched["run_id"].as_str().unwrap().to_string();
+    let api = attractor_api::AttractorApiService::new(harness.settings.clone());
+    let mut question = Value::Null;
+    wait_for("child question", || {
+        let bundle = attractor_runtime::RunStore::for_settings(&harness.settings)
+            .read_run_bundle(&root)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !bundle.record.as_ref().is_some_and(|r| r.status == "failed"),
+            "{:?}",
+            bundle.record
+        );
+        question = api.list_pipeline_questions(&root).body["questions"][0].clone();
+        !question.is_null()
+    });
+    let child = question["run_id"].as_str().unwrap();
+    assert_ne!(child, root);
+    harness.missions.deliver_run_events(child).unwrap();
+    assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+    harness.agent.release(1);
+    harness.wait_turns(2);
+    let response = api.answer_pipeline_question(
+        child,
+        question["question_id"].as_str().unwrap(),
+        serde_json::from_value(json!({"selected_value":"Proceed"})).unwrap(),
+    );
+    assert_eq!(response.status_code, 200);
+    harness.missions.deliver_run_events(child).unwrap();
+    assert_ne!(harness.get(&mission.id).runs[0].status, "waiting");
+    assert_eq!(wait_terminal(&harness.settings, child), "completed");
+    assert_eq!(wait_terminal(&harness.settings, &root), "completed");
+    harness.missions.deliver_run_events(&root).unwrap();
+    harness.agent.release(2);
+    harness.wait_turns(3);
+    harness.wait_idle(&mission.id);
+    assert!(harness.agent.prompts()[2].contains("ended completed"));
 }
