@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
+import { runTranscriptSegmentKey } from '../model/transcriptModel'
 
 type RunTranscriptStatus = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -60,7 +61,8 @@ export const useRunTranscriptStore = create<RunTranscriptStoreState>()((set) => 
     applySegmentUpsert: (runId, segment) =>
         set((state) => {
             const current = resolveState(state.byRunId, runId)
-            const index = current.segments.findIndex((existing) => existing.id === segment.id)
+            const key = runTranscriptSegmentKey(segment)
+            const index = current.segments.findIndex((existing) => runTranscriptSegmentKey(existing) === key)
             const segments = index >= 0
                 ? current.segments.map((existing, position) => (position === index ? segment : existing))
                 : [...current.segments, segment]

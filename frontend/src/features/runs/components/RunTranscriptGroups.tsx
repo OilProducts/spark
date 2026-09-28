@@ -69,6 +69,7 @@ export function RunTranscriptGroupSection({
         <section
             data-testid="run-transcript-group"
             data-node-id={group.nodeId ?? undefined}
+            data-stage-index={group.stageIndex}
             data-attempt={group.attempt}
             className="space-y-2"
         >
