@@ -957,6 +957,171 @@ fn mission_reasoning_settings_are_validated_and_captured_for_turns() {
 }
 
 #[test]
+fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Shared question IDs"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    for root in ["root-a", "root-b"] {
+        owned_run(
+            &harness.settings,
+            &harness.project,
+            &mission.id,
+            root,
+            "running",
+        );
+    }
+    for (index, (id, root)) in [
+        ("child-a", "root-a"),
+        ("child-b", "root-a"),
+        ("root-a", "root-a"),
+        ("root-b", "root-b"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if id != root {
+            let mut record = attractor_core::RunRecord::new(id, &harness.project);
+            record.parent_run_id = Some(root.into());
+            record.root_run_id = Some(root.into());
+            record.status = "waiting".into();
+            store
+                .create_run(attractor_runtime::CreateRunRequest {
+                    record,
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        let paths = store.find_run_root(id).unwrap().unwrap();
+        store
+            .append_event(
+                &paths,
+                attractor_runtime::human_gate_pending_event(
+                    id,
+                    "gate-0",
+                    "gate",
+                    "work",
+                    "Proceed?",
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events(id).unwrap();
+        harness.wait_turns(index + 2);
+        let prompt = &harness.agent.prompts()[index + 1];
+        assert!(prompt.contains(&format!("\"run_id\":\"{id}\"")), "{prompt}");
+        assert!(prompt.contains("\"question_id\":\"gate-0\""), "{prompt}");
+        assert!(harness.missions.deliver_run_events(id).unwrap().is_none());
+        assert!(harness.missions.deliver_run_events(root).unwrap().is_none());
+        assert_eq!(harness.get(&mission.id).event_seq, (index + 1) as u64);
+        harness.agent.release(1);
+        harness.wait_idle(&mission.id);
+    }
+}
+
+#[test]
+fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
+    for status in ["canceled", "failed", "validation_error", "completed"] {
+        let harness = Harness::new();
+        harness.agent_requestable("work/next.yaml", simple_flow());
+        let mission = harness.create(json!({
+            "title": "Continue after termination", "budget": {"concurrent_runs": 1}
+        }));
+        harness
+            .missions
+            .start(&harness.project, &mission.id)
+            .unwrap();
+        harness.wait_turns(1);
+        owned_run(
+            &harness.settings,
+            &harness.project,
+            &mission.id,
+            "root",
+            "running",
+        );
+        let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+        let mut record = attractor_core::RunRecord::new("child", &harness.project);
+        record.parent_run_id = Some("root".into());
+        record.root_run_id = Some("root".into());
+        record.status = "waiting".into();
+        let child = store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &child,
+                attractor_runtime::human_gate_pending_event(
+                    "child",
+                    "gate-0",
+                    "gate",
+                    "work",
+                    "Proceed?",
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events("child").unwrap();
+        assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
+        assert!(harness
+            .launch(&mission.id, "work/next.yaml", "Blocked")
+            .unwrap_err()
+            .to_string()
+            .contains("concurrent_runs (1)"));
+        let root = store.find_run_root("root").unwrap().unwrap();
+        let mut record = store.read_run_record(&root).unwrap().unwrap();
+        record.status = status.into();
+        store.write_run_record(&root, &record).unwrap();
+        let mut result = attractor_core::RunResult::pending("root", status);
+        result.state = "completed".into();
+        store.write_result(&root, &result).unwrap();
+        // A gate first observed after termination must not create another actionable question.
+        store
+            .append_event(
+                &child,
+                attractor_runtime::human_gate_pending_event(
+                    "child",
+                    "gate-1",
+                    "gate",
+                    "work",
+                    "Obsolete question",
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events("child").unwrap();
+        let reconciled = harness.get(&mission.id);
+        assert_eq!(reconciled.runs[0].status, status);
+        assert_eq!(reconciled.event_seq, 2);
+        assert!(harness
+            .missions
+            .deliver_run_events("root")
+            .unwrap()
+            .is_none());
+        let next = harness
+            .launch(&mission.id, "work/next.yaml", "Continue")
+            .unwrap();
+        harness.settle(&next);
+        harness.agent.release(1);
+        harness.wait_turns(2);
+        assert!(!harness.agent.prompts()[1].contains("Obsolete question"));
+        harness.agent.release(1);
+        harness.wait_idle(&mission.id);
+    }
+}
+
+#[test]
 fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_answers() {
     let harness = Harness::new();
     let mission = harness.create(json!({"title": "Questions"}));

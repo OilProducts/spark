@@ -741,7 +741,7 @@ impl WorkspaceMissionService {
         Ok(())
     }
 
-    /// Reconciles a mission-owned run tree and delivers questions once by ID.
+    /// Reconciles a mission-owned run tree and delivers questions once per owning run and question ID.
     pub fn deliver_run_events(&self, run_id: &str) -> WorkspaceResult<Option<MissionRecord>> {
         self.deliver(run_id, false)
     }
@@ -801,18 +801,23 @@ impl WorkspaceMissionService {
         let mission = self.locked(&owner.project, &owner.mission_id, !recovering, |repo, mission| {
             let Some(record) = store.read_run_record(&owner.paths).map_err(internal)? else { return Ok(()); };
             let status = attractor_runtime::normalize_run_status(record.status.trim());
-            let response = attractor_api::AttractorApiService::new(self.settings.clone())
-                .list_pipeline_questions(root_id);
-            if response.status_code != 200 {
-                return Err(WorkspaceError::Internal(response.body.to_string()));
-            }
-            let questions = response.body["questions"].as_array().cloned().unwrap_or_default();
+            // Unanswered gates remain in the event log after termination, but can no longer block work.
+            let questions = if TERMINAL_RUN_STATUSES.contains(&status.as_str()) {
+                vec![]
+            } else {
+                let response = attractor_api::AttractorApiService::new(self.settings.clone())
+                    .list_pipeline_questions(root_id);
+                if response.status_code != 200 {
+                    return Err(WorkspaceError::Internal(response.body.to_string()));
+                }
+                response.body["questions"].as_array().cloned().unwrap_or_default()
+            };
             for mut question in questions.iter().cloned() {
                 question["root_run_id"] = json!(root_id);
                 let question_id = question["question_id"].as_str().unwrap_or_default();
                 let source = question["run_id"].as_str().unwrap_or(root_id).to_string();
                 changed |= Self::append(repo, mission, MissionEventPost {
-                    id: Some(format!("question:{question_id}")),
+                    id: Some(format!("question:{source}:{question_id}")),
                     kind: "run.question".into(),
                     source: Some(source.clone()),
                     payload: question,
