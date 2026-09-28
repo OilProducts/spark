@@ -3202,3 +3202,231 @@ fn chat_and_workflow_preserve_unlisted_effort_through_compatible_provider_dispat
         assert_eq!(request.body["reasoning_effort"], "FutureEffort");
     }
 }
+
+struct FailingUtilityAdapter {
+    delay: Duration,
+}
+
+impl ProviderAdapter for FailingUtilityAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, AdapterError> {
+        thread::sleep(self.delay);
+        Err(AdapterError::new(
+            AdapterErrorKind::Authentication,
+            "provider rejected the key",
+        ))
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        unreachable!("utility calls never stream")
+    }
+}
+
+fn utility_call(provider: &str, metadata: Value) -> spark_agent_adapter::UtilityCall {
+    spark_agent_adapter::UtilityCall {
+        provider: Some(provider.to_string()),
+        model: Some("utility-model".to_string()),
+        reasoning_effort: Some("low".to_string()),
+        instructions: "Name the thread.".to_string(),
+        input: "First message".to_string(),
+        metadata: serde_json::from_value(metadata).expect("metadata"),
+        timeout: Duration::from_secs(5),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn utility_api_call_sends_one_completion_without_tools_or_history() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(RecordingAdapter::new("anthropic", Arc::clone(&calls)));
+    let client = Client::from_adapters(vec![adapter], None).expect("client");
+    let call = utility_call(
+        "anthropic",
+        json!({"spark.execution.settings": {"model_settings": {"thinking": "budget", "thinking_budget_tokens": 2048}}}),
+    );
+
+    let text = spark_agent_adapter::run_utility_call(&client, &call).expect("utility text");
+
+    assert_eq!(text, "adapter response for utility-model");
+    let calls = calls.lock().expect("calls");
+    assert_eq!(calls.len(), 1);
+    let request = &calls[0];
+    assert!(request.tools.is_empty());
+    assert!(request.tool_choice.is_none());
+    assert_eq!(
+        request
+            .messages
+            .iter()
+            .map(|message| (message.role, message.text()))
+            .collect::<Vec<_>>(),
+        vec![
+            (MessageRole::System, "Name the thread.".to_string()),
+            (MessageRole::User, "First message".to_string()),
+        ]
+    );
+    assert_eq!(request.reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(request.thinking.as_deref(), Some("budget"));
+    // Bounded output leaves room for the requested thinking budget.
+    assert_eq!(
+        request.max_tokens,
+        Some(spark_agent_adapter::llm_backend::UTILITY_MAX_OUTPUT_TOKENS + 2048)
+    );
+}
+
+#[test]
+fn utility_api_provider_errors_and_timeouts_are_errors() {
+    let failing = |delay| {
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(FailingUtilityAdapter { delay });
+        Client::from_adapters(vec![adapter], None).expect("client")
+    };
+    let mut call = utility_call("openai", json!({}));
+
+    let error = spark_agent_adapter::run_utility_call(&failing(Duration::ZERO), &call)
+        .expect_err("provider error");
+    assert!(error.contains("provider rejected the key"), "{error}");
+
+    call.timeout = Duration::from_millis(50);
+    let started = Instant::now();
+    let error = spark_agent_adapter::run_utility_call(&failing(Duration::from_secs(2)), &call)
+        .expect_err("timeout");
+    assert!(error.contains("timed out"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn utility_cli_commands_are_one_shot_without_tools_sessions_or_project() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let work_dir = temp.path().join("work");
+    let output = work_dir.join("output.txt");
+    let metadata = json!({"spark.execution.settings": {
+        "model_settings": {"reasoning_summary": "concise"},
+        "configuration": {"agents": {"native": {
+            "claude_binary": "/opt/claude", "codex_binary": "/opt/codex",
+            "codex_runtime_root": temp.path().join("codex-runtime")
+        }}}
+    }});
+    let args = |command: &std::process::Command| {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let claude = spark_agent_adapter::utility_cli_command(
+        &utility_call("claude-code", metadata.clone()),
+        &work_dir,
+        &output,
+    )
+    .expect("claude command");
+    assert_eq!(claude.get_program(), "/opt/claude");
+    assert_eq!(claude.get_current_dir(), Some(work_dir.as_path()));
+    let claude_args = args(&claude);
+    for expected in [
+        &["-p"][..],
+        &["--tools", ""],
+        &["--strict-mcp-config"],
+        &["--no-session-persistence"],
+        &["--system-prompt", "Name the thread."],
+        &["--model", "utility-model"],
+        &["--effort", "low"],
+    ] {
+        assert!(
+            claude_args
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "{expected:?} in {claude_args:?}"
+        );
+    }
+    assert!(!claude_args.iter().any(|arg| arg == "--resume"));
+
+    let codex = spark_agent_adapter::utility_cli_command(
+        &utility_call("codex", metadata),
+        &work_dir,
+        &output,
+    )
+    .expect("codex command");
+    assert_eq!(codex.get_program(), "/opt/codex");
+    assert_eq!(codex.get_current_dir(), Some(work_dir.as_path()));
+    let codex_args = args(&codex);
+    for expected in [
+        &[
+            "exec",
+            "--ephemeral",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+        ][..],
+        &["-C", work_dir.to_str().unwrap()],
+        &["-o", output.to_str().unwrap()],
+        &["-c", "developer_instructions=\"Name the thread.\""],
+        &["-m", "utility-model"],
+        &["-c", "model_reasoning_effort=\"low\""],
+        &["-c", "model_reasoning_summary=\"concise\""],
+    ] {
+        assert!(
+            codex_args
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "{expected:?} in {codex_args:?}"
+        );
+    }
+    assert_eq!(codex_args.last().map(String::as_str), Some("-"));
+}
+
+#[cfg(unix)]
+#[test]
+fn utility_cli_call_runs_outside_the_project_and_surfaces_timeouts_and_failures() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let script = |name: &str, body: &str| {
+        let path = temp.path().join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("script");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+        path
+    };
+    let call = |binary: &Path, timeout: Duration| {
+        let mut call = utility_call(
+            "claude-code",
+            json!({"spark.execution.settings": {"configuration": {"agents": {"native": {"claude_binary": binary}}}}}),
+        );
+        call.timeout = timeout;
+        call
+    };
+    let client = Client::default();
+
+    let echo = script(
+        "echo.sh",
+        "read line; printf '%s from %s\\n' \"$line\" \"$(pwd)\"",
+    );
+    let text = spark_agent_adapter::run_utility_call(&client, &call(&echo, Duration::from_secs(5)))
+        .expect("utility text");
+    let cwd = text
+        .strip_prefix("First message from ")
+        .expect("echoed input");
+    assert!(!Path::new(cwd).exists(), "work directory is removed: {cwd}");
+    assert_ne!(Path::new(cwd), std::env::current_dir().unwrap());
+
+    let failing = script("fail.sh", "echo 'not logged in' >&2; exit 3");
+    let error =
+        spark_agent_adapter::run_utility_call(&client, &call(&failing, Duration::from_secs(5)))
+            .expect_err("failure");
+    assert!(error.contains("not logged in"), "{error}");
+
+    let slow = script("slow.sh", "sleep 5");
+    let started = Instant::now();
+    let error =
+        spark_agent_adapter::run_utility_call(&client, &call(&slow, Duration::from_millis(200)))
+            .expect_err("timeout");
+    assert!(error.contains("timed out"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+
+    let silent = script("silent.sh", "exit 0");
+    let error =
+        spark_agent_adapter::run_utility_call(&client, &call(&silent, Duration::from_secs(5)))
+            .expect_err("empty output");
+    assert!(error.contains("no text"), "{error}");
+}

@@ -302,6 +302,13 @@ pub fn validate_core_sections(path: &Path, values: &toml::Table) -> Result<()> {
     models
         .validate()
         .map_err(|error| invalid(path, error.to_string()))?;
+    if let Some(utility) =
+        document.section::<spark_common::settings::ModelSettings>(path, "utility_models")?
+    {
+        utility
+            .validate()
+            .map_err(|error| invalid(path, error.to_string()))?;
+    }
     validate_desktop_section(path, values)
 }
 

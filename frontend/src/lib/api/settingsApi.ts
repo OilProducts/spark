@@ -192,8 +192,11 @@ export interface ModelSettingsView {
     source: 'workspace' | 'project' | 'conversation'
 }
 
-export function parseModelSettingsView(payload: unknown, endpoint: string): ModelSettingsView {
-    const record = expectObjectRecord(expectObjectRecord(payload, endpoint).models, endpoint)
+// `utility_models` is the workspace utility model; a null group turns utility inference off.
+export type ModelSettingsSection = 'models' | 'utility_models'
+
+export function parseModelSettingsView(payload: unknown, endpoint: string, section: ModelSettingsSection = 'models'): ModelSettingsView {
+    const record = expectObjectRecord(expectObjectRecord(payload, endpoint)[section], endpoint)
     const group = (value: unknown): ModelSettings => {
         const fields = expectObjectRecord(value, endpoint)
         const field = (key: string) => fields[key] == null ? null : expectString(fields[key], endpoint, key)
@@ -209,17 +212,17 @@ export function parseModelSettingsView(payload: unknown, endpoint: string): Mode
     return { scope, source, revision: expectString(record.revision, endpoint, 'revision'), ...parseRepairableStored(record, group), effective: record.effective == null ? null : group(record.effective), ...parseSettingsFeedback(record, endpoint) }
 }
 
-export function fetchModelSettings(projectPath?: string): Promise<ModelSettingsView> {
+export function fetchModelSettings(projectPath?: string, section: ModelSettingsSection = 'models'): Promise<ModelSettingsView> {
     return fetchWorkspaceJsonValidated(`/settings${projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : ''}`, undefined,
-        '/workspace/api/settings', parseModelSettingsView)
+        '/workspace/api/settings', (payload, endpoint) => parseModelSettingsView(payload, endpoint, section))
 }
 
-export function saveModelSettings(revision: string, value: ModelSettings | null, projectPath?: string): Promise<ModelSettingsView> {
+export function saveModelSettings(revision: string, value: ModelSettings | null, projectPath?: string, section: ModelSettingsSection = 'models'): Promise<ModelSettingsView> {
     return fetchWorkspaceJsonValidated('/settings', {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expected_revision: revision, section: projectPath ? 'project_models' : 'models',
+        body: JSON.stringify(section === 'utility_models' ? { expected_revision: revision, section, value: modelSettingsForApi(value) } : { expected_revision: revision, section: projectPath ? 'project_models' : 'models',
             value: projectPath ? { project_path: projectPath, model_settings: modelSettingsForApi(value) } : (modelSettingsForApi(value) ?? { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }) }),
-    }, '/workspace/api/settings', parseModelSettingsView)
+    }, '/workspace/api/settings', (payload, endpoint) => parseModelSettingsView(payload, endpoint, section))
 }
 
 export function fetchProjectExecutionSettings(projectPath: string): Promise<{ revision: string, stored: unknown, validation_errors?: string[] }> {

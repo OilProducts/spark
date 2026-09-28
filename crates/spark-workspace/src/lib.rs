@@ -11,6 +11,7 @@ pub mod profile_settings;
 pub mod projects;
 pub mod settings;
 pub mod triggers;
+pub mod utility;
 pub mod workflow_log;
 
 pub use conversations::{

@@ -7,6 +7,7 @@ import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
 import { ProjectModelSettingsEditor } from "./ProjectModelSettingsEditor"
+import { UtilityModelSettingsEditor } from "./UtilityModelSettingsEditor"
 import { useEffect, useState } from "react"
 import { useStore } from "@/store"
 import { useLlmProfiles } from "@/lib/useLlmProfiles"
@@ -166,6 +167,7 @@ export function SettingsPanel() {
                     </CardContent>
                 </Card>
 
+                <UtilityModelSettingsEditor projectPath={activeProjectPath} />
                 {activeProjectPath && <ProjectModelSettingsEditor key={activeProjectPath} projectPath={activeProjectPath} />}
                 <ProviderSettingsEditor />
                 <LlmProfilesEditor />

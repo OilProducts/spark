@@ -1059,6 +1059,9 @@ async fn patch_settings(
         | spark_workspace::settings::WorkspaceSettingsSection::ImportModels(_) => {
             ("workspace", "models", None)
         }
+        spark_workspace::settings::WorkspaceSettingsSection::UtilityModels(_) => {
+            ("workspace", "utility_models", None)
+        }
         spark_workspace::settings::WorkspaceSettingsSection::ProjectModels {
             project_path, ..
         } => ("project", "models", Some(project_path.clone())),

@@ -1892,7 +1892,7 @@ pub fn build_codex_runtime_environment() -> Result<BTreeMap<String, String>, Cod
     build_codex_runtime_environment_with_settings(None)
 }
 
-fn build_codex_runtime_environment_with_settings(
+pub(crate) fn build_codex_runtime_environment_with_settings(
     native: Option<&spark_common::agent_settings::NativeAgentSettings>,
 ) -> Result<BTreeMap<String, String>, CodexAppServerError> {
     let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
