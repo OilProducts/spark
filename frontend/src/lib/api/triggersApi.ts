@@ -10,6 +10,8 @@ import { fetchWorkspaceJsonValidated } from './apiClient'
 export type TriggerSourceType = 'schedule' | 'poll' | 'webhook' | 'flow_event'
 
 export interface TriggerActionResponse {
+    mode?: string
+    mission_id?: string | null
     flow_name: string
     project_path?: string | null
     static_context?: Record<string, unknown>
@@ -88,7 +90,9 @@ export function parseTriggerResponse(payload: unknown, endpoint = '/workspace/ap
         created_at: expectString(record.created_at, endpoint, 'created_at'),
         updated_at: expectString(record.updated_at, endpoint, 'updated_at'),
         action: {
-            flow_name: expectString(actionRecord.flow_name, endpoint, 'action.flow_name'),
+            mode: asOptionalNullableString(actionRecord.mode) ?? 'static',
+            mission_id: asOptionalNullableString(actionRecord.mission_id),
+            flow_name: actionRecord.mode === 'mission' || actionRecord.mode === 'workspace_draft' ? asOptionalNullableString(actionRecord.flow_name) ?? '' : expectString(actionRecord.flow_name, endpoint, 'action.flow_name'),
             project_path: asOptionalNullableString(actionRecord.project_path),
             static_context: asUnknownRecord(actionRecord.static_context) ?? {},
         },

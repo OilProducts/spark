@@ -56,13 +56,12 @@ impl WorkspaceTriggerService {
         &self,
         request: TriggerCreateRequest,
     ) -> WorkspaceResult<SerializedTrigger> {
-        if action_mode(&request.action) != "workspace_draft" {
-            let flow_name = required_flow_name(&request.action)?;
-            self.ensure_flow_exists(flow_name)?;
-        }
-        TriggerService::new(self.settings.clone())
-            .create_trigger(request)
-            .map_err(Into::into)
+        let action = spark_storage::normalize_trigger_action_payload(&request.action)?;
+        self.with_validated_action(&action, || {
+            TriggerService::new(self.settings.clone())
+                .create_trigger(request)
+                .map_err(Into::into)
+        })
     }
 
     pub fn update_trigger(
@@ -70,18 +69,34 @@ impl WorkspaceTriggerService {
         trigger_id: &str,
         request: TriggerUpdateRequest,
     ) -> WorkspaceResult<SerializedTrigger> {
-        if request
-            .action
-            .as_ref()
-            .is_none_or(|action| action_mode(action) != "workspace_draft")
-        {
-            if let Some(flow_name) = optional_flow_name(request.action.as_ref()) {
-                self.ensure_flow_exists(flow_name)?;
-            }
+        let existing = TriggerRepositories::from_settings(&self.settings)
+            .definitions
+            .get(trigger_id)?
+            .ok_or_else(|| WorkspaceError::NotFound("Unknown trigger.".into()))?;
+        let mut action = serde_json::to_value(&existing.action)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        if let Some(update) = &request.action {
+            action.extend(update.clone());
         }
-        TriggerService::new(self.settings.clone())
-            .update_trigger(trigger_id, request)
-            .map_err(Into::into)
+        let action = spark_storage::normalize_trigger_action_payload(&action)?;
+        if action.mode == "static"
+            && request
+                .action
+                .as_ref()
+                .is_none_or(|a| !a.contains_key("flow_name"))
+        {
+            return TriggerService::new(self.settings.clone())
+                .update_trigger(trigger_id, request)
+                .map_err(Into::into);
+        }
+        self.with_validated_action(&action, || {
+            TriggerService::new(self.settings.clone())
+                .update_trigger(trigger_id, request)
+                .map_err(Into::into)
+        })
     }
 
     pub fn delete_trigger(
@@ -186,6 +201,42 @@ impl WorkspaceTriggerService {
         ]))
     }
 
+    fn with_validated_action<T>(
+        &self,
+        action: &spark_storage::TriggerAction,
+        work: impl FnOnce() -> WorkspaceResult<T>,
+    ) -> WorkspaceResult<T> {
+        if action.mode == "mission" {
+            // Serialize target validation and persistence with mission closure.
+            let scope = spark_storage::ProjectRegistry::new(self.settings.data_dir.clone())
+                .ensure_project_paths(action.project_path.as_deref().unwrap())?;
+            spark_storage::workspace_missions::MissionRepository::new(&scope.root)
+                .locked::<_, WorkspaceError>(|_| {
+                    self.validate_action(action)?;
+                    work()
+                })
+        } else {
+            self.validate_action(action)?;
+            work()
+        }
+    }
+
+    fn validate_action(&self, action: &spark_storage::TriggerAction) -> WorkspaceResult<()> {
+        if action.mode == "mission" {
+            let mission = crate::missions::WorkspaceMissionService::new(self.settings.clone())
+                .get(
+                    action.project_path.as_deref().unwrap(),
+                    action.mission_id.as_deref().unwrap(),
+                )?;
+            if mission.closed.is_some() {
+                return Err(WorkspaceError::Validation("Mission is closed".into()));
+            }
+        } else if action.mode == "static" {
+            self.ensure_flow_exists(&action.flow_name)?;
+        }
+        Ok(())
+    }
+
     fn ensure_flow_exists(&self, flow_name: &str) -> WorkspaceResult<()> {
         WorkspaceFlowService::new(self.settings.clone()).ensure_flow_exists(flow_name)
     }
@@ -212,6 +263,11 @@ impl TriggerActivationSink for WorkspaceTriggerActivationSink {
         &self,
         request: TriggerActivationRequest,
     ) -> spark_triggers::TriggerResult<TriggerActivationSinkOutcome> {
+        if request.action.mode == "mission" {
+            return crate::missions::WorkspaceMissionService::new(self.settings.clone())
+                .deliver_trigger(&request)
+                .map_err(|error| spark_triggers::TriggerError::Validation(error.detail()));
+        }
         if request.action.mode == "workspace_draft" {
             return self.activate_workspace_draft(request);
         }
@@ -549,34 +605,6 @@ mod next_session_tests {
         .unwrap_err()
         .contains("unsupported type"));
     }
-}
-
-fn required_flow_name(action: &Map<String, Value>) -> WorkspaceResult<&str> {
-    action
-        .get("flow_name")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            WorkspaceError::Validation("Trigger action requires a flow_name.".to_string())
-        })
-}
-
-fn optional_flow_name(action: Option<&Map<String, Value>>) -> Option<&str> {
-    action?
-        .get("flow_name")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn action_mode(action: &Map<String, Value>) -> &str {
-    action
-        .get("mode")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("static")
 }
 
 fn flow_allowed(flow_name: &str, allowlist: &[String]) -> bool {

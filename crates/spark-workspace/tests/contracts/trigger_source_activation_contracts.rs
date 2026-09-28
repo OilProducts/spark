@@ -787,6 +787,7 @@ async fn non_math_chain_id_keeps_static_schedule_context_nested() {
         protected: false,
         source_type: "schedule".to_string(),
         action: spark_storage::TriggerAction {
+            mission_id: None,
             mode: "static".to_string(),
             flow_name: "ops/run.yaml".to_string(),
             project_path: Some(project_path.to_string_lossy().into_owned()),
@@ -888,6 +889,7 @@ fn flow_event_definition(
         protected: false,
         source_type: "flow_event".to_string(),
         action: spark_storage::TriggerAction {
+            mission_id: None,
             mode: if id.ends_with("-chain") {
                 "workspace_draft".to_string()
             } else {

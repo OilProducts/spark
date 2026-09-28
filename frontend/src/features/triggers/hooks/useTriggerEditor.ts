@@ -187,7 +187,7 @@ export function useTriggerEditor({
                 : {
                     name: resolvedEditTriggerForm.name,
                     enabled: resolvedEditTriggerForm.enabled,
-                    action: buildTriggerActionPayload(resolvedEditTriggerForm),
+                    action: { ...buildTriggerActionPayload(resolvedEditTriggerForm), mode: resolvedEditTriggerForm.actionMode },
                     source: buildTriggerSourcePayload(resolvedEditTriggerForm),
                 }
             const updated = await updateTriggerValidated(selectedTrigger.id, { ...payload, expected_revision: currentEditDraft?.form ? currentEditDraft.expectedRevision ?? '' : selectedTrigger.revision })

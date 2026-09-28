@@ -221,7 +221,7 @@ export function TriggersPanel() {
                         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                           <span className="max-w-full truncate">{triggerSourceSummary(trigger)}</span>
                           <span aria-hidden="true">→</span>
-                          <span className="max-w-full truncate font-mono">{trigger.action.flow_name}</span>
+                          <span className="max-w-full truncate font-mono">{trigger.action.mode === 'mission' ? `Mission · ${trigger.action.mission_id}` : trigger.action.flow_name}</span>
                           <Badge variant="outline">
                             {triggerTargetSummary(trigger, activeProjectPath)}
                           </Badge>

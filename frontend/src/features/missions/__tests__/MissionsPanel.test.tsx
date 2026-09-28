@@ -1,5 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { TriggersSessionController } from '@/app/AppSessionControllers'
+import { TriggersPanel } from '@/features/triggers/TriggersPanel'
+import { createEmptyTriggerForm } from '@/features/triggers/model/triggerForm'
 import { MissionsPanel } from '../MissionsPanel'
 import { useStore } from '@/store'
 
@@ -15,6 +18,7 @@ beforeEach(() => {
     snapshot = conversation([])
     useStore.setState({ activeProjectPath: '/project', viewMode: 'missions' })
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/workspace/api/triggers') return { ok: true, json: async () => [] }
         if (url.includes('/chat-models')) return { ok: true, json: async () => ({ models: [{ provider: 'claude-code', id: 'opus', display: 'Opus', is_default: true, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'unavailable', error: null } } }) }
         if (init?.body) {
             const body = JSON.parse(String(init.body)); calls.push({ url, body })
@@ -435,4 +439,66 @@ it('filters titles locally with matching counts and keeps the selected read view
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
     expect(screen.getByRole('button', { name: 'Deliver search' })).toHaveAttribute('aria-pressed', 'true')
     expect(fetch).toHaveBeenCalledTimes(count)
+})
+
+it('shows waiting in Running and links targeting triggers from mission detail', async () => {
+    task = { ...task, status: 'running', waiting: true, wait_reason: 'Review pending' }
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+        if (String(url) === '/workspace/api/triggers') return { ok: true, json: async () => [{ id: 'watcher', revision: '1', name: 'Review watcher', source_type: 'webhook', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id, project_path: '/project' }, source: {}, state: {} }] } as Response
+        return original(url, init)
+    })
+    render(<MissionsPanel active />)
+    const running = await screen.findByRole('region', { name: 'Running' })
+    expect(within(running).getByText('Waiting: Review pending')).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Needs you' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: task.fields.title }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review watcher · webhook · Enabled' }))
+    expect(useStore.getState().viewMode).toBe('triggers')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('watcher')
+})
+
+
+it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission detail and the cached Triggers view from live events', async (action) => {
+    task = mission({ status: 'needs_you', started_at: 't' })
+    let trigger = { id: 'watcher', revision: '1', name: 'Review watcher', source_type: 'schedule', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id, project_path: '/project' }, source: { kind: 'interval', interval_seconds: 60 }, state: { recent_history: [], next_run_at: null } }
+    useStore.setState({ viewMode: 'triggers', triggersSession: {
+        status: 'idle', error: null, triggers: [], selectedTriggerId: null, scopeFilter: 'all', revealedWebhookSecrets: {}, createFormOpen: false,
+        newTriggerDraft: { form: createEmptyTriggerForm(null), targetBehavior: 'default' }, editTriggerDraftsByTriggerId: {},
+    } })
+    const original = vi.mocked(fetch).getMockImplementation()!
+    const close = () => {
+        task = mission({ status: 'closed', closed: { status: action === 'Cancel mission' ? 'canceled' : 'done', actor: action === 'agent close' ? 'assistant' : 'human', reason: 'Finished', at: 't' } })
+        trigger = { ...trigger, enabled: false, revision: '2' }
+        window.dispatchEvent(new CustomEvent('spark:trigger-live-event', { detail: { type: 'trigger.upsert', payload: { type: 'trigger_upsert', trigger } } }))
+        window.dispatchEvent(new CustomEvent('spark:mission-live-event', { detail: { projectPath: '/project', mission: task } }))
+    }
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+        if (String(url) === '/workspace/api/triggers') return { ok: true, json: async () => [trigger] } as Response
+        if (init?.method === 'POST' && /\/(close|cancel)\?/.test(String(url))) {
+            close()
+            return { ok: true, json: async () => task } as Response
+        }
+        return original(url, init)
+    })
+    // Keep both views mounted while switching, as the app does for cached panels.
+    function Panels() {
+        const view = useStore(state => state.viewMode)
+        return <><TriggersSessionController /><div hidden={view !== 'triggers'}><TriggersPanel /></div><div hidden={view !== 'missions'}><MissionsPanel active={view === 'missions'} /></div></>
+    }
+    render(<Panels />)
+    const row = await screen.findByTestId('trigger-row-watcher')
+    expect(within(row).getByText('Enabled')).toBeVisible()
+    act(() => useStore.setState({ viewMode: 'missions' }))
+    fireEvent.click(await screen.findByRole('button', { name: task.fields.title }))
+    const heading = detail().getByRole('heading', { level: 2 })
+    expect(await detail().findByRole('button', { name: 'Review watcher · schedule · Enabled' })).toBeVisible()
+    if (action === 'agent close') act(close)
+    else menu(action)
+    const link = await detail().findByRole('button', { name: 'Review watcher · schedule · Disabled' })
+    expect(detail().getByRole('heading', { level: 2 })).toBe(heading)
+    expect(useStore.getState().triggersSession.triggers[0]).toMatchObject({ enabled: false, revision: '2' })
+    fireEvent.click(link)
+    expect(screen.getByTestId('trigger-row-watcher')).toBe(row)
+    expect(within(row).getByText('Disabled')).toBeVisible()
 })

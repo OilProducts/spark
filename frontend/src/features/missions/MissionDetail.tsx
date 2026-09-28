@@ -1,3 +1,5 @@
+import { useStore } from '@/store'
+import { fetchTriggerListValidated, type TriggerResponse } from '@/lib/api/triggersApi'
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useEffect, useRef, useState } from 'react'
 import { DropdownMenu } from 'radix-ui'
@@ -24,6 +26,15 @@ const menuItem = 'relative flex cursor-default select-none items-center rounded-
 
 /** The mission's transcript: the pinned objective, the conversation, and the reply box. */
 export function MissionDetail({ mission, project, busy, error, narrow, focusRequest, edit, close, archive, onChange }: Props) {
+    const [triggers, setTriggers] = useState<TriggerResponse[]>([])
+    const [triggerError, setTriggerError] = useState('')
+    useEffect(() => {
+        let disposed = false
+        const load = () => { void fetchTriggerListValidated().then(items => { if (!disposed) { setTriggers(items.filter(t => t.action.mode === 'mission' && t.action.mission_id === mission.id && t.action.project_path === project)); setTriggerError('') } }).catch(error => { if (!disposed) setTriggerError(error.message) }) }
+        load()
+        window.addEventListener('spark:trigger-live-event', load)
+        return () => { disposed = true; window.removeEventListener('spark:trigger-live-event', load) }
+    }, [mission.id, project])
     const heading = useRef<HTMLHeadingElement>(null)
     useEffect(() => { heading.current?.focus({ preventScroll: true }) }, [mission.id, focusRequest])
     const [pending, setPending] = useState(false)
@@ -113,6 +124,8 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                         <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">{mission.playbook.text}</p></details>
                     : mission.fields.playbook && <p className="mt-2 text-xs text-muted-foreground">Playbook: <span className="font-medium text-foreground">{mission.fields.playbook}</span></p>}
             </section>
+            {triggerError && <InlineError>{triggerError}</InlineError>}
+            {triggers.length > 0 && <section className="px-4 py-2" aria-label="Targeting triggers"><h3 className="text-sm font-semibold">Triggers</h3><ul>{triggers.map(trigger => <li key={trigger.id}><button type="button" className="text-sm underline" onClick={() => { useStore.getState().updateTriggersSession({ selectedTriggerId: trigger.id, scopeFilter: 'all' }); useStore.getState().setViewMode('triggers') }}>{trigger.name} · {trigger.source_type} · {trigger.enabled ? 'Enabled' : 'Disabled'}</button></li>)}</ul></section>}
             {status !== 'draft' && mission.conversation_id && <div className="p-4"><MissionTranscript mission={mission} project={project} /></div>}
         </div>
         <footer className="shrink-0 border-t border-border p-4">

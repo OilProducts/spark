@@ -301,6 +301,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         protected: true,
         source_type: "webhook".to_string(),
         action: TriggerAction {
+            mission_id: None,
             mode: "static".to_string(),
             flow_name: "ops/run.yaml".to_string(),
             project_path: Some("/tmp/project".to_string()),
@@ -516,6 +517,43 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     let started = mission_cli(&["start"]);
     assert_eq!(started["conversation_id"], id);
     assert!(started["started_at"].is_string());
+    let waiting = mission_cli(&["wait", "--reason", "Review pending"]);
+    assert_eq!(waiting["wait_reason"], "Review pending");
+    let mission_action = serde_json::json!({"name":"Review watcher", "source_type":"schedule", "action":{"mode":"mission","mission_id":id,"project_path":project},"source":{"kind":"interval","interval_seconds":300}}).to_string();
+    let action_file = temp.path().join("mission-trigger.json");
+    fs::write(&action_file, mission_action).unwrap();
+    let output = run_spark(
+        temp.path(),
+        vec![
+            "trigger",
+            "create",
+            "--json",
+            action_file.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let trigger: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(trigger["action"]["mission_id"], id);
+    fs::write(&action_file, serde_json::json!({"expected_revision":trigger["revision"], "name":"Updated watcher", "action":{"mode":"mission", "mission_id":id, "project_path":project}}).to_string()).unwrap();
+    let updated = run_spark(
+        temp.path(),
+        vec![
+            "trigger",
+            "update",
+            "--id",
+            trigger["id"].as_str().unwrap(),
+            "--json",
+            action_file.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ],
+    );
+    assert_eq!(updated.status.code(), Some(0), "{}", stderr(&updated));
+    let updated: Value = serde_json::from_slice(&updated.stdout).unwrap();
+    assert_eq!(updated["action"]["mission_id"], id);
+    assert_eq!(updated["name"], "Updated watcher");
     let sent = mission_cli(&["send", "--message", "Focus on the parser"]);
     assert_eq!(sent["id"], id);
 

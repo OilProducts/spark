@@ -1048,6 +1048,7 @@ mod incremental_usage_tests {
                 protected: false,
                 source_type: "flow_event".into(),
                 action: spark_storage::TriggerAction {
+                    mission_id: None,
                     mode: "workspace_draft".into(),
                     flow_name: flow_name.into(),
                     project_path: Some(project.to_string_lossy().into_owned()),
