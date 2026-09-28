@@ -1588,3 +1588,80 @@ async fn triggers_deliver_to_missions_wait_batch_and_close() {
         )
         .is_err());
 }
+
+#[test]
+fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
+    use spark_triggers::TriggerCreateRequest;
+    use spark_workspace::WorkspaceTriggerService;
+
+    for actor in ["human", "assistant", "cancel"] {
+        let h = Harness::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let published = events.clone();
+        install_runtime(
+            &h.settings,
+            MissionRuntime {
+                agent_turn_backend: h.agent.clone(),
+                publish: Arc::new(move |event| published.lock().unwrap().push(event)),
+            },
+        );
+        let mission = h.create(json!({"title": "Waiting mission"}));
+        let triggers = WorkspaceTriggerService::new(h.settings.clone());
+        let create = |name: &str, enabled: bool, mission_id: &str| {
+            triggers.create_trigger(TriggerCreateRequest {
+                name: name.into(), enabled, source_type: "schedule".into(),
+                action: json!({"mode": "mission", "mission_id": mission_id, "project_path": h.project}).as_object().unwrap().clone(),
+                source: json!({"kind": "interval", "interval_seconds": 60}).as_object().unwrap().clone(),
+            }).unwrap()
+        };
+        let first = create("First watcher", true, &mission.id);
+        let second = create("Second watcher", true, &mission.id);
+        let disabled = create("Already disabled", false, &mission.id);
+        let other = h.create(json!({"title": "Other mission"}));
+        let unrelated = create("Other watcher", true, &other.id);
+        if actor == "cancel" {
+            h.missions.cancel(&h.project, &mission.id).unwrap();
+        } else {
+            h.missions
+                .close(
+                    &h.project,
+                    &mission.id,
+                    serde_json::from_value(json!({"actor": actor, "reason": "Finished"})).unwrap(),
+                )
+                .unwrap();
+        }
+        // Repeated closure must not publish duplicate trigger updates.
+        h.missions.cancel(&h.project, &mission.id).unwrap();
+        let events = events.lock().unwrap();
+        let updates: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "trigger.upsert")
+            .collect();
+        assert_eq!(updates.len(), 2, "{actor}");
+        for before in [first, second] {
+            let saved = triggers.get_trigger(&before.id).unwrap();
+            assert!(!saved.enabled);
+            assert_ne!(saved.revision, before.revision);
+            let update = updates
+                .iter()
+                .find(|event| event.resource.id.as_deref() == Some(&before.id))
+                .unwrap();
+            assert_eq!(update.project_path, saved.action.project_path);
+            let payload = &update.payload["trigger"];
+            assert_eq!(payload["revision"], saved.revision);
+            assert_eq!(payload["enabled"], false);
+            assert_eq!(payload["id"], saved.id);
+            assert_eq!(payload["name"], saved.name);
+            assert_eq!(payload["source_type"], saved.source_type);
+            assert_eq!(payload["action"], json!(saved.action));
+        }
+        assert_eq!(
+            triggers.get_trigger(&disabled.id).unwrap().revision,
+            disabled.revision
+        );
+        assert_eq!(
+            triggers.get_trigger(&unrelated.id).unwrap().revision,
+            unrelated.revision
+        );
+    }
+}

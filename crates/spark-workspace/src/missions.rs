@@ -685,6 +685,11 @@ impl WorkspaceMissionService {
             trigger.enabled = false;
             trigger.updated_at = now();
             repo.put(&trigger)?;
+            if let Some(runtime) = self.runtime() {
+                let saved = crate::triggers::WorkspaceTriggerService::new(self.settings.clone())
+                    .get_trigger(&trigger.id)?;
+                (runtime.publish)(crate::live::trigger_upsert_envelope(&json!(saved)));
+            }
             disabled.push(format!("{} ({})", trigger.name, trigger.id));
         }
         let mut note = format!("Closed as {}: {reason}", json!(status).as_str().unwrap());
