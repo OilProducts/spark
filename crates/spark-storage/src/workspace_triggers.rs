@@ -33,7 +33,10 @@ pub struct TriggerAction {
         skip_serializing_if = "is_static_action_mode"
     )]
     pub mode: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub flow_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mission_id: Option<String>,
     pub project_path: Option<String>,
     pub static_context: Map<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -446,11 +449,11 @@ fn normalize_trigger_action_payload_at(
         .to_ascii_lowercase();
     if !matches!(
         mode.as_str(),
-        ACTION_MODE_STATIC | ACTION_MODE_WORKSPACE_DRAFT
+        ACTION_MODE_STATIC | ACTION_MODE_WORKSPACE_DRAFT | "mission"
     ) {
         return Err(invalid_trigger(
             path,
-            "Trigger action mode must be static or workspace_draft.",
+            "Trigger action mode must be static, workspace_draft, or mission.",
         ));
     }
     let flow_name = payload
@@ -476,6 +479,23 @@ fn normalize_trigger_action_payload_at(
                 .ok_or_else(|| invalid_trigger(path, "Project path is required."))
         })
         .transpose()?;
+    let mission_id = payload
+        .get("mission_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    if mode == "mission" && (mission_id.is_none() || project_path.is_none()) {
+        return Err(invalid_trigger(
+            path,
+            "Mission actions require mission_id and project_path.",
+        ));
+    }
+    let flow_name = if mode == "mission" {
+        String::new()
+    } else {
+        flow_name
+    };
     let static_context = match payload.get("static_context") {
         Some(Value::Object(object)) => object.clone(),
         Some(Value::Null) | None => match payload
@@ -529,6 +549,7 @@ fn normalize_trigger_action_payload_at(
         .map(str::to_string);
     Ok(TriggerAction {
         mode,
+        mission_id,
         flow_name,
         project_path,
         static_context,
@@ -846,6 +867,9 @@ fn trigger_definition_toml(definition: &TriggerDefinition) -> String {
     ];
     if definition.action.mode != ACTION_MODE_STATIC {
         lines.push(format!("mode = {}", toml_string(&definition.action.mode)));
+    }
+    if let Some(id) = &definition.action.mission_id {
+        lines.push(format!("mission_id = {}", toml_string(id)));
     }
     if !definition.action.flow_name.is_empty() {
         lines.push(format!(

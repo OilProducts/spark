@@ -17,6 +17,7 @@ export type Status = 'draft' | 'running' | 'needs_you' | 'closed'
 export type RosterEntry = { run_id: string; flow_name: string; summary: string; launched_at: string; status: string }
 export type Mission = {
     id: string; revision: number; updated_at?: string; fields: Fields; activity: { revision: number; actor: string; at: string; note: string; before?: Fields; after?: Fields }[]
+    wait_reason?: string | null; waiting?: boolean
     status?: Status; conversation_id?: string | null; runs?: RosterEntry[]; cursor?: number; event_seq?: number
     closed?: { status: 'done' | 'failed' | 'canceled'; reason: string; at: string; actor?: string } | null; started_at?: string | null
     /** The playbook as it was on Start. */
@@ -35,7 +36,7 @@ export function statusLine(mission: Mission): string {
     const gate = runs.find(run => run.status === 'waiting')
     switch (mission.status ?? 'draft') {
         case 'draft': return 'Not started'
-        case 'running': return inFlight ? `${inFlight} run${inFlight === 1 ? '' : 's'} in flight` : 'Agent is working'
+        case 'running': return mission.waiting ? `Waiting: ${mission.wait_reason}` : inFlight ? `${inFlight} run${inFlight === 1 ? '' : 's'} in flight` : 'Agent is working'
         case 'needs_you': return gate ? `${gate.summary || gate.flow_name} is waiting on a human gate` : 'Waiting for your reply'
         case 'closed': return `Closed as ${mission.closed?.status ?? 'done'}${mission.closed?.reason ? `: ${mission.closed.reason}` : ''}`
     }
@@ -97,8 +98,9 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
             if (detail?.mission) upsert(detail.mission)
             else void load()
         }
+        window.addEventListener('spark:trigger-live-event', load)
         window.addEventListener('spark:mission-live-event', onLive)
-        return () => { disposed = true; window.removeEventListener('spark:mission-live-event', onLive) }
+        return () => { disposed = true; window.removeEventListener('spark:mission-live-event', onLive); window.removeEventListener('spark:trigger-live-event', load) }
     }, [project, active])
     function upsert(saved: Mission) {
         setBoard(current => ({ missions: current.missions.some(mission => mission.id === saved.id) ? current.missions.map(mission => mission.id === saved.id ? saved : mission) : [...current.missions, saved] }))

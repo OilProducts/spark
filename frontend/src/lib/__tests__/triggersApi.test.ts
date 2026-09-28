@@ -36,6 +36,14 @@ describe('parseTriggerResponse', () => {
     expect(parseTriggerResponse({ ...baseTriggerResponse, source_type: 'flow_event', source: { flow_name: 'observed.dot', statuses: ['completed'] } }).source_type).toBe('flow_event')
   })
 
+  it('accepts actions that do not name a flow', () => {
+    for (const mode of ['mission', 'workspace_draft']) {
+      const trigger = parseTriggerResponse({ ...baseTriggerResponse, action: { mode, mission_id: 'mission-1', project_path: '/project' } })
+      expect(trigger.action.mode).toBe(mode)
+      expect(trigger.action.flow_name).toBe('')
+    }
+  })
+
   it('rejects unsupported trigger source types', () => {
     expect(() => parseTriggerResponse({
       ...baseTriggerResponse,

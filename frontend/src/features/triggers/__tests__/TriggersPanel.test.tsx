@@ -100,6 +100,30 @@ describe('TriggersPanel', () => {
     vi.unstubAllGlobals()
   })
 
+  it('creates a mission action from the project open mission picker', async () => {
+    useStore.setState({ activeProjectPath: '/project' })
+    let saved: Record<string, unknown> | null = null
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = resolveRequestUrl(input)
+      if (url.includes('/missions?')) return jsonResponse({ missions: [{ id: 'open', fields: { title: 'Open mission' } }, { id: 'closed', fields: { title: 'Closed mission' }, closed: { status: 'done' } }] })
+      if (init?.method === 'POST') saved = JSON.parse(String(init.body))
+      const trigger = { ...makeTrigger({ id: 'mission-trigger' }), ...saved }
+      return jsonResponse(init?.method === 'POST' ? trigger : saved ? [trigger] : [])
+    })
+    const user = userEvent.setup()
+    renderTriggersPanel()
+    const form = await openCreateTriggerForm(user)
+    await user.type(form.getByLabelText('Name'), 'Mission watcher')
+    await user.selectOptions(form.getByLabelText('Action'), 'mission')
+    await form.findByRole('option', { name: 'Open mission' })
+    expect(form.queryByRole('option', { name: 'Closed mission' })).not.toBeInTheDocument()
+    expect(form.queryByLabelText('Target Flow')).not.toBeInTheDocument()
+    await user.selectOptions(form.getByLabelText('Mission'), 'open')
+    await user.click(screen.getByTestId('trigger-create-button'))
+    await waitFor(() => expect(saved).toMatchObject({ action: { mode: 'mission', mission_id: 'open', project_path: '/project' } }))
+    expect((saved as unknown as { action: object }).action).not.toHaveProperty('flow_name')
+  })
+
   it('creates a schedule trigger and refreshes the list', async () => {
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {

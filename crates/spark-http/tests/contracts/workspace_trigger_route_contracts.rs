@@ -706,6 +706,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         protected: true,
         source_type: "webhook".to_string(),
         action: TriggerAction {
+            mission_id: None,
             mode: "static".to_string(),
             flow_name: "ops/run.yaml".to_string(),
             project_path: Some("/tmp/project".to_string()),

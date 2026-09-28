@@ -1357,7 +1357,7 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             _ => Err(usage_error("Unknown command")),
         },
         "mission" => match domain_matches.subcommand_name() {
-            Some("list" | "get" | "create" | "update" | "start" | "send" | "close") => {
+            Some("list" | "get" | "create" | "update" | "start" | "send" | "close" | "wait") => {
                 Ok(CommandPath {
                     domain: CommandDomain::Mission,
                 })
@@ -1439,6 +1439,7 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("create"))
                 .subcommand(clap_command_leaf("update"))
                 .subcommand(clap_command_leaf("start"))
+                .subcommand(clap_command_leaf("wait"))
                 .subcommand(clap_command_leaf("send"))
                 .subcommand(clap_command_leaf("close")),
         )
@@ -2205,7 +2206,15 @@ fn trigger_list_text(payload: &Value) -> String {
         let flow_name = row
             .get("action")
             .and_then(Value::as_object)
-            .and_then(|action| action.get("flow_name"))
+            .and_then(|action| {
+                action.get(
+                    if action.get("mode").and_then(Value::as_str) == Some("mission") {
+                        "mission_id"
+                    } else {
+                        "flow_name"
+                    },
+                )
+            })
             .and_then(Value::as_str)
             .unwrap_or_default()
             .trim();
@@ -2293,9 +2302,20 @@ fn describe_trigger_text(payload: &Value) -> String {
         .expect("writing to String cannot fail");
     writeln!(
         &mut text,
-        "Flow Target: {}",
+        "{} Target: {}",
+        if action.and_then(|a| a.get("mode")).and_then(Value::as_str) == Some("mission") {
+            "Mission"
+        } else {
+            "Flow"
+        },
         action
-            .and_then(|action| action.get("flow_name"))
+            .and_then(|action| action.get(
+                if action.get("mode").and_then(Value::as_str) == Some("mission") {
+                    "mission_id"
+                } else {
+                    "flow_name"
+                }
+            ))
             .and_then(Value::as_str)
             .unwrap_or_default()
     )
@@ -2570,6 +2590,7 @@ fn build_mission_plan(
     match command {
         "start" => path.push_str("/start"),
         "close" => path.push_str("/close"),
+        "wait" => path.push_str("/wait"),
         "send" => path.push_str("/events"),
         _ => {}
     }
@@ -2607,13 +2628,16 @@ fn build_mission_plan(
             let reason = non_empty_value(&options, "--reason", "Reason is required")?;
             Some(json!({"status": status, "reason": reason, "actor": "assistant"}))
         }
+        "wait" => Some(
+            json!({"reason": non_empty_value(&options, "--reason", "Reason is required")?, "actor": "assistant"}),
+        ),
         "start" => Some(json!({})),
         _ => None,
     };
     Ok(ApiRequestPlan {
         method: match command {
             "list" | "get" => HttpMethod::Get,
-            "create" | "start" | "send" | "close" => HttpMethod::Post,
+            "create" | "start" | "send" | "close" | "wait" => HttpMethod::Post,
             "update" => HttpMethod::Patch,
             _ => return Err(usage_error("Unknown command")),
         },

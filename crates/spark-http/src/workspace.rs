@@ -1552,6 +1552,7 @@ async fn control_mission(
             "start" => service.start(project, &id),
             "cancel" => service.cancel(project, &id),
             "close" => service.close(project, &id, close),
+            "wait" => service.wait(project, &id, &close.reason),
             _ => Err(WorkspaceError::NotFound("Unknown mission control".into())),
         }
     })

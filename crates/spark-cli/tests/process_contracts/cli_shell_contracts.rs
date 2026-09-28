@@ -1734,6 +1734,13 @@ fn mission_commands_use_project_scope_and_minimal_payloads() {
         start.path,
         "/workspace/api/missions/mission-1/start?project_path=%2Fp"
     );
+    let waiting = scoped("wait", &["--reason", "Review pending"]);
+    assert_eq!(waiting.method, HttpMethod::Post);
+    assert_eq!(
+        waiting.path,
+        "/workspace/api/missions/mission-1/wait?project_path=%2Fp"
+    );
+    assert_eq!(waiting.body.unwrap()["reason"], "Review pending");
     let send = scoped("send", &["--message", "Prefer small diffs"]);
     assert_eq!(send.method, HttpMethod::Post);
     assert_eq!(

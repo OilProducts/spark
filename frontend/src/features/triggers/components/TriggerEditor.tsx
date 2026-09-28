@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { request, type Board, type Mission } from '@/features/missions/MissionsPanel'
 
 import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -45,6 +46,16 @@ export function TriggerEditor({
     protectedTrigger: boolean
     activeProjectPath: string | null
 }) {
+    const [missions, setMissions] = useState<Mission[]>([])
+    const [missionError, setMissionError] = useState('')
+    useEffect(() => {
+        let disposed = false
+        setMissions([]); setMissionError('')
+        if (form.actionMode === 'mission' && form.projectPath && form.targetMode !== 'none') {
+            void request<Board>(form.projectPath).then(board => { if (!disposed) setMissions(board.missions.filter(m => !m.closed)) }).catch(error => { if (!disposed) setMissionError(error.message) })
+        }
+        return () => { disposed = true }
+    }, [form.actionMode, form.projectPath, form.targetMode])
     const sourceTypeDisabled = protectedTrigger || mode === 'edit'
     const executionTargetDisabled = protectedTrigger
     const sourceConfigurationDisabled = protectedTrigger
@@ -89,14 +100,26 @@ export function TriggerEditor({
                         className="text-sm"
                     />
                 </TriggerField>
-                <TriggerField label="Target Flow" htmlFor={fieldId('target-flow')} className="text-sm">
+                <TriggerField label="Action" htmlFor={fieldId('action')}>
+                    <NativeSelect id={fieldId('action')} value={form.actionMode} disabled={protectedTrigger} onChange={e => onChange({ ...form, actionMode: e.target.value })}>
+                        <option value="static">Launch flow</option><option value="mission">Deliver to mission</option>
+                        {form.actionMode === 'workspace_draft' && <option value="workspace_draft">Workspace draft</option>}
+                    </NativeSelect>
+                </TriggerField>
+                {form.actionMode === 'mission' ? <TriggerField label="Mission" htmlFor={fieldId('mission')}>
+                    <NativeSelect id={fieldId('mission')} value={form.missionId} disabled={protectedTrigger} onChange={e => onChange({ ...form, missionId: e.target.value })}>
+                        <option value="">Select an open mission</option>
+                        {missions.map(m => <option key={m.id} value={m.id}>{m.fields.title}</option>)}
+                    </NativeSelect>
+                    {missionError && <p role="alert">{missionError}</p>}
+                </TriggerField> : <TriggerField label="Target Flow" htmlFor={fieldId('target-flow')} className="text-sm">
                     <Input
                         id={fieldId('target-flow')}
                         value={form.flowName}
                         onChange={(event) => onChange({ ...form, flowName: event.target.value })}
                         className="text-sm font-mono"
                     />
-                </TriggerField>
+                </TriggerField>}
             </div>
 
             <div className="grid gap-3 lg:grid-cols-3">
@@ -313,7 +336,7 @@ export function TriggerEditor({
                 </div>
             ) : null}
 
-            <TriggerField label="Static Context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
+            {form.actionMode !== 'mission' && <TriggerField label="Static Context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
                 <Textarea
                     id={fieldId('static-context-json')}
                     value={form.staticContextText}
@@ -321,7 +344,7 @@ export function TriggerEditor({
                     disabled={protectedTrigger}
                     className="min-h-24 font-mono text-sm"
                 />
-            </TriggerField>
+            </TriggerField>}
         </div>
     )
 }

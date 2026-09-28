@@ -15,6 +15,7 @@ beforeEach(() => {
     snapshot = conversation([])
     useStore.setState({ activeProjectPath: '/project', viewMode: 'missions' })
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === '/workspace/api/triggers') return { ok: true, json: async () => [] }
         if (url.includes('/chat-models')) return { ok: true, json: async () => ({ models: [{ provider: 'claude-code', id: 'opus', display: 'Opus', is_default: true, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'unavailable', error: null } } }) }
         if (init?.body) {
             const body = JSON.parse(String(init.body)); calls.push({ url, body })
@@ -435,4 +436,21 @@ it('filters titles locally with matching counts and keeps the selected read view
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
     expect(screen.getByRole('button', { name: 'Deliver search' })).toHaveAttribute('aria-pressed', 'true')
     expect(fetch).toHaveBeenCalledTimes(count)
+})
+
+it('shows waiting in Running and links targeting triggers from mission detail', async () => {
+    task = { ...task, status: 'running', waiting: true, wait_reason: 'Review pending' }
+    const original = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+        if (String(url) === '/workspace/api/triggers') return { ok: true, json: async () => [{ id: 'watcher', revision: '1', name: 'Review watcher', source_type: 'webhook', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id, project_path: '/project' }, source: {}, state: {} }] } as Response
+        return original(url, init)
+    })
+    render(<MissionsPanel active />)
+    const running = await screen.findByRole('region', { name: 'Running' })
+    expect(within(running).getByText('Waiting: Review pending')).toBeVisible()
+    expect(screen.queryByRole('region', { name: 'Needs you' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: task.fields.title }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Review watcher · webhook · Enabled' }))
+    expect(useStore.getState().viewMode).toBe('triggers')
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('watcher')
 })

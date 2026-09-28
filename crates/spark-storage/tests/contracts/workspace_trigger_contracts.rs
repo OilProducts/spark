@@ -383,6 +383,7 @@ fn definition_with_source(
         protected: false,
         source_type: source_type.to_string(),
         action: TriggerAction {
+            mission_id: None,
             mode: "static".to_string(),
             flow_name: "ops/run.dot".to_string(),
             // A prefix that exists on no platform: /tmp is a symlink on macOS and
