@@ -1665,3 +1665,54 @@ fn closing_missions_publishes_disabled_triggers_with_saved_revisions() {
         );
     }
 }
+
+#[test]
+fn a_retried_webhook_delivery_reaches_the_mission_once() {
+    use spark_triggers::{TriggerCreateRequest, WebhookHandleRequest};
+    use spark_workspace::WorkspaceTriggerService;
+    let h = Harness::new();
+    let mission = h.create(json!({"title": "Watch a webhook"}));
+    h.missions.start(&h.project, &mission.id).unwrap();
+    h.wait_turns(1);
+    h.agent.release(1);
+    h.wait_idle(&mission.id);
+    let triggers = WorkspaceTriggerService::new(h.settings.clone());
+    let webhook = triggers
+        .create_trigger(TriggerCreateRequest {
+            name: "webhook watcher".into(),
+            enabled: true,
+            source_type: "webhook".into(),
+            action: json!({"mode": "mission", "mission_id": mission.id, "project_path": h.project})
+                .as_object()
+                .unwrap()
+                .clone(),
+            source: Default::default(),
+        })
+        .unwrap();
+    let deliver = |request_id: &str| {
+        triggers
+            .dispatch_webhook(WebhookHandleRequest {
+                webhook_key: webhook.source["webhook_key"].as_str().unwrap().into(),
+                webhook_secret: webhook.webhook_secret.clone().unwrap(),
+                request_id: Some(request_id.into()),
+                payload: json!({"event": "review"}).as_object().unwrap().clone(),
+            })
+            .unwrap();
+    };
+    let seq = h.get(&mission.id).event_seq;
+    deliver("delivery-1");
+    deliver("delivery-1");
+    assert_eq!(
+        h.get(&mission.id).event_seq,
+        seq + 1,
+        "a retry is the same event"
+    );
+    deliver("delivery-2");
+    assert_eq!(
+        h.get(&mission.id).event_seq,
+        seq + 2,
+        "a new delivery is a new event"
+    );
+    h.agent.release(2);
+    h.wait_idle(&mission.id);
+}

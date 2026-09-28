@@ -67,6 +67,9 @@ pub struct TriggerActivationRequest {
     pub source_type: String,
     pub action: TriggerAction,
     pub source_payload: Value,
+    /// The sender's id for this delivery (a webhook's `X-Spark-Webhook-Request-Id`);
+    /// the same id on a retry identifies the same event.
+    pub delivery_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

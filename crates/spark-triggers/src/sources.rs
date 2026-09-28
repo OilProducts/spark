@@ -131,6 +131,7 @@ impl TriggerSourceRuntime {
             definition,
             json!({ "scheduled_at": state::datetime_to_iso(due_at) }),
             now,
+            None,
         )
         .map(|outcome| vec![outcome])
     }
@@ -200,6 +201,7 @@ impl TriggerSourceRuntime {
                 definition,
                 json!({ "poll_item": item.clone() }),
                 now,
+                None,
             )?);
         }
         Ok(outcomes)
@@ -258,6 +260,7 @@ impl TriggerSourceRuntime {
                 &definition,
                 Value::Object(payload.clone()),
                 now,
+                None,
             )?);
         }
         Ok(outcomes)
@@ -281,6 +284,7 @@ impl TriggerSourceRuntime {
             &definition,
             Value::Object(request.payload),
             OffsetDateTime::now_utc(),
+            request.request_id.filter(|id| !id.trim().is_empty()),
         )?;
         Ok(WebhookDispatchOutcome {
             response,
@@ -293,6 +297,7 @@ impl TriggerSourceRuntime {
         definition: &TriggerDefinition,
         source_payload: Value,
         timestamp: OffsetDateTime,
+        delivery_id: Option<String>,
     ) -> TriggerResult<TriggerActivationOutcome> {
         let sink_result = self.sink.activate(TriggerActivationRequest {
             trigger_id: definition.id.clone(),
@@ -300,6 +305,7 @@ impl TriggerSourceRuntime {
             source_type: definition.source_type.clone(),
             action: definition.action.clone(),
             source_payload: source_payload.clone(),
+            delivery_id,
         });
         let mut trigger_state = self.repositories.runtime_state.load(&definition.id)?;
         match sink_result {
