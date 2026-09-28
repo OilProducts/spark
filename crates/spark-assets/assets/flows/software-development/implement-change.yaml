@@ -165,6 +165,7 @@ nodes:
       flow_ref: workers/implement-task.yaml
       input_map:
         context.task.objective: context.task.objective
+        context.task.artifact_path: context.task.artifact_path
         context.task.validation_command: context.task.validation_command
         context.review.summary: context.review.summary
         context.review.required_changes: context.review.required_changes

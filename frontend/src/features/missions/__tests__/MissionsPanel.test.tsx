@@ -100,7 +100,7 @@ it('shows a draft with its pinned objective and Start in place of the reply box'
 it('renders the transcript with linked run events and the close notice, and replies post messages', async () => {
     task = mission({ status: 'needs_you', conversation_id: 'task-1', started_at: 't', fields: { ...fields, description: 'Ship search' } })
     snapshot = conversation([
-        turn('u1', 'user', 'Objective:\nShip search\n\nBegin work on this mission.'),
+        turn('u1', 'user', 'Begin work on this mission.'),
         turn('a1', 'assistant', 'Launched the build.'),
         turn('u2', 'user', 'Run run-build (work/build.yaml, "Build") ended completed.\n\nUser: Prefer small diffs'),
         turn('n1', 'system', 'Closed as done: Shipped', 'mission_notice'),

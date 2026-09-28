@@ -520,12 +520,8 @@ impl WorkspaceMissionService {
             mission.started_at = Some(now());
             mission.conversation_id = Some(mission.id.clone());
             mission.note("human", "Started mission");
-            let objective = if mission.fields.description.trim().is_empty() {
-                &mission.fields.title
-            } else {
-                &mission.fields.description
-            };
-            let begin = format!("Objective:\n{objective}\n\nBegin work on this mission.");
+            // The objective is pinned in the frame; the transcript only starts the work.
+            let begin = "Begin work on this mission.".to_string();
             // The first turn's frame is built from the stored record.
             repo.write(&mission.id, &stored(mission))?;
             self.deliver_pending(repo, mission, Some(begin))
@@ -930,14 +926,18 @@ pub(crate) fn mission_frame(mission: &MissionRecord, handle: &str) -> String {
         Objective:\n{objective}\n\n\
         {playbook}\
         Work in the project directly, and launch Spark flows when a flow fits the work. Every run you launch reports back to this conversation: when runs complete, fail, are canceled, or wait on a human gate, you receive a new turn listing them. Never poll or sleep waiting for runs; end your turn instead. Launches count against the mission budget ({concurrent} concurrent runs, {total} runs in total); a refused launch names the limit it hit.\n\n\
-        When a run or descendant asks a question, answer when the objective, playbook, and evidence settle it: `spark run answer --run <owning run id> --question <question id> (--option <value> | --text <text>)`. Use the owning run id, not the root run id. Inspect open questions with `spark run questions --run <id>`. If the decision belongs to the user or is unclear, ask the user and end your turn; relay their reply with `spark run answer` on the next turn. Never guess an answer.\n\n\
+        When a run or descendant asks a question, you answer it. First decide whether you have the information to: the objective, the playbook, the runs' results and logs, and the repository. Investigate before deciding. If you have it, answer with `spark run answer --run <owning run id> --question <question id> (--option <value> | --text <text>)` and state your reasoning in your reply. Use the owning run id, not the root run id; `spark run questions --run <id>` lists open questions. Only if you do not have the information, ask the user for exactly what is missing and end your turn; relay their reply with `spark run answer` on the next turn. Never guess an answer.\n\n\
         When the objective is met or cannot be met, close the mission: `spark mission close --project {project} --id {id} --status done|failed|canceled --reason <text>`. When only the user can decide something, ask and end your turn; their reply arrives as a new turn.\n\n\
         {control}\n\n\
         Mission ID: {id}\n\
         Conversation handle: {handle}\n\
         Project path: {project}",
         title = mission.fields.title,
-        objective = mission.fields.description,
+        objective = if mission.fields.description.trim().is_empty() {
+            &mission.fields.title
+        } else {
+            &mission.fields.description
+        },
         playbook = mission.playbook.as_ref().map_or(String::new(), |playbook| format!(
             "Playbook ({name}): the broad shape of this kind of mission. Decide each step from run results and logs, and depart from it when the evidence calls for it.\n{text}\n\n",
             name = playbook.name,

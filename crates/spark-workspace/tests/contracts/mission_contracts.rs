@@ -392,10 +392,7 @@ fn start_creates_the_conversation_and_pins_the_objective_outside_the_transcript(
     ));
     harness.wait_turns(1);
     let request = harness.agent.requests.lock().unwrap()[0].clone();
-    assert_eq!(
-        request.prompt,
-        "Objective:\nSearch returns documents.\n\nBegin work on this mission."
-    );
+    assert_eq!(request.prompt, "Begin work on this mission.");
     let frame = request.metadata[AGENT_INSTRUCTIONS_METADATA_KEY]
         .as_str()
         .unwrap();
@@ -453,6 +450,11 @@ fn a_model_set_on_a_draft_missions_conversation_runs_its_turns() {
     harness.wait_turns(1);
     let request = harness.agent.requests.lock().unwrap()[0].clone();
     assert_eq!(request.model.as_deref(), Some("opus"));
+    // A mission without a description pins its title as the objective.
+    let frame = request.metadata[AGENT_INSTRUCTIONS_METADATA_KEY]
+        .as_str()
+        .unwrap();
+    assert!(frame.contains("Objective:\nSearch\n"), "{frame}");
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
 }

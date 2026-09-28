@@ -405,7 +405,7 @@ impl spark_agent_adapter::AgentTurnBackend for ScriptedMissionAgent {
             .map(|prompt| prompt.matches("Run run-").count())
             .sum::<usize>();
         drop(prompts);
-        let reply = if request.prompt.starts_with("Objective:") {
+        let reply = if request.prompt == "Begin work on this mission." {
             for (flow, summary) in [("work/ok.yaml", "Build it"), ("work/ok.yaml", "Test it")] {
                 let launched = self.call(
                     "POST",
