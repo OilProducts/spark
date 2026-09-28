@@ -33,3 +33,14 @@ it('retains edits across late reads and failed saves', async () => {
     expect(input).toHaveValue('/draft')
     expect(saveRuntimeSettings).toHaveBeenCalledWith('revision-1', { ...view.stored, flows_dir: '/draft' })
 })
+
+it('lists installed flows that seeding keeps as local edits', async () => {
+    const view: RuntimeSettingsView = {
+        scope: 'workspace', revision: 'revision-1', restart_fields: [],
+        stored: null, effective: { flows_dir: '/flows', runs_dir: null, ui_dir: null, project_roots: [] },
+        locally_edited_flows: ['software-development/implement-change.yaml', 'examples/simple-linear.yaml'],
+    }
+    vi.mocked(fetchRuntimeSettings).mockResolvedValue(view)
+    render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
+    expect(await screen.findByText(/software-development\/implement-change\.yaml, examples\/simple-linear\.yaml/)).toHaveTextContent('Delete a flow\'s file to reinstall the bundled version')
+})

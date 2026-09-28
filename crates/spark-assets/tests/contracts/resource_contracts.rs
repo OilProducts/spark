@@ -805,3 +805,41 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[test]
+fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
+    use sha2::{Digest, Sha256};
+    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let temp = tempfile::tempdir().expect("tempdir");
+    let dir = temp.path();
+    let assets = flows::starter_flow_assets().expect("bundled flows");
+    let [same, stale, edited, unknown, ..] = &assets[..] else {
+        panic!("at least four bundled flows")
+    };
+    let write = |name: &str, content: &[u8]| {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    };
+    write(&same.name, same.content.as_bytes());
+    write(&stale.name, b"older packaged version\n");
+    write(&edited.name, b"edited: true\n");
+    write(&unknown.name, b"installed before the manifest existed\n");
+    let manifest = serde_json::json!({
+        same.name.clone(): hash(b"anything"),
+        stale.name.clone(): hash(b"older packaged version\n"),
+        edited.name.clone(): hash(edited.content.as_bytes()),
+    });
+    fs::write(
+        dir.join(flows::PACKAGED_FLOW_HASHES),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    // Matching the bundled copy, or the last installed version (updated on the
+    // next start), is not an edit; missing files are reinstalled.
+    assert_eq!(
+        flows::locally_edited_flows(dir),
+        vec![edited.name.clone(), unknown.name.clone()]
+    );
+}

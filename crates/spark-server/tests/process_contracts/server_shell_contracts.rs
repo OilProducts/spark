@@ -254,6 +254,21 @@ fn init_seeds_playbooks_updating_unmodified_copies_and_keeping_edits() {
     fs::write(&bug_report, "edited\n").expect("user edit");
     init();
     assert_eq!(fs::read_to_string(&bug_report).unwrap(), "edited\n");
+
+    // A packaged copy whose manifest entry fell behind converges instead of
+    // reading as an edit that would block every later update.
+    fs::write(&bug_report, &packaged).expect("packaged copy");
+    let mut manifest: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest.insert("bug-report.md".into(), "stale".into());
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).expect("manifest");
+    init();
+    let manifest: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(
+        manifest["bug-report.md"],
+        format!("{:x}", Sha256::digest(packaged.as_bytes()))
+    );
 }
 
 #[test]

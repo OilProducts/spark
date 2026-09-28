@@ -126,6 +126,7 @@ export interface RuntimeSettingsView {
     repair_defaults?: RuntimeSettings
     effective: RuntimeSettings | null
     active_startup?: RuntimeSettings
+    locally_edited_flows?: string[]
     sources?: Record<string, string>
     validation_errors?: string[]
     restart_fields: string[]
@@ -150,6 +151,7 @@ function parseRuntimeView(payload: unknown, endpoint: string): RuntimeSettingsVi
         active_startup: record.active_startup == null ? undefined : parseRuntimeSettings(record.active_startup, endpoint), effective: record.effective == null ? null : parseRuntimeSettings(record.effective, endpoint),
         ...parseSettingsFeedback(record, endpoint),
         restart_fields: Array.isArray(record.restart_fields) ? record.restart_fields.map((value) => expectString(value, endpoint, 'restart_fields')) : [],
+        locally_edited_flows: Array.isArray(record.locally_edited_flows) ? record.locally_edited_flows.map((value) => expectString(value, endpoint, 'locally_edited_flows')) : [],
     }
 }
 

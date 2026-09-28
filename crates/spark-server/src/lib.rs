@@ -393,7 +393,7 @@ pub fn initialize_runtime_with_options(
     let result = seed_packaged_files(
         &settings.flows_dir,
         flows,
-        ".packaged-flow-hashes.json",
+        spark_assets::flows::PACKAGED_FLOW_HASHES,
         options.force,
     )?;
     seed_packaged_files(
@@ -916,7 +916,18 @@ fn seed_packaged_files(
                 })?;
             match prior_hashes.get(&relative_name) {
                 Some(old_hash) if current_hash == *old_hash && packaged_hash != *old_hash => {}
+                // Already the packaged version: record it, so a manifest left behind
+                // by an earlier write converges instead of reading as a local edit.
+                Some(_) if current_hash == packaged_hash => {
+                    next_hashes.insert(relative_name.clone(), packaged_hash);
+                    skipped.push(relative_name);
+                    continue;
+                }
                 Some(old_hash) => {
+                    tracing::warn!(
+                        file = %relative_name,
+                        "keeping a locally edited packaged file; the bundled version differs"
+                    );
                     next_hashes.insert(relative_name.clone(), old_hash.clone());
                     skipped.push(relative_name);
                     continue;

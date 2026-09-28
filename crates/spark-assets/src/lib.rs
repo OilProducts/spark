@@ -184,6 +184,32 @@ pub mod flows {
         packaged_file(&STARTER_FLOWS, name).ok_or(FlowResourceError::Missing)
     }
 
+    /// The manifest recording the packaged version last installed for each flow.
+    pub const PACKAGED_FLOW_HASHES: &str = ".packaged-flow-hashes.json";
+
+    /// Installed flows that seeding keeps as local edits: they differ from the
+    /// bundled copy and from the version Spark last installed, so newer bundled
+    /// versions never reach them.
+    pub fn locally_edited_flows(flows_dir: &std::path::Path) -> Vec<String> {
+        use sha2::{Digest, Sha256};
+        let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let manifest: std::collections::BTreeMap<String, String> =
+            std::fs::read(flows_dir.join(PACKAGED_FLOW_HASHES))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .unwrap_or_default();
+        starter_flow_assets()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|asset| {
+                let installed = hash(&std::fs::read(flows_dir.join(&asset.name)).ok()?);
+                (installed != hash(asset.content.as_bytes())
+                    && manifest.get(&asset.name) != Some(&installed))
+                .then_some(asset.name)
+            })
+            .collect()
+    }
+
     pub fn starter_flow_assets() -> Result<Vec<StarterFlowAsset>, FlowResourceError> {
         starter_flow_names()?
             .into_iter()

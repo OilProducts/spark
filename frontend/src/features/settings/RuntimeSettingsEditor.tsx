@@ -31,6 +31,7 @@ export function RuntimeSettingsEditor() {
             </>}
             {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: flows {saved.active_startup.flows_dir}, runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}
             {!draft && saved?.repair_defaults && <Button variant="outline" disabled={pending} onClick={() => setDraft(saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {saved?.locally_edited_flows?.length ? <p className="text-xs">These installed flows have local changes, so Spark keeps them instead of updating them to newer bundled versions: {saved.locally_edited_flows.join(', ')}. Delete a flow's file to reinstall the bundled version on the next start.</p> : null}
             {saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={message} error={error} dirty={dirty} />
         </CardContent>
