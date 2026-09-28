@@ -491,7 +491,8 @@ impl RunStore {
         let Some(meta) = self.read_run_meta(run_id)? else {
             return Ok(None);
         };
-        let Some(mut record) = meta.record else {
+        let _lock = crate::records::lock_run_record(&meta.paths)?;
+        let Some(mut record) = self.read_run_record(&meta.paths)? else {
             return Ok(None);
         };
         update(&mut record);

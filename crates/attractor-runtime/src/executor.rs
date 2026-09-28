@@ -715,7 +715,10 @@ where
             });
             if let Some(cleanup_error) = self.node_executor.take_cleanup_error() {
                 record.cleanup_error = Some(cleanup_error.clone());
-                write_run_record(&paths, &record)?;
+                // Merge into the disk record: writing ours back could drop a control request.
+                store.update_run_record(&run_id, |disk| {
+                    disk.cleanup_error = Some(cleanup_error.clone());
+                })?;
                 store.append_event(&paths, cleanup_error_event(&run_id, cleanup_error))?;
             }
             let mut outcome = apply_outcome_context_updates_for_node(
@@ -848,12 +851,11 @@ where
             // Fold usage into the record on disk without clobbering it: the
             // persisted record doubles as the control channel (cancel/pause
             // requests land in its status), so only the usage fields merge.
-            if let Ok(Some(mut disk_record)) = store.read_run_record(&paths) {
+            store.update_run_record(&run_id, |disk_record| {
                 disk_record.token_usage = record.token_usage;
                 disk_record.token_usage_breakdown = record.token_usage_breakdown.clone();
                 disk_record.estimated_model_cost = record.estimated_model_cost.clone();
-                write_run_record(&paths, &disk_record)?;
-            }
+            })?;
 
             if let Some(action) = self.poll_control() {
                 return match action {
@@ -1606,10 +1608,14 @@ fn finalize_completed<E: NodeExecutor>(
         retry_counts,
     )?;
     // Cancellation is persisted while a node runs; every completion route must honor it.
+    // Hold the record lock from this check through the completed write, so a cancel
+    // accepted in between cannot be overwritten.
+    let lock = crate::records::lock_run_record(paths)?;
     if store
         .read_run_record(paths)?
         .is_some_and(|record| record.status == "cancel_requested")
     {
+        drop(lock);
         return finalize_canceled(
             store,
             paths,
@@ -1632,6 +1638,7 @@ fn finalize_completed<E: NodeExecutor>(
     record.last_error.clear();
     refresh_record_usage(store, paths, record);
     write_run_record(paths, record)?;
+    drop(lock);
     store.append_event(
         paths,
         runtime_status_event(

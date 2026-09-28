@@ -720,7 +720,11 @@ impl RuntimeControls {
             .store
             .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
-        let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
+        let _lock = crate::records::lock_run_record(&bundle.paths)?;
+        let mut record = self
+            .store
+            .read_run_record(&bundle.paths)?
+            .ok_or(RuntimeControlError::UnknownPipeline)?;
         if !matches!(
             crate::records::normalize_run_status(&record.status).as_str(),
             "queued" | "running" | "waiting" | "pause_requested" | "cancel_requested"
@@ -765,7 +769,11 @@ impl RuntimeControls {
             .store
             .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
-        let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
+        let _lock = crate::records::lock_run_record(&bundle.paths)?;
+        let mut record = self
+            .store
+            .read_run_record(&bundle.paths)?
+            .ok_or(RuntimeControlError::UnknownPipeline)?;
         let current_node = bundle
             .checkpoint
             .as_ref()
@@ -795,7 +803,11 @@ impl RuntimeControls {
             .store
             .read_run_meta(run_id)?
             .ok_or(RuntimeControlError::UnknownPipeline)?;
-        let mut record = bundle.record.ok_or(RuntimeControlError::UnknownPipeline)?;
+        let _lock = crate::records::lock_run_record(&bundle.paths)?;
+        let mut record = self
+            .store
+            .read_run_record(&bundle.paths)?
+            .ok_or(RuntimeControlError::UnknownPipeline)?;
         mark_record_canceled(&mut record, last_error);
         self.store.write_run_record(&bundle.paths, &record)?;
         self.store.append_event(

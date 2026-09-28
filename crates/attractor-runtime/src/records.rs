@@ -63,6 +63,22 @@ pub fn read_run_record(paths: &RunRootPaths) -> Result<Option<RunRecord>> {
     Ok(Some(record))
 }
 
+/// Serializes read-modify-write of a run record across threads and processes:
+/// the record doubles as the control channel, so an unlocked rewrite can drop a
+/// concurrent cancel or pause request. The lock releases when the file drops.
+pub fn lock_run_record(paths: &RunRootPaths) -> Result<std::fs::File> {
+    let path = paths.root.join(".run.json.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|source| RuntimeStorageError::io("open run record lock", &path, source))?;
+    file.lock()
+        .map_err(|source| RuntimeStorageError::io("lock run record", &path, source))?;
+    Ok(file)
+}
+
 pub fn write_run_record(paths: &RunRootPaths, record: &RunRecord) -> Result<()> {
     let mut normalized = record.clone();
     normalize_record_for_write(&mut normalized);

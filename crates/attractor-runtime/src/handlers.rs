@@ -1666,6 +1666,8 @@ impl RuntimeHandlerRunner {
         run_id: &str,
         status: GateRunStatus,
     ) -> std::result::Result<(), RuntimeNodeError> {
+        let _lock = crate::records::lock_run_record(paths)
+            .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?;
         let Some(mut record) = crate::records::read_run_record(paths)
             .map_err(|error| RuntimeNodeError::runtime(error.to_string()))?
         else {

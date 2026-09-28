@@ -339,3 +339,59 @@ fn stage_completed_events_carry_truncated_outcome_notes() {
     assert_eq!(notes.chars().count(), 200);
     assert_eq!(notes, expected_notes);
 }
+
+#[test]
+fn a_cancel_during_a_run_record_update_waits_and_is_not_lost() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let store = temp_store(&temp);
+    let project_path = temp.path().join("Project Lock");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let paths = prepare_fresh_run(
+        &store,
+        &record("run-record-lock", &project_path),
+        &simple_flow(),
+        None,
+        None,
+        &LaunchContext::empty(),
+        &Default::default(),
+    )
+    .expect("prepare run");
+
+    // An executor-style merge holds the record lock while it rewrites the record.
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    let updater_store = store.clone();
+    let updater = std::thread::spawn(move || {
+        updater_store.update_run_record("run-record-lock", |record| {
+            entered.send(()).unwrap();
+            release_rx.recv().unwrap();
+            record.cleanup_error = Some("merged while locked".into());
+        })
+    });
+    entered_rx.recv().unwrap();
+
+    let (done, done_rx) = std::sync::mpsc::channel();
+    let cancel_store = store.clone();
+    let canceller = std::thread::spawn(move || {
+        let status = RuntimeControls::new(cancel_store).request_cancel("run-record-lock");
+        done.send(()).unwrap();
+        status
+    });
+    assert!(
+        done_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+        "the cancel must wait for the in-flight record update"
+    );
+    release.send(()).unwrap();
+    updater.join().unwrap().expect("update").expect("record");
+    done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("cancel completes");
+    assert_eq!(
+        canceller.join().unwrap().expect("cancel").status,
+        "cancel_requested"
+    );
+    // Both writes survive: the cancel landed on top of the merged update.
+    let record = store.read_run_record(&paths).unwrap().unwrap();
+    assert_eq!(record.status, "cancel_requested");
+    assert_eq!(record.cleanup_error.as_deref(), Some("merged while locked"));
+}
