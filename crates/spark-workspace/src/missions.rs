@@ -274,17 +274,15 @@ impl WorkspaceMissionService {
         Ok(mission)
     }
     /// Draft until started and Closed once closed. An open mission Needs you
-    /// when a run waits on a human gate or nothing is in flight or pending;
-    /// otherwise it is Running.
+    /// after a turn ends with an open question or nothing in flight or pending.
     fn with_status(&self, mut mission: MissionRecord) -> MissionRecord {
         mission.status = if mission.closed.is_some() {
             MissionStatus::Closed
         } else if mission.started_at.is_none() {
             MissionStatus::Draft
-        } else if mission.runs.iter().any(|run| run.status == "waiting") {
-            MissionStatus::NeedsYou
         } else if mission.event_seq > mission.cursor
-            || mission.runs.iter().any(RosterEntry::in_flight)
+            || (mission.runs.iter().any(RosterEntry::in_flight)
+                && !mission.runs.iter().any(|run| run.status == "waiting"))
             || mission.conversation_id.as_deref().is_some_and(|id| {
                 WorkspaceConversationService::new(self.settings.clone())
                     .turn_in_flight(id, &mission.project_path)
@@ -743,8 +741,7 @@ impl WorkspaceMissionService {
         Ok(())
     }
 
-    /// Turns a mission-owned run's terminal or waiting status into one inbox
-    /// event keyed by run id plus status.
+    /// Reconciles a mission-owned run tree and delivers questions once by ID.
     pub fn deliver_run_events(&self, run_id: &str) -> WorkspaceResult<Option<MissionRecord>> {
         self.deliver(run_id, false)
     }
@@ -767,6 +764,13 @@ impl WorkspaceMissionService {
                 let Some(record) = store.read_run_record(&paths).map_err(internal)? else {
                     return Ok(None);
                 };
+                let root_id = record.root_run_id.as_deref().unwrap_or(run_id);
+                let Some(paths) = store.find_run_root(root_id).map_err(internal)? else {
+                    return Ok(None);
+                };
+                let Some(record) = store.read_run_record(&paths).map_err(internal)? else {
+                    return Ok(None);
+                };
                 let owner = record
                     .launch_context
                     .as_ref()
@@ -781,7 +785,6 @@ impl WorkspaceMissionService {
                             record.project_path.clone()
                         },
                         paths,
-                        status: None,
                     });
                 run_owners()
                     .lock()
@@ -793,54 +796,61 @@ impl WorkspaceMissionService {
         let Some(owner) = owner else {
             return Ok(None);
         };
-        let Some(record) = store.read_run_record(&owner.paths).map_err(internal)? else {
-            return Ok(None);
-        };
-        let status = attractor_runtime::normalize_run_status(record.status.trim());
-        let kind = match status.as_str() {
-            "completed" => "run.completed",
-            "failed" | "validation_error" => "run.failed",
-            "canceled" => "run.canceled",
-            // ponytail: roster keeps `waiting` until terminal and a second gate on the
-            // same run dedupes by event id; track resumes if gate-heavy flows need it.
-            "waiting" => "run.waiting",
-            _ => return Ok(None),
-        };
-        if owner.status.as_ref() == Some(&status) {
-            return Ok(None);
-        }
-        if !recovering
-            && kind != "run.waiting"
-            && store
-                .read_result(&owner.paths)
-                .map_err(internal)?
-                .is_some_and(|result| result.state == "pending")
-        {
-            return Ok(None);
-        }
+        let root_id = &owner.paths.run_id;
         let mut changed = false;
         let mission = self.locked(&owner.project, &owner.mission_id, !recovering, |repo, mission| {
-            changed = Self::append(
-                repo,
-                mission,
-                MissionEventPost {
-                    id: Some(format!("{run_id}:{status}")),
-                    kind: kind.into(),
-                    source: Some(run_id.into()),
-                    payload: json!({"status": status, "flow_name": record.flow_name, "outcome": record.outcome, "error": record.last_error}),
-                },
-                run_id,
-            )?;
-            if let Some(run) = mission.runs.iter_mut().find(|run| run.run_id == run_id) {
-                if run.in_flight() {
-                    run.status = status.clone();
+            let Some(record) = store.read_run_record(&owner.paths).map_err(internal)? else { return Ok(()); };
+            let status = attractor_runtime::normalize_run_status(record.status.trim());
+            let response = attractor_api::AttractorApiService::new(self.settings.clone())
+                .list_pipeline_questions(root_id);
+            if response.status_code != 200 {
+                return Err(WorkspaceError::Internal(response.body.to_string()));
+            }
+            let questions = response.body["questions"].as_array().cloned().unwrap_or_default();
+            for mut question in questions.iter().cloned() {
+                question["root_run_id"] = json!(root_id);
+                let question_id = question["question_id"].as_str().unwrap_or_default();
+                let source = question["run_id"].as_str().unwrap_or(root_id).to_string();
+                changed |= Self::append(repo, mission, MissionEventPost {
+                    id: Some(format!("question:{question_id}")),
+                    kind: "run.question".into(),
+                    source: Some(source.clone()),
+                    payload: question,
+                }, &source)?;
+            }
+            // Gate records can still say waiting while their answer is being consumed.
+            // Recovery decisions are the only non-question waits.
+            let recovery_wait = status == "waiting"
+                && record.outcome_reason_code.as_deref() == Some("recovery_decision_required");
+            let roster_status = if !questions.is_empty() || recovery_wait { "waiting" }
+                else if status == "waiting" { "running" } else { &status };
+            let kind = match status.as_str() {
+                "completed" => Some("run.completed"),
+                "failed" | "validation_error" => Some("run.failed"),
+                "canceled" => Some("run.canceled"),
+                "waiting" if questions.is_empty() && recovery_wait => Some("run.waiting"),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                if recovering || kind == "run.waiting" || !store.read_result(&owner.paths)
+                    .map_err(internal)?.is_some_and(|result| result.state == "pending") {
+                    changed |= Self::append(repo, mission, MissionEventPost {
+                        id: Some(format!("{root_id}:{status}")),
+                        kind: kind.into(), source: Some(root_id.clone()),
+                        payload: json!({"status": status, "flow_name": record.flow_name, "outcome": record.outcome, "error": record.last_error}),
+                    }, root_id)?;
+                } else {
+                    return Ok(());
+                }
+            }
+            if let Some(run) = mission.runs.iter_mut().find(|run| run.run_id == *root_id) {
+                if run.in_flight() && run.status != roster_status {
+                    run.status = roster_status.into();
+                    changed = true;
                 }
             }
             Ok(())
         })?;
-        if let Some(Some(delivered)) = run_owners().lock().unwrap().get_mut(&key) {
-            delivered.status = Some(status);
-        }
         Ok(changed.then_some(mission))
     }
 
@@ -881,6 +891,9 @@ fn render_event(mission: &MissionRecord, event: &MissionEvent) -> String {
     if event.kind == "human.message" {
         return format!("User: {}", payload["message"].as_str().unwrap_or_default());
     }
+    if event.kind == "run.question" {
+        return format!("Run question: {payload}");
+    }
     let run = mission.runs.iter().find(|run| run.run_id == event.source);
     let flow = run
         .map(|run| run.flow_name.as_str())
@@ -889,7 +902,7 @@ fn render_event(mission: &MissionRecord, event: &MissionEvent) -> String {
         .unwrap_or("unknown flow");
     let summary = run.map_or("", |run| run.summary.as_str());
     let outcome = match event.kind.as_str() {
-        "run.waiting" => "is waiting on a human gate".to_string(),
+        "run.waiting" => "is waiting on a recovery decision".to_string(),
         _ => format!("ended {}", payload["status"].as_str().unwrap_or("")),
     };
     let error = payload["error"]
@@ -912,6 +925,7 @@ pub(crate) fn mission_frame(mission: &MissionRecord, handle: &str) -> String {
         Objective:\n{objective}\n\n\
         {playbook}\
         Work in the project directly, and launch Spark flows when a flow fits the work. Every run you launch reports back to this conversation: when runs complete, fail, are canceled, or wait on a human gate, you receive a new turn listing them. Never poll or sleep waiting for runs; end your turn instead. Launches count against the mission budget ({concurrent} concurrent runs, {total} runs in total); a refused launch names the limit it hit.\n\n\
+        When a run or descendant asks a question, answer when the objective, playbook, and evidence settle it: `spark run answer --run <owning run id> --question <question id> (--option <value> | --text <text>)`. Use the owning run id, not the root run id. Inspect open questions with `spark run questions --run <id>`. If the decision belongs to the user or is unclear, ask the user and end your turn; relay their reply with `spark run answer` on the next turn. Never guess an answer.\n\n\
         When the objective is met or cannot be met, close the mission: `spark mission close --project {project} --id {id} --status done|failed|canceled --reason <text>`. When only the user can decide something, ask and end your turn; their reply arrives as a new turn.\n\n\
         {control}\n\n\
         Mission ID: {id}\n\
@@ -932,13 +946,12 @@ pub(crate) fn mission_frame(mission: &MissionRecord, handle: &str) -> String {
     )
 }
 
-/// A run's owning mission and the status delivery already posted for it.
+/// A run tree's owning mission and root record.
 #[derive(Clone)]
 struct RunOwner {
     mission_id: String,
     project: String,
     paths: attractor_runtime::paths::RunRootPaths,
-    status: Option<String>,
 }
 
 /// Ownership is fixed at launch, so unowned runs are answered from memory.

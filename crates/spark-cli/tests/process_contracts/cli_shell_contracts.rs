@@ -1878,3 +1878,75 @@ fn settings_get_encodes_project_and_conversation_scopes() {
     );
     assert_eq!(plan.method, spark_cli::HttpMethod::Get);
 }
+
+#[test]
+fn run_questions_and_answers_use_existing_routes_and_owning_run() {
+    let env = BTreeMap::new();
+    let (base, requests) = serve_once(HttpResponse::json(
+        200,
+        r#"{"questions":[{"run_id":"child","question_id":"q1"}]}"#,
+    ));
+    let output = run_with_args_and_env(
+        [
+            "spark",
+            "run",
+            "questions",
+            "--run",
+            "root",
+            "--base-url",
+            &base,
+        ],
+        &env,
+    );
+    assert_eq!(output.exit_code, 0);
+    assert!(output.stdout.contains("child"));
+    assert_eq!(
+        requests.recv_timeout(Duration::from_secs(2)).unwrap().path,
+        "/attractor/pipelines/root/questions"
+    );
+    for (flag, value) in [
+        ("--option", "approve"),
+        ("--text", "Use the existing design"),
+    ] {
+        let (base, requests) = serve_once(HttpResponse::json(200, r#"{"ok":true}"#));
+        let output = run_with_args_and_env(
+            [
+                "spark",
+                "run",
+                "answer",
+                "--run",
+                "child",
+                "--question",
+                "q1",
+                flag,
+                value,
+                "--base-url",
+                &base,
+            ],
+            &env,
+        );
+        assert_eq!(output.exit_code, 0, "{}", output.stderr);
+        let request = requests.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            request.path,
+            "/attractor/pipelines/child/questions/q1/answer"
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&request.body).unwrap(),
+            serde_json::json!({"selected_value": value})
+        );
+    }
+    for args in [vec![], vec!["--option", "a", "--text", "b"]] {
+        let mut command = vec![
+            "spark",
+            "run",
+            "answer",
+            "--run",
+            "child",
+            "--question",
+            "q1",
+        ];
+        command.extend(args);
+        assert_ne!(run_with_args_and_env(command, &env).exit_code, 0);
+    }
+}

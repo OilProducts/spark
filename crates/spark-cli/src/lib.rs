@@ -494,6 +494,48 @@ fn build_run_plan(
                 text: false,
             })
         }
+        "questions" | "answer" => {
+            let allowed = if command == "answer" {
+                vec!["--run", "--question", "--option", "--text", "--base-url"]
+            } else {
+                vec!["--run", "--base-url"]
+            };
+            let options = parse_api_options(&args[2..], &allowed, &[], PositionalMode::None)?;
+            let base_url = resolve_base_url(&options, "spark run", env)?;
+            let run = non_empty_value(&options, "--run", "Missing required --run id.")?;
+            let mut path = format!(
+                "/attractor/pipelines/{}/questions",
+                percent_encode_component(&run)
+            );
+            let body = if command == "answer" {
+                let question =
+                    non_empty_value(&options, "--question", "Missing required --question id.")?;
+                if options.value("--option").is_some() && options.value("--text").is_some() {
+                    return Err(usage_error("Provide exactly one of --option or --text."));
+                }
+                let option = trimmed_option(&options, "--option");
+                let text = trimmed_option(&options, "--text");
+                let answer = match (option, text) {
+                    (Some(value), None) | (None, Some(value)) => value,
+                    _ => return Err(usage_error("Provide exactly one of --option or --text.")),
+                };
+                path.push_str(&format!("/{}/answer", percent_encode_component(&question)));
+                Some(json!({"selected_value": answer}))
+            } else {
+                None
+            };
+            Ok(ApiRequestPlan {
+                method: if body.is_some() {
+                    HttpMethod::Post
+                } else {
+                    HttpMethod::Get
+                },
+                base_url,
+                path,
+                body,
+                text: false,
+            })
+        }
         "events" => {
             let options = parse_api_options(
                 &args[2..],
@@ -1301,9 +1343,11 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             _ => Err(usage_error("Unknown command")),
         },
         "run" => match domain_matches.subcommand_name() {
-            Some("launch" | "retry" | "continue" | "events") => Ok(CommandPath {
-                domain: CommandDomain::Run,
-            }),
+            Some("launch" | "retry" | "continue" | "events" | "questions" | "answer") => {
+                Ok(CommandPath {
+                    domain: CommandDomain::Run,
+                })
+            }
             _ => Err(usage_error("Unknown command")),
         },
         "flow" => match domain_matches.subcommand_name() {
@@ -1368,7 +1412,9 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("launch"))
                 .subcommand(clap_command_leaf("retry"))
                 .subcommand(clap_command_leaf("continue"))
-                .subcommand(clap_command_leaf("events")),
+                .subcommand(clap_command_leaf("events"))
+                .subcommand(clap_command_leaf("questions"))
+                .subcommand(clap_command_leaf("answer")),
         )
         .subcommand(
             Command::new("flow")
