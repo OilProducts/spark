@@ -4680,9 +4680,9 @@ describe('ProjectsPanel', () => {
 
   describe('creating empty threads', () => {
     const projectPath = '/tmp/empty-thread-project'
-    const snapshotFor = (conversationId: string, title: string) => withSnapshotSchema({
+    const snapshotFor = (conversationId: string, title: string, snapshotProjectPath = projectPath) => withSnapshotSchema({
       conversation_id: conversationId,
-      project_path: projectPath,
+      project_path: snapshotProjectPath,
       title,
       created_at: '2026-09-29T10:00:00Z',
       updated_at: '2026-09-29T10:00:00Z',
@@ -4705,9 +4705,10 @@ describe('ProjectsPanel', () => {
           headers: { 'Content-Type': 'application/json' },
         })
         if (url.includes('/workspace/api/projects/conversations')) {
-          return json(Object.values(server.persisted).map((snapshot) => ({
+          const listedProjectPath = new URL(url, 'http://localhost').searchParams.get('project_path') ?? projectPath
+          return json(Object.values(server.persisted).filter((snapshot) => snapshot.project_path === listedProjectPath).map((snapshot) => ({
             conversation_id: snapshot.conversation_id,
-            project_path: projectPath,
+            project_path: snapshot.project_path,
             title: snapshot.title,
             created_at: snapshot.created_at,
             updated_at: snapshot.updated_at,
@@ -4720,7 +4721,7 @@ describe('ProjectsPanel', () => {
           server.settingsRequests.push({ conversationId, body: JSON.parse(String(init.body)) })
           await server.settingsGate
           if (server.failSettings) return json({ detail: 'Disk is read-only.' }, 500)
-          server.persisted[conversationId] = snapshotFor(conversationId, 'New thread')
+          server.persisted[conversationId] = snapshotFor(conversationId, 'New thread', String(server.settingsRequests.at(-1)?.body.project_path))
           return json(server.persisted[conversationId])
         }
         if (conversationId && init?.method === 'DELETE') {
@@ -4763,6 +4764,42 @@ describe('ProjectsPanel', () => {
       const thread = await screen.findByRole('button', { name: 'Open thread New thread' })
       expect(thread).toHaveAttribute('aria-current', 'true')
       expect(selectedConversationId()).toBe(server.settingsRequests[0]?.conversationId)
+    })
+
+    it('leaves another project untouched when creation finishes after switching to it', async () => {
+      const user = userEvent.setup()
+      const otherProjectPath = '/tmp/empty-thread-other-project'
+      const server = stubThreadServer({
+        'conversation-other': snapshotFor('conversation-other', 'Other thread', otherProjectPath),
+      })
+      let releaseSettings!: () => void
+      server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
+      openProject()
+      renderProjectsPanel()
+      await screen.findByText('No threads for this project yet.')
+      await user.click(screen.getByTestId('project-thread-new-button'))
+      await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
+      const createdConversationId = server.settingsRequests[0]!.conversationId
+
+      act(() => {
+        useStore.getState().registerProject(otherProjectPath)
+        useStore.getState().setActiveProjectPath(otherProjectPath)
+        useStore.getState().setConversationId('conversation-other')
+      })
+      await screen.findByRole('button', { name: 'Open thread Other thread' })
+      await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft in B')
+
+      await act(async () => releaseSettings())
+      await waitFor(() => {
+        expect(useStore.getState().homeConversationCache.summariesByProjectPath[projectPath]?.map((entry) => entry.conversation_id))
+          .toContain(createdConversationId)
+      })
+      expect(useStore.getState().projectSessionsByPath[otherProjectPath]?.conversationId).toBe('conversation-other')
+      expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Draft in B')
+      expect(screen.queryByRole('button', { name: 'Open thread New thread' })).not.toBeInTheDocument()
+
+      act(() => useStore.getState().setActiveProjectPath(projectPath))
+      await screen.findByRole('button', { name: 'Open thread New thread' })
     })
 
     it('shows an error and keeps the selection when creation fails', async () => {

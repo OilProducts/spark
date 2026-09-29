@@ -8,6 +8,7 @@ import {
     type ConversationSummaryResponse,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
+import { useStore } from '@/store'
 import {
     buildProjectConversationId,
     extractApiErrorMessage,
@@ -78,6 +79,10 @@ export function useProjectThreadActions({
                 expected_revision: '0',
             })
             applyConversationSnapshot(activeProjectPath, snapshot, 'create-thread')
+            // Only select it if the user is still in the originating project.
+            if (useStore.getState().activeProjectPath !== activeProjectPath) {
+                return
+            }
             activateConversationThread(activeProjectPath, conversationId, 'create-thread')
         } catch (error) {
             setPanelError(extractApiErrorMessage(error, 'Unable to create the thread.'))
