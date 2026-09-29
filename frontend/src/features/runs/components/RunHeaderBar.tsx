@@ -25,6 +25,8 @@ export interface RunHeaderBarProps {
     flowTitle: string | null
     /** The selected visit's label; "Continue from here" restarts there. */
     selectedVisitLabel: string | null
+    /** The commit the flow recorded in its context, preferred over the start commit. */
+    recordedCommit: string | null
     onRequestCancel: (runId: string, currentStatus: string) => void
     onRequestRetry: (runId: string, currentStatus: string) => void
     onContinueFromRun: (run: RunRecord) => void
@@ -36,6 +38,7 @@ export function RunHeaderBar({
     now,
     flowTitle,
     selectedVisitLabel,
+    recordedCommit,
     onRequestCancel,
     onRequestRetry,
     onContinueFromRun,
@@ -46,7 +49,7 @@ export function RunHeaderBar({
     // An active run's duration already says how long it has been going.
     const when = inactive ? formatRunAge(run.ended_at || run.started_at, now) : ''
     const tokens = run.token_usage_breakdown?.total_tokens ?? run.token_usage
-    const commit = run.git_commit?.trim()
+    const commit = recordedCommit || run.git_commit?.trim()
     const facts = [
         `${formatDuration(run.started_at, run.ended_at, run.status, now)}`,
         ...(typeof tokens === 'number' ? [`${formatTokenCount(tokens)} tokens`] : []),

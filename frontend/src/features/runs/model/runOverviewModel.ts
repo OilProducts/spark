@@ -152,9 +152,16 @@ export function buildRunContextOverview({
     const byNamespace = new Map<string, ContextKeyHistory[]>()
     for (const key of [...histories.keys()].sort()) {
         const history = histories.get(key)!
-        const value = finalContext && Object.hasOwn(finalContext, key)
-            ? finalContext[key]
-            : history.at(-1)?.value ?? null
+        // The visits' writes are the live record; the snapshot catches up at the
+        // next checkpoint and covers keys no visit wrote.
+        // ponytail: a parallel branch's write only reaches the final value through
+        // the snapshot; read the fan-in's merge if branches often write shared keys.
+        const lastWrite = [...history].reverse().find((entry) => entry.visit !== null && entry.visit.parentKey === null)
+        const value = lastWrite
+            ? lastWrite.value
+            : finalContext && Object.hasOwn(finalContext, key)
+                ? finalContext[key]
+                : history.at(-1)?.value ?? null
         const namespace = contextNamespace(key)
         byNamespace.set(namespace, [...(byNamespace.get(namespace) ?? []), { key, value, history }])
     }
@@ -162,4 +169,14 @@ export function buildRunContextOverview({
         namespaces: [...byNamespace.entries()].map(([name, keys]) => ({ name, keys })),
         systemKeys: [...systemKeys].sort(),
     }
+}
+
+/** The commit and branch the flow recorded in its workspace context, if any. */
+export function recordedGitRef(overview: RunContextOverview): { commit: string | null; branch: string | null } {
+    const keys = overview.namespaces.find((namespace) => namespace.name === 'workspace')?.keys ?? []
+    const text = (key: string) => {
+        const value = keys.find((row) => row.key === key)?.value
+        return typeof value === 'string' && value.trim() ? value.trim() : null
+    }
+    return { commit: text('context.workspace.commit'), branch: text('context.workspace.branch') }
 }

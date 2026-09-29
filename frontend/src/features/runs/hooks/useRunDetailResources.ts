@@ -289,8 +289,8 @@ export function useRunDetailResources({
         }
     }, [fetchPendingQuestions, manageSync, reconnectSignal, selectedRunId])
 
-    // A settled stage writes its files and an ended run writes its result;
-    // with no Refresh buttons left, the live journal keeps both current.
+    // A settled stage writes its files, a checkpoint its context, and an ended
+    // run its result; with no Refresh buttons left, the live journal keeps them current.
     useEffect(() => {
         if (!manageSync || !selectedRunId) return
         const refreshOutputs = (event: Event) => {
@@ -299,11 +299,13 @@ export function useRunDetailResources({
             if (detail?.runId !== selectedRunId) return
             if (type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchResult()
             if (type === 'StageCompleted' || type === 'StageFailed' || type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchArtifacts()
+            if (type === 'CheckpointSaved' || type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchContext()
         }
-        // Journal entries missed while disconnected leave both stale.
+        // Journal entries missed while disconnected leave them stale.
         const reconcileOutputs = () => {
             void fetchResult()
             void fetchArtifacts()
+            void fetchContext()
         }
         window.addEventListener('spark:run-journal-entry', refreshOutputs)
         window.addEventListener('spark:run-resync-required', reconcileOutputs)
@@ -311,13 +313,14 @@ export function useRunDetailResources({
             window.removeEventListener('spark:run-journal-entry', refreshOutputs)
             window.removeEventListener('spark:run-resync-required', reconcileOutputs)
         }
-    }, [fetchArtifacts, fetchResult, manageSync, selectedRunId])
+    }, [fetchArtifacts, fetchContext, fetchResult, manageSync, selectedRunId])
 
     useEffect(() => {
         if (!manageSync || !selectedRunId || reconnectSignal === 0) return
         void fetchResult()
         void fetchArtifacts()
-    }, [fetchArtifacts, fetchResult, manageSync, reconnectSignal, selectedRunId])
+        void fetchContext()
+    }, [fetchArtifacts, fetchContext, fetchResult, manageSync, reconnectSignal, selectedRunId])
 
     const viewArtifact = useCallback(async (entry: { path: string; viewable: boolean }) => {
         if (!selectedRunId) {

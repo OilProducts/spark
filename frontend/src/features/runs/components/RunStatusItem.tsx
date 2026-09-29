@@ -17,6 +17,8 @@ import {
     formatLineage,
     formatOutcomeReason,
     formatTokenCount,
+    hasExecutionLockMetadata,
+    shouldShowWorkingDirectoryDifference,
 } from '../model/runSummaryFormat'
 import {
     classifyRunFailure,
@@ -27,6 +29,7 @@ import {
 import type { RunVisit, VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
+type GitRef = { commit: string | null; branch: string | null }
 
 interface RunStatusItemProps {
     run: RunRecord
@@ -37,6 +40,8 @@ interface RunStatusItemProps {
     result: PipelineResultResponse | null
     resultError: string | null
     artifactEntries: ArtifactListEntry[]
+    /** The commit and branch the flow recorded in its context. */
+    recordedRef: GitRef
     /** The pending question, answered in place. */
     question: ReactNode
     onSelectVisit: (visit: RunVisit) => void
@@ -70,6 +75,7 @@ export function RunStatusItem({
     result,
     resultError,
     artifactEntries,
+    recordedRef,
     question,
     onSelectVisit,
     onViewArtifact,
@@ -181,7 +187,7 @@ export function RunStatusItem({
                 </section>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
-                <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} onViewArtifact={onViewArtifact} />
+                <RunOutputs run={run} recordedRef={recordedRef} withCommit={kind === 'completed'} artifactEntries={artifactEntries} onViewArtifact={onViewArtifact} />
             ) : null}
             <RunFacts run={run} />
         </article>
@@ -215,11 +221,13 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
 
 function RunOutputs({
     run,
+    recordedRef,
     withCommit,
     artifactEntries,
     onViewArtifact,
 }: {
     run: RunRecord
+    recordedRef: GitRef
     withCommit: boolean
     artifactEntries: ArtifactListEntry[]
     onViewArtifact: ViewArtifact
@@ -229,9 +237,10 @@ function RunOutputs({
     ))
     const flowSnapshot = artifactEntries.find((entry) => entry.path.startsWith('artifacts/flow/flow-source'))
         ?? artifactEntries.find((entry) => entry.path.startsWith('artifacts/flow/'))
-    // A failed run's commit and branch are where it started, not something it made.
-    const commit = withCommit ? run.git_commit?.trim() : null
-    const branch = withCommit ? run.git_branch?.trim() : null
+    // The flow's recorded commit is its output. Without one, a completed run's
+    // start commit stands in; a failed run's is where it started, not something it made.
+    const startRef = withCommit ? { commit: run.git_commit?.trim() || null, branch: run.git_branch?.trim() || null } : null
+    const { commit, branch } = recordedRef.commit ? recordedRef : startRef ?? { commit: null, branch: null }
     const fileLink = (entry: ArtifactListEntry, label: string) => (
         <button
             key={entry.path}
@@ -279,6 +288,12 @@ function RunOutputs({
     )
 }
 
+const LOCK_STATES: Record<string, string> = {
+    holding: 'Holding',
+    queued: 'Queued',
+    inherited: 'Inherited from parent',
+}
+
 function RunFacts({ run }: { run: RunRecord }) {
     const usage = run.token_usage_breakdown
     const provider = run.llm_provider || run.provider
@@ -298,6 +313,16 @@ function RunFacts({ run }: { run: RunRecord }) {
         }),
         ['cost', 'Cost', costNote ? `${formatEstimatedModelCostLabel(run)} · ${costNote}` : formatEstimatedModelCostLabel(run)],
         ['directory', 'Directory', run.working_directory || run.project_path || '—'],
+        ...(shouldShowWorkingDirectoryDifference(run, null) ? [['project', 'Project', run.project_path] as [string, string, ReactNode]] : []),
+        ...(run.spec_id ? [['spec', 'Spec', run.spec_id] as [string, string, ReactNode]] : []),
+        ...(run.plan_id ? [['plan', 'Plan', run.plan_id] as [string, string, ReactNode]] : []),
+        ...(hasExecutionLockMetadata(run) ? [['lock', 'Lock', [
+            LOCK_STATES[run.execution_lock?.state ?? ''] ?? run.execution_lock?.state,
+            run.execution_lock?.key,
+            run.execution_lock?.scope && `scope ${run.execution_lock.scope}`,
+            run.execution_lock?.conflict_policy && `on conflict ${run.execution_lock.conflict_policy}`,
+            typeof run.execution_lock?.queue_position === 'number' && `queue position ${run.execution_lock.queue_position}`,
+        ].filter(Boolean).join(' · ')] as [string, string, ReactNode]] : []),
         ['started', 'Started', formatTimestamp(run.started_at)],
         ['ended', 'Ended', formatTimestamp(run.ended_at)],
         ['run', 'Run', run.run_id],

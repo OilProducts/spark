@@ -55,7 +55,9 @@ const result: PipelineResultResponse = {
   summary_enabled: false,
 }
 
-const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false) => {
+const NO_REF = { commit: null, branch: null }
+
+const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false, recordedRef: { commit: string | null; branch: string | null } = NO_REF) => {
   const onSelectVisit = vi.fn()
   const onViewArtifact = vi.fn()
   render(
@@ -71,6 +73,7 @@ const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false
         { path: 'result/result.md', size_bytes: 10, media_type: 'text/markdown', viewable: true },
         { path: 'artifacts/flow/flow-source.yaml', size_bytes: 10, media_type: 'text/yaml', viewable: true },
       ]}
+      recordedRef={recordedRef}
       question={<p>Approve the change?</p>}
       onSelectVisit={onSelectVisit}
       onViewArtifact={onViewArtifact}
@@ -113,6 +116,34 @@ describe('RunStatusItem', () => {
     expect(onSelectVisit).toHaveBeenCalledWith(stopped)
     // A failed run's commit is where it started, so it isn't an output.
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
+  })
+
+  it('shows the commit and branch the flow recorded when the run record has none', () => {
+    const recorded = { commit: '6debdc97bfbdf337d60c301d4df6730b1d040262', branch: 'spark/implement-change/run-1' }
+    renderStatus(run({ git_commit: null, git_branch: null }), [visit('commit', 1, 'succeeded')], false, recorded)
+    expect(screen.getByTestId('run-output-commit')).toHaveTextContent('6debdc9 on spark/implement-change/run-1')
+  })
+
+  it('keeps lock, spec, plan and a separate project path among the run facts', () => {
+    renderStatus(run({
+      project_path: '/tmp/project',
+      working_directory: '/tmp/worktree',
+      spec_id: 'spec-7',
+      plan_id: 'plan-3',
+      execution_lock: { identity: 'id', state: 'queued', key: 'repo:/tmp/project', scope: 'project', conflict_policy: 'queue', queue_position: 2 },
+    }), [])
+    expect(screen.getByTestId('run-fact-directory')).toHaveTextContent('/tmp/worktree')
+    expect(screen.getByTestId('run-fact-project')).toHaveTextContent('/tmp/project')
+    expect(screen.getByTestId('run-fact-spec')).toHaveTextContent('spec-7')
+    expect(screen.getByTestId('run-fact-plan')).toHaveTextContent('plan-3')
+    expect(screen.getByTestId('run-fact-lock')).toHaveTextContent('Queued · repo:/tmp/project · scope project · on conflict queue · queue position 2')
+  })
+
+  it('leaves out lock, spec, plan and project facts a run does not have', () => {
+    renderStatus(run(), [])
+    for (const id of ['project', 'spec', 'plan', 'lock']) {
+      expect(screen.queryByTestId(`run-fact-${id}`)).not.toBeInTheDocument()
+    }
   })
 
   it('shows the pending question and the visit that asked it', () => {

@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import { useRunDetailResources } from '../hooks/useRunDetailResources'
+import { useRunDetails } from '../hooks/useRunDetails'
+import type { RunRecord } from '../model/shared'
 
 import { useRunTimeline } from '../hooks/useRunTimeline'
 import { useRunJournalStore } from '../state/runJournalStore'
@@ -173,3 +175,31 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         await waitFor(() => expect(result.current.artifactData?.artifacts).toHaveLength(1))
     },
 )
+
+it.each([
+    ['CheckpointSaved', null],
+    ['PipelineCompleted', null],
+    [null, 'spark:run-resync-required'],
+    [null, 'spark:runs-transport-reconnect'],
+])('keeps context, copy and export current after journal %s / signal %s', async (journalType, signal) => {
+    let context: Record<string, unknown> = { 'context.review.findings': 'missing test' }
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/run/context')
+        ? Promise.resolve(Response.json({ pipeline_id: 'run', context }))
+        : new Promise<Response>(() => {})))
+    const writeText = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const { result } = renderHook(() => useRunDetails({ selectedRunSummary: { run_id: 'run' } as RunRecord }))
+    await waitFor(() => expect(result.current.contextData?.context).toEqual(context))
+    // A later visit clears the finding.
+    context = {}
+    act(() => {
+        window.dispatchEvent(journalType
+            ? new CustomEvent('spark:run-journal-entry', { detail: { runId: 'run', entry: { type: journalType } } })
+            : new CustomEvent(signal!, { detail: { runId: 'run' } }))
+    })
+    await waitFor(() => expect(result.current.contextData?.context).toEqual({}))
+    expect(decodeURIComponent(result.current.contextExportHref)).not.toContain('missing test')
+    await act(() => result.current.copyContextToClipboard())
+    expect(writeText).not.toHaveBeenCalled()
+    expect(result.current.contextCopyStatus).toBe('No context entries available to copy.')
+})
