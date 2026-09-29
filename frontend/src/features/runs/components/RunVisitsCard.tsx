@@ -100,14 +100,15 @@ export function RunVisitsCard({
     const [showJournal, setShowJournal] = useState(false)
     const listRef = useRef<HTMLDivElement | null>(null)
 
-    // An explicit pick wins while it agrees with the graph selection; a graph
-    // node alone shows its latest visit; otherwise the status item.
-    const picked = visits.find((visit) => visit.key === selectedKey) ?? null
-    const graphVisit = selectedNodeId && picked?.nodeId !== selectedNodeId
+    // The node selection drives what the actions act on, so a picked visit only
+    // shows while its node is selected; a graph node alone shows its latest
+    // visit; with no node selected, the status or Context item.
+    const picked = visits.find((visit) => visit.key === selectedKey && visit.nodeId === selectedNodeId) ?? null
+    const graphVisit = selectedNodeId && !picked
         ? [...visits].reverse().find((visit) => visit.nodeId === selectedNodeId) ?? null
         : null
-    const selected: RunVisit | ItemKey = graphVisit
-        ?? picked
+    const selected: RunVisit | ItemKey = picked
+        ?? graphVisit
         ?? (selectedKey === 'context' ? 'context' : 'status')
     const items: Array<RunVisit | ItemKey> = ['status', 'context', ...visits]
     const itemKey = (item: RunVisit | ItemKey) => (typeof item === 'string' ? item : item.key)

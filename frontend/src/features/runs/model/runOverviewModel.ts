@@ -171,12 +171,21 @@ export function buildRunContextOverview({
     }
 }
 
-/** The commit and branch the flow recorded in its workspace context, if any. */
+/** The commit and branch the flow recorded in its context, if any. */
 export function recordedGitRef(overview: RunContextOverview): { commit: string | null; branch: string | null } {
-    const keys = overview.namespaces.find((namespace) => namespace.name === 'workspace')?.keys ?? []
-    const text = (key: string) => {
-        const value = keys.find((row) => row.key === key)?.value
-        return typeof value === 'string' && value.trim() ? value.trim() : null
+    const keys = overview.namespaces.flatMap((namespace) => namespace.keys)
+    // Workspace flows record context.workspace.*; merge-change records context.integration.*.
+    const text = (...candidates: string[]) => {
+        for (const key of candidates) {
+            const value = keys.find((row) => row.key === key)?.value
+            if (typeof value === 'string' && value.trim()) {
+                return value.trim()
+            }
+        }
+        return null
     }
-    return { commit: text('context.workspace.commit'), branch: text('context.workspace.branch') }
+    return {
+        commit: text('context.workspace.commit', 'context.integration.merge_commit'),
+        branch: text('context.workspace.branch', 'context.integration.target_branch'),
+    }
 }

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
-import { useState } from 'react'
+import { useState, type ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
@@ -242,12 +242,18 @@ describe('RunContextItem', () => {
   })
 })
 
+// The card follows the page's node selection, as RunsPanel wires it.
+function SelectingVisitsCard(props: Omit<ComponentProps<typeof RunVisitsCard>, 'selectedNodeId' | 'onSelectNode'>) {
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  return <RunVisitsCard {...props} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />
+}
+
 describe('RunVisitsCard', () => {
   it('opens on the status item, opens a written key in the Context item, and links a visit to its files', () => {
     const review = visit('review', 1, 'succeeded', { status: { context_updates: { 'context.review.findings': 'x' } } })
     const onViewArtifact = vi.fn()
     render(
-      <RunVisitsCard
+      <SelectingVisitsCard
         visits={[review]}
         flowNodes={{}}
         segments={[]}
@@ -258,8 +264,6 @@ describe('RunVisitsCard', () => {
         isLive={false}
         transcriptError={null}
         timelineError={null}
-        selectedNodeId={null}
-        onSelectNode={vi.fn()}
         onOpenRun={vi.fn()}
         statusRow={{ label: 'Result' }}
         renderStatus={() => <p>status item</p>}
@@ -299,7 +303,7 @@ describe('RunVisitsCard', () => {
     function Harness() {
       const [query, setQuery] = useState('')
       return (
-        <RunVisitsCard
+        <SelectingVisitsCard
           visits={[review]}
           flowNodes={{}}
           segments={[]}
@@ -310,8 +314,6 @@ describe('RunVisitsCard', () => {
           isLive={false}
           transcriptError={null}
           timelineError={null}
-          selectedNodeId={null}
-          onSelectNode={vi.fn()}
           onOpenRun={vi.fn()}
           statusRow={{ label: 'Result' }}
           renderStatus={() => null}

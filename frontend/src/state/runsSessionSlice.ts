@@ -187,6 +187,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
                 [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
                     record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
                     questionsStatus: 'idle' as const,
+                    // A run opens on its status item, not on a node picked last time.
+                    selectedNodeId: null,
                 },
             } } : {}),
             runsListSession: {

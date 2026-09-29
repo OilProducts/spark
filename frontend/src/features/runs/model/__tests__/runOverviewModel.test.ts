@@ -89,6 +89,15 @@ describe('buildRunContextOverview', () => {
     const overview = buildRunContextOverview({ visits: [review1, branch], launchContext: null, finalContext: stale })
     expect(recordedGitRef(overview)).toEqual({ commit: 'abc1234', branch: null })
   })
+
+  it('reads the commit and branch merge-change records', () => {
+    const merge = visit('merge', 1, 'succeeded', {
+      'context.integration.target_branch': 'main',
+      'context.integration.merge_commit': '50ffbb8cc3c851258f54a4a3131b28a8f9064bcb',
+    })
+    const overview = buildRunContextOverview({ visits: [merge], launchContext: null, finalContext: null })
+    expect(recordedGitRef(overview)).toEqual({ commit: '50ffbb8cc3c851258f54a4a3131b28a8f9064bcb', branch: 'main' })
+  })
 })
 
 describe('didNotPassVisits', () => {

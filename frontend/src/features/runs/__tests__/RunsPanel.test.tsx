@@ -4,6 +4,7 @@ import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
+import { openRun } from '@/features/missions/MissionTranscript'
 import { RunStream } from '@/features/runs/RunStream'
 import {
   flattenRunJournalSegments,
@@ -928,6 +929,25 @@ describe('RunsPanel', () => {
     expect(
       runListPanel.compareDocumentPosition(runSummaryPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+
+    // Escape clears the selection the actions act on, and the view follows it.
+    const selectedNodeId = () => useStore.getState().runDetailSessionsByRunId['run-selected']?.selectedNodeId ?? null
+    await user.click(screen.getAllByTestId('run-visit-row')[0])
+    expect(selectedNodeId()).toBe('validate')
+    await user.keyboard('{Escape}')
+    expect(selectedNodeId()).toBeNull()
+    expect(screen.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByTestId('run-visit-view')).not.toBeInTheDocument()
+
+    // Reopening a run through another path (Open child run) starts on its status item.
+    await user.click(screen.getAllByTestId('run-visit-row')[0])
+    act(() => openRun('run-secondary'))
+    act(() => openRun('run-selected'))
+    expect(selectedNodeId()).toBeNull()
+    await waitFor(() => {
+      expect(screen.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
+    })
+    expect(screen.queryByTestId('run-visit-view')).not.toBeInTheDocument()
   })
 
   it('selects a run in place when clicking the card without leaving the runs tab', async () => {

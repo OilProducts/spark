@@ -66,8 +66,6 @@ function RunsSidebar({ activeProjectPath, scopeMode, selectedRunId }: {
                 const state = useStore.getState()
                 state.setRunsSelectedRunIdForScope(buildRunsScopeKey(scopeMode, activeProjectPath), run.run_id)
                 state.reconcileRunRecord(run.run_id, 'list', run)
-                // A run opens on its status item, not on a node picked last time.
-                state.updateRunDetailSession(run.run_id, { selectedNodeId: null })
             }}
             runs={scopedRuns}
             selectedRunId={selectedRunId}
