@@ -25,4 +25,12 @@
 .conversation-markdown .katex-display, .markdown-diagram { max-width: 100%; overflow-x: auto; overflow-wrap: normal; }
 .markdown-diagram svg { max-width: 100%; height: auto; }
 
-.conversation-markdown pre:has(.hljs) { background: #0d1117; color: #c9d1d9; }
+/* Syntax colours from Air tokens, so highlighted code follows light and dark. */
+.conversation-markdown .hljs :where(.hljs-keyword, .hljs-doctag, .hljs-template-tag, .hljs-template-variable, .hljs-type, .hljs-variable.language_) { color: hsl(var(--primary)); }
+.conversation-markdown .hljs :where(.hljs-string, .hljs-regexp, .hljs-addition) { color: hsl(var(--success)); }
+.conversation-markdown .hljs :where(.hljs-number, .hljs-literal, .hljs-built_in, .hljs-symbol, .hljs-attr, .hljs-attribute, .hljs-selector-attr, .hljs-selector-pseudo) { color: hsl(var(--warning)); }
+.conversation-markdown .hljs :where(.hljs-comment, .hljs-quote, .hljs-meta, .hljs-code, .hljs-formula) { color: hsl(var(--muted-foreground)); }
+.conversation-markdown .hljs :where(.hljs-title, .hljs-section, .hljs-name, .hljs-selector-tag, .hljs-selector-id, .hljs-selector-class) { font-weight: 500; }
+.conversation-markdown .hljs .hljs-deletion { color: hsl(var(--destructive)); }
+.conversation-markdown .hljs .hljs-emphasis { font-style: italic; }
+.conversation-markdown .hljs .hljs-strong { font-weight: 600; }

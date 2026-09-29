@@ -11,7 +11,6 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
 import { MarkdownMermaid } from './MarkdownMermaid'
 import 'katex/dist/katex.min.css'
-import 'highlight.js/styles/github-dark.css'
 import './conversation-markdown.css'
 
 const MarkdownContext = createContext(false)

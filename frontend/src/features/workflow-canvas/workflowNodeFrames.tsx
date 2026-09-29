@@ -11,11 +11,9 @@ export type WorkflowNodeFramePalette = {
     fillColor: string
     strokeColor: string
     nestedStrokeColor: string
-    shadowClassName: string
 }
 
 type WorkflowNodeSvgFrameProps = {
-    palette: WorkflowNodeFramePalette
     viewBoxWidth: number
     viewBoxHeight: number
     children: ReactNode
@@ -30,7 +28,6 @@ function statusPalette(token: string): WorkflowNodeFramePalette {
         fillColor: NODE_FILL,
         strokeColor: `hsl(var(--${token}) / 0.6)`,
         nestedStrokeColor: `hsl(var(--${token}) / 0.3)`,
-        shadowClassName: '',
     };
 }
 
@@ -48,7 +45,6 @@ export function getWorkflowNodeFramePalette({
             fillColor: 'hsl(var(--accent))',
             strokeColor: 'hsl(var(--primary))',
             nestedStrokeColor: 'hsl(var(--primary) / 0.4)',
-            shadowClassName: '',
         };
     }
     if (isWaiting) return statusPalette('warning');
@@ -59,7 +55,6 @@ export function getWorkflowNodeFramePalette({
         fillColor: NODE_FILL,
         strokeColor: 'hsl(var(--muted-foreground) / 0.35)',
         nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.2)',
-        shadowClassName: '',
     };
 }
 
@@ -102,12 +97,12 @@ export function getWorkflowNodeOverlayOffsetClassName(shape: WorkflowNodeShape):
     }
 }
 
-function SvgFrame({ palette, viewBoxWidth, viewBoxHeight, children, testId }: WorkflowNodeSvgFrameProps) {
+function SvgFrame({ viewBoxWidth, viewBoxHeight, children, testId }: WorkflowNodeSvgFrameProps) {
     return (
         <svg
             data-testid={testId}
             viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
-            className={`absolute inset-0 h-full w-full overflow-visible ${palette.shadowClassName}`}
+            className="absolute inset-0 h-full w-full overflow-visible"
             aria-hidden
         >
             {children}
@@ -166,7 +161,7 @@ function BoxNodeFrame({ palette }: { palette: WorkflowNodeFramePalette }) {
     return (
         <div
             data-testid="workflow-node-frame-box"
-            className={`absolute inset-0 rounded-lg border ${palette.shadowClassName}`}
+            className={`absolute inset-0 rounded-lg border`}
             style={{
                 backgroundColor: palette.fillColor,
                 borderColor: palette.strokeColor,
@@ -179,7 +174,6 @@ function BoxNodeFrame({ palette }: { palette: WorkflowNodeFramePalette }) {
 function StartNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-Mdiamond"
@@ -193,7 +187,6 @@ function StartNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePal
 function ExitNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-Msquare"
@@ -207,7 +200,6 @@ function ExitNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePale
 function HumanGateNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-hexagon"
@@ -220,7 +212,6 @@ function HumanGateNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFram
 function ConditionalNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-diamond"
@@ -233,7 +224,6 @@ function ConditionalNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFr
 function ParallelNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-component"
@@ -246,7 +236,6 @@ function ParallelNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFrame
 function FanInNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-tripleoctagon"
@@ -261,7 +250,6 @@ function FanInNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePal
 function ToolNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-parallelogram"
@@ -274,7 +262,6 @@ function ToolNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePale
 function ManagerNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePalette; dimensions: WorkflowNodeDimensions }) {
     return (
         <SvgFrame
-            palette={palette}
             viewBoxWidth={dimensions.width}
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-house"
