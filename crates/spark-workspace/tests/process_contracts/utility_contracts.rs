@@ -17,8 +17,8 @@ use spark_workspace::live::{envelope_matches_query, validate_live_query};
 use spark_workspace::settings::{update_workspace_settings, workspace_settings};
 use spark_workspace::utility::utility_complete;
 use spark_workspace::{
-    ConversationTurnRequest, LiveEnvelope, RawLiveQuery, WorkspaceConversationService,
-    WorkspaceError,
+    ConversationTurnRequest, LiveEnvelope, RawLiveQuery, RunLaunchRequest,
+    WorkspaceConversationService, WorkspaceError,
 };
 
 const PROJECT: &str = "/projects/utility";
@@ -88,7 +88,8 @@ fn fake_claude(settings: &SparkSettings, reply: &str, delay: &str, status: i32) 
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncat > /dev/null\necho call >> '{}'\nsleep {delay}\necho '{reply}'\nexit {status}\n",
+            "#!/bin/sh\ncat >> '{}.input'\necho call >> '{}'\nsleep {delay}\necho '{reply}'\nexit {status}\n",
+            calls.display(),
             calls.display()
         ),
     )
@@ -430,4 +431,157 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(call_count(&calls), 1);
     assert_eq!(stored_title(&service, "failing"), "first question");
+}
+
+const TITLED_FLOW: &str = r#"schema_version: "1"
+id: titled
+title: Implement Change
+goal: Implement the requested change.
+inputs:
+- {key: context.request.objective, label: Objective}
+- {key: context.request.unused, label: Unused}
+nodes:
+  start: {kind: start}
+  done: {kind: exit}
+edges:
+- {from: start, to: done}
+"#;
+
+/// A service whose run-record writes reach the receiver as live run upserts,
+/// the way the HTTP run event publisher delivers them.
+fn run_service_with_updates(
+    settings: SparkSettings,
+) -> (WorkspaceConversationService, mpsc::Receiver<LiveEnvelope>) {
+    let flow = settings.flows_dir.join("ops/titled.yaml");
+    fs::create_dir_all(flow.parent().unwrap()).unwrap();
+    fs::write(flow, TITLED_FLOW).unwrap();
+    let (sender, receiver) = mpsc::channel();
+    let sender = std::sync::Mutex::new(sender);
+    let observed = settings.clone();
+    let service = WorkspaceConversationService::new(settings).with_run_event_observer(Arc::new(
+        move |run_id: &str| {
+            if let Ok(Some(envelope)) =
+                spark_workspace::live::run_upsert_envelope(&observed, run_id)
+            {
+                let _ = sender.lock().unwrap().send(envelope);
+            }
+        },
+    ));
+    (service, receiver)
+}
+
+fn launch(service: &WorkspaceConversationService, project: &Path) -> String {
+    let response = service
+        .launch_workspace_run(RunLaunchRequest {
+            flow_name: "ops/titled.yaml".into(),
+            summary: "Launch.".into(),
+            project_path: Some(project.to_string_lossy().into_owned()),
+            launch_context: Some(json!({"context.request.objective": "fix the deploy pipeline"})),
+            ..RunLaunchRequest::default()
+        })
+        .unwrap();
+    response["run_id"].as_str().unwrap().to_string()
+}
+
+fn stored_run_title(settings: &SparkSettings, run_id: &str) -> Option<String> {
+    attractor_runtime::RunStore::for_settings(settings)
+        .read_run_bundle(run_id)
+        .unwrap()
+        .unwrap()
+        .record
+        .unwrap()
+        .title
+}
+
+#[cfg(unix)]
+#[test]
+fn root_run_gets_a_generated_title_in_the_background() {
+    let _env = claude_env();
+    let (temp, settings) = fixture();
+    let calls = fake_claude(&settings, "\"Deploy pipeline fix.\"", "1", 0);
+    let (service, updates) = run_service_with_updates(settings.clone());
+
+    let started = Instant::now();
+    let run_id = launch(&service, temp.path());
+    // Launch does not wait for the one-second utility call.
+    assert!(started.elapsed() < Duration::from_millis(900));
+
+    // A live client gets the title as a run-record update.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let run = loop {
+        let envelope = updates
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("titled run upsert");
+        if envelope.payload["run"]["title"] != Value::Null {
+            break envelope.payload["run"].clone();
+        }
+    };
+    assert_eq!(run["run_id"], run_id.as_str());
+    assert_eq!(run["title"], "Deploy pipeline fix");
+    assert_eq!(call_count(&calls), 1);
+    let input = fs::read_to_string(calls.with_extension("input")).unwrap();
+    assert!(input.contains("Implement Change"), "{input}");
+    assert!(input.contains("Implement the requested change."), "{input}");
+    assert!(
+        input.contains("Objective: fix the deploy pipeline"),
+        "{input}"
+    );
+    assert!(!input.contains("Unused"), "{input}");
+
+    // A later write from a record read before the title keeps the title.
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let paths = store.find_run_root(&run_id).unwrap().unwrap();
+    let mut stale = store.read_run_record(&paths).unwrap().unwrap();
+    stale.title = None;
+    store.write_run_record(&paths, &stale).unwrap();
+    assert_eq!(
+        stored_run_title(&settings, &run_id).as_deref(),
+        Some("Deploy pipeline fix")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() {
+    let _env = claude_env();
+
+    // Off: no utility model.
+    let (temp, settings) = fixture();
+    let (service, _updates) = run_service_with_updates(settings.clone());
+    let run_id = launch(&service, temp.path());
+    assert!(service.generate_run_title(&run_id).unwrap().is_none());
+    assert_eq!(stored_run_title(&settings, &run_id), None);
+
+    // Failing: launch succeeds, one call, nothing stored.
+    let (temp, settings) = fixture();
+    let calls = fake_claude(&settings, "ignored", "0", 1);
+    let (service, _updates) = run_service_with_updates(settings.clone());
+    let run_id = launch(&service, temp.path());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while call_count(&calls) == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(call_count(&calls), 1);
+    assert_eq!(stored_run_title(&settings, &run_id), None);
+
+    // Child: no utility call.
+    let (temp, settings) = fixture();
+    let calls = fake_claude(&settings, "Child title", "0", 0);
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let mut record = attractor_core::RunRecord::new("child-run", temp.path().to_string_lossy());
+    record.parent_run_id = Some("parent-run".into());
+    store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record,
+            checkpoint: None,
+            manifest: None,
+            flow_source: Some(TITLED_FLOW.into()),
+            flow_definition_json: None,
+        })
+        .unwrap();
+    let (service, _updates) = run_service_with_updates(settings.clone());
+    assert!(service.generate_run_title("child-run").unwrap().is_none());
+    assert_eq!(call_count(&calls), 0);
+    assert_eq!(stored_run_title(&settings, "child-run"), None);
 }

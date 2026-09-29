@@ -1562,17 +1562,7 @@ impl WorkspaceConversationService {
         else {
             return Ok(None);
         };
-        let title = text
-            .lines()
-            .map(|line| line.trim().trim_matches(['"', '\'', '`', '*', '#', ' ']))
-            .find(|line| !line.is_empty())
-            .map(|line| truncate_text(line.trim_end_matches('.'), 64))
-            .unwrap_or_default();
-        if title.is_empty() {
-            return Err(WorkspaceError::ServiceUnavailable(
-                "Utility call returned no title.".into(),
-            ));
-        }
+        let title = clean_generated_title(&text)?;
         // Re-read: a title stored during the call wins.
         let snapshot = read()?;
         if has_stored_title(&snapshot) {
@@ -3263,7 +3253,8 @@ impl WorkspaceConversationService {
                 key: lock.key,
                 conflict_policy: lock.conflict_policy,
             });
-        self.runtime_api_service()
+        let response = self
+            .runtime_api_service()
             .start_pipeline(PipelineStartRequest {
                 run_id: None,
                 flow_name: Some(flow_name.to_string()),
@@ -3293,7 +3284,82 @@ impl WorkspaceConversationService {
                     .and_then(non_empty_string),
                 launch_context: Some(launch_context.into_iter().collect()),
                 ..PipelineStartRequest::default()
+            });
+        if let Ok(outcome) = flow_start_outcome_from_response(&response) {
+            self.spawn_run_title_generation(outcome.run_id);
+        }
+        response
+    }
+
+    /// Titles a root run in the background after launch; launch does not
+    /// wait. Every launch path here starts a root run; child runs start inside
+    /// the runtime and get no title. The record write reaches live clients as
+    /// a run-record update through the run event observer.
+    fn spawn_run_title_generation(&self, run_id: String) {
+        let service = self.clone();
+        std::thread::spawn(move || {
+            // Off or failed: nothing is stored and nothing retries.
+            let _ = service.generate_run_title(&run_id);
+        });
+    }
+
+    /// Stores a utility-generated title on a root run from its flow's title
+    /// and goal and its labelled launch inputs. Returns the updated record, or
+    /// `None` when utility inference is off or the run already has a title.
+    pub fn generate_run_title(
+        &self,
+        run_id: &str,
+    ) -> WorkspaceResult<Option<attractor_core::RunRecord>> {
+        let internal = |error: attractor_runtime::RuntimeStorageError| {
+            WorkspaceError::Internal(error.to_string())
+        };
+        let mut store = attractor_runtime::RunStore::for_settings(&self.settings);
+        if let Some(observer) = &self.run_event_observer {
+            store = store.with_run_event_observer(observer.clone());
+        }
+        let Some(paths) = store.find_run_root(run_id).map_err(internal)? else {
+            return Err(WorkspaceError::NotFound(format!("Unknown run: {run_id}")));
+        };
+        let Some(record) = store.read_run_record(&paths).map_err(internal)? else {
+            return Err(WorkspaceError::NotFound(format!("Unknown run: {run_id}")));
+        };
+        if record.title.is_some() || record.parent_run_id.is_some() {
+            return Ok(None);
+        }
+        let source = store
+            .read_graph_source(&paths)
+            .map_err(internal)?
+            .unwrap_or_default();
+        let flow = attractor_dsl::parse_flow_definition(&source)
+            .map_err(|error| WorkspaceError::Internal(error.to_string()))?;
+        let launch_context = record.launch_context.unwrap_or_default();
+        let mut input = format!("Flow: {}\nGoal: {}\n\nInputs:", flow.title, flow.goal);
+        for flow_input in &flow.inputs {
+            let value = match launch_context.get(&flow_input.key) {
+                Some(Value::String(text)) => text.clone(),
+                Some(Value::Null) | None => continue,
+                Some(value) => value.to_string(),
+            };
+            if value.trim().is_empty() {
+                continue;
+            }
+            let label = non_empty_string(&flow_input.label).unwrap_or(flow_input.key.clone());
+            input.push_str(&format!(
+                "\n- {label}: {}",
+                truncate_text(&value, TITLE_INPUT_CHARS)
+            ));
+        }
+        let Some(text) =
+            crate::utility::utility_complete(&self.settings, RUN_TITLE_INSTRUCTIONS, &input)?
+        else {
+            return Ok(None);
+        };
+        let title = clean_generated_title(&text)?;
+        store
+            .update_run_record(run_id, |record| {
+                record.title.get_or_insert(title);
             })
+            .map_err(internal)
     }
 
     pub(crate) fn launch_workspace_flow(
@@ -5451,6 +5517,24 @@ fn truncate_tool_call_outputs(snapshot: &mut Value) {
 
 const TITLE_INSTRUCTIONS: &str = "You name chat threads. Given the first message and reply of a conversation, write a short title of at most six words that says what it is about. Reply with the title only: plain text, no quotes, no trailing punctuation.";
 const TITLE_INPUT_CHARS: usize = 2000;
+const RUN_TITLE_INSTRUCTIONS: &str = "You name workflow runs. Given the flow that ran and the inputs it was launched with, write a short title of at most six words that says what this run is doing. Reply with the title only: plain text, no quotes, no trailing punctuation.";
+
+/// The first non-empty line of a utility reply, stripped of quoting and
+/// markdown, as a title.
+fn clean_generated_title(text: &str) -> WorkspaceResult<String> {
+    let title = text
+        .lines()
+        .map(|line| line.trim().trim_matches(['"', '\'', '`', '*', '#', ' ']))
+        .find(|line| !line.is_empty())
+        .map(|line| truncate_text(line.trim_end_matches('.'), 64))
+        .unwrap_or_default();
+    if title.is_empty() {
+        return Err(WorkspaceError::ServiceUnavailable(
+            "Utility call returned no title.".into(),
+        ));
+    }
+    Ok(title)
+}
 
 /// The first user message and reply, when exactly one turn has completed.
 fn first_exchange(snapshot: &Value) -> Option<(String, String)> {

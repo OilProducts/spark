@@ -1,5 +1,7 @@
 #[path = "contracts/explicit_retry_contracts.rs"]
 mod explicit_retry_contracts;
+#[path = "contracts/failure_reason_contracts.rs"]
+mod failure_reason_contracts;
 #[path = "contracts/flow_definition_typed_runtime_contracts.rs"]
 mod flow_definition_typed_runtime_contracts;
 #[path = "contracts/result_summary_contracts.rs"]
