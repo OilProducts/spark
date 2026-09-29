@@ -122,14 +122,14 @@ export function RunList({
                     }
                 }}
                 className={cn(
-                    'rounded-lg border border-border/80 bg-card/80 px-3 py-2 shadow-sm outline-none transition-colors hover:border-primary/40 focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
-                    selectedRunId === run.run_id && 'border-primary/50 bg-muted/30 ring-1 ring-primary/20',
+                    'rounded-none px-3 py-2 outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
+                    selectedRunId === run.run_id && 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]',
                 )}
             >
                 <div className="space-y-2">
                     <div className="flex items-start gap-2">
                         <div className="min-w-0 flex-1 space-y-1">
-                            <div className="truncate text-sm font-medium text-foreground" title={run.flow_name || run.run_id}>
+                            <div className="truncate text-sm font-normal" title={run.flow_name || run.run_id}>
                                 {run.flow_name || run.run_id.slice(0, 8)}
                             </div>
                             <div className="truncate text-xs leading-4 text-muted-foreground">
@@ -162,7 +162,7 @@ export function RunList({
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center gap-2">
                             <span
-                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-xs font-semibold uppercase tracking-wide ${statusToneClassName(run.status)}`}
+                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-xs font-medium uppercase tracking-wide ${statusToneClassName(run.status)}`}
                             >
                                 {formatRunStatusLabel(run)}
                             </span>
@@ -191,7 +191,7 @@ export function RunList({
         return (
             <section key={key} data-testid={`run-list-group-${key}`} className="space-y-2">
                 <div className={cn(
-                    'flex items-center justify-between px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground',
+                    'flex items-center justify-between px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground',
                     accent,
                 )}
                 >
@@ -257,7 +257,7 @@ export function RunList({
                     <InlineError>{error}</InlineError>
                 ) : null}
                 {scopeMode === 'active' && !activeProjectPath ? (
-                    <Alert className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground">
+                    <Alert className="border-border px-3 py-2 text-muted-foreground">
                         <AlertDescription className="text-inherit">
                             Choose an active project or switch to all projects to view run history.
                         </AlertDescription>
@@ -292,7 +292,7 @@ export function RunList({
                         {renderRunGroup('running', 'Running', runningRuns)}
                         {queuedLockGroups.map((group) => (
                             <section key={group.identity} className="space-y-2">
-                                <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+                                <div className="rounded-md border-0 border-l border-warning px-3 py-2 text-xs font-medium text-warning">
                                     Queued execution lock · {group.label}
                                 </div>
                                 <div className="space-y-3">

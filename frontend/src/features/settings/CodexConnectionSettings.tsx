@@ -83,8 +83,8 @@ export function CodexConnectionControls() {
 }
 
 export function CodexConnectionSettings() {
-    return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="px-4"><h3 className="text-base font-semibold">Codex connection</h3></CardHeader>
+    return <Card className="gap-4 py-4">
+        <CardHeader className="px-4"><h3 className="text-lg font-light">Codex connection</h3></CardHeader>
         <CardContent className="px-4"><CodexConnectionControls /></CardContent>
     </Card>
 }

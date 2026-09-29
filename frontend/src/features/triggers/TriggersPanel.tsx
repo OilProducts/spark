@@ -124,7 +124,7 @@ export function TriggersPanel() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 space-y-1">
-            <h2 className="text-xl font-semibold tracking-tight text-foreground">Triggers</h2>
+            <h2 className="text-2xl font-light tracking-tight text-foreground">Triggers</h2>
             <p className="text-sm text-muted-foreground">
               Automations that start flows on a schedule, on events, or from webhooks.
             </p>
@@ -179,7 +179,7 @@ export function TriggersPanel() {
         <div className={hasDetail ? 'grid items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]' : 'grid gap-6'}>
           <Card className="gap-4 py-4">
             <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
-              <CardTitle className="text-base">Triggers</CardTitle>
+              <CardTitle className="text-lg font-light">Triggers</CardTitle>
               <Button
                 type="button"
                 onClick={() => void refreshTriggers()}
@@ -193,7 +193,7 @@ export function TriggersPanel() {
               {triggerGroups.map((group) => (
                 <div key={group.title} className="space-y-2">
                   <div>
-                    <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{group.title}</h3>
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.title}</h3>
                     {group.note ? <p className="text-xs text-muted-foreground">{group.note}</p> : null}
                   </div>
                   {status !== 'ready' && status !== 'error' ? (
@@ -205,15 +205,15 @@ export function TriggersPanel() {
                       type="button"
                       data-testid={`trigger-row-${trigger.id}`}
                       onClick={() => setSelectedTriggerId(trigger.id)}
-                      variant="outline"
-                      className={`h-auto w-full justify-start whitespace-normal rounded-md px-3 py-2 text-left ${selectedTriggerId === trigger.id ? 'border-foreground bg-muted/60' : 'border-border bg-background/70'}`}
+                      variant="ghost"
+                      className={`h-auto w-full justify-start whitespace-normal rounded-md px-3 py-2 text-left ${selectedTriggerId === trigger.id ? 'rounded-none text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]' : 'hover:text-primary'}`}
                     >
                       <div className="w-full min-w-0">
                         <div className="flex items-center justify-between gap-2">
                           <span className="truncate text-sm font-medium">{trigger.name}</span>
                           <Badge
                             variant="outline"
-                            className={trigger.enabled ? 'border-success/40 bg-success/10 text-success' : 'text-muted-foreground'}
+                            className={trigger.enabled ? 'text-success' : 'text-muted-foreground'}
                           >
                             {trigger.enabled ? 'Enabled' : 'Disabled'}
                           </Badge>
@@ -244,7 +244,7 @@ export function TriggersPanel() {
           {createFormOpen ? (
             <Card className="gap-4 py-4">
               <CardHeader className="gap-1 px-4">
-                <CardTitle className="text-base">New trigger</CardTitle>
+                <CardTitle className="text-lg font-light">New trigger</CardTitle>
               </CardHeader>
               <CardContent className="px-4 pt-0">
                 <TriggerEditor
@@ -280,7 +280,7 @@ export function TriggersPanel() {
             <Card className="gap-4 py-4">
               <CardHeader className="flex flex-row items-start justify-between gap-2 px-4">
                 <div className="min-w-0">
-                  <CardTitle className="truncate text-base">{selectedTrigger.name}</CardTitle>
+                  <CardTitle className="truncate text-lg font-light">{selectedTrigger.name}</CardTitle>
                   <div className="text-xs text-muted-foreground">
                     {selectedTrigger.protected ? 'System trigger' : 'Custom trigger'}
                   </div>
@@ -291,9 +291,8 @@ export function TriggersPanel() {
                     data-testid="trigger-delete-button"
                     disabled={pending || isRegenerating}
                     onClick={() => void onDeleteSelectedTrigger()}
-                    variant="outline"
+                    variant="destructive"
                     size="xs"
-                    className="border-destructive/40 text-destructive hover:bg-destructive/10"
                   >
                     Delete
                   </Button>
@@ -310,7 +309,7 @@ export function TriggersPanel() {
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (
-                  <div className="mt-4 space-y-2 rounded-md border border-border bg-background/70 p-3 text-sm">
+                  <div className="mt-4 space-y-2 rounded-md border border-border p-3 text-sm">
                     <div className="font-medium text-foreground">Shared webhook ingress</div>
                     <div className="text-muted-foreground">POST JSON to <code>{SHARED_WEBHOOK_ENDPOINT}</code> with:</div>
                     <div className="font-mono text-xs text-foreground">
@@ -332,7 +331,7 @@ export function TriggersPanel() {
                 ) : null}
 
                 <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-md border border-border bg-background/70 p-3 text-sm">
+                  <div className="rounded-md border border-border p-3 text-sm">
                     <div className="font-medium text-foreground">Runtime</div>
                     <div className="mt-2 text-muted-foreground">Target: {triggerTargetSummary(selectedTrigger, activeProjectPath)}</div>
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
@@ -342,7 +341,7 @@ export function TriggersPanel() {
                       <div className="mt-2 text-destructive">{selectedTrigger.state.last_error}</div>
                     ) : null}
                   </div>
-                  <div className="rounded-md border border-border bg-background/70 p-3 text-sm">
+                  <div className="rounded-md border border-border p-3 text-sm">
                     <div className="font-medium text-foreground">Recent history</div>
                     <div className="mt-2 space-y-2">
                       {selectedTrigger.state.recent_history.slice(0, 5).map((entry) => (

@@ -135,7 +135,7 @@ function AttentionBell() {
                 {items.length > 0 && (
                     <span
                         data-testid="attention-bell-count"
-                        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-semibold text-warning-foreground"
+                        className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
                     >
                         {items.length}
                     </span>
@@ -238,7 +238,7 @@ export function Navbar() {
     const brand = (
         <div className="flex items-center gap-2">
             <img src="/assets/spark-app-icon.png" alt="" width={20} height={20} className="size-5" />
-            <span className="font-semibold tracking-tight">Spark</span>
+            <span className="font-normal">Spark</span>
         </div>
     )
 
@@ -246,7 +246,7 @@ export function Navbar() {
         <div
             data-testid="view-mode-tabs"
             data-responsive-layout={layout}
-            className={`inline-flex h-10 items-center justify-center rounded-md bg-muted p-1 text-muted-foreground ${isNarrowViewport ? 'grow basis-md' : 'shrink-0'}`}
+            className={`inline-flex h-10 items-center justify-center gap-1 text-muted-foreground ${isNarrowViewport ? 'grow basis-md' : 'shrink-0'}`}
         >
             {NAV_MODE_ITEMS.map((item) => {
                 const isActive = item.mode === 'home'
@@ -260,8 +260,8 @@ export function Navbar() {
                         aria-current={isActive ? 'page' : undefined}
                         onClick={() => setViewMode(item.mode)}
                         onKeyDown={(event) => onViewModeKeyDown(event, item.mode)}
-                        variant={isActive ? 'secondary' : 'ghost'}
-                        className={`rounded-sm px-3 py-1.5 text-sm ${isNarrowViewport ? 'flex-1' : ''}`}
+                        variant="ghost"
+                        className={`relative rounded-none px-3 py-1.5 text-sm font-normal hover:bg-transparent hover:text-foreground aria-[current=page]:text-foreground aria-[current=page]:after:absolute aria-[current=page]:after:inset-x-3 aria-[current=page]:after:-bottom-1 aria-[current=page]:after:h-px aria-[current=page]:after:bg-foreground ${isNarrowViewport ? 'flex-1' : ''}`}
                     >
                         {item.labelTestId ? (
                             <span data-testid={item.labelTestId}>{item.label}</span>
@@ -292,7 +292,7 @@ export function Navbar() {
                         data-testid="top-nav-project-switcher"
                         size="sm"
                         title={activeProjectPath || 'No active project'}
-                        className="min-w-0 flex-1 bg-muted/40"
+                        className="min-w-0 flex-1"
                     >
                         <SelectValue placeholder={hasRegisteredProjects ? 'Choose project' : 'No projects'}>
                             {closedProjectLabel}
@@ -370,8 +370,9 @@ export function Navbar() {
                 title="Settings"
                 aria-current={viewMode === 'settings' ? 'page' : undefined}
                 onClick={() => setViewMode('settings')}
-                variant={viewMode === 'settings' ? 'secondary' : 'ghost'}
+                variant="ghost"
                 size="icon-sm"
+                className="aria-[current=page]:text-primary"
             >
                 <Settings className="h-4 w-4" />
             </Button>

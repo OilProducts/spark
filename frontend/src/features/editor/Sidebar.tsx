@@ -597,7 +597,7 @@ edges:
         return (
             <div
                 data-testid={testId}
-                className="space-y-1 rounded-md border border-border/80 bg-muted/20 px-3 py-2"
+                className="space-y-1 rounded-md border border-border/80 px-3 py-2"
             >
                 {diagnosticsForField.map((diag, index) => {
                     const severityClassName = diag.severity === 'error'
@@ -626,7 +626,7 @@ edges:
             style={isNarrowViewport ? undefined : { width: `${desktopWidthPx}px` }}
         >
             <div className="px-4 pb-2 pt-4">
-                <div className="text-xs font-semibold uppercase tracking-[0.2em] text-foreground">{inspectorTitle}</div>
+                <div className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{inspectorTitle}</div>
             </div>
 
             <div className="min-h-0 flex-1 flex flex-col overflow-hidden">

@@ -26,7 +26,7 @@ export function RunResultCard({
             <CardHeader className="gap-1 px-4">
                 <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
-                        <h3 className="text-base font-semibold text-foreground">Result</h3>
+                        <h3 className="text-lg font-light text-foreground">Result</h3>
                         <p className="text-xs leading-5 text-muted-foreground">
                             {result?.display_mode === 'summary' ? 'Summarized output' : 'Final output'}
                             {result?.source_node_id ? ` from ${result.source_node_id}` : ''}
@@ -65,7 +65,7 @@ export function RunResultCard({
                 {!resultError && (!result || result.state === 'pending') ? (
                     <Alert
                         data-testid="run-result-pending"
-                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                        className="border-border px-3 py-2 text-muted-foreground"
                     >
                         <AlertDescription className="text-inherit">
                             Result will be available after the run reaches a terminal state.
@@ -75,7 +75,7 @@ export function RunResultCard({
                 {!resultError && result?.state === 'unavailable' ? (
                     <Alert
                         data-testid="run-result-unavailable"
-                        className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                        className="border-border px-3 py-2 text-muted-foreground"
                     >
                         <AlertDescription className="text-inherit">
                             No result source was found for this run.
@@ -86,7 +86,7 @@ export function RunResultCard({
                     <InlineError data-testid="run-result-resolution-error">{result.error || 'Result resolution failed.'}</InlineError>
                 ) : null}
                 {result?.state === 'ready' ? (
-                    <div data-testid="run-result-body" className="rounded-md border border-border/80 bg-muted/20 p-3">
+                    <div data-testid="run-result-body" className="rounded-md border border-border p-3">
                         <ProjectConversationMarkdown content={result.body_markdown || ''} />
                         {result.summary_error ? (
                             <p data-testid="run-result-summary-error" className="mt-3 text-xs text-warning">

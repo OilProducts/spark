@@ -73,7 +73,7 @@ export function EdgeInspectorPanel({
                                 onChange={(event) => onPropertyChange('condition', event.target.value)}
                                 placeholder='e.g. outcome = "success"'
                             />
-                            <div data-testid="edge-condition-syntax-hints" className="space-y-1 rounded-md border border-border/80 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                            <div data-testid="edge-condition-syntax-hints" className="space-y-1 rounded-md border border-border/80 px-3 py-2 text-xs text-muted-foreground">
                                 <p>Use && to join clauses.</p>
                                 <p>{'Supported keys: outcome, preferred_label, context.<path>'}</p>
                                 <p>Operators: = or !=</p>
@@ -81,12 +81,12 @@ export function EdgeInspectorPanel({
                             {renderFieldDiagnostics('edge', 'condition', edgeFieldDiagnostics, 'edge-field-diagnostics-condition')}
                             <div
                                 data-testid="edge-condition-preview-feedback"
-                                className={`rounded-md border px-3 py-2 text-xs ${
+                                className={`border-0 border-l px-3 py-2 text-xs ${
                                     conditionPreviewHasError
-                                        ? 'border-destructive/50 text-destructive'
+                                        ? 'border-destructive text-destructive'
                                         : conditionPreviewHasWarning
-                                            ? 'border-warning/40 bg-warning/10 text-warning'
-                                            : 'border-success/40 bg-success/10 text-success'
+                                            ? 'border-warning text-warning'
+                                            : 'border-success text-success'
                                 }`}
                             >
                                 {selectedEdgeConditionDiagnostics.length > 0 ? (

@@ -14,8 +14,8 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
     const profiles = useLlmProfiles()
     const inherited = useInheritedModelSettings()
     const invalidModel = !!editor.draft && !isModelSelectionValid(editor.draft.llm_profile || editor.draft.provider || '', editor.draft.model, profiles)
-    return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="px-4"><h3 className="text-base font-semibold">Project model defaults</h3></CardHeader>
+    return <Card className="gap-4 py-4">
+        <CardHeader className="px-4"><h3 className="text-lg font-light">Project model defaults</h3></CardHeader>
         <CardContent className="space-y-3 px-4">
             {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="break-all text-xs text-muted-foreground">{projectPath}</p>

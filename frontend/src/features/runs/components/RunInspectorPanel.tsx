@@ -78,10 +78,10 @@ export function RunInspectorPanel({
                         data-testid={`run-inspector-tab-${tab.value}`}
                         onClick={() => onInspectorTabChange(tab.value)}
                         className={cn(
-                            'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                            'border-b px-2.5 py-1 text-xs font-medium transition-colors',
                             inspectorTab === tab.value
-                                ? 'bg-primary text-primary-foreground'
-                                : 'bg-muted/40 text-muted-foreground hover:bg-muted',
+                                ? 'border-primary text-foreground'
+                                : 'border-transparent text-muted-foreground hover:text-foreground',
                         )}
                     >
                         {tab.label}

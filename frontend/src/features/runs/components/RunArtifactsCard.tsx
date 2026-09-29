@@ -134,7 +134,7 @@ export function RunArtifactsCard({
                         {showPartialRunArtifactNote && (
                             <div
                                 data-testid="run-artifact-partial-run-note"
-                                className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+                                className="rounded-md border-0 border-l border-warning px-3 py-2 text-xs text-warning"
                             >
                                 <div>This run may be partial or artifacts may have been pruned.</div>
                                 {missingCoreArtifacts.length > 0 && (
@@ -205,7 +205,7 @@ export function RunArtifactsCard({
                                 </EmptyHeader>
                             </Empty>
                         )}
-                        <div data-testid="run-artifact-viewer" className="rounded-md border border-border/80 bg-muted/30 p-3">
+                        <div data-testid="run-artifact-viewer" className="rounded-md border border-border p-3">
                             <div className="mb-2 text-xs text-muted-foreground">
                                 {selectedArtifactEntry ? `Preview: ${selectedArtifactEntry.path}` : 'Select a viewable artifact to preview.'}
                             </div>

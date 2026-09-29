@@ -623,12 +623,12 @@ export function RunStream() {
                     data-testid="global-save-state-indicator"
                     className={`pointer-events-auto rounded-md border px-2 py-1 text-xs font-medium shadow-sm transition-opacity duration-1000 ${
                         saveState === 'error'
-                            ? 'border-destructive/50 bg-background/95 text-destructive'
+                            ? 'border-border bg-background text-destructive'
                             : saveState === 'conflict'
-                                ? 'border-warning/50 bg-warning/10 text-warning'
+                                ? 'border-border bg-background text-warning'
                                 : saveState === 'saved'
-                                    ? 'border-success/40 bg-success/10 text-success'
-                                    : 'border-border bg-background/95 text-muted-foreground'
+                                    ? 'border-border bg-background text-success'
+                                    : 'border-border bg-background text-muted-foreground'
                     } ${shouldFadeSaveCard && fadeSavedToast ? 'opacity-0' : 'opacity-100'}`}
                     title={saveErrorMessage || undefined}
                 >

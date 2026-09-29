@@ -242,10 +242,10 @@ const PlanRow = memo(function PlanRow({
         <li className="flex min-w-0 justify-start">
             <div
                 data-testid={`project-plan-card-${entry.id}`}
-                className="min-w-0 max-w-[85%] rounded-md border border-success/40 bg-success/10 px-3 py-2 text-foreground"
+                className="min-w-0 max-w-[85%] rounded-md border-0 border-l border-success px-3 py-2 text-foreground"
             >
                 <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-success">
+                    <p className="text-xs font-medium uppercase tracking-wide text-success">
                         Proposed Plan
                     </p>
                     {statusPresentation ? (
@@ -300,7 +300,7 @@ const PlanRow = memo(function PlanRow({
                                     value={reviewNoteValue}
                                     onChange={(event) => onPlanReviewNoteChange(proposedPlan.id, event.target.value)}
                                     placeholder="Optional review note"
-                                    className="h-8 border-success/20 bg-background/80 text-sm"
+                                    className="h-8 bg-background text-sm"
                                 />
                                 <div className="flex flex-wrap items-center gap-2">
                                     <Button

@@ -48,10 +48,10 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
     return (
         <div
             data-testid="graph-launch-inputs-editor"
-            className="space-y-3 rounded-md border border-border/80 bg-background/40 p-3"
+            className="space-y-3 rounded-md border border-border/80 p-3"
         >
             <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Launch Inputs
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -59,7 +59,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                 </p>
             </div>
             {entries.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border/80 bg-muted/10 px-3 py-2 text-xs text-muted-foreground">
+                <div className="rounded-md border border-dashed border-border/80 px-3 py-2 text-xs text-muted-foreground">
                     No launch inputs declared yet.
                 </div>
             ) : null}

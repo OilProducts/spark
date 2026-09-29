@@ -22,7 +22,17 @@ type WorkflowNodeSvgFrameProps = {
     testId: string
 }
 
-const CARD_FILL = 'hsl(var(--card) / 0.96)';
+const NODE_FILL = 'hsl(var(--background))';
+
+// Air: hairline frames on the plain background, no glows; status tints only the stroke.
+function statusPalette(token: string): WorkflowNodeFramePalette {
+    return {
+        fillColor: NODE_FILL,
+        strokeColor: `hsl(var(--${token}) / 0.6)`,
+        nestedStrokeColor: `hsl(var(--${token}) / 0.3)`,
+        shadowClassName: '',
+    };
+}
 
 export function getWorkflowNodeFramePalette({
     status,
@@ -33,50 +43,22 @@ export function getWorkflowNodeFramePalette({
     selected: boolean
     isWaiting: boolean
 }): WorkflowNodeFramePalette {
-    if (isWaiting) {
-        return {
-            fillColor: CARD_FILL,
-            strokeColor: 'hsl(var(--warning))',
-            nestedStrokeColor: 'hsl(var(--warning) / 0.5)',
-            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--warning)/0.2)]',
-        };
-    }
-    if (status === 'running') {
-        return {
-            fillColor: CARD_FILL,
-            strokeColor: 'hsl(var(--info))',
-            nestedStrokeColor: 'hsl(var(--info) / 0.45)',
-            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--info)/0.2)]',
-        };
-    }
-    if (status === 'failed') {
-        return {
-            fillColor: CARD_FILL,
-            strokeColor: 'hsl(var(--destructive))',
-            nestedStrokeColor: 'hsl(var(--destructive) / 0.45)',
-            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--destructive)/0.18)]',
-        };
-    }
-    if (status === 'success') {
-        return {
-            fillColor: CARD_FILL,
-            strokeColor: 'hsl(var(--success))',
-            nestedStrokeColor: 'hsl(var(--success) / 0.45)',
-            shadowClassName: 'drop-shadow-[0_0_10px_hsl(var(--success)/0.16)]',
-        };
-    }
     if (selected) {
         return {
-            fillColor: CARD_FILL,
-            strokeColor: 'hsl(var(--foreground))',
-            nestedStrokeColor: 'hsl(var(--foreground) / 0.35)',
-            shadowClassName: 'drop-shadow-[0_0_6px_rgba(15,23,42,0.15)]',
+            fillColor: 'hsl(var(--accent))',
+            strokeColor: 'hsl(var(--primary))',
+            nestedStrokeColor: 'hsl(var(--primary) / 0.4)',
+            shadowClassName: '',
         };
     }
+    if (isWaiting) return statusPalette('warning');
+    if (status === 'running') return statusPalette('info');
+    if (status === 'failed') return statusPalette('destructive');
+    if (status === 'success') return statusPalette('success');
     return {
-        fillColor: CARD_FILL,
-        strokeColor: 'hsl(var(--border))',
-        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.45)',
+        fillColor: NODE_FILL,
+        strokeColor: 'hsl(var(--muted-foreground) / 0.35)',
+        nestedStrokeColor: 'hsl(var(--muted-foreground) / 0.2)',
         shadowClassName: '',
     };
 }
@@ -184,7 +166,7 @@ function BoxNodeFrame({ palette }: { palette: WorkflowNodeFramePalette }) {
     return (
         <div
             data-testid="workflow-node-frame-box"
-            className={`absolute inset-0 rounded-xl border ${palette.shadowClassName}`}
+            className={`absolute inset-0 rounded-lg border ${palette.shadowClassName}`}
             style={{
                 backgroundColor: palette.fillColor,
                 borderColor: palette.strokeColor,
@@ -202,8 +184,8 @@ function StartNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePal
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-Mdiamond"
         >
-            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
-            <path d={diamondPath(dimensions.width - 20, dimensions.height - 20)} transform="translate(10 10)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1.5} />
+            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={diamondPath(dimensions.width - 20, dimensions.height - 20)} transform="translate(10 10)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
         </SvgFrame>
     );
 }
@@ -216,8 +198,8 @@ function ExitNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePale
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-Msquare"
         >
-            <rect x={1.5} y={1.5} width={dimensions.width - 3} height={dimensions.height - 3} rx={8} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
-            <rect x={11} y={11} width={dimensions.width - 22} height={dimensions.height - 22} rx={6} fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1.5} />
+            <rect x={1.5} y={1.5} width={dimensions.width - 3} height={dimensions.height - 3} rx={8} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <rect x={11} y={11} width={dimensions.width - 22} height={dimensions.height - 22} rx={6} fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
         </SvgFrame>
     );
 }
@@ -230,7 +212,7 @@ function HumanGateNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFram
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-hexagon"
         >
-            <path d={hexagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
+            <path d={hexagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
         </SvgFrame>
     );
 }
@@ -243,7 +225,7 @@ function ConditionalNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFr
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-diamond"
         >
-            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
+            <path d={diamondPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
         </SvgFrame>
     );
 }
@@ -256,7 +238,7 @@ function ParallelNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFrame
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-component"
         >
-            <path d={componentPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
+            <path d={componentPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
         </SvgFrame>
     );
 }
@@ -269,9 +251,9 @@ function FanInNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePal
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-tripleoctagon"
         >
-            <path d={octagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
-            <path d={octagonPath(dimensions.width - 18, dimensions.height - 18)} transform="translate(9 9)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1.5} />
-            <path d={octagonPath(dimensions.width - 34, dimensions.height - 34)} transform="translate(17 17)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1.2} />
+            <path d={octagonPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
+            <path d={octagonPath(dimensions.width - 18, dimensions.height - 18)} transform="translate(9 9)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
+            <path d={octagonPath(dimensions.width - 34, dimensions.height - 34)} transform="translate(17 17)" fill="none" stroke={palette.nestedStrokeColor} strokeWidth={1} />
         </SvgFrame>
     );
 }
@@ -284,7 +266,7 @@ function ToolNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFramePale
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-parallelogram"
         >
-            <path d={parallelogramPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
+            <path d={parallelogramPath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
         </SvgFrame>
     );
 }
@@ -297,7 +279,7 @@ function ManagerNodeFrame({ palette, dimensions }: { palette: WorkflowNodeFrameP
             viewBoxHeight={dimensions.height}
             testId="workflow-node-frame-house"
         >
-            <path d={housePath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={2.5} />
+            <path d={housePath(dimensions.width, dimensions.height)} fill={palette.fillColor} stroke={palette.strokeColor} strokeWidth={1.25} />
         </SvgFrame>
     );
 }

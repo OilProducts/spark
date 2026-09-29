@@ -268,7 +268,7 @@ export function RunGraphCard({
             <CardHeader className="gap-1 px-4">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     <h3
-                        className="shrink-0 whitespace-nowrap text-base font-semibold text-foreground"
+                        className="shrink-0 whitespace-nowrap text-lg font-light text-foreground"
                         title="Live node states for the selected run. Click a node to focus its activity; click the background to clear the selection."
                     >
                         Run Graph
@@ -312,13 +312,13 @@ export function RunGraphCard({
                     <InlineError data-testid="run-graph-error">{graphError}</InlineError>
                 ) : null}
                 {diagnostics.length > 0 ? (
-                    <div data-testid="run-graph-diagnostics" className="rounded-md border border-border/80 bg-muted/20 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <div data-testid="run-graph-diagnostics" className="rounded-md border border-border p-3">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                             Graph diagnostics
                         </p>
                         <ul className="mt-2 space-y-2 text-sm">
                             {diagnostics.slice(0, 6).map((diagnostic, index) => (
-                                <li key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`} className="rounded border border-border/80 bg-background/80 px-3 py-2">
+                                <li key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`} className="rounded border border-border px-3 py-2">
                                     <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
                                         <span>{diagnostic.severity}</span>
                                         <span>{diagnostic.rule_id}</span>
@@ -331,7 +331,7 @@ export function RunGraphCard({
                     </div>
                 ) : null}
                 {graphStatus === 'ready' && !hasRenderableGraph ? (
-                    <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border bg-muted/20">
+                    <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border">
                         <Empty className="text-sm text-muted-foreground">
                             <EmptyHeader>
                                 <EmptyDescription>
@@ -390,7 +390,7 @@ export function RunGraphCard({
                             useStore.getState().setClientRunPresentation({ graph_height: clampGraphPaneHeight(paneHeight + GRAPH_PANE_KEYBOARD_STEP) })
                         }
                     }}
-                    className="group flex h-3 cursor-row-resize items-center justify-center rounded-sm hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="group flex h-3 cursor-row-resize items-center justify-center rounded-sm hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                     <span className="h-1 w-12 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
                 </div>

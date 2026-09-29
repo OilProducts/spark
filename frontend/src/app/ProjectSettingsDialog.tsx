@@ -131,10 +131,9 @@ export function ProjectSettingsDialog({
                             <Button
                                 type="button"
                                 data-testid="top-nav-project-remove-button"
-                                variant="outline"
+                                variant="destructive"
                                 size="sm"
                                 disabled={!projectPath || dirty || isSaving}
-                                className="border-destructive/40 text-destructive hover:bg-destructive/10"
                                 onClick={() => {
                                     void onRemoveProject().then(() => onOpenChange(false))
                                 }}

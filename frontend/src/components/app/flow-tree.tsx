@@ -85,11 +85,11 @@ function FlowTreeNodeRow({
                 aria-label={node.path}
                 title={node.path}
                 onClick={() => onSelectFlow(node.path)}
-                variant={selectedFlow === node.path ? 'secondary' : 'ghost'}
+                variant="ghost"
                 className={`h-9 w-full justify-start rounded-md px-3 py-2 pr-8 text-left text-sm transition-colors ${
                     selectedFlow === node.path
-                        ? 'font-medium text-secondary-foreground'
-                        : 'text-muted-foreground hover:text-foreground'
+                        ? 'font-medium rounded-none text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]'
+                        : 'text-muted-foreground hover:text-primary'
                 }`}
                 style={{ paddingLeft: `${indent}px` }}
             >
@@ -137,7 +137,7 @@ function FlowTreeDirectoryRow({
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-full justify-start gap-2 px-3 text-xs font-semibold tracking-[0.08em] text-muted-foreground"
+                    className="h-8 w-full justify-start gap-2 px-3 text-xs font-medium tracking-[0.08em] text-muted-foreground"
                     style={{ paddingLeft: `${indent}px` }}
                     title={node.path}
                 >

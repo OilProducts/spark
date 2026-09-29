@@ -73,7 +73,7 @@ export function RunTranscriptGroupSection({
             data-attempt={group.attempt}
             className="space-y-2"
         >
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {runTranscriptGroupLabel(group)}
             </p>
             <ul className="list-none space-y-2">

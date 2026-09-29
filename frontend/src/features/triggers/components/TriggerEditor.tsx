@@ -161,7 +161,7 @@ export function TriggerEditor({
             </div>
 
             {form.targetMode === 'active' ? (
-                <div className="rounded-md border border-border bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+                <div className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground">
                     {activeProjectPath
                         ? `Uses the current active project: ${activeProjectPath}`
                         : 'No active project is available. Choose "No project" or "Other path".'}
@@ -331,7 +331,7 @@ export function TriggerEditor({
             ) : null}
 
             {form.sourceType === 'webhook' ? (
-                <div className="rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-muted-foreground">
+                <div className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
                     Webhook triggers use the shared ingress endpoint at <code>{SHARED_WEBHOOK_ENDPOINT}</code>. The key and secret are generated automatically.
                 </div>
             ) : null}

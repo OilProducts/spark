@@ -302,7 +302,7 @@ describe('ValidationEdge', () => {
         await waitFor(() => {
             const path = document.querySelector('path.react-flow__edge-path') as SVGPathElement | null
             expect(path).not.toBeNull()
-            expect(path?.style.strokeWidth).toBe('2')
+            expect(path?.style.strokeWidth).toBe('1.25')
         })
     })
 })

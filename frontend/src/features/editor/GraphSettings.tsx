@@ -383,7 +383,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         return (
             <div
                 data-testid={testId}
-                className="rounded-md border border-border/80 bg-muted/20 px-2 py-1"
+                className="rounded-md border border-border/80 px-2 py-1"
             >
                 <div className="space-y-1">
                     {diagnosticsForField.map((diag: DiagnosticEntry, index: number) => {
@@ -515,7 +515,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                 }}
                 variant="outline"
                 size="sm"
-                className="bg-background/90 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                className="bg-background text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
             >
                 Graph Settings
             </Button>

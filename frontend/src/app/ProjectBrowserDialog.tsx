@@ -128,7 +128,7 @@ export function ProjectBrowserDialog({
                                 </div>
                                 <p
                                     data-testid="project-browser-current-path"
-                                    className="truncate rounded-md border border-border/70 bg-muted/30 px-3 py-2 font-mono text-xs text-foreground"
+                                    className="truncate rounded-md border border-border/70 px-3 py-2 font-mono text-xs text-foreground"
                                 >
                                     {currentPath || 'Resolving directory…'}
                                 </p>
@@ -176,7 +176,7 @@ export function ProjectBrowserDialog({
 
                         <div
                             data-testid="project-browser-entry-list"
-                            className="max-h-[22rem] overflow-y-auto rounded-lg border border-border/70 bg-muted/10 p-2"
+                            className="max-h-[22rem] overflow-y-auto rounded-lg border border-border/70 p-2"
                         >
                             {isLoading ? (
                                 <div

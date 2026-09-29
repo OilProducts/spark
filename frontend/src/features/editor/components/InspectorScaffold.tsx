@@ -25,18 +25,18 @@ export function InspectorScaffold({
         <section
             data-testid="inspector-scaffold"
             data-inspector-scope={scopeLabel.toLowerCase()}
-            className="rounded-md border border-border/80 bg-background/50 p-4"
+            className="p-4"
         >
             <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                    <span className="rounded border border-border bg-background px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <span className="rounded border border-border bg-background px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         {scopeLabel}
                     </span>
-                    <h2 className="text-base font-semibold tracking-tight text-foreground">{title}</h2>
+                    <h2 className="text-lg font-light tracking-tight text-foreground">{title}</h2>
                 </div>
                 <p className="text-xs text-muted-foreground">{description}</p>
                 {entityValue ? (
-                    <div className="rounded border border-border/80 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+                    <div className="rounded border border-border/80 px-2 py-1 text-xs text-muted-foreground">
                         <span className="font-semibold text-foreground">{entityLabel || 'Selection'}:</span>{' '}
                         <span className="font-mono break-all">{entityValue}</span>
                     </div>
@@ -51,7 +51,7 @@ export function InspectorEmptyState({ message }: InspectorEmptyStateProps) {
     return (
         <div
             data-testid="inspector-empty-state"
-            className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-border/80 bg-muted/20 px-4 text-center text-sm text-muted-foreground"
+            className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-border/80 px-4 text-center text-sm text-muted-foreground"
         >
             <p>{message}</p>
         </div>

@@ -6,9 +6,9 @@ import { Button } from '@/components/ui/button';
 import { NativeSelect } from '@/components/ui/native-select';
 
 const severityStyles: Record<string, string> = {
-    error: 'bg-destructive/15 text-destructive',
-    warning: 'bg-warning/15 text-warning',
-    info: 'bg-info/15 text-info',
+    error: 'text-destructive',
+    warning: 'text-warning',
+    info: 'text-info',
 };
 
 type SeverityFilter = 'all' | 'error' | 'warning' | 'info';
@@ -145,12 +145,12 @@ export function ValidationPanel() {
         <div
             data-testid="validation-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`absolute z-20 rounded-md border border-border bg-card/95 p-3 shadow-lg ${
+            className={`absolute z-20 rounded-md border border-border bg-card p-3 shadow-lg ${
                 isNarrowViewport ? 'bottom-2 left-2 right-2 w-auto' : 'bottom-4 left-4 w-80'
             }`}
         >
             <div className="flex items-center justify-between">
-                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Validation</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Validation</div>
                 <div className="text-xs font-medium text-muted-foreground">
                     {hasValidationErrors ? 'Errors present' : 'Warnings only'}
                 </div>
@@ -207,16 +207,16 @@ export function ValidationPanel() {
                             }
                         }}
                         variant="outline"
-                        className={`h-auto w-full justify-start whitespace-normal rounded-md bg-background/85 px-2 py-1 text-left text-sm transition-colors ${
+                        className={`h-auto w-full justify-start whitespace-normal rounded-md px-2 py-1 text-left text-sm transition-colors ${
                             hasDirectMapping(diag)
-                                ? 'border-border/60 hover:bg-muted'
-                                : 'border-dashed border-border/70 hover:bg-muted/60'
+                                ? 'border-border/60 hover:bg-accent/50'
+                                : 'border-dashed border-border/70 hover:bg-accent/50'
                         }`}
                     >
                         <div className="flex w-full min-w-0 items-start gap-2">
                             <span
-                                className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${
-                                    severityStyles[diag.severity] || 'bg-muted text-muted-foreground'
+                                className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide ${
+                                    severityStyles[diag.severity] || 'text-muted-foreground'
                                 }`}
                             >
                                 {diag.severity}
@@ -237,7 +237,7 @@ export function ValidationPanel() {
                     </Button>
                 ))}
                 {sortedDiagnostics.length === 0 && (
-                    <div className="rounded-md border border-dashed border-border/60 bg-background/80 px-2 py-2 text-xs text-muted-foreground">
+                    <div className="rounded-md border border-dashed border-border/60 px-2 py-2 text-xs text-muted-foreground">
                         No diagnostics for current filter.
                     </div>
                 )}
