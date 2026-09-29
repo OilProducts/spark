@@ -36,13 +36,12 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     ...overrides,
 })
 
-const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null, recordedCommit: string | null = null) => render(
+const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null) => render(
     <RunHeaderBar
         run={run}
         now={Date.parse('2026-03-22T00:10:00Z')}
         flowTitle="Review Changes"
         selectedVisitLabel={selectedVisitLabel}
-        recordedCommit={recordedCommit}
         onRequestCancel={vi.fn()}
         onRequestRetry={vi.fn()}
         onContinueFromRun={vi.fn()}
@@ -58,11 +57,6 @@ describe('RunHeaderBar', () => {
         expect(screen.getByTestId('run-header-title')).toHaveTextContent('Tighten the review loop')
         expect(screen.getByTestId('run-header-facts')).toHaveTextContent('Completed 5m ago · 5m · 1,234 tokens · abcdef0')
         expect(screen.queryByText(/Node:/)).not.toBeInTheDocument()
-    })
-
-    it('shows the commit the flow recorded when the run record has none', () => {
-        renderHeader(makeRun({ git_commit: null, git_branch: null }), null, '6debdc97bfbdf337d60c301d4df6730b1d040262')
-        expect(screen.getByTestId('run-header-facts')).toHaveTextContent('1,234 tokens · 6debdc9')
     })
 
     it('offers Retry only for failed runs and Cancel only for active ones', () => {

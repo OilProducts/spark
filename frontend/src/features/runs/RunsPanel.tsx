@@ -26,7 +26,7 @@ import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
-import { buildRunContextOverview, recordedGitRef, runStatusKind } from './model/runOverviewModel'
+import { buildRunContextOverview, runStatusKind } from './model/runOverviewModel'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
@@ -261,7 +261,6 @@ export function RunsPanel() {
         () => buildRunContextOverview({ visits, launchContext, finalContext }),
         [finalContext, launchContext, visits],
     )
-    const recordedRef = useMemo(() => recordedGitRef(contextOverview), [contextOverview])
     const statusKind = selectedRun ? runStatusKind(selectedRun.status, groupedPendingInterviewGates.length > 0) : 'ended'
     const selectedVisitLabel = selectedNodeId
         ? flowNodes[selectedNodeId]?.label ?? selectedNodeId
@@ -414,7 +413,6 @@ export function RunsPanel() {
                                 now={now}
                                 flowTitle={flowSnapshot?.title ?? null}
                                 selectedVisitLabel={selectedVisitLabel}
-                                recordedCommit={recordedRef.commit}
                                 onContinueFromRun={beginContinuation}
                                 onRerunRun={(run) => {
                                     const projectPath = run.project_path || run.working_directory || null
@@ -554,7 +552,6 @@ export function RunsPanel() {
                                                 result={resultData}
                                                 resultError={resultError}
                                                 artifactEntries={artifactEntries}
-                                                recordedRef={recordedRef}
                                                 onSelectVisit={selectVisit}
                                                 onViewArtifact={openArtifact}
                                                 question={

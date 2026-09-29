@@ -4,7 +4,6 @@ import {
   buildRunContextOverview,
   classifyRunFailure,
   didNotPassVisits,
-  recordedGitRef,
   runTitle,
 } from '../runOverviewModel'
 import type { RunVisit, VisitOutcome } from '../visitModel'
@@ -78,25 +77,16 @@ describe('buildRunContextOverview', () => {
     const evaluate = visit('evaluate', 2, 'succeeded', { 'context.review.findings': null })
     const review2 = visit('review', 3, 'did_not_pass', { 'context.review.findings': 'still missing' })
     // The snapshot was taken after the first review; later writes arrive live.
-    const stale = { 'context.review.findings': 'missing test', 'context.workspace.commit': 'abc1234' }
+    const stale = { 'context.review.findings': 'missing test', 'context.lint.status': 'clean' }
     const value = (visits: RunVisit[]) => buildRunContextOverview({ visits, launchContext: null, finalContext: stale })
       .namespaces.find((namespace) => namespace.name === 'review')!.keys[0]
     expect(value([review1, evaluate])).toMatchObject({ value: null })
     expect(value([review1, evaluate]).history.at(-1)?.visit).toBe(evaluate)
     expect(value([review1, evaluate, review2]).value).toBe('still missing')
     // A key no visit wrote keeps its snapshot value; a parallel branch's write defers to it too.
-    const branch = { ...visit('lint', 4, 'succeeded', { 'context.workspace.commit': 'branch1' }), parentKey: 'fanout' }
+    const branch = { ...visit('lint', 4, 'succeeded', { 'context.lint.status': 'dirty' }), parentKey: 'fanout' }
     const overview = buildRunContextOverview({ visits: [review1, branch], launchContext: null, finalContext: stale })
-    expect(recordedGitRef(overview)).toEqual({ commit: 'abc1234', branch: null })
-  })
-
-  it('reads the commit and branch merge-change records', () => {
-    const merge = visit('merge', 1, 'succeeded', {
-      'context.integration.target_branch': 'main',
-      'context.integration.merge_commit': '50ffbb8cc3c851258f54a4a3131b28a8f9064bcb',
-    })
-    const overview = buildRunContextOverview({ visits: [merge], launchContext: null, finalContext: null })
-    expect(recordedGitRef(overview)).toEqual({ commit: '50ffbb8cc3c851258f54a4a3131b28a8f9064bcb', branch: 'main' })
+    expect(overview.namespaces.find((namespace) => namespace.name === 'lint')!.keys[0].value).toBe('clean')
   })
 })
 

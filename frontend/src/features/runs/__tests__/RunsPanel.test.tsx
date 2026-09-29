@@ -337,6 +337,28 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('run-context-panel')).toHaveTextContent('cached value')
   })
 
+  it('takes the header and output commit from the run record, never from flow context', () => {
+    vi.mocked(global.fetch).mockImplementation(() => new Promise<Response>(() => {}))
+    const state = useStore.getState()
+    state.updateRunsListSession({ scopeMode: 'all' })
+    state.setRunsSelectedRunIdForScope('all', 'git')
+    state.reconcileRunRecord('git', 'list', makeRun({ run_id: 'git', last_error: '', git_commit: 'abcdef0', git_branch: 'main' }))
+    state.updateRunDetailSession('git', {
+      contextStatus: 'ready', contextData: { pipeline_id: 'git', context: {
+        'context.workspace.commit': '1111111aaaa', 'context.workspace.branch': 'flow-branch',
+        'context.integration.merge_commit': '2222222bbbb', 'context.anything.commit': '3333333cccc',
+      } },
+    })
+    state.setRunsSelectedRunIdForScope('all', 'other')
+    render(<DialogProvider><RunsPanel /></DialogProvider>)
+    act(() => state.setRunsSelectedRunIdForScope('all', 'git'))
+    expect(screen.getByTestId('run-header-facts')).toHaveTextContent('abcdef0')
+    expect(screen.getByTestId('run-output-commit')).toHaveTextContent('abcdef0 on main')
+    for (const testId of ['run-header-facts', 'run-output-commit']) {
+      expect(screen.getByTestId(testId)).not.toHaveTextContent(/1111111|2222222|3333333|flow-branch/)
+    }
+  })
+
   beforeEach(() => {
     resetRunsState()
     vi.stubGlobal('fetch', vi.fn())

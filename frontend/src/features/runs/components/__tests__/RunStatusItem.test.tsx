@@ -55,9 +55,7 @@ const result: PipelineResultResponse = {
   summary_enabled: false,
 }
 
-const NO_REF = { commit: null, branch: null }
-
-const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false, recordedRef: { commit: string | null; branch: string | null } = NO_REF) => {
+const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false) => {
   const onSelectVisit = vi.fn()
   const onViewArtifact = vi.fn()
   render(
@@ -73,7 +71,6 @@ const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false
         { path: 'result/result.md', size_bytes: 10, media_type: 'text/markdown', viewable: true },
         { path: 'artifacts/flow/flow-source.yaml', size_bytes: 10, media_type: 'text/yaml', viewable: true },
       ]}
-      recordedRef={recordedRef}
       question={<p>Approve the change?</p>}
       onSelectVisit={onSelectVisit}
       onViewArtifact={onViewArtifact}
@@ -116,12 +113,6 @@ describe('RunStatusItem', () => {
     expect(onSelectVisit).toHaveBeenCalledWith(stopped)
     // A failed run's commit is where it started, so it isn't an output.
     expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
-  })
-
-  it('shows the commit and branch the flow recorded when the run record has none', () => {
-    const recorded = { commit: '6debdc97bfbdf337d60c301d4df6730b1d040262', branch: 'spark/implement-change/run-1' }
-    renderStatus(run({ git_commit: null, git_branch: null }), [visit('commit', 1, 'succeeded')], false, recorded)
-    expect(screen.getByTestId('run-output-commit')).toHaveTextContent('6debdc9 on spark/implement-change/run-1')
   })
 
   it('keeps lock, spec, plan and a separate project path among the run facts', () => {
