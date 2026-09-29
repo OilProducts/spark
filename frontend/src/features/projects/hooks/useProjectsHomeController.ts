@@ -344,6 +344,7 @@ export function useProjectsHomeController() {
         conversationCacheRef,
         setConversationSummaryList,
         activateConversationThread,
+        applyConversationSnapshot,
         resetComposer,
         setConversationId,
         updateProjectSessionState,
