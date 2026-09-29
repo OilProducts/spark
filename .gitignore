@@ -27,24 +27,6 @@ agent-notes.md
 *.log
 /containers/mathlab/spark-server-bin
 
-# Contract and retained audit evidence for the targeted settings corrections.
-!/changes/
-/changes/*
-!/changes/CR-2026-0118-finish-the-settings-overhaul-with-targeted-corrections/
-!/changes/CR-2026-0119-preserve-containers-for-one-run-execution/
-!/changes/CR-2026-0120-cr-2026-0086-speak-the-claude-code-bidirectional-control-protocol/
-!/changes/CR-2026-0121-missions-supersede-tasks-with-event-driven-coordination/
-!/changes/CR-2026-0122-fix-mission-delivery-and-coordination-defects/
-!/changes/CR-2026-0123-missions-as-conversations/
-!/changes/CR-2026-0124-mission-playbooks/
-!/changes/CR-2026-0125-reusable-model-chooser/
-!/changes/CR-2026-0126-model-picker/
-!/changes/CR-2026-0127-provider-native-reasoning-effort/
-!/changes/CR-2026-0128-reachable-models-only/
-!/changes/CR-2026-0129-provider-native-reasoning-controls/
-!/changes/CR-2026-0130-missions-answer-run-questions/
-!/changes/CR-2026-0131-triggers-deliver-to-missions/
-!/changes/CR-2026-0132-per-execution-run-transcripts/
-!/changes/CR-2026-0133-utility-inference/
+# Retained audit evidence for the settings overhaul.
 !/reports/CR-2026-0117-evaluation.md
 !/reports/CR-2026-0117-audit/

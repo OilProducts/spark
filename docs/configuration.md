@@ -1,6 +1,6 @@
 # Persisted settings
 
-This page describes the unified settings operations. Validation and delivery details are recorded in [the implementation result](../changes/CR-2026-0117-unify-spark-configuration-and-settings/result.md).
+This page describes the unified settings operations.
 
 Core runtime paths and workspace model defaults live in `$SPARK_HOME/config/spark.toml`. Bootstrap home selection remains external. Explicit runtime arguments override environment variables, which override persisted paths. The runtime settings response separates stored choices from the running process's effective paths and lists fields requiring restart.
 

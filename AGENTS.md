@@ -92,7 +92,7 @@ Add a Rust test as a module under the crate's existing `tests/contracts/` or `te
 
 ### Change requests
 
-Change requests live in `changes/CR-YYYY-NNNN-<slug>/` as `request.md` and `result.md`. Number a new one as the highest existing number plus one, taken from the full, untruncated directory listing. `changes/` is gitignored; a change request is tracked only when `.gitignore` un-ignores it explicitly.
+Change requests live in `changes/CR-YYYY-NNNN-<slug>/request.md`. Number a new one as the highest existing number plus one, taken from the full, untruncated directory listing. `changes/` is gitignored and local only; never commit change requests. A run records its own result, so don't write a `result.md`.
 
 ### Browser smoke tests
 
