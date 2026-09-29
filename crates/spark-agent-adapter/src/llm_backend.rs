@@ -1211,19 +1211,29 @@ pub fn run_utility_call(client: &Client, call: &UtilityCall) -> Result<String, S
             stdout
         }
     } else {
-        let request = utility_llm_request(client, call).map_err(|e| format_adapter_error(&e))?;
-        let client = client.clone();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        // ponytail: a timed-out HTTP call finishes on its detached thread; pass an
-        // abort signal through if the adapter learns to cancel in-flight requests.
+        let mut request =
+            utility_llm_request(client, call).map_err(|e| format_adapter_error(&e))?;
+        // Streaming honours the abort signal mid-request, so a timeout cancels
+        // the HTTP call rather than abandoning it.
+        let controller = unified_llm_adapter::AbortController::new();
+        request.abort_signal = Some(controller.signal());
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let timeout = call.timeout;
         std::thread::spawn(move || {
-            let _ = sender.send(client.complete(request));
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(timeout)
+            {
+                controller.abort(utility_timeout_message(timeout));
+            }
         });
-        receiver
-            .recv_timeout(call.timeout)
-            .map_err(|_| utility_timeout_message(call.timeout))?
-            .map_err(|error| format_adapter_error(&error))?
-            .text()
+        let mut accumulator = unified_llm_adapter::StreamAccumulator::default();
+        let result = client.stream(request).and_then(|events| {
+            for event in events {
+                accumulator.push(event?);
+            }
+            Ok(accumulator.finalize().text())
+        });
+        drop(done);
+        result.map_err(|error| format_adapter_error(&error))?
     };
     let text = text.trim();
     if text.is_empty() {
@@ -1333,6 +1343,10 @@ pub fn utility_cli_command(
         command
             .args([
                 "-p",
+                // No user, project or local settings: hooks, permissions and
+                // plugins stay out of the call; sign-in is unaffected.
+                "--setting-sources",
+                "",
                 "--tools",
                 "",
                 "--strict-mcp-config",

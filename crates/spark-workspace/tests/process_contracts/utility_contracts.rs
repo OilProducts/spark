@@ -13,9 +13,13 @@ use spark_common::settings::{resolve_settings_with_env, SettingsOverrides, Spark
 use spark_storage::conversation::{ConversationMetadataPatch, ConversationMutation};
 use spark_storage::settings::{load_core_settings, read_settings_document};
 use spark_storage::ConversationRepository;
+use spark_workspace::live::{envelope_matches_query, validate_live_query};
 use spark_workspace::settings::{update_workspace_settings, workspace_settings};
 use spark_workspace::utility::utility_complete;
-use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService, WorkspaceError};
+use spark_workspace::{
+    ConversationTurnRequest, LiveEnvelope, RawLiveQuery, WorkspaceConversationService,
+    WorkspaceError,
+};
 
 const PROJECT: &str = "/projects/utility";
 
@@ -140,29 +144,56 @@ impl AgentTurnBackend for ReplyBackend {
     }
 }
 
-fn turn(
-    service: &WorkspaceConversationService,
-    id: &str,
-    message: &str,
-) -> (Value, mpsc::Receiver<Value>) {
+/// A service whose live updates (generated titles) arrive on the receiver.
+fn service_with_updates(
+    settings: SparkSettings,
+) -> (WorkspaceConversationService, mpsc::Receiver<LiveEnvelope>) {
     let (sender, receiver) = mpsc::channel();
-    let snapshot = service
-        .execute_turn_with_progress_payloads(
-            id,
-            ConversationTurnRequest {
-                project_path: PROJECT.into(),
-                message: message.into(),
-                provider: Some("codex".into()),
-                ..Default::default()
-            },
-            move |payload| {
-                if payload["type"] == "conversation_snapshot" {
-                    let _ = sender.send(payload);
-                }
-            },
-        )
-        .unwrap();
-    (snapshot, receiver)
+    let sender = std::sync::Mutex::new(sender);
+    let service =
+        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(ReplyBackend))
+            .with_live_publisher(Arc::new(move |envelope| {
+                let _ = sender.lock().unwrap().send(envelope);
+            }));
+    (service, receiver)
+}
+
+fn request(message: &str) -> ConversationTurnRequest {
+    ConversationTurnRequest {
+        project_path: PROJECT.into(),
+        message: message.into(),
+        provider: Some("codex".into()),
+        ..Default::default()
+    }
+}
+
+fn turn(service: &WorkspaceConversationService, id: &str, message: &str) -> Value {
+    service
+        .execute_turn_with_progress_payloads(id, request(message), |_| {})
+        .unwrap()
+}
+
+/// The thread-list and conversation updates a generated title publishes.
+fn title_updates(updates: &mpsc::Receiver<LiveEnvelope>, wait: Duration) -> Option<(Value, Value)> {
+    let summary = updates.recv_timeout(wait).ok()?;
+    let snapshot = updates.recv_timeout(Duration::from_secs(1)).ok()?;
+    assert_eq!(summary.event_type, "conversation.summary_upsert");
+    assert_eq!(summary.resource.kind, "conversation_summary");
+    // Only clients that ask for the thread-list feed receive it.
+    let query = |include: Option<&str>| {
+        validate_live_query(RawLiveQuery {
+            include_conversations: include.map(str::to_string),
+            ..Default::default()
+        })
+        .unwrap()
+    };
+    assert!(envelope_matches_query(&summary, &query(Some("true"))));
+    assert!(!envelope_matches_query(&summary, &query(None)));
+    assert_eq!(snapshot.event_type, "conversation.snapshot");
+    Some((
+        summary.payload["conversation"].clone(),
+        snapshot.payload["state"].clone(),
+    ))
 }
 
 fn stored_title(service: &WorkspaceConversationService, id: &str) -> String {
@@ -294,22 +325,25 @@ fn first_completed_turn_gets_one_generated_title_in_the_background() {
     let _env = claude_env();
     let (_temp, settings) = fixture();
     let calls = fake_claude(&settings, "\"Deploy pipeline repair.\"", "1", 0);
-    let service =
-        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(ReplyBackend));
+    let (service, updates) = service_with_updates(settings);
 
     let started = Instant::now();
-    let (snapshot, updates) = turn(&service, "titled", "please fix the deploy pipeline");
+    let snapshot = turn(&service, "titled", "please fix the deploy pipeline");
     // The turn does not wait for the one-second utility call.
     assert!(started.elapsed() < Duration::from_millis(900));
     assert_eq!(snapshot["title"], "please fix the deploy pipeline");
 
-    let update = updates.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!(update["state"]["title"], "Deploy pipeline repair");
-    assert_eq!(update["revision"], update["state"]["revision"]);
+    // Every client's thread list and the thread's own view get the title.
+    let (summary, state) = title_updates(&updates, Duration::from_secs(10)).unwrap();
+    assert_eq!(summary["conversation_id"], "titled");
+    assert_eq!(summary["project_path"], PROJECT);
+    assert_eq!(summary["title"], "Deploy pipeline repair");
+    assert_eq!(summary["revision"], state["revision"]);
+    assert_eq!(state["title"], "Deploy pipeline repair");
     assert_eq!(stored_title(&service, "titled"), "Deploy pipeline repair");
     assert_eq!(call_count(&calls), 1);
 
-    let (snapshot, updates) = turn(&service, "titled", "and the staging one");
+    let snapshot = turn(&service, "titled", "and the staging one");
     assert_eq!(snapshot["title"], "Deploy pipeline repair");
     assert!(updates.recv_timeout(Duration::from_millis(1500)).is_err());
     assert_eq!(call_count(&calls), 1);
@@ -318,14 +352,42 @@ fn first_completed_turn_gets_one_generated_title_in_the_background() {
 
 #[cfg(unix)]
 #[test]
+fn a_first_turn_resumed_after_a_question_gets_a_generated_title() {
+    let _env = claude_env();
+    let (_temp, settings) = fixture();
+    fake_claude(&settings, "Deploy question", "0", 0);
+    let (service, updates) = service_with_updates(settings);
+
+    // A turn that stopped on a question finishes through the answer path,
+    // which ingests the resumed output directly.
+    let (prepared, _) = service
+        .start_turn("asked", request("which deploy should I fix?"))
+        .unwrap();
+    let output = ReplyBackend
+        .run_turn(prepared.agent_turn_request.clone())
+        .unwrap();
+    service
+        .ingest_agent_turn_output(
+            "asked",
+            PROJECT,
+            &prepared.assistant_turn_id,
+            &prepared.chat_mode,
+            output,
+        )
+        .unwrap();
+
+    let (summary, _) = title_updates(&updates, Duration::from_secs(10)).unwrap();
+    assert_eq!(summary["title"], "Deploy question");
+    assert_eq!(stored_title(&service, "asked"), "Deploy question");
+}
+
+#[cfg(unix)]
+#[test]
 fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
     let _env = claude_env();
     let (_temp, settings) = fixture();
     let calls = fake_claude(&settings, "Generated", "0", 0);
-    let service = WorkspaceConversationService::new_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(ReplyBackend),
-    );
+    let (service, updates) = service_with_updates(settings.clone());
     ConversationRepository::new(settings.data_dir.clone())
         .commit_conversation(
             "named",
@@ -339,7 +401,7 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
             }],
         )
         .unwrap();
-    let (_, updates) = turn(&service, "named", "first question");
+    turn(&service, "named", "first question");
     assert!(updates.recv_timeout(Duration::from_millis(500)).is_err());
     assert_eq!(stored_title(&service, "named"), "Named by hand");
     assert_eq!(call_count(&calls), 0);
@@ -360,9 +422,8 @@ fn stored_titles_stay_and_derived_titles_remain_when_off_or_failing() {
     // Failing: the derived title stays and a later turn does not retry.
     let (_temp, settings) = fixture();
     let calls = fake_claude(&settings, "ignored", "0", 1);
-    let service =
-        WorkspaceConversationService::new_with_agent_turn_backend(settings, Arc::new(ReplyBackend));
-    let (_, updates) = turn(&service, "failing", "first question");
+    let (service, updates) = service_with_updates(settings);
+    turn(&service, "failing", "first question");
     assert!(updates.recv_timeout(Duration::from_millis(1500)).is_err());
     assert_eq!(call_count(&calls), 1);
     turn(&service, "failing", "second question");

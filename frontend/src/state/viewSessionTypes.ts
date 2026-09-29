@@ -153,6 +153,8 @@ export interface HomeSessionSlice {
         projectPath: string,
         summaries: ConversationSummaryResponse[],
     ) => void
+    /** Applies a live thread-list change to a project list already loaded. */
+    upsertHomeConversationSummary: (summary: ConversationSummaryResponse) => void
     setHomeThreadSummariesStatus: (
         projectPath: string,
         status: ResourceStatus,

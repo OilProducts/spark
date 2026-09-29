@@ -211,3 +211,20 @@ it('keeps the utility model off until chosen, offers the chat picker models, and
     expect(saveModelSettings).toHaveBeenLastCalledWith('utility-one+', null, undefined, 'utility_models')
     await waitFor(() => expect(utility.getByRole('switch')).not.toBeChecked())
 })
+
+it.each([
+    ['Codex, when both are available', { codex: 'available', 'claude-code': 'available' }, { provider: 'codex', model: 'gpt-5.6-luna' }],
+    ['Claude Code, when only it is available', { codex: 'unavailable', 'claude-code': 'available' }, { provider: 'claude-code', model: 'claude-sonnet-5-5' }],
+    ['Codex, when neither is available', { codex: 'unavailable', 'claude-code': 'unavailable' }, { provider: 'codex', model: null }],
+] as const)('turning the utility model on defaults to %s', async (_label, statuses, expected) => {
+    const user = userEvent.setup()
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [], providers: Object.fromEntries(
+        Object.entries(statuses).map(([provider, status]) => [provider, { status, error: null }]),
+    ) } })
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    const utility = card('Utility model')
+    await waitFor(() => expect(utility.getByRole('switch')).toBeEnabled())
+    await user.click(utility.getByRole('switch'))
+    await user.click(utility.getByRole('button', { name: 'Save utility model' }))
+    expect(saveModelSettings).toHaveBeenLastCalledWith('utility-one', expect.objectContaining(expected), undefined, 'utility_models')
+})

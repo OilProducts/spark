@@ -5,14 +5,22 @@ import { Switch } from '@/components/ui/switch'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useLlmProfiles } from '@/lib/useLlmProfiles'
+import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { useModelSettingsEditor } from './hooks/useModelSettingsEditor'
 import { SaveStatus } from './SaveStatus'
 
 const codexDefault = { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }
+// Small, fast models for the first provider available: Codex, then Claude Code.
+const UTILITY_DEFAULTS = [
+    { ...codexDefault, model: 'gpt-5.6-luna' },
+    { ...codexDefault, provider: 'claude-code', model: 'claude-sonnet-5-5' },
+]
 
 export function UtilityModelSettingsEditor({ projectPath }: { projectPath: string | null }) {
     const editor = useModelSettingsEditor(undefined, 'utility_models')
     const profiles = useLlmProfiles()
+    const discovery = useModelOptions(projectPath)
+    const utilityDefault = UTILITY_DEFAULTS.find(({ provider }) => discovery?.payload?.providers?.[provider]?.status === 'available') ?? codexDefault
     const invalidModel = !!editor.draft && !isModelSelectionValid(editor.draft.llm_profile || editor.draft.provider || '', editor.draft.model, profiles)
     return <Card className="gap-4 py-4 shadow-sm">
         <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Utility model</h3></CardHeader>
@@ -21,7 +29,7 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
             {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
                 <Label className="flex items-center gap-2 text-sm"><Switch checked={editor.draft !== null}
-                    onCheckedChange={(checked) => editor.setDraft(checked ? { ...codexDefault } : null)} />Use a utility model</Label>
+                    onCheckedChange={(checked) => editor.setDraft(checked ? { ...utilityDefault } : null)} />Use a utility model</Label>
                 {editor.draft && <ModelChooser inherited={codexDefault} disabled={!editor.saved || editor.pending} value={editor.draft} onChange={next => editor.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={projectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />}
             </fieldset>
             <div className="flex flex-wrap gap-2">

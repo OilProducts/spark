@@ -543,7 +543,7 @@ function parseProposedPlanArtifactResponse(value: unknown): ProposedPlanArtifact
     }
 }
 
-function parseConversationSummaryResponse(value: unknown): ConversationSummaryResponse | null {
+export function parseConversationSummaryResponse(value: unknown): ConversationSummaryResponse | null {
     const record = asUnknownRecord(value)
     if (
         !record

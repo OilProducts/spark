@@ -3205,6 +3205,7 @@ fn chat_and_workflow_preserve_unlisted_effort_through_compatible_provider_dispat
 
 struct FailingUtilityAdapter {
     delay: Duration,
+    aborted: Arc<Mutex<bool>>,
 }
 
 impl ProviderAdapter for FailingUtilityAdapter {
@@ -3213,15 +3214,27 @@ impl ProviderAdapter for FailingUtilityAdapter {
     }
 
     fn complete(&self, _request: Request) -> Result<Response, AdapterError> {
-        thread::sleep(self.delay);
+        unreachable!("utility calls stream so a timeout can abort them")
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        // Like the HTTP transport: wait for the provider, but give up as soon
+        // as the request's abort signal fires.
+        let signal = request
+            .abort_signal
+            .expect("utility calls carry an abort signal");
+        let deadline = Instant::now() + self.delay;
+        while Instant::now() < deadline {
+            if signal.aborted() {
+                *self.aborted.lock().unwrap() = true;
+                return Err(unified_llm_adapter::abort_error("request", signal.reason()));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         Err(AdapterError::new(
             AdapterErrorKind::Authentication,
             "provider rejected the key",
         ))
-    }
-
-    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
-        unreachable!("utility calls never stream")
     }
 }
 
@@ -3279,8 +3292,12 @@ fn utility_api_call_sends_one_completion_without_tools_or_history() {
 
 #[test]
 fn utility_api_provider_errors_and_timeouts_are_errors() {
+    let aborted = Arc::new(Mutex::new(false));
     let failing = |delay| {
-        let adapter: Arc<dyn ProviderAdapter> = Arc::new(FailingUtilityAdapter { delay });
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(FailingUtilityAdapter {
+            delay,
+            aborted: Arc::clone(&aborted),
+        });
         Client::from_adapters(vec![adapter], None).expect("client")
     };
     let mut call = utility_call("openai", json!({}));
@@ -3295,6 +3312,8 @@ fn utility_api_provider_errors_and_timeouts_are_errors() {
         .expect_err("timeout");
     assert!(error.contains("timed out"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(1));
+    // The in-flight request was cancelled, not abandoned.
+    assert!(*aborted.lock().unwrap());
 }
 
 #[test]
@@ -3327,6 +3346,7 @@ fn utility_cli_commands_are_one_shot_without_tools_sessions_or_project() {
     let claude_args = args(&claude);
     for expected in [
         &["-p"][..],
+        &["--setting-sources", ""],
         &["--tools", ""],
         &["--strict-mcp-config"],
         &["--no-session-persistence"],

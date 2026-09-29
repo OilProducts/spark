@@ -233,6 +233,7 @@ pub struct WorkspaceConversationService {
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
+    live_publisher: Option<Arc<dyn Fn(crate::live::LiveEnvelope) + Send + Sync>>,
 }
 
 /// The `spark.execution.settings` snapshot a model call resolves credentials,
@@ -429,7 +430,18 @@ impl WorkspaceConversationService {
             runtime_handler_runner_factory,
             agent_turn_backend,
             run_event_observer: None,
+            live_publisher: None,
         }
+    }
+
+    /// Publishes changes this service makes outside a request, such as a
+    /// generated title, to live clients.
+    pub fn with_live_publisher(
+        mut self,
+        publisher: Arc<dyn Fn(crate::live::LiveEnvelope) + Send + Sync>,
+    ) -> Self {
+        self.live_publisher = Some(publisher);
+        self
     }
 
     pub fn with_run_event_observer(
@@ -1351,6 +1363,7 @@ impl WorkspaceConversationService {
         )?;
         let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+        self.spawn_title_generation(&snapshot);
         Ok(snapshot)
     }
 
@@ -1452,7 +1465,7 @@ impl WorkspaceConversationService {
             self.repository(),
             prepared.conversation_id.clone(),
             prepared.project_path.clone(),
-            progress.clone(),
+            progress,
         );
         let output = self
             .agent_turn_backend
@@ -1467,29 +1480,22 @@ impl WorkspaceConversationService {
             return Err(error.into());
         }
         match output {
-            Ok(output) => {
-                let snapshot = self.ingest_agent_turn_output_inner(
-                    &prepared.conversation_id,
-                    &prepared.project_path,
-                    &prepared.assistant_turn_id,
-                    &prepared.chat_mode,
-                    output,
-                    false,
-                )?;
-                self.spawn_title_generation(&snapshot, progress);
-                Ok(snapshot)
-            }
+            Ok(output) => self.ingest_agent_turn_output_inner(
+                &prepared.conversation_id,
+                &prepared.project_path,
+                &prepared.assistant_turn_id,
+                &prepared.chat_mode,
+                output,
+                false,
+            ),
             Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
         }
     }
 
     /// Titles a conversation in the background after its first completed
-    /// turn; the turn does not wait. The update reaches clients through
-    /// `progress` as a `conversation_snapshot` payload.
-    fn spawn_title_generation<F>(&self, snapshot: &Value, progress: Arc<F>)
-    where
-        F: Fn(Value) + Send + Sync + 'static,
-    {
+    /// turn; the turn does not wait. Live clients get the new snapshot and
+    /// thread-list summary through the live publisher.
+    fn spawn_title_generation(&self, snapshot: &Value) {
         if first_exchange(snapshot).is_none() || has_stored_title(snapshot) {
             return;
         }
@@ -1502,13 +1508,24 @@ impl WorkspaceConversationService {
         let service = self.clone();
         std::thread::spawn(move || {
             // Off or failed: the derived title stays, and no later turn retries.
-            if let Ok(Some(snapshot)) =
+            let Ok(Some(snapshot)) =
                 service.generate_conversation_title(&conversation_id, &project_path)
+            else {
+                return;
+            };
+            let Some(publish) = service.live_publisher.as_ref() else {
+                return;
+            };
+            if let Some(summary) =
+                conversation_summary_from_snapshot(&snapshot, &conversation_id, &project_path)
             {
-                progress(
-                    json!({"type": "conversation_snapshot", "revision": snapshot["revision"], "state": snapshot}),
-                );
+                publish(crate::live::conversation_summary_envelope(&summary));
             }
+            publish(crate::live::conversation_snapshot_envelope_from_state(
+                &conversation_id,
+                &project_path,
+                snapshot,
+            ));
         });
     }
 
