@@ -71,6 +71,7 @@ export function useProjectThreadActions({
             return
         }
         const conversationId = buildProjectConversationId(activeProjectPath)
+        const selectedConversationId = useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
         setPanelError(null)
         try {
             // Persist first so an empty thread survives reload and can be deleted.
@@ -79,8 +80,12 @@ export function useProjectThreadActions({
                 expected_revision: '0',
             })
             applyConversationSnapshot(activeProjectPath, snapshot, 'create-thread')
-            // Only select it if the user is still in the originating project.
-            if (useStore.getState().activeProjectPath !== activeProjectPath) {
+            // Only select it if the user is still on the thread they were on when creating it.
+            const state = useStore.getState()
+            if (
+                state.activeProjectPath !== activeProjectPath
+                || (state.projectSessionsByPath[activeProjectPath]?.conversationId ?? null) !== selectedConversationId
+            ) {
                 return
             }
             activateConversationThread(activeProjectPath, conversationId, 'create-thread')

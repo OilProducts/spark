@@ -4802,6 +4802,30 @@ describe('ProjectsPanel', () => {
       await screen.findByRole('button', { name: 'Open thread New thread' })
     })
 
+    it('keeps another selected thread and its draft when creation finishes after selecting it', async () => {
+      const user = userEvent.setup()
+      const server = stubThreadServer({
+        'conversation-first': snapshotFor('conversation-first', 'First thread'),
+        'conversation-second': snapshotFor('conversation-second', 'Second thread'),
+      })
+      let releaseSettings!: () => void
+      server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
+      openProject('conversation-first')
+      renderProjectsPanel()
+      const secondThread = await screen.findByRole('button', { name: 'Open thread Second thread' })
+      await user.click(screen.getByTestId('project-thread-new-button'))
+      await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
+
+      await user.click(secondThread)
+      await waitFor(() => expect(selectedConversationId()).toBe('conversation-second'))
+      await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft here')
+
+      await act(async () => releaseSettings())
+      await screen.findByRole('button', { name: 'Open thread New thread' })
+      expect(selectedConversationId()).toBe('conversation-second')
+      expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Draft here')
+    })
+
     it('shows an error and keeps the selection when creation fails', async () => {
       const user = userEvent.setup()
       const server = stubThreadServer({ 'conversation-existing': snapshotFor('conversation-existing', 'Existing thread') })
