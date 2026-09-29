@@ -117,6 +117,27 @@ describe('RunList', () => {
         expect(screen.getByTestId('run-list-search-empty')).toBeVisible()
     })
 
+    it('titles and finds list records by their first launch input', () => {
+        const listed = { ...makeRun({ run_id: 'listed', flow_name: 'merge-change.yaml' }), first_launch_input: 'changes/CR-9/request.md' }
+        const other = makeRun({ run_id: 'other', title: 'Other work' })
+        render(
+            <RunList
+                activeProjectPath="/tmp/project-one"
+                error={null}
+                onScopeModeChange={vi.fn()}
+                onSelectRun={vi.fn()}
+                runs={[listed, other]}
+                scopeMode="active"
+                selectedRunId={null}
+                status="ready"
+                summaryLabel="2 total runs · 2 running"
+            />,
+        )
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'cr-9' } })
+        expect(screen.getAllByTestId('run-history-row-title').map((row) => row.textContent))
+            .toEqual(['Merge Change · changes/CR-9/request.md'])
+    })
+
     it('keeps ancestors of a matching child run and reveals the match on search', () => {
         const parent = makeRun({ run_id: 'parent', status: 'completed', title: 'Parent work', flow_name: 'parent.yaml' })
         const child = makeRun({ run_id: 'child', flow_name: 'Middle Child', parent_run_id: 'parent', root_run_id: 'parent' })

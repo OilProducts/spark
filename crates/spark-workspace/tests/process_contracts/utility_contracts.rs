@@ -512,6 +512,11 @@ fn root_run_gets_a_generated_title_in_the_background() {
         let envelope = updates
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .expect("titled run upsert");
+        // Every live record carries the launch input that names an untitled run.
+        assert_eq!(
+            envelope.payload["run"]["first_launch_input"],
+            "fix the deploy pipeline"
+        );
         if envelope.payload["run"]["title"] != Value::Null {
             break envelope.payload["run"].clone();
         }

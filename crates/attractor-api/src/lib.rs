@@ -3933,7 +3933,9 @@ fn list_run_records(
     Ok(records)
 }
 
-fn first_launch_input(launch_context: &Value) -> Option<String> {
+/// The first non-empty launch input, cut to a line, which names a run that
+/// has no title in run lists.
+pub fn first_launch_input(launch_context: &Value) -> Option<String> {
     let input = launch_context
         .as_object()?
         .values()
