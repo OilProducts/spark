@@ -1,47 +1,33 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { useCallback, useMemo, useRef, type SetStateAction } from 'react'
+import { useCallback, useMemo, type SetStateAction } from 'react'
 import { ApiHttpError, fetchPipelineAnswerValidated } from '@/lib/attractorClient'
 import { useStore } from '@/store'
 import type { RunDetailSessionState } from '@/state/viewSessionTypes'
 import type {
-    GroupedTimelineEntry,
     PendingInterviewGate,
     PendingQuestionSnapshot,
     TimelineEventEntry,
-    TimelineEventCategory,
-    TimelineSeverity,
 } from '../model/shared'
 import {
     buildGroupedPendingInterviewGates,
     filterAnsweredPendingInterviewGates,
     logUnexpectedRunError,
-    matchesTimelineFilters,
     mergePendingInterviewGatesWithSnapshots,
-    timelineCorrelationDescriptorFromEvent,
     toTimelineEvent,
 } from '../model/timelineModel'
 import { loadSelectedRunJournal } from '../services/runStreamTransport'
 import {
     iterateRunJournalEntries,
     useRunJournalStore,
-    type RunJournalMutation,
     type RunJournalStateEntry,
 } from '../state/runJournalStore'
 
 type UseRunTimelineArgs = {
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
-    selectedRunCurrentNode: string | null | undefined
     selectedRunTimelineId: string | null
 }
 
-type TimelineProjection = {
-    filteredCount: number
-    groupedEntries: GroupedTimelineEntry[]
-}
-
 const DEFAULT_TIMELINE_SESSION = {
-    timelineCategoryFilter: 'all' as const,
-    timelineSeverityFilter: 'all' as const,
     pendingGateActionError: null as string | null,
     submittingGateIds: {} as Record<string, boolean>,
     answeredGateIds: {} as Record<string, boolean>,
@@ -73,120 +59,8 @@ const DEFAULT_RUN_JOURNAL_STATE: RunJournalStateEntry = {
     _pendingInterviewGateKeys: new Set<string>(),
 }
 
-const EMPTY_TIMELINE_PROJECTION: TimelineProjection = {
-    filteredCount: 0,
-    groupedEntries: [],
-}
-
-const buildTimelineProjection = (
-    journalState: RunJournalStateEntry,
-    _selectedRunCurrentNode: string | null | undefined,
-    filters: {
-        timelineCategoryFilter: 'all' | TimelineEventCategory
-        timelineSeverityFilter: 'all' | TimelineSeverity
-    },
-): TimelineProjection => {
-    const groupedEntries: GroupedTimelineEntry[] = []
-    const groupedEntryIndex = new Map<string, number>()
-    let filteredCount = 0
-
-    for (const event of iterateRunJournalEntries(journalState.segments)) {
-        if (!matchesTimelineFilters(event, filters)) {
-            continue
-        }
-        filteredCount += 1
-        const correlation = timelineCorrelationDescriptorFromEvent(event, journalState._retryCorrelationEntityKeys)
-        if (!correlation) {
-            groupedEntries.push({
-                id: event.id,
-                correlation: null,
-                events: [event],
-            })
-            continue
-        }
-
-        const existingIndex = groupedEntryIndex.get(correlation.key)
-        if (existingIndex === undefined) {
-            groupedEntryIndex.set(correlation.key, groupedEntries.length)
-            groupedEntries.push({
-                id: `group-${correlation.key}`,
-                correlation,
-                events: [event],
-            })
-            continue
-        }
-
-        groupedEntries[existingIndex].events.push(event)
-    }
-
-    return {
-        filteredCount,
-        groupedEntries,
-    }
-}
-
-const applyLiveMutationToProjection = (
-    projection: TimelineProjection,
-    mutation: Extract<RunJournalMutation, { kind: 'append_live' }>,
-    journalState: RunJournalStateEntry,
-    _selectedRunCurrentNode: string | null | undefined,
-    filters: {
-        timelineCategoryFilter: 'all' | TimelineEventCategory
-        timelineSeverityFilter: 'all' | TimelineSeverity
-    },
-): TimelineProjection | null => {
-    if (!mutation.appendedAsNewest || mutation.introducedRetryCorrelation) {
-        return null
-    }
-    if (!matchesTimelineFilters(mutation.entry, filters)) {
-        return {
-            ...projection,
-        }
-    }
-
-    const correlation = timelineCorrelationDescriptorFromEvent(mutation.entry, journalState._retryCorrelationEntityKeys)
-    if (!correlation) {
-        return {
-            filteredCount: projection.filteredCount + 1,
-            groupedEntries: [{
-                id: mutation.entry.id,
-                correlation: null,
-                events: [mutation.entry],
-            }, ...projection.groupedEntries],
-        }
-    }
-
-    const existingIndex = projection.groupedEntries.findIndex((entry) => entry.correlation?.key === correlation.key)
-    if (existingIndex === -1) {
-        return {
-            filteredCount: projection.filteredCount + 1,
-            groupedEntries: [{
-                id: `group-${correlation.key}`,
-                correlation,
-                events: [mutation.entry],
-            }, ...projection.groupedEntries],
-        }
-    }
-
-    const existingEntry = projection.groupedEntries[existingIndex]
-    const nextEntry: GroupedTimelineEntry = {
-        ...existingEntry,
-        correlation,
-        events: [mutation.entry, ...existingEntry.events],
-    }
-    return {
-        filteredCount: projection.filteredCount + 1,
-        groupedEntries: [
-            nextEntry,
-            ...projection.groupedEntries.slice(0, existingIndex),
-            ...projection.groupedEntries.slice(existingIndex + 1),
-        ],
-    }
-}
-
 export function useRunTimeline({
     pendingQuestionSnapshots,
-    selectedRunCurrentNode,
     selectedRunTimelineId,
 }: UseRunTimelineArgs) {
     const runSession = useStore((state) => selectedRunTimelineId ? state.runDetailSessionsByRunId[selectedRunTimelineId] ?? null : null)
@@ -200,64 +74,6 @@ export function useRunTimeline({
     const appendOlderPage = useRunJournalStore((state) => state.appendOlderPage)
     const timelineError = journalState.error || journalState.liveError
     const isTimelineLive = journalState.liveStatus === 'live'
-    const timelineFilters = useMemo(() => ({
-        timelineCategoryFilter: timelineSession.timelineCategoryFilter,
-        timelineSeverityFilter: timelineSession.timelineSeverityFilter,
-    }), [
-        timelineSession.timelineCategoryFilter,
-        timelineSession.timelineSeverityFilter,
-    ])
-    const projectionCacheRef = useRef<{
-        filterKey: string
-        projection: TimelineProjection
-        revision: number
-        runId: string | null
-    } | null>(null)
-    const filterKey = `${timelineFilters.timelineCategoryFilter}::${timelineFilters.timelineSeverityFilter}`
-    const timelineProjection = useMemo(() => {
-        if (!selectedRunTimelineId) {
-            projectionCacheRef.current = {
-                filterKey,
-                projection: EMPTY_TIMELINE_PROJECTION,
-                revision: journalState.revision,
-                runId: null,
-            }
-            return EMPTY_TIMELINE_PROJECTION
-        }
-
-        const previous = projectionCacheRef.current
-        const liveMutation = journalState.lastMutation?.kind === 'append_live'
-            ? journalState.lastMutation
-            : null
-        if (
-            previous
-            && previous.runId === selectedRunTimelineId
-            && previous.filterKey === filterKey
-            && previous.revision === journalState.revision - 1
-            && liveMutation
-        ) {
-            const nextProjection = applyLiveMutationToProjection(previous.projection, liveMutation, journalState, selectedRunCurrentNode, timelineFilters)
-            if (nextProjection) {
-                projectionCacheRef.current = {
-                    filterKey,
-                    projection: nextProjection,
-                    revision: journalState.revision,
-                    runId: selectedRunTimelineId,
-                }
-                return nextProjection
-            }
-        }
-
-        const nextProjection = buildTimelineProjection(journalState, selectedRunCurrentNode, timelineFilters)
-        projectionCacheRef.current = {
-            filterKey,
-            projection: nextProjection,
-            revision: journalState.revision,
-            runId: selectedRunTimelineId,
-        }
-        return nextProjection
-    }, [filterKey, journalState, journalState.lastMutation, journalState.revision, selectedRunCurrentNode, selectedRunTimelineId, timelineFilters])
-
     const pendingInterviewGates = useMemo(
         () => mergePendingInterviewGatesWithSnapshots(journalState.pendingInterviewGates, pendingQuestionSnapshots),
         [journalState.pendingInterviewGates, pendingQuestionSnapshots],
@@ -381,11 +197,9 @@ export function useRunTimeline({
 
     return {
         confirmedQuestionIds: runSession?.questionsStatus === 'ready' ? runSession.pendingQuestionSnapshots.map((question) => question.questionId) : [],
-        filteredTimelineEventCount: timelineProjection.filteredCount,
         freeformAnswersByGateId: timelineSession.freeformAnswersByGateId,
         gateNotesByGateId: timelineSession.gateNotesByGateId,
         groupedPendingInterviewGates,
-        groupedTimelineEntries: timelineProjection.groupedEntries,
         hasOlderTimelineEvents: journalState.hasOlder,
         isTimelineLive,
         isTimelineLoadingOlder: journalState.isLoadingOlder,
@@ -403,14 +217,9 @@ export function useRunTimeline({
                 ? next(timelineSession.gateNotesByGateId)
                 : next,
         }),
-        setTimelineCategoryFilter: (value: 'all' | TimelineEventCategory) => { patchTimelineSession({ timelineCategoryFilter: value }); useStore.getState().setClientRunPresentation({ timeline_category: value }) },
-        setTimelineSeverityFilter: (value: 'all' | TimelineSeverity) => { patchTimelineSession({ timelineSeverityFilter: value }); useStore.getState().setClientRunPresentation({ timeline_severity: value }) },
         submittingGateIds: timelineSession.submittingGateIds,
         submitPendingGateAnswer,
-        timelineCategoryFilter: timelineSession.timelineCategoryFilter,
         timelineError,
-        timelineEventCount: journalState.loadedEntryCount,
-        timelineSeverityFilter: timelineSession.timelineSeverityFilter,
         visiblePendingInterviewGates,
     }
 }

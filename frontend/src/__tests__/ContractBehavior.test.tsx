@@ -899,8 +899,9 @@ describe('Frontend contract behavior', () => {
     expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
     expect(screen.getByTestId('run-artifact-refresh-button')).toBeEnabled()
 
+    await user.click(screen.getByTestId('run-graph-toggle'))
     expect(screen.getByTestId('run-graph-panel')).toBeVisible()
-    // The persistent graph pane stays rendered even under partial API failure.
+    // The graph pane stays functional even under partial API failure.
     await waitFor(() => {
       expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })
@@ -1535,9 +1536,9 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       renderRunsPanelWithController()
 
       await waitFor(() => {
-        expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+        expect(screen.getByTestId('run-visits-panel')).toBeVisible()
       })
-      expect(screen.getByTestId('run-activity-stream-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('run-visits-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
     } finally {
       act(() => {
         setViewportWidth(originalViewportWidth)
@@ -1821,11 +1822,9 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
     expect(screen.queryByTestId('timeline-update-performance-budget')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-event-timeline-throughput')).not.toBeInTheDocument()
-    expect(screen.getAllByText(/Live|Idle/).some((element) => element.textContent === 'Live' || element.textContent === 'Idle')).toBe(true)
 
     cleanup()
     localStorage.setItem('spark.debug.performance', '1')
@@ -1842,7 +1841,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
     const timelineBudget = screen.getByTestId('timeline-update-performance-budget')
     expect(timelineBudget).toHaveAttribute('data-budget-ms', '50')
@@ -1917,7 +1916,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     expect(profile).toHaveTextContent('debounced-preview')
   })
 
-  it('[CID:13.3.03] keeps journal rendering bounded under sustained SSE throughput', async () => {
+  it('[CID:13.3.03] keeps every visit listed under sustained SSE throughput', async () => {
     const runId = 'run-timeline-throughput-contract'
     const runApiPath = `/attractor/pipelines/${encodeURIComponent(runId)}`
     const totalEvents = 235
@@ -2026,7 +2025,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
     await waitFor(() => {
       expect(eventSource?.onmessage).toBeTruthy()
@@ -2044,25 +2043,14 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       }
     })
 
+    // No row cap: every visit stays listed, newest at the bottom.
     await waitFor(() => {
-      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', String(totalEvents))
+      expect(screen.getAllByTestId('run-visit-row')).toHaveLength(totalEvents)
     })
-
-    const timelineRows = screen.getAllByTestId('run-event-timeline-row')
-    // Chronological stream: the newest event holds the live edge at the bottom.
-    expect(timelineRows.at(-1)).toHaveTextContent(`stage_${totalEvents - 1}`)
-    expect(timelineRows.length).toBeGreaterThan(0)
-    expect(timelineRows.length).toBeLessThan(totalEvents)
-
-    const throughputNotice = screen.getByTestId('run-event-timeline-throughput')
-    expect(throughputNotice).toHaveAttribute('data-loaded-count', String(totalEvents))
-    expect(Number(throughputNotice.getAttribute('data-rendered-count'))).toBe(timelineRows.length)
-    expect(Number(throughputNotice.getAttribute('data-window-size'))).toBeGreaterThan(0)
-    expect(timelineRows.length).toBeLessThanOrEqual(Number(throughputNotice.getAttribute('data-window-size')))
-    expect(throughputNotice).toHaveTextContent(`Loaded ${totalEvents} journal entries.`)
-    expect(throughputNotice).toHaveTextContent('Rendering')
-    expect(screen.getByTestId('run-activity-truncation-note')).toBeVisible()
-    expect(screen.getByTestId('run-activity-list')).not.toHaveTextContent('stage_0')
+    const visitRows = screen.getAllByTestId('run-visit-row')
+    expect(visitRows[0]).toHaveTextContent('Stage 0')
+    expect(visitRows.at(-1)).toHaveTextContent(`Stage ${totalEvents - 1}`)
+    expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent(`Stage ${totalEvents - 1}`)
   })
 
   it('[CID:14.0.01] propagates navbar project context through Home, Triggers, and Runs', async () => {
@@ -4399,15 +4387,16 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-list')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    fireEvent.click(screen.getByTestId('run-journal-toggle'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
+      expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
         'Interview completed for review_gate (accepted answer: Approve)',
       )
     })
-    expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
+    expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
       'Interview completed for release_gate (skipped)',
     )
   })
@@ -4538,15 +4527,16 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-list')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    fireEvent.click(screen.getByTestId('run-journal-toggle'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
+      expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
         'Interview completed for review_gate (accepted answer: Approve)',
       )
     })
-    expect(screen.getByTestId('run-activity-list')).toHaveTextContent(
+    expect(screen.getByTestId('run-journal-panel')).toHaveTextContent(
       'Interview completed for approval_gate (skipped)',
     )
   })

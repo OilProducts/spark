@@ -1129,10 +1129,22 @@ export interface RunTranscriptSegment extends ConversationSegmentResponse {
     source_run_id: string | null
 }
 
+export interface RunExecutionPrompt {
+    run_id: string
+    node_id: string
+    stage_index: number
+    attempt: number
+    content: string
+}
+
 export interface RunSegmentsResponse {
     run_id: string
     segments: RunTranscriptSegment[]
     newest_sequence: number
+    executions?: NodeExecutionResponse[]
+    child_runs?: ChildRunActivityResponse[]
+    /** Each execution's prompt, the user turn that opens its transcript. */
+    prompts?: RunExecutionPrompt[]
 }
 
 export function parseRunTranscriptSegment(value: unknown): RunTranscriptSegment | null {
@@ -1154,15 +1166,27 @@ export function parseRunTranscriptSegment(value: unknown): RunTranscriptSegment 
     }
 }
 
-async function fetchExecutionSegments(execution: NodeExecutionResponse, sourceScope: 'root' | 'child'): Promise<RunTranscriptSegment[]> {
+async function fetchExecutionActivity(execution: NodeExecutionResponse, sourceScope: 'root' | 'child'): Promise<{ segments: RunTranscriptSegment[]; prompt: RunExecutionPrompt | null }> {
     const endpoint = `/attractor/pipelines/{id}/executions/{node}/{identity}/transcript`
     const url = attractorUrl(`/pipelines/${encodeURIComponent(execution.run_id)}/executions/${encodeURIComponent(execution.node_id)}/${execution.stage_index}-${execution.attempt}/transcript`)
     const response = await fetchJsonWithValidation(url, undefined, endpoint, (payload) => {
         const record = expectObjectRecord(payload, endpoint)
         return Array.isArray(record.records) ? record.records : []
     })
-    return response.flatMap((value): RunTranscriptSegment[] => {
+    let prompt: RunExecutionPrompt | null = null
+    const segments = response.flatMap((value): RunTranscriptSegment[] => {
         const record = asUnknownRecord(value)
+        const turn = asUnknownRecord(record?.turn)
+        if (record?.type === 'turn_upsert' && turn?.id === 'prompt' && typeof turn.content === 'string') {
+            prompt = {
+                run_id: execution.run_id,
+                node_id: execution.node_id,
+                stage_index: execution.stage_index,
+                attempt: execution.attempt,
+                content: turn.content,
+            }
+            return []
+        }
         if (record?.type !== 'segment_upsert') return []
         const segment = parseConversationSegmentResponse(record.segment)
         if (!segment) return []
@@ -1178,14 +1202,49 @@ async function fetchExecutionSegments(execution: NodeExecutionResponse, sourceSc
             source_run_id: execution.run_id,
         }]
     })
+    return { segments, prompt }
 }
 
-export async function fetchRunActivityValidated(runId: string): Promise<RunSegmentsResponse> {
+const executionKey = (item: { run_id?: string; source_run_id?: string | null; node_id: string | null; stage_index: number; attempt: number }) => (
+    JSON.stringify([item.source_run_id ?? item.run_id, item.node_id, item.stage_index, item.attempt])
+)
+
+/**
+ * Loads each execution's transcript and prompt. With `previous`, only executions
+ * that are new or whose status changed are fetched again; the rest keep their
+ * loaded segments (including live upserts) and prompt.
+ */
+export async function fetchRunActivityValidated(runId: string, previous?: RunSegmentsResponse): Promise<RunSegmentsResponse> {
     const detail = await fetchPipelineStatusValidated(runId)
+    const executions = detail.executions ?? []
+    const childRuns = detail.child_runs ?? []
     const resources = [
-        ...(detail.executions ?? []).map((execution) => ({ execution, scope: 'root' as const })),
-        ...(detail.child_runs ?? []).flatMap((child) => child.executions.map((execution) => ({ execution, scope: 'child' as const }))),
+        ...executions.map((execution) => ({ execution, scope: 'root' as const })),
+        ...childRuns.flatMap((child) => child.executions.map((execution) => ({ execution, scope: 'child' as const }))),
     ]
-    const segments = (await Promise.all(resources.map(({ execution, scope }) => fetchExecutionSegments(execution, scope)))).flat()
-    return { run_id: runId, segments, newest_sequence: 0 }
+    const previousStatus = new Map(
+        [...(previous?.executions ?? []), ...(previous?.child_runs ?? []).flatMap((child) => child.executions)]
+            .map((execution) => [executionKey(execution), JSON.stringify(execution.status)]),
+    )
+    const unchanged = (execution: NodeExecutionResponse) => (
+        previousStatus.get(executionKey(execution)) === JSON.stringify(execution.status)
+    )
+    const activity = await Promise.all(resources.map(({ execution, scope }) => {
+        if (previous && unchanged(execution)) {
+            const key = executionKey(execution)
+            return {
+                segments: previous.segments.filter((segment) => executionKey(segment) === key),
+                prompt: previous.prompts?.find((prompt) => executionKey(prompt) === key) ?? null,
+            }
+        }
+        return fetchExecutionActivity(execution, scope)
+    }))
+    return {
+        run_id: runId,
+        segments: activity.flatMap((entry) => entry.segments),
+        newest_sequence: 0,
+        executions,
+        child_runs: childRuns,
+        prompts: activity.flatMap((entry) => (entry.prompt ? [entry.prompt] : [])),
+    }
 }

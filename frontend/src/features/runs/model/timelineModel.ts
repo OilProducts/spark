@@ -503,40 +503,12 @@ const pendingGateSemanticFallbackOptions = (
     return []
 }
 
-type TimelineFilters = {
-    timelineCategoryFilter: 'all' | TimelineEventCategory
-    timelineSeverityFilter: 'all' | TimelineSeverity
-}
-
 const buildTimelineTypeOptions = (timelineEvents: Iterable<TimelineEventEntry>) => {
     const eventTypes = new Set<string>()
     for (const event of timelineEvents) {
         eventTypes.add(event.type)
     }
     return Array.from(eventTypes).sort((left, right) => left.localeCompare(right))
-}
-
-const matchesTimelineFilters = (
-    event: TimelineEventEntry,
-    { timelineCategoryFilter, timelineSeverityFilter }: TimelineFilters,
-) => {
-    if (timelineCategoryFilter !== 'all' && event.category !== timelineCategoryFilter) {
-        return false
-    }
-    return timelineSeverityFilter === 'all' || event.severity === timelineSeverityFilter
-}
-
-const filterTimelineEvents = (
-    timelineEvents: Iterable<TimelineEventEntry>,
-    filters: TimelineFilters,
-) => {
-    const filteredEvents: TimelineEventEntry[] = []
-    for (const event of timelineEvents) {
-        if (matchesTimelineFilters(event, filters)) {
-            filteredEvents.push(event)
-        }
-    }
-    return filteredEvents
 }
 
 const buildRetryCorrelationEntityKeys = (timelineEvents: Iterable<TimelineEventEntry>) => {
@@ -816,8 +788,6 @@ export {
     buildRetryCorrelationEntityKeys,
     buildTimelineTypeOptions,
     filterAnsweredPendingInterviewGates,
-    filterTimelineEvents,
-    matchesTimelineFilters,
     mergePendingInterviewGatesWithSnapshots,
     PENDING_GATE_FALLBACK_RECEIVED_AT,
     asFiniteNumber,

@@ -1,7 +1,6 @@
 import {
   buildGroupedPendingInterviewGates,
   buildPendingInterviewGates,
-  filterTimelineEvents,
   toTimelineEvent,
 } from '@/features/runs/model/timelineModel'
 import { humanizeTimelineType } from '@/features/runs/model/shared'
@@ -84,37 +83,7 @@ describe('timelineModel', () => {
     expect(grouped[0]?.heading).toBe('review')
   })
 
-  it('filters timeline events by severity and node/stage text', () => {
-    const events = [
-      toTimelineEvent({
-        type: 'StageStarted',
-        sequence: 1,
-        emitted_at: '2026-04-06T12:02:00Z',
-        node_id: 'plan',
-        index: 1,
-      }),
-      toTimelineEvent({
-        type: 'StageFailed',
-        sequence: 2,
-        emitted_at: '2026-04-06T12:03:00Z',
-        node_id: 'apply',
-        index: 2,
-        error: 'boom',
-      }),
-    ].filter(Boolean)
-
-    const filtered = filterTimelineEvents(events, {
-      timelineTypeFilter: 'all',
-      timelineCategoryFilter: 'all',
-      timelineSeverityFilter: 'error',
-      timelineNodeStageFilter: 'apply',
-    })
-
-    expect(filtered).toHaveLength(1)
-    expect(filtered[0]?.nodeId).toBe('apply')
-  })
-
-  it('preserves child source labels and allows filtering by child metadata', () => {
+  it('preserves child source labels', () => {
     const childEvent = toTimelineEvent({
       type: 'StageStarted',
       node_id: 'plan_current',
@@ -133,16 +102,6 @@ describe('timelineModel', () => {
       summary: 'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
       receivedAt: '2026-04-06T12:00:00Z',
     })
-
-    const filtered = filterTimelineEvents([childEvent].filter(Boolean), {
-      timelineTypeFilter: 'all',
-      timelineCategoryFilter: 'all',
-      timelineSeverityFilter: 'all',
-      timelineNodeStageFilter: 'run_milestone',
-    })
-
-    expect(filtered).toHaveLength(1)
-    expect(filtered[0]?.id).toBe('event-12')
   })
 
   it('groups child pending interview gates under child-aware headings', () => {

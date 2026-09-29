@@ -321,6 +321,11 @@ export function RunStream() {
                 const timelineEvent = toTimelineEvent(data)
                 if (timelineEvent) {
                     useRunJournalStore.getState().appendLiveEntry(selectedRunId, timelineEvent)
+                    // A finished stage has written its status, prompt and
+                    // context updates; reload the executions whose status changed.
+                    if (timelineEvent.sourceScope === 'root' && (timelineEvent.type === 'StageCompleted' || timelineEvent.type === 'StageFailed')) {
+                        void refreshRunTranscript()
+                    }
                 }
                 const payload = (
                     timelineEvent?.payload
@@ -501,23 +506,33 @@ export function RunStream() {
             handleMessage({ data: JSON.stringify(detail.entry) })
         }
 
+        let transcriptRequestId = 0
         const refreshRunTranscript = async () => {
+            const requestId = ++transcriptRequestId
             const transcript = useRunTranscriptStore.getState()
             if (transcript.byRunId[selectedRunId]?.status !== 'ready') {
                 transcript.patchRun(selectedRunId, { status: 'loading', error: null })
             }
             try {
-                const response = await loadRunTranscript(selectedRunId)
-                if (!isCurrent()) {
+                const loaded = useRunTranscriptStore.getState().byRunId[selectedRunId]
+                const response = await loadRunTranscript(selectedRunId, loaded?.status === 'ready'
+                    ? { run_id: selectedRunId, segments: loaded.segments, newest_sequence: loaded.newestSequence, executions: loaded.executions, child_runs: loaded.childRuns, prompts: loaded.prompts }
+                    : undefined)
+                if (!isCurrent() || requestId !== transcriptRequestId) {
                     return
                 }
                 useRunTranscriptStore.getState().setSegments(
                     selectedRunId,
                     response.segments,
                     response.newest_sequence,
+                    {
+                        executions: response.executions ?? [],
+                        childRuns: response.child_runs ?? [],
+                        prompts: response.prompts ?? [],
+                    },
                 )
             } catch (error) {
-                if (!isCurrent()) {
+                if (!isCurrent() || requestId !== transcriptRequestId) {
                     return
                 }
                 useRunTranscriptStore.getState().patchRun(selectedRunId, {

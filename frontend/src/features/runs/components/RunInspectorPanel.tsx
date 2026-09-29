@@ -9,7 +9,7 @@ import { RunResultCard } from './RunResultCard'
 export type RunInspectorTab = 'activity' | 'result' | 'details' | 'context' | 'artifacts'
 
 const INSPECTOR_TABS: Array<{ value: RunInspectorTab; label: string }> = [
-    { value: 'activity', label: 'Activity' },
+    { value: 'activity', label: 'Visits' },
     { value: 'result', label: 'Result' },
     { value: 'details', label: 'Details' },
     { value: 'context', label: 'Context' },
@@ -19,8 +19,10 @@ const INSPECTOR_TABS: Array<{ value: RunInspectorTab; label: string }> = [
 interface RunInspectorPanelProps {
     inspectorTab: RunInspectorTab
     onInspectorTabChange: (tab: RunInspectorTab) => void
-    /** The live activity/transcript stream, rendered as the primary tab. */
+    /** The run's visit list and visit view, rendered as the primary tab. */
     activityContent: ReactNode
+    /** Page controls shown at the end of the tab row. */
+    toolbar?: ReactNode
     fillHeight?: boolean
     scrollRegionRef?: Ref<HTMLDivElement>
     // Run scope card props, passed through unchanged
@@ -34,6 +36,7 @@ export function RunInspectorPanel({
     inspectorTab,
     onInspectorTabChange,
     activityContent,
+    toolbar,
     fillHeight = false,
     scrollRegionRef,
     resultCardProps,
@@ -64,29 +67,32 @@ export function RunInspectorPanel({
             data-testid="run-inspector-panel"
             className={cn('flex flex-col gap-2', fillHeight && 'h-full min-h-0 flex-1')}
         >
-            <div
-                role="tablist"
-                aria-label="Run inspector"
-                className="flex shrink-0 flex-wrap gap-1"
-            >
-                {INSPECTOR_TABS.map((tab) => (
-                    <button
-                        key={tab.value}
-                        type="button"
-                        role="tab"
-                        aria-selected={inspectorTab === tab.value}
-                        data-testid={`run-inspector-tab-${tab.value}`}
-                        onClick={() => onInspectorTabChange(tab.value)}
-                        className={cn(
-                            'border-b px-2.5 py-1 text-xs font-medium transition-colors',
-                            inspectorTab === tab.value
-                                ? 'border-primary text-foreground'
-                                : 'border-transparent text-muted-foreground hover:text-foreground',
-                        )}
-                    >
-                        {tab.label}
-                    </button>
-                ))}
+            <div className="flex shrink-0 flex-wrap items-center gap-1">
+                <div
+                    role="tablist"
+                    aria-label="Run inspector"
+                    className="flex flex-wrap gap-1"
+                >
+                    {INSPECTOR_TABS.map((tab) => (
+                        <button
+                            key={tab.value}
+                            type="button"
+                            role="tab"
+                            aria-selected={inspectorTab === tab.value}
+                            data-testid={`run-inspector-tab-${tab.value}`}
+                            onClick={() => onInspectorTabChange(tab.value)}
+                            className={cn(
+                                'border-b px-2.5 py-1 text-xs font-medium transition-colors',
+                                inspectorTab === tab.value
+                                    ? 'border-primary text-foreground'
+                                    : 'border-transparent text-muted-foreground hover:text-foreground',
+                            )}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                {toolbar ? <div className="ml-auto flex items-center">{toolbar}</div> : null}
             </div>
             <div
                 ref={scrollRegionRef}

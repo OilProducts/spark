@@ -34,7 +34,6 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     completedNodesSnapshot: [],
     statusFetchedAtMs: null,
     selectedNodeId: null,
-    activityMode: null,
     inspectorTab: null,
     graphStatus: 'idle',
     graphError: null,
@@ -64,8 +63,6 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     artifactViewerError: null,
     questionsStatus: 'idle',
     pendingQuestionSnapshots: [],
-    timelineCategoryFilter: 'all',
-    timelineSeverityFilter: 'all',
     pendingGateActionError: null,
     submittingGateIds: {},
     answeredGateIds: {},
@@ -81,10 +78,7 @@ const resolveRunDetailSession = (
     preferences: AppState['clientRunPresentation'] = {},
 ) => sessionsByRunId[runId] ?? ({
     ...DEFAULT_RUN_DETAIL_SESSION_STATE,
-    activityMode: preferences.activity_mode ?? null,
     inspectorTab: preferences.inspector_tab ?? null,
-    timelineCategoryFilter: preferences.timeline_category ?? 'all',
-    timelineSeverityFilter: preferences.timeline_severity ?? 'all',
     graphPaneHeight: preferences.graph_height ?? 512,
     lifetime: ++nextSessionLifetime,
 })

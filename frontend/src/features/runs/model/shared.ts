@@ -261,25 +261,6 @@ export const humanizeTimelineType = (type: string): string => {
     return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : type
 }
 
-export const TIMELINE_CATEGORY_LABELS: Record<TimelineEventCategory, string> = {
-    lifecycle: 'Lifecycle',
-    stage: 'Stage',
-    parallel: 'Parallel',
-    interview: 'Interview',
-    checkpoint: 'Checkpoint',
-    log: 'Log',
-    runtime: 'Runtime',
-    state: 'State',
-    metadata: 'Metadata',
-    other: 'Other',
-}
-
-export const TIMELINE_SEVERITY_LABELS: Record<TimelineSeverity, string> = {
-    info: 'Info',
-    warning: 'Warning',
-    error: 'Error',
-}
-
 export type StatusTone = 'info' | 'warning' | 'success' | 'destructive' | 'muted'
 
 // Border color is inert unless the call site adds a `border` width class.
@@ -289,12 +270,6 @@ export const TONE_STYLES: Record<StatusTone, string> = {
     success: 'border-border text-success',
     destructive: 'border-border text-destructive',
     muted: 'border-border text-muted-foreground',
-}
-
-export const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
-    info: 'border-border text-muted-foreground',
-    warning: TONE_STYLES.warning,
-    error: TONE_STYLES.destructive,
 }
 
 export const RUN_JOURNAL_WINDOW_SIZE = 80

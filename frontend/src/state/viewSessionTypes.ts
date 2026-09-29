@@ -16,8 +16,6 @@ import type {
     ContextResponse,
     PendingQuestionSnapshot,
     RunRecord,
-    TimelineEventCategory,
-    TimelineSeverity,
 } from '@/features/runs/model/shared'
 import type { TriggerFormState } from '@/features/triggers/model/triggerForm'
 
@@ -69,8 +67,6 @@ export interface RunDetailSessionState {
     completedNodesSnapshot: string[]
     statusFetchedAtMs: number | null
     selectedNodeId: string | null
-    /** null = auto: Transcript when the run has agent output, All otherwise. */
-    activityMode: 'all' | 'transcript' | 'events' | null
     // null = auto: node when one is selected, result for terminal runs,
     // details otherwise. An explicit user choice sticks per run.
     inspectorTab: 'activity' | 'result' | 'details' | 'context' | 'artifacts' | null
@@ -102,8 +98,6 @@ export interface RunDetailSessionState {
     artifactViewerError: string | null
     questionsStatus: ResourceStatus
     pendingQuestionSnapshots: PendingQuestionSnapshot[]
-    timelineCategoryFilter: 'all' | TimelineEventCategory
-    timelineSeverityFilter: 'all' | TimelineSeverity
     pendingGateActionError: string | null
     submittingGateIds: Record<string, boolean>
     answeredGateIds: Record<string, boolean>
