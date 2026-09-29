@@ -20,6 +20,7 @@ import type {
 } from '@/features/projects/model/projectsHomeState'
 import type { ConversationStreamDeltaEventResponse } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import { parseConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
@@ -373,6 +374,7 @@ export function WorkspaceLiveEventsController() {
         }
         // The workflow event log is a global, always-on feed for the Home pane.
         params.set('include_workflow_log', 'true')
+        params.set('include_conversations', 'true')
         params.set('include_settings', 'true')
         return buildWorkspaceLiveEventsUrl(params)
     }, [
@@ -493,6 +495,13 @@ export function WorkspaceLiveEventsController() {
                         window.dispatchEvent(new CustomEvent('spark:triggers-resync-required', {
                             detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
                         }))
+                    }
+                    return
+                }
+                if (envelope.type === 'conversation.summary_upsert' && envelope.resource?.kind === 'conversation_summary') {
+                    const summary = parseConversationSummaryResponse(payload.conversation)
+                    if (summary) {
+                        useStore.getState().upsertHomeConversationSummary(summary)
                     }
                     return
                 }

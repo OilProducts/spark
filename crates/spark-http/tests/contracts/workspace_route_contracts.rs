@@ -908,6 +908,46 @@ async fn model_settings_http_scopes_have_independent_conflicts_and_browser_impor
 }
 
 #[tokio::test]
+async fn utility_model_settings_http_round_trip_and_clear() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = build_app(settings(temp.path()));
+    let read = || request_json(app.clone(), "GET", "/workspace/api/settings", None);
+    let initial = read().await.1;
+    assert!(initial["utility_models"]["stored"].is_null());
+    let patch = |revision: &Value, value: Value| {
+        request_json(
+            app.clone(),
+            "PATCH",
+            "/workspace/api/settings",
+            Some(
+                json!({"expected_revision": revision, "section": "utility_models", "value": value}),
+            ),
+        )
+    };
+    let invalid = patch(
+        &initial["utility_models"]["revision"],
+        json!({"provider": "codex", "thinking": "sometimes"}),
+    )
+    .await;
+    assert_eq!(invalid.0, StatusCode::BAD_REQUEST, "{}", invalid.1);
+    let saved = patch(
+        &initial["utility_models"]["revision"],
+        json!({"provider": "claude-code", "model": "haiku"}),
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+    assert_eq!(saved.1["utility_models"]["stored"]["model"], "haiku");
+    assert_eq!(
+        read().await.1["utility_models"]["effective"]["provider"],
+        "claude-code"
+    );
+    assert_eq!(read().await.1["models"], saved.1["models"]);
+    let cleared = patch(&saved.1["utility_models"]["revision"], Value::Null).await;
+    assert_eq!(cleared.0, StatusCode::OK, "{}", cleared.1);
+    assert!(read().await.1["utility_models"]["stored"].is_null());
+}
+
+#[tokio::test]
 async fn conversation_resource_requires_revisions_for_every_model_selector() {
     let temp = tempfile::tempdir().unwrap();
     let config = settings(temp.path());

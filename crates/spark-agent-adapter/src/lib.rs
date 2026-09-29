@@ -64,7 +64,10 @@ pub use history::{
     history_to_messages, AssistantTurn, HistoryTurn, SteeringTurn, SystemTurn, ToolResultsTurn,
     TurnContent, UserTurn,
 };
-pub use llm_backend::{RustLlmAgentTurnBackend, RustLlmCodergenBackend};
+pub use llm_backend::{
+    run_utility_call, utility_cli_command, utility_llm_request, RustLlmAgentTurnBackend,
+    RustLlmCodergenBackend, UtilityCall,
+};
 pub use local_environment::LocalExecutionEnvironment;
 pub use profiles::{
     create_anthropic_profile, create_gemini_profile, create_gemini_profile_with_options,

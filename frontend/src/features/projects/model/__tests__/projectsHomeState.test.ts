@@ -250,6 +250,21 @@ describe('applyConversationSnapshotToCache', () => {
     expect(getConversationTimelineEntries(record).map((entry) => entry.id)).toEqual(record.timelineEntryIds)
   })
 
+  it('updates the thread list title from a later snapshot, as a generated title arrives', () => {
+    const initialSnapshot = buildSnapshot()
+    const cache = applyConversationSnapshotToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      initialSnapshot.project_path,
+      initialSnapshot,
+    ).cache
+    const titled = applyConversationSnapshotToCache(
+      cache,
+      initialSnapshot.project_path,
+      buildSnapshot({ revision: initialSnapshot.revision + 1, title: 'Generated title' }),
+    ).cache
+    expect(titled.summariesByProjectPath[initialSnapshot.project_path].map((summary) => summary.title)).toEqual(['Generated title'])
+  })
+
   it('accepts same-timestamp snapshots when revision advances', () => {
     const initialSnapshot = buildSnapshot()
     const cacheWithInitialSnapshot = applyConversationSnapshotToCache(

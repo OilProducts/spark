@@ -34,6 +34,8 @@ pub enum WorkspaceSettingsSection {
     Runtime(RuntimeSettings),
     Models(ModelSettings),
     ImportModels(ModelSettings),
+    /// `None` turns utility inference off.
+    UtilityModels(Option<ModelSettings>),
     ConversationModels {
         conversation_id: String,
         project_path: String,
@@ -267,6 +269,19 @@ pub fn workspace_settings(settings: &SparkSettings) -> WorkspaceResult<Value> {
     });
     result["connections"]["running_server"] = json!(settings.connections);
     result["agents"]["active_startup"] = json!({"codex_runtime_root":settings.agents.native.codex_runtime_root, "codex_seed_dir":settings.agents.native.codex_seed_dir, "claude_config_dir":settings.agents.native.claude_config_dir});
+    let mut utility = json!({"scope":"workspace", "source":"workspace", "revision":document.revision,
+        "stored":document.values.get("utility_models"), "effective":null, "sources":{}, "restart_fields":[], "validation_errors":[]});
+    match utility_section(settings, &path, &document) {
+        Ok(value) => {
+            utility["stored"] = json!(value);
+            utility["effective"] = json!(value);
+        }
+        Err(error) => {
+            utility["validation_errors"] = json!([error.to_string()]);
+            utility["repair_defaults"] = json!(ModelSettings::default());
+        }
+    }
+    result["utility_models"] = utility;
     result["llm_profiles"] = crate::profile_settings::llm_profiles_view(settings)?;
     result["execution_profiles"] = crate::profile_settings::execution_profiles_view(settings)?;
     Ok(result)
@@ -354,6 +369,11 @@ pub fn validate_workspace_settings_update(
         WorkspaceSettingsSection::Models(value) | WorkspaceSettingsSection::ImportModels(value) => {
             validate_model_settings(settings, value)
         }
+        WorkspaceSettingsSection::UtilityModels(value) => value
+            .as_ref()
+            .map(|value| validate_model_settings(settings, value))
+            .transpose()
+            .map(|_| ()),
         WorkspaceSettingsSection::ProjectModels { model_settings, .. }
         | WorkspaceSettingsSection::ConversationModels { model_settings, .. } => model_settings
             .as_ref()
@@ -376,6 +396,7 @@ pub fn update_workspace_settings(
         &request.section,
         WorkspaceSettingsSection::Models(_)
             | WorkspaceSettingsSection::ImportModels(_)
+            | WorkspaceSettingsSection::UtilityModels(_)
             | WorkspaceSettingsSection::ProjectModels { .. }
     ) {
         Some(spark_storage::settings::lock_profile_references(
@@ -473,6 +494,21 @@ pub fn update_workspace_settings(
         WorkspaceSettingsSection::Runtime(value) => ("runtime", toml::Value::try_from(value)),
         WorkspaceSettingsSection::Models(value) | WorkspaceSettingsSection::ImportModels(value) => {
             ("models", toml::Value::try_from(value))
+        }
+        WorkspaceSettingsSection::UtilityModels(value) => {
+            let value = value
+                .map(toml::Value::try_from)
+                .transpose()
+                .map_err(|_| WorkspaceError::Validation("Invalid model settings.".into()))?;
+            // Validated above while holding the profile reference lock.
+            update_settings_section(
+                &path,
+                &request.expected_revision,
+                "utility_models",
+                value,
+                |values| spark_storage::settings::validate_core_version(&path, values),
+            )?;
+            return workspace_settings(settings);
         }
         WorkspaceSettingsSection::ConversationModels {
             conversation_id,
@@ -647,6 +683,26 @@ pub fn workspace_model_settings(settings: &SparkSettings) -> WorkspaceResult<Mod
         .section::<ModelSettings>(&path, "models")?
         .unwrap_or_default();
     validate_model_settings(settings, &group)?;
+    Ok(group)
+}
+
+/// The configured utility model, or `None` when utility inference is off.
+pub fn workspace_utility_model_settings(
+    settings: &SparkSettings,
+) -> WorkspaceResult<Option<ModelSettings>> {
+    let path = settings.config_dir.join("spark.toml");
+    utility_section(settings, &path, &read_settings_document(&path)?)
+}
+
+fn utility_section(
+    settings: &SparkSettings,
+    path: &std::path::Path,
+    document: &SettingsDocument,
+) -> WorkspaceResult<Option<ModelSettings>> {
+    let group = document.section::<ModelSettings>(path, "utility_models")?;
+    if let Some(group) = &group {
+        validate_model_settings(settings, group)?;
+    }
     Ok(group)
 }
 

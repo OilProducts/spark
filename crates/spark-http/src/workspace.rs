@@ -64,6 +64,13 @@ fn conversation_service(
     }
 }
 
+fn live_publisher(
+    live_hub: &Arc<WorkspaceLiveHub>,
+) -> Arc<dyn Fn(spark_workspace::LiveEnvelope) + Send + Sync> {
+    let live_hub = live_hub.clone();
+    Arc::new(move |envelope| live_hub.publish(envelope))
+}
+
 pub fn router() -> Router<HttpAppState> {
     Router::new()
         .nest("/codex", crate::codex_auth::router())
@@ -331,7 +338,8 @@ async fn send_conversation_turn(
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
-    );
+    )
+    .with_live_publisher(live_publisher(&live_hub));
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let conversation_id_for_start = conversation_id.clone();
     let service_for_start = service.clone();
@@ -470,7 +478,8 @@ async fn answer_conversation_request_user_input(
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
-    );
+    )
+    .with_live_publisher(live_publisher(&live_hub));
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let conversation_id_for_answer = conversation_id.clone();
     let request_id_for_answer = request_id.clone();
@@ -1059,6 +1068,9 @@ async fn patch_settings(
         | spark_workspace::settings::WorkspaceSettingsSection::ImportModels(_) => {
             ("workspace", "models", None)
         }
+        spark_workspace::settings::WorkspaceSettingsSection::UtilityModels(_) => {
+            ("workspace", "utility_models", None)
+        }
         spark_workspace::settings::WorkspaceSettingsSection::ProjectModels {
             project_path, ..
         } => ("project", "models", Some(project_path.clone())),
@@ -1306,6 +1318,7 @@ fn live_query_subscribes(query: &spark_workspace::live::LiveQuery) -> bool {
         || query.include_triggers
         || query.include_workflow_log
         || query.include_missions
+        || query.include_conversations
 }
 
 fn current_conversation_revision(

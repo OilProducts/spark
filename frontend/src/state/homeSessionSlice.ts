@@ -1,6 +1,6 @@
 import { type StateCreator } from 'zustand'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
-import { sortConversationSummaries } from '@/features/projects/model/conversationState'
+import { sortConversationSummaries, upsertConversationSummary } from '@/features/projects/model/conversationState'
 import type { AppState } from './store-types'
 import type {
     HomeConversationSessionState,
@@ -87,6 +87,23 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
                 },
             },
         })),
+    upsertHomeConversationSummary: (summary) =>
+        set((state) => {
+            const current = state.homeConversationCache.summariesByProjectPath[summary.project_path]
+            const existing = current?.find((entry) => entry.conversation_id === summary.conversation_id)
+            if (!current || (existing && existing.revision > summary.revision)) {
+                return {}
+            }
+            return {
+                homeConversationCache: {
+                    ...state.homeConversationCache,
+                    summariesByProjectPath: {
+                        ...state.homeConversationCache.summariesByProjectPath,
+                        [summary.project_path]: upsertConversationSummary(current, summary),
+                    },
+                },
+            }
+        }),
     setHomeThreadSummariesStatus: (projectPath, status, error = null) =>
         set((state) => ({
             homeThreadSummariesStatusByProjectPath: {

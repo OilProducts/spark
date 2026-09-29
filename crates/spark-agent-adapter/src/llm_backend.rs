@@ -1171,6 +1171,277 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
     }
 }
 
+/// Output cap for one utility call; a reasoning budget is added on top.
+pub const UTILITY_MAX_OUTPUT_TOKENS: u64 = 4096;
+const UTILITY_MAX_TEXT_CHARS: usize = 8192;
+
+/// One stateless model call for Spark housekeeping: no tools, no history, and
+/// no persisted session. `metadata` carries `spark.execution.settings` as a
+/// chat turn does, so reasoning controls and native agent settings resolve
+/// the same way.
+#[derive(Debug, Clone, Default)]
+pub struct UtilityCall {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub llm_profile: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub instructions: String,
+    pub input: String,
+    pub metadata: BTreeMap<String, Value>,
+    pub timeout: std::time::Duration,
+}
+
+/// Returns the model's trimmed text, or an error on provider failure,
+/// timeout, or empty output.
+pub fn run_utility_call(client: &Client, call: &UtilityCall) -> Result<String, String> {
+    let provider = call.provider.as_deref().unwrap_or("");
+    let text = if is_codex_provider_selector(provider) || is_claude_code_provider_selector(provider)
+    {
+        // A fresh empty directory keeps project instructions, settings and
+        // files out of the call; it is removed when the call returns.
+        let work_dir = tempfile::tempdir()
+            .map_err(|error| format!("utility call directory failed: {error}"))?;
+        let output = work_dir.path().join("output.txt");
+        let command = utility_cli_command(call, work_dir.path(), &output)?;
+        let stdout = run_utility_process(command, &call.input, call.timeout)?;
+        if is_codex_provider_selector(provider) {
+            std::fs::read_to_string(&output)
+                .map_err(|error| format!("codex utility call wrote no output: {error}"))?
+        } else {
+            stdout
+        }
+    } else {
+        let mut request =
+            utility_llm_request(client, call).map_err(|e| format_adapter_error(&e))?;
+        // Streaming honours the abort signal mid-request, so a timeout cancels
+        // the HTTP call rather than abandoning it.
+        let controller = unified_llm_adapter::AbortController::new();
+        request.abort_signal = Some(controller.signal());
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let timeout = call.timeout;
+        std::thread::spawn(move || {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(timeout)
+            {
+                controller.abort(utility_timeout_message(timeout));
+            }
+        });
+        let mut accumulator = unified_llm_adapter::StreamAccumulator::default();
+        let result = client.stream(request).and_then(|events| {
+            for event in events {
+                accumulator.push(event?);
+            }
+            Ok(accumulator.finalize().text())
+        });
+        drop(done);
+        result.map_err(|error| format_adapter_error(&error))?
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("utility model returned no text".into());
+    }
+    Ok(text.chars().take(UTILITY_MAX_TEXT_CHARS).collect())
+}
+
+/// Builds the single completion an API provider or LLM profile receives.
+pub fn utility_llm_request(client: &Client, call: &UtilityCall) -> Result<Request, AdapterError> {
+    let mut built = build_llm_request(
+        client,
+        vec![
+            Message::system(call.instructions.clone()),
+            Message::user(call.input.clone()),
+        ],
+        RequestSelection {
+            provider: normalize_request_provider_selector(call.provider.as_deref().unwrap_or("")),
+            model: normalize_model_selector(call.model.as_deref()),
+            llm_profile: normalize_optional(call.llm_profile.as_deref()),
+            reasoning_effort: normalize_optional(call.reasoning_effort.as_deref()),
+            required_capabilities: ModelCapabilities::default(),
+        },
+        call.metadata.clone(),
+    )?;
+    built.request.max_tokens = Some(
+        UTILITY_MAX_OUTPUT_TOKENS
+            + built
+                .request
+                .thinking_budget_tokens
+                .filter(|_| built.request.thinking.as_deref() == Some("budget"))
+                .unwrap_or(0),
+    );
+    Ok(built.request)
+}
+
+/// Builds the Claude Code or Codex one-shot command: prompt on stdin, no
+/// tools, no session persistence, run in `work_dir` outside any project.
+pub fn utility_cli_command(
+    call: &UtilityCall,
+    work_dir: &std::path::Path,
+    output: &std::path::Path,
+) -> Result<std::process::Command, String> {
+    let native =
+        crate::config::captured_session_config(&call.metadata)?.map(|config| config.native);
+    let model = call.model.as_deref().and_then(non_empty);
+    let effort = call.reasoning_effort.as_deref().and_then(non_empty);
+    let mut command;
+    if is_codex_provider_selector(call.provider.as_deref().unwrap_or("")) {
+        command = std::process::Command::new(
+            native
+                .as_ref()
+                .and_then(|config| config.codex_binary.as_ref())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(crate::codex_app_server::codex_executable),
+        );
+        command
+            .envs(
+                crate::codex_app_server::build_codex_runtime_environment_with_settings(
+                    native.as_ref(),
+                )
+                .map_err(|error| error.message)?,
+            )
+            .args([
+                "exec",
+                "--ephemeral",
+                "--sandbox",
+                "read-only",
+                "--skip-git-repo-check",
+                "--ignore-rules",
+                "-C",
+            ])
+            .arg(work_dir)
+            .arg("-o")
+            .arg(output)
+            .arg("-c")
+            .arg(format!(
+                "developer_instructions={}",
+                serde_json::to_string(&call.instructions).unwrap_or_default()
+            ));
+        if let Some(model) = model {
+            command.arg("-m").arg(model);
+        }
+        if let Some(effort) = effort {
+            command
+                .arg("-c")
+                .arg(format!("model_reasoning_effort={effort:?}"));
+        }
+        if let Some(summary) = call
+            .metadata
+            .get("spark.execution.settings")
+            .and_then(|settings| settings["model_settings"]["reasoning_summary"].as_str())
+        {
+            command
+                .arg("-c")
+                .arg(format!("model_reasoning_summary={summary:?}"));
+        }
+        command.arg("-");
+    } else {
+        command = std::process::Command::new(
+            native
+                .as_ref()
+                .and_then(|config| config.claude_binary.as_ref())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(crate::claude_code::claude_code_executable),
+        );
+        command
+            .args([
+                "-p",
+                // No user, project or local settings: hooks, permissions and
+                // plugins stay out of the call; sign-in is unaffected.
+                "--setting-sources",
+                "",
+                "--tools",
+                "",
+                "--strict-mcp-config",
+                "--no-session-persistence",
+                "--output-format",
+                "text",
+                "--system-prompt",
+            ])
+            .arg(&call.instructions)
+            .env(
+                "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+                UTILITY_MAX_OUTPUT_TOKENS.to_string(),
+            );
+        if let Some(model) = model {
+            command.arg("--model").arg(model);
+        }
+        if let Some(effort) = effort {
+            command.arg("--effort").arg(effort);
+        }
+        if let Some(config_dir) = native.and_then(|config| config.claude_config_dir) {
+            command.env("CLAUDE_CONFIG_DIR", config_dir);
+        }
+    }
+    command.current_dir(work_dir);
+    Ok(command)
+}
+
+fn run_utility_process(
+    mut command: std::process::Command,
+    input: &str,
+    timeout: std::time::Duration,
+) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("utility model launch failed for {program}: {error}"))?;
+    let mut stdin = child.stdin.take();
+    let input = input.to_owned();
+    std::thread::spawn(move || {
+        if let Some(stdin) = stdin.as_mut() {
+            let _ = stdin.write_all(input.as_bytes());
+        }
+    });
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_string(&mut text);
+            }
+            text
+        })
+    };
+    let stdout = read(child.stdout.take().map(|pipe| Box::new(pipe) as _));
+    let stderr = read(child.stderr.take().map(|pipe| Box::new(pipe) as _));
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("utility model wait failed: {error}"))?
+        {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(utility_timeout_message(timeout));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let stdout = stdout.join().unwrap_or_default();
+    if !status.success() {
+        let stderr = stderr.join().unwrap_or_default();
+        let detail = non_empty(&stderr)
+            .or_else(|| non_empty(&stdout))
+            .unwrap_or("no output");
+        return Err(format!(
+            "utility model command failed ({status}): {}",
+            detail.chars().take(500).collect::<String>()
+        ));
+    }
+    Ok(stdout)
+}
+
+fn utility_timeout_message(timeout: std::time::Duration) -> String {
+    format!(
+        "utility model call timed out after {}s",
+        timeout.as_secs_f64()
+    )
+}
+
 #[derive(Debug, Clone)]
 struct AgentSessionSelection {
     provider: Option<String>,

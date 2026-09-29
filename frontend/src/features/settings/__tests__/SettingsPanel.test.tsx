@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
-import { fetchModelSettings, saveModelSettings } from '@/lib/api/settingsApi'
+import { fetchModelSettings, saveModelSettings, type ModelSettings } from '@/lib/api/settingsApi'
 import { fetchClientPreferences } from '../services/clientPreferences'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { SettingsPanel } from '../SettingsPanel'
@@ -25,7 +25,9 @@ const card = (name: string) => within(screen.getByRole('heading', { name, exact:
 beforeEach(() => {
     vi.resetAllMocks()
     useStore.setState({ viewMode: 'settings', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
-    vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel }))
+    vi.mocked(fetchModelSettings).mockImplementation(async (path, section) => section === 'utility_models'
+        ? { scope: 'workspace', source: 'workspace', revision: 'utility-one', stored: null, effective: null }
+        : { scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel })
     vi.mocked(fetchClientPreferences).mockResolvedValue({ client_id: 'browser-test', revision: 'one', stored: { editor_mode: null, editor_sidebar_width: null }, effective: { editor_mode: 'structured', editor_sidebar_width: 288 } })
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', failed: true, payload: { models: [], providers: { codex: { status: 'unavailable', error: 'offline' } } } })
 })
@@ -170,4 +172,59 @@ it.each([false, true])('resolves reset from the parent instead of the saved over
     expect(reset).toHaveTextContent(`Use default · ${expected}`)
     await user.click(reset)
     expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent(`Default: ${expected}`)
+})
+
+it('keeps the utility model off until chosen, offers the chat picker models, and saves or clears it', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [
+        { provider: 'codex', id: 'discovered', display: 'Discovered' },
+        { provider: 'anthropic', id: 'claude-haiku-4-5', display: 'claude-haiku-4-5' },
+    ], providers: { codex: { status: 'available', error: null }, anthropic: { status: 'available', error: null } } } })
+    const chosen = { provider: 'anthropic', llm_profile: null, model: 'claude-haiku-4-5', reasoning_effort: null }
+    let saved = { scope: 'workspace' as const, source: 'workspace' as const, revision: 'utility-one', stored: null as ModelSettings | null, effective: null as ModelSettings | null }
+    const models = vi.mocked(fetchModelSettings).getMockImplementation()!
+    vi.mocked(fetchModelSettings).mockImplementation(async (path, section) => section === 'utility_models' ? saved : models(path, section))
+    vi.mocked(saveModelSettings).mockImplementation(async (revision, value) => {
+        saved = { ...saved, revision: `${revision}+`, stored: value, effective: value }
+        return saved
+    })
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    const utility = card('Utility model')
+    await waitFor(() => expect(utility.getByRole('switch')).toBeEnabled())
+    expect(utility.getByRole('switch')).not.toBeChecked()
+    expect(utility.queryByRole('button', { name: /^Model:/ })).toBeNull()
+
+    await user.click(utility.getByRole('switch'))
+    const options = async (scope: ReturnType<typeof card>) => {
+        await openPicker(user, scope)
+        const names = screen.getAllByRole('option').map((option) => option.textContent)
+        await user.keyboard('{Escape}')
+        return names
+    }
+    expect(await options(utility)).toEqual(await options(card('Model defaults (Workspace)')))
+    await chooseModel(user, 'anthropic', 'claude-haiku-4-5', utility)
+    await user.click(utility.getByRole('button', { name: 'Save utility model' }))
+    expect(saveModelSettings).toHaveBeenCalledWith('utility-one', expect.objectContaining(chosen), undefined, 'utility_models')
+
+    await user.click(utility.getByRole('switch'))
+    await user.click(utility.getByRole('button', { name: 'Save utility model' }))
+    expect(saveModelSettings).toHaveBeenLastCalledWith('utility-one+', null, undefined, 'utility_models')
+    await waitFor(() => expect(utility.getByRole('switch')).not.toBeChecked())
+})
+
+it.each([
+    ['Codex, when both are available', { codex: 'available', 'claude-code': 'available' }, { provider: 'codex', model: 'gpt-5.6-luna' }],
+    ['Claude Code, when only it is available', { codex: 'unavailable', 'claude-code': 'available' }, { provider: 'claude-code', model: 'claude-sonnet-5-5' }],
+    ['Codex, when neither is available', { codex: 'unavailable', 'claude-code': 'unavailable' }, { provider: 'codex', model: null }],
+] as const)('turning the utility model on defaults to %s', async (_label, statuses, expected) => {
+    const user = userEvent.setup()
+    vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [], providers: Object.fromEntries(
+        Object.entries(statuses).map(([provider, status]) => [provider, { status, error: null }]),
+    ) } })
+    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    const utility = card('Utility model')
+    await waitFor(() => expect(utility.getByRole('switch')).toBeEnabled())
+    await user.click(utility.getByRole('switch'))
+    await user.click(utility.getByRole('button', { name: 'Save utility model' }))
+    expect(saveModelSettings).toHaveBeenLastCalledWith('utility-one', expect.objectContaining(expected), undefined, 'utility_models')
 })

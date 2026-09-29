@@ -233,18 +233,52 @@ pub struct WorkspaceConversationService {
     runtime_handler_runner_factory: RuntimeHandlerRunnerFactory,
     agent_turn_backend: Arc<dyn AgentTurnBackend>,
     run_event_observer: Option<attractor_runtime::RunEventObserver>,
+    live_publisher: Option<Arc<dyn Fn(crate::live::LiveEnvelope) + Send + Sync>>,
+}
+
+/// The `spark.execution.settings` snapshot a model call resolves credentials,
+/// profiles and reasoning controls from, plus the selected profile.
+pub(crate) fn capture_execution_settings(
+    settings: &SparkSettings,
+    effective: &ModelSettings,
+) -> WorkspaceResult<(Value, Option<unified_llm_adapter::LlmProfile>)> {
+    let profile_contents = effective
+        .llm_profile
+        .as_deref()
+        .map(|id| {
+            unified_llm_adapter::get_llm_profile(&settings.config_dir, id).map_err(|_| {
+                WorkspaceError::Validation("Unable to load selected LLM profile.".into())
+            })
+        })
+        .transpose()?;
+    let mut configuration = spark_storage::settings::read_execution_configuration(
+        &settings.config_dir,
+        &spark_common::paths::ProcessEnvironment,
+    )?;
+    configuration.retain_startup_settings(settings);
+    spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
+    let profile_definitions = unified_llm_adapter::load_llm_profiles(&settings.config_dir)
+        .map_err(|_| {
+            WorkspaceError::Validation(
+                "Unable to load LLM profiles; check llm-profiles.toml.".into(),
+            )
+        })?;
+    Ok((
+        json!({"configuration": configuration, "llm_profiles": profile_definitions, "model_settings": effective, "llm_profile": profile_contents}),
+        profile_contents,
+    ))
 }
 
 #[derive(Clone)]
-struct EnvironmentAgentTurnBackend {
+pub(crate) struct EnvironmentAgentTurnBackend {
     config_dir: PathBuf,
 }
 
 impl EnvironmentAgentTurnBackend {
-    fn new(config_dir: PathBuf) -> Self {
+    pub(crate) fn new(config_dir: PathBuf) -> Self {
         Self { config_dir }
     }
-    fn client_for_execution(
+    pub(crate) fn client_for_execution(
         &self,
         metadata: &BTreeMap<String, Value>,
         environment: &BTreeMap<String, String>,
@@ -396,7 +430,18 @@ impl WorkspaceConversationService {
             runtime_handler_runner_factory,
             agent_turn_backend,
             run_event_observer: None,
+            live_publisher: None,
         }
+    }
+
+    /// Publishes changes this service makes outside a request, such as a
+    /// generated title, to live clients.
+    pub fn with_live_publisher(
+        mut self,
+        publisher: Arc<dyn Fn(crate::live::LiveEnvelope) + Send + Sync>,
+    ) -> Self {
+        self.live_publisher = Some(publisher);
+        self
     }
 
     pub fn with_run_event_observer(
@@ -922,15 +967,8 @@ impl WorkspaceConversationService {
             &project_path,
             group.as_ref(),
         )?;
-        let profile_contents = effective
-            .llm_profile
-            .as_deref()
-            .map(|id| {
-                unified_llm_adapter::get_llm_profile(&self.settings.config_dir, id).map_err(|_| {
-                    WorkspaceError::Validation("Unable to load selected LLM profile.".into())
-                })
-            })
-            .transpose()?;
+        let (mut execution_settings, profile_contents) =
+            capture_execution_settings(&self.settings, &effective)?;
         let effective_provider = effective
             .provider
             .clone()
@@ -947,19 +985,8 @@ impl WorkspaceConversationService {
         });
         let effective_profile = effective.llm_profile.clone();
         let effective_reasoning_effort = effective.reasoning_effort.clone();
-        let mut configuration = spark_storage::settings::read_execution_configuration(
-            &self.settings.config_dir,
-            &spark_common::paths::ProcessEnvironment,
-        )?;
-        configuration.retain_startup_settings(&self.settings);
-        spark_agent_adapter::config::capture_native_binaries(&mut configuration.agents);
-        let profile_definitions = unified_llm_adapter::load_llm_profiles(&self.settings.config_dir)
-            .map_err(|_| {
-                WorkspaceError::Validation(
-                    "Unable to load LLM profiles; check llm-profiles.toml.".into(),
-                )
-            })?;
-        let execution_settings = json!({"configuration": configuration, "llm_profiles": profile_definitions, "model_settings": effective, "source": source, "llm_profile": profile_contents, "chat_mode": effective_chat_mode});
+        execution_settings["source"] = json!(source);
+        execution_settings["chat_mode"] = json!(effective_chat_mode);
         // Compatibility projection only; new turns resolve the authored group above.
         if snapshot["provider"] != json!(effective_provider) {
             settings_patch.provider = Some(effective_provider.clone());
@@ -1336,6 +1363,7 @@ impl WorkspaceConversationService {
         )?;
         let mut snapshot = commit.snapshot;
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+        self.spawn_title_generation(&snapshot);
         Ok(snapshot)
     }
 
@@ -1462,6 +1490,109 @@ impl WorkspaceConversationService {
             ),
             Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
         }
+    }
+
+    /// Titles a conversation in the background after its first completed
+    /// turn; the turn does not wait. Live clients get the new snapshot and
+    /// thread-list summary through the live publisher.
+    fn spawn_title_generation(&self, snapshot: &Value) {
+        if first_exchange(snapshot).is_none() || has_stored_title(snapshot) {
+            return;
+        }
+        let (Some(conversation_id), Some(project_path)) = (
+            snapshot["conversation_id"].as_str().map(str::to_string),
+            snapshot_project_path(snapshot),
+        ) else {
+            return;
+        };
+        let service = self.clone();
+        std::thread::spawn(move || {
+            // Off or failed: the derived title stays, and no later turn retries.
+            let Ok(Some(snapshot)) =
+                service.generate_conversation_title(&conversation_id, &project_path)
+            else {
+                return;
+            };
+            let Some(publish) = service.live_publisher.as_ref() else {
+                return;
+            };
+            if let Some(summary) =
+                conversation_summary_from_snapshot(&snapshot, &conversation_id, &project_path)
+            {
+                publish(crate::live::conversation_summary_envelope(&summary));
+            }
+            publish(crate::live::conversation_snapshot_envelope_from_state(
+                &conversation_id,
+                &project_path,
+                snapshot,
+            ));
+        });
+    }
+
+    /// Stores a utility-generated title when the conversation has exactly one
+    /// completed turn and no stored title. Returns the updated snapshot, or
+    /// `None` when utility inference is off or the title was left unchanged.
+    pub fn generate_conversation_title(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<Option<Value>> {
+        let repository = self.repository();
+        let read = || -> WorkspaceResult<Value> {
+            repository
+                .read_snapshot(conversation_id, Some(project_path))?
+                .ok_or_else(|| {
+                    WorkspaceError::NotFound(format!("Unknown conversation: {conversation_id}"))
+                })
+        };
+        let snapshot = read()?;
+        let Some((message, reply)) = first_exchange(&snapshot) else {
+            return Ok(None);
+        };
+        if has_stored_title(&snapshot) {
+            return Ok(None);
+        }
+        let input = format!(
+            "First message:\n{}\n\nFirst reply:\n{}",
+            truncate_text(&message, TITLE_INPUT_CHARS),
+            truncate_text(&reply, TITLE_INPUT_CHARS)
+        );
+        let Some(text) =
+            crate::utility::utility_complete(&self.settings, TITLE_INSTRUCTIONS, &input)?
+        else {
+            return Ok(None);
+        };
+        let title = text
+            .lines()
+            .map(|line| line.trim().trim_matches(['"', '\'', '`', '*', '#', ' ']))
+            .find(|line| !line.is_empty())
+            .map(|line| truncate_text(line.trim_end_matches('.'), 64))
+            .unwrap_or_default();
+        if title.is_empty() {
+            return Err(WorkspaceError::ServiceUnavailable(
+                "Utility call returned no title.".into(),
+            ));
+        }
+        // Re-read: a title stored during the call wins.
+        let snapshot = read()?;
+        if has_stored_title(&snapshot) {
+            return Ok(None);
+        }
+        let commit = commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            project_path,
+            snapshot_revision(&snapshot),
+            vec![ConversationMutation::MetadataUpdated {
+                patch: ConversationMetadataPatch {
+                    title: Some(title),
+                    ..Default::default()
+                },
+            }],
+        )?;
+        let mut snapshot = commit.snapshot;
+        prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+        Ok(Some(snapshot))
     }
 
     pub fn interrupt_turn(
@@ -5316,6 +5447,40 @@ fn truncate_tool_call_outputs(snapshot: &mut Value) {
         tool_call.insert("output_size".to_string(), json!(output_size));
         tool_call.insert("output_truncated".to_string(), json!(truncated));
     }
+}
+
+const TITLE_INSTRUCTIONS: &str = "You name chat threads. Given the first message and reply of a conversation, write a short title of at most six words that says what it is about. Reply with the title only: plain text, no quotes, no trailing punctuation.";
+const TITLE_INPUT_CHARS: usize = 2000;
+
+/// The first user message and reply, when exactly one turn has completed.
+fn first_exchange(snapshot: &Value) -> Option<(String, String)> {
+    let turns = snapshot.get("turns")?.as_array()?;
+    let messages = |role: &'static str| {
+        turns.iter().filter(move |turn| {
+            turn["role"] == role
+                && turn
+                    .as_object()
+                    .is_some_and(|turn| turn_kind(turn) == "message")
+        })
+    };
+    let mut replies = messages("assistant").filter(|turn| turn["status"] == "complete");
+    let reply = replies.next()?["content"].as_str()?.to_string();
+    if replies.next().is_some() {
+        return None;
+    }
+    let message = messages("user").next()?["content"].as_str()?.to_string();
+    Some((message, reply))
+}
+
+/// A title other than the one derived from the first message was stored.
+fn has_stored_title(snapshot: &Value) -> bool {
+    snapshot["title"]
+        .as_str()
+        .and_then(non_empty_string)
+        .is_some_and(|title| {
+            title != "New thread"
+                && title != derive_conversation_title(snapshot["turns"].as_array())
+        })
 }
 
 fn derive_conversation_title(turns: Option<&Vec<Value>>) -> String {
