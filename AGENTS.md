@@ -94,6 +94,10 @@ Add a Rust test as a module under the crate's existing `tests/contracts/` or `te
 
 Change requests live in `changes/CR-YYYY-NNNN-<slug>/request.md`. Number a new one as the highest existing number plus one, taken from the full, untruncated directory listing. `changes/` is gitignored and local only; never commit change requests. A run records its own result, so don't write a `result.md`.
 
+### Stored data
+
+Spark does not support older on-disk formats. Don't add compatibility code or migrations for run records, logs or other stored data written in an earlier layout, such as run logs from before `logs/<node>/executions/`; old history is wiped instead. Losing access to data in an old format is not a regression.
+
 ### Browser smoke tests
 
 `npm --prefix frontend run ui:smoke` serves the built `frontend/dist`. Run `npm --prefix frontend run build` first, or the smoke tests exercise stale code.
