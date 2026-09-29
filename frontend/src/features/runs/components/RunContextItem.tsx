@@ -78,7 +78,11 @@ export function RunContextItem({
     const namespaces = overview.namespaces
         .map((namespace) => ({ ...namespace, keys: namespace.keys.filter((row) => matches(row, query)) }))
         .filter((namespace) => namespace.keys.length > 0)
-    const systemKeys = overview.systemKeys.filter((key) => !query || key.toLowerCase().includes(query))
+    const systemValue = (key: string): unknown => (finalContext && Object.hasOwn(finalContext, key) ? finalContext[key] : undefined)
+    const systemKeys = overview.systemKeys.filter((key) => {
+        const value = systemValue(key)
+        return !query || key.toLowerCase().includes(query) || (value !== undefined && formatValue(value).toLowerCase().includes(query))
+    })
     const toggle = (key: string) => setExpandedKeys((current) => {
         const next = new Set(current)
         if (!next.delete(key)) {
@@ -126,7 +130,7 @@ export function RunContextItem({
             {!contextError && status !== 'ready' && namespaces.length === 0 ? (
                 <p data-testid="run-context-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring context…</p>
             ) : null}
-            {status === 'ready' && namespaces.length === 0 ? (
+            {status === 'ready' && namespaces.length === 0 && !(query && systemKeys.length > 0) ? (
                 <p data-testid="run-context-empty" className="text-sm text-muted-foreground">
                     {query ? 'No context keys match the search.' : 'This run has no flow context yet.'}
                 </p>
@@ -206,14 +210,31 @@ export function RunContextItem({
                         + {systemKeys.length} system {systemKeys.length === 1 ? 'key' : 'keys'}
                     </summary>
                     <ul className="mt-1 divide-y divide-border text-xs">
-                        {systemKeys.map((key) => (
-                            <li key={key} data-testid="run-context-system-row" className="grid grid-cols-[minmax(8rem,14rem)_1fr] gap-3 py-1">
-                                <code className="truncate text-muted-foreground" title={key}>{key}</code>
-                                <span className="truncate text-muted-foreground">
-                                    {finalContext && Object.hasOwn(finalContext, key) ? formatValue(finalContext[key]) : '—'}
-                                </span>
-                            </li>
-                        ))}
+                        {systemKeys.map((key) => {
+                            const value = systemValue(key)
+                            const expanded = expandedKeys.has(key)
+                            return (
+                                <li key={key} data-testid="run-context-system-row" data-context-key={key} className="grid grid-cols-[minmax(8rem,14rem)_1fr] gap-3 py-1">
+                                    <code className="truncate text-muted-foreground" title={key}>{key}</code>
+                                    <div className="min-w-0 text-muted-foreground">
+                                        <p data-testid="run-context-system-value" className={expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}>
+                                            {value === undefined ? '—' : expanded ? formatFullValue(value) : formatValue(value)}
+                                        </p>
+                                        {value !== undefined && isLongValue(value) ? (
+                                            <button
+                                                type="button"
+                                                data-testid="run-context-system-toggle"
+                                                aria-expanded={expanded}
+                                                onClick={() => toggle(key)}
+                                                className="hover:text-foreground"
+                                            >
+                                                {expanded ? 'show less' : 'show full value'}
+                                            </button>
+                                        ) : null}
+                                    </div>
+                                </li>
+                            )
+                        })}
                     </ul>
                 </details>
             ) : null}

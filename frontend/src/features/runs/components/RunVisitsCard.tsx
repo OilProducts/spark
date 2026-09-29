@@ -38,7 +38,7 @@ const OUTCOME_CLASSES: Partial<Record<RunVisit['outcome'], string>> = {
 }
 
 // ponytail: fixed file set per execution; list the directory if nodes write more worth reading.
-const VISIT_FILES = ['prompt.md', 'response.md', 'status.json', 'transcript.jsonl']
+const VISIT_FILES = ['initial-context.txt', 'prompt.md', 'response.md', 'status.json', 'transcript.jsonl']
 
 type ItemKey = 'status' | 'context'
 

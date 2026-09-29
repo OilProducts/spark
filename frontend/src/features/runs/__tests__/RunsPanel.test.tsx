@@ -2334,7 +2334,9 @@ describe('RunsPanel', () => {
     const modelRows = screen.getAllByTestId('run-fact-model-usage')
     expect(modelRows).toHaveLength(2)
     expect(modelRows[0]).toHaveTextContent('gpt-5.4')
+    expect(modelRows[0]).toHaveTextContent('24 (15 in, 3 cached, 9 out)')
     expect(modelRows[1]).toHaveTextContent('gpt-5.3-codex-spark')
+    expect(modelRows[1]).toHaveTextContent('12 (8 in, 0 cached, 4 out) · unpriced')
   })
 
   it('keeps selected-run detail fetches scoped to run id changes instead of same-run stream updates', async () => {

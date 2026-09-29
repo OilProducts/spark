@@ -231,6 +231,45 @@ describe('RunContextItem', () => {
     expect(value.textContent).toBe(JSON.stringify(plan, null, 2))
     expect(value).not.toHaveClass('truncate')
   })
+
+  it('searches system key values and reads them in full while keeping them collapsed', () => {
+    const snapshot = { model: 'gpt-6-astra', notes: 'n'.padEnd(200, 'n') }
+    const finalContext = {
+      'context.task.id': 'CR-1',
+      '_attractor.runtime.launch_model': 'gpt-6-astra',
+      'internal.execution_configuration_snapshot': snapshot,
+    }
+    const overview = buildRunContextOverview({ visits: [], launchContext: {}, finalContext })
+    const props = {
+      overview,
+      finalContext,
+      status: 'ready' as const,
+      contextError: null,
+      onSearchQueryChange: vi.fn(),
+      contextCopyStatus: '',
+      contextExportHref: null,
+      onCopy: vi.fn(),
+      onRefresh: vi.fn(),
+      focusKey: null,
+      onSelectVisit: vi.fn(),
+    }
+    const { rerender } = render(<RunContextItem {...props} searchQuery="" />)
+    expect(screen.getByTestId('run-context-runtime-group')).not.toHaveAttribute('open')
+
+    rerender(<RunContextItem {...props} searchQuery="gpt-6-astra" />)
+    expect(screen.getByTestId('run-context-runtime-group')).toHaveAttribute('open')
+    expect(screen.getAllByTestId('run-context-system-row').map((row) => row.dataset.contextKey)).toEqual([
+      '_attractor.runtime.launch_model',
+      'internal.execution_configuration_snapshot',
+    ])
+    expect(screen.queryByTestId('run-context-empty')).not.toBeInTheDocument()
+
+    const row = screen.getAllByTestId('run-context-system-row')[1]
+    fireEvent.click(within(row).getByRole('button', { name: 'show full value' }))
+    const value = within(row).getByTestId('run-context-system-value')
+    expect(value.textContent).toBe(JSON.stringify(snapshot, null, 2))
+    expect(value).not.toHaveClass('truncate')
+  })
 })
 
 // The card follows the page's node selection, as RunsPanel wires it.
@@ -262,6 +301,7 @@ describe('RunVisitsCard', () => {
           <p data-context-key={focusKey ?? undefined}>context item focused on {focusKey}</p>
         )}
         artifactEntries={[
+          { path: 'logs/review/executions/1-0/initial-context.txt', size_bytes: 1, media_type: 'text/plain', viewable: true, context_capture_kind: 'codex_turn_input' },
           { path: 'logs/review/executions/1-0/prompt.md', size_bytes: 1, media_type: 'text/markdown', viewable: true },
           { path: 'logs/review/executions/1-0/status.json', size_bytes: 1, media_type: 'application/json', viewable: true },
           { path: 'logs/review/executions/1-0/events.jsonl', size_bytes: 1, media_type: 'application/jsonl', viewable: true },
@@ -275,9 +315,15 @@ describe('RunVisitsCard', () => {
 
     fireEvent.click(screen.getByTestId('run-visit-row'))
     const files = screen.getAllByTestId('run-visit-file')
-    expect(files.map((file) => file.textContent)).toEqual(['prompt', 'status'])
-    fireEvent.click(files[1])
+    expect(files.map((file) => file.textContent)).toEqual(['initial-context', 'prompt', 'status'])
+    fireEvent.click(files[2])
     expect(onViewArtifact).toHaveBeenCalledWith(expect.objectContaining({ path: 'logs/review/executions/1-0/status.json' }))
+    // The capture keeps its metadata, so the viewer can show its note.
+    fireEvent.click(files[0])
+    expect(onViewArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      path: 'logs/review/executions/1-0/initial-context.txt',
+      context_capture_kind: 'codex_turn_input',
+    }))
 
     fireEvent.click(screen.getByTestId('run-visit-context-key'))
     expect(screen.getByTestId('run-visit-item-context')).toHaveAttribute('aria-selected', 'true')

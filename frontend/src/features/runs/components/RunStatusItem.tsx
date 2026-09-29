@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
+import type { TokenUsageBucketResponse } from '@/lib/api/attractorApi'
 import { InlineError } from '@/components/app/inline-error'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import {
@@ -292,17 +293,18 @@ function RunFacts({ run }: { run: RunRecord }) {
     const provider = run.llm_provider || run.provider
     const lineage = formatLineage(run)
     const costNote = formatEstimatedModelCostNote(run)
+    const tokenBreakdown = (bucket: TokenUsageBucketResponse) => (
+        `${formatTokenCount(bucket.total_tokens)} (${formatTokenCount(bucket.input_tokens)} in, ${formatTokenCount(bucket.cached_input_tokens)} cached, ${formatTokenCount(bucket.output_tokens)} out)`
+    )
     const facts: Array<[id: string, label: string, value: ReactNode]> = [
         ['model', 'Model', [run.model || 'default', provider, run.reasoning_effort].filter(Boolean).join(' · ')],
         ...(run.execution_profile_id || run.execution_mode
             ? [['execution', 'Execution', [run.execution_profile_id, run.execution_mode, run.execution_container_image].filter(Boolean).join(' · ')] as [string, string, ReactNode]]
             : []),
-        ['tokens', 'Tokens', usage
-            ? `${formatTokenCount(usage.total_tokens)} (${formatTokenCount(usage.input_tokens)} in, ${formatTokenCount(usage.cached_input_tokens)} cached, ${formatTokenCount(usage.output_tokens)} out)`
-            : formatTokenCount(run.token_usage)],
+        ['tokens', 'Tokens', usage ? tokenBreakdown(usage) : formatTokenCount(run.token_usage)],
         ...Object.entries(usage?.by_model ?? {}).map(([modelId, bucket]) => {
             const cost = run.estimated_model_cost?.by_model?.[modelId]
-            return ['model-usage', `  ${modelId}`, `${formatTokenCount(bucket.total_tokens)} tokens · ${cost?.status === 'estimated' ? formatEstimatedCost(cost.amount, cost.currency) : 'unpriced'}`] as [string, string, ReactNode]
+            return ['model-usage', `  ${modelId}`, `${tokenBreakdown(bucket)} · ${cost?.status === 'estimated' ? formatEstimatedCost(cost.amount, cost.currency) : 'unpriced'}`] as [string, string, ReactNode]
         }),
         ['cost', 'Cost', costNote ? `${formatEstimatedModelCostLabel(run)} · ${costNote}` : formatEstimatedModelCostLabel(run)],
         ['directory', 'Directory', run.working_directory || run.project_path || '—'],
