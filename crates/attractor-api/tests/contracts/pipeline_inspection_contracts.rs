@@ -95,7 +95,8 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         json!({"context.topic": "inspect"})
     );
 
-    // The runs list stays lean: launch inputs are detail-only.
+    // The runs list stays lean: launch inputs are detail-only, but the first
+    // one names a run that has no title.
     let listed = service.list_runs();
     let listed_run = listed.body["runs"]
         .as_array()
@@ -104,6 +105,7 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
         .find(|run| run["run_id"] == json!("run-inspect"))
         .expect("listed run");
     assert!(listed_run.get("launch_context").is_none());
+    assert_eq!(listed_run["first_launch_input"], json!("inspect"));
 
     let checkpoint = service.get_pipeline_checkpoint("run-inspect");
     assert_eq!(checkpoint.status_code, 200);

@@ -4,6 +4,7 @@ import type { RunRecord } from '@/features/runs/model/shared'
 export function toRunRecord(status: PipelineStatusResponse): RunRecord {
     return {
         run_id: status.run_id,
+        title: status.title ?? null,
         flow_name: status.flow_name || '',
         status: status.status,
         outcome: status.outcome ?? null,
@@ -16,6 +17,9 @@ export function toRunRecord(status: PipelineStatusResponse): RunRecord {
         spec_id: status.spec_id ?? null,
         plan_id: status.plan_id ?? null,
         model: status.model || '',
+        provider: status.provider ?? null,
+        llm_provider: status.llm_provider ?? null,
+        reasoning_effort: status.reasoning_effort ?? null,
         started_at: status.started_at || '',
         ended_at: status.ended_at ?? null,
         last_error: status.last_error || '',
@@ -39,5 +43,6 @@ export function toRunRecord(status: PipelineStatusResponse): RunRecord {
         execution_profile_capabilities: status.execution_profile_capabilities,
         execution_lock: status.execution_lock ?? undefined,
         cleanup_error: status.cleanup_error,
+        launch_context: status.launch_context ?? null,
     }
 }

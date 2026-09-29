@@ -10,7 +10,7 @@ it('remembers independent project and all-project selections, including explicit
     state.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/a'), 'a')
     state.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/b'), 'b')
     state.setRunsSelectedRunIdForScope('all', null)
-    state.updateRunDetailSession('a', { selectedNodeId: 'node-a', inspectorTab: 'artifacts' })
+    state.updateRunDetailSession('a', { selectedNodeId: 'node-a' })
     state.updateRunDetailSession('b', { selectedNodeId: 'node-b' })
     useStore.setState({ activeProjectPath: '/a' })
     const cached = selectSelectedRunSession(useStore.getState())

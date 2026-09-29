@@ -3894,9 +3894,16 @@ fn list_run_records(
             let mut value =
                 serde_json::from_str::<Value>(&raw).map_err(|error| error.to_string())?;
             // Launch inputs can be large; the runs list stays lean and the
-            // detail endpoint remains the only place they are exposed.
+            // detail endpoint remains the only place they are exposed. The
+            // first one, cut to a line, names a run that has no title.
             if let Some(object) = value.as_object_mut() {
-                object.remove("launch_context");
+                if let Some(input) = object
+                    .remove("launch_context")
+                    .as_ref()
+                    .and_then(first_launch_input)
+                {
+                    object.insert("first_launch_input".to_string(), json!(input));
+                }
             }
             if let Some(project_path_filter) = project_path_filter.as_deref() {
                 let project_path = value
@@ -3924,6 +3931,16 @@ fn list_run_records(
         right_key.cmp(&left_key)
     });
     Ok(records)
+}
+
+fn first_launch_input(launch_context: &Value) -> Option<String> {
+    let input = launch_context
+        .as_object()?
+        .values()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|value| !value.is_empty())?;
+    Some(input.lines().next()?.chars().take(160).collect())
 }
 
 fn run_sort_key(value: &Value) -> String {

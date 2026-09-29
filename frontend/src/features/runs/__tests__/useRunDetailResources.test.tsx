@@ -98,3 +98,20 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         expect(restoredHistory()).toEqual(restoredHistoryBefore)
     },
 )
+
+it('refetches files when a stage settles and the result when the run ends', () => {
+    const fetchMock = vi.mocked(global.fetch)
+    renderHook(() => useRunDetailResources({ selectedRunId: 'run', manageSync: true }))
+    const count = (resource: string) => fetchMock.mock.calls.filter(([url]) => String(url).endsWith(`/run/${resource}`)).length
+    expect([count('artifacts'), count('result')]).toEqual([1, 1])
+    const journal = (type: string, runId = 'run') => act(() => {
+        window.dispatchEvent(new CustomEvent('spark:run-journal-entry', { detail: { runId, entry: { type } } }))
+    })
+    journal('StageStarted')
+    journal('StageCompleted', 'other-run')
+    expect([count('artifacts'), count('result')]).toEqual([1, 1])
+    journal('StageCompleted')
+    expect([count('artifacts'), count('result')]).toEqual([2, 1])
+    journal('PipelineCompleted')
+    expect([count('artifacts'), count('result')]).toEqual([3, 2])
+})

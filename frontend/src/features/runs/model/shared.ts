@@ -25,6 +25,10 @@ export interface EstimatedModelCost {
 
 export interface RunRecord {
     run_id: string
+    /** Utility-generated title of a root run, when a utility model is set. */
+    title?: string | null
+    /** The runs list's stand-in for launch_context: its first input, cut to a line. */
+    first_launch_input?: string | null
     flow_name: string
     status: string
     outcome?: 'success' | 'failure' | null
@@ -293,6 +297,7 @@ export const statusToneClassName = (status: string) => TONE_STYLES[STATUS_TONES[
 
 export const STATUS_LABELS: Record<string, string> = {
     queued: 'Queued',
+    running: 'Running',
     waiting: 'Needs input',
     completed: 'Completed',
     failed: 'Failed',

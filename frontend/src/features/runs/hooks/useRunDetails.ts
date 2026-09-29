@@ -130,6 +130,7 @@ export function useRunDetails({
         checkpointStatus,
         checkpointRetryCounters,
         contextCopyStatus,
+        contextData,
         contextError,
         contextExportHref,
         contextSearchQuery,

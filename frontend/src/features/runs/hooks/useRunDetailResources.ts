@@ -277,6 +277,21 @@ export function useRunDetailResources({
         }
     }, [fetchPendingQuestions, manageSync, reconnectSignal, selectedRunId])
 
+    // A settled stage writes its files and an ended run writes its result;
+    // with no Refresh buttons left, the live journal keeps both current.
+    useEffect(() => {
+        if (!manageSync || !selectedRunId) return
+        const refreshOutputs = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            const type = detail?.entry?.raw_type ?? detail?.entry?.type
+            if (detail?.runId !== selectedRunId) return
+            if (type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchResult()
+            if (type === 'StageCompleted' || type === 'StageFailed' || type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchArtifacts()
+        }
+        window.addEventListener('spark:run-journal-entry', refreshOutputs)
+        return () => window.removeEventListener('spark:run-journal-entry', refreshOutputs)
+    }, [fetchArtifacts, fetchResult, manageSync, selectedRunId])
+
     const viewArtifact = useCallback(async (entry: { path: string; viewable: boolean }) => {
         if (!selectedRunId) {
             return

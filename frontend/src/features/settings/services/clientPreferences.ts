@@ -33,12 +33,10 @@ export type FlowEdgePorts = Record<string, Record<string, LayoutEdgePorts>>
 export type FlowNodePositions = Record<string, Record<string, { x: number; y: number }>>
 export interface RunPresentation {
     sort?: 'newest' | 'oldest' | null
-    inspector_tab?: 'activity' | 'result' | 'details' | 'context' | 'artifacts' | null
     graph_height?: number | null
 }
 export const runPresentationChoices = {
     sort: ['newest', 'oldest'],
-    inspector_tab: ['activity', 'result', 'details', 'context', 'artifacts'],
 } as const
 export interface ClientPreferences {
     run_presentation?: RunPresentation | null

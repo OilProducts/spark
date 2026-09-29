@@ -1,4 +1,4 @@
-import { RunInspectorPanel } from '../components/RunInspectorPanel'
+import { RunVisitsCard } from '../components/RunVisitsCard'
 import { RunGraphCard } from '../components/RunGraphCard'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
@@ -15,7 +15,7 @@ import { act, render, screen, waitFor, within, fireEvent } from '@testing-librar
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../components/RunInspectorPanel', { spy: true })
+vi.mock('../components/RunVisitsCard', { spy: true })
 vi.mock('../components/RunGraphCard', { spy: true })
 
 const jsonResponse = (payload: unknown) =>
@@ -245,9 +245,12 @@ const installControllableEventSource = () => {
   }
 }
 
-const openDetailsTab = async () => {
-  const tab = await screen.findByTestId('run-inspector-tab-details')
-  fireEvent.click(tab)
+// Run facts live collapsed at the end of the status item.
+const openRunFacts = async () => {
+  fireEvent.click(await screen.findByTestId('run-visit-item-status'))
+  const facts = screen.getByTestId('run-status-facts')
+  fireEvent.click(within(facts).getByText('Run facts'))
+  return facts
 }
 
 describe('RunsPanel', () => {
@@ -259,48 +262,47 @@ describe('RunsPanel', () => {
     state.updateRunsListSession({ scopeMode: 'all', status: 'ready', runs: [a, b] })
     state.setRunsSelectedRunIdForScope('all', 'b')
     state.setRunsSelectedRunIdForScope('all', 'a')
-    state.updateRunDetailSession('a', { inspectorTab: 'details' })
     render(<DialogProvider><RunsPanel /></DialogProvider>)
     fireEvent.keyDown(window, { key: 'g' })
     const row = (name: string) => screen.getAllByText(name)
       .map((element) => element.closest('[data-testid="run-history-row"]'))
       .find((element) => element !== null)!
-    vi.mocked(RunInspectorPanel).mockClear()
+    vi.mocked(RunVisitsCard).mockClear()
     vi.mocked(RunGraphCard).mockClear()
 
     act(() => state.reconcileRunRecord('b', 'live', { ...b, status: 'running' }))
-    expect(row('b.dot')).toHaveTextContent(/running/i)
-    expect(RunInspectorPanel).not.toHaveBeenCalled()
+    expect(row('B')).toHaveTextContent(/running/i)
+    expect(RunVisitsCard).not.toHaveBeenCalled()
     expect(RunGraphCard).not.toHaveBeenCalled()
 
     // Updating the list snapshot for the same live upsert also stays in the sidebar.
     act(() => state.updateRunsListSession({ runs: [a, { ...b, status: 'running' }] }, 'live'))
-    expect(row('b.dot')).toHaveTextContent(/running/i)
-    expect(RunInspectorPanel).not.toHaveBeenCalled()
+    expect(row('B')).toHaveTextContent(/running/i)
+    expect(RunVisitsCard).not.toHaveBeenCalled()
     expect(RunGraphCard).not.toHaveBeenCalled()
 
     act(() => state.reconcileRunRecord('a', 'live', { ...a, status: 'running' }))
-    expect(row('a.dot')).toHaveTextContent(/running/i)
-    expect(RunInspectorPanel).toHaveBeenCalled()
+    expect(row('A')).toHaveTextContent(/running/i)
+    expect(RunVisitsCard).toHaveBeenCalled()
     expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
       run: expect.objectContaining({ run_id: 'a', status: 'running' }),
     }), undefined)
 
-    vi.mocked(RunInspectorPanel).mockClear()
-    fireEvent.click(row('b.dot'))
-    expect(row('b.dot')).toHaveAttribute('aria-pressed', 'true')
-    expect(RunInspectorPanel).toHaveBeenCalled()
+    vi.mocked(RunVisitsCard).mockClear()
+    fireEvent.click(row('B'))
+    expect(row('B')).toHaveAttribute('aria-pressed', 'true')
+    expect(RunVisitsCard).toHaveBeenCalled()
     expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
       run: expect.objectContaining({ run_id: 'b', status: 'running' }),
     }), undefined)
-    fireEvent.click(row('a.dot'))
-    expect(screen.getByTestId('run-inspector-tab-details')).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(row('A'))
+    expect(screen.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
     expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
       run: expect.objectContaining({ run_id: 'a', status: 'running' }),
     }), undefined)
   })
 
-  it.each(['context', 'artifacts', 'result'] as const)('renders cached %s on revisit, pending refresh, and refresh failure', async (tab) => {
+  it('renders cached context and result on revisit, pending refresh, and refresh failure', async () => {
     const requests: { url: string; resolve: (response: Response) => void }[] = []
     vi.mocked(global.fetch).mockImplementation((input) => new Promise<Response>((resolve) => {
       requests.push({ url: resolveRequestUrl(input), resolve })
@@ -310,9 +312,7 @@ describe('RunsPanel', () => {
     state.setRunsSelectedRunIdForScope('all', 'cached')
     state.reconcileRunRecord('cached', 'list', makeRun({ run_id: 'cached', last_error: '' }))
     state.updateRunDetailSession('cached', {
-      inspectorTab: tab,
-      contextStatus: 'ready', contextData: { pipeline_id: 'cached', context: { cached_key: 'cached value' } },
-      artifactStatus: 'ready', artifactData: { pipeline_id: 'cached', artifacts: [{ path: 'cached.txt', size_bytes: 12 }] },
+      contextStatus: 'ready', contextData: { pipeline_id: 'cached', context: { 'context.cached_key': 'cached value' } },
       resultStatus: 'ready', resultData: {
         run_id: 'cached', status: 'completed', state: 'ready', source_node_id: 'answer',
         source_artifact_path: 'cached.txt', display_mode: 'raw', body_markdown: 'cached result',
@@ -322,18 +322,18 @@ describe('RunsPanel', () => {
     state.setRunsSelectedRunIdForScope('all', 'other')
     render(<DialogProvider><RunsPanel /></DialogProvider>)
     act(() => state.setRunsSelectedRunIdForScope('all', 'cached'))
-    const contentId = { context: 'run-context-table', artifacts: 'run-artifact-table', result: 'run-result-body' }[tab]
-    const prefix = tab === 'artifacts' ? 'artifact' : tab
-    const cachedText = { context: 'cached value', artifacts: 'cached.txt', result: 'cached result' }[tab]
-    expect(screen.getByTestId(contentId)).toHaveTextContent(cachedText)
-    fireEvent.click(screen.getByTestId(`run-${prefix}-refresh-button`))
-    expect(screen.getByTestId(contentId)).toHaveTextContent(cachedText)
-    expect(screen.getByTestId(`run-${prefix}-refresh-button`)).toHaveTextContent('Refreshing')
-    const request = requests.filter(({ url }) => url.endsWith(`/${tab}`)).at(-1)!
+    expect(screen.getByTestId('run-result-body')).toHaveTextContent('cached result')
+
+    fireEvent.click(screen.getByTestId('run-visit-item-context'))
+    expect(screen.getByTestId('run-context-panel')).toHaveTextContent('cached value')
+    fireEvent.click(screen.getByTestId('run-context-refresh-button'))
+    expect(screen.getByTestId('run-context-panel')).toHaveTextContent('cached value')
+    expect(screen.getByTestId('run-context-refresh-button')).toHaveTextContent('Refreshing')
+    const request = requests.filter(({ url }) => url.endsWith('/context')).at(-1)!
     expect(request).toBeDefined()
     await act(async () => request.resolve(new Response('{}', { status: 503 })))
-    expect(screen.getByTestId(`run-${prefix}-error`)).toBeVisible()
-    expect(screen.getByTestId(contentId)).toHaveTextContent(cachedText)
+    expect(screen.getByTestId('run-context-error')).toBeVisible()
+    expect(screen.getByTestId('run-context-panel')).toHaveTextContent('cached value')
   })
 
   beforeEach(() => {
@@ -412,7 +412,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('project-one.dot')).toBeVisible()
+      expect(screen.getByText('Project One')).toBeVisible()
     })
     expect(
       fetchMock.mock.calls.some(([request]) =>
@@ -424,7 +424,7 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('runs-scope-all-projects'))
 
     await waitFor(() => {
-      expect(screen.getByText('project-two.dot')).toBeVisible()
+      expect(screen.getByText('Project Two')).toBeVisible()
     })
     expect(
       fetchMock.mock.calls.some(([request]) => {
@@ -499,8 +499,8 @@ describe('RunsPanel', () => {
 
     expect(await screen.findByText('Holding execution lock')).toBeVisible()
     expect(screen.getByText('Queued execution lock · project lock · main-worktree-integration')).toBeVisible()
-    expect(screen.getByText('queued-a.dot')).toBeVisible()
-    expect(screen.getByText('queued-b.dot')).toBeVisible()
+    expect(screen.getByText('Queued A')).toBeVisible()
+    expect(screen.getByText('Queued B')).toBeVisible()
     expect(screen.getByText('Queued for execution lock · position 1')).toBeVisible()
   })
 
@@ -553,7 +553,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('project-one.dot')).toBeVisible()
+      expect(screen.getByText('Project One')).toBeVisible()
       expect(latestSourceMatching('/workspace/api/live/events')).toBeTruthy()
     })
 
@@ -574,7 +574,7 @@ describe('RunsPanel', () => {
         },
       })
     })
-    expect(screen.queryByText('incomplete-live-upsert.dot')).not.toBeInTheDocument()
+    expect(screen.queryByText('Incomplete Live Upsert')).not.toBeInTheDocument()
 
     act(() => {
       activeScopeSource?.emit({
@@ -595,13 +595,13 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText('streamed-active.dot')).toBeVisible()
+      expect(screen.getByText('Streamed Active')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('runs-scope-all-projects'))
 
     await waitFor(() => {
-      expect(screen.getByText('project-two.dot')).toBeVisible()
+      expect(screen.getByText('Project Two')).toBeVisible()
     })
 
     const allProjectsSource = latestSourceMatching('/workspace/api/live/events')
@@ -638,15 +638,15 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText('streamed-all.dot')).toBeVisible()
+      expect(screen.getByText('Streamed All')).toBeVisible()
     })
-    expect(screen.queryByText('closed-source-update.dot')).not.toBeInTheDocument()
+    expect(screen.queryByText('Closed Source Update')).not.toBeInTheDocument()
 
     await user.click(screen.getByTestId('runs-scope-active-project'))
 
     await waitFor(() => {
-      expect(screen.getByText('project-one.dot')).toBeVisible()
-      expect(screen.queryByText('project-two.dot')).not.toBeInTheDocument()
+      expect(screen.getByText('Project One')).toBeVisible()
+      expect(screen.queryByText('Project Two')).not.toBeInTheDocument()
     })
 
     const restoredActiveScopeSource = latestSourceMatching('/workspace/api/live/events')
@@ -683,7 +683,7 @@ describe('RunsPanel', () => {
     await user.click(screen.getByTestId('runs-scope-all-projects'))
 
     await waitFor(() => {
-      expect(screen.getByText('global.dot')).toBeVisible()
+      expect(screen.getByText('Global')).toBeVisible()
     })
     expect(fetchMock).toHaveBeenCalled()
   })
@@ -847,7 +847,7 @@ describe('RunsPanel', () => {
     expect(screen.queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
     expect(screen.queryByText('history table')).not.toBeInTheDocument()
 
-    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).not.toBeNull()
     await user.click(selectedRunCard!)
 
@@ -858,74 +858,64 @@ describe('RunsPanel', () => {
     const detailScrollRegion = screen.getByTestId('run-details-scroll-region')
     expect(detailScrollRegion).toHaveClass('min-h-0')
     expect(detailScrollRegion).toHaveClass('flex-1')
-    expect(detailScrollRegion).toHaveClass('overflow-auto')
 
     const runSummaryPanel = screen.getByTestId('run-summary-panel')
-    const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
-    const runInspectorPanel = screen.getByTestId('run-inspector-panel')
-    // Monitoring folds into the compact header strip: identity, status, and
-    // ambient facts on the masthead, no drawer-style NOW box.
-    expect(screen.getByTestId('run-header-title')).toHaveTextContent('selected.dot')
-    expect(screen.getByTestId('run-header-fact-node')).toHaveTextContent('validate')
+    // The masthead is a title and one line of facts; no tab row remains.
+    expect(screen.getByTestId('run-header-title')).toHaveTextContent('Selected')
+    expect(screen.queryByText(/Node:/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-pending-human-gates-panel')?.closest('[data-testid="run-status-item"]')).not.toBeNull()
     expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
-    // Reference detail lives behind the inspector Details tab.
-    await user.click(screen.getByTestId('run-inspector-tab-details'))
-    expect(screen.getByTestId('run-summary-section-scope')).toHaveTextContent('Scope')
-    expect(screen.getByTestId('run-summary-section-usage')).toHaveTextContent('Usage')
-    expect(screen.getByTestId('run-summary-spec-artifact-link')).toBeVisible()
-    expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
-    await user.click(screen.getByTestId('run-inspector-tab-result'))
-    expect(runPendingQuestionsPanel).toBeVisible()
-    // Panes are exclusive now: the visit list returns on its tab.
-    await user.click(screen.getByTestId('run-inspector-tab-activity'))
+    expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
     const visitsPanel = screen.getByTestId('run-visits-panel')
     expect(visitsPanel).toBeVisible()
     expect(visitsPanel).toHaveAttribute('data-responsive-layout', 'split')
     expect(screen.getAllByTestId('run-visit-row')).toHaveLength(2)
-    // The pending gate auto-focuses its node, so its visit is shown.
+    // A waiting run opens on its status item: the question, asked by its visit.
+    const statusItem = screen.getByTestId('run-status-item')
+    expect(statusItem).toHaveAttribute('data-status-kind', 'waiting')
+    expect(screen.getByTestId('run-visit-item-status')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('run-visit-item-status')).toHaveTextContent('Needs input')
+    expect(within(statusItem).getByText('Approve the validation result?')).toBeVisible()
     await waitFor(() => {
-      expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Validate')
+      expect(within(statusItem).getByTestId('run-visit-link')).toHaveTextContent('Validate')
     })
+    await user.click(within(statusItem).getByTestId('run-visit-link'))
+    expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Validate')
     const visitView = () => within(screen.getByTestId('run-visit-view'))
     await waitFor(() => {
       expect(visitView().getByText('passed', { selector: 'strong' })).toBeVisible()
     })
     expect(visitView().queryByText('Draft archive output.')).not.toBeInTheDocument()
     expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Waiting on a question')
-    // Selecting a graph node shows that node's visit; with no explicit tab
-    // choice stored, the inspector resolves to the visit list.
+    // Selecting a graph node shows that node's visit.
     act(() => {
-      useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft', inspectorTab: null })
+      useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft' })
     })
-    expect(screen.getByTestId('run-inspector-tab-activity')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Draft')
     expect(visitView().getByText('Draft archive output.')).toBeVisible()
     expect(visitView().queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
     await user.click(screen.getAllByTestId('run-visit-row')[0])
     expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Validate')
-    expect(runInspectorPanel).toBeVisible()
     // The run graph stays hidden until toggled.
     expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
     await user.click(screen.getByTestId('run-graph-toggle'))
     const runGraphPanel = screen.getByTestId('run-graph-panel')
     expect(runGraphPanel).toBeVisible()
-    // The masthead leads: header, gates, then the graph/work-pane row.
+    // The masthead leads, then the graph/work-pane row.
     expect(
-      runSummaryPanel.compareDocumentPosition(runPendingQuestionsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runSummaryPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     expect(
-      runPendingQuestionsPanel.compareDocumentPosition(runGraphPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      runGraphPanel.compareDocumentPosition(runInspectorPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
+      runGraphPanel.compareDocumentPosition(visitsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
 
-    await user.click(screen.getByTestId('run-inspector-tab-details'))
-    expect(screen.getByTestId('run-details-card')).toBeVisible()
-    await user.click(screen.getByTestId('run-inspector-tab-context'))
+    // Run facts live collapsed in the status item; context is its own item.
+    await user.click(screen.getByTestId('run-visit-item-status'))
+    expect(within(screen.getByTestId('run-status-facts')).getByText('run-selected')).toBeInTheDocument()
+    expect(screen.getByTestId('run-status-facts')).not.toHaveAttribute('open')
+    await user.click(screen.getByTestId('run-visit-item-context'))
     expect(screen.getByTestId('run-context-panel')).toBeVisible()
-    await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
-    expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
 
     // The persistent graph pane fills its column: canvas, no expand toggle,
     // no manual resize handle.
@@ -1024,7 +1014,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     // The active run sorts into the Running group ahead of Recent history, so
@@ -1032,14 +1022,14 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('run-list-group-running')).toBeVisible()
     expect(screen.getByTestId('run-list-group-recent')).toBeVisible()
     const selectedCard = screen
-      .getByText('selected.dot')
+      .getByText('Selected')
       .closest('[data-testid="run-history-row"]')
     expect(selectedCard).not.toBeNull()
     await user.click(selectedCard!)
 
     await waitFor(() => {
       expect(screen.getByTestId('run-summary-panel')).toBeVisible()
-      expect(screen.getByTestId('run-header-title')).toHaveTextContent('selected.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('Selected')
     })
 
     expect(useStore.getState().viewMode).toBe('runs')
@@ -1157,7 +1147,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -1166,8 +1156,8 @@ describe('RunsPanel', () => {
       expect(screen.getByTestId('run-summary-continue-button')).toBeVisible()
     })
 
-    await openDetailsTab()
-    expect(screen.getByTestId('run-summary-section-scope')).toHaveTextContent('/tmp/project-one')
+    await openRunFacts()
+    expect(screen.getByTestId('run-fact-directory')).toHaveTextContent('/tmp/project-one/worktree')
 
     await user.click(screen.getByTestId('run-summary-continue-button'))
 
@@ -1327,7 +1317,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected · original topic')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
 
@@ -1389,7 +1379,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
     await user.click(await screen.findByTestId('run-graph-toggle'))
@@ -1455,7 +1445,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
 
@@ -1548,7 +1538,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -1658,41 +1648,33 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('failure.dot')).toBeVisible()
-      expect(screen.getByText('lineage.dot')).toBeVisible()
+      expect(screen.getByText('Failure')).toBeVisible()
+      expect(screen.getByText('Lineage')).toBeVisible()
     })
 
     await user.click(screen.getAllByTestId('run-history-row')[0]!)
-    await openDetailsTab()
+    await openRunFacts()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-outcome')).toHaveTextContent('Failure')
+      expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('Release gate rejected')
     })
-    expect(screen.getByTestId('run-summary-status')).toHaveTextContent('Completed')
-    expect(screen.getByTestId('run-summary-outcome-reason')).toHaveTextContent('Release gate rejected')
-    expect(screen.queryByTestId('run-summary-working-directory')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-working-directory-note')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-git-ref')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-artifacts')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-lineage')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-last-error')).not.toBeInTheDocument()
+    expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
+    expect(screen.getByTestId('run-header-facts')).not.toHaveTextContent(/[0-9a-f]{7}$/)
+    expect(screen.queryByTestId('run-output-commit')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-fact-lineage')).not.toBeInTheDocument()
 
     await user.click(screen.getAllByTestId('run-history-row')[1]!)
-    await openDetailsTab()
+    await openRunFacts()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-flow-name')).toHaveTextContent('lineage.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('Lineage')
     })
-    expect(screen.getByTestId('run-summary-working-directory-note')).toHaveTextContent('Working dir differs')
-    expect(screen.getByTestId('run-summary-working-directory-note')).toHaveTextContent('/srv/spark/worktrees/run-lineage')
-    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Continued from run-source @ review')
-    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Parent run-parent @ child_flow')
-    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Root run-root')
-    expect(screen.getByTestId('run-summary-lineage')).toHaveTextContent('Child invocation #2')
-    expect(screen.queryByTestId('run-summary-continued-from')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-parent-run')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-root-run')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('run-summary-child-invocation')).not.toBeInTheDocument()
+    expect(screen.getByTestId('run-fact-directory')).toHaveTextContent('/srv/spark/worktrees/run-lineage')
+    expect(screen.getByTestId('run-fact-lineage')).toHaveTextContent('Continued from run-source @ review')
+    expect(screen.getByTestId('run-fact-lineage')).toHaveTextContent('Parent run-parent @ child_flow')
+    expect(screen.getByTestId('run-fact-lineage')).toHaveTextContent('Root run-root')
+    expect(screen.getByTestId('run-fact-lineage')).toHaveTextContent('Child invocation #2')
+    expect(screen.queryByTestId('run-status-outcome-reason')).not.toBeInTheDocument()
   })
 
   it('converges the selected run summary, activity surface, and list row on authoritative run detail state', async () => {
@@ -1835,7 +1817,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -1861,7 +1843,7 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-history-row')).toHaveTextContent('Completed')
+      expect(screen.queryByTestId('run-history-row-status')).not.toBeInTheDocument()
     })
   })
 
@@ -1959,13 +1941,13 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-header-status')).toHaveTextContent('running')
+      expect(screen.getByTestId('run-header-status')).toHaveTextContent('Running')
     })
 
     Object.assign(selectedRun, { status: 'completed', outcome: 'failure', outcome_reason_code: 'live_failure', outcome_reason_message: 'Live gate failed', ended_at: '2026-03-22T00:06:00Z', last_error: 'Live gate failed' })
@@ -1990,10 +1972,10 @@ describe('RunsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
     })
-    await openDetailsTab()
-    expect(screen.getByTestId('run-summary-outcome')).toHaveTextContent('Failure')
-    expect(screen.getByTestId('run-summary-outcome-reason')).toHaveTextContent('Live gate failed')
-    expect(screen.getByTestId('run-history-row')).toHaveTextContent('Completed')
+    await openRunFacts()
+    expect(screen.getByTestId('run-status-outcome-reason')).toHaveTextContent('Live gate failed')
+    // A finished run needs no status word in the selector.
+    expect(screen.queryByTestId('run-history-row-status')).not.toBeInTheDocument()
   })
 
   it('opens one runs-list stream and one selected-run stream while a run is selected', async () => {
@@ -2129,7 +2111,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
@@ -2238,14 +2220,14 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('run-history-row'))
-    await openDetailsTab()
+    await openRunFacts()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-estimated-model-cost')).toHaveTextContent('—')
+      expect(screen.getByTestId('run-fact-cost')).toHaveTextContent('—')
     })
 
     act(() => {
@@ -2300,15 +2282,17 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-summary-estimated-model-cost')).toHaveTextContent('$0.000166')
+      expect(screen.getByTestId('run-fact-cost')).toHaveTextContent('$0.000166')
     })
-    expect(screen.getByTestId('run-summary-estimated-model-cost-note')).toHaveTextContent(
+    expect(screen.getByTestId('run-fact-cost')).toHaveTextContent(
       'Unpriced models excluded from the subtotal: gpt-5.3-codex-spark',
     )
-    expect(screen.getByTestId('run-summary-token-usage')).toHaveTextContent('36')
-    expect(screen.getAllByTestId('run-summary-model-row')).toHaveLength(2)
-    expect(screen.getByTestId('run-summary-model-breakdown')).toHaveTextContent('gpt-5.4')
-    expect(screen.getByTestId('run-summary-model-breakdown')).toHaveTextContent('gpt-5.3-codex-spark')
+    expect(screen.getByTestId('run-fact-tokens')).toHaveTextContent('36 (23 in, 3 cached, 13 out)')
+    expect(screen.getByTestId('run-header-facts')).toHaveTextContent('36 tokens')
+    const modelRows = screen.getAllByTestId('run-fact-model-usage')
+    expect(modelRows).toHaveLength(2)
+    expect(modelRows[0]).toHaveTextContent('gpt-5.4')
+    expect(modelRows[1]).toHaveTextContent('gpt-5.3-codex-spark')
   })
 
   it('keeps selected-run detail fetches scoped to run id changes instead of same-run stream updates', async () => {
@@ -2458,10 +2442,10 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
-    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).toBeTruthy()
     await user.click(selectedRunCard!)
 
@@ -2513,7 +2497,7 @@ describe('RunsPanel', () => {
       expect(countDetailFetches(selectedRun.run_id, resource)).toBe(1)
     })
 
-    const otherRunCard = screen.getByText('other.dot').closest('[data-testid="run-history-row"]')
+    const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
     await user.click(otherRunCard!)
 
@@ -2651,7 +2635,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
       expect(sourcesMatching(liveEventsUrl)).toHaveLength(1)
     })
 
@@ -2931,10 +2915,10 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
-    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).toBeTruthy()
     await user.click(selectedRunCard!)
 
@@ -2963,7 +2947,7 @@ describe('RunsPanel', () => {
       'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
     )
 
-    const otherRunCard = screen.getByText('other.dot').closest('[data-testid="run-history-row"]')
+    const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
     await user.click(otherRunCard!)
 
@@ -2972,7 +2956,7 @@ describe('RunsPanel', () => {
       expect(initialReplaySource?.readyState).toBe(ReplayEventSource.CLOSED)
     })
 
-    const reselectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    const reselectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(reselectedRunCard).toBeTruthy()
     await user.click(reselectedRunCard!)
 
@@ -3351,10 +3335,10 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
+      expect(screen.getByText('Selected')).toBeVisible()
     })
 
-    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    const selectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(selectedRunCard).toBeTruthy()
     await user.click(selectedRunCard!)
 
@@ -3372,11 +3356,11 @@ describe('RunsPanel', () => {
       newestSequence: 4,
     })
 
-    const otherRunCard = screen.getByText('other.dot').closest('[data-testid="run-history-row"]')
+    const otherRunCard = screen.getByText('Other').closest('[data-testid="run-history-row"]')
     expect(otherRunCard).toBeTruthy()
     await user.click(otherRunCard!)
 
-    const reselectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
+    const reselectedRunCard = screen.getByText('Selected').closest('[data-testid="run-history-row"]')
     expect(reselectedRunCard).toBeTruthy()
     await user.click(reselectedRunCard!)
 

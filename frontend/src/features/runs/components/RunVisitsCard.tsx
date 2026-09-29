@@ -6,7 +6,7 @@ import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import { formatTimestamp, type TimelineEventEntry } from '../model/shared'
+import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from '../model/shared'
 import {
     VISIT_OUTCOME_LABELS,
     formatVisitDuration,
@@ -37,6 +37,11 @@ const OUTCOME_CLASSES: Partial<Record<RunVisit['outcome'], string>> = {
     waiting: 'text-info',
 }
 
+// ponytail: fixed file set per execution; list the directory if nodes write more worth reading.
+const VISIT_FILES = ['prompt.md', 'response.md', 'status.json', 'transcript.jsonl']
+
+type ItemKey = 'status' | 'context'
+
 const visitCountLabel = (visit: RunVisit) => (visit.count > 1 ? `${visit.number}/${visit.count}` : '')
 
 const formatValue = (value: unknown): string => (
@@ -56,8 +61,16 @@ interface RunVisitsCardProps {
     timelineError: string | null
     /** The node selected on the graph; its visits are highlighted. */
     selectedNodeId: string | null
-    onSelectNode: (nodeId: string) => void
+    onSelectNode: (nodeId: string | null) => void
     onOpenRun: (runId: string) => void
+    /** The status item's row: what it says and whether it needs attention. */
+    statusRow: { label: string; className?: string }
+    renderStatus: (selectVisit: (visit: RunVisit) => void) => ReactNode
+    renderContext: (focusKey: string | null, selectVisit: (visit: RunVisit) => void) => ReactNode
+    artifactEntries: ArtifactListEntry[]
+    onViewArtifact: (entry: ArtifactListEntry) => void
+    /** Page controls shown in the list header. */
+    toolbar?: ReactNode
 }
 
 export function RunVisitsCard({
@@ -74,52 +87,69 @@ export function RunVisitsCard({
     selectedNodeId,
     onSelectNode,
     onOpenRun,
+    statusRow,
+    renderStatus,
+    renderContext,
+    artifactEntries,
+    onViewArtifact,
+    toolbar,
 }: RunVisitsCardProps) {
-    const [selectedKey, setSelectedKey] = useState<string | null>(null)
+    // The status item leads and is selected when a run opens.
+    const [selectedKey, setSelectedKey] = useState<string>('status')
+    const [contextFocusKey, setContextFocusKey] = useState<string | null>(null)
     const [showJournal, setShowJournal] = useState(false)
     const listRef = useRef<HTMLDivElement | null>(null)
 
     // An explicit pick wins while it agrees with the graph selection; a graph
-    // node alone shows its latest visit; otherwise follow the latest visit.
+    // node alone shows its latest visit; otherwise the status item.
     const picked = visits.find((visit) => visit.key === selectedKey) ?? null
-    const selected = (picked && (!selectedNodeId || picked.nodeId === selectedNodeId))
-        ? picked
-        : [...visits].reverse().find((visit) => visit.nodeId === selectedNodeId)
-            ?? [...visits].reverse().find((visit) => visit.parentKey === null)
-            ?? null
+    const graphVisit = selectedNodeId && picked?.nodeId !== selectedNodeId
+        ? [...visits].reverse().find((visit) => visit.nodeId === selectedNodeId) ?? null
+        : null
+    const selected: RunVisit | ItemKey = graphVisit
+        ?? picked
+        ?? (selectedKey === 'context' ? 'context' : 'status')
+    const items: Array<RunVisit | ItemKey> = ['status', 'context', ...visits]
+    const itemKey = (item: RunVisit | ItemKey) => (typeof item === 'string' ? item : item.key)
 
-    const select = (visit: RunVisit | undefined, focus = false) => {
-        if (!visit) {
-            return
-        }
-        setSelectedKey(visit.key)
+    const select = (item: RunVisit | ItemKey) => {
+        setSelectedKey(itemKey(item))
         setShowJournal(false)
-        onSelectNode(visit.nodeId)
-        if (focus) {
-            listRef.current?.querySelector<HTMLElement>(`[data-visit-key="${CSS.escape(visit.key)}"]`)?.focus()
-        }
+        onSelectNode(typeof item === 'string' ? null : item.nodeId)
+    }
+    const openContextKey = (key: string) => {
+        setContextFocusKey(key)
+        select('context')
     }
 
     const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-        if (!selected || event.metaKey || event.ctrlKey || event.altKey) {
+        if (event.metaKey || event.ctrlKey || event.altKey) {
             return
         }
-        const index = visits.indexOf(selected)
-        const sameNode = visits.filter((visit) => visit.nodeId === selected.nodeId)
-        const nodeIndex = sameNode.indexOf(selected)
-        const targets: Record<string, RunVisit | undefined> = {
-            ArrowDown: visits[index + 1],
-            j: visits[index + 1],
-            ArrowUp: visits[index - 1],
-            k: visits[index - 1],
+        const index = items.indexOf(selected)
+        const sameNode = typeof selected === 'string' ? [] : visits.filter((visit) => visit.nodeId === selected.nodeId)
+        const nodeIndex = typeof selected === 'string' ? -1 : sameNode.indexOf(selected)
+        const targets: Record<string, RunVisit | ItemKey | undefined> = {
+            ArrowDown: items[index + 1],
+            j: items[index + 1],
+            ArrowUp: items[index - 1],
+            k: items[index - 1],
             ArrowRight: sameNode[nodeIndex + 1],
-            ArrowLeft: sameNode[nodeIndex - 1],
+            ArrowLeft: nodeIndex > 0 ? sameNode[nodeIndex - 1] : undefined,
         }
+        const target = targets[event.key]
         if (Object.hasOwn(targets, event.key)) {
             event.preventDefault()
-            select(targets[event.key], true)
+        }
+        if (target) {
+            select(target)
+            listRef.current?.querySelector<HTMLElement>(`[data-visit-key="${CSS.escape(itemKey(target))}"]`)?.focus()
         }
     }
+    const itemRowClass = (isSelected: boolean) => cn(
+        'flex w-full items-center gap-2 py-1.5 pl-1 pr-1 text-left text-sm',
+        isSelected ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50',
+    )
 
     return (
         <section
@@ -133,6 +163,7 @@ export function RunVisitsCard({
                         {visits.length} {visits.length === 1 ? 'visit' : 'visits'}
                         {isLive ? <span className="ml-2 text-info">Live</span> : null}
                     </span>
+                    {toolbar ? <span className="ml-auto">{toolbar}</span> : null}
                     <button
                         type="button"
                         data-testid="run-journal-toggle"
@@ -153,71 +184,92 @@ export function RunVisitsCard({
                     </p>
                 ) : null}
                 {transcriptError ? <InlineError data-testid="run-transcript-error">{transcriptError}</InlineError> : null}
-                {visits.length === 0 ? (
-                    <p data-testid="run-visits-empty" className="py-2 text-sm text-muted-foreground">
-                        No visits have been recorded for this run yet.
-                    </p>
-                ) : (
-                    <div
-                        ref={listRef}
-                        role="listbox"
-                        aria-label="Visits"
-                        data-testid="run-visit-list"
-                        onKeyDown={onListKeyDown}
-                        className={cn('divide-y divide-border overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
-                    >
-                        {visits.map((visit) => {
-                            const isSelected = !showJournal && visit === selected
-                            return (
-                                <button
-                                    key={visit.key}
-                                    type="button"
-                                    role="option"
-                                    aria-selected={isSelected}
-                                    tabIndex={visit === selected ? 0 : -1}
-                                    data-testid="run-visit-row"
-                                    data-visit-key={visit.key}
-                                    data-node-id={visit.nodeId}
-                                    data-outcome={visit.outcome}
-                                    data-node-selected={visit.nodeId === selectedNodeId || undefined}
-                                    onClick={() => select(visit)}
-                                    className={cn(
-                                        'flex w-full items-center gap-2 py-1.5 pr-1 text-left text-sm',
-                                        visit.parentKey ? 'pl-5' : 'pl-1',
-                                        isSelected ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50',
-                                        visit.nodeId === selectedNodeId && !isSelected && 'bg-accent/30',
-                                    )}
-                                >
-                                    <span className="flex w-7 shrink-0 gap-0.5 text-xs" data-testid="run-visit-row-marks">
-                                        {visitMarks(visit).map((mark) => (
-                                            <span
-                                                key={mark}
-                                                data-mark={mark}
-                                                title={MARKS[mark].label}
-                                                aria-label={MARKS[mark].label}
-                                                className={MARKS[mark].className}
-                                            >
-                                                {MARKS[mark].glyph}
-                                            </span>
-                                        ))}
-                                    </span>
-                                    <span className="min-w-0 flex-1 truncate">{visit.label}</span>
-                                    <span data-testid="run-visit-row-count" className="shrink-0 text-xs text-muted-foreground">
-                                        {visitCountLabel(visit)}
-                                    </span>
-                                    <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
-                                        {formatVisitDuration(visitDurationMs(visit, now))}
-                                    </span>
-                                </button>
-                            )
-                        })}
-                    </div>
-                )}
+                <div
+                    ref={listRef}
+                    role="listbox"
+                    aria-label="Visits"
+                    data-testid="run-visit-list"
+                    onKeyDown={onListKeyDown}
+                    className={cn('divide-y divide-border overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
+                >
+                    {(['status', 'context'] as const).map((item) => (
+                        <button
+                            key={item}
+                            type="button"
+                            role="option"
+                            aria-selected={!showJournal && selected === item}
+                            tabIndex={selected === item ? 0 : -1}
+                            data-testid={`run-visit-item-${item}`}
+                            data-visit-key={item}
+                            onClick={() => select(item)}
+                            className={itemRowClass(!showJournal && selected === item)}
+                        >
+                            <span className="w-7 shrink-0" />
+                            <span className={cn('min-w-0 flex-1 truncate', item === 'status' && statusRow.className)}>
+                                {item === 'status' ? statusRow.label : 'Context'}
+                            </span>
+                        </button>
+                    ))}
+                    {visits.length === 0 ? (
+                        <p data-testid="run-visits-empty" className="py-2 text-sm text-muted-foreground">
+                            No visits have been recorded for this run yet.
+                        </p>
+                    ) : null}
+                    {visits.map((visit) => {
+                        const isSelected = !showJournal && visit === selected
+                        return (
+                            <button
+                                key={visit.key}
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected}
+                                tabIndex={visit === selected ? 0 : -1}
+                                data-testid="run-visit-row"
+                                data-visit-key={visit.key}
+                                data-node-id={visit.nodeId}
+                                data-outcome={visit.outcome}
+                                data-node-selected={visit.nodeId === selectedNodeId || undefined}
+                                onClick={() => select(visit)}
+                                className={cn(
+                                    'flex w-full items-center gap-2 py-1.5 pr-1 text-left text-sm',
+                                    visit.parentKey ? 'pl-5' : 'pl-1',
+                                    isSelected ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50',
+                                    visit.nodeId === selectedNodeId && !isSelected && 'bg-accent/30',
+                                )}
+                            >
+                                <span className="flex w-7 shrink-0 gap-0.5 text-xs" data-testid="run-visit-row-marks">
+                                    {visitMarks(visit).map((mark) => (
+                                        <span
+                                            key={mark}
+                                            data-mark={mark}
+                                            title={MARKS[mark].label}
+                                            aria-label={MARKS[mark].label}
+                                            className={MARKS[mark].className}
+                                        >
+                                            {MARKS[mark].glyph}
+                                        </span>
+                                    ))}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate">{visit.label}</span>
+                                <span data-testid="run-visit-row-count" className="shrink-0 text-xs text-muted-foreground">
+                                    {visitCountLabel(visit)}
+                                </span>
+                                <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                                    {formatVisitDuration(visitDurationMs(visit, now))}
+                                </span>
+                            </button>
+                        )
+                    })}
+                </div>
             </div>
             <div className={cn('min-w-0 flex-1', isNarrowViewport ? undefined : 'min-h-0 overflow-y-auto')}>
                 {showJournal ? (
                     <RunJournal journal={journal} timelineError={timelineError} />
-                ) : selected ? (
+                ) : selected === 'status' ? (
+                    renderStatus(select)
+                ) : selected === 'context' ? (
+                    <div key={contextFocusKey ?? ''}>{renderContext(contextFocusKey, select)}</div>
+                ) : (
                     <RunVisitView
                         key={selected.key}
                         visit={selected}
@@ -226,10 +278,13 @@ export function RunVisitsCard({
                         segments={segments}
                         prompts={prompts}
                         now={now}
+                        artifactEntries={artifactEntries}
+                        onViewArtifact={onViewArtifact}
                         onSelectVisit={(visit) => select(visit)}
+                        onOpenContextKey={openContextKey}
                         onOpenRun={onOpenRun}
                     />
-                ) : null}
+                )}
             </div>
         </section>
     )
@@ -251,7 +306,10 @@ function RunVisitView({
     segments,
     prompts,
     now,
+    artifactEntries,
+    onViewArtifact,
     onSelectVisit,
+    onOpenContextKey,
     onOpenRun,
 }: {
     visit: RunVisit
@@ -260,7 +318,10 @@ function RunVisitView({
     segments: RunTranscriptSegment[]
     prompts: RunExecutionPrompt[]
     now: number
+    artifactEntries: ArtifactListEntry[]
+    onViewArtifact: (entry: ArtifactListEntry) => void
     onSelectVisit: (visit: RunVisit) => void
+    onOpenContextKey: (key: string) => void
     onOpenRun: (runId: string) => void
 }) {
     const expansion = useTranscriptExpansion()
@@ -271,6 +332,24 @@ function RunVisitView({
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
     const outcomeClass = OUTCOME_CLASSES[visit.outcome]
+    const filesDir = `logs/${visit.nodeId}/executions/${visit.stageIndex}-${visit.attempt}/`
+    const files = visit.parentKey === null
+        ? VISIT_FILES.flatMap((name) => artifactEntries.filter((entry) => entry.path === filesDir + name))
+        : []
+    const contextKeyButton = (key: string) => (
+        <button
+            type="button"
+            data-testid="run-visit-context-key"
+            data-key={key}
+            onClick={(event) => {
+                event.preventDefault()
+                onOpenContextKey(key)
+            }}
+            className="text-foreground/80 hover:underline hover:underline-offset-4"
+        >
+            <code>{key}</code>
+        </button>
+    )
 
     return (
         <article data-testid="run-visit-view" data-visit-key={visit.key} className="space-y-4 pb-6">
@@ -321,7 +400,7 @@ function RunVisitView({
                     {flowNode.readsContext.map((key, index) => (
                         <span key={key}>
                             {index > 0 ? ', ' : ''}
-                            <code className="text-foreground/80">{key}</code>
+                            {contextKeyButton(key)}
                         </span>
                     ))}
                 </p>
@@ -404,13 +483,13 @@ function RunVisitView({
                                 <li key={key} data-testid="run-visit-write" data-key={key}>
                                     {value === null ? (
                                         <p className="flex gap-3 py-1">
-                                            <code className="truncate text-foreground/80">{key}</code>
+                                            <span className="truncate">{contextKeyButton(key)}</span>
                                             <span className="ml-auto shrink-0 text-muted-foreground">cleared</span>
                                         </p>
                                     ) : (
                                         <details>
                                             <summary className="flex cursor-pointer gap-3 py-1">
-                                                <code className="shrink-0 text-foreground/80">{key}</code>
+                                                <span className="shrink-0">{contextKeyButton(key)}</span>
                                                 <span className="min-w-0 truncate text-muted-foreground">{formatValue(value)}</span>
                                             </summary>
                                             <pre className="mb-2 max-h-72 overflow-auto whitespace-pre-wrap break-words pl-3 text-xs text-foreground/90">
@@ -428,6 +507,25 @@ function RunVisitView({
                         </p>
                     ) : null}
                 </Section>
+            ) : null}
+            {files.length > 0 ? (
+                <p data-testid="run-visit-files" className="text-xs text-muted-foreground">
+                    Files:{' '}
+                    {files.map((entry, index) => (
+                        <span key={entry.path}>
+                            {index > 0 ? ' · ' : ''}
+                            <button
+                                type="button"
+                                data-testid="run-visit-file"
+                                data-path={entry.path}
+                                onClick={() => onViewArtifact(entry)}
+                                className="hover:text-foreground hover:underline hover:underline-offset-4"
+                            >
+                                {entry.path.slice(filesDir.length).replace(/\.\w+$/, '')}
+                            </button>
+                        </span>
+                    ))}
+                </p>
             ) : null}
         </article>
     )

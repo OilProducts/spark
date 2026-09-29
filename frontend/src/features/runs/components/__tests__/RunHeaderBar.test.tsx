@@ -1,7 +1,6 @@
 import { render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import { RunDetailsCard } from '../RunDetailsCard'
 import { RunHeaderBar } from '../RunHeaderBar'
 import type { RunRecord } from '../../model/shared'
 
@@ -37,82 +36,47 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     ...overrides,
 })
 
-const renderHeader = (run: RunRecord, onFocusPendingQuestions: (() => void) | null = null) => render(
+const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null) => render(
     <RunHeaderBar
         run={run}
         now={Date.parse('2026-03-22T00:10:00Z')}
-        currentNodeId={run.current_node ?? null}
+        flowTitle="Review Changes"
+        selectedVisitLabel={selectedVisitLabel}
         onRequestCancel={vi.fn()}
         onRequestRetry={vi.fn()}
         onContinueFromRun={vi.fn()}
-        onFocusPendingQuestions={onFocusPendingQuestions}
+        onRerunRun={vi.fn()}
     />,
 )
 
 describe('RunHeaderBar', () => {
-    it('shows identity, status, ambient facts, and actions on the strip', () => {
-        renderHeader(makeRun())
+    it('shows the run title under its flow and one line of facts', () => {
+        renderHeader(makeRun({ title: 'Tighten the review loop' }))
 
-        expect(screen.getByTestId('run-header-title')).toHaveTextContent('review.dot')
-        expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
-        expect(screen.getByTestId('run-header-fact-duration')).toHaveTextContent('5m')
-        expect(screen.getByTestId('run-header-fact-tokens')).toHaveTextContent('1,234')
-        expect(screen.getByTestId('run-summary-cancel-button')).toBeDisabled()
-        expect(screen.getByTestId('run-summary-continue-button')).toBeVisible()
-        expect(screen.queryByTestId('run-header-failure-reason')).not.toBeInTheDocument()
-        expect(screen.queryByTestId('run-header-waiting-chip')).not.toBeInTheDocument()
+        expect(screen.getByTestId('run-header-flow')).toHaveTextContent('Review Changes')
+        expect(screen.getByTestId('run-header-title')).toHaveTextContent('Tighten the review loop')
+        expect(screen.getByTestId('run-header-facts')).toHaveTextContent('Completed 5m ago · 5m · 1,234 tokens · abcdef0')
+        expect(screen.queryByText(/Node:/)).not.toBeInTheDocument()
     })
 
-    it('leads with the failure reason on failed runs', () => {
-        renderHeader(makeRun({
-            status: 'failed',
-            outcome: 'failure',
-            last_error: 'tool command failed with code 1',
-            current_node: 'transform',
-        }))
+    it('offers Retry only for failed runs and Cancel only for active ones', () => {
+        const { unmount } = renderHeader(makeRun())
+        expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('run-summary-cancel-button')).not.toBeInTheDocument()
+        expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from here')
+        unmount()
 
-        expect(screen.getByTestId('run-header-failure-reason')).toHaveTextContent('tool command failed with code 1')
-        expect(screen.getByTestId('run-header-fact-node')).toHaveTextContent('transform')
+        const failed = renderHeader(makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' }), 'Transform')
         expect(screen.getByTestId('run-summary-retry-button')).toBeVisible()
-    })
+        expect(screen.queryByTestId('run-summary-cancel-button')).not.toBeInTheDocument()
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform')
+        failed.unmount()
 
-    it('offers a waiting chip that focuses the pending questions', () => {
-        const onFocus = vi.fn()
-        renderHeader(makeRun({ status: 'waiting', ended_at: null, current_node: 'review' }), onFocus)
-
-        const chip = screen.getByTestId('run-header-waiting-chip')
-        expect(chip).toHaveTextContent('Waiting for input at review')
-        chip.click()
-        expect(onFocus).toHaveBeenCalledTimes(1)
-        // Waiting runs stay cancelable from the header.
+        renderHeader(makeRun({ status: 'waiting', ended_at: null }))
         expect(screen.getByTestId('run-summary-cancel-button')).toBeEnabled()
-    })
-})
-
-describe('RunDetailsCard', () => {
-    it('displays execution placement metadata when a run has execution fields', () => {
-        render(
-            <RunDetailsCard
-                run={makeRun({
-                    execution_profile_id: 'local-dev',
-                    execution_mode: 'local_container',
-                    execution_container_image: 'spark-exec:latest',
-                })}
-                activeProjectPath="/tmp/project"
-            />,
-        )
-
-        expect(screen.getByTestId('run-summary-section-execution')).toHaveTextContent('Execution')
-        expect(screen.getByTestId('run-summary-execution-profile')).toHaveTextContent('local-dev')
-        expect(screen.getByTestId('run-summary-execution-mode')).toHaveTextContent('local_container')
-        expect(screen.getByTestId('run-summary-execution-container-image')).toHaveTextContent('spark-exec:latest')
-    })
-
-    it('omits the execution section for legacy runs without execution metadata', () => {
-        render(<RunDetailsCard run={makeRun()} activeProjectPath="/tmp/project" />)
-
-        expect(screen.queryByTestId('run-summary-section-execution')).not.toBeInTheDocument()
-        expect(screen.getByTestId('run-summary-section-scope')).toHaveTextContent('review.dot')
-        expect(screen.getByTestId('run-summary-token-usage')).toHaveTextContent('1,234')
+        expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
+        expect(screen.getByTestId('run-header-status')).toHaveTextContent('Needs input')
     })
 })

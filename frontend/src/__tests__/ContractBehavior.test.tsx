@@ -885,19 +885,17 @@ describe('Frontend contract behavior', () => {
     renderRunsPanelWithController()
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-inspector-panel')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
-    // Each inspector tab stays functional independently of the failed endpoint.
-    await user.click(screen.getByTestId('run-inspector-tab-context'))
+    // The status and Context items stay functional independently of the failed endpoint.
+    expect(screen.getByTestId('run-status-item')).toBeVisible()
+    await user.click(screen.getByTestId('run-visit-item-context'))
     expect(screen.getByTestId('run-context-panel')).toBeVisible()
-    expect(screen.getByTestId('run-context-table')).toBeVisible()
-    expect(screen.getByText('graph.goal')).toBeVisible()
-    expect(screen.getByText('run.outcome')).toBeVisible()
+    // Keys outside context. are runtime bookkeeping, collapsed behind a count.
+    expect(screen.getByTestId('run-context-runtime-group')).toHaveTextContent('2 system keys')
+    expect(screen.getByText('graph.goal')).toBeInTheDocument()
+    expect(screen.getByText('run.outcome')).toBeInTheDocument()
     expect(screen.getByTestId('run-context-refresh-button')).toBeEnabled()
-
-    await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
-    expect(screen.getByTestId('run-artifact-panel')).toBeVisible()
-    expect(screen.getByTestId('run-artifact-refresh-button')).toBeEnabled()
 
     await user.click(screen.getByTestId('run-graph-toggle'))
     expect(screen.getByTestId('run-graph-panel')).toBeVisible()
@@ -2050,7 +2048,8 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     const visitRows = screen.getAllByTestId('run-visit-row')
     expect(visitRows[0]).toHaveTextContent('Stage 0')
     expect(visitRows.at(-1)).toHaveTextContent(`Stage ${totalEvents - 1}`)
-    expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent(`Stage ${totalEvents - 1}`)
+    // The status item leads and points at the visit in progress.
+    expect(screen.getByTestId('run-status-running')).toHaveTextContent(`Now in Stage ${totalEvents - 1}.`)
   })
 
   it('[CID:14.0.01] propagates navbar project context through Home, Triggers, and Runs', async () => {
@@ -2219,7 +2218,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     })
     expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-beta')
     expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
-    expect(screen.getByText('beta.yaml')).toBeVisible()
+    expect(screen.getByText('Beta')).toBeVisible()
   })
 
   it('[CID:14.0.02] enforces unique project directories while allowing missing Git metadata', async () => {

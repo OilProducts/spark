@@ -1,9 +1,12 @@
+import { useState } from 'react'
+
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { InlineError } from '@/components/app/inline-error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
     Empty,
     EmptyDescription,
@@ -11,11 +14,8 @@ import {
 } from '@/components/ui/empty'
 import { formatProjectPathLabel } from '@/lib/projectPaths'
 import type { RunRecord } from '../model/shared'
-import {
-    formatDuration,
-    formatRunStatusLabel,
-    statusToneClassName,
-} from '../model/shared'
+import { formatDuration } from '../model/shared'
+import { flowTitle, formatRunAge, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -24,6 +24,14 @@ const ACTIVE_LIST_STATUSES = new Set([
     'abort_requested',
     'cancel_requested',
 ])
+
+// A status word only when the run needs attention.
+const ATTENTION: Record<string, { label: string; className: string }> = {
+    failed: { label: 'Failed', className: 'text-destructive' },
+    validation_error: { label: 'Failed', className: 'text-destructive' },
+    waiting: { label: 'Needs input', className: 'text-warning' },
+    running: { label: 'Running', className: 'text-info' },
+}
 
 interface RunListProps {
     activeProjectPath: string | null
@@ -49,6 +57,17 @@ export function RunList({
     summaryLabel,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
+    const [searchQuery, setSearchQuery] = useState('')
+    const [expandedParents, setExpandedParents] = useState<Set<string>>(() => new Set())
+    // eslint-disable-next-line react-hooks/purity -- render-time clock for run ages; the list re-renders on run updates
+    const now = Date.now()
+    const query = searchQuery.trim().toLowerCase()
+    const matchesSearch = (run: RunRecord) => (
+        !query
+        || runTitle(run).toLowerCase().includes(query)
+        || flowTitle(run.flow_name).toLowerCase().includes(query)
+        || run.flow_name.toLowerCase().includes(query)
+    )
     const scopeDescription = scopeMode === 'all'
         ? 'Run history across all projects.'
         : activeProjectPath
@@ -74,6 +93,9 @@ export function RunList({
         return [...groups, { identity: executionLock.identity, label, runs: [run] }]
     }, [])
     const historyRuns = runs.filter((run) => run.status !== 'queued' || !run.execution_lock?.identity)
+    const visibleQueuedLockGroups = queuedLockGroups
+        .map((group) => ({ ...group, runs: group.runs.filter(matchesSearch) }))
+        .filter((group) => group.runs.length > 0)
 
     // Work-queue grouping: children nest under their parent; parentless (or
     // orphaned) runs bucket by how actionable they are.
@@ -85,7 +107,7 @@ export function RunList({
             const siblings = childRunsByParent.get(run.parent_run_id) ?? []
             siblings.push(run)
             childRunsByParent.set(run.parent_run_id, siblings)
-        } else {
+        } else if (matchesSearch(run)) {
             topLevelRuns.push(run)
         }
     }
@@ -96,21 +118,25 @@ export function RunList({
     )
 
     const renderRunRow = (run: RunRecord, depth = 0) => {
-        const shortRunId = run.run_id.slice(0, 8)
         const projectLabel = scopeMode === 'all' ? compactProjectLabel(run.project_path) : null
+        const attention = ATTENTION[run.status]
+        const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const metaParts = [
-            formatDuration(run.started_at, run.ended_at, run.status),
-            shortRunId,
-        ].filter((value) => Boolean(value) && value !== '—')
+            title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
+            formatRunAge(run.started_at, now),
+            formatDuration(run.started_at, run.ended_at, run.status, now),
+            projectLabel,
+        ].filter((value): value is string => Boolean(value) && value !== '—')
         const holdsExecutionLock = run.execution_lock?.state === 'holding'
         const queuedForExecutionLock = run.execution_lock?.state === 'queued'
-
         const childRuns = childRunsByParent.get(run.run_id) ?? []
+        const childrenExpanded = expandedParents.has(run.run_id)
 
         return (
             <div key={run.run_id} className={cn(depth > 0 && 'ml-4 border-l border-border/60 pl-2')}>
             <article
                 data-testid="run-history-row"
+                data-run-id={run.run_id}
                 role="button"
                 tabIndex={0}
                 aria-pressed={selectedRunId === run.run_id}
@@ -122,57 +148,56 @@ export function RunList({
                     }
                 }}
                 className={cn(
-                    'rounded-none px-3 py-2 outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
+                    'rounded-none px-3 py-1.5 outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
                     selectedRunId === run.run_id && 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]',
                 )}
             >
-                <div className="space-y-2">
-                    <div className="flex items-start gap-2">
-                        <div className="min-w-0 flex-1 space-y-1">
-                            <div className="truncate text-sm font-normal" title={run.flow_name || run.run_id}>
-                                {run.flow_name || run.run_id.slice(0, 8)}
-                            </div>
-                            <div className="truncate text-xs leading-4 text-muted-foreground">
-                                {metaParts.length > 0 ? (
-                                    <span>{metaParts.join(' · ')}</span>
-                                ) : null}
-                                {projectLabel ? (
-                                    <span title={run.project_path}>
-                                        {' · '}{projectLabel}
-                                    </span>
-                                ) : null}
-                                {run.root_run_id && run.root_run_id !== run.run_id ? (
-                                    <span title={run.root_run_id}>
-                                        {' · '}root {run.root_run_id.slice(0, 8)}
-                                    </span>
-                                ) : null}
-                            </div>
-                            {holdsExecutionLock ? (
-                                <div className="text-xs font-medium text-warning">
-                                    Holding execution lock
-                                </div>
-                            ) : null}
-                            {queuedForExecutionLock ? (
-                                <div className="text-xs font-medium text-warning">
-                                    Queued for execution lock{typeof run.execution_lock?.queue_position === 'number'
-                                        ? ` · position ${run.execution_lock.queue_position}`
-                                        : ''}
-                                </div>
-                            ) : null}
-                        </div>
-                        <div className="flex shrink-0 flex-wrap items-center gap-2">
-                            <span
-                                className={`inline-flex h-6 items-center justify-center rounded-md px-2 text-xs font-medium uppercase tracking-wide ${statusToneClassName(run.status)}`}
-                            >
-                                {formatRunStatusLabel(run)}
-                            </span>
-                        </div>
-                    </div>
+                <div data-testid="run-history-row-title" className="truncate text-sm font-normal" title={`${title} · ${run.run_id}`}>
+                    {title}
                 </div>
+                <div data-testid="run-history-row-meta" className="truncate text-xs leading-4 text-muted-foreground">
+                    {metaParts.join(' · ')}
+                    {attention ? (
+                        <span data-testid="run-history-row-status" className={attention.className}>
+                            {metaParts.length > 0 ? ' · ' : ''}{attention.label}
+                        </span>
+                    ) : null}
+                </div>
+                {holdsExecutionLock ? (
+                    <div className="text-xs font-medium text-warning">
+                        Holding execution lock
+                    </div>
+                ) : null}
+                {queuedForExecutionLock ? (
+                    <div className="text-xs font-medium text-warning">
+                        Queued for execution lock{typeof run.execution_lock?.queue_position === 'number'
+                            ? ` · position ${run.execution_lock.queue_position}`
+                            : ''}
+                    </div>
+                ) : null}
             </article>
             {childRuns.length > 0 ? (
-                <div data-testid="run-history-children" className="mt-2 space-y-2">
-                    {childRuns.map((child) => renderRunRow(child, depth + 1))}
+                <div className="ml-3">
+                    <button
+                        type="button"
+                        data-testid="run-history-children-toggle"
+                        aria-expanded={childrenExpanded}
+                        onClick={() => setExpandedParents((current) => {
+                            const next = new Set(current)
+                            if (!next.delete(run.run_id)) {
+                                next.add(run.run_id)
+                            }
+                            return next
+                        })}
+                        className="px-3 text-xs text-muted-foreground hover:text-foreground"
+                    >
+                        {childrenExpanded ? '▾' : '▸'} {childRuns.length} child {childRuns.length === 1 ? 'run' : 'runs'}
+                    </button>
+                    {childrenExpanded ? (
+                        <div data-testid="run-history-children" className="space-y-1">
+                            {childRuns.map((child) => renderRunRow(child, depth + 1))}
+                        </div>
+                    ) : null}
                 </div>
             ) : null}
             </div>
@@ -253,6 +278,15 @@ export function RunList({
                         All projects
                     </Button>
                 </div>
+                <Input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => setSearchQuery(event.target.value)}
+                    placeholder="Search runs…"
+                    aria-label="Search runs by title or flow"
+                    data-testid="run-list-search-input"
+                    className="h-7 text-sm"
+                />
                 {error ? (
                     <InlineError>{error}</InlineError>
                 ) : null}
@@ -290,7 +324,7 @@ export function RunList({
                     <div className="space-y-3">
                         {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-warning')}
                         {renderRunGroup('running', 'Running', runningRuns)}
-                        {queuedLockGroups.map((group) => (
+                        {visibleQueuedLockGroups.map((group) => (
                             <section key={group.identity} className="space-y-2">
                                 <div className="rounded-md border-0 border-l border-warning px-3 py-2 text-xs font-medium text-warning">
                                     Queued execution lock · {group.label}
@@ -301,6 +335,11 @@ export function RunList({
                             </section>
                         ))}
                         {renderRunGroup('recent', 'Recent', recentRuns)}
+                        {query && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
+                            <p data-testid="run-list-search-empty" className="px-1 text-xs text-muted-foreground">
+                                No runs match the search.
+                            </p>
+                        ) : null}
                     </div>
                 </div>
             )}

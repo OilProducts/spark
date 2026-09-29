@@ -36,11 +36,8 @@ export function RunQuestionsPanel({
     return (
         <div
             data-testid="run-pending-human-gates-panel"
-            className={`mb-3 rounded-md border-0 border-l border-warning px-3 py-2 ${className ?? ''}`.trim()}
+            className={className}
         >
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Pending Questions
-            </div>
             {pendingGateActionError && (
                 <InlineError data-testid="run-pending-human-gate-answer-error" className="mt-2" dense>{pendingGateActionError}</InlineError>
             )}
@@ -49,7 +46,7 @@ export function RunQuestionsPanel({
                     <div
                         key={group.key}
                         data-testid="run-pending-human-gate-group"
-                        className="rounded border border-border px-2 py-1.5"
+                        className="border-t border-border py-1.5 first:border-t-0"
                     >
                         <div
                             data-testid="run-pending-human-gate-group-heading"

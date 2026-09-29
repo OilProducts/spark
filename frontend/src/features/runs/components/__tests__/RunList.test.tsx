@@ -1,6 +1,6 @@
 import { RunList } from '@/features/runs/components/RunList'
 import type { RunRecord } from '@/features/runs/model/shared'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
@@ -26,6 +26,10 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     continued_from_node: overrides.continued_from_node ?? null,
     continued_from_flow_mode: overrides.continued_from_flow_mode ?? null,
     continued_from_flow_name: overrides.continued_from_flow_name ?? null,
+    parent_run_id: overrides.parent_run_id ?? null,
+    root_run_id: overrides.root_run_id ?? null,
+    title: overrides.title ?? null,
+    launch_context: overrides.launch_context ?? null,
 })
 
 describe('RunList', () => {
@@ -65,17 +69,23 @@ describe('RunList', () => {
 
         expect(screen.queryByTestId('run-list-loading')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-list-scroll-region')).toBeVisible()
-        expect(screen.getByText('refreshing.dot')).toBeVisible()
+        expect(screen.getByText('Refreshing')).toBeVisible()
         expect(screen.queryByTestId('runs-refresh-button')).not.toBeInTheDocument()
     })
 
-    it('uses nesting instead of a Child chip and retains child status', () => {
-        const parent = makeRun({ run_id: 'parent', status: 'completed' })
+    it('titles runs, folds child runs under their parent, and filters on search', () => {
+        const parent = makeRun({ run_id: 'parent', status: 'completed', title: 'Tighten the review loop', flow_name: 'software-development/implement-change.yaml' })
         const child = makeRun({
             run_id: 'child-run',
             flow_name: 'Implement Task',
             parent_run_id: 'parent',
             root_run_id: 'parent',
+        })
+        const untitled = makeRun({
+            run_id: 'other',
+            status: 'failed',
+            flow_name: 'merge-change.yaml',
+            launch_context: { 'context.request.artifact_path': 'changes/CR-1/request.md' },
         })
         render(
             <RunList
@@ -83,19 +93,27 @@ describe('RunList', () => {
                 error={null}
                 onScopeModeChange={vi.fn()}
                 onSelectRun={vi.fn()}
-                runs={[parent, child]}
+                runs={[parent, child, untitled]}
                 scopeMode="active"
                 selectedRunId={null}
                 status="ready"
-                summaryLabel="2 total runs · 1 running"
+                summaryLabel="3 total runs · 1 running"
             />,
         )
-        expect(screen.queryByText('Child')).not.toBeInTheDocument()
-        const childTitle = screen.getByText('Implement Task')
-        expect(childTitle).toBeVisible()
-        expect(childTitle.parentElement?.parentElement).toHaveClass('flex')
-        expect(childTitle.parentElement?.parentElement).not.toHaveClass('flex-wrap')
-        expect(childTitle.nextElementSibling).toHaveClass('truncate')
-        expect(screen.getByText('Running')).toBeVisible()
+        const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
+        expect(titles()).toEqual(['Tighten the review loop', 'Merge Change · changes/CR-1/request.md'])
+        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^Implement Change · /)
+        expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Failed'])
+
+        const toggle = screen.getByTestId('run-history-children-toggle')
+        expect(toggle).toHaveTextContent('1 child run')
+        fireEvent.click(toggle)
+        expect(titles()).toEqual(['Tighten the review loop', 'Implement Task', 'Merge Change · changes/CR-1/request.md'])
+        expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Running', ' · Failed'])
+
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'merge' } })
+        expect(titles()).toEqual(['Merge Change · changes/CR-1/request.md'])
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'nothing like it' } })
+        expect(screen.getByTestId('run-list-search-empty')).toBeVisible()
     })
 })

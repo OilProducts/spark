@@ -115,6 +115,7 @@ export interface EstimatedModelCostResponse {
 export interface PipelineStatusResponse {
     pipeline_id: string
     run_id: string
+    title?: string | null
     status: string
     outcome?: 'success' | 'failure' | null
     outcome_reason_code?: string | null
@@ -252,6 +253,8 @@ export type PipelineGraphPreviewResponse = PreviewResponsePayload
 
 export interface RunRecordResponse {
     run_id: string
+    title?: string | null
+    first_launch_input?: string | null
     flow_name: string
     status: string
     outcome?: 'success' | 'failure' | null
@@ -743,6 +746,8 @@ function parseRunRecord(
     }
     return {
         run_id: record.run_id,
+        title: asOptionalNullableString(record.title),
+        first_launch_input: asOptionalNullableString(record.first_launch_input),
         flow_name: typeof record.flow_name === 'string' ? record.flow_name : '',
         status: record.status,
         outcome: asOptionalNullableString(record.outcome) as RunRecordResponse['outcome'],
