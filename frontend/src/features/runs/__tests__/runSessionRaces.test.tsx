@@ -58,7 +58,7 @@ it('keeps stale questions visible but enforces fresh confirmation in the submiss
     useStore.getState().updateRunDetailSession('a', { questionsStatus: 'ready', pendingQuestionSnapshots: [question] })
     select('b')
     select('a')
-    const { result } = renderHook(() => useRunTimeline({ selectedRunTimelineId: 'a', selectedRunCurrentNode: 'review', pendingQuestionSnapshots: [question] }))
+    const { result } = renderHook(() => useRunTimeline({ selectedRunTimelineId: 'a', pendingQuestionSnapshots: [question] }))
     expect(result.current.visiblePendingInterviewGates).toHaveLength(1)
     expect(result.current.confirmedQuestionIds).toEqual([])
     await act(async () => result.current.submitPendingGateAnswer(gate, 'yes'))

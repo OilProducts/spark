@@ -2235,8 +2235,8 @@ describe('App shell behavior', () => {
     })
 
     // Focus the review node (as a graph-node click would: selection plus the
-    // Activity tab) so the pending gate's auto-selection cannot scope the
-    // stream elsewhere.
+    // Visits tab) so the pending gate's auto-selection cannot select another
+    // visit.
     act(() => {
       useStore.getState().updateRunDetailSession('run-session', {
         selectedNodeId: 'review',
@@ -2244,17 +2244,9 @@ describe('App shell behavior', () => {
       })
     })
     await waitFor(() => {
-      expect(
-        within(screen.getByTestId('run-activity-stream-panel')).getByText('Stage review started'),
-      ).toBeVisible()
-    })
-    await waitFor(() => {
-      expect(screen.getByTestId('run-activity-mode-events')).toBeVisible()
+      expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Review')
     })
 
-    await user.click(screen.getByTestId('run-activity-mode-events'))
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-category'), 'stage')
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'info')
     await user.click(screen.getByTestId('run-inspector-tab-context'))
     await user.clear(screen.getByTestId('run-context-search-input'))
     await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
@@ -2271,10 +2263,7 @@ describe('App shell behavior', () => {
     )
 
     expect(useStore.getState().runDetailSessionsByRunId['run-session']).toMatchObject({
-      activityMode: 'events',
       selectedNodeId: 'review',
-      timelineCategoryFilter: 'stage',
-      timelineSeverityFilter: 'info',
       contextSearchQuery: 'alpha',
       selectedArtifactPath: 'logs/summary.txt',
       freeformAnswersByGateId: {
@@ -2293,10 +2282,7 @@ describe('App shell behavior', () => {
     expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
     expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
     await user.click(screen.getByTestId('run-inspector-tab-activity'))
-    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: review')
-    expect(screen.getByTestId('run-event-timeline-filter-category')).toHaveValue('stage')
-    expect(screen.getByTestId('run-event-timeline-filter-severity')).toHaveValue('info')
+    expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Review')
     await user.click(screen.getByTestId('run-inspector-tab-context'))
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
     expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')
@@ -2433,9 +2419,7 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-runs'))
 
     await waitFor(() => {
-      expect(
-        within(screen.getByTestId('run-activity-stream-panel')).getByText('Stage review started'),
-      ).toBeVisible()
+      expect(within(screen.getByTestId('run-visit-list')).getByText('Review')).toBeVisible()
     })
   })
 

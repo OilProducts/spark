@@ -261,6 +261,7 @@ describe('RunsPanel', () => {
     state.setRunsSelectedRunIdForScope('all', 'a')
     state.updateRunDetailSession('a', { inspectorTab: 'details' })
     render(<DialogProvider><RunsPanel /></DialogProvider>)
+    fireEvent.keyDown(window, { key: 'g' })
     const row = (name: string) => screen.getAllByText(name)
       .map((element) => element.closest('[data-testid="run-history-row"]'))
       .find((element) => element !== null)!
@@ -853,7 +854,6 @@ describe('RunsPanel', () => {
 
     const runSummaryPanel = screen.getByTestId('run-summary-panel')
     const runPendingQuestionsPanel = screen.getByTestId('run-pending-human-gates-panel')
-    const runGraphPanel = screen.getByTestId('run-graph-panel')
     const runInspectorPanel = screen.getByTestId('run-inspector-panel')
     // Monitoring folds into the compact header strip: identity, status, and
     // ambient facts on the masthead, no drawer-style NOW box.
@@ -868,53 +868,39 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('run-summary-plan-artifact-link')).toBeVisible()
     await user.click(screen.getByTestId('run-inspector-tab-result'))
     expect(runPendingQuestionsPanel).toBeVisible()
-    // Panes are exclusive now: the Activity stream returns on its tab.
+    // Panes are exclusive now: the visit list returns on its tab.
     await user.click(screen.getByTestId('run-inspector-tab-activity'))
-    const activityPanel = screen.getByTestId('run-activity-stream-panel')
-    expect(activityPanel).toBeVisible()
-    expect(activityPanel).toHaveAttribute('data-responsive-layout', 'split')
-    // The pending gate auto-focuses its node, scoping the unified activity stream.
+    const visitsPanel = screen.getByTestId('run-visits-panel')
+    expect(visitsPanel).toBeVisible()
+    expect(visitsPanel).toHaveAttribute('data-responsive-layout', 'split')
+    expect(screen.getAllByTestId('run-visit-row')).toHaveLength(2)
+    // The pending gate auto-focuses its node, so its visit is shown.
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: validate')
+      expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Validate')
     })
-    const activityList = () => within(screen.getByTestId('run-activity-list'))
+    const visitView = () => within(screen.getByTestId('run-visit-view'))
     await waitFor(() => {
-      expect(activityList().getAllByTestId('run-transcript-group').length).toBeGreaterThan(0)
+      expect(visitView().getByText('passed', { selector: 'strong' })).toBeVisible()
     })
-    expect(activityList().getByTestId('run-transcript-group')).toHaveAttribute('data-node-id', 'validate')
-    expect(activityList().getByText('passed', { selector: 'strong' })).toBeVisible()
-    expect(activityList().queryByText('Draft archive output.')).not.toBeInTheDocument()
-    // Clearing the node focus reveals every transcript group in the single stream.
-    await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    expect(activityList().getAllByTestId('run-transcript-group')).toHaveLength(2)
-    expect(activityList().getByText('passed', { selector: 'strong' })).toBeVisible()
-    expect(activityList().getByText('Draft archive output.')).toBeVisible()
-    // Selecting a graph node scopes the stream to that node's entries only.
+    expect(visitView().queryByText('Draft archive output.')).not.toBeInTheDocument()
+    expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Waiting on a question')
+    // Selecting a graph node shows that node's visit; with no explicit tab
+    // choice stored, the inspector resolves to the visit list.
     act(() => {
-      // Deep links and gate focus set only the node; with no explicit tab
-      // choice stored, the inspector auto-resolves to the Activity stream.
       useStore.getState().updateRunDetailSession('run-selected', { selectedNodeId: 'draft', inspectorTab: null })
     })
-    expect(screen.getByTestId('run-activity-node-scope')).toHaveTextContent('Node: draft')
     expect(screen.getByTestId('run-inspector-tab-activity')).toHaveAttribute('aria-selected', 'true')
-    const scopedActivityList = screen.getByTestId('run-activity-list')
-    expect(within(scopedActivityList).getAllByTestId('run-transcript-group')).toHaveLength(1)
-    expect(within(scopedActivityList).getByTestId('run-transcript-group')).toHaveAttribute('data-node-id', 'draft')
-    expect(within(scopedActivityList).queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
-    await user.click(screen.getByTestId('run-activity-node-scope-clear'))
-    // Clearing node focus keeps the Activity stream front and center; the
-    // live transcript is the default work surface.
+    expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Draft')
+    expect(visitView().getByText('Draft archive output.')).toBeVisible()
+    expect(visitView().queryByText('passed', { selector: 'strong' })).not.toBeInTheDocument()
+    await user.click(screen.getAllByTestId('run-visit-row')[0])
+    expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Validate')
     expect(runInspectorPanel).toBeVisible()
-    await waitFor(() => {
-      expect(screen.getByTestId('run-inspector-tab-activity')).toHaveAttribute('aria-selected', 'true')
-    })
-    // The run graph is a persistent surface beside the work pane.
+    // The run graph stays hidden until toggled.
+    expect(screen.queryByTestId('run-graph-panel')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId('run-graph-toggle'))
+    const runGraphPanel = screen.getByTestId('run-graph-panel')
     expect(runGraphPanel).toBeVisible()
-    // Transcript-first: runs with agent output default the stream to the
-    // live transcript; All and Events remain one click away.
-    expect(screen.getByTestId('run-activity-mode-transcript')).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('run-activity-mode-all')).toHaveAttribute('aria-pressed', 'false')
-    expect(screen.getByTestId('run-activity-mode-events')).toHaveAttribute('aria-pressed', 'false')
     // The masthead leads: header, gates, then the graph/work-pane row.
     expect(
       runSummaryPanel.compareDocumentPosition(runPendingQuestionsPanel) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -1398,6 +1384,7 @@ describe('RunsPanel', () => {
       expect(screen.getByText('selected.dot')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
+    await user.click(await screen.findByTestId('run-graph-toggle'))
 
     const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
     await waitFor(() => expect(openButton).toBeEnabled())
@@ -1433,6 +1420,7 @@ describe('RunsPanel', () => {
       expect(screen.getByText('Ad-hoc Content Flow')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
+    await user.click(await screen.findByTestId('run-graph-toggle'))
 
     const openButton = await screen.findByTestId('run-graph-open-in-editor-button')
     await waitFor(() => expect(openButton).toBeDisabled())
@@ -2706,7 +2694,7 @@ describe('RunsPanel', () => {
     })
   })
 
-  it('hydrates durable journal history, shows child events inline, and deduplicates reconnects and reselects', async () => {
+  it('hydrates durable journal history, shows child events in the raw journal, and deduplicates reconnects and reselects', async () => {
     const selectedRun = makeRun({
       run_id: 'run-history-replay',
       flow_name: 'selected.dot',
@@ -2943,8 +2931,9 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    await user.click(screen.getByTestId('run-journal-toggle'))
 
     expect(latestEventSourceForRun(selectedRun.run_id)).toBeNull()
     act(() => {
@@ -2960,12 +2949,10 @@ describe('RunsPanel', () => {
     expect(initialReplaySource?.url).toContain('run_sequence=3')
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(3)
+      expect(screen.getAllByTestId('run-journal-row')).toHaveLength(3)
     })
-    expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(3)
-    expect(screen.getAllByTestId('run-event-timeline-row-source')).toHaveLength(2)
-    expect(screen.getAllByTestId('run-event-timeline-row-source')[0]).toHaveTextContent(
-      'Source: Child flow implement-milestone.dot via run_milestone',
+    expect(screen.getAllByTestId('run-journal-row')[1]).toHaveTextContent(
+      'Child flow implement-milestone.dot via run_milestone: Stage plan_current started',
     )
 
     const otherRunCard = screen.getByText('other.dot').closest('[data-testid="run-history-row"]')
@@ -2983,8 +2970,9 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(latestEventSourceForRun(selectedRun.run_id)).not.toBe(initialReplaySource)
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
+      expect(screen.getByTestId('run-visits-panel')).toBeVisible()
     })
+    await user.click(screen.getByTestId('run-journal-toggle'))
 
     const replayAfterReselect = latestEventSourceForRun(selectedRun.run_id)
     expect(replayAfterReselect).toBeTruthy()
@@ -3021,7 +3009,7 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(4)
+      expect(screen.getAllByTestId('run-journal-row')).toHaveLength(4)
     })
 
     expect(
@@ -3029,7 +3017,7 @@ describe('RunsPanel', () => {
         .map(({ sequence }) => sequence),
     ).toEqual([4, 3, 2, 1])
 
-    const timelineSummaries = screen.getAllByTestId('run-event-timeline-row-summary').map((node) => node.textContent ?? '')
+    const timelineSummaries = screen.getAllByTestId('run-journal-row').map((node) => node.lastElementChild?.textContent ?? '')
     expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current started'))).toHaveLength(1)
     expect(timelineSummaries.filter((summary) => summary.includes('Stage plan_current completed'))).toHaveLength(1)
     expect(timelineSummaries).toEqual([
@@ -3038,405 +3026,6 @@ describe('RunsPanel', () => {
       'Child flow implement-milestone.dot via run_milestone: Stage plan_current completed',
       'Stage done completed',
     ])
-  })
-
-  it('keeps Load older available when filters empty the loaded journal and reveals older matching history', async () => {
-    const selectedRun = makeRun({
-      run_id: 'run-history-filtered-empty',
-      flow_name: 'selected.dot',
-      status: 'completed',
-      outcome: 'success',
-      project_path: '/tmp/project-one',
-      ended_at: '2026-03-22T00:05:00Z',
-    })
-    const latestEntries = [
-      makeJournalEntry(
-        4,
-        {
-          type: 'StageCompleted',
-          sequence: 4,
-          emitted_at: '2026-03-22T00:05:00Z',
-          node_id: 'done',
-          index: 3,
-          source_scope: 'root',
-        },
-        {
-          kind: 'stage',
-          severity: 'info',
-          summary: 'Stage done completed',
-        },
-      ),
-      makeJournalEntry(
-        3,
-        {
-          type: 'StageCompleted',
-          sequence: 3,
-          emitted_at: '2026-03-22T00:04:00Z',
-          node_id: 'plan_current',
-          index: 2,
-          source_scope: 'root',
-        },
-        {
-          kind: 'stage',
-          severity: 'info',
-          summary: 'Stage plan_current completed',
-        },
-      ),
-    ]
-    const olderEntries = [
-      makeJournalEntry(
-        2,
-        {
-          type: 'StageFailed',
-          sequence: 2,
-          emitted_at: '2026-03-22T00:03:00Z',
-          node_id: 'legacy_validate',
-          index: 2,
-          source_scope: 'root',
-          error: 'validation gate rejected',
-        },
-        {
-          kind: 'stage',
-          severity: 'error',
-          summary: 'Stage legacy_validate failed: validation gate rejected',
-        },
-      ),
-      makeJournalEntry(
-        1,
-        {
-          type: 'StageStarted',
-          sequence: 1,
-          emitted_at: '2026-03-22T00:02:00Z',
-          node_id: 'prepare',
-          index: 1,
-          source_scope: 'root',
-        },
-        {
-          kind: 'stage',
-          severity: 'info',
-          summary: 'Stage prepare started',
-        },
-      ),
-    ]
-    const journalRequestUrls: string[] = []
-
-    const fetchMock = vi.mocked(global.fetch)
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = resolveRequestUrl(input)
-      const method = init?.method ?? 'GET'
-      if (method !== 'GET') {
-        throw new Error(`Unhandled request: ${method} ${url}`)
-      }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
-        return jsonResponse({ runs: [selectedRun] })
-      }
-      if (url.endsWith(`/attractor/pipelines/${selectedRun.run_id}`)) {
-        return jsonResponse({
-          pipeline_id: selectedRun.run_id,
-          run_id: selectedRun.run_id,
-          flow_name: selectedRun.flow_name,
-          status: selectedRun.status,
-          outcome: selectedRun.outcome,
-          outcome_reason_code: null,
-          outcome_reason_message: null,
-          working_directory: selectedRun.working_directory,
-          project_path: selectedRun.project_path,
-          git_branch: selectedRun.git_branch,
-          git_commit: selectedRun.git_commit,
-          spec_id: null,
-          plan_id: null,
-          model: selectedRun.model,
-          started_at: selectedRun.started_at,
-          ended_at: selectedRun.ended_at,
-          last_error: selectedRun.last_error ?? '',
-          token_usage: selectedRun.token_usage,
-          completed_nodes: ['prepare', 'done'],
-          progress: {
-            current_node: 'done',
-            completed_count: 2,
-          },
-          continued_from_run_id: null,
-          continued_from_node: null,
-          continued_from_flow_mode: null,
-          continued_from_flow_name: null,
-        })
-      }
-      const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
-      const runId = pipelineMatch?.[1] ? decodeURIComponent(pipelineMatch[1]) : null
-      const resource = pipelineMatch?.[2] ?? null
-      if (runId === selectedRun.run_id) {
-        if (resource === 'checkpoint') {
-          return jsonResponse({
-            pipeline_id: runId,
-            checkpoint: {
-              current_node: 'done',
-              completed_nodes: ['prepare'],
-            },
-          })
-        }
-        if (resource === 'context') {
-          return jsonResponse({
-            pipeline_id: runId,
-            context: {},
-          })
-        }
-        if (resource === 'artifacts') {
-          return jsonResponse({
-            pipeline_id: runId,
-            artifacts: [],
-          })
-        }
-        if (resource === 'graph-preview') {
-          return jsonResponse({
-            status: 'ok',
-            graph: {
-              graph_attrs: {},
-              nodes: [
-                { id: 'start', label: 'Start', shape: 'Mdiamond' },
-                { id: 'done', label: 'Done', shape: 'Msquare' },
-              ],
-              edges: [
-                { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              ],
-            },
-            diagnostics: [],
-            errors: [],
-          })
-        }
-        if (resource === 'questions') {
-          return jsonResponse({
-            pipeline_id: runId,
-            questions: [],
-          })
-        }
-        if (resource === 'journal') {
-          const requestUrl = new URL(url, 'http://localhost')
-          journalRequestUrls.push(requestUrl.toString())
-          if (requestUrl.searchParams.get('before_sequence') === '3') {
-            return jsonResponse(makeJournalPage(runId, olderEntries, false))
-          }
-          return jsonResponse(makeJournalPage(runId, latestEntries, true))
-        }
-      }
-      throw new Error(`Unhandled request: ${method} ${url}`)
-    })
-
-    act(() => {
-      useStore.getState().registerProject('/tmp/project-one')
-      useStore.getState().setActiveProjectPath('/tmp/project-one')
-    })
-
-    const user = userEvent.setup()
-    renderRunsWorkspace()
-
-    await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
-    })
-
-    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
-    expect(selectedRunCard).toBeTruthy()
-    await user.click(selectedRunCard!)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
-      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
-    })
-
-    await user.selectOptions(screen.getByTestId('run-event-timeline-filter-severity'), 'error')
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-activity-empty')).toHaveTextContent('No journal entries match the current filters.')
-      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
-      expect(screen.queryByTestId('run-activity-list')).not.toBeInTheDocument()
-    })
-
-    await user.click(screen.getByTestId('run-journal-load-older'))
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('run-activity-empty')).not.toBeInTheDocument()
-      expect(screen.getByTestId('run-activity-list')).toHaveTextContent('Stage legacy_validate failed: validation gate rejected')
-      expect(screen.getAllByTestId('run-event-timeline-row-summary')).toHaveLength(1)
-      expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
-    })
-
-    expect(
-      journalRequestUrls.filter((requestUrl) => requestUrl.includes(`/attractor/pipelines/${selectedRun.run_id}/journal?limit=100&before_sequence=3`)),
-    ).toHaveLength(1)
-    expect(
-      flattenRunJournalSegments(useRunJournalStore.getState().byRunId[selectedRun.run_id]?.segments ?? [])
-        .map(({ sequence }) => sequence),
-    ).toEqual([4, 3, 2, 1])
-  })
-
-  it('bounds rendered journal rows when a single retry correlation group contains long history', async () => {
-    localStorage.setItem('spark.debug.performance', '1')
-    const selectedRun = makeRun({
-      run_id: 'run-history-large-retry-group',
-      flow_name: 'selected.dot',
-      status: 'completed',
-      outcome: 'failure',
-      project_path: '/tmp/project-one',
-      ended_at: '2026-03-22T00:05:00Z',
-    })
-    const groupedHistory = Array.from({ length: 180 }, (_, index) => {
-      const sequence = 180 - index
-      return makeJournalEntry(
-        sequence,
-        {
-          type: 'StageRetrying',
-          sequence,
-          emitted_at: new Date(Date.UTC(2026, 2, 22, 0, 0, sequence)).toISOString(),
-          node_id: 'review_loop',
-          index: 2,
-          source_scope: 'root',
-          attempt: sequence,
-        },
-        {
-          kind: 'stage',
-          severity: sequence % 2 === 0 ? 'warning' : 'info',
-          summary: `Retry attempt ${sequence}`,
-        },
-      )
-    })
-
-    const fetchMock = vi.mocked(global.fetch)
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = resolveRequestUrl(input)
-      const method = init?.method ?? 'GET'
-      if (method !== 'GET') {
-        throw new Error(`Unhandled request: ${method} ${url}`)
-      }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
-        return jsonResponse({ runs: [selectedRun] })
-      }
-      if (url.endsWith(`/attractor/pipelines/${selectedRun.run_id}`)) {
-        return jsonResponse({
-          pipeline_id: selectedRun.run_id,
-          run_id: selectedRun.run_id,
-          flow_name: selectedRun.flow_name,
-          status: selectedRun.status,
-          outcome: selectedRun.outcome,
-          outcome_reason_code: null,
-          outcome_reason_message: 'Retry budget exhausted',
-          working_directory: selectedRun.working_directory,
-          project_path: selectedRun.project_path,
-          git_branch: selectedRun.git_branch,
-          git_commit: selectedRun.git_commit,
-          spec_id: null,
-          plan_id: null,
-          model: selectedRun.model,
-          started_at: selectedRun.started_at,
-          ended_at: selectedRun.ended_at,
-          last_error: selectedRun.last_error ?? '',
-          token_usage: selectedRun.token_usage,
-          completed_nodes: ['prepare'],
-          progress: {
-            current_node: 'review_loop',
-            completed_count: 1,
-          },
-          continued_from_run_id: null,
-          continued_from_node: null,
-          continued_from_flow_mode: null,
-          continued_from_flow_name: null,
-        })
-      }
-      const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
-      const runId = pipelineMatch?.[1] ? decodeURIComponent(pipelineMatch[1]) : null
-      const resource = pipelineMatch?.[2] ?? null
-      if (runId === selectedRun.run_id) {
-        if (resource === 'checkpoint') {
-          return jsonResponse({
-            pipeline_id: runId,
-            checkpoint: {
-              current_node: 'review_loop',
-              completed_nodes: ['prepare'],
-            },
-          })
-        }
-        if (resource === 'context') {
-          return jsonResponse({
-            pipeline_id: runId,
-            context: {},
-          })
-        }
-        if (resource === 'artifacts') {
-          return jsonResponse({
-            pipeline_id: runId,
-            artifacts: [],
-          })
-        }
-        if (resource === 'graph-preview') {
-          return jsonResponse({
-            status: 'ok',
-            graph: {
-              graph_attrs: {},
-              nodes: [
-                { id: 'start', label: 'Start', shape: 'Mdiamond' },
-                { id: 'review_loop', label: 'Review Loop', shape: 'box' },
-                { id: 'done', label: 'Done', shape: 'Msquare' },
-              ],
-              edges: [
-                { from: 'start', to: 'review_loop', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-                { from: 'review_loop', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
-              ],
-            },
-            diagnostics: [],
-            errors: [],
-          })
-        }
-        if (resource === 'questions') {
-          return jsonResponse({
-            pipeline_id: runId,
-            questions: [],
-          })
-        }
-        if (resource === 'journal') {
-          return jsonResponse(makeJournalPage(runId, groupedHistory, false))
-        }
-      }
-      throw new Error(`Unhandled request: ${method} ${url}`)
-    })
-
-    act(() => {
-      useStore.getState().registerProject('/tmp/project-one')
-      useStore.getState().setActiveProjectPath('/tmp/project-one')
-    })
-
-    const user = userEvent.setup()
-    renderRunsWorkspace()
-
-    await waitFor(() => {
-      expect(screen.getByText('selected.dot')).toBeVisible()
-    })
-
-    const selectedRunCard = screen.getByText('selected.dot').closest('[data-testid="run-history-row"]')
-    expect(selectedRunCard).toBeTruthy()
-    await user.click(selectedRunCard!)
-
-    await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
-      expect(screen.getByTestId('run-event-timeline-throughput')).toHaveAttribute('data-loaded-count', '180')
-    })
-
-    const throughput = screen.getByTestId('run-event-timeline-throughput')
-    const renderedCount = Number(throughput.getAttribute('data-rendered-count') ?? '0')
-    const windowSize = Number(throughput.getAttribute('data-window-size') ?? '0')
-
-    expect(windowSize).toBeGreaterThan(0)
-    expect(renderedCount).toBe(windowSize)
-    expect(renderedCount).toBeLessThan(groupedHistory.length)
-    expect(screen.getAllByTestId('run-event-timeline-row')).toHaveLength(renderedCount)
-    expect(screen.getByTestId('run-activity-truncation-note')).toHaveTextContent(
-      `Showing the latest ${renderedCount} rows; ${groupedHistory.length - renderedCount} older loaded rows are hidden.`,
-    )
-    expect(screen.getAllByTestId('run-event-timeline-row-correlation')[0]).toHaveTextContent(
-      'Retry sequence for review_loop',
-    )
-    // Chronological stream: the live edge (bottom) holds the newest attempt.
-    expect(screen.getAllByTestId('run-event-timeline-row-summary').at(-1)).toHaveTextContent('Retry attempt 180')
-    expect(
-      screen.getAllByTestId('run-event-timeline-row-summary').some((node) => node.textContent === 'Retry attempt 1'),
-    ).toBe(false)
   })
 
   it('resyncs node statuses from durable state when the live stream gaps', async () => {
@@ -3550,7 +3139,7 @@ describe('RunsPanel', () => {
     })
   })
 
-  it('keeps exhausted journal history marked complete after reselect so Load older does not reappear', async () => {
+  it('loads older journal pages for the visit list once and keeps exhausted history complete after reselect', async () => {
     const selectedRun = makeRun({
       run_id: 'run-history-exhausted',
       flow_name: 'selected.dot',
@@ -3762,15 +3351,11 @@ describe('RunsPanel', () => {
     await user.click(selectedRunCard!)
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-activity-stream-panel')).toBeVisible()
-      expect(screen.getByTestId('run-journal-load-older')).toBeVisible()
-    })
-
-    await user.click(screen.getByTestId('run-journal-load-older'))
-
-    await waitFor(() => {
-      expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
-      expect(screen.getByTestId('run-activity-list')).toHaveTextContent('Stage prepare completed')
+      expect(screen.getAllByTestId('run-visit-row').map((row) => row.textContent)).toEqual([
+        expect.stringContaining('Prepare'),
+        expect.stringContaining('Plan Current'),
+        expect.stringContaining('Done'),
+      ])
     })
 
     expect(useRunJournalStore.getState().byRunId[selectedRun.run_id]).toMatchObject({
@@ -3794,7 +3379,7 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.queryByTestId('run-journal-load-older')).not.toBeInTheDocument()
+      expect(screen.getAllByTestId('run-visit-row')).toHaveLength(3)
     })
 
     expect(

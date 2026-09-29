@@ -361,13 +361,12 @@ test('run journal inspector hydrates durable history, pages older entries, and a
   await openRunsForSmokeTest(page, projectPath)
 
   const pendingQuestionsPanel = page.getByTestId('run-pending-human-gates-panel')
-  const journalPanel = page.getByTestId('run-activity-stream-panel')
+  const journalPanel = page.getByTestId('run-journal-panel')
 
   await expect(pendingQuestionsPanel).toBeVisible()
   await expect(pendingQuestionsPanel).toContainText('Approve production deploy?')
   await page.getByTestId('run-inspector-tab-activity').click()
-  await page.getByTestId('run-activity-mode-events').click()
-  await page.getByTestId('run-activity-node-scope-clear').click()
+  await page.getByTestId('run-journal-toggle').click()
   await expect(journalPanel).toBeVisible()
   await expect(journalPanel).toContainText('Deploy package uploaded to staging.')
 
@@ -391,12 +390,9 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     })
     .toContain(`run_id=${run.run_id}`)
 
-  await expect(page.getByTestId('run-journal-load-older')).toBeVisible()
-  await page.getByTestId('run-journal-load-older').click()
-
-  await expect(page.getByTestId('run-activity-list')).toContainText('Stage build completed')
-  await expect(page.getByTestId('run-activity-list')).toContainText('Stage build started')
-  await expect(page.getByTestId('run-journal-load-older')).toHaveCount(0)
+  // Older pages load on their own: visits need the whole journal.
+  await expect(journalPanel).toContainText('Stage build completed')
+  await expect(journalPanel).toContainText('Stage build started')
   expect(journalRequestUrls.some((url) => url.includes('before_sequence=4'))).toBe(true)
 
   await page.evaluate(({ runId }) => {
@@ -418,7 +414,7 @@ test('run journal inspector hydrates durable history, pages older entries, and a
     })
   }, { runId: run.run_id })
 
-  await expect(page.getByTestId('run-activity-list')).toContainText('Stage deploy completed (success)')
+  await expect(journalPanel).toContainText('Stage deploy completed (success)')
   await page.screenshot({ path: screenshotPath('08c-runs-panel-journal-live-tail.png'), fullPage: true })
 })
 
@@ -546,6 +542,8 @@ test('run graph panel renders /pipelines/{id}/graph-preview output for item 9.5-
   await openRunsForSmokeTest(page, projectPath)
 
   const graphPanel = page.getByTestId('run-graph-panel')
+  await expect(graphPanel).toHaveCount(0)
+  await page.getByTestId('run-graph-toggle').click()
   await expect(graphPanel).toBeVisible()
   await expect(page.getByTestId('run-graph-canvas')).toBeVisible()
   await expect(page.locator('[data-testid="run-graph-canvas"] .react-flow__node')).toHaveCount(3)
@@ -618,32 +616,51 @@ test('run artifact browser handles missing files and partial run states for item
   await artifactPanel.screenshot({ path: screenshotPath('08o-runs-panel-artifact-missing-partial.png') })
 })
 
-test('run activity shows one labeled transcript group per visit of a repeated node, before and after a live update', async ({ page }) => {
+test('run visits list a review loop and show one visit at a time', async ({ page }) => {
   const projectPath = `/tmp/ui-smoke-project-runs-visits-${Date.now()}`
   const run = buildSmokeRun(projectPath, {
     run_id: `run-visits-${Date.now()}`,
     flow_name: 'LoopFlow',
-    status: 'running',
-    outcome: null,
-    ended_at: null,
   })
-  const segment = (content: string, at: string) => ({
-    id: 'final-response',
-    turn_id: 'response',
-    order: 1,
-    kind: 'assistant_message',
-    role: 'assistant',
-    status: 'complete',
-    timestamp: at,
-    updated_at: at,
-    content,
-  })
-  const transcripts: Record<string, unknown> = {
-    '1-0': segment('First verdict: needs changes.', '2026-03-03T12:00:10Z'),
-    '3-0': segment('Second verdict: streaming.', '2026-03-03T12:00:30Z'),
+  const stages: Array<[string, number, 'success' | 'fail']> = [
+    ['start', 0, 'success'],
+    ['implement', 1, 'success'],
+    ['evaluate', 2, 'fail'],
+    ['implement', 3, 'success'],
+    ['evaluate', 4, 'success'],
+    ['done', 5, 'success'],
+  ]
+  const journal = stages.flatMap(([node, index, outcome]) => [
+    buildSmokeJournalEntry(index * 2 + 1, {
+      kind: 'stage', raw_type: 'StageStarted', summary: `Stage ${node} started`, node_id: node, stage_index: index,
+      emitted_at: `2026-03-03T12:0${index}:00Z`, payload: { node_id: node, index },
+    }),
+    buildSmokeJournalEntry(index * 2 + 2, {
+      kind: 'stage',
+      raw_type: outcome === 'fail' ? 'StageFailed' : 'StageCompleted',
+      summary: `Stage ${node} ${outcome === 'fail' ? 'failed' : 'completed'}`,
+      node_id: node,
+      stage_index: index,
+      emitted_at: `2026-03-03T12:0${index}:42Z`,
+      payload: outcome === 'fail' ? { node_id: node, index, error: 'stage_failed' } : { node_id: node, index, outcome },
+    }),
+  ]).reverse()
+  const rejection = {
+    outcome: 'fail',
+    failure_reason: 'Missing regression tests.',
+    notes: '',
+    context_updates: {
+      'context.review.required_changes': 'Add a regression test for the loop.',
+      'context.review.approved': null,
+      last_stage: 'evaluate',
+    },
   }
+  const envelope = JSON.stringify({ outcome: 'fail', context_updates: rejection.context_updates })
+  const segment = (id: string, order: number, content: string) => ({
+    id, turn_id: 'response', order, kind: 'assistant_message', role: 'assistant', status: 'complete',
+    timestamp: '2026-03-03T12:02:30Z', updated_at: '2026-03-03T12:02:30Z', content,
+  })
 
-  await installMockEventSource(page)
   await stubRunSummary(page, run)
   await page.route(`**/attractor/pipelines/${run.run_id}`, async (route) => {
     await route.fulfill({
@@ -652,97 +669,127 @@ test('run activity shows one labeled transcript group per visit of a repeated no
       body: JSON.stringify({
         pipeline_id: run.run_id,
         ...run,
-        completed_nodes: [],
-        progress: { current_node: null, completed_count: 0 },
-        executions: ['1-0', '3-0'].map((identity) => ({
+        completed_nodes: ['done'],
+        progress: { current_node: 'done', completed_count: 6 },
+        executions: stages.map(([node, index, outcome]) => ({
           run_id: run.run_id,
-          node_id: 'evaluate',
-          stage_index: Number(identity.split('-')[0]),
+          node_id: node,
+          stage_index: index,
           attempt: 0,
-          status: null,
+          status: index === 2 ? rejection : { outcome, notes: '', context_updates: {} },
         })),
+        child_runs: [],
       }),
     })
   })
-  await page.route(`**/attractor/pipelines/${run.run_id}/executions/evaluate/*/transcript`, async (route) => {
-    const identity = new URL(route.request().url()).pathname.split('/').at(-2) ?? ''
+  await page.route(`**/attractor/pipelines/${run.run_id}/executions/*/*/transcript`, async (route) => {
+    const isRejection = new URL(route.request().url()).pathname.endsWith('/evaluate/2-0/transcript')
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ records: [{ type: 'segment_upsert', source_event_sequence: 1, segment: transcripts[identity] }] }),
+      body: JSON.stringify({
+        records: isRejection
+          ? [
+            { type: 'turn_upsert', turn: { id: 'prompt', role: 'user', kind: 'message', content: 'Judge the implementation against the contract.' } },
+            { type: 'segment_upsert', source_event_sequence: 1, segment: segment('reply', 1, 'Checked the diff; the loop has no regression test.') },
+            { type: 'segment_upsert', source_event_sequence: 2, segment: segment('final', 2, envelope) },
+          ]
+          : [],
+      }),
     })
   })
   await page.route(`**/attractor/pipelines/${run.run_id}/journal**`, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
+      body: JSON.stringify({ pipeline_id: run.run_id, entries: journal, oldest_sequence: 1, newest_sequence: 12, has_older: false }),
+    })
+  })
+  await page.route(`**/attractor/pipelines/${run.run_id}/graph-preview**`, async (route) => {
+    const nodes = [
+      { id: 'start', label: 'Start', kind: 'start' },
+      { id: 'implement', label: 'Implement', kind: 'agent_task' },
+      { id: 'evaluate', label: 'Evaluate', kind: 'agent_task' },
+      { id: 'done', label: 'Done', kind: 'exit' },
+    ]
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
       body: JSON.stringify({
-        pipeline_id: run.run_id,
-        entries: [
-          buildSmokeJournalEntry(3, {
-            kind: 'stage', raw_type: 'StageStarted', summary: 'Stage evaluate started (second visit)',
-            node_id: 'evaluate', stage_index: 3, emitted_at: '2026-03-03T12:00:20Z',
-          }),
-          buildSmokeJournalEntry(2, {
-            kind: 'stage', raw_type: 'StageCompleted', summary: 'Stage evaluate completed (first visit)',
-            node_id: 'evaluate', stage_index: 1, emitted_at: '2026-03-03T12:00:15Z',
-          }),
-        ],
-        oldest_sequence: 2,
-        newest_sequence: 3,
-        has_older: false,
+        status: 'ok',
+        flow: {
+          nodes: Object.fromEntries(nodes.map((node) => [node.id, {
+            ...node,
+            ...(node.id === 'evaluate' ? { contracts: { reads_context: ['context.task.objective'] } } : {}),
+          }])),
+        },
+        graph: {
+          nodes: nodes.map((node) => ({ id: node.id, label: node.label, shape: 'box' })),
+          edges: [
+            { from: 'start', to: 'implement' },
+            { from: 'implement', to: 'evaluate' },
+            { from: 'evaluate', to: 'implement' },
+            { from: 'evaluate', to: 'done' },
+          ].map((edge) => ({ ...edge, label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false })),
+        },
+        diagnostics: [],
+        errors: [],
       }),
     })
   })
 
   await openRunsForSmokeTest(page, projectPath)
-  await page.getByTestId('run-inspector-tab-activity').click()
-  await page.getByTestId('run-activity-mode-all').click()
-  const list = page.getByTestId('run-activity-list')
-  const groups = list.getByTestId('run-transcript-group')
-  const expectVisitsInOrder = async (secondContent: string) => {
-    await expect(groups).toHaveCount(2)
-    await expect(groups.nth(0)).toContainText('evaluate — visit 1')
-    await expect(groups.nth(0)).toContainText('First verdict: needs changes.')
-    await expect(groups.nth(1)).toContainText('evaluate — visit 2')
-    await expect(groups.nth(1)).toContainText(secondContent)
-    await expect(list.locator('> *')).toHaveText([
-      /First verdict/,
-      /Stage evaluate completed \(first visit\)/,
-      /Stage evaluate started \(second visit\)/,
-      new RegExp(secondContent),
-    ])
-  }
-  await expectVisitsInOrder('Second verdict: streaming.')
+  await expect(page.getByTestId('run-graph-panel')).toHaveCount(0)
 
-  await page.evaluate(({ runId }) => {
-    ;(globalThis as typeof globalThis & {
-      __runEventSourceController?: {
-        emitLatest(pattern: string, payload: unknown): void
-      }
-    }).__runEventSourceController?.emitLatest('/workspace/api/live/events', {
-      type: 'conversation.segment_upsert',
-      resource: { kind: 'node_execution', id: `${runId}:evaluate:3-0` },
-      payload: {
-        run_id: runId,
-        presentation_run_id: runId,
-        source_scope: 'root',
-        node_id: 'evaluate',
-        stage_index: 3,
-        attempt: 0,
-        record: {
-          type: 'segment_upsert',
-          source_event_sequence: 2,
-          segment: {
-            id: 'final-response', turn_id: 'response', order: 1, kind: 'assistant_message', role: 'assistant',
-            status: 'complete', timestamp: '2026-03-03T12:00:30Z', updated_at: '2026-03-03T12:00:40Z',
-            content: 'Second verdict: approved.',
-          },
-        },
-      },
-    })
-  }, { runId: run.run_id })
+  // One row per visit, n/x for repeated nodes, marks only where notable.
+  const rows = page.getByTestId('run-visit-row')
+  await expect(rows).toHaveCount(6)
+  await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1/2', '1/2', '2/2', '2/2', ''])
+  await expect(rows.nth(2).locator('[data-mark]')).toHaveCount(2)
+  await expect(rows.nth(2).locator('[data-mark="did_not_pass"]')).toBeVisible()
+  await expect(rows.nth(2).locator('[data-mark="loop_back"]')).toBeVisible()
+  await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
 
-  await expectVisitsInOrder('Second verdict: approved.')
-  await page.screenshot({ path: screenshotPath('08d-runs-panel-activity-visits.png'), fullPage: true })
+  // The Evaluate visit that didn't pass: instructions, transcript, reason, writes.
+  await rows.nth(2).click()
+  const view = page.getByTestId('run-visit-view')
+  await expect(view).toContainText('visit 1 of 2')
+  await expect(page.getByTestId('run-visit-view-outcome')).toHaveText("Didn't pass")
+  const instructions = page.getByTestId('run-visit-instructions')
+  await expect(instructions).not.toHaveAttribute('open', '')
+  await instructions.locator('summary').click()
+  await expect(instructions).toContainText('Judge the implementation against the contract.')
+  await expect(page.getByTestId('run-visit-reads')).toContainText('context.task.objective')
+  await expect(page.getByTestId('run-visit-work')).toContainText('the loop has no regression test')
+  await expect(page.getByTestId('run-visit-work')).not.toContainText('"outcome"')
+  await expect(page.getByTestId('run-visit-reason')).toHaveText('Missing regression tests.')
+  await expect(page.getByTestId('run-visit-next')).toHaveText('Sent back to Implement 2/2')
+  await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.required_changes"]')).toContainText('Add a regression test for the loop.')
+  await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.approved"]')).toContainText('cleared')
+  await expect(page.getByTestId('run-visit-system-writes')).toHaveText('1 system key written')
+  await page.screenshot({ path: screenshotPath('08d-runs-panel-visit-view.png'), fullPage: true })
+
+  // The picker jumps between this node's visits.
+  await page.getByTestId('run-visit-picker').getByRole('button', { name: 'Visit 2 of 2' }).click()
+  await expect(view).toContainText('visit 2 of 2')
+  await expect(page.getByTestId('run-visit-view-outcome')).toHaveText('Succeeded')
+
+  // Keyboard: left/right step within the node, up/down and j/k move through the list.
+  await rows.nth(4).focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(rows.nth(2)).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('ArrowUp')
+  await expect(rows.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByTestId('run-visit-view-title')).toHaveText('Implement')
+  await page.keyboard.press('j')
+  await expect(rows.nth(2)).toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('ArrowRight')
+  await expect(rows.nth(4)).toHaveAttribute('aria-selected', 'true')
+
+  // The graph stays hidden until toggled, by button or by g.
+  await expect(page.getByTestId('run-graph-panel')).toHaveCount(0)
+  await page.keyboard.press('g')
+  await expect(page.getByTestId('run-graph-panel')).toBeVisible()
+  await page.getByTestId('run-graph-toggle').click()
+  await expect(page.getByTestId('run-graph-panel')).toHaveCount(0)
 })

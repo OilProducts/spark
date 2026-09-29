@@ -11,8 +11,10 @@ import { useRunActions } from './hooks/useRunActions'
 import { useRunDetails } from './hooks/useRunDetails'
 import { useRunTimeline } from './hooks/useRunTimeline'
 import { useRunTranscriptStore } from './state/runTranscriptStore'
-import { buildRunTranscriptGroups } from './model/transcriptModel'
-import { RunActivityCard } from './components/RunActivityCard'
+import { flattenRunJournalSegments, useRunJournalStore } from './state/runJournalStore'
+import { buildRunVisits, visitFlowNodesFromSnapshot, type VisitFlowNode } from './model/visitModel'
+import { loadRunGraphPreview } from './services/runGraphTransport'
+import { RunVisitsCard } from './components/RunVisitsCard'
 import { RunGraphCard } from './components/RunGraphCard'
 import { RunInspectorPanel } from './components/RunInspectorPanel'
 import { RunList } from './components/RunList'
@@ -27,10 +29,10 @@ import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
-import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
+import { openRun } from '@/features/missions/MissionTranscript'
 
 const EMPTY_NODE_STATUSES = {}
-const EMPTY_TRANSCRIPT_SEGMENTS: RunTranscriptSegment[] = []
+const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
@@ -134,15 +136,12 @@ export function RunsPanel() {
     const transcriptState = useRunTranscriptStore((state) => (
         selectedRun ? state.byRunId[selectedRun.run_id] : undefined
     ))
-    const transcriptSegments = transcriptState?.segments ?? EMPTY_TRANSCRIPT_SEGMENTS
     const transcriptError = transcriptState?.status === 'error' ? transcriptState.error : null
     const {
         confirmedQuestionIds,
-        filteredTimelineEventCount,
         freeformAnswersByGateId,
         gateNotesByGateId,
         groupedPendingInterviewGates,
-        groupedTimelineEntries,
         hasOlderTimelineEvents,
         isTimelineLive,
         isTimelineLoadingOlder,
@@ -150,32 +149,17 @@ export function RunsPanel() {
         pendingGateActionError,
         setFreeformAnswersByGateId,
         setGateNotesByGateId,
-        setTimelineCategoryFilter,
-        setTimelineSeverityFilter,
         submittingGateIds,
         submitPendingGateAnswer,
-        timelineCategoryFilter,
         timelineError,
-        timelineEventCount,
-        timelineSeverityFilter,
         visiblePendingInterviewGates,
     } = useRunTimeline({
         pendingQuestionSnapshots,
-        selectedRunCurrentNode: selectedRun?.current_node ?? checkpointResumeNode,
         selectedRunTimelineId,
     })
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
-    const storedActivityMode = selectedRunSessionState?.activityMode ?? null
-    // Transcript-first: with no explicit mode chosen, lead with the live
-    // transcript whenever the run has agent output to show; tool-only runs
-    // fall back to the full activity stream.
-    const hasTranscriptContent = useMemo(
-        () => buildRunTranscriptGroups(transcriptSegments, null).length > 0,
-        [transcriptSegments],
-    )
-    const activityMode = storedActivityMode ?? (hasTranscriptContent ? 'transcript' : 'all')
     const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
         if (!selectedRun?.run_id) {
             return
@@ -222,6 +206,71 @@ export function RunsPanel() {
         [checkpointData],
     )
     const selectedRunStatus = selectedRun?.status ?? null
+    const journalSegments = useRunJournalStore((state) => (
+        selectedRunTimelineId ? state.byRunId[selectedRunTimelineId]?.segments : undefined
+    ))
+    const journal = useMemo(
+        () => (journalSegments ? flattenRunJournalSegments(journalSegments).reverse() : []),
+        [journalSegments],
+    )
+    // Visits need the whole journal for timing, child runs and branches.
+    // ponytail: loads every older page up front; page lazily if journals grow large.
+    useEffect(() => {
+        if (hasOlderTimelineEvents && !isTimelineLoadingOlder && !timelineError) {
+            void loadOlderTimelineEvents()
+        }
+    }, [hasOlderTimelineEvents, isTimelineLoadingOlder, loadOlderTimelineEvents, timelineError])
+    const [flowNodesByRunId, setFlowNodesByRunId] = useState<Record<string, Record<string, VisitFlowNode>>>({})
+    useEffect(() => {
+        if (!selectedRunTimelineId || flowNodesByRunId[selectedRunTimelineId]) {
+            return
+        }
+        const controller = new AbortController()
+        loadRunGraphPreview(selectedRunTimelineId, { signal: controller.signal })
+            .then((preview) => {
+                setFlowNodesByRunId((current) => ({
+                    ...current,
+                    [selectedRunTimelineId]: visitFlowNodesFromSnapshot(preview.flow),
+                }))
+            })
+            .catch(() => {
+                // Without the snapshot, visits fall back to node ids for labels.
+            })
+        return () => controller.abort()
+    }, [flowNodesByRunId, selectedRunTimelineId])
+    const flowNodes = (selectedRunTimelineId && flowNodesByRunId[selectedRunTimelineId]) || EMPTY_FLOW_NODES
+    const waitingNodeIds = useMemo(
+        () => [
+            ...visiblePendingInterviewGates.map((gate) => (gate.sourceScope === 'child' ? gate.sourceParentNodeId : gate.nodeId)),
+            humanGateNodeId,
+        ]
+            .filter((nodeId): nodeId is string => Boolean(nodeId)),
+        [humanGateNodeId, visiblePendingInterviewGates],
+    )
+    const visits = useMemo(() => (selectedRunTimelineId ? buildRunVisits({
+        runId: selectedRunTimelineId,
+        runStatus: selectedRunStatus,
+        journal,
+        executions: transcriptState?.executions ?? [],
+        childRuns: transcriptState?.childRuns ?? [],
+        flowNodes,
+        waitingNodeIds,
+    }) : []), [flowNodes, journal, selectedRunStatus, selectedRunTimelineId, transcriptState, waitingNodeIds])
+    const [showGraph, setShowGraph] = useState(false)
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            const target = event.target instanceof Element ? event.target : null
+            // The panel stays mounted behind other tabs; only Runs owns g.
+            if (event.key !== 'g' || event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented
+                || useStore.getState().viewMode !== 'runs'
+                || target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) {
+                return
+            }
+            setShowGraph((current) => !current)
+        }
+        window.addEventListener('keydown', onKeyDown)
+        return () => window.removeEventListener('keydown', onKeyDown)
+    }, [])
     const runNodeStatuses = useMemo(() => buildRunNodeStatuses({
         completedNodes: completedNodesSnapshot ?? [],
         nodeOutcomes: checkpointNodeOutcomes,
@@ -454,6 +503,8 @@ export function RunsPanel() {
                                 ? 'space-y-6'
                                 : 'flex min-h-0 flex-1 gap-4'}
                             >
+                                {/* A continuation picks its restart node on the graph. */}
+                                {showGraph || activeContinuationDraft ? (
                                 <div className={isNarrowViewport
                                     ? undefined
                                     : 'flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
@@ -490,6 +541,7 @@ export function RunsPanel() {
                                         fillHeight={!isNarrowViewport}
                                     />
                                 </div>
+                                ) : null}
                                 <div className={isNarrowViewport
                                     ? 'mt-6'
                                     : 'flex min-h-0 min-w-0 flex-1 flex-col'}
@@ -502,35 +554,35 @@ export function RunsPanel() {
                                     }}
                                     fillHeight={!isNarrowViewport}
                                     scrollRegionRef={detailsScrollRef}
+                                    toolbar={
+                                        <button
+                                            type="button"
+                                            data-testid="run-graph-toggle"
+                                            aria-pressed={showGraph}
+                                            aria-keyshortcuts="g"
+                                            title="Show or hide the run graph (g)"
+                                            onClick={() => setShowGraph((current) => !current)}
+                                            className="px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                                        >
+                                            {showGraph ? 'Hide graph' : 'Show graph'}
+                                        </button>
+                                    }
                                     activityContent={
-                                        <RunActivityCard
-                                            fillHeight={!isNarrowViewport}
-                                        isNarrowViewport={isNarrowViewport}
-                                        isLive={isTimelineLive}
-                                        activityMode={activityMode}
-                                        onActivityModeChange={(mode) => {
-                                            patchSelectedRunSession({ activityMode: mode })
-                                            useStore.getState().setClientRunPresentation({ activity_mode: mode })
-                                        }}
-                                        selectedNodeId={selectedNodeId}
-                                        onClearNodeSelection={() => {
-                                            selectNode(null)
-                                        }}
-                                        transcriptSegments={transcriptSegments}
-                                        transcriptError={transcriptError}
-                                        groupedTimelineEntries={groupedTimelineEntries}
-                                        timelineError={timelineError}
-                                        timelineEventCount={timelineEventCount}
-                                        filteredTimelineEventCount={filteredTimelineEventCount}
-                                        timelineCategoryFilter={timelineCategoryFilter}
-                                        timelineSeverityFilter={timelineSeverityFilter}
-                                        onTimelineCategoryFilterChange={setTimelineCategoryFilter}
-                                        onTimelineSeverityFilterChange={setTimelineSeverityFilter}
-                                        hasOlderTimelineEvents={hasOlderTimelineEvents}
-                                        isTimelineLoadingOlder={isTimelineLoadingOlder}
-                                        onLoadOlderTimelineEvents={() => {
-                                            void loadOlderTimelineEvents()
-                                        }}
+                                        <RunVisitsCard
+                                            key={selectedRun.run_id}
+                                            visits={visits}
+                                            flowNodes={flowNodes}
+                                            segments={transcriptState?.segments ?? []}
+                                            prompts={transcriptState?.prompts ?? []}
+                                            journal={journal}
+                                            now={now}
+                                            isNarrowViewport={isNarrowViewport}
+                                            isLive={isTimelineLive && isSelectedRunActive}
+                                            transcriptError={transcriptError}
+                                            timelineError={timelineError}
+                                            selectedNodeId={selectedNodeId}
+                                            onSelectNode={selectNode}
+                                            onOpenRun={openRun}
                                         />
                                     }
                                     detailsCardProps={{

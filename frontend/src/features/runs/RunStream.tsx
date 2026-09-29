@@ -321,6 +321,12 @@ export function RunStream() {
                 const timelineEvent = toTimelineEvent(data)
                 if (timelineEvent) {
                     useRunJournalStore.getState().appendLiveEntry(selectedRunId, timelineEvent)
+                    // A finished stage has written its status, prompt and
+                    // context updates; reload them for the visit view.
+                    // ponytail: refetches every execution's transcript; fetch just the finished one if runs grow long.
+                    if (timelineEvent.sourceScope === 'root' && (timelineEvent.type === 'StageCompleted' || timelineEvent.type === 'StageFailed')) {
+                        void refreshRunTranscript()
+                    }
                 }
                 const payload = (
                     timelineEvent?.payload
@@ -501,23 +507,30 @@ export function RunStream() {
             handleMessage({ data: JSON.stringify(detail.entry) })
         }
 
+        let transcriptRequestId = 0
         const refreshRunTranscript = async () => {
+            const requestId = ++transcriptRequestId
             const transcript = useRunTranscriptStore.getState()
             if (transcript.byRunId[selectedRunId]?.status !== 'ready') {
                 transcript.patchRun(selectedRunId, { status: 'loading', error: null })
             }
             try {
                 const response = await loadRunTranscript(selectedRunId)
-                if (!isCurrent()) {
+                if (!isCurrent() || requestId !== transcriptRequestId) {
                     return
                 }
                 useRunTranscriptStore.getState().setSegments(
                     selectedRunId,
                     response.segments,
                     response.newest_sequence,
+                    {
+                        executions: response.executions ?? [],
+                        childRuns: response.child_runs ?? [],
+                        prompts: response.prompts ?? [],
+                    },
                 )
             } catch (error) {
-                if (!isCurrent()) {
+                if (!isCurrent() || requestId !== transcriptRequestId) {
                     return
                 }
                 useRunTranscriptStore.getState().patchRun(selectedRunId, {

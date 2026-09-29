@@ -2,11 +2,9 @@ import { useCallback, useState } from 'react'
 
 import { MessageRow, ThinkingRow, ToolCallRow } from '@/components/app/transcript/SegmentRows'
 import { formatTimestamp } from '../model/shared'
-import type { RunTranscriptGroup, RunTranscriptRow } from '../model/transcriptModel'
-import { runTranscriptGroupLabel } from '../model/transcriptModel'
+import type { RunTranscriptRow } from '../model/transcriptModel'
 
-// Run transcripts render the same shared segment rows the chat surface uses;
-// this module adds the run-specific grouping (node, attempt, child flow).
+// Run transcripts render the same shared segment rows the chat surface uses.
 
 export interface TranscriptExpansionState {
     expandedToolCalls: Record<string, boolean>
@@ -56,35 +54,4 @@ export function RunTranscriptRowItem({
         )
     }
     return <MessageRow entry={row.entry} formatConversationTimestamp={formatTimestamp} />
-}
-
-export function RunTranscriptGroupSection({
-    group,
-    expansion,
-}: {
-    group: RunTranscriptGroup
-    expansion: TranscriptExpansionState
-}) {
-    return (
-        <section
-            data-testid="run-transcript-group"
-            data-node-id={group.nodeId ?? undefined}
-            data-stage-index={group.stageIndex}
-            data-attempt={group.attempt}
-            className="space-y-2"
-        >
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {runTranscriptGroupLabel(group)}
-            </p>
-            <ul className="list-none space-y-2">
-                {group.rows.map((row) => (
-                    <RunTranscriptRowItem
-                        key={row.segment.id}
-                        row={row}
-                        expansion={expansion}
-                    />
-                ))}
-            </ul>
-        </section>
-    )
 }

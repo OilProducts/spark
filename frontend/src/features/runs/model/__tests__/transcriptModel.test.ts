@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { useRunTranscriptStore } from '../../state/runTranscriptStore'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
-import { buildRunTranscriptGroups, runTranscriptGroupLabel } from '../transcriptModel'
+import { buildRunTranscriptRow } from '../transcriptModel'
 
 const segment = (overrides: Partial<RunTranscriptSegment>): RunTranscriptSegment => ({
   id: 'segment-1',
@@ -33,35 +33,11 @@ const segment = (overrides: Partial<RunTranscriptSegment>): RunTranscriptSegment
   ...overrides,
 })
 
-describe('buildRunTranscriptGroups', () => {
-  it('groups segments by node attempt and orders rows within each group', () => {
-    const groups = buildRunTranscriptGroups([
-      segment({ id: 's-answer', order: 2, latest_sequence: 4 }),
-      segment({
-        id: 's-thinking',
-        kind: 'reasoning',
-        order: 1,
-        content: '**Weighing options** details here',
-        latest_sequence: 2,
-      }),
-      segment({
-        id: 's-retry',
-        turn_id: 'root:implement:attempt-1',
-        attempt: 1,
-        content: 'Second try.',
-        latest_sequence: 9,
-      }),
-    ])
-    expect(groups).toHaveLength(2)
-    expect(groups[0].rows.map((row) => row.kind)).toEqual(['thinking', 'message'])
-    expect(groups[0].latestSequence).toBe(4)
-    expect(groups[1].attempt).toBe(1)
-    expect(runTranscriptGroupLabel(groups[1])).toBe('implement — attempt 2')
-  })
-
-  it('maps tool call segments and scopes by node', () => {
-    const groups = buildRunTranscriptGroups([
-      segment({ id: 's-other-node', node_id: 'review', turn_id: 'root:review:attempt-0' }),
+describe('buildRunTranscriptRow', () => {
+  it('maps messages, reasoning and tool calls onto the shared rows and skips other kinds', () => {
+    const rows = [
+      segment({ id: 's-answer' }),
+      segment({ id: 's-thinking', kind: 'reasoning', content: '**Weighing options** details here' }),
       segment({
         id: 's-tool',
         kind: 'tool_call',
@@ -78,45 +54,9 @@ describe('buildRunTranscriptGroups', () => {
           file_paths: [],
         },
       }),
-    ], 'implement')
-    expect(groups).toHaveLength(1)
-    expect(groups[0].rows).toHaveLength(1)
-    expect(groups[0].rows[0].kind).toBe('tool_call')
-  })
-
-  it('labels child-run groups with their flow', () => {
-    const groups = buildRunTranscriptGroups([
-      segment({
-        id: 's-child',
-        turn_id: 'run-child:child_step:attempt-0',
-        node_id: 'child_step',
-        source_scope: 'child',
-        source_flow_name: 'child-flow.dot',
-        source_run_id: 'run-child',
-      }),
-    ])
-    expect(runTranscriptGroupLabel(groups[0])).toBe('child_step (child-flow.dot)')
-  })
-
-  it('keeps executions that differ only in stage_index apart and labels each visit', () => {
-    const shared = { turn_id: 'response', id: 'final-response', node_id: 'evaluate', source_run_id: 'run-1' }
-    const groups = buildRunTranscriptGroups([
-      segment({ ...shared, stage_index: 7, content: 'Second.', updated_at: '2026-07-08T10:05:00Z' }),
-      segment({ ...shared, stage_index: 3, content: 'First.', updated_at: '2026-07-08T10:01:00Z' }),
-    ])
-    expect(groups.map((group) => group.rows[0].entry)).toMatchObject([{ content: 'First.' }, { content: 'Second.' }])
-    expect(groups.map(runTranscriptGroupLabel)).toEqual(['evaluate — visit 1', 'evaluate — visit 2'])
-    expect(new Set(groups.map((group) => group.key)).size).toBe(2)
-  })
-
-  it('keeps a root and a child run with matching node ids apart', () => {
-    const shared = { turn_id: 'response', id: 'final-response', node_id: 'implement' }
-    const groups = buildRunTranscriptGroups([
-      segment({ ...shared, source_run_id: 'run-root', content: 'Root.' }),
-      segment({ ...shared, source_run_id: 'run-child', source_scope: 'child', content: 'Child.' }),
-    ])
-    expect(groups).toHaveLength(2)
-    expect(groups.map((group) => group.visit)).toEqual([null, null])
+      segment({ id: 's-compaction', kind: 'context_compaction' }),
+    ].map(buildRunTranscriptRow)
+    expect(rows.map((row) => row?.kind ?? null)).toEqual(['message', 'thinking', 'tool_call', null])
   })
 })
 
@@ -140,6 +80,5 @@ describe('runTranscriptStore.applySegmentUpsert', () => {
     store.setSegments('run-2', [segment({ ...shared, source_run_id: 'run-2', content: 'Root.' })], 0)
     store.applySegmentUpsert('run-2', segment({ ...shared, source_run_id: 'run-child', source_scope: 'child', content: 'Child.' }))
     expect(contents('run-2')).toEqual(['Root.', 'Child.'])
-    expect(buildRunTranscriptGroups(useRunTranscriptStore.getState().byRunId['run-2'].segments)).toHaveLength(2)
   })
 })

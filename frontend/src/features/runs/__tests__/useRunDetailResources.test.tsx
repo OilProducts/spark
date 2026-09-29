@@ -62,7 +62,7 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
             const resources = useRunDetailResources({ selectedRunId: 'run' })
             return useRunTimeline({
                 pendingQuestionSnapshots: resources.pendingQuestionSnapshots,
-                selectedRunCurrentNode: 'work', selectedRunTimelineId: 'run',
+                selectedRunTimelineId: 'run',
             })
         })
         const ids = () => result.current.groupedPendingInterviewGates.flatMap((group) => group.gates.map((gate) => [gate.questionId, gate.runId]))
@@ -84,9 +84,10 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         questions = [questions[1]]
         await act(async () => window.dispatchEvent(new CustomEvent(signal, { detail: { runId: 'run' } })))
         expect(ids()).toEqual([['child', 'child']])
-        const restoredHistory = result.current.groupedTimelineEntries
-        expect(JSON.stringify(restoredHistory)).toContain('Custom answer')
-        expect(JSON.stringify(restoredHistory)).toContain('Question child')
+        const restoredHistory = () => useRunJournalStore.getState().byRunId.run.segments
+        const restoredHistoryBefore = restoredHistory()
+        expect(JSON.stringify(restoredHistory())).toContain('Custom answer')
+        expect(JSON.stringify(restoredHistory())).toContain('Question child')
         // No closing interview event arrives for a dead child request.
         questions = []
         await act(async () => window.dispatchEvent(new CustomEvent('spark:run-upsert', {
@@ -94,6 +95,6 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         })))
         expect(ids()).toEqual([])
         expect(result.current.confirmedQuestionIds).toEqual([])
-        expect(result.current.groupedTimelineEntries).toEqual(restoredHistory)
+        expect(restoredHistory()).toEqual(restoredHistoryBefore)
     },
 )
