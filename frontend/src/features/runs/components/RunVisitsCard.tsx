@@ -23,7 +23,7 @@ import {
 import { RunTranscriptRowItem, useTranscriptExpansion } from './RunTranscriptGroups'
 
 const MARKS: Record<VisitMark, { glyph: string; label: string; className: string }> = {
-    did_not_pass: { glyph: '✕', label: "Didn't pass", className: 'text-warning' },
+    did_not_pass: { glyph: '!', label: "Didn't pass", className: 'text-warning' },
     failed: { glyph: '✕', label: 'Failed', className: 'text-destructive' },
     interrupted: { glyph: '‖', label: 'Interrupted', className: 'text-warning' },
     waiting: { glyph: '?', label: 'Waiting on a question', className: 'text-info' },

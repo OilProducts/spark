@@ -1205,7 +1205,16 @@ async function fetchExecutionActivity(execution: NodeExecutionResponse, sourceSc
     return { segments, prompt }
 }
 
-export async function fetchRunActivityValidated(runId: string): Promise<RunSegmentsResponse> {
+const executionKey = (item: { run_id?: string; source_run_id?: string | null; node_id: string | null; stage_index: number; attempt: number }) => (
+    JSON.stringify([item.source_run_id ?? item.run_id, item.node_id, item.stage_index, item.attempt])
+)
+
+/**
+ * Loads each execution's transcript and prompt. With `previous`, only executions
+ * that are new or whose status changed are fetched again; the rest keep their
+ * loaded segments (including live upserts) and prompt.
+ */
+export async function fetchRunActivityValidated(runId: string, previous?: RunSegmentsResponse): Promise<RunSegmentsResponse> {
     const detail = await fetchPipelineStatusValidated(runId)
     const executions = detail.executions ?? []
     const childRuns = detail.child_runs ?? []
@@ -1213,7 +1222,23 @@ export async function fetchRunActivityValidated(runId: string): Promise<RunSegme
         ...executions.map((execution) => ({ execution, scope: 'root' as const })),
         ...childRuns.flatMap((child) => child.executions.map((execution) => ({ execution, scope: 'child' as const }))),
     ]
-    const activity = await Promise.all(resources.map(({ execution, scope }) => fetchExecutionActivity(execution, scope)))
+    const previousStatus = new Map(
+        [...(previous?.executions ?? []), ...(previous?.child_runs ?? []).flatMap((child) => child.executions)]
+            .map((execution) => [executionKey(execution), JSON.stringify(execution.status)]),
+    )
+    const unchanged = (execution: NodeExecutionResponse) => (
+        previousStatus.get(executionKey(execution)) === JSON.stringify(execution.status)
+    )
+    const activity = await Promise.all(resources.map(({ execution, scope }) => {
+        if (previous && unchanged(execution)) {
+            const key = executionKey(execution)
+            return {
+                segments: previous.segments.filter((segment) => executionKey(segment) === key),
+                prompt: previous.prompts?.find((prompt) => executionKey(prompt) === key) ?? null,
+            }
+        }
+        return fetchExecutionActivity(execution, scope)
+    }))
     return {
         run_id: runId,
         segments: activity.flatMap((entry) => entry.segments),

@@ -206,6 +206,22 @@ describe('buildRunVisits', () => {
       summary: 'Implemented the change.',
     })
     expect(visits[0].childRun?.endedAt).not.toBeNull()
+    // The runtime's "Child completed" note is not a reason; the child summary says what happened.
+    expect(visits[0].reason).toBeNull()
+  })
+
+  it('makes visits only of executions the journal started or the flow declares', () => {
+    const visits = build({
+      journal: [...stage('start', 0)],
+      executions: [
+        execution('start', 0, { outcome: 'success' }),
+        // The post-run result summary: stage 0, never in the journal, not a flow node.
+        execution('result_summary', 0, { outcome: 'success', notes: 'Summary.' }),
+        // An exit node that ran without stage events is still a visit.
+        execution('done', 1, { outcome: 'success' }),
+      ],
+    })
+    expect(visits.map((visit) => visit.label)).toEqual(['Start', 'Done'])
   })
 
   it('nests parallel branches under their fan-out visit', () => {

@@ -184,6 +184,13 @@ export function buildRunVisits({
         if (execution.run_id !== runId) {
             continue
         }
+        // An execution the journal never started is a visit only when its node is
+        // in the flow; runtime-internal executions (the post-run result summary)
+        // are not visits.
+        const key = visitKey(runId, execution.node_id, execution.stage_index, execution.attempt)
+        if (!drafts.has(key) && !flowNodes[execution.node_id]) {
+            continue
+        }
         const draft = draftFor(execution.node_id, execution.stage_index, execution.attempt, Number.POSITIVE_INFINITY)
         draft.visit.status = execution.status
     }
@@ -283,7 +290,10 @@ export function buildRunVisits({
         } else {
             visit.outcome = waiting.has(visit.nodeId) ? 'waiting' : 'running'
         }
-        visit.reason = asString(status?.failure_reason) ?? asString(status?.notes) ?? draft.journalReason
+        // A subflow visit's notes are the runtime's "Child completed"; its child
+        // run summary says what happened, so only a failure reason is kept.
+        visit.reason = asString(status?.failure_reason)
+            ?? (visit.childRun ? null : asString(status?.notes) ?? draft.journalReason)
     }
     rootDrafts.forEach((draft, index) => settle(draft, index === rootDrafts.length - 1))
     branchDrafts.forEach((draft) => settle(draft, false))

@@ -322,8 +322,7 @@ export function RunStream() {
                 if (timelineEvent) {
                     useRunJournalStore.getState().appendLiveEntry(selectedRunId, timelineEvent)
                     // A finished stage has written its status, prompt and
-                    // context updates; reload them for the visit view.
-                    // ponytail: refetches every execution's transcript; fetch just the finished one if runs grow long.
+                    // context updates; reload the executions whose status changed.
                     if (timelineEvent.sourceScope === 'root' && (timelineEvent.type === 'StageCompleted' || timelineEvent.type === 'StageFailed')) {
                         void refreshRunTranscript()
                     }
@@ -515,7 +514,10 @@ export function RunStream() {
                 transcript.patchRun(selectedRunId, { status: 'loading', error: null })
             }
             try {
-                const response = await loadRunTranscript(selectedRunId)
+                const loaded = useRunTranscriptStore.getState().byRunId[selectedRunId]
+                const response = await loadRunTranscript(selectedRunId, loaded?.status === 'ready'
+                    ? { run_id: selectedRunId, segments: loaded.segments, newest_sequence: loaded.newestSequence, executions: loaded.executions, child_runs: loaded.childRuns, prompts: loaded.prompts }
+                    : undefined)
                 if (!isCurrent() || requestId !== transcriptRequestId) {
                     return
                 }

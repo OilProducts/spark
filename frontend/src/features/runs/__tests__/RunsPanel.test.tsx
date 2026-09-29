@@ -762,6 +762,14 @@ describe('RunsPanel', () => {
           },
           diagnostics: [],
           errors: [],
+          flow: {
+            nodes: {
+              start: { kind: 'start', label: 'Start' },
+              validate: { kind: 'agent_task', label: 'Validate' },
+              draft: { kind: 'agent_task', label: 'Draft' },
+              done: { kind: 'exit', label: 'Done' },
+            },
+          },
         })
       }
       if (url.includes('/attractor/pipelines/run-selected/questions')) {

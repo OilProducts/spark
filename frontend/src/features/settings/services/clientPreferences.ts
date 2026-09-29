@@ -33,17 +33,12 @@ export type FlowEdgePorts = Record<string, Record<string, LayoutEdgePorts>>
 export type FlowNodePositions = Record<string, Record<string, { x: number; y: number }>>
 export interface RunPresentation {
     sort?: 'newest' | 'oldest' | null
-    activity_mode?: 'all' | 'transcript' | 'events' | null
     inspector_tab?: 'activity' | 'result' | 'details' | 'context' | 'artifacts' | null
-    timeline_category?: 'all' | import('@/features/runs/model/shared').TimelineEventCategory | null
-    timeline_severity?: 'all' | import('@/features/runs/model/shared').TimelineSeverity | null
     graph_height?: number | null
 }
 export const runPresentationChoices = {
-    sort: ['newest', 'oldest'], activity_mode: ['all', 'transcript', 'events'],
+    sort: ['newest', 'oldest'],
     inspector_tab: ['activity', 'result', 'details', 'context', 'artifacts'],
-    timeline_category: ['all', 'lifecycle', 'stage', 'parallel', 'interview', 'checkpoint', 'log', 'runtime', 'state', 'metadata', 'other'],
-    timeline_severity: ['all', 'info', 'warning', 'error'],
 } as const
 export interface ClientPreferences {
     run_presentation?: RunPresentation | null
