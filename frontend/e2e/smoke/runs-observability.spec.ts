@@ -911,7 +911,11 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await page.getByTestId('run-graph-toggle').click()
   await expect(page.getByTestId('run-graph-panel')).toHaveCount(0)
 
-  // A written key opens the Context item at that key, with its history across visits.
+  // A written key opens the Context item at that key, with its history across visits,
+  // even when an earlier search would hide it.
+  await page.getByTestId('run-visit-item-context').click()
+  await page.getByTestId('run-context-search-input').fill('unrelated search')
+  await expect(page.getByTestId('run-context-row')).toHaveCount(0)
   await rows.nth(2).click()
   await page.locator('[data-testid="run-visit-write"][data-key="context.review.approved"]').getByTestId('run-visit-context-key').click()
   await expect(page.getByTestId('run-visit-item-context')).toHaveAttribute('aria-selected', 'true')
@@ -920,4 +924,5 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   // Opened from a visit, the key shows its history straight away.
   await expect(approved.getByTestId('run-context-history-toggle')).toHaveAttribute('aria-expanded', 'true')
   await expect(approved.getByTestId('run-context-history-entry')).toHaveText(['Implement 1/2:draft looks fine', 'Evaluate 1/2:cleared'])
+  await expect(page.getByTestId('run-context-search-input')).toHaveValue('')
 })

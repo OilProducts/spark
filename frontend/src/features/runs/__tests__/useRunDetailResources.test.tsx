@@ -115,3 +115,61 @@ it('refetches files when a stage settles and the result when the run ends', () =
     journal('PipelineCompleted')
     expect([count('artifacts'), count('result')]).toEqual([3, 2])
 })
+
+// A backend double with the executor's ordering: PipelineCompleted is journaled
+// before the result (and its files) are materialized.
+function stubMaterializingBackend() {
+    const backend = { status: 'running', materialized: false }
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+        if (url.endsWith('/run/result')) {
+            const state = backend.status === 'running' ? 'pending' : backend.materialized ? 'ready' : 'unavailable'
+            return Promise.resolve(Response.json({
+                run_id: 'run', status: backend.status, state, body_markdown: backend.materialized ? 'Shipped it.' : '', summary_enabled: true,
+            }))
+        }
+        if (url.endsWith('/run/artifacts')) {
+            const artifacts = backend.materialized ? [{ path: 'result/summary.md', media_type: 'text/markdown' }] : []
+            return Promise.resolve(Response.json({ pipeline_id: 'run', artifacts }))
+        }
+        return new Promise<Response>(() => {})
+    }))
+    return backend
+}
+
+it('shows the result and its files once they materialize after PipelineCompleted', async () => {
+    vi.useFakeTimers()
+    try {
+        const backend = stubMaterializingBackend()
+        const { result } = renderHook(() => useRunDetailResources({ selectedRunId: 'run' }))
+        await act(() => vi.advanceTimersByTimeAsync(0))
+        expect(result.current.resultData?.state).toBe('pending')
+        backend.status = 'completed'
+        act(() => {
+            window.dispatchEvent(new CustomEvent('spark:run-journal-entry', { detail: { runId: 'run', entry: { type: 'PipelineCompleted' } } }))
+        })
+        await act(() => vi.advanceTimersByTimeAsync(0))
+        expect(result.current.resultData?.state).toBe('unavailable')
+        // The summary-model call finishes well after the final event.
+        await act(() => vi.advanceTimersByTimeAsync(5000))
+        backend.materialized = true
+        await act(() => vi.advanceTimersByTimeAsync(60000))
+        expect(result.current.resultData).toMatchObject({ state: 'ready', body_markdown: 'Shipped it.' })
+        expect(result.current.artifactData?.artifacts.map((entry) => entry.path)).toEqual(['result/summary.md'])
+    } finally {
+        vi.useRealTimers()
+    }
+})
+
+it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
+    'recovers a result that materialized while disconnected on %s',
+    async (signal) => {
+        const backend = stubMaterializingBackend()
+        backend.status = 'completed'
+        const { result } = renderHook(() => useRunDetailResources({ selectedRunId: 'run' }))
+        await waitFor(() => expect(result.current.resultData?.state).toBe('unavailable'))
+        backend.materialized = true
+        act(() => { window.dispatchEvent(new CustomEvent(signal, { detail: { runId: 'run' } })) })
+        await waitFor(() => expect(result.current.resultData?.body_markdown).toBe('Shipped it.'))
+        await waitFor(() => expect(result.current.artifactData?.artifacts).toHaveLength(1))
+    },
+)

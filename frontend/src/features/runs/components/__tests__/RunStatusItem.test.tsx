@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
@@ -159,6 +160,55 @@ describe('RunContextItem', () => {
     expect(screen.getAllByTestId('run-context-row')[1]).toHaveTextContent('launch input')
     expect(screen.getByTestId('run-context-runtime-group')).toHaveTextContent('1 system key')
   })
+
+  it('reads long multiline and structured values in full, including history, from the keyboard', () => {
+    const findings = 'Blocking: '.padEnd(500, 'x') + '\nSecond finding line.'
+    const visits = [
+      visit('review', 1, 'did_not_pass', { status: { context_updates: { 'context.review.summary': findings } } }),
+      visit('review', 2, 'succeeded', { status: { context_updates: { 'context.review.summary': 'Approved.' } } }),
+    ]
+    const plan = { steps: ['a', 'b'] }
+    const finalContext = { 'context.review.summary': 'Approved.', 'context.task.plan': plan }
+    const overview = buildRunContextOverview({ visits, launchContext: { 'context.task.plan': plan }, finalContext })
+    render(
+      <RunContextItem
+        overview={overview}
+        finalContext={finalContext}
+        status="ready"
+        contextError={null}
+        searchQuery=""
+        onSearchQueryChange={vi.fn()}
+        contextCopyStatus=""
+        contextExportHref={null}
+        onCopy={vi.fn()}
+        onRefresh={vi.fn()}
+        focusKey={null}
+        onSelectVisit={vi.fn()}
+      />,
+    )
+    const [summary, planRow] = screen.getAllByTestId('run-context-row')
+    // Compact by default.
+    expect(within(planRow).getByTestId('run-context-row-value')).toHaveClass('truncate')
+    expect(within(summary).queryByTestId('run-context-history')).not.toBeInTheDocument()
+
+    // The toggle is a native button, so Enter and Space (and taps) reach it.
+    const historyToggle = within(summary).getByRole('button', { name: 'written 2×' })
+    historyToggle.focus()
+    expect(historyToggle).toHaveFocus()
+    fireEvent.click(historyToggle)
+    const entries = within(summary).getAllByTestId('run-context-history-entry')
+    expect(entries[0].textContent).toContain(findings)
+    expect(entries[0].lastElementChild).toHaveClass('whitespace-pre-wrap')
+    expect(entries[0].lastElementChild).not.toHaveClass('truncate')
+
+    const planToggle = within(planRow).getByRole('button', { name: 'show full value' })
+    expect(planToggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(planToggle)
+    expect(planToggle).toHaveAttribute('aria-expanded', 'true')
+    const value = within(planRow).getByTestId('run-context-row-value')
+    expect(value.textContent).toBe(JSON.stringify(plan, null, 2))
+    expect(value).not.toHaveClass('truncate')
+  })
 })
 
 describe('RunVisitsCard', () => {
@@ -206,5 +256,69 @@ describe('RunVisitsCard', () => {
     fireEvent.click(screen.getByTestId('run-visit-context-key'))
     expect(screen.getByTestId('run-visit-item-context')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('context item focused on context.review.findings')).toBeVisible()
+  })
+
+  it('clears a search that hides a key opened from a visit', () => {
+    const review = visit('review', 1, 'succeeded', { status: { context_updates: { 'context.review.findings': 'x' } } })
+    const overview = buildRunContextOverview({
+      visits: [review],
+      launchContext: { 'context.request.objective': 'Finish the Runs page' },
+      finalContext: { 'context.review.findings': 'x', 'context.request.objective': 'Finish the Runs page' },
+    })
+    function Harness() {
+      const [query, setQuery] = useState('')
+      return (
+        <RunVisitsCard
+          visits={[review]}
+          flowNodes={{}}
+          segments={[]}
+          prompts={[]}
+          journal={[]}
+          now={0}
+          isNarrowViewport={false}
+          isLive={false}
+          transcriptError={null}
+          timelineError={null}
+          selectedNodeId={null}
+          onSelectNode={vi.fn()}
+          onOpenRun={vi.fn()}
+          statusRow={{ label: 'Result' }}
+          renderStatus={() => null}
+          renderContext={(focusKey, selectVisit) => (
+            <RunContextItem
+              overview={overview}
+              finalContext={null}
+              status="ready"
+              contextError={null}
+              searchQuery={query}
+              onSearchQueryChange={setQuery}
+              contextCopyStatus=""
+              contextExportHref={null}
+              onCopy={vi.fn()}
+              onRefresh={vi.fn()}
+              focusKey={focusKey}
+              onSelectVisit={selectVisit}
+            />
+          )}
+          artifactEntries={[]}
+          onViewArtifact={vi.fn()}
+        />
+      )
+    }
+    render(<Harness />)
+    fireEvent.click(screen.getByTestId('run-visit-item-context'))
+    fireEvent.change(screen.getByTestId('run-context-search-input'), { target: { value: 'objective' } })
+    expect(screen.getAllByTestId('run-context-row').map((row) => row.dataset.contextKey)).toEqual(['context.request.objective'])
+
+    fireEvent.click(screen.getByTestId('run-visit-row'))
+    fireEvent.click(screen.getByTestId('run-visit-context-key'))
+    expect(screen.getByTestId('run-context-search-input')).toHaveValue('')
+    expect(screen.getAllByTestId('run-context-row').map((row) => row.dataset.contextKey)).toContain('context.review.findings')
+
+    // Opening the Context item itself keeps the reader's own search.
+    fireEvent.change(screen.getByTestId('run-context-search-input'), { target: { value: 'objective' } })
+    fireEvent.click(screen.getByTestId('run-visit-row'))
+    fireEvent.click(screen.getByTestId('run-visit-item-context'))
+    expect(screen.getByTestId('run-context-search-input')).toHaveValue('objective')
   })
 })

@@ -114,12 +114,13 @@ export function RunVisitsCard({
 
     const select = (item: RunVisit | ItemKey) => {
         setSelectedKey(itemKey(item))
+        setContextFocusKey(null)
         setShowJournal(false)
         onSelectNode(typeof item === 'string' ? null : item.nodeId)
     }
     const openContextKey = (key: string) => {
-        setContextFocusKey(key)
         select('context')
+        setContextFocusKey(key)
     }
 
     const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {

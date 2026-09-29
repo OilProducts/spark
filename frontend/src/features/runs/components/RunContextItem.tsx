@@ -12,6 +12,16 @@ const formatValue = (value: unknown): string => (
     typeof value === 'string' ? value : JSON.stringify(value)
 )
 
+// Expanded values keep their line breaks and indent structured values.
+const formatFullValue = (value: unknown): string => (
+    typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+)
+
+// ponytail: length heuristic; a compact row may still clip a shorter value on narrow screens.
+const isLongValue = (value: unknown): boolean => (
+    value !== null && (typeof value === 'object' || formatValue(value).length > 60 || formatValue(value).includes('\n'))
+)
+
 const matches = (row: ContextKeyHistory, query: string): boolean => (
     !query
     || row.key.toLowerCase().includes(query)
@@ -50,12 +60,21 @@ export function RunContextItem({
 }: RunContextItemProps) {
     const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set(focusKey ? [focusKey] : []))
     const rootRef = useRef<HTMLElement | null>(null)
-    useEffect(() => {
-        if (focusKey) {
-            rootRef.current?.querySelector(`[data-context-key="${CSS.escape(focusKey)}"]`)?.scrollIntoView({ block: 'center' })
-        }
-    }, [focusKey])
+    // Opening a key reveals it once, clearing a search that hides it first.
+    const pendingFocusRef = useRef(focusKey)
     const query = searchQuery.trim().toLowerCase()
+    const focusRow = overview.namespaces.flatMap((namespace) => namespace.keys).find((row) => row.key === focusKey)
+    const focusHidden = focusRow !== undefined && !matches(focusRow, query)
+    useEffect(() => {
+        const key = pendingFocusRef.current
+        if (!key || !focusRow) return
+        if (focusHidden) {
+            onSearchQueryChange('')
+            return
+        }
+        pendingFocusRef.current = null
+        rootRef.current?.querySelector(`[data-context-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'center' })
+    }, [focusHidden, focusRow, onSearchQueryChange])
     const namespaces = overview.namespaces
         .map((namespace) => ({ ...namespace, keys: namespace.keys.filter((row) => matches(row, query)) }))
         .filter((namespace) => namespace.keys.length > 0)
@@ -120,6 +139,7 @@ export function RunContextItem({
                             const last = row.history.at(-1)
                             const writes = row.history.length
                             const expanded = expandedKeys.has(row.key)
+                            const expandable = writes > 1 || isLongValue(row.value)
                             return (
                                 <li
                                     key={row.key}
@@ -129,14 +149,20 @@ export function RunContextItem({
                                 >
                                     <code className="truncate text-foreground/80" title={row.key}>{row.key.replace(/^context\./, '')}</code>
                                     <div className="min-w-0 space-y-0.5">
-                                        <p data-testid="run-context-row-value" className="truncate" title={row.value === null ? undefined : formatValue(row.value)}>
-                                            {row.value === null ? <span className="text-muted-foreground">cleared</span> : formatValue(row.value)}
+                                        <p
+                                            data-testid="run-context-row-value"
+                                            className={expanded ? 'whitespace-pre-wrap break-words' : 'truncate'}
+                                            title={expanded || row.value === null ? undefined : formatValue(row.value)}
+                                        >
+                                            {row.value === null
+                                                ? <span className="text-muted-foreground">cleared</span>
+                                                : expanded ? formatFullValue(row.value) : formatValue(row.value)}
                                         </p>
                                         <p className="text-xs text-muted-foreground">
                                             {last?.visit ? (
                                                 <>{last.value === null ? 'cleared' : 'set'} by <VisitLink visit={last.visit} onSelect={onSelectVisit} /></>
                                             ) : last ? 'launch input' : 'set by the runtime'}
-                                            {writes > 1 ? (
+                                            {expandable ? (
                                                 <>
                                                     {' · '}
                                                     <button
@@ -146,7 +172,9 @@ export function RunContextItem({
                                                         onClick={() => toggle(row.key)}
                                                         className="hover:text-foreground"
                                                     >
-                                                        {expanded ? 'hide history' : `written ${writes}×`}
+                                                        {writes > 1
+                                                            ? expanded ? 'hide history' : `written ${writes}×`
+                                                            : expanded ? 'show less' : 'show full value'}
                                                     </button>
                                                 </>
                                             ) : null}
@@ -158,8 +186,8 @@ export function RunContextItem({
                                                         <span className="shrink-0 text-muted-foreground">
                                                             {entry.visit ? <VisitLink visit={entry.visit} onSelect={onSelectVisit} /> : 'launch'}:
                                                         </span>
-                                                        <span className="min-w-0 truncate" title={entry.value === null ? undefined : formatValue(entry.value)}>
-                                                            {entry.value === null ? <span className="text-muted-foreground">cleared</span> : formatValue(entry.value)}
+                                                        <span className="min-w-0 whitespace-pre-wrap break-words">
+                                                            {entry.value === null ? <span className="text-muted-foreground">cleared</span> : formatFullValue(entry.value)}
                                                         </span>
                                                     </li>
                                                 ))}
