@@ -195,7 +195,7 @@ export function LaunchPanel({
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
-                    <h3 className="text-base font-semibold text-foreground">Launch Flow</h3>
+                    <h3 className="text-lg font-light text-foreground">Launch Flow</h3>
                     <p
                         data-testid="launch-panel-target-copy"
                         className="text-xs leading-5 text-muted-foreground"
@@ -242,7 +242,7 @@ export function LaunchPanel({
             {infoNotice ? (
                 <Alert
                     data-testid="launch-panel-info-notice"
-                    className="border-border/70 bg-muted/20 px-3 py-2 text-muted-foreground"
+                    className="border-border/70 px-3 py-2 text-muted-foreground"
                 >
                     <AlertDescription className="text-inherit">{infoNotice}</AlertDescription>
                 </Alert>
@@ -256,7 +256,7 @@ export function LaunchPanel({
             {lockMetadata?.execution_lock ? (
                 <Alert
                     data-testid="execution-launch-lock-notice"
-                    className="border-warning/40 bg-warning/10 px-3 py-2 text-warning"
+                    className="border-warning px-3 py-2 text-warning"
                 >
                     <AlertDescription className="text-inherit">
                         Execution lock: {lockMetadata.execution_lock.scope} / {lockMetadata.execution_lock.key} / {lockMetadata.execution_lock.conflict_policy}. This launch policy is stored in the workspace flow catalog, not in YAML.
@@ -309,16 +309,16 @@ export function LaunchPanel({
             {visibleDiagnostics.length > 0 ? (
                 <div
                     data-testid="launch-panel-diagnostics"
-                    className="space-y-2 rounded-md border border-border/70 bg-muted/20 p-3"
+                    className="space-y-2 rounded-md border border-border/70 p-3"
                 >
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         Launch diagnostics
                     </p>
                     <ul className="space-y-2 text-sm">
                         {visibleDiagnostics.map((diagnostic, index) => (
                             <li
                                 key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`}
-                                className="rounded border border-border/70 bg-background/80 px-3 py-2"
+                                className="rounded border border-border/70 px-3 py-2"
                             >
                                 <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
                                     <span>{diagnostic.severity}</span>
@@ -332,7 +332,7 @@ export function LaunchPanel({
                 </div>
             ) : null}
 
-            <div className="rounded-lg border border-border/80 bg-muted/10 p-4">
+            <div className="rounded-lg border border-border/80 p-4">
                 <LaunchInputsForm
                     isNarrowViewport={isNarrowViewport}
                     flowName={target.flowName}

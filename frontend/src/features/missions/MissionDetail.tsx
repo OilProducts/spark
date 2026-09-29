@@ -75,13 +75,13 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         } finally { setPending(false) }
     }
     const control = (action: string, body: unknown = {}) => act(() => request<Mission>(project, mission.id, body, `/${action}`), true)
-    return <section aria-label="Mission details" className={`flex min-h-0 min-w-0 flex-col rounded-md border border-border bg-card ${narrow ? 'w-full' : 'flex-1'}`} onKeyDown={e => {
+    return <section aria-label="Mission details" className={`flex min-h-0 min-w-0 flex-col rounded-md border border-border ${narrow ? 'w-full' : 'flex-1'}`} onKeyDown={e => {
         // Menu keys arrive through the portal; only the pane's own Escape dismisses it.
         if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && !busy && e.currentTarget.contains(e.target as Node)) { e.stopPropagation(); close() }
     }}>
         <header className="flex shrink-0 items-start gap-2 border-b border-border p-4">
             <div className="min-w-0 flex-1">
-                <h2 ref={heading} tabIndex={-1} className="text-lg font-semibold whitespace-pre-wrap break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.title}</h2>
+                <h2 ref={heading} tabIndex={-1} className="text-lg font-light whitespace-pre-wrap break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.title}</h2>
                 <p role="status" className="mt-1 text-xs text-muted-foreground"><span className="font-medium text-foreground">{statusLabels[status]}</span> · {statusLine(mission)}{busy || pending ? ' · Saving…' : ''}</p>
                 {mission.fields.archived && <span className="mt-2 inline-block rounded border border-border px-2 py-0.5 text-xs text-muted-foreground">Archived</span>}
             </div>
@@ -116,7 +116,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             <div className="flex gap-2"><Button type="submit" size="sm" disabled={disabled}>Save model</Button><Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => setModel(null)}>Cancel</Button></div>
         </form>}
         <div className="min-h-0 flex-1 overflow-y-auto text-sm">
-            <section aria-label="Objective" className="sticky top-0 z-10 border-b border-border bg-card p-4">
+            <section aria-label="Objective" className="sticky top-0 z-10 border-b border-border bg-background p-4">
                 <h3 className="text-xs font-medium text-muted-foreground">Objective</h3>
                 <p tabIndex={0} className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.description || 'No objective'}</p>
                 {mission.playbook

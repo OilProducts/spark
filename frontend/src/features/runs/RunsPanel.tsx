@@ -330,7 +330,7 @@ export function RunsPanel() {
                 <div className="mb-4">
                     <Alert
                         data-testid="runs-transport-reconnect-banner"
-                        className="border-warning/40 bg-warning/10 px-3 py-2 text-warning"
+                        className="border-0 border-l border-warning px-3 py-2 text-warning"
                     >
                         <AlertDescription className="text-inherit">
                             Live run transport degraded for {degradedTransportLabels.join(' and ')}.
@@ -360,7 +360,7 @@ export function RunsPanel() {
                         className={isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col gap-4'}
                     >
                         {showRunSelectionEmptyState && (
-                            <div data-testid="run-selection-empty-state" className="rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
+                            <div data-testid="run-selection-empty-state" className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
                                 Select a run from the sidebar to inspect its details.
                             </div>
                         )}
@@ -405,7 +405,7 @@ export function RunsPanel() {
                         {selectedRun && degradedRunPanels.length > 0 && (
                             <div
                                 data-testid="run-partial-api-failure-banner"
-                                className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
+                                className="rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
                             >
                                 Some run detail endpoints are unavailable. Non-dependent panels remain functional.
                                 <span className="ml-1 text-xs">

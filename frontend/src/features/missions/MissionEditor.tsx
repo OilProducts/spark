@@ -33,18 +33,18 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
         void fetch('/workspace/api/playbooks').then(response => response.ok ? response.json() : []).then(value => { if (!disposed && Array.isArray(value)) setPlaybooks(value) }).catch(() => {})
         return () => { disposed = true }
     }, [started])
-    return <section aria-label="Mission details" className={`flex min-h-0 min-w-0 flex-col rounded-md border border-border bg-card ${narrow ? 'w-full' : 'w-[28rem] shrink-0'}`} onKeyDown={e => {
+    return <section aria-label="Mission details" className={`flex min-h-0 min-w-0 flex-col rounded-md border border-border ${narrow ? 'w-full' : 'w-[28rem] shrink-0'}`} onKeyDown={e => {
         if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && !busy) { e.stopPropagation(); close() }
     }}>
         <header className="shrink-0 border-b border-border p-4">
-            <h2 ref={heading} tabIndex={-1} className="text-base font-semibold break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{editing?.fields.title ?? 'New mission'}</h2>
+            <h2 ref={heading} tabIndex={-1} className="text-lg font-light break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{editing?.fields.title ?? 'New mission'}</h2>
             {unsaved && <p className="mt-1 text-xs text-muted-foreground">Unsaved changes</p>}
         </header>
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={e => { e.preventDefault(); void save() }}>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-4 text-sm">
             {error && <InlineError>{error}</InlineError>}
             {conflict && !changed && <p role="status">Refresh to load the latest revision and reconcile before saving. Your draft is preserved.</p>}
-            {changed && <div role="status" className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
+            {changed && <div role="status" className="space-y-3 rounded-md border border-border p-3">
                 <p>A newer revision is available. Your draft is preserved. Review the latest values; your edited fields take precedence when reconciling.</p>
                 <dl className="space-y-2">{(Object.keys(fieldLabels) as Core[]).filter(key => latest.fields[key] !== editing?.fields[key]).map(key => <div key={key}><dt className="font-medium">{fieldLabels[key]}</dt><dd className="whitespace-pre-wrap break-words text-muted-foreground">{display(latest.fields[key])}</dd></div>)}</dl>
                 <Button variant="secondary" type="button" disabled={busy} onClick={reconcile}>Reconcile with latest revision</Button>

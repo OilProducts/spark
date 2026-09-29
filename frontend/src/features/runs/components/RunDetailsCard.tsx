@@ -27,7 +27,7 @@ function SummarySection({
     title: string
 }) {
     return (
-        <section data-testid={testId} className="space-y-3 rounded-md border border-border/70 bg-muted/20 px-3 py-3">
+        <section data-testid={testId} className="space-y-3 rounded-md border border-border px-3 py-3">
             <h4 className="text-sm font-semibold text-foreground">{title}</h4>
             {children}
         </section>
@@ -228,7 +228,7 @@ export function RunDetailsCard({ run, activeProjectPath, now, resumeNode = null 
                     </div>
                 ) : null}
                 {modelUsageEntries.length > 0 ? (
-                    <div data-testid="run-summary-model-breakdown" className="space-y-2 rounded-md border border-border/70 bg-background/70 p-3">
+                    <div data-testid="run-summary-model-breakdown" className="space-y-2 rounded-md border border-border p-3">
                         <div className="text-sm font-medium">Per-model breakdown</div>
                         <div className="space-y-2">
                             {modelUsageEntries.map(([modelId, usage]) => {
@@ -240,7 +240,7 @@ export function RunDetailsCard({ run, activeProjectPath, now, resumeNode = null 
                                     <div
                                         key={modelId}
                                         data-testid="run-summary-model-row"
-                                        className="rounded-sm border border-border/70 bg-card px-3 py-2 text-sm"
+                                        className="rounded-sm border border-border px-3 py-2 text-sm"
                                     >
                                         <div className="font-mono text-xs text-muted-foreground">{modelId}</div>
                                         <div className="mt-1 grid gap-x-4 gap-y-1 md:grid-cols-5">

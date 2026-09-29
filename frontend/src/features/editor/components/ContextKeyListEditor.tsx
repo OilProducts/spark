@@ -20,7 +20,7 @@ export function ContextKeyListEditor({
 }: ContextKeyListEditorProps) {
     const id = useId()
     return (
-        <div data-testid={testId} className="space-y-1.5 rounded-md border border-border/80 bg-muted/10 px-3 py-3">
+        <div data-testid={testId} className="space-y-1.5 rounded-md border border-border/80 px-3 py-3">
             <div>
                 <FieldLabel htmlFor={`${id}-keys`}>{title}</FieldLabel>
                 <p id={`${id}-description`} className="mt-1 text-xs text-muted-foreground">{description}</p>

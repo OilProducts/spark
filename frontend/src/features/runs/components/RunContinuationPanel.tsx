@@ -143,11 +143,11 @@ export function RunContinuationPanel({
     return (
         <div
             data-testid="run-continuation-panel"
-            className="space-y-4 rounded-lg border border-border/80 bg-muted/10 p-4"
+            className="space-y-4 rounded-lg border border-border p-4"
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                    <h3 className="text-base font-semibold text-foreground">Continue Run</h3>
+                    <h3 className="text-lg font-light text-foreground">Continue Run</h3>
                     <p className="text-xs leading-5 text-muted-foreground">
                         Create a derived run from <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span> using inherited checkpoint context.
                     </p>
@@ -193,7 +193,7 @@ export function RunContinuationPanel({
 
             <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         Graph source
                     </p>
                     <div className="flex flex-wrap gap-2">
@@ -271,7 +271,7 @@ export function RunContinuationPanel({
 
             <div
                 data-testid="run-continuation-selected-node-copy"
-                className="rounded-md border border-border/80 bg-background/80 px-3 py-2 text-sm text-muted-foreground"
+                className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground"
             >
                 {draft.startNodeId
                     ? <>Restart node: <span className="font-mono text-foreground">{draft.startNodeId}</span></>

@@ -43,9 +43,9 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-summary-${entry.id}`}
-                className="max-w-[85%] rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-foreground"
+                className="max-w-[85%] rounded-md border-0 border-l border-warning px-3 py-2 text-foreground"
             >
-                <p className="text-xs font-semibold uppercase tracking-wide text-warning">
+                <p className="text-xs font-medium uppercase tracking-wide text-warning">
                     Answered Request
                 </p>
                 <div className="mt-2 space-y-2">
@@ -72,9 +72,9 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-expired-${entry.id}`}
-                className="max-w-[85%] rounded-md border border-destructive/50 px-3 py-2 text-foreground"
+                className="max-w-[85%] rounded-md border-0 border-l border-destructive px-3 py-2 text-foreground"
             >
-                <p className="text-xs font-semibold uppercase tracking-wide text-destructive">
+                <p className="text-xs font-medium uppercase tracking-wide text-destructive">
                     Expired Request
                 </p>
                 <p className="mt-2 text-sm text-foreground">
@@ -118,9 +118,9 @@ export function ProjectConversationRequestUserInputCard({
     return (
         <div
             data-testid={`project-request-user-input-card-${entry.id}`}
-            className="w-full max-w-[85%] rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-foreground"
+            className="w-full max-w-[85%] rounded-md border-0 border-l border-warning px-3 py-2 text-foreground"
         >
-            <p className="text-xs font-semibold uppercase tracking-wide text-warning">
+            <p className="text-xs font-medium uppercase tracking-wide text-warning">
                 Needs Input
             </p>
             {validationError || actionError ? (
@@ -133,7 +133,7 @@ export function ProjectConversationRequestUserInputCard({
                     return (
                         <div key={question.id} className="space-y-2">
                             <div className="space-y-0.5">
-                                <p className="text-xs font-semibold uppercase tracking-wide text-warning">
+                                <p className="text-xs font-medium uppercase tracking-wide text-warning">
                                     {question.header}
                                 </p>
                                 <p className="text-sm text-foreground">{question.question}</p>
@@ -162,8 +162,8 @@ export function ProjectConversationRequestUserInputCard({
                                                 size="xs"
                                                 className={`h-7 text-xs ${
                                                     isSelected
-                                                        ? 'border-warning bg-warning/15 text-warning'
-                                                        : 'border-warning/50 bg-background text-warning hover:bg-warning/15'
+                                                        ? 'border-primary bg-accent text-accent-foreground'
+                                                        : 'border-border text-foreground hover:text-primary'
                                                 }`}
                                             >
                                                 {option.label}
@@ -186,7 +186,7 @@ export function ProjectConversationRequestUserInputCard({
                                     }}
                                     disabled={isSubmitting}
                                     placeholder={question.allowOther ? 'Or enter another answer...' : 'Type answer...'}
-                                    className="h-8 border-warning/40 bg-background text-sm text-foreground focus-visible:ring-warning/40"
+                                    className="h-8 bg-background text-sm text-foreground"
                                 />
                             ) : null}
                             {question.options.length > 0 ? (
@@ -217,7 +217,7 @@ export function ProjectConversationRequestUserInputCard({
                     disabled={isSubmitting}
                     variant="outline"
                     size="xs"
-                    className="h-7 border-warning/60 bg-background text-xs font-medium text-warning hover:bg-warning/15"
+                    className="h-7 text-xs font-medium"
                 >
                     {isSubmitting ? 'Submitting...' : 'Submit'}
                 </Button>

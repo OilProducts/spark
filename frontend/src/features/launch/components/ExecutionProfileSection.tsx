@@ -23,10 +23,10 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
     return (
         <div
             data-testid="execution-profile-launch-settings"
-            className="space-y-2 rounded-lg border border-border/80 bg-muted/10 p-4"
+            className="space-y-2 rounded-lg border border-border/80 p-4"
         >
             <div className="flex min-w-0 items-baseline justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     Execution profile
                 </p>
                 <p

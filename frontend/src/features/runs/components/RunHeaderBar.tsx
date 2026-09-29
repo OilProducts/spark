@@ -62,19 +62,19 @@ export function RunHeaderBar({
     return (
         <header
             data-testid="run-summary-panel"
-            className="space-y-2 rounded-lg border border-border bg-card px-4 py-3"
+            className="space-y-2 border-b border-border px-4 py-3"
         >
             <div className="flex flex-wrap items-center gap-3">
                 <h3
                     data-testid="run-header-title"
-                    className="min-w-0 truncate text-xl font-semibold tracking-tight text-foreground"
+                    className="min-w-0 truncate text-2xl font-light tracking-tight text-foreground"
                     title={run.flow_name || run.run_id}
                 >
                     {run.flow_name || run.run_id.slice(0, 8)}
                 </h3>
                 <span
                     data-testid="run-header-status"
-                    className={`inline-flex rounded border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${statusToneClassName(run.status)}`}
+                    className={`inline-flex rounded border px-2 py-0.5 text-xs font-medium uppercase tracking-wide ${statusToneClassName(run.status)}`}
                 >
                     {formatRunStatusLabel(run)}
                 </span>
@@ -83,7 +83,7 @@ export function RunHeaderBar({
                         type="button"
                         data-testid="run-header-waiting-chip"
                         onClick={onFocusPendingQuestions}
-                        className="inline-flex rounded border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs font-medium text-warning hover:bg-warning/20"
+                        className="inline-flex rounded border border-border px-2 py-0.5 text-xs font-medium text-warning hover:bg-accent/50"
                     >
                         Waiting for input{currentNodeId ? ` at ${currentNodeId}` : ''} — answer below
                     </button>

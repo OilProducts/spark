@@ -284,15 +284,15 @@ export type StatusTone = 'info' | 'warning' | 'success' | 'destructive' | 'muted
 
 // Border color is inert unless the call site adds a `border` width class.
 export const TONE_STYLES: Record<StatusTone, string> = {
-    info: 'border-info/40 bg-info/10 text-info',
-    warning: 'border-warning/40 bg-warning/10 text-warning',
-    success: 'border-success/40 bg-success/10 text-success',
-    destructive: 'border-destructive/40 bg-destructive/10 text-destructive',
-    muted: 'border-border bg-muted text-muted-foreground',
+    info: 'border-border text-info',
+    warning: 'border-border text-warning',
+    success: 'border-border text-success',
+    destructive: 'border-border text-destructive',
+    muted: 'border-border text-muted-foreground',
 }
 
 export const TIMELINE_SEVERITY_STYLES: Record<TimelineSeverity, string> = {
-    info: 'border-border/80 bg-background text-muted-foreground',
+    info: 'border-border text-muted-foreground',
     warning: TONE_STYLES.warning,
     error: TONE_STYLES.destructive,
 }

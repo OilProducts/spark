@@ -13,7 +13,7 @@ export function ChildFlowExpansionToggle({
     return (
         <div
             data-testid={testId}
-            className="flex rounded-md border border-border bg-background/90 p-1 shadow-sm"
+            className="flex rounded-md border border-border bg-background p-1"
         >
             <Button
                 type="button"

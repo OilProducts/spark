@@ -49,9 +49,9 @@ export function AdvancedKeyValueEditor({
     return (
         <section
             data-testid={`${testIdPrefix}-extension-attrs-editor`}
-            className="space-y-2 rounded-md border border-border/80 bg-muted/10 p-3"
+            className="space-y-2 rounded-md border border-border/80 p-3"
         >
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {title}
             </p>
             <p className="text-xs text-muted-foreground">

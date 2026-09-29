@@ -15,15 +15,15 @@ import { TranscriptCopyButton } from './TranscriptCopyButton'
 export type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
 
 const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
-    neutral: 'bg-muted/50 text-muted-foreground',
-    info: 'bg-info/15 text-info',
-    success: 'bg-success/15 text-success',
-    warning: 'bg-warning/15 text-warning',
-    danger: 'bg-destructive/10 text-destructive',
+    neutral: 'text-muted-foreground',
+    info: 'text-info',
+    success: 'text-success',
+    warning: 'text-warning',
+    danger: 'text-destructive',
 }
 
 export const getSurfaceToneClassName = (tone: SurfaceTone) => (
-    `rounded px-2 py-0.5 text-xs font-semibold uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
+    `rounded border border-border px-2 py-0.5 text-xs font-medium uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
 )
 
 export interface TranscriptToolCall {
@@ -119,7 +119,7 @@ export const ToolCallRow = memo(function ToolCallRow({
 
     return (
         <li className="flex min-w-0 justify-start">
-            <div className="min-w-0 w-full rounded-md border border-border bg-muted/40 px-3 py-2">
+            <div className="min-w-0 w-full rounded-md border border-border px-3 py-2">
                 <Button
                     type="button"
                     data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
@@ -134,7 +134,7 @@ export const ToolCallRow = memo(function ToolCallRow({
                     ) : (
                         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     )}
-                    <p className="shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <p className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         {entry.toolCall.kind === 'file_change' ? 'File change' : 'Tool call'}
                     </p>
                     <span className={getSurfaceToneClassName(statusPresentation.tone)}>
@@ -154,7 +154,7 @@ export const ToolCallRow = memo(function ToolCallRow({
                 {isExpanded ? (
                     <div className="mt-2 space-y-2">
                         {entry.toolCall.command ? (
-                            <p className="whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
+                            <p className="whitespace-pre-wrap break-words rounded border border-border/60 bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
                                 {entry.toolCall.command}
                             </p>
                         ) : null}
@@ -168,7 +168,7 @@ export const ToolCallRow = memo(function ToolCallRow({
                             </ul>
                         ) : null}
                         {displayedOutput ? (
-                            <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-background/80 px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                            <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-muted px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                                 {displayedOutput}
                             </pre>
                         ) : null}
@@ -281,14 +281,14 @@ export const MessageRow = memo(function MessageRow({
             <div
                 className={`min-w-0 max-w-[85%] rounded border px-3 py-2 ${
                     entry.role === 'user'
-                        ? 'border-primary/40 bg-primary/10 text-foreground'
+                        ? 'border-primary/40 text-foreground'
                         : entry.presentation === 'thinking'
                             ? 'border-border/80 bg-background text-muted-foreground'
-                            : 'border-border bg-muted/40 text-foreground'
+                            : 'border-border text-foreground'
                 }`}
             >
                 <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                    <p className="text-xs font-medium uppercase tracking-wide opacity-70">
                         {entry.role === 'assistant'
                             ? (entry.presentation === 'thinking' ? 'Thinking' : 'Spark')
                             : entry.role}

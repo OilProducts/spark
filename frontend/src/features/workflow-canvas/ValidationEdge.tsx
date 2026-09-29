@@ -14,8 +14,6 @@ import { useStore as useAppStore } from '@/store'
 import { useCanvasSessionMode, useCanvasRunId } from './canvasSessionContext'
 import { getDerivedPreviewMeta } from './derivedPreview'
 
-const WARNING_STROKE = 'hsl(38 92% 50%)'
-
 function readRenderRoute(value: unknown): EdgeRoute | null {
     if (!Array.isArray(value)) {
         return null
@@ -105,47 +103,38 @@ export function ValidationEdge({
     const edgeStyle: CSSProperties = {
         strokeLinecap: 'round',
         strokeLinejoin: 'round',
-        strokeWidth: 2,
+        strokeWidth: 1.25,
         ...style,
     }
 
     if (hasError) {
         edgeStyle.stroke = 'hsl(var(--destructive))'
-        edgeStyle.strokeWidth = selected ? 4 : 3
+        edgeStyle.strokeWidth = selected ? 2.5 : 1.5
         edgeStyle.opacity = 1
     } else if (hasWarning) {
-        edgeStyle.stroke = WARNING_STROKE
-        edgeStyle.strokeWidth = selected ? 4 : 3
+        edgeStyle.stroke = 'hsl(var(--warning))'
+        edgeStyle.strokeWidth = selected ? 2.5 : 1.5
         edgeStyle.opacity = 0.95
     } else if (isDerivedLinkEdge) {
         edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.6)'
         edgeStyle.strokeDasharray = '6 6'
-        edgeStyle.strokeWidth = 2
+        edgeStyle.strokeWidth = 1.25
         edgeStyle.opacity = 0.8
     } else if (isDerivedChildEdge) {
         edgeStyle.stroke = 'hsl(var(--muted-foreground) / 0.45)'
-        edgeStyle.strokeWidth = 2
+        edgeStyle.strokeWidth = 1.25
         edgeStyle.opacity = 0.62
     } else if (selected) {
         edgeStyle.stroke = 'hsl(var(--primary))'
-        edgeStyle.strokeWidth = 4
+        edgeStyle.strokeWidth = 2
         edgeStyle.opacity = 1
     }
 
-    if (selected) {
-        const shadowColor = hasError
-            ? 'hsl(var(--destructive) / 0.55)'
-            : hasWarning
-                ? 'hsl(38 92% 50% / 0.4)'
-                : 'hsl(var(--primary) / 0.6)'
-        edgeStyle.filter = `drop-shadow(0 0 7px ${shadowColor})`
-    }
-
     const badgeClass = hasError
-        ? 'bg-destructive/15 text-destructive'
+        ? 'text-destructive'
         : hasWarning
-            ? 'bg-warning/15 text-warning'
-            : 'bg-info/15 text-info'
+            ? 'text-warning'
+            : 'text-info'
 
     return (
         <>

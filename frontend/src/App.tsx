@@ -22,7 +22,7 @@ function App() {
       <RunStream />
       <div data-testid="app-shell" className="h-screen flex flex-col antialiased bg-background text-foreground">
         <Navbar />
-        <main data-testid="app-main" className="flex-1 relative flex flex-col overflow-hidden bg-muted/10">
+        <main data-testid="app-main" className="flex-1 relative flex flex-col overflow-hidden">
           <div
             data-testid="canvas-workspace-primary"
             data-canvas-active={String(isCanvasMode)}

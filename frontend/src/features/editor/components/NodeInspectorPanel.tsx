@@ -323,10 +323,10 @@ export function NodeInspectorPanel({
                                 </div>
                                 <div
                                     data-testid="manager-child-linkage"
-                                    className="space-y-2 rounded-md border border-border/80 bg-muted/20 px-3 py-2"
+                                    className="space-y-2 rounded-md border border-border/80 px-3 py-2"
                                 >
                                     <div>
-                                        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                                             Child Flow Linkage
                                         </p>
                                         <p id={`${id}-child-flow-help`} className="mt-1 text-xs text-muted-foreground">
@@ -354,7 +354,7 @@ export function NodeInspectorPanel({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="w-full text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="w-full text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
                                 onClick={() => onSetShowAdvanced((current) => !current)}
                             >
                                 {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}

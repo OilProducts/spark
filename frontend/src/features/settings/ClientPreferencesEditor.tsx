@@ -11,7 +11,7 @@ import { SaveStatus } from './SaveStatus'
 export function ClientPreferencesEditor() {
     const editor = useClientPreferencesEditor()
     return <Card>
-        <CardHeader><h3 className="text-base font-semibold">Client preferences</h3></CardHeader>
+        <CardHeader><h3 className="text-lg font-light">Client preferences</h3></CardHeader>
         <CardContent className="space-y-3">
             {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs">Preferences for this browser/Desktop client. Sidebar width applies after saving. Editor mode and graph choices are defaults for newly opened flows.</p>

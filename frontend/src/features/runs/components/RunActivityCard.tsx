@@ -93,12 +93,12 @@ export function EventRow({
     return (
         <article
             data-testid="run-event-timeline-row"
-            className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-1.5"
+            className="rounded-md border border-border px-2.5 py-1.5"
         >
             <div className="flex items-center gap-2 text-xs">
                 <span
                     data-testid="run-event-timeline-row-type"
-                    className="inline-flex shrink-0 rounded border border-border/80 bg-background px-1.5 py-0.5 font-medium text-foreground"
+                    className="inline-flex shrink-0 rounded border border-border px-1.5 py-0.5 font-medium text-foreground"
                 >
                     {humanizeTimelineType(event.type)}
                 </span>
@@ -273,7 +273,7 @@ export function RunActivityCard({
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     {fillHeight ? <span aria-hidden className="h-0 w-0" /> : (
                         <h3
-                            className="text-base font-semibold text-foreground"
+                            className="text-lg font-light text-foreground"
                             title="Transcript and journal history in one chronological stream; the newest activity is at the bottom and the view follows it while a run is live. Select a graph node to focus its activity."
                         >
                             Activity
@@ -295,8 +295,8 @@ export function RunActivityCard({
                                     className={cn(
                                         'px-2 py-1 text-xs font-medium transition-colors',
                                         activityMode === option.value
-                                            ? 'bg-primary text-primary-foreground'
-                                            : 'bg-background text-muted-foreground hover:bg-muted/60',
+                                            ? 'bg-accent text-accent-foreground'
+                                            : 'bg-background text-muted-foreground hover:text-foreground',
                                     )}
                                 >
                                     {option.label}
@@ -305,10 +305,10 @@ export function RunActivityCard({
                         </div>
                         <span
                             className={cn(
-                                'inline-flex rounded border px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
+                                'inline-flex rounded border px-2 py-0.5 text-xs font-medium uppercase tracking-wide',
                                 isLive
-                                    ? 'border-info/40 bg-info/10 text-info'
-                                    : 'border-border bg-muted text-muted-foreground',
+                                    ? 'border-border text-info'
+                                    : 'border-border text-muted-foreground',
                             )}
                         >
                             {isLive ? 'Live' : 'Idle'}
@@ -322,7 +322,7 @@ export function RunActivityCard({
                         <div
                             data-testid="timeline-update-performance-budget"
                             data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
-                            className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                            className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground"
                         >
                             Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
                         </div>
@@ -331,7 +331,7 @@ export function RunActivityCard({
                             data-loaded-count={timelineEventCount}
                             data-rendered-count={renderedRows.length}
                             data-window-size={MAX_RENDERED_ACTIVITY_ROWS}
-                            className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground"
+                            className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground"
                         >
                             Loaded {timelineEventCount} journal entries. Rendering {renderedRows.length} rows in a bounded window.
                         </div>
@@ -341,7 +341,7 @@ export function RunActivityCard({
                     <div className="flex items-center gap-2">
                         <span
                             data-testid="run-activity-node-scope"
-                            className="inline-flex items-center gap-1 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-xs font-medium text-info"
+                            className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-info"
                         >
                             Node: {selectedNodeId}
                             <button
@@ -477,7 +477,7 @@ export function RunActivityCard({
                                 type="button"
                                 data-testid="run-activity-jump-to-latest"
                                 onClick={jumpToLatest}
-                                className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background/95 px-3 py-1 text-xs font-medium text-foreground shadow-sm hover:bg-muted"
+                                className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full border border-border bg-background px-3 py-1 text-xs font-medium text-foreground shadow-sm hover:text-primary"
                             >
                                 Jump to latest ↓
                             </button>

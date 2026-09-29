@@ -65,7 +65,7 @@ function ProjectFlowResultPreview({ runId }: { runId: string }) {
                 <p className="text-destructive">{result.error || "Result resolution failed."}</p>
             ) : null}
             {result?.state === "ready" ? (
-                <div data-testid="project-flow-launch-result-body" className="rounded border border-border/60 bg-background/80 px-2 py-2">
+                <div data-testid="project-flow-launch-result-body" className="rounded border border-border/60 px-2 py-2">
                     <ProjectConversationMarkdown content={result.body_markdown} />
                 </div>
             ) : null}
@@ -85,7 +85,7 @@ export function ProjectFlowRunRequestEntry({
 }: ProjectFlowRunRequestEntryProps) {
     if (!flowRunRequest) {
         return (
-            <div className="w-full rounded-md border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            <div className="w-full rounded-md border border-border px-4 py-3 text-xs text-muted-foreground">
                 Flow run request artifact unavailable. Refresh the project chat to reload it.
             </div>
         )
@@ -100,12 +100,12 @@ export function ProjectFlowRunRequestEntry({
     return (
         <div
             data-testid={isLatestFlowRunRequest ? "project-flow-run-request-surface" : undefined}
-            className="w-full rounded-md border border-success/20 bg-success/5 px-4 py-3"
+            className="w-full rounded-md border-0 border-l border-success px-4 py-3"
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-success">
+                        <p className="text-xs font-medium uppercase tracking-wide text-success">
                             Flow run request
                         </p>
                         <span className={getSurfaceToneClassName(statusPresentation.tone)}>
@@ -124,7 +124,7 @@ export function ProjectFlowRunRequestEntry({
                     Flow: <span className="font-mono text-foreground">{flowRunRequest.flow_name}</span>
                 </p>
                 {flowRunRequest.goal ? (
-                    <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 text-sm text-muted-foreground">
+                    <p className="whitespace-pre-wrap rounded border border-border/60 px-2 py-1 text-sm text-muted-foreground">
                         {flowRunRequest.goal}
                     </p>
                 ) : null}
@@ -133,7 +133,7 @@ export function ProjectFlowRunRequestEntry({
                         <p>
                             Launch context:
                         </p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-2 font-mono text-xs text-muted-foreground">
+                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-muted px-2 py-2 font-mono text-xs text-muted-foreground">
                             {launchContextText}
                         </pre>
                     </div>
@@ -235,7 +235,7 @@ export function ProjectFlowLaunchEntry({
 }: ProjectFlowLaunchEntryProps) {
     if (!flowLaunch) {
         return (
-            <div className="w-full rounded-md border border-border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
+            <div className="w-full rounded-md border border-border px-4 py-3 text-xs text-muted-foreground">
                 Flow launch artifact unavailable. Refresh the project chat to reload it.
             </div>
         )
@@ -249,12 +249,12 @@ export function ProjectFlowLaunchEntry({
     return (
         <div
             data-testid={isLatestFlowLaunch ? "project-flow-launch-surface" : undefined}
-            className="w-full rounded-md border border-info/20 bg-info/5 px-4 py-3"
+            className="w-full rounded-md border-0 border-l border-info px-4 py-3"
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                     <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-info">
+                        <p className="text-xs font-medium uppercase tracking-wide text-info">
                             Flow launch
                         </p>
                         <span className={getSurfaceToneClassName(statusPresentation.tone)}>
@@ -273,14 +273,14 @@ export function ProjectFlowLaunchEntry({
                     Flow: <span className="font-mono text-foreground">{flowLaunch.flow_name}</span>
                 </p>
                 {flowLaunch.goal ? (
-                    <p className="whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-1 text-sm text-muted-foreground">
+                    <p className="whitespace-pre-wrap rounded border border-border/60 px-2 py-1 text-sm text-muted-foreground">
                         {flowLaunch.goal}
                     </p>
                 ) : null}
                 {launchContextText ? (
                     <div className="space-y-1">
                         <p>Launch context:</p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-background/80 px-2 py-2 font-mono text-xs text-muted-foreground">
+                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-muted px-2 py-2 font-mono text-xs text-muted-foreground">
                             {launchContextText}
                         </pre>
                     </div>

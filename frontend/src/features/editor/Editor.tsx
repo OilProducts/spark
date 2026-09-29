@@ -1454,7 +1454,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             <div className="relative min-h-0 flex-1">
                 {editorMode === 'raw' ? (
                     <div className="h-full w-full p-4">
-                        <div className="h-full rounded-lg border border-border bg-background/80 p-3">
+                        <div className="h-full rounded-lg border border-border p-3">
                             <Textarea
                                 data-testid="raw-yaml-editor"
                                 value={rawYamlDraft}
@@ -1517,7 +1517,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             data-testid="editor-no-flow-state"
                             className="flex h-full items-center justify-center p-6"
                         >
-                            <div className="max-w-md rounded-lg border border-dashed border-border bg-background/70 px-6 py-5 text-center shadow-sm">
+                            <div className="max-w-md rounded-lg border border-dashed border-border px-6 py-5 text-center">
                                 <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
                                 <p className="mt-2 text-sm text-muted-foreground">
                                     Flows are shared authoring assets. Choose one from the Flows panel.
@@ -1534,7 +1534,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                 <div
                                     data-testid="canvas-interaction-performance-budget"
                                     data-budget-ms={CANVAS_INTERACTION_BUDGET_MS}
-                                    className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                                    className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground"
                                 >
                                     Canvas interaction budget: {CANVAS_INTERACTION_BUDGET_MS}ms max per interaction frame.
                                 </div>
@@ -1547,7 +1547,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                     data-optimizations={optimizationLabel}
                                     data-preview-ms={Math.round(lastPreviewMs)}
                                     data-layout-ms={Math.round(lastLayoutMs)}
-                                    className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm"
+                                    className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground"
                                 >
                                     Canvas profile: {performanceProfile} ({nodeCount} nodes). Preview debounce: {previewDebounceMs}ms.
                                     {' '}Optimizations: {optimizationLabel}.
@@ -1555,7 +1555,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             </>
                         ) : null}
                         {isExpandedReadOnlyPreview ? (
-                            <div className="inline-flex items-center rounded-md border border-border/70 bg-background/90 px-3 py-1.5 text-xs text-muted-foreground shadow-sm">
+                            <div className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground">
                                 Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.
                             </div>
                         ) : null}
@@ -1567,7 +1567,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                 {flowName && editorMode === 'structured' && isRunPanelOpen ? (
                     <div
                         data-testid="editor-run-panel"
-                        className="absolute bottom-4 right-3 top-2 z-20 flex w-[26rem] max-w-[calc(100%-2rem)] flex-col rounded-lg border border-border bg-background/95 p-4 shadow-lg"
+                        className="absolute bottom-4 right-3 top-2 z-20 flex w-[26rem] max-w-[calc(100%-2rem)] flex-col rounded-lg border border-border bg-background p-4 shadow-lg"
                     >
                         <LaunchPanel
                             target={{

@@ -74,11 +74,11 @@ export function ProjectsSidebar({
                     className={isNarrowViewport ? "" : "min-h-0 overflow-hidden"}
                     style={isNarrowViewport ? undefined : { height: `${homeSidebarPrimaryHeight}px` }}
                 >
-                    <Card className="h-full gap-4 rounded-md border border-border py-0">
+                    <Card className="h-full gap-4 py-0">
                         <CardHeader className="gap-1 border-b border-border/60 px-4 py-4">
                             <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0 space-y-1">
-                                    <h3 className="text-base font-semibold text-foreground">Threads</h3>
+                                    <h3 className="text-lg font-light text-foreground">Threads</h3>
                                     {activeProjectPath ? (
                                         <p className="text-xs leading-5 text-muted-foreground">
                                             Threads for {activeProjectLabel || 'the active project'}.
@@ -142,15 +142,15 @@ export function ProjectsSidebar({
                                                     onClick={() => onSelectConversationThread(conversation.conversation_id)}
                                                     aria-current={isActiveConversation ? "true" : undefined}
                                                     aria-label={`Open thread ${conversation.title}`}
-                                                    variant={isActiveConversation ? "secondary" : "ghost"}
+                                                    variant="ghost"
                                                     size="sm"
                                                     className={`h-auto w-full min-w-0 justify-start overflow-hidden rounded-xl px-2 py-2 pr-9 text-left ${isActiveConversation
-                                                        ? "bg-muted text-foreground shadow-sm"
-                                                        : "text-foreground/90 hover:bg-muted/60"
+                                                        ? "rounded-none text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]"
+                                                        : "text-foreground/90 hover:text-primary"
                                                         }`}
                                                 >
                                                     <div className="flex w-full min-w-0 items-center gap-2">
-                                                        <FileText className={`h-3.5 w-3.5 shrink-0 ${isActiveConversation ? "text-foreground" : "text-muted-foreground"}`} />
+                                                        <FileText className={`h-3.5 w-3.5 shrink-0 ${isActiveConversation ? "text-primary" : "text-muted-foreground"}`} />
                                                         <div className="min-w-0 flex-1">
                                                             <span className="block truncate text-sm font-medium">
                                                                 {conversation.title}
@@ -205,10 +205,10 @@ export function ProjectsSidebar({
                 ) : null}
                 <div
                     data-testid="project-event-log-surface"
-                    className={`flex min-h-[280px] flex-col rounded-md border border-border bg-card p-4 shadow-sm ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-hidden"}`}
+                    className={`flex min-h-[280px] flex-col border-t border-border p-4 ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-hidden"}`}
                 >
                     <div className="mb-3 flex items-center justify-between gap-2">
-                        <h3 className="text-base font-semibold text-foreground">Workflow Event Log</h3>
+                        <h3 className="text-lg font-light text-foreground">Workflow Event Log</h3>
                         <div
                             role="group"
                             aria-label="Workflow event log scope"
@@ -222,8 +222,8 @@ export function ProjectsSidebar({
                                 className={cn(
                                     'px-2 py-0.5 text-xs font-medium transition-colors',
                                     logScope === 'all'
-                                        ? 'bg-primary text-primary-foreground'
-                                        : 'bg-background text-muted-foreground hover:bg-muted/60',
+                                        ? 'bg-accent text-accent-foreground'
+                                        : 'text-muted-foreground hover:text-primary',
                                 )}
                             >
                                 All projects
@@ -237,8 +237,8 @@ export function ProjectsSidebar({
                                 className={cn(
                                     'px-2 py-0.5 text-xs font-medium transition-colors disabled:opacity-50',
                                     logScope === 'active'
-                                        ? 'bg-primary text-primary-foreground'
-                                        : 'bg-background text-muted-foreground hover:bg-muted/60',
+                                        ? 'bg-accent text-accent-foreground'
+                                        : 'text-muted-foreground hover:text-primary',
                                 )}
                             >
                                 This project
@@ -266,9 +266,9 @@ export function ProjectsSidebar({
                                         className={cn(
                                             'block rounded border border-border border-l-2 px-2 py-1.5 transition-colors hover:bg-muted/40',
                                             entry.kind === 'run_failed' && 'border-l-destructive/70',
-                                            entry.kind === 'run_waiting_on_input' && 'border-l-sky-500/70',
-                                            entry.kind === 'run_completed' && 'border-l-green-500/70',
-                                            entry.kind === 'run_canceled' && 'border-l-amber-500/70',
+                                            entry.kind === 'run_waiting_on_input' && 'border-l-info/70',
+                                            entry.kind === 'run_completed' && 'border-l-success/70',
+                                            entry.kind === 'run_canceled' && 'border-l-warning/70',
                                         )}
                                     >
                                         <p className="flex items-center justify-between gap-2 text-xs text-muted-foreground">

@@ -81,13 +81,13 @@ export function ProjectConversationSurface({
             >
                 <CardHeader className="gap-1 px-4">
                     <div className="flex items-center justify-between gap-3">
-                        <CardTitle className="text-base">
+                        <CardTitle className="text-lg font-light">
                             {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
                         </CardTitle>
                         {activeProjectPath && activeChatMode ? (
                             <span
                                 data-testid="project-active-chat-mode-badge"
-                                className="inline-flex items-center rounded-full border border-border/70 bg-muted/40 px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                                className="inline-flex items-center rounded-full border border-border px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
                             >
                                 {activeChatMode === 'plan' ? 'Plan mode' : 'Chat mode'}
                             </span>

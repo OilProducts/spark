@@ -33,7 +33,7 @@ function ContextRows({ rows }: { rows: RunContextRow[] }) {
                     <td className="px-3 py-2 font-mono text-sm text-foreground">
                         <span
                             data-testid="run-context-row-type"
-                            className="mr-2 inline-flex rounded border border-border/80 bg-muted/50 px-1.5 py-0.5 text-xs uppercase tracking-wide text-muted-foreground"
+                            className="mr-2 inline-flex rounded border border-border px-1.5 py-0.5 text-xs uppercase tracking-wide text-muted-foreground"
                         >
                             {row.valueType}
                         </span>
@@ -137,10 +137,10 @@ export function RunContextCard({
                     <div className="space-y-3">
                         <div className="overflow-hidden rounded-md border border-border/80">
                             <table data-testid="run-context-table" className="w-full table-fixed border-collapse text-sm">
-                                <thead className="bg-muted/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                                <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
                                     <tr>
-                                        <th className="w-2/5 px-3 py-2 font-semibold">Key</th>
-                                        <th className="px-3 py-2 font-semibold">Value</th>
+                                        <th className="w-2/5 px-3 py-2 font-medium">Key</th>
+                                        <th className="px-3 py-2 font-medium">Value</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -160,7 +160,7 @@ export function RunContextCard({
                         </div>
                         {runtimeRows.length > 0 ? (
                             <details data-testid="run-context-runtime-group" open={isSearching}>
-                                <summary className="cursor-pointer select-none text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                                <summary className="cursor-pointer select-none text-xs font-medium uppercase tracking-wide text-muted-foreground">
                                     Runtime internals ({runtimeRows.length})
                                 </summary>
                                 <div className="mt-2 overflow-hidden rounded-md border border-border/80">

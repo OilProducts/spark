@@ -130,7 +130,7 @@ export function SettingsPanel() {
         <div data-testid="settings-panel" className="min-w-0 flex-1 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
                 <div className="space-y-1">
-                    <h2 className="text-xl font-semibold tracking-tight text-foreground">Settings</h2>
+                    <h2 className="text-2xl font-light tracking-tight text-foreground">Settings</h2>
                     <p className="text-sm text-muted-foreground">
                         Model defaults apply to inheriting conversations on their next message.
                     </p>
@@ -146,9 +146,9 @@ export function SettingsPanel() {
                 <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
                 <CodexConnectionSettings />
 
-                <Card className="gap-4 py-4 shadow-sm">
+                <Card className="gap-4 py-4">
                     <CardHeader className="gap-1 px-4">
-                        <h3 className="text-base font-semibold">Model defaults (Workspace)</h3>
+                        <h3 className="text-lg font-light">Model defaults (Workspace)</h3>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
                         <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations.</p>
@@ -176,8 +176,8 @@ export function SettingsPanel() {
                 <TabsContent value="execution" forceMount hidden={category !== 'execution'} className="space-y-6">
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
-                <Card className="gap-4 py-4 shadow-sm">
-                    <CardHeader className="px-4"><h3 className="text-base font-semibold">Scoped configuration</h3></CardHeader>
+                <Card className="gap-4 py-4">
+                    <CardHeader className="px-4"><h3 className="text-lg font-light">Scoped configuration</h3></CardHeader>
                     <CardContent className="space-y-3 px-4">
                         <p className="text-xs text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
                         <div className="flex flex-wrap gap-2">
@@ -190,8 +190,8 @@ export function SettingsPanel() {
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
                 <p className="text-xs text-muted-foreground">Server/Desktop configuration. Environment overrides take precedence over saved values.</p>
                 {getTauriInvoke() ? (
-                    <Card className="gap-4 py-4 shadow-sm">
-                        <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Desktop Server</h3></CardHeader>
+                    <Card className="gap-4 py-4">
+                        <CardHeader className="gap-1 px-4"><h3 className="text-lg font-light">Desktop Server</h3></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">
                             {desktopSettings ? <>
                             <div className="flex items-center justify-between gap-4 rounded border border-border px-3 py-2">
@@ -215,7 +215,7 @@ export function SettingsPanel() {
                                 }}>Discard</Button>
                             </div>
                             {isSavingDesktopSettings && <p role="status">Saving or reloading settings…</p>}
-                            {desktopSettings.requires_restart ? <div className="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">Restart Spark Desktop to apply the server binding change.</div> : null}
+                            {desktopSettings.requires_restart ? <div className="border-0 border-l border-warning px-3 py-2 text-xs text-warning">Restart Spark Desktop to apply the server binding change.</div> : null}
                             </> : desktopSettingsError ? <Button variant="outline" onClick={() => { setDesktopSettingsError(null); setDesktopRetry((value) => value + 1) }}>Retry Desktop settings</Button> : <p role="status">Loading Desktop settings…</p>}
                             <SaveStatus message={desktopMessage} error={desktopSettingsError} dirty={desktopDirty} />
                         </CardContent>

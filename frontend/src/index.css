@@ -6,8 +6,9 @@
 
 @theme {
   --font-sans:
-    'Inter', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji',
-    'Segoe UI Symbol', 'Noto Color Emoji';
+    system-ui, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  --font-mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
 
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -42,63 +43,74 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
 
+  /* Air: surfaces separate by hairlines, not shadows; only floating layers keep a faint lift. */
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 0 #0000;
+  --shadow: 0 0 #0000;
+  --shadow-md: 0 4px 16px hsl(215 25% 15% / 0.08);
+  --shadow-lg: 0 8px 28px hsl(215 25% 15% / 0.1);
+  --shadow-xl: 0 8px 28px hsl(215 25% 15% / 0.1);
+
+  --radius-xl: calc(var(--radius) + 2px);
   --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: var(--radius);
+  --radius-sm: calc(var(--radius) - 2px);
 }
 
 @layer base {
+  /* Air: plain white surfaces, 1px very light hairlines, cool greys, one ink-blue accent.
+     Status hues are for small marks and text only. */
   :root {
     --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    --foreground: 213 13% 14%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 213 13% 14%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 40%;
-    --destructive-foreground: 0 0% 98%;
-    --success: 142 72% 29%;
-    --warning: 32 95% 34%;
-    --warning-foreground: 0 0% 98%;
-    --info: 201 96% 32%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 10% 3.9%;
-    --radius: 0.5rem;
+    --popover-foreground: 213 13% 14%;
+    --primary: 228 69% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 20% 97%;
+    --secondary-foreground: 213 13% 14%;
+    --muted: 220 20% 97%;
+    --muted-foreground: 215 8% 42%;
+    --accent: 228 100% 97%;
+    --accent-foreground: 228 69% 50%;
+    --destructive: 0 65% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 133 52% 33%;
+    --warning: 20 88% 42%;
+    --warning-foreground: 0 0% 100%;
+    --info: 228 69% 55%;
+    --border: 210 12% 93%;
+    --input: 214 12% 87%;
+    --ring: 228 69% 55%;
+    --radius: 6px;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 84% 65%;
-    --destructive-foreground: 240 10% 3.9%;
-    --success: 142 69% 58%;
-    --warning: 43 96% 56%;
-    --warning-foreground: 240 10% 3.9%;
-    --info: 198 93% 60%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --background: 220 12% 9%;
+    --foreground: 214 14% 89%;
+    --card: 220 12% 9%;
+    --card-foreground: 214 14% 89%;
+    --popover: 218 12% 12%;
+    --popover-foreground: 214 14% 89%;
+    --primary: 228 96% 74%;
+    --primary-foreground: 220 12% 9%;
+    --secondary: 218 11% 14%;
+    --secondary-foreground: 214 14% 89%;
+    --muted: 218 11% 14%;
+    --muted-foreground: 216 8% 62%;
+    --accent: 228 35% 17%;
+    --accent-foreground: 228 96% 78%;
+    --destructive: 0 90% 72%;
+    --destructive-foreground: 220 12% 9%;
+    --success: 130 55% 62%;
+    --warning: 29 100% 66%;
+    --warning-foreground: 220 12% 9%;
+    --info: 228 96% 74%;
+    --border: 216 12% 17%;
+    --input: 215 11% 25%;
+    --ring: 228 96% 74%;
   }
 }
 
@@ -127,7 +139,7 @@
   }
 
   .react-flow__background path {
-    stroke: hsl(var(--border) / 0.55);
+    stroke: hsl(var(--border));
   }
 
   .flow-canvas .react-flow__selection {
@@ -140,9 +152,8 @@
     overflow: hidden;
     border: 1px solid hsl(var(--border));
     border-radius: calc(var(--radius) - 2px);
-    background: hsl(var(--card) / 0.9);
-    box-shadow: 0 1px 2px hsl(240 10% 4% / 0.24) !important;
-    backdrop-filter: blur(6px);
+    background: hsl(var(--background));
+    box-shadow: none !important;
   }
 
   .react-flow__controls-button {
@@ -162,8 +173,8 @@
   }
 
   .react-flow__controls-button:hover {
-    background: hsl(var(--muted)) !important;
-    color: hsl(var(--foreground)) !important;
+    background: hsl(var(--accent)) !important;
+    color: hsl(var(--accent-foreground)) !important;
   }
 
   .react-flow__controls-button:focus-visible {
@@ -178,9 +189,8 @@
   .react-flow__minimap {
     border: 1px solid hsl(var(--border)) !important;
     border-radius: calc(var(--radius) - 2px) !important;
-    background: hsl(var(--card) / 0.94) !important;
-    box-shadow: 0 1px 2px hsl(240 10% 4% / 0.24);
-    backdrop-filter: blur(6px);
+    background: hsl(var(--background)) !important;
+    box-shadow: none;
   }
 
   .react-flow__minimap-mask {
@@ -188,8 +198,8 @@
   }
 
   .react-flow__minimap-node {
-    fill: hsl(var(--muted)) !important;
-    stroke: hsl(var(--border)) !important;
+    fill: hsl(var(--muted-foreground) / 0.25) !important;
+    stroke: none !important;
     stroke-width: 1 !important;
   }
 
@@ -202,8 +212,8 @@
   .flow-canvas .react-flow__handle {
     width: 9px !important;
     height: 9px !important;
-    border: 1px solid hsl(var(--border)) !important;
-    background: hsl(var(--muted-foreground)) !important;
+    border: 1px solid hsl(var(--background)) !important;
+    background: hsl(var(--muted-foreground) / 0.7) !important;
     transition:
       scale 120ms ease,
       background-color 120ms ease;
@@ -212,13 +222,13 @@
   /* `scale`, not `transform`: React Flow positions handles with transform: translate(). */
   .flow-canvas .react-flow__handle:hover {
     scale: 1.12;
-    background: hsl(var(--foreground)) !important;
+    background: hsl(var(--primary)) !important;
   }
 
   .react-flow__edge.flow-edge .react-flow__edge-path {
-    stroke: hsl(var(--border));
-    stroke-width: 2;
-    opacity: 0.92;
+    stroke: hsl(var(--muted-foreground) / 0.45);
+    stroke-width: 1.25;
+    opacity: 1;
     transition: stroke 140ms ease, stroke-width 140ms ease, filter 140ms ease,
       opacity 140ms ease, stroke-dasharray 140ms ease;
   }
@@ -230,8 +240,7 @@
 
   .react-flow__edge.flow-edge.selected .react-flow__edge-path {
     stroke: hsl(var(--primary));
-    stroke-width: 4;
+    stroke-width: 2;
     opacity: 1;
-    filter: drop-shadow(0 0 7px hsl(var(--primary) / 0.6));
   }
 }

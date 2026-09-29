@@ -22,8 +22,8 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
     const discovery = useModelOptions(projectPath)
     const utilityDefault = UTILITY_DEFAULTS.find(({ provider }) => discovery?.payload?.providers?.[provider]?.status === 'available') ?? codexDefault
     const invalidModel = !!editor.draft && !isModelSelectionValid(editor.draft.llm_profile || editor.draft.provider || '', editor.draft.model, profiles)
-    return <Card className="gap-4 py-4 shadow-sm">
-        <CardHeader className="gap-1 px-4"><h3 className="text-base font-semibold">Utility model</h3></CardHeader>
+    return <Card className="gap-4 py-4">
+        <CardHeader className="gap-1 px-4"><h3 className="text-lg font-light">Utility model</h3></CardHeader>
         <CardContent className="space-y-3 px-4 pt-0">
             <p className="text-xs text-muted-foreground">A small, fast model Spark uses for housekeeping, such as naming threads. Off until you choose one; Spark does not fall back to the chat model.</p>
             {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}

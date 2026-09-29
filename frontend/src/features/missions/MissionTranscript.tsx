@@ -59,7 +59,7 @@ export function MissionTranscript({ mission, project }: { mission: Mission; proj
             const lines = entry.content.split('\n\n')
             if (!lines.some(line => RUN_EVENT.test(line))) return null
             return <li key={key} className="flex justify-end">
-                <div aria-label="Mission events" className="max-w-[85%] space-y-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+                <div aria-label="Mission events" className="max-w-[85%] space-y-2 rounded-md border border-border px-3 py-2 text-sm">
                     {lines.map((line, index) => {
                         const runId = RUN_EVENT.exec(line)?.[1]
                         return <p key={index} className="whitespace-pre-wrap break-words">{line}

@@ -204,7 +204,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const handleClassName = cn(
         'h-2.5 w-2.5 transition-opacity',
         isEditorCanvas && !isReadOnlyEditorCanvas
-            ? 'border-border/70 bg-background/90 opacity-0 group-hover:opacity-100'
+            ? 'border-border/70 bg-background opacity-0 group-hover:opacity-100'
             : 'pointer-events-none border-transparent bg-transparent opacity-0',
         selected && isEditorCanvas && !isReadOnlyEditorCanvas ? 'opacity-100' : null,
     )
@@ -414,12 +414,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
             <div className={cn('absolute left-2 right-2 z-20 flex items-start justify-between', overlayOffsetClassName)}>
                 <div className="min-w-0">
                     {isWaiting && (
-                        <div className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-warning">
+                        <div className="rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-warning">
                             Needs Input
                         </div>
                     )}
                     {isReadOnlyPreviewNode && (
-                        <div className="mt-1 rounded-full bg-muted px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                        <div className="mt-1 rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                             Read-only Preview
                         </div>
                     )}
@@ -428,7 +428,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                     {selected && isEditorCanvas && !isReadOnlyEditorCanvas && (
                         <button
                             onClick={openDetailsEditor}
-                            className="rounded border border-border bg-background/90 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                            className="rounded border border-border bg-background px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
                         >
                             Edit
                         </button>
@@ -437,12 +437,12 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         <div
                             data-testid="node-diagnostic-badge"
                             className={cn(
-                                'rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-wide',
+                                'rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide',
                                 hasDiagnosticError
-                                    ? 'bg-destructive/15 text-destructive'
+                                    ? 'text-destructive'
                                     : hasDiagnosticWarning
-                                        ? 'bg-warning/15 text-warning'
-                                        : 'bg-info/15 text-info',
+                                        ? 'text-warning'
+                                        : 'text-info',
                             )}
                             title={diagnosticsForNode.map((diag) => diag.message).join('\n')}
                         >
@@ -506,7 +506,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
 
             <NodeToolbar isVisible={isEditingDetails} position={Position.Bottom} className="nodrag nopan">
                 <div className="mt-2 w-64 rounded-md border border-border bg-card p-3 shadow-lg">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                         Node Properties
                     </div>
                     <div className="mt-2 space-y-2">
@@ -515,7 +515,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                             <select
                                 value={draftShape}
                                 onChange={(event) => setDraftShape(event.target.value)}
-                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                             >
                                 {WORKFLOW_NODE_SHAPE_OPTIONS.map((option) => (
                                     <option key={option.value} value={option.value}>
@@ -530,7 +530,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                 <textarea
                                     value={draftPrompt}
                                     onChange={(event) => setDraftPrompt(event.target.value)}
-                                    className="nodrag h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    className="nodrag h-20 w-full resize-none rounded-md border border-input bg-background px-2 py-1 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                 />
                             </div>
                         )}
@@ -540,7 +540,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                 <input
                                     value={draftToolCommand}
                                     onChange={(event) => setDraftToolCommand(event.target.value)}
-                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     placeholder="e.g. cargo test -p spark-cli"
                                 />
                             </div>
@@ -552,7 +552,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <select
                                         value={draftJoinPolicy}
                                         onChange={(event) => changeDraftJoinPolicy(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
                                         <option value="wait_all">Wait All</option>
                                         <option value="first_success">First Success</option>
@@ -567,7 +567,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             data-testid="node-toolbar-attr-input-join_k"
                                             value={draftJoinK}
                                             onChange={(event) => setDraftJoinK(event.target.value)}
-                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder="2"
                                         />
                                     </div>
@@ -579,7 +579,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             data-testid="node-toolbar-attr-input-join_quorum"
                                             value={draftJoinQuorum}
                                             onChange={(event) => setDraftJoinQuorum(event.target.value)}
-                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                            className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             placeholder="0.5"
                                         />
                                     </div>
@@ -589,7 +589,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <select
                                         value={draftErrorPolicy}
                                         onChange={(event) => setDraftErrorPolicy(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     >
                                         <option value="continue">Continue</option>
                                         <option value="fail_fast">Fail Fast</option>
@@ -601,7 +601,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <input
                                         value={draftMaxParallel}
                                         onChange={(event) => setDraftMaxParallel(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder="4"
                                     />
                                 </div>
@@ -614,7 +614,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <input
                                         value={draftManagerPollInterval}
                                         onChange={(event) => setDraftManagerPollInterval(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder="25ms"
                                     />
                                 </div>
@@ -623,7 +623,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <input
                                         value={draftManagerMaxCycles}
                                         onChange={(event) => setDraftManagerMaxCycles(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder="3"
                                     />
                                 </div>
@@ -632,7 +632,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <input
                                         value={draftManagerStopCondition}
                                         onChange={(event) => setDraftManagerStopCondition(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder='child.status == "success"'
                                     />
                                 </div>
@@ -641,7 +641,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                     <input
                                         value={draftManagerActions}
                                         onChange={(event) => setDraftManagerActions(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder="observe,steer"
                                     />
                                 </div>
@@ -651,7 +651,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                         data-testid="node-toolbar-attr-input-manager.steer_cooldown"
                                         value={draftManagerSteerCooldown}
                                         onChange={(event) => setDraftManagerSteerCooldown(event.target.value)}
-                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                         placeholder="2s"
                                     />
                                 </div>
@@ -670,7 +670,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         {visibility.showAdvanced && (
                             <button
                                 onClick={() => setShowAdvanced((prev) => !prev)}
-                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
                             >
                                 {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}
                             </button>
@@ -685,7 +685,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                 <input
                                                     value={draftMaxRetries}
                                                     onChange={(event) => setDraftMaxRetries(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                             </div>
                                             <div className="space-y-1">
@@ -693,7 +693,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                 <input
                                                     value={draftTimeout}
                                                     onChange={(event) => setDraftTimeout(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                     placeholder="900s"
                                                 />
                                             </div>
@@ -715,7 +715,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             <input
                                                 value={draftRetryTarget}
                                                 onChange={(event) => setDraftRetryTarget(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             />
                                         </div>
                                         <div className="space-y-1">
@@ -723,7 +723,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             <input
                                                 value={draftFallbackRetryTarget}
                                                 onChange={(event) => setDraftFallbackRetryTarget(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             />
                                         </div>
                                         {visibility.showToolCommand && (
@@ -734,7 +734,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         data-testid="node-toolbar-attr-input-tool.hooks.pre"
                                                         value={draftToolHooksPre}
                                                         onChange={(event) => setDraftToolHooksPre(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. ./hooks/pre.sh"
                                                     />
                                                     {draftToolHooksPreWarning && (
@@ -749,7 +749,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         data-testid="node-toolbar-attr-input-tool.hooks.post"
                                                         value={draftToolHooksPost}
                                                         onChange={(event) => setDraftToolHooksPost(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. ./hooks/post.sh"
                                                     />
                                                     {draftToolHooksPostWarning && (
@@ -764,7 +764,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         data-testid="node-toolbar-attr-input-tool.artifacts.paths"
                                                         value={draftToolArtifactsPaths}
                                                         onChange={(event) => setDraftToolArtifactsPaths(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. dist/**,reports/*.json"
                                                     />
                                                 </div>
@@ -774,7 +774,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         data-testid="node-toolbar-attr-input-tool.artifacts.stdout"
                                                         value={draftToolArtifactsStdout}
                                                         onChange={(event) => setDraftToolArtifactsStdout(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. stdout.txt"
                                                     />
                                                 </div>
@@ -784,7 +784,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                         data-testid="node-toolbar-attr-input-tool.artifacts.stderr"
                                                         value={draftToolArtifactsStderr}
                                                         onChange={(event) => setDraftToolArtifactsStderr(event.target.value)}
-                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                        className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                         placeholder="e.g. stderr.txt"
                                                     />
                                                 </div>
@@ -796,7 +796,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                 <input
                                                     value={draftFidelity}
                                                     onChange={(event) => setDraftFidelity(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                             </div>
                                             <div className="space-y-1">
@@ -804,7 +804,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                                 <input
                                                     value={draftThreadId}
                                                     onChange={(event) => setDraftThreadId(event.target.value)}
-                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                    className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                                 />
                                             </div>
                                         </div>
@@ -813,7 +813,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                             <input
                                                 value={draftClassName}
                                                 onChange={(event) => setDraftClassName(event.target.value)}
-                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                                className="nodrag h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                             />
                                         </div>
                                     </>
@@ -867,7 +867,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                         </button>
                         <button
                             onClick={saveDetails}
-                            className="h-7 rounded-md bg-primary px-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                            className="h-7 rounded-md border border-primary px-2 text-xs font-medium text-primary hover:bg-accent"
                         >
                             Save
                         </button>
