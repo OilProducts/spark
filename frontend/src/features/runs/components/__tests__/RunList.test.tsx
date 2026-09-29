@@ -116,4 +116,33 @@ describe('RunList', () => {
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'nothing like it' } })
         expect(screen.getByTestId('run-list-search-empty')).toBeVisible()
     })
+
+    it('keeps ancestors of a matching child run and reveals the match on search', () => {
+        const parent = makeRun({ run_id: 'parent', status: 'completed', title: 'Parent work', flow_name: 'parent.yaml' })
+        const child = makeRun({ run_id: 'child', flow_name: 'Middle Child', parent_run_id: 'parent', root_run_id: 'parent' })
+        const sibling = makeRun({ run_id: 'sibling', flow_name: 'Other Child', parent_run_id: 'parent', root_run_id: 'parent' })
+        const grandchild = makeRun({ run_id: 'grandchild', flow_name: 'Question Child', parent_run_id: 'child', root_run_id: 'parent' })
+        render(
+            <RunList
+                activeProjectPath="/tmp/project-one"
+                error={null}
+                onScopeModeChange={vi.fn()}
+                onSelectRun={vi.fn()}
+                runs={[parent, child, sibling, grandchild]}
+                scopeMode="active"
+                selectedRunId={null}
+                status="ready"
+                summaryLabel="4 total runs · 3 running"
+            />,
+        )
+        const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
+
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'Question Child' } })
+        expect(screen.queryByTestId('run-list-search-empty')).not.toBeInTheDocument()
+        expect(titles()).toEqual(['Parent work', 'Middle Child', 'Question Child'])
+
+        fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'Parent work' } })
+        expect(titles()).toEqual(['Parent work'])
+        expect(screen.getByTestId('run-history-children-toggle')).toHaveTextContent('2 child runs')
+    })
 })

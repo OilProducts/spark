@@ -101,16 +101,25 @@ export function RunList({
     // orphaned) runs bucket by how actionable they are.
     const listedRunIds = new Set(historyRuns.map((run) => run.run_id))
     const childRunsByParent = new Map<string, RunRecord[]>()
-    const topLevelRuns: RunRecord[] = []
+    const rootRuns: RunRecord[] = []
     for (const run of historyRuns) {
         if (run.parent_run_id && listedRunIds.has(run.parent_run_id)) {
             const siblings = childRunsByParent.get(run.parent_run_id) ?? []
             siblings.push(run)
             childRunsByParent.set(run.parent_run_id, siblings)
-        } else if (matchesSearch(run)) {
-            topLevelRuns.push(run)
+        } else {
+            rootRuns.push(run)
         }
     }
+    // A search keeps a run whose own row or any descendant matches, so a
+    // matching child stays reachable through its ancestors.
+    const descendantMatches = (run: RunRecord, seen = new Set<string>()): boolean => {
+        seen.add(run.run_id)
+        return (childRunsByParent.get(run.run_id) ?? []).some(
+            (child) => !seen.has(child.run_id) && (matchesSearch(child) || descendantMatches(child, seen)),
+        )
+    }
+    const topLevelRuns = rootRuns.filter((run) => matchesSearch(run) || descendantMatches(run))
     const needsInputRuns = topLevelRuns.filter((run) => run.status === 'waiting')
     const runningRuns = topLevelRuns.filter((run) => ACTIVE_LIST_STATUSES.has(run.status))
     const recentRuns = topLevelRuns.filter(
@@ -129,8 +138,14 @@ export function RunList({
         ].filter((value): value is string => Boolean(value) && value !== '—')
         const holdsExecutionLock = run.execution_lock?.state === 'holding'
         const queuedForExecutionLock = run.execution_lock?.state === 'queued'
-        const childRuns = childRunsByParent.get(run.run_id) ?? []
-        const childrenExpanded = expandedParents.has(run.run_id)
+        const allChildRuns = childRunsByParent.get(run.run_id) ?? []
+        // Searching opens the path to matching descendants; a matching parent
+        // keeps all of its children available.
+        const revealsMatch = Boolean(query) && descendantMatches(run)
+        const childRuns = query && !matchesSearch(run)
+            ? allChildRuns.filter((child) => matchesSearch(child) || descendantMatches(child))
+            : allChildRuns
+        const childrenExpanded = revealsMatch || expandedParents.has(run.run_id)
 
         return (
             <div key={run.run_id} className={cn(depth > 0 && 'ml-4 border-l border-border/60 pl-2')}>
