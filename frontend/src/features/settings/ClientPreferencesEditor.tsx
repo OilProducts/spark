@@ -68,7 +68,7 @@ export function ClientPreferencesEditor() {
                     </NativeSelect>
                 </Field>)}
                 {(Object.keys(runPresentationChoices) as (keyof typeof runPresentationChoices)[]).map((key) => <Field key={key}>
-                    <FieldLabel htmlFor={`run-preference-${key}`}>{{ sort: 'Run sort order', inspector_tab: 'Run inspector tab' }[key]}</FieldLabel>
+                    <FieldLabel htmlFor={`run-preference-${key}`}>{{ sort: 'Run sort order' }[key]}</FieldLabel>
                     <NativeSelect id={`run-preference-${key}`} value={editor.draft?.run_presentation?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, [key]: event.target.value || null } as RunPresentation }))}>
                         <option value="">Default</option>{runPresentationChoices[key].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
                     </NativeSelect>

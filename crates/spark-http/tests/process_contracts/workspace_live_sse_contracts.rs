@@ -1081,6 +1081,13 @@ async fn live_route_replays_run_journals_and_runs_overview() {
         flow_content: Some(simple_flow()),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
+        launch_context: Some(
+            [(
+                "context.request.path".to_string(),
+                json!("changes/CR-1/request.md\nsecond line"),
+            )]
+            .into(),
+        ),
         ..PipelineStartRequest::default()
     });
     assert_eq!(started.status_code, 200);
@@ -1118,6 +1125,11 @@ async fn live_route_replays_run_journals_and_runs_overview() {
     assert_eq!(upsert["type"], "run.upsert");
     assert_eq!(upsert["payload"]["run"]["run_id"], "run-live-http");
     assert_eq!(upsert["payload"]["run"]["model"], "compat-model");
+    assert_eq!(
+        upsert["payload"]["run"]["first_launch_input"],
+        "changes/CR-1/request.md"
+    );
+    assert!(upsert["payload"]["run"].get("launch_context").is_none());
 }
 
 #[tokio::test]
@@ -1229,7 +1241,8 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
             "flow_name": "ops/live.yaml",
             "summary": "Launch from open SSE overview",
             "project_path": project_path,
-            "model": "compat-model"
+            "model": "compat-model",
+            "launch_context": {"context.request.objective": "fix the deploy pipeline"}
         })),
     )
     .await;
@@ -1241,6 +1254,10 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     assert_eq!(upsert["type"], "run.upsert");
     assert_eq!(upsert["payload"]["run"]["run_id"], launched_run_id);
     assert_eq!(upsert["payload"]["run"]["model"], "compat-model");
+    assert_eq!(
+        upsert["payload"]["run"]["first_launch_input"],
+        "fix the deploy pipeline"
+    );
 
     let service = AttractorApiService::new(settings.clone());
     // Wait for terminal state: this section exercises steer-event streaming

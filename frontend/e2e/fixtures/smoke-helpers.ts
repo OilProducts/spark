@@ -63,8 +63,9 @@ export async function stubProjectRegistration(page: Page, projectPath: string) {
   const projectRecord = buildSmokeProjectRecord(projectPath)
 
   // Synthetic projects must not invoke host CLI model discovery during editor smoke tests.
+  // Codex is reachable but lists nothing, so pickers still offer custom models.
   await page.route('**/workspace/api/projects/chat-models**', (route) => route.fulfill({
-    json: { models: [], providers: { codex: { status: 'unavailable', error: 'Smoke fixture' } } },
+    json: { models: [], providers: { codex: { status: 'available', error: null } } },
   }))
 
   await page.route('**/workspace/api/projects', async (route) => {

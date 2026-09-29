@@ -39,6 +39,9 @@ type UseRunDetailResourcesArgs = {
 
 let nextArtifactPreviewRequestId = 0
 let nextResourceRequestId = 0
+// An ended run writes its result after its final event, possibly after a
+// summary-model call, so an unavailable result is retried with backoff.
+const RESULT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000, 60000, 60000, 60000, 60000, 60000]
 
 function beginResourceRequest(runId: string, resource: string) {
     const state = useStore.getState()
@@ -179,7 +182,7 @@ export function useRunDetailResources({
         }
     }, [selectedRunId, updateRunDetailSession])
 
-    const fetchResult = useCallback(async () => {
+    const fetchResult = useCallback(async (attempt = 0): Promise<void> => {
         if (!selectedRunId) {
             return
         }
@@ -192,11 +195,20 @@ export function useRunDetailResources({
         try {
             const payload = await fetchPipelineResultValidated(selectedRunId)
             if (!isCurrentRequest()) return
+            const previousState = useStore.getState().runDetailSessionsByRunId[selectedRunId]?.resultData?.state
             updateRunDetailSession(selectedRunId, {
                 resultData: payload,
                 resultStatus: 'ready',
                 resultError: null,
             })
+            const delay = RESULT_RETRY_DELAYS_MS[attempt]
+            if (payload.state === 'unavailable' && delay !== undefined) {
+                // A newer fetch supersedes this retry chain.
+                setTimeout(() => { if (isCurrentRequest()) void fetchResult(attempt + 1) }, delay)
+            } else if ((previousState === 'pending' || previousState === 'unavailable') && (payload.state === 'ready' || payload.state === 'error')) {
+                // Materializing the result can also add output files.
+                void fetchArtifacts()
+            }
         } catch (err) {
             if (!isCurrentRequest()) return
             logUnexpectedRunError(err)
@@ -207,7 +219,7 @@ export function useRunDetailResources({
                     : 'Unable to load result. Check your network/backend connection and retry.',
             })
         }
-    }, [selectedRunId, updateRunDetailSession])
+    }, [fetchArtifacts, selectedRunId, updateRunDetailSession])
 
     const fetchPendingQuestions = useCallback(async () => {
         if (!selectedRunId) {
@@ -261,8 +273,10 @@ export function useRunDetailResources({
         }
         const reconcileQuestions = () => { void fetchPendingQuestions() }
         const reconcileTerminalQuestions = (event: Event) => {
-            const detail = event instanceof CustomEvent ? event.detail : null
-            if (['completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(detail?.run?.status)) {
+            const run = event instanceof CustomEvent ? event.detail?.run : null
+            // Only this run and its descendants: the live stream replays every listed run on reconnect.
+            const related = run?.run_id === selectedRunId || run?.root_run_id === selectedRunId || run?.parent_run_id === selectedRunId
+            if (related && ['completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(run?.status)) {
                 void fetchPendingQuestions()
             }
         }
@@ -276,6 +290,39 @@ export function useRunDetailResources({
             window.removeEventListener('spark:run-journal-entry', refreshQuestions)
         }
     }, [fetchPendingQuestions, manageSync, reconnectSignal, selectedRunId])
+
+    // A settled stage writes its files, a checkpoint its context, and an ended
+    // run its result; with no Refresh buttons left, the live journal keeps them current.
+    useEffect(() => {
+        if (!manageSync || !selectedRunId) return
+        const refreshOutputs = (event: Event) => {
+            const detail = event instanceof CustomEvent ? event.detail : null
+            const type = detail?.entry?.raw_type ?? detail?.entry?.type
+            if (detail?.runId !== selectedRunId) return
+            if (type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchResult()
+            if (type === 'StageCompleted' || type === 'StageFailed' || type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchArtifacts()
+            if (type === 'CheckpointSaved' || type === 'PipelineCompleted' || type === 'PipelineFailed') void fetchContext()
+        }
+        // Journal entries missed while disconnected leave them stale.
+        const reconcileOutputs = () => {
+            void fetchResult()
+            void fetchArtifacts()
+            void fetchContext()
+        }
+        window.addEventListener('spark:run-journal-entry', refreshOutputs)
+        window.addEventListener('spark:run-resync-required', reconcileOutputs)
+        return () => {
+            window.removeEventListener('spark:run-journal-entry', refreshOutputs)
+            window.removeEventListener('spark:run-resync-required', reconcileOutputs)
+        }
+    }, [fetchArtifacts, fetchContext, fetchResult, manageSync, selectedRunId])
+
+    useEffect(() => {
+        if (!manageSync || !selectedRunId || reconnectSignal === 0) return
+        void fetchResult()
+        void fetchArtifacts()
+        void fetchContext()
+    }, [fetchArtifacts, fetchContext, fetchResult, manageSync, reconnectSignal, selectedRunId])
 
     const viewArtifact = useCallback(async (entry: { path: string; viewable: boolean }) => {
         if (!selectedRunId) {

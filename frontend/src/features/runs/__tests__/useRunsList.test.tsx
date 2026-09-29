@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useRunsList } from '../hooks/useRunsList'
 import { useRunDetailResources } from '../hooks/useRunDetailResources'
 import type { RunRecord } from '../model/shared'
+import { runTitle } from '../model/runOverviewModel'
 import { requestRunsTransportReconnect } from '../services/runsTransportReconnect'
 import { useStore } from '@/store'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
@@ -157,4 +158,26 @@ it('reconciles only the live upsert row and still accepts fresh list telemetry',
     await respond(pending.length - 1, [record('a', telemetry), record('b')])
     expect(useStore.getState().runDetailSessionsByRunId.a.record?.token_usage).toBe(101)
   }
+})
+
+it('keeps the launch-input title fallback through initial load, live updates and new live runs', async () => {
+  const record = (runId: string, input: string, extra: Partial<RunRecord> = {}) => ({
+    run_id: runId, project_path: '/one', working_directory: '/one', flow_name: 'implement-change.yaml',
+    status: 'running', model: '', started_at: runId, last_error: '', first_launch_input: input, ...extra,
+  })
+  useStore.setState({ activeProjectPath: '/one' })
+  renderHook(() => useRunsList({ activeProjectPath: '/one', scopeMode: 'active', selectedRunId: null }))
+  await act(async () => pending[0].resolve(new Response(JSON.stringify({ runs: [record('a', 'changes/CR-1/request.md')] }), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  })))
+  const titles = () => useStore.getState().runsListSession.runs.map(runTitle)
+  expect(titles()).toEqual(['Implement Change · changes/CR-1/request.md'])
+
+  const upsert = (run: object) => act(() => {
+    window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } }))
+  })
+  upsert(record('a', 'changes/CR-1/request.md', { status: 'completed' }))
+  expect(titles()).toEqual(['Implement Change · changes/CR-1/request.md'])
+  upsert(record('b', 'changes/CR-2/request.md'))
+  expect(titles()).toEqual(['Implement Change · changes/CR-2/request.md', 'Implement Change · changes/CR-1/request.md'])
 })

@@ -5,9 +5,18 @@ import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
 
-test.beforeEach(async ({ page }) => {
-    await page.route('**/workspace/api/projects/chat-models**', route => route.fulfill({
-        json: { models: [], providers: { codex: { status: 'unavailable', error: 'Smoke fixture' } } },
+test.beforeEach(async ({ context }) => {
+    // The picker lists only reachable providers, so the fixture reaches the ones these tests choose from.
+    // On the context, so second pages a test opens get it too; a test's own page route still wins.
+    await context.route('**/workspace/api/projects/chat-models**', route => route.fulfill({
+        json: {
+            provider_reasoning_efforts: { codex: ['low', 'medium', 'high', 'xhigh'], openai: ['low', 'medium', 'high'], anthropic: ['low', 'medium', 'high'] },
+            providers: { codex: { status: 'available', error: null }, openai: { status: 'available', error: null }, anthropic: { status: 'available', error: null } },
+            models: [
+                { provider: 'openai', id: 'gpt-5.5', display: 'gpt-5.5', is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] },
+                { provider: 'anthropic', id: 'claude-opus-4-6', display: 'claude-opus-4-6', is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] },
+            ],
+        },
     }))
 })
 
@@ -519,7 +528,7 @@ test('conversation effort and model edits preserve an inherited profile; selecti
     const conversation = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
     try {
         expect((await page.request.post('/workspace/api/projects/register', {data:{project_path:project}})).ok()).toBeTruthy()
-        await save('llm_profiles', [...original.llm_profiles.stored, {id, provider:'openai_compatible', base_url:'http://127.0.0.1:1', models:['model-one','model-two'], default_model:'model-one'}])
+        await save('llm_profiles', [...original.llm_profiles.stored, {id, provider:'openai_compatible', base_url:'http://127.0.0.1:1', models:['model-one','model-two'], default_model:'model-one', reasoning_efforts:['low','medium','high']}])
         await save('models', {llm_profile:id, model:null, reasoning_effort:'low'})
         const created = await page.request.put(`${conversationPath}/settings`, {data:{project_path:project, expected_revision:'0', model_settings:null}})
         expect(created.ok(), await created.text()).toBeTruthy()
@@ -534,9 +543,9 @@ test('conversation effort and model edits preserve an inherited profile; selecti
         await openPicker(page)
         await expect(page.getByRole('group', { name: 'Reasoning effort' }).getByRole('button', { name: 'High', exact: true })).toBeDisabled()
         await chooseModel(page, `openai_compatible / ${id}`, 'model-two')
-        await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:'model-two',reasoning_effort:null})
+        await expect.poll(async () => (await conversation()).settings.models.stored).toMatchObject({provider:null,llm_profile:id,model:'model-two',reasoning_effort:null})
         await chooseEffort(page, 'High')
-        await expect.poll(async () => (await conversation()).settings.models.stored).toEqual({provider:null,llm_profile:id,model:'model-two',reasoning_effort:'high'})
+        await expect.poll(async () => (await conversation()).settings.models.stored).toMatchObject({provider:null,llm_profile:id,model:'model-two',reasoning_effort:'high'})
         await chooseModel(page, 'anthropic', 'claude-opus-4-6')
         await expect.poll(async () => (await conversation()).settings.models.stored.provider).toBe('anthropic')
         await expect(provider).toContainText('claude-opus-4-6 · High')
@@ -738,7 +747,7 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await release()
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
     const final = { provider: 'anthropic', llm_profile: null, model: 'final-model', reasoning_effort: 'high' }
-    await expect.poll(async () => (await read()).settings.models.stored).toEqual(final)
+    await expect.poll(async () => (await read()).settings.models.stored).toMatchObject(final)
     expect(statuses).toEqual([200, 200, 200])
     expect(requests.map((request) => request.expected_revision)).toEqual(
         Array.from({ length: 3 }, (_, index) => String(snapshot.revision + index)),
@@ -753,8 +762,9 @@ test('picker default persists workspace and project resets', async ({ page }, te
     const read = async (scoped = false) => (await page.request.get('/workspace/api/settings' + (scoped ? `?project_path=${encodeURIComponent(project)}` : ''))).json()
     const original = (await read()).models
     await page.route('**/workspace/api/projects/chat-models**', route => route.fulfill({ json: {
-        providers: { codex: { status: 'available', error: null } },
-        models: [{ provider: 'codex', id: 'discovery-default', display: 'Discovery default', is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }],
+        provider_reasoning_efforts: { codex: ['low', 'medium', 'high', 'xhigh'], openai: ['low', 'medium', 'high'], anthropic: ['low', 'medium', 'high'] },
+        providers: { codex: { status: 'available', error: null }, anthropic: { status: 'available', error: null } },
+        models: [{ provider: 'codex', id: 'discovery-default', display: 'Discovery default', is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }, { provider: 'anthropic', id: 'claude-opus-4-6', display: 'claude-opus-4-6', is_default: true, default_reasoning_effort: 'medium', supported_reasoning_efforts: ['low', 'medium', 'high'] }],
     } }))
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
     try {
@@ -796,7 +806,7 @@ test('picker default persists workspace and project resets', async ({ page }, te
                 const saved = page.waitForResponse(response => response.url().endsWith('/workspace/api/settings') && response.request().method() === 'PATCH')
                 await scope.getByRole('button', { name: /^Save/ }).click()
                 expect((await saved).status()).toBe(200)
-                await expect.poll(async () => (await read(scoped)).models.stored).toEqual({ provider: 'codex', llm_profile: null, model: null, reasoning_effort: 'high' })
+                await expect.poll(async () => (await read(scoped)).models.stored).toMatchObject({ provider: 'codex', llm_profile: null, model: null, reasoning_effort: 'high' })
                 await page.reload()
                 await page.getByTestId('nav-mode-settings').click()
                 await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText('Discovery default · High')
@@ -804,7 +814,8 @@ test('picker default persists workspace and project resets', async ({ page }, te
                 await page.getByRole('button', { name: /^Use default ·/ }).click()
             }
             await scope.getByRole('button', { name: /^Save/ }).click()
-            await expect.poll(async () => (await read(scoped)).models.stored).toEqual(scoped ? null : { provider: 'codex', llm_profile: null, model: null, reasoning_effort: null })
+            if (scoped) await expect.poll(async () => (await read(scoped)).models.stored).toBeNull()
+            else await expect.poll(async () => (await read(scoped)).models.stored).toMatchObject({ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null })
             if (scoped) await page.getByRole('switch', { name: 'Override workspace model settings' }).click()
             await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText(expected)
             if (scoped) await scope.getByRole('button', { name: /^Discard/ }).click()

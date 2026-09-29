@@ -1,157 +1,135 @@
 import { Button } from '@/components/ui/button'
-import { InlineError } from '@/components/app/inline-error'
 import type { RunRecord } from '../model/shared'
 import {
     canCancelRun,
     canContinueRun,
     canRetryRun,
     cancelRunActionLabel,
-    cancelRunDisabledReason,
     formatDuration,
     formatRunStatusLabel,
-    formatTimestamp,
     statusToneClassName,
 } from '../model/shared'
-import {
-    formatEstimatedModelCostLabel,
-    formatOutcomeReason,
-    formatTokenCount,
-} from '../model/runSummaryFormat'
+import { formatTokenCount } from '../model/runSummaryFormat'
+import { formatRunAge, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
 
-// The run's masthead: identity, state, and actions on one line; ambient facts
-// on a second. Reference detail lives behind the inspector's Details tab.
+// The run's masthead: flow and run title, one line of facts, and actions.
+// Everything else about the run lives in the status item.
+
+const ATTENTION_STATUSES = new Set(['failed', 'validation_error', 'waiting'])
+const CANCELING_STATUSES = new Set(['cancel_requested', 'abort_requested'])
 
 export interface RunHeaderBarProps {
     run: RunRecord
     now: number
-    currentNodeId: string | null
+    /** The flow's own title from the run's snapshot, when loaded. */
+    flowTitle: string | null
+    /** The selected visit's label; "Continue from here" restarts there. */
+    selectedVisitLabel: string | null
     onRequestCancel: (runId: string, currentStatus: string) => void
     onRequestRetry: (runId: string, currentStatus: string) => void
     onContinueFromRun: (run: RunRecord) => void
     onRerunRun: (run: RunRecord) => void
-    onFocusPendingQuestions: (() => void) | null
 }
 
 export function RunHeaderBar({
     run,
     now,
-    currentNodeId,
+    flowTitle,
+    selectedVisitLabel,
     onRequestCancel,
     onRequestRetry,
     onContinueFromRun,
     onRerunRun,
-    onFocusPendingQuestions,
 }: RunHeaderBarProps) {
-    const cancelAvailable = canCancelRun(run.status)
-    const continueAvailable = canContinueRun(run.status)
-    const rerunAvailable = canContinueRun(run.status)
-    const retryAvailable = canRetryRun(run.status)
-    const outcomeReason = run.status === 'failed' ? formatOutcomeReason(run) : null
-    const facts: Array<{ id: string; label: string; value: string }> = [
-        ...(currentNodeId ? [{ id: 'node', label: 'Node', value: currentNodeId }] : []),
-        {
-            id: 'duration',
-            label: 'Duration',
-            value: formatDuration(run.started_at, run.ended_at, run.status, now),
-        },
-        { id: 'tokens', label: 'Tokens', value: formatTokenCount(run.token_usage_breakdown?.total_tokens ?? run.token_usage) },
-        { id: 'cost', label: 'Est. cost', value: formatEstimatedModelCostLabel(run) },
-        { id: 'started', label: 'Started', value: formatTimestamp(run.started_at) },
-    ]
+    const inactive = canContinueRun(run.status)
+    const showCancel = canCancelRun(run.status) || CANCELING_STATUSES.has(run.status)
+    // An active run's duration already says how long it has been going.
+    const when = inactive ? formatRunAge(run.ended_at || run.started_at, now) : ''
+    const tokens = run.token_usage_breakdown?.total_tokens ?? run.token_usage
+    const commit = run.git_commit?.trim()
+    const facts = [
+        `${formatDuration(run.started_at, run.ended_at, run.status, now)}`,
+        ...(typeof tokens === 'number' ? [`${formatTokenCount(tokens)} tokens`] : []),
+        ...(commit ? [commit.slice(0, 7)] : []),
+    ].filter((fact) => fact && fact !== '—')
 
     return (
-        <header
-            data-testid="run-summary-panel"
-            className="space-y-2 border-b border-border px-4 py-3"
-        >
-            <div className="flex flex-wrap items-center gap-3">
-                <h3
-                    data-testid="run-header-title"
-                    className="min-w-0 truncate text-2xl font-light tracking-tight text-foreground"
-                    title={run.flow_name || run.run_id}
-                >
-                    {run.flow_name || run.run_id.slice(0, 8)}
-                </h3>
-                <span
-                    data-testid="run-header-status"
-                    className={`inline-flex rounded border px-2 py-0.5 text-xs font-medium uppercase tracking-wide ${statusToneClassName(run.status)}`}
-                >
-                    {formatRunStatusLabel(run)}
-                </span>
-                {run.status === 'waiting' && onFocusPendingQuestions ? (
-                    <button
-                        type="button"
-                        data-testid="run-header-waiting-chip"
-                        onClick={onFocusPendingQuestions}
-                        className="inline-flex rounded border border-border px-2 py-0.5 text-xs font-medium text-warning hover:bg-accent/50"
+        <header data-testid="run-summary-panel" className="space-y-1 border-b border-border pb-3">
+            <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-0 flex-1">
+                    <p data-testid="run-header-flow" className="truncate text-xs text-muted-foreground">
+                        {flowTitle || flowTitleFromName(run.flow_name)}
+                    </p>
+                    <h3
+                        data-testid="run-header-title"
+                        className="truncate text-2xl font-light tracking-tight text-foreground"
+                        title={`${runTitle(run)} · ${run.run_id}`}
                     >
-                        Waiting for input{currentNodeId ? ` at ${currentNodeId}` : ''} — answer below
-                    </button>
-                ) : null}
-                <span className="font-mono text-xs text-muted-foreground" title={run.run_id}>
-                    {run.run_id}
-                </span>
-                <div className="ml-auto flex flex-wrap items-center gap-2">
-                    {rerunAvailable ? (
+                        {runTitle(run)}
+                    </h3>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    {inactive ? (
+                        <Button
+                            type="button"
+                            data-testid="run-summary-continue-button"
+                            onClick={() => onContinueFromRun(run)}
+                            title={selectedVisitLabel
+                                ? `Start a new run from ${selectedVisitLabel}`
+                                : 'Start a new run from a node you pick on the graph'}
+                            variant="ghost"
+                            size="xs"
+                        >
+                            Continue from here
+                        </Button>
+                    ) : null}
+                    {inactive ? (
                         <Button
                             type="button"
                             data-testid="run-summary-rerun-button"
                             onClick={() => onRerunRun(run)}
                             title="Launch a new run of this flow with the same inputs"
-                            variant="outline"
+                            variant="ghost"
                             size="xs"
                         >
                             Re-run
                         </Button>
                     ) : null}
-                    {continueAvailable ? (
-                        <Button
-                            type="button"
-                            data-testid="run-summary-continue-button"
-                            onClick={() => onContinueFromRun(run)}
-                            variant="outline"
-                            size="xs"
-                        >
-                            Continue from node
-                        </Button>
-                    ) : null}
-                    {retryAvailable ? (
+                    {canRetryRun(run.status) ? (
                         <Button
                             type="button"
                             data-testid="run-summary-retry-button"
                             onClick={() => onRequestRetry(run.run_id, run.status)}
-                            variant="secondary"
+                            variant="outline"
                             size="xs"
                         >
-                            Retry run
+                            Retry
                         </Button>
                     ) : null}
-                    <Button
-                        type="button"
-                        data-testid="run-summary-cancel-button"
-                        onClick={() => onRequestCancel(run.run_id, run.status)}
-                        disabled={!cancelAvailable}
-                        title={cancelAvailable ? undefined : cancelRunDisabledReason(run.status)}
-                        variant={cancelAvailable ? 'destructive' : 'outline'}
-                        size="xs"
-                    >
-                        {cancelRunActionLabel(run.status)}
-                    </Button>
+                    {showCancel ? (
+                        <Button
+                            type="button"
+                            data-testid="run-summary-cancel-button"
+                            onClick={() => onRequestCancel(run.run_id, run.status)}
+                            disabled={!canCancelRun(run.status)}
+                            variant="outline"
+                            size="xs"
+                        >
+                            {cancelRunActionLabel(run.status)}
+                        </Button>
+                    ) : null}
                 </div>
             </div>
-            <div
-                data-testid="run-header-facts"
-                className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground"
-            >
-                {facts.map((fact) => (
-                    <span key={fact.id} data-testid={`run-header-fact-${fact.id}`}>
-                        <span className="font-medium text-foreground">{fact.label}:</span> {fact.value}
-                    </span>
-                ))}
-            </div>
-            {outcomeReason ? (
-                <InlineError data-testid="run-header-failure-reason">{outcomeReason}</InlineError>
-            ) : null}
+            <p data-testid="run-header-facts" className="truncate text-xs text-muted-foreground">
+                <span
+                    data-testid="run-header-status"
+                    className={ATTENTION_STATUSES.has(run.status) ? statusToneClassName(run.status) : 'text-foreground'}
+                >
+                    {formatRunStatusLabel(run)}
+                </span>
+                {when ? ` ${when}` : ''}
+                {facts.map((fact) => ` · ${fact}`).join('')}
+            </p>
         </header>
     )
 }

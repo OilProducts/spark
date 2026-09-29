@@ -34,7 +34,6 @@ const DEFAULT_RUN_DETAIL_SESSION_STATE: RunDetailSessionState = {
     completedNodesSnapshot: [],
     statusFetchedAtMs: null,
     selectedNodeId: null,
-    inspectorTab: null,
     graphStatus: 'idle',
     graphError: null,
     expandChildFlows: false,
@@ -78,7 +77,6 @@ const resolveRunDetailSession = (
     preferences: AppState['clientRunPresentation'] = {},
 ) => sessionsByRunId[runId] ?? ({
     ...DEFAULT_RUN_DETAIL_SESSION_STATE,
-    inspectorTab: preferences.inspector_tab ?? null,
     graphPaneHeight: preferences.graph_height ?? 512,
     lifetime: ++nextSessionLifetime,
 })
@@ -189,6 +187,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
                 [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
                     record: state.runDetailSessionsByRunId[runId]?.record ?? state.runsListSession.runs.find((run) => run.run_id === runId) ?? null,
                     questionsStatus: 'idle' as const,
+                    // A run opens on its status item, not on a node picked last time.
+                    selectedNodeId: null,
                 },
             } } : {}),
             runsListSession: {

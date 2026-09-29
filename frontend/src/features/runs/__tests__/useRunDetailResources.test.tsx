@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { useStore } from '@/store'
 import { useRunDetailResources } from '../hooks/useRunDetailResources'
+import { useRunDetails } from '../hooks/useRunDetails'
+import type { RunRecord } from '../model/shared'
 
 import { useRunTimeline } from '../hooks/useRunTimeline'
 import { useRunJournalStore } from '../state/runJournalStore'
@@ -90,11 +92,122 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         expect(JSON.stringify(restoredHistory())).toContain('Question child')
         // No closing interview event arrives for a dead child request.
         questions = []
+        // An unrelated run ending does not refetch; the live stream replays every listed run.
+        const fetches = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/questions')).length
+        const before = fetches()
         await act(async () => window.dispatchEvent(new CustomEvent('spark:run-upsert', {
-            detail: { run: { run_id: 'child', status: 'failed' } },
+            detail: { run: { run_id: 'elsewhere', root_run_id: 'elsewhere', parent_run_id: null, status: 'completed' } },
+        })))
+        expect(fetches()).toBe(before)
+        expect(ids()).toEqual([['child', 'child']])
+        await act(async () => window.dispatchEvent(new CustomEvent('spark:run-upsert', {
+            detail: { run: { run_id: 'child', root_run_id: 'run', parent_run_id: 'run', status: 'failed' } },
         })))
         expect(ids()).toEqual([])
         expect(result.current.confirmedQuestionIds).toEqual([])
         expect(restoredHistory()).toEqual(restoredHistoryBefore)
     },
 )
+
+it('refetches files when a stage settles and the result when the run ends', () => {
+    const fetchMock = vi.mocked(global.fetch)
+    renderHook(() => useRunDetailResources({ selectedRunId: 'run', manageSync: true }))
+    const count = (resource: string) => fetchMock.mock.calls.filter(([url]) => String(url).endsWith(`/run/${resource}`)).length
+    expect([count('artifacts'), count('result')]).toEqual([1, 1])
+    const journal = (type: string, runId = 'run') => act(() => {
+        window.dispatchEvent(new CustomEvent('spark:run-journal-entry', { detail: { runId, entry: { type } } }))
+    })
+    journal('StageStarted')
+    journal('StageCompleted', 'other-run')
+    expect([count('artifacts'), count('result')]).toEqual([1, 1])
+    journal('StageCompleted')
+    expect([count('artifacts'), count('result')]).toEqual([2, 1])
+    journal('PipelineCompleted')
+    expect([count('artifacts'), count('result')]).toEqual([3, 2])
+})
+
+// A backend double with the executor's ordering: PipelineCompleted is journaled
+// before the result (and its files) are materialized.
+function stubMaterializingBackend() {
+    const backend = { status: 'running', materialized: false }
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+        if (url.endsWith('/run/result')) {
+            const state = backend.status === 'running' ? 'pending' : backend.materialized ? 'ready' : 'unavailable'
+            return Promise.resolve(Response.json({
+                run_id: 'run', status: backend.status, state, body_markdown: backend.materialized ? 'Shipped it.' : '', summary_enabled: true,
+            }))
+        }
+        if (url.endsWith('/run/artifacts')) {
+            const artifacts = backend.materialized ? [{ path: 'result/summary.md', media_type: 'text/markdown' }] : []
+            return Promise.resolve(Response.json({ pipeline_id: 'run', artifacts }))
+        }
+        return new Promise<Response>(() => {})
+    }))
+    return backend
+}
+
+it('shows the result and its files once they materialize after PipelineCompleted', async () => {
+    vi.useFakeTimers()
+    try {
+        const backend = stubMaterializingBackend()
+        const { result } = renderHook(() => useRunDetailResources({ selectedRunId: 'run' }))
+        await act(() => vi.advanceTimersByTimeAsync(0))
+        expect(result.current.resultData?.state).toBe('pending')
+        backend.status = 'completed'
+        act(() => {
+            window.dispatchEvent(new CustomEvent('spark:run-journal-entry', { detail: { runId: 'run', entry: { type: 'PipelineCompleted' } } }))
+        })
+        await act(() => vi.advanceTimersByTimeAsync(0))
+        expect(result.current.resultData?.state).toBe('unavailable')
+        // The summary-model call finishes well after the final event.
+        await act(() => vi.advanceTimersByTimeAsync(5000))
+        backend.materialized = true
+        await act(() => vi.advanceTimersByTimeAsync(60000))
+        expect(result.current.resultData).toMatchObject({ state: 'ready', body_markdown: 'Shipped it.' })
+        expect(result.current.artifactData?.artifacts.map((entry) => entry.path)).toEqual(['result/summary.md'])
+    } finally {
+        vi.useRealTimers()
+    }
+})
+
+it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
+    'recovers a result that materialized while disconnected on %s',
+    async (signal) => {
+        const backend = stubMaterializingBackend()
+        backend.status = 'completed'
+        const { result } = renderHook(() => useRunDetailResources({ selectedRunId: 'run' }))
+        await waitFor(() => expect(result.current.resultData?.state).toBe('unavailable'))
+        backend.materialized = true
+        act(() => { window.dispatchEvent(new CustomEvent(signal, { detail: { runId: 'run' } })) })
+        await waitFor(() => expect(result.current.resultData?.body_markdown).toBe('Shipped it.'))
+        await waitFor(() => expect(result.current.artifactData?.artifacts).toHaveLength(1))
+    },
+)
+
+it.each([
+    ['CheckpointSaved', null],
+    ['PipelineCompleted', null],
+    [null, 'spark:run-resync-required'],
+    [null, 'spark:runs-transport-reconnect'],
+])('keeps context, copy and export current after journal %s / signal %s', async (journalType, signal) => {
+    let context: Record<string, unknown> = { 'context.review.findings': 'missing test' }
+    vi.stubGlobal('fetch', vi.fn((url: string) => url.endsWith('/run/context')
+        ? Promise.resolve(Response.json({ pipeline_id: 'run', context }))
+        : new Promise<Response>(() => {})))
+    const writeText = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const { result } = renderHook(() => useRunDetails({ selectedRunSummary: { run_id: 'run' } as RunRecord }))
+    await waitFor(() => expect(result.current.contextData?.context).toEqual(context))
+    // A later visit clears the finding.
+    context = {}
+    act(() => {
+        window.dispatchEvent(journalType
+            ? new CustomEvent('spark:run-journal-entry', { detail: { runId: 'run', entry: { type: journalType } } })
+            : new CustomEvent(signal!, { detail: { runId: 'run' } }))
+    })
+    await waitFor(() => expect(result.current.contextData?.context).toEqual({}))
+    expect(decodeURIComponent(result.current.contextExportHref)).not.toContain('missing test')
+    await act(() => result.current.copyContextToClipboard())
+    expect(writeText).not.toHaveBeenCalled()
+    expect(result.current.contextCopyStatus).toBe('No context entries available to copy.')
+})

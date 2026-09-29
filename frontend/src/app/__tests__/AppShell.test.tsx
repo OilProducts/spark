@@ -1091,7 +1091,7 @@ describe('App shell behavior', () => {
     })
     expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-two')
     expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
-    expect(screen.getByText('review-two.dot')).toBeVisible()
+    expect(screen.getByText('Review Two')).toBeVisible()
   })
 
   it('preserves the Home thread session across tab switches', async () => {
@@ -2015,15 +2015,15 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByText('review-one.dot')).toBeVisible()
+      expect(screen.getByText('Review One')).toBeVisible()
     })
 
     await user.click(screen.getByTestId('runs-scope-all-projects'))
     await waitFor(() => {
-      expect(screen.getByText('review-two.dot')).toBeVisible()
+      expect(screen.getByText('Review Two')).toBeVisible()
     })
     const runTwoCard = within(screen.getByTestId('run-list-scroll-region'))
-      .getByText('review-two.dot')
+      .getByText('Review Two')
       .closest('[data-testid="run-history-row"]')
     expect(runTwoCard).not.toBeNull()
     await user.click(runTwoCard!)
@@ -2036,10 +2036,10 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-projects'))
     await user.click(screen.getByTestId('nav-mode-runs'))
     await waitFor(() => {
-      expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Two')
     })
     expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history across all projects.')
-    expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-two.dot')
+    expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Two')
     expect(selectSelectedRunId(useStore.getState())).toBe('run-two')
   })
 
@@ -2110,12 +2110,12 @@ describe('App shell behavior', () => {
           return jsonResponse({
             pipeline_id: 'run-session',
             context: {
-              alpha: 'first',
-              beta: 'second',
+              'context.alpha': 'first',
+              'context.beta': 'second',
             },
           })
         }
-        if (url.includes('/attractor/pipelines/run-session/artifacts/logs/summary.txt')) {
+        if (url.includes('/attractor/pipelines/run-session/artifacts/logs/review/executions/2-0/response.md')) {
           return new Response('artifact preview contents', {
             status: 200,
             headers: { 'Content-Type': 'text/plain' },
@@ -2126,7 +2126,7 @@ describe('App shell behavior', () => {
             pipeline_id: 'run-session',
             artifacts: [
               {
-                path: 'logs/summary.txt',
+                path: 'logs/review/executions/2-0/response.md',
                 size_bytes: 42,
                 media_type: 'text/plain',
                 viewable: true,
@@ -2188,26 +2188,32 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByText('review-session.dot')).toBeVisible()
+      expect(screen.getByText('Review Session')).toBeVisible()
     })
 
     const runRow = within(screen.getByTestId('run-list-scroll-region'))
-      .getByText('review-session.dot')
+      .getByText('Review Session')
       .closest('[data-testid="run-history-row"]')
     expect(runRow).not.toBeNull()
     await user.click(runRow!)
 
+    // The pending question is answered in place, on the status item.
     await waitFor(() => {
-      expect(screen.getByTestId('run-inspector-panel')).toBeVisible()
+      expect(screen.getByTestId('run-status-item')).toBeVisible()
       expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toBeVisible()
     })
     expect(screen.queryByTestId('run-context-search-input')).not.toBeInTheDocument()
+    await user.type(
+      screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform'),
+      'Need another pass',
+    )
 
-    await user.click(screen.getByTestId('run-inspector-tab-context'))
-
+    await user.click(screen.getByTestId('run-visit-item-context'))
     await waitFor(() => {
       expect(screen.getByTestId('run-context-search-input')).toBeVisible()
     })
+    await user.clear(screen.getByTestId('run-context-search-input'))
+    await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
 
     await waitFor(() => {
       expect(
@@ -2234,38 +2240,26 @@ describe('App shell behavior', () => {
         }))
     })
 
-    // Focus the review node (as a graph-node click would: selection plus the
-    // Visits tab) so the pending gate's auto-selection cannot select another
-    // visit.
+    // Focus the review node, as a graph-node click would.
     act(() => {
       useStore.getState().updateRunDetailSession('run-session', {
         selectedNodeId: 'review',
-        inspectorTab: 'activity',
       })
     })
     await waitFor(() => {
       expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Review')
     })
-
-    await user.click(screen.getByTestId('run-inspector-tab-context'))
-    await user.clear(screen.getByTestId('run-context-search-input'))
-    await user.type(screen.getByTestId('run-context-search-input'), 'alpha')
-    await user.click(screen.getByTestId('run-inspector-tab-artifacts'))
-    await user.click(screen.getByTestId('run-artifact-view-button'))
-
+    // A visit's files open in the artifact viewer.
+    await user.click(await screen.findByTestId('run-visit-file'))
     await waitFor(() => {
       expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
     })
-
-    await user.type(
-      screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform'),
-      'Need another pass',
-    )
+    await user.keyboard('{Escape}')
 
     expect(useStore.getState().runDetailSessionsByRunId['run-session']).toMatchObject({
       selectedNodeId: 'review',
       contextSearchQuery: 'alpha',
-      selectedArtifactPath: 'logs/summary.txt',
+      selectedArtifactPath: 'logs/review/executions/2-0/response.md',
       freeformAnswersByGateId: {
         'gate-freeform': 'Need another pass',
       },
@@ -2275,16 +2269,13 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('nav-mode-runs'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('run-header-title')).toHaveTextContent('review-session.dot')
+      expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Session')
     })
-    // The inspector restores its last active tab (Artifacts) across the switch.
-    expect(screen.getByTestId('run-inspector-tab-artifacts')).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByTestId('run-artifact-viewer')).toHaveTextContent('Preview: logs/summary.txt')
-    expect(screen.getByTestId('run-artifact-viewer-payload')).toHaveTextContent('artifact preview contents')
-    await user.click(screen.getByTestId('run-inspector-tab-activity'))
+    // The selected node's visit survives the switch, as do the context search and draft answer.
     expect(screen.getByTestId('run-visit-view-title')).toHaveTextContent('Review')
-    await user.click(screen.getByTestId('run-inspector-tab-context'))
+    await user.click(screen.getByTestId('run-visit-item-context'))
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('alpha')
+    await user.click(screen.getByTestId('run-visit-item-status'))
     expect(screen.getByTestId('run-pending-human-gate-freeform-input-gate-freeform')).toHaveValue('Need another pass')
   })
 
@@ -2384,11 +2375,11 @@ describe('App shell behavior', () => {
     render(<App />)
 
     await waitFor(() => {
-      expect(screen.getByText('review-hidden.dot')).toBeVisible()
+      expect(screen.getByText('Review Hidden')).toBeVisible()
     })
 
     const selectedRunRow = within(screen.getByTestId('run-list-scroll-region'))
-      .getByText('review-hidden.dot')
+      .getByText('Review Hidden')
       .closest('[data-testid="run-history-row"]')
     expect(selectedRunRow).not.toBeNull()
     await user.click(selectedRunRow!)

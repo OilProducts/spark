@@ -16,7 +16,9 @@ import { buildRunVisits, visitFlowNodesFromSnapshot, type VisitFlowNode } from '
 import { loadRunGraphPreview } from './services/runGraphTransport'
 import { RunVisitsCard } from './components/RunVisitsCard'
 import { RunGraphCard } from './components/RunGraphCard'
-import { RunInspectorPanel } from './components/RunInspectorPanel'
+import { RunStatusItem } from './components/RunStatusItem'
+import { RunContextItem } from './components/RunContextItem'
+import { RunArtifactViewer } from './components/RunArtifactViewer'
 import { RunList } from './components/RunList'
 import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { RunHeaderBar } from './components/RunHeaderBar'
@@ -24,7 +26,7 @@ import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
-import type { RunDetailSessionState } from '@/state/viewSessionTypes'
+import { buildRunContextOverview, runStatusKind } from './model/runOverviewModel'
 import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
@@ -33,6 +35,14 @@ import { openRun } from '@/features/missions/MissionTranscript'
 
 const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
+
+const STATUS_ROWS = {
+    waiting: { label: 'Needs input', className: 'text-warning' },
+    failed: { label: 'Failed', className: 'text-destructive' },
+    completed: { label: 'Result' },
+    running: { label: 'Running' },
+    ended: { label: 'Status' },
+}
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
@@ -97,35 +107,25 @@ export function RunsPanel() {
     const {
         artifactDownloadHref,
         artifactEntries,
-        artifactError,
-        artifactStatus,
         artifactViewerError,
         artifactViewerPayload,
         checkpointCurrentNode,
         checkpointData,
         contextCopyStatus,
+        contextData,
         contextError,
         contextExportHref,
         contextSearchQuery,
         contextStatus,
         degradedDetailPanels,
-        fetchArtifacts,
         fetchContext,
-        fetchResult,
-        filteredContextRows,
-        isArtifactLoading,
         isArtifactViewerLoading,
-        isContextLoading,
-        isResultLoading,
-        missingCoreArtifacts,
         pendingQuestionSnapshots,
         resultData,
         resultError,
-        resultStatus,
         selectedArtifactEntry,
         setContextCopyStatus,
         setContextSearchQuery,
-        showPartialRunArtifactNote,
         viewArtifact,
         copyContextToClipboard,
     } = useRunDetails({
@@ -160,12 +160,6 @@ export function RunsPanel() {
     const selectedRunSessionState = useStore((state) => (
         selectedRun?.run_id ? state.runDetailSessionsByRunId[selectedRun.run_id] ?? null : null
     ))
-    const patchSelectedRunSession = useCallback((patch: Partial<RunDetailSessionState>) => {
-        if (!selectedRun?.run_id) {
-            return
-        }
-        updateRunDetailSession(selectedRun.run_id, patch)
-    }, [selectedRun?.run_id, updateRunDetailSession])
     const degradedRunPanels = timelineError
         ? [...degradedDetailPanels, 'run journal']
         : degradedDetailPanels
@@ -188,14 +182,14 @@ export function RunsPanel() {
     const runsTransportError = [streamError, selectedRunStatusError].filter(Boolean).join(' ')
     // eslint-disable-next-line react-hooks/purity -- intentional render-time clock snapshot for elapsed-time labels; re-renders are driven by stream events
     const now = Date.now()
-    const questionsPanelRef = useRef<HTMLDivElement | null>(null)
+    const [artifactViewerPath, setArtifactViewerPath] = useState<string | null>(null)
+    const openArtifact = useCallback((entry: { path: string; viewable: boolean }) => {
+        setArtifactViewerPath(entry.path)
+        void viewArtifact(entry)
+    }, [viewArtifact])
     const detailsScrollRef = useRef<HTMLDivElement | null>(null)
     const currentNodeForSummary = selectedRun?.current_node || checkpointResumeNode
     const selectedNodeId = selectedRunSessionState?.selectedNodeId ?? null
-    const storedInspectorTab = selectedRunSessionState?.inspectorTab ?? null
-    // Activity-first: the live transcript stream is the default work surface;
-    // an explicit tab choice sticks per run.
-    const inspectorTab = storedInspectorTab ?? 'activity'
     const liveNodeStatuses = useStore((state) => selectSelectedRunSession(state)?.nodeStatuses ?? EMPTY_NODE_STATUSES)
     const humanGateNodeId = useStore((state) => selectSelectedRunSession(state)?.humanGate?.nodeId ?? null)
     const gateNodeId = visiblePendingInterviewGates[0]?.nodeId ?? humanGateNodeId
@@ -220,25 +214,30 @@ export function RunsPanel() {
             void loadOlderTimelineEvents()
         }
     }, [hasOlderTimelineEvents, isTimelineLoadingOlder, loadOlderTimelineEvents, timelineError])
-    const [flowNodesByRunId, setFlowNodesByRunId] = useState<Record<string, Record<string, VisitFlowNode>>>({})
+    const [flowSnapshotsByRunId, setFlowSnapshotsByRunId] = useState<Record<string, { nodes: Record<string, VisitFlowNode>; title: string | null }>>({})
     useEffect(() => {
-        if (!selectedRunTimelineId || flowNodesByRunId[selectedRunTimelineId]) {
+        if (!selectedRunTimelineId || flowSnapshotsByRunId[selectedRunTimelineId]) {
             return
         }
         const controller = new AbortController()
         loadRunGraphPreview(selectedRunTimelineId, { signal: controller.signal })
             .then((preview) => {
-                setFlowNodesByRunId((current) => ({
+                const title = preview.flow?.title
+                setFlowSnapshotsByRunId((current) => ({
                     ...current,
-                    [selectedRunTimelineId]: visitFlowNodesFromSnapshot(preview.flow),
+                    [selectedRunTimelineId]: {
+                        nodes: visitFlowNodesFromSnapshot(preview.flow),
+                        title: typeof title === 'string' && title.trim() ? title : null,
+                    },
                 }))
             })
             .catch(() => {
                 // Without the snapshot, visits fall back to node ids for labels.
             })
         return () => controller.abort()
-    }, [flowNodesByRunId, selectedRunTimelineId])
-    const flowNodes = (selectedRunTimelineId && flowNodesByRunId[selectedRunTimelineId]) || EMPTY_FLOW_NODES
+    }, [flowSnapshotsByRunId, selectedRunTimelineId])
+    const flowSnapshot = selectedRunTimelineId ? flowSnapshotsByRunId[selectedRunTimelineId] : undefined
+    const flowNodes = flowSnapshot?.nodes ?? EMPTY_FLOW_NODES
     const waitingNodeIds = useMemo(
         () => [
             ...visiblePendingInterviewGates.map((gate) => (gate.sourceScope === 'child' ? gate.sourceParentNodeId : gate.nodeId)),
@@ -256,6 +255,16 @@ export function RunsPanel() {
         flowNodes,
         waitingNodeIds,
     }) : []), [flowNodes, journal, selectedRunStatus, selectedRunTimelineId, transcriptState, waitingNodeIds])
+    const finalContext = contextData?.context ?? null
+    const launchContext = selectedRun?.launch_context
+    const contextOverview = useMemo(
+        () => buildRunContextOverview({ visits, launchContext, finalContext }),
+        [finalContext, launchContext, visits],
+    )
+    const statusKind = selectedRun ? runStatusKind(selectedRun.status, groupedPendingInterviewGates.length > 0) : 'ended'
+    const selectedVisitLabel = selectedNodeId
+        ? flowNodes[selectedNodeId]?.label ?? selectedNodeId
+        : null
     const [showGraph, setShowGraph] = useState(false)
     useEffect(() => {
         const onKeyDown = (event: KeyboardEvent) => {
@@ -288,9 +297,6 @@ export function RunsPanel() {
         liveNodeStatuses,
         selectedRunStatus,
     ])
-    // Explicit node selection also focuses the inspector's node tab; the gate
-    // auto-focus below deliberately does not, so it never hijacks a tab the
-    // operator chose.
     // A new run starts reading from the top; scroll position must not leak
     // from the previous selection.
     useEffect(() => {
@@ -303,13 +309,7 @@ export function RunsPanel() {
         if (!selectedRun?.run_id) {
             return
         }
-        const patch: Partial<RunDetailSessionState> = { selectedNodeId: nodeId }
-        if (nodeId) {
-            // Selecting a node is an intent to read its activity: land in the
-            // node-scoped live transcript stream.
-            patch.inspectorTab = 'activity'
-        }
-        updateRunDetailSession(selectedRun.run_id, patch)
+        updateRunDetailSession(selectedRun.run_id, { selectedNodeId: nodeId })
     }, [selectedRun?.run_id, updateRunDetailSession])
 
     useEffect(() => {
@@ -317,7 +317,9 @@ export function RunsPanel() {
             return
         }
         const onKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
+            // Escape in a dialog (the file viewer) closes the dialog, not the selection.
+            const target = event.target instanceof Element ? event.target : null
+            if (event.key === 'Escape' && !target?.closest('[role="dialog"]')) {
                 selectNode(null)
             }
         }
@@ -326,18 +328,6 @@ export function RunsPanel() {
             window.removeEventListener('keydown', onKeyDown)
         }
     }, [selectedNodeId, selectNode])
-
-    // Focus the gate's node when a run starts waiting on input. Keyed on the gate
-    // node so an explicit clear afterwards is respected until the gate set changes.
-    useEffect(() => {
-        if (!gateNodeId || !selectedRun?.run_id) {
-            return
-        }
-        const session = useStore.getState().runDetailSessionsByRunId[selectedRun.run_id]
-        if ((session?.selectedNodeId ?? null) === null) {
-            updateRunDetailSession(selectedRun.run_id, { selectedNodeId: gateNodeId })
-        }
-    }, [gateNodeId, selectedRun?.run_id, updateRunDetailSession])
 
     const beginContinuation = (run: RunRecord) => {
         const projectPath = run.project_path || run.working_directory || null
@@ -352,7 +342,8 @@ export function RunsPanel() {
             sourceWorkingDirectory: run.working_directory || projectPath || '',
             sourceModel: run.model || null,
             flowSourceMode: 'snapshot',
-            startNodeId: null,
+            // "Continue from here" restarts at the selected visit's node.
+            startNodeId: selectedNodeId,
             workingDir: run.working_directory || projectPath || '',
             model: normalizedModel,
             overrideFlowName: run.flow_name || null,
@@ -420,7 +411,8 @@ export function RunsPanel() {
                             <RunHeaderBar
                                 run={selectedRun}
                                 now={now}
-                                currentNodeId={currentNodeForSummary}
+                                flowTitle={flowSnapshot?.title ?? null}
+                                selectedVisitLabel={selectedVisitLabel}
                                 onContinueFromRun={beginContinuation}
                                 onRerunRun={(run) => {
                                     const projectPath = run.project_path || run.working_directory || null
@@ -434,9 +426,6 @@ export function RunsPanel() {
                                 }}
                                 onRequestRetry={(runId, currentStatus) => {
                                     void requestRetry(runId, currentStatus)
-                                }}
-                                onFocusPendingQuestions={() => {
-                                    questionsPanelRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
                                 }}
                             />
                         )}
@@ -468,35 +457,6 @@ export function RunsPanel() {
                                     <EmptyDescription>No runs have been recorded yet.</EmptyDescription>
                                 </EmptyHeader>
                             </Empty>
-                        )}
-                        {selectedRun && (
-                            <div
-                                ref={questionsPanelRef}
-                                className={isNarrowViewport ? undefined : 'max-h-[38vh] shrink-0 overflow-y-auto'}
-                            >
-                            <RunQuestionsPanel confirmedQuestionIds={confirmedQuestionIds}
-                                freeformAnswersByGateId={freeformAnswersByGateId}
-                                gateNotesByGateId={gateNotesByGateId}
-                                groupedPendingInterviewGates={groupedPendingInterviewGates}
-                                onFreeformAnswerChange={(questionId, value) => {
-                                    setFreeformAnswersByGateId((previous) => ({
-                                        ...previous,
-                                        [questionId]: value,
-                                    }))
-                                }}
-                                onGateNoteChange={(questionId, value) => {
-                                    setGateNotesByGateId((previous) => ({
-                                        ...previous,
-                                        [questionId]: value,
-                                    }))
-                                }}
-                                onSubmitPendingGateAnswer={(gate, selectedValue, note) => {
-                                    void submitPendingGateAnswer(gate, selectedValue, note)
-                                }}
-                                pendingGateActionError={pendingGateActionError}
-                                submittingGateIds={submittingGateIds}
-                            />
-                            </div>
                         )}
                         {selectedRun && (
                             <div className={isNarrowViewport
@@ -546,106 +506,123 @@ export function RunsPanel() {
                                     ? 'mt-6'
                                     : 'flex min-h-0 min-w-0 flex-1 flex-col'}
                                 >
-                                <RunInspectorPanel
-                                    inspectorTab={inspectorTab}
-                                    onInspectorTabChange={(tab) => {
-                                        patchSelectedRunSession({ inspectorTab: tab })
-                                        useStore.getState().setClientRunPresentation({ inspector_tab: tab })
-                                    }}
-                                    fillHeight={!isNarrowViewport}
-                                    scrollRegionRef={detailsScrollRef}
-                                    toolbar={
-                                        <button
-                                            type="button"
-                                            data-testid="run-graph-toggle"
-                                            aria-pressed={showGraph}
-                                            aria-keyshortcuts="g"
-                                            title="Show or hide the run graph (g)"
-                                            onClick={() => setShowGraph((current) => !current)}
-                                            className="px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
-                                        >
-                                            {showGraph ? 'Hide graph' : 'Show graph'}
-                                        </button>
-                                    }
-                                    activityContent={
-                                        <RunVisitsCard
-                                            key={selectedRun.run_id}
-                                            visits={visits}
-                                            flowNodes={flowNodes}
-                                            segments={transcriptState?.segments ?? []}
-                                            prompts={transcriptState?.prompts ?? []}
-                                            journal={journal}
-                                            now={now}
-                                            isNarrowViewport={isNarrowViewport}
-                                            isLive={isTimelineLive && isSelectedRunActive}
-                                            transcriptError={transcriptError}
-                                            timelineError={timelineError}
-                                            selectedNodeId={selectedNodeId}
-                                            onSelectNode={selectNode}
-                                            onOpenRun={openRun}
-                                        />
-                                    }
-                                    detailsCardProps={{
-                                        run: selectedRun,
-                                        activeProjectPath,
-                                        now,
-                                        resumeNode: checkpointResumeNode,
-                                    }}
-                                    resultCardProps={{
-                                        result: resultData,
-                                        resultError,
-                                        isLoading: isResultLoading || resultStatus === 'idle',
-                                        onRefresh: () => {
-                                            void fetchResult()
-                                        },
-                                        onViewSource: (artifactPath) => {
-                                            void viewArtifact({ path: artifactPath, viewable: true })
-                                        },
-                                    }}
-                                    contextCardProps={{
-                                        contextCopyStatus,
-                                        contextError,
-                                        contextExportHref: contextExportHref || null,
-                                        filteredContextRows,
-                                        isLoading: isContextLoading,
-                                        onCopy: () => {
-                                            void copyContextToClipboard()
-                                        },
-                                        onRefresh: () => {
-                                            setContextCopyStatus('')
-                                            void fetchContext()
-                                        },
-                                        onSearchQueryChange: setContextSearchQuery,
-                                        runId: selectedRun.run_id,
-                                        searchQuery: contextSearchQuery,
-                                        status: contextStatus,
-                                    }}
-                                    artifactsCardProps={{
-                                        artifactDownloadHref: (artifactPath) => artifactDownloadHref(artifactPath) || null,
-                                        artifactEntries,
-                                        artifactError,
-                                        artifactViewerError,
-                                        artifactViewerPayload: artifactViewerPayload || null,
-                                        isArtifactViewerLoading,
-                                        isLoading: isArtifactLoading,
-                                        missingCoreArtifacts,
-                                        onRefresh: () => {
-                                            void fetchArtifacts()
-                                        },
-                                        onViewArtifact: (artifact) => {
-                                            void viewArtifact(artifact)
-                                        },
-                                        selectedArtifactEntry,
-                                        showPartialRunArtifactNote,
-                                        status: artifactStatus,
-                                    }}
-                                />
+                                <div
+                                    ref={detailsScrollRef}
+                                    data-testid="run-details-scroll-region"
+                                    className={isNarrowViewport ? undefined : 'flex min-h-0 flex-1 flex-col'}
+                                >
+                                    <RunVisitsCard
+                                        key={selectedRun.run_id}
+                                        visits={visits}
+                                        flowNodes={flowNodes}
+                                        segments={transcriptState?.segments ?? []}
+                                        prompts={transcriptState?.prompts ?? []}
+                                        journal={journal}
+                                        now={now}
+                                        isNarrowViewport={isNarrowViewport}
+                                        isLive={isTimelineLive && isSelectedRunActive}
+                                        transcriptError={transcriptError}
+                                        timelineError={timelineError}
+                                        selectedNodeId={selectedNodeId}
+                                        onSelectNode={selectNode}
+                                        onOpenRun={openRun}
+                                        artifactEntries={artifactEntries}
+                                        onViewArtifact={openArtifact}
+                                        toolbar={
+                                            <button
+                                                type="button"
+                                                data-testid="run-graph-toggle"
+                                                aria-pressed={showGraph}
+                                                aria-keyshortcuts="g"
+                                                title="Show or hide the run graph (g)"
+                                                onClick={() => setShowGraph((current) => !current)}
+                                                className="hover:text-foreground"
+                                            >
+                                                {showGraph ? 'Hide graph' : 'Graph'}
+                                            </button>
+                                        }
+                                        statusRow={STATUS_ROWS[statusKind]}
+                                        renderStatus={(selectVisit) => (
+                                            <RunStatusItem
+                                                run={selectedRun}
+                                                kind={statusKind}
+                                                now={now}
+                                                visits={visits}
+                                                flowNodes={flowNodes}
+                                                result={resultData}
+                                                resultError={resultError}
+                                                artifactEntries={artifactEntries}
+                                                onSelectVisit={selectVisit}
+                                                onViewArtifact={openArtifact}
+                                                question={
+                                                    <RunQuestionsPanel
+                                                        confirmedQuestionIds={confirmedQuestionIds}
+                                                        freeformAnswersByGateId={freeformAnswersByGateId}
+                                                        gateNotesByGateId={gateNotesByGateId}
+                                                        groupedPendingInterviewGates={groupedPendingInterviewGates}
+                                                        onFreeformAnswerChange={(questionId, value) => {
+                                                            setFreeformAnswersByGateId((previous) => ({
+                                                                ...previous,
+                                                                [questionId]: value,
+                                                            }))
+                                                        }}
+                                                        onGateNoteChange={(questionId, value) => {
+                                                            setGateNotesByGateId((previous) => ({
+                                                                ...previous,
+                                                                [questionId]: value,
+                                                            }))
+                                                        }}
+                                                        onSubmitPendingGateAnswer={(gate, selectedValue, note) => {
+                                                            void submitPendingGateAnswer(gate, selectedValue, note)
+                                                        }}
+                                                        pendingGateActionError={pendingGateActionError}
+                                                        submittingGateIds={submittingGateIds}
+                                                    />
+                                                }
+                                            />
+                                        )}
+                                        renderContext={(focusKey, selectVisit) => (
+                                            <RunContextItem
+                                                overview={contextOverview}
+                                                finalContext={finalContext}
+                                                status={contextStatus}
+                                                contextError={contextError}
+                                                searchQuery={contextSearchQuery}
+                                                onSearchQueryChange={setContextSearchQuery}
+                                                contextCopyStatus={contextCopyStatus}
+                                                contextExportHref={contextExportHref || null}
+                                                onCopy={() => {
+                                                    void copyContextToClipboard()
+                                                }}
+                                                onRefresh={() => {
+                                                    setContextCopyStatus('')
+                                                    void fetchContext()
+                                                }}
+                                                focusKey={focusKey}
+                                                onSelectVisit={selectVisit}
+                                            />
+                                        )}
+                                    />
+                                </div>
                                 </div>
                             </div>
                         )}
                     </div>
                 </div>
             </div>
+            <RunArtifactViewer
+                entry={selectedArtifactEntry?.path === artifactViewerPath ? selectedArtifactEntry : artifactViewerPath ? { path: artifactViewerPath } : null}
+                open={artifactViewerPath !== null}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setArtifactViewerPath(null)
+                    }
+                }}
+                isLoading={isArtifactViewerLoading}
+                error={artifactViewerError}
+                payload={artifactViewerPayload || null}
+                downloadHref={artifactViewerPath ? artifactDownloadHref(artifactViewerPath) || null : null}
+            />
             <Dialog
                 open={Boolean(rerunRun)}
                 onOpenChange={(open) => {
