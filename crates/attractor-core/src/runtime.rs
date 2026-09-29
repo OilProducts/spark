@@ -203,6 +203,11 @@ pub struct RunRecord {
     pub estimated_model_cost: Option<Value>,
     #[serde(default)]
     pub launch_context: Option<crate::context::ContextMap>,
+    /// Utility-generated title of a root run. Written once, after launch;
+    /// deliberately absent from the record writer's known fields so a stale
+    /// in-memory record written later keeps the stored title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl RunRecord {

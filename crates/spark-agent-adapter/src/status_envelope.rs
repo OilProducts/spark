@@ -55,6 +55,7 @@ pub fn build_status_envelope_prompt_appendix(
         "- Required top-level key: \"outcome\" with one of \"success\", \"fail\", \"partial_success\", or \"retry\".".to_string(),
         "- Optional top-level keys: \"preferred_label\", \"suggested_next_ids\", \"context_updates\", \"notes\", \"failure_reason\", and \"retryable\".".to_string(),
         "- Use \"preferred_label\" for routing.".to_string(),
+        "- Whenever \"outcome\" is \"fail\", set \"failure_reason\" to one sentence saying why.".to_string(),
         "- \"suggested_next_ids\" must be a list of strings.".to_string(),
         "- \"context_updates\" must be a JSON object.".to_string(),
         "- Do not emit any other top-level keys.".to_string(),

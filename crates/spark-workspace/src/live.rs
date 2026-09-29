@@ -1053,6 +1053,7 @@ fn value_revision(value: &Value) -> Option<i64> {
 fn public_run_record(record: attractor_core::RunRecord) -> Value {
     json!({
         "run_id": record.run_id,
+        "title": record.title,
         "flow_name": record.flow_name,
         "status": record.status,
         "outcome": record.outcome,
