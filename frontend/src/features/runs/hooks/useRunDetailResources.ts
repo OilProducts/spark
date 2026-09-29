@@ -273,8 +273,10 @@ export function useRunDetailResources({
         }
         const reconcileQuestions = () => { void fetchPendingQuestions() }
         const reconcileTerminalQuestions = (event: Event) => {
-            const detail = event instanceof CustomEvent ? event.detail : null
-            if (['completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(detail?.run?.status)) {
+            const run = event instanceof CustomEvent ? event.detail?.run : null
+            // Only this run and its descendants: the live stream replays every listed run on reconnect.
+            const related = run?.run_id === selectedRunId || run?.root_run_id === selectedRunId || run?.parent_run_id === selectedRunId
+            if (related && ['completed', 'failed', 'canceled', 'aborted', 'paused', 'interrupted'].includes(run?.status)) {
                 void fetchPendingQuestions()
             }
         }

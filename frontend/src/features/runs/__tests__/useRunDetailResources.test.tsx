@@ -92,8 +92,16 @@ it.each(['spark:runs-transport-reconnect', 'spark:run-resync-required'])(
         expect(JSON.stringify(restoredHistory())).toContain('Question child')
         // No closing interview event arrives for a dead child request.
         questions = []
+        // An unrelated run ending does not refetch; the live stream replays every listed run.
+        const fetches = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/questions')).length
+        const before = fetches()
         await act(async () => window.dispatchEvent(new CustomEvent('spark:run-upsert', {
-            detail: { run: { run_id: 'child', status: 'failed' } },
+            detail: { run: { run_id: 'elsewhere', root_run_id: 'elsewhere', parent_run_id: null, status: 'completed' } },
+        })))
+        expect(fetches()).toBe(before)
+        expect(ids()).toEqual([['child', 'child']])
+        await act(async () => window.dispatchEvent(new CustomEvent('spark:run-upsert', {
+            detail: { run: { run_id: 'child', root_run_id: 'run', parent_run_id: 'run', status: 'failed' } },
         })))
         expect(ids()).toEqual([])
         expect(result.current.confirmedQuestionIds).toEqual([])
