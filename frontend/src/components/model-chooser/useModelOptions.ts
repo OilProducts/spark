@@ -15,7 +15,7 @@ export function useModelOptions(projectPath: string | null) {
             let revision = 0
             const created: Entry = { value: null, listeners: new Set(), refresh: (event) => {
                 const detail = (event as CustomEvent | undefined)?.detail
-                if (detail?.payload?.section && !['providers', 'llm_profiles', 'agents', 'codex'].includes(detail.payload.section)) return
+                if (detail?.payload?.section && !['providers', 'llm_profiles', 'agents', 'codex', 'claude_code'].includes(detail.payload.section)) return
                 const request = ++revision
                 created.value = null
                 created.listeners.forEach((notify) => notify())

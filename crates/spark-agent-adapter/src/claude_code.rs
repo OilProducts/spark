@@ -5,12 +5,13 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use spark_common::agent_settings::NativeAgentSettings;
 use spark_common::events::{
     TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
 };
@@ -22,6 +23,7 @@ use crate::agent::{
     AgentTurnRequest,
 };
 
+pub mod auth;
 mod control;
 
 pub const CLAUDE_CODE_BACKEND: &str = "claude_code_cli";
@@ -132,11 +134,7 @@ impl ClaudeCodeBackend {
         let configuration = crate::config::captured_session_config(&request.metadata)
             .map_err(ClaudeCodeError::configuration)?;
         let native = configuration.as_ref().map(|config| &config.native);
-        let executable = native
-            .and_then(|config| config.claude_binary.as_ref())
-            .map(PathBuf::from)
-            .unwrap_or_else(claude_code_executable);
-        let mut command = Command::new(&executable);
+        let (executable, mut command) = claude_command(native);
         command
             .arg("-p")
             .arg("--output-format")
@@ -184,14 +182,6 @@ impl ClaudeCodeBackend {
         if let Some(file) = &instructions {
             command.arg("--append-system-prompt-file").arg(file.path());
         }
-        if let Some(config_dir) = match native {
-            Some(config) => config.claude_config_dir.clone(),
-            None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
-                .ok()
-                .and_then(|value| non_empty(&value).map(str::to_string)),
-        } {
-            command.env("CLAUDE_CONFIG_DIR", config_dir);
-        }
         // A turn ends at the first result, which kills anything the agent
         // backgrounded, so commands must run in the foreground. Long gates such
         // as `just test` exceed Claude Code's 10-minute foreground cap.
@@ -201,20 +191,9 @@ impl ClaudeCodeBackend {
             .env("BASH_DEFAULT_TIMEOUT_MS", "3600000")
             .env("BASH_MAX_TIMEOUT_MS", "3600000");
 
-        let mut child = command.spawn().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                ClaudeCodeError::configuration(format!(
-                    "claude code executable not found: {} (install Claude Code and log in, \
-                     or set {CLAUDE_CODE_BIN_ENV})",
-                    executable.display()
-                ))
-            } else {
-                ClaudeCodeError::runtime(format!(
-                    "claude code launch failed for {}: {error}",
-                    executable.display()
-                ))
-            }
-        })?;
+        let mut child = command
+            .spawn()
+            .map_err(|error| launch_error(&executable, error))?;
 
         // The prompt travels over stdin so arbitrarily large composed prompts
         // never hit argv limits.
@@ -376,12 +355,16 @@ impl ClaudeCodeBackend {
             });
         }
         if turn.is_error {
+            let text = turn.resolved_final_text();
             return Err(ClaudeCodeError {
-                message: format!(
-                    "claude code turn failed ({}): {}",
-                    turn.result_subtype.as_deref().unwrap_or("error"),
-                    turn.resolved_final_text()
-                ),
+                message: if auth::requires_login(&text) {
+                    auth::AUTH_REQUIRED_MESSAGE.to_string()
+                } else {
+                    format!(
+                        "claude code turn failed ({}): {text}",
+                        turn.result_subtype.as_deref().unwrap_or("error"),
+                    )
+                },
                 retryable: false,
                 details: turn.result_payload.clone(),
             });
@@ -424,11 +407,7 @@ pub fn list_available_claude_code_models() -> Result<Vec<ClaudeCodeModelMetadata
 pub fn list_available_claude_code_models_with_settings(
     native: Option<&spark_common::agent_settings::NativeAgentSettings>,
 ) -> Result<Vec<ClaudeCodeModelMetadata>, ClaudeCodeError> {
-    let executable = native
-        .and_then(|config| config.claude_binary.as_ref())
-        .map(PathBuf::from)
-        .unwrap_or_else(claude_code_executable);
-    let mut command = Command::new(&executable);
+    let (executable, mut command) = claude_command(native);
     command
         .arg("-p")
         .arg("--verbose")
@@ -442,29 +421,10 @@ pub fn list_available_claude_code_models_with_settings(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    if let Some(config_dir) = match native {
-        Some(config) => config.claude_config_dir.clone(),
-        None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
-            .ok()
-            .and_then(|value| non_empty(&value).map(str::to_string)),
-    } {
-        command.env("CLAUDE_CONFIG_DIR", config_dir);
-    }
 
-    let mut child = command.spawn().map_err(|error| {
-        log_model_discovery_error(if error.kind() == std::io::ErrorKind::NotFound {
-            ClaudeCodeError::configuration(format!(
-                "claude code executable not found: {} (install Claude Code and log in, \
-                 or set {CLAUDE_CODE_BIN_ENV})",
-                executable.display()
-            ))
-        } else {
-            ClaudeCodeError::runtime(format!(
-                "claude code launch failed for {}: {error}",
-                executable.display()
-            ))
-        })
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|error| log_model_discovery_error(launch_error(&executable, error)))?;
 
     let mut stdin = child
         .stdin
@@ -1034,6 +994,40 @@ pub(crate) fn claude_code_executable() -> PathBuf {
         .ok()
         .and_then(|value| non_empty(&value).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("claude"))
+}
+
+/// The CLI as every Spark launch sees it: the configured binary and config
+/// dir, which is where Claude Code keeps its sign-in.
+fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
+    let executable = native
+        .and_then(|config| config.claude_binary.as_ref())
+        .map(PathBuf::from)
+        .unwrap_or_else(claude_code_executable);
+    let mut command = Command::new(&executable);
+    if let Some(config_dir) = match native {
+        Some(config) => config.claude_config_dir.clone(),
+        None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
+            .ok()
+            .and_then(|value| non_empty(&value).map(str::to_string)),
+    } {
+        command.env("CLAUDE_CONFIG_DIR", config_dir);
+    }
+    (executable, command)
+}
+
+fn launch_error(executable: &Path, error: std::io::Error) -> ClaudeCodeError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        ClaudeCodeError::configuration(format!(
+            "claude code executable not found: {} (install Claude Code and log in, \
+             or set {CLAUDE_CODE_BIN_ENV})",
+            executable.display()
+        ))
+    } else {
+        ClaudeCodeError::runtime(format!(
+            "claude code launch failed for {}: {error}",
+            executable.display()
+        ))
+    }
 }
 
 fn permission_mode() -> String {

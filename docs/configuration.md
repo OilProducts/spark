@@ -218,6 +218,14 @@ OAuth credentials are never copied from the host or seed directory and are not
 part of Spark's settings documents. Seed directories provide configuration and
 plugin caches only.
 
+Claude Code authentication is managed through **Settings → Claude Code
+connection**, which runs `claude auth login` with the same binary and
+`claude_config_dir` as turns. The browser opens and sign-in completes on its
+own; when no browser can open, such as in Docker, open the sign-in link and
+paste the code it shows. Claude Code stores and refreshes the credentials. A
+turn that fails because the sign-in expired offers the same sign-in from the
+transcript.
+
 Optional native fields are `codex_binary`, `codex_runtime_root`, `codex_seed_dir`,
 `claude_binary`, and `claude_config_dir`. Existing `SPARK_CODEX_APP_SERVER_BIN`,
 `ATTRACTOR_CODEX_RUNTIME_ROOT`, `ATTRACTOR_CODEX_SEED_DIR`, `SPARK_CLAUDE_CODE_BIN`,

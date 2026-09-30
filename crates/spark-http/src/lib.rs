@@ -26,6 +26,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
 
+mod claude_auth;
 mod codex_auth;
 mod workspace;
 
@@ -122,6 +123,7 @@ fn build_app_with_live_hub(
     let (run_event_observer, run_event_publisher) =
         RunEventPublisher::spawn(settings.clone(), live_hub.clone());
     let state = HttpAppState {
+        claude_connection: Arc::new(Mutex::new(Default::default())),
         codex_connection: Arc::new(Mutex::new(Default::default())),
         settings,
         live_hub,
@@ -181,6 +183,7 @@ fn build_app_with_live_hub(
 
 #[derive(Clone)]
 pub(crate) struct HttpAppState {
+    claude_connection: Arc<Mutex<spark_agent_adapter::claude_code::auth::ClaudeCodeConnection>>,
     codex_connection: Arc<Mutex<codex_auth::ConnectionState>>,
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,

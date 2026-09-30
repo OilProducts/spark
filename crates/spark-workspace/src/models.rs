@@ -39,6 +39,10 @@ pub fn invalidate_model_discovery(section: &str) {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear(),
+        "claude_code" => CLAUDE_CODE_MODELS_CACHE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear(),
         _ => {}
     }
 }

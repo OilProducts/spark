@@ -1,5 +1,7 @@
 import { memo } from 'react'
+import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
+import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeConnection'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
 import { ChevronRight } from 'lucide-react'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
@@ -248,6 +250,8 @@ export const MessageRow = memo(function MessageRow({
             : entry.content
     const needsCodexLogin = entry.role === 'assistant' && entry.status === 'failed'
         && isCodexAuthError(entry.error || entry.content)
+    const needsClaudeLogin = entry.role === 'assistant' && entry.status === 'failed'
+        && isClaudeCodeAuthError(entry.error || entry.content)
     const canCopy = enableCopy && (
         entry.role === 'user'
         || (
@@ -287,10 +291,13 @@ export const MessageRow = memo(function MessageRow({
                         }`}
                     >
                         {needsCodexLogin && isCodexAuthError(literalContent)
-                            ? 'Your Codex connection needs sign-in. Your conversation is saved.' : literalContent}
+                            ? 'Your Codex connection needs sign-in. Your conversation is saved.'
+                            : needsClaudeLogin && isClaudeCodeAuthError(literalContent)
+                                ? 'Claude Code needs sign-in. Your conversation is saved.' : literalContent}
                     </p>
                 )}
                 {needsCodexLogin && <CodexReconnect />}
+                {needsClaudeLogin && <ClaudeCodeReconnect />}
             </div>
         </li>
     )

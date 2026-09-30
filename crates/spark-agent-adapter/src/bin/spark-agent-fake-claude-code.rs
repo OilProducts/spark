@@ -13,6 +13,9 @@ fn main() {
         std::process::exit(3);
     });
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if args.first().map(String::as_str) == Some("auth") {
+        fake_auth(&args[1..]);
+    }
     let mut model = String::from("claude-opus-4-8");
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -255,14 +258,18 @@ fn main() {
         std::process::exit(1);
     }
 
-    if mode == "error" {
+    if mode == "error" || mode == "auth-error" {
         emit(
             &mut out,
             serde_json::json!({
                 "type": "result",
                 "subtype": "error_during_execution",
                 "is_error": true,
-                "result": "simulated failure",
+                "result": if mode == "auth-error" {
+                    "Failed to authenticate: OAuth session expired and could not be refreshed"
+                } else {
+                    "simulated failure"
+                },
                 "session_id": session_id,
                 "num_turns": 1,
                 "usage": {"input_tokens": 3, "output_tokens": 1},
@@ -518,4 +525,50 @@ fn read_control() -> Value {
         "expected control message before EOF"
     );
     serde_json::from_str(&line).unwrap()
+}
+
+/// `claude auth status|login` as 2.1.28x prints them. The sign-in lives in a
+/// marker file under CLAUDE_CONFIG_DIR; the code `good#state` completes login.
+fn fake_auth(args: &[String]) -> ! {
+    let marker = std::path::PathBuf::from(env::var("CLAUDE_CONFIG_DIR").unwrap_or_default())
+        .join("fake-signed-in");
+    if args.first().map(String::as_str) == Some("status") {
+        let signed_in = marker.exists();
+        let mut report =
+            json!({"loggedIn": signed_in, "authMethod": "none", "apiProvider": "firstParty"});
+        if signed_in {
+            report["authMethod"] = json!("claude.ai");
+            report["email"] = json!("spark@example.test");
+            report["subscriptionType"] = json!("max");
+        }
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        std::process::exit(if signed_in { 0 } else { 1 });
+    }
+    println!("Opening browser to sign in\u{2026}");
+    println!("If the browser didn't open, visit: \u{1b}]8;;https://claude.com/cai/oauth/authorize?code=true&state=fake\u{7}https://claude.com/cai/oauth/authorize?code=true&state=fake\u{1b}]8;;\u{7}");
+    print!("Paste code here if prompted > ");
+    std::io::stdout().flush().unwrap();
+    let mut line = String::new();
+    while std::io::stdin()
+        .read_line(&mut line)
+        .map(|read| read > 0)
+        .unwrap_or(false)
+    {
+        match line.trim() {
+            "good#state" => {
+                std::fs::write(&marker, "").unwrap();
+                println!("Login successful.");
+                std::process::exit(0);
+            }
+            code if !code.contains('#') => {
+                eprintln!("Invalid code. Please make sure the full code was copied.")
+            }
+            _ => {
+                eprintln!("Login failed: Invalid authorization code");
+                std::process::exit(1);
+            }
+        }
+        line.clear();
+    }
+    std::process::exit(1)
 }

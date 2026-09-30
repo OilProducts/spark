@@ -2,7 +2,9 @@ import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
 import { HomeWorkspace } from './HomeWorkspace'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
+import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
+import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeConnection'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -99,6 +101,7 @@ export function ProjectConversationSurface({
                     <InlineError data-testid="project-panel-error" dense>
                         {panelError}
                         {isCodexAuthError(panelError) && <CodexReconnect />}
+                        {isClaudeCodeAuthError(panelError) && <ClaudeCodeReconnect />}
                     </InlineError>
                 ) : null}
                 {!activeProjectPath ? (

@@ -3,6 +3,7 @@ import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { ProviderSettingsEditor } from "./ProviderSettingsEditor"
 import { CodexConnectionSettings } from "./CodexConnectionSettings"
+import { ClaudeCodeConnectionSettings } from "./ClaudeCodeConnectionSettings"
 import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
@@ -145,6 +146,7 @@ export function SettingsPanel() {
                 </TabsList></div>
                 <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
                 <CodexConnectionSettings />
+                <ClaudeCodeConnectionSettings />
 
                 <Card className="gap-4 py-4">
                     <CardHeader className="gap-1 px-4">

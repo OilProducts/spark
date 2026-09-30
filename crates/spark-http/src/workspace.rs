@@ -73,6 +73,7 @@ fn live_publisher(
 
 pub fn router() -> Router<HttpAppState> {
     Router::new()
+        .nest("/claude", crate::claude_auth::router())
         .nest("/codex", crate::codex_auth::router())
         .route("/missions", get(list_missions).post(create_mission))
         .route(

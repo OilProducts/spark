@@ -2,6 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde_json::json;
+use spark_agent_adapter::claude_code::auth::{
+    ClaudeCodeConnection, ClaudeCodeConnectionStatus, AUTH_REQUIRED_MESSAGE,
+};
 use spark_agent_adapter::{
     list_available_claude_code_models, AgentTurnBackend, AgentTurnRequest, ClaudeCodeBackend,
     ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest, CodergenBackendResponse,
@@ -815,4 +818,115 @@ fn claude_code_interrupt_does_not_hide_api_failures_and_process_death_expires_qu
             Some("request_user_input_not_pending")
         );
     }
+}
+
+fn sign_in_settings(
+    config_dir: &std::path::Path,
+) -> spark_common::agent_settings::NativeAgentSettings {
+    spark_common::agent_settings::NativeAgentSettings {
+        claude_binary: Some(fake_claude_code_bin().into()),
+        claude_config_dir: Some(config_dir.to_string_lossy().into()),
+        ..Default::default()
+    }
+}
+
+fn settled_status(
+    connection: &mut ClaudeCodeConnection,
+    native: &spark_common::agent_settings::NativeAgentSettings,
+    done: impl Fn(&ClaudeCodeConnectionStatus) -> bool,
+) -> ClaudeCodeConnectionStatus {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let status = connection.status(native).unwrap();
+        if done(&status) || std::time::Instant::now() > deadline {
+            return status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn claude_code_sign_in_relays_the_link_and_pasted_code_to_the_cli() {
+    let temp = tempfile::tempdir().unwrap();
+    let native = sign_in_settings(temp.path());
+    let mut connection = ClaudeCodeConnection::default();
+    assert_eq!(connection.status(&native).unwrap().status, "disconnected");
+
+    let (sender, completed) = std::sync::mpsc::channel();
+    let pending = connection
+        .start_login(&native, move |status| {
+            let _ = sender.send(status.status);
+        })
+        .unwrap();
+    assert_eq!(pending.status, "pending");
+    // Terminal hyperlink escapes around the printed link are dropped.
+    assert_eq!(
+        pending.login_url.as_deref(),
+        Some("https://claude.com/cai/oauth/authorize?code=true&state=fake")
+    );
+    assert!(connection.submit_code("good#state\nextra").is_err());
+
+    connection.submit_code("missing-state").unwrap();
+    let rejected = settled_status(&mut connection, &native, |status| status.message.is_some());
+    assert_eq!(rejected.status, "pending");
+    assert!(rejected.message.unwrap().starts_with("Invalid code"));
+
+    connection.submit_code("  good#state \n").unwrap();
+    assert_eq!(
+        completed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        "connected"
+    );
+    let connected = connection.status(&native).unwrap();
+    assert_eq!(connected.status, "connected");
+    let account = connected.account.unwrap();
+    assert_eq!(account.email.as_deref(), Some("spark@example.test"));
+    assert_eq!(account.plan.as_deref(), Some("max"));
+    assert!(connected.login_url.is_none());
+    // Afterwards the CLI itself is asked, and no login is waiting for a code.
+    assert_eq!(connection.status(&native).unwrap().status, "connected");
+    assert!(connection.submit_code("good#state").is_err());
+}
+
+#[test]
+fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
+    let temp = tempfile::tempdir().unwrap();
+    let native = sign_in_settings(temp.path());
+    let mut connection = ClaudeCodeConnection::default();
+
+    connection.start_login(&native, |_| {}).unwrap();
+    connection.submit_code("wrong#state").unwrap();
+    let failed = settled_status(&mut connection, &native, |status| {
+        status.status != "pending"
+    });
+    assert_eq!(failed.status, "disconnected");
+    assert_eq!(
+        failed.message.as_deref(),
+        Some("Login failed: Invalid authorization code")
+    );
+
+    connection.start_login(&native, |_| {}).unwrap();
+    let cancelled = connection.cancel_login();
+    assert_eq!(cancelled.status, "disconnected");
+    assert!(connection.submit_code("good#state").is_err());
+    assert_eq!(connection.status(&native).unwrap().status, "disconnected");
+    assert!(!temp.path().join("fake-signed-in").exists());
+}
+
+#[test]
+fn claude_code_auth_failure_asks_for_sign_in_and_keeps_the_cli_reason() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "auth-error");
+
+    let error = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect_err("auth failure");
+    assert_eq!(error.message, AUTH_REQUIRED_MESSAGE);
+    assert_eq!(
+        error.details.unwrap()["result"],
+        "Failed to authenticate: OAuth session expired and could not be refreshed"
+    );
 }
