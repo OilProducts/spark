@@ -578,6 +578,25 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
+    let answer_output = AgentTurnOutput {
+        raw_log_lines: vec![AgentRawLogLine {
+            direction: "incoming".to_string(),
+            line: "{\"event\":\"http-live-answer\"}".to_string(),
+        }],
+        events: vec![
+            content_delta("Answered ", "app-turn-live-answer", "final-answer"),
+            content_delta("over live SSE.", "app-turn-live-answer", "final-answer"),
+            token_usage(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
+        ],
+        final_assistant_text: Some("Answered over live SSE.".to_string()),
+        token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
+        ..AgentTurnOutput::default()
+    };
+    // Built first: startup settles turns left in flight, pending questions included.
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(StaticAgentTurnBackend::from_output(answer_output)),
+    );
     let service = WorkspaceConversationService::new(settings.clone());
     let (prepared, _) = service
         .start_turn(
@@ -604,24 +623,6 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     let before_revision = pending_snapshot["revision"]
         .as_i64()
         .expect("pending revision");
-    let answer_output = AgentTurnOutput {
-        raw_log_lines: vec![AgentRawLogLine {
-            direction: "incoming".to_string(),
-            line: "{\"event\":\"http-live-answer\"}".to_string(),
-        }],
-        events: vec![
-            content_delta("Answered ", "app-turn-live-answer", "final-answer"),
-            content_delta("over live SSE.", "app-turn-live-answer", "final-answer"),
-            token_usage(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
-        ],
-        final_assistant_text: Some("Answered over live SSE.".to_string()),
-        token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
-        ..AgentTurnOutput::default()
-    };
-    let app = build_app_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(StaticAgentTurnBackend::from_output(answer_output)),
-    );
 
     let live = request(
         app.clone(),
@@ -873,8 +874,11 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
     let mut promoted = None;
     for _ in 0..20 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        if envelope["type"] == "conversation.stream_delta"
-            && envelope["payload"]["delta_kind"] == "segment_delta"
+        // A finished segment arrives committed; a transient delta would also do.
+        let carries_segment = envelope["type"] == "conversation.segment_upsert"
+            || (envelope["type"] == "conversation.stream_delta"
+                && envelope["payload"]["delta_kind"] == "segment_delta");
+        if carries_segment
             && envelope["payload"]["segment"]["source"]["item_id"] == "block-2"
             && envelope["payload"]["segment"]["phase"] == "final_answer"
         {
@@ -1068,6 +1072,268 @@ async fn live_route_streams_transient_deltas_with_stream_sequence_cursors() {
         .iter()
         .any(|segment| segment["kind"] == "request_user_input"
             && segment["request_user_input"]["status"] == "pending"));
+}
+
+/// Streams `before`, waits for the test to open the gate, then streams `after`.
+struct GatedStreamingBackend {
+    before: Vec<TurnStreamEvent>,
+    after: Vec<TurnStreamEvent>,
+    output: AgentTurnOutput,
+    gate: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl AgentTurnBackend for GatedStreamingBackend {
+    fn run_turn(&self, _request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        Ok(self.output.clone())
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<spark_agent_adapter::AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let sink = event_sink.expect("event sink");
+        for event in &self.before {
+            sink(event.clone());
+        }
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(60))
+            .expect("gate opened");
+        for event in &self.after {
+            sink(event.clone());
+        }
+        self.run_turn(request)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commits() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().to_string();
+    let conversation_id = "conversation-mid-turn";
+    seed_conversation(&settings, &project_path, conversation_id);
+    write_flow(&settings, "ops/live.yaml");
+    spark_storage::set_flow_launch_policy(
+        &settings.config_dir,
+        "ops/live.yaml",
+        "agent_requestable",
+    )
+    .expect("launch policy");
+
+    let mut commentary = content_completed(
+        TurnStreamChannel::Assistant,
+        "Looking around.",
+        "app-turn-mid",
+        "commentary-1",
+    );
+    commentary.phase = Some("commentary".to_string());
+    let final_answer = content_completed(
+        TurnStreamChannel::Assistant,
+        "Half done. All done.",
+        "app-turn-mid",
+        "final-answer",
+    );
+    let (open_gate, gate) = std::sync::mpsc::channel();
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(GatedStreamingBackend {
+            before: vec![
+                commentary.clone(),
+                content_delta("Half done.", "app-turn-mid", "final-answer"),
+            ],
+            after: vec![
+                content_delta(" All done.", "app-turn-mid", "final-answer"),
+                final_answer.clone(),
+            ],
+            output: AgentTurnOutput {
+                events: vec![commentary, final_answer],
+                final_assistant_text: Some("Half done. All done.".to_string()),
+                ..AgentTurnOutput::default()
+            },
+            gate: std::sync::Mutex::new(gate),
+        }),
+    );
+
+    let live = request(
+        app.clone(),
+        "GET",
+        &format!(
+            "/workspace/api/live/events?conversation_id={conversation_id}&conversation_project_path={}&conversation_revision=2",
+            url_encode(&project)
+        ),
+        None,
+    )
+    .await;
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let posted = request(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(json!({"project_path": project, "message": "Take your time."})),
+    )
+    .await;
+    assert_eq!(posted.status(), StatusCode::OK);
+    let started = json_body(posted).await;
+    let turn_id = started["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["role"] == "assistant" && turn["status"] == "pending")
+        .and_then(|turn| turn["id"].as_str())
+        .expect("assistant turn")
+        .to_string();
+    let started_revision = started["revision"].as_i64().expect("revision");
+
+    // Wait until the gated backend has streamed its first half.
+    let mut last_sequence = 0;
+    loop {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        if envelope["type"] != "conversation.stream_delta" {
+            continue;
+        }
+        // The turn's own commits of finished segments move its base forward.
+        assert!(envelope["payload"]["base_revision"].as_i64().expect("base") >= started_revision);
+        last_sequence = envelope["payload"]["stream_sequence"]
+            .as_i64()
+            .expect("sequence");
+        if envelope["payload"]["segment"]["content"] == "Half done." {
+            break;
+        }
+    }
+
+    // Mid-turn reads of the snapshot and the thread list never commit.
+    let transcript_path = ConversationRepository::new(&settings.data_dir)
+        .conversation_root(conversation_id, Some(&project))
+        .expect("root")
+        .expect("conversation root")
+        .join("transcript.jsonl");
+    let transcript_before = fs::read(&transcript_path).expect("transcript");
+    let snapshot_uri = format!(
+        "/workspace/api/conversations/{conversation_id}?project_path={}",
+        url_encode(&project)
+    );
+    let mut read_revision = None;
+    for _ in 0..2 {
+        let snapshot = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await;
+        // Reads leave the revision where the turn's own commits put it...
+        let revision = snapshot["revision"].as_i64().expect("revision");
+        assert_eq!(*read_revision.get_or_insert(revision), revision);
+        // ...and show what the turn has finished so far.
+        assert!(snapshot["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .any(|segment| segment["turn_id"] == turn_id.as_str()
+                && segment["content"] == "Looking around."
+                && segment["status"] == "complete"));
+        let threads = request(
+            app.clone(),
+            "GET",
+            &format!(
+                "/workspace/api/projects/conversations?project_path={}",
+                url_encode(&project)
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(threads.status(), StatusCode::OK);
+    }
+    assert_eq!(
+        fs::read(&transcript_path).expect("transcript"),
+        transcript_before
+    );
+
+    // The agent launches a flow and the thread title is stored mid-turn.
+    let handle = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await
+        ["conversation_handle"]
+        .as_str()
+        .expect("handle")
+        .to_string();
+    let launched = request(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
+        Some(json!({"flow_name": "ops/live.yaml", "summary": "Run it."})),
+    )
+    .await;
+    assert_eq!(launched.status(), StatusCode::OK);
+    let repository = ConversationRepository::new(&settings.data_dir);
+    let revision = repository
+        .read_snapshot(conversation_id, Some(&project))
+        .expect("read")
+        .expect("snapshot")["revision"]
+        .as_i64()
+        .expect("revision");
+    repository
+        .commit_conversation(
+            conversation_id,
+            &project,
+            revision,
+            vec![ConversationMutation::MetadataUpdated {
+                patch: spark_storage::conversation::ConversationMetadataPatch {
+                    title: Some("Stored title".to_string()),
+                    ..Default::default()
+                },
+            }],
+        )
+        .expect("store title");
+    let mid_turn = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await;
+    let mid_turn_revision = mid_turn["revision"].as_i64().expect("revision");
+    assert!(mid_turn_revision > started_revision);
+    let mid_turn_status = mid_turn["turns"]
+        .as_array()
+        .expect("turns")
+        .iter()
+        .find(|turn| turn["id"] == turn_id.as_str())
+        .expect("assistant turn")["status"]
+        .clone();
+    assert!(mid_turn_status == "pending" || mid_turn_status == "streaming");
+
+    // Live updates keep flowing after those commits, each newer for its turn,
+    // until the turn's final state is committed.
+    open_gate.send(()).expect("open gate");
+    let mut late_deltas = Vec::new();
+    loop {
+        let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+        if envelope["type"] == "conversation.stream_delta"
+            && envelope["payload"]["turn_id"] == turn_id.as_str()
+        {
+            late_deltas.push(envelope["payload"].clone());
+        }
+        let payload = &envelope["payload"];
+        let turns = payload["state"]["turns"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if turns
+            .iter()
+            .chain(std::iter::once(&payload["turn"]))
+            .any(|turn| turn["id"] == turn_id.as_str() && turn["status"] == "complete")
+        {
+            break;
+        }
+    }
+    assert!(late_deltas.iter().any(|delta| {
+        delta["delta_kind"] == "segment_delta"
+            && delta["segment"]["content"] == "Half done. All done."
+    }));
+    for delta in &late_deltas {
+        let sequence = delta["stream_sequence"].as_i64().expect("sequence");
+        assert!(
+            sequence > last_sequence,
+            "stream sequence advances per turn"
+        );
+        last_sequence = sequence;
+        // Stamped with the turn's base, now behind the conversation revision.
+        assert!(delta["base_revision"].as_i64().expect("base") < mid_turn_revision);
+    }
 }
 
 #[tokio::test]

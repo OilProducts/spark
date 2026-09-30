@@ -288,6 +288,7 @@ export const buildRemoveProjectTransition = (
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
             : DEFAULT_WORKING_DIRECTORY,
         homeConversationCache: {
+            ...state.homeConversationCache,
             conversationsById: nextHomeConversationsById,
             summariesByProjectPath: nextHomeSummariesByProjectPath,
         },

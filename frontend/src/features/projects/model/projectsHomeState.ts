@@ -71,6 +71,8 @@ export type NormalizedConversationRecord = {
 export type ProjectConversationCacheState = {
     conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
+    // Last applied live update's stream_sequence, by turn id.
+    streamSequenceByTurnId?: Record<string, number>
 }
 
 export type ApplyConversationStreamEventResult =
@@ -476,6 +478,33 @@ function isConversationRecordAtLeastAsFreshAsSnapshot(
     return record.revision >= snapshot.revision
 }
 
+// A mid-turn commit (title, artifacts) publishes a snapshot without a running
+// turn's uncommitted live segments. Keep them until the turn's terminal commit,
+// which is authoritative.
+// ponytail: a segment dropped mid-turn by a snapshot lingers until that commit.
+function withLiveTurnContent(
+    snapshot: ConversationSnapshotResponse,
+    record: NormalizedConversationRecord,
+): ConversationSnapshotResponse {
+    const activeTurnIds = snapshot.turns
+        .filter((turn) => turn.status === 'pending' || turn.status === 'streaming')
+        .map((turn) => turn.id)
+    if (activeTurnIds.length === 0) {
+        return snapshot
+    }
+    const snapshotSegmentIds = new Set(snapshot.segments.map((segment) => segment.id))
+    const liveSegments = activeTurnIds.flatMap((turnId) => (record.orderedSegmentIdsByTurnId[turnId] || [])
+        .map((segmentId) => record.segmentsById[segmentId])
+        .filter((segment) => segment && !snapshotSegmentIds.has(segment.id)))
+    return {
+        ...snapshot,
+        turns: snapshot.turns.map((turn) => (activeTurnIds.includes(turn.id)
+            ? sanitizeStreamingTurnUpsert(record.turnsById[turn.id] || null, turn)
+            : turn)),
+        segments: [...snapshot.segments, ...liveSegments],
+    }
+}
+
 export function setProjectConversationSummaryList(
     current: ProjectConversationCacheState,
     projectPath: string,
@@ -508,12 +537,15 @@ export function applyConversationSnapshotToCache(
             cache: current,
         }
     }
-    const record = hydrateConversationRecordFromSnapshot(scopedSnapshot)
+    const record = hydrateConversationRecordFromSnapshot(
+        existingRecord ? withLiveTurnContent(scopedSnapshot, existingRecord) : scopedSnapshot,
+    )
 
     return {
         applied: true,
         record,
         cache: {
+            ...current,
             conversationsById: {
                 ...current.conversationsById,
                 [scopedSnapshot.conversation_id]: record,
@@ -644,6 +676,7 @@ export function applyConversationStreamEventToCache(
         status: 'applied',
         record: mergedRecord,
         cache: {
+            ...current,
             conversationsById: {
                 ...current.conversationsById,
                 [event.conversation_id]: mergedRecord,
@@ -681,8 +714,17 @@ export function applyTransientConversationEventToCache(
     current: ProjectConversationCacheState,
     event: ConversationStreamDeltaEventResponse,
 ): ApplyTransientConversationEventResult {
+    // Staleness is per turn: other commits during the turn raise the revision
+    // but don't make its live updates stale.
     const existingRecord = current.conversationsById[event.conversation_id]
-    if (!existingRecord || event.base_revision < existingRecord.revision) {
+    const turnStatus = existingRecord?.turnsById[event.turn_id]?.status
+    const lastSequence = current.streamSequenceByTurnId?.[event.turn_id] ?? 0
+    if (
+        !existingRecord
+        || turnStatus === 'complete'
+        || turnStatus === 'failed'
+        || event.stream_sequence <= lastSequence
+    ) {
         return { status: 'dropped', cache: current }
     }
     let mergedRecord: NormalizedConversationRecord = existingRecord
@@ -760,6 +802,10 @@ export function applyTransientConversationEventToCache(
                 ...current.conversationsById,
                 [event.conversation_id]: mergedRecord,
             },
+            streamSequenceByTurnId: {
+                ...current.streamSequenceByTurnId,
+                [event.turn_id]: event.stream_sequence,
+            },
         },
     }
 }
@@ -791,6 +837,7 @@ export function removeProjectFromCache(
     })
 
     return {
+        ...current,
         conversationsById: nextConversationsById,
         summariesByProjectPath: nextSummariesByProjectPath,
     }

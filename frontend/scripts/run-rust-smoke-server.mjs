@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
@@ -33,6 +33,13 @@ mkdirSync(dataDir, { recursive: true })
 mkdirSync(flowsDir, { recursive: true })
 
 const cargo = process.platform === 'win32' ? 'cargo.exe' : 'cargo'
+// Chat turns run against the repo's fake Codex app-server; the live-turn smoke opens its gates.
+const fakeCodex = 'spark-agent-fake-codex-app-server'
+const built = spawnSync(cargo, ['build', '--quiet', '-p', 'spark-agent-adapter', '--bin', fakeCodex], { cwd: repoRoot, stdio: 'inherit' })
+if (built.status !== 0) {
+  process.exit(built.status ?? 1)
+}
+const targetDir = process.env.CARGO_TARGET_DIR ? path.resolve(repoRoot, process.env.CARGO_TARGET_DIR) : path.join(repoRoot, 'target')
 const child = spawn(
   cargo,
   [
@@ -60,6 +67,9 @@ const child = spawn(
       SPARK_HOME: dataDir,
       SPARK_FLOWS_DIR: flowsDir,
       SPARK_UI_DIR: distDir,
+      SPARK_CODEX_APP_SERVER_BIN: path.join(targetDir, 'debug', fakeCodex),
+      SPARK_FAKE_CODEX_APP_SERVER_MODE: 'gated',
+      SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR: path.join(tmpRoot, 'gates'),
     },
     stdio: 'inherit',
   },

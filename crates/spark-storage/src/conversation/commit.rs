@@ -62,12 +62,11 @@ impl ConversationRepository {
             .write(true)
             .open(&lock_path)
             .map_err(|e| StorageError::io("open conversation lock", &lock_path, e))?;
-        // Readers can replay provider events while a live writer commits. Hold
-        // the lock through revision allocation and publication, across instances/processes.
+        // Hold the lock through revision allocation and publication, across
+        // instances/processes.
         lock.lock_exclusive()
             .map_err(|e| StorageError::io("lock conversation", &lock_path, e))?;
-        let latest_snapshot =
-            self.read_snapshot_without_recovery(conversation_id, Some(project_path))?;
+        let latest_snapshot = self.read_snapshot(conversation_id, Some(project_path))?;
         if latest_snapshot.is_none() && base_revision != 0 {
             return Err(commit_rejected(
                 conversation_id,

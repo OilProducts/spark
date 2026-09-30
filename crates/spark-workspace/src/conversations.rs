@@ -1609,7 +1609,28 @@ impl WorkspaceConversationService {
         )
     }
 
-    /// Fails a turn a previous process left in flight; nothing will finish it.
+    /// Startup recovery: settles every chat turn a previous process left in
+    /// flight. Assumes one server per Spark home.
+    pub fn settle_orphaned_turns(&self) -> WorkspaceResult<()> {
+        let repository = self.repository();
+        for project in
+            ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
+        {
+            let Ok(conversation_ids) =
+                repository.list_conversation_ids_for_project(&project.project_path)
+            else {
+                continue;
+            };
+            for conversation_id in conversation_ids {
+                let _ = self.abandon_active_turn(&conversation_id, &project.project_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// Settles a turn a previous process left in flight; nothing will finish
+    /// it. Its completed segments are rebuilt from the provider event log; it
+    /// ends completed if its `TurnCompleted` was logged, otherwise interrupted.
     pub(crate) fn abandon_active_turn(
         &self,
         conversation_id: &str,
@@ -1626,15 +1647,125 @@ impl WorkspaceConversationService {
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, project_path);
         let base_revision = snapshot_revision(&snapshot);
         let mut emitted_payloads = Vec::new();
-        fail_assistant_turn_and_segments(
-            &mut snapshot,
-            &turn_id,
-            "Spark restarted before this turn finished.",
-            None,
-            None,
-            true,
-            &mut emitted_payloads,
-        );
+        let mut turn_completed = false;
+        let root = repository.conversation_root(conversation_id, Some(project_path))?;
+        for record in root
+            .map(|root| spark_storage::ActivityRepository::new(root).read_events())
+            .transpose()?
+            .unwrap_or_default()
+        {
+            if record.event.get("turn_id").and_then(Value::as_str) != Some(turn_id.as_str()) {
+                continue;
+            }
+            let Some(Ok(event)) = record
+                .event
+                .get("event")
+                .map(|event| serde_json::from_value::<TurnStreamEvent>(event.clone()))
+            else {
+                continue;
+            };
+            match event.kind {
+                TurnStreamEventKind::TurnCompleted => {
+                    turn_completed = true;
+                    finalize_turn_boundary_segments(
+                        &mut snapshot,
+                        &turn_id,
+                        &event,
+                        Some(&record.committed_at),
+                        &mut emitted_payloads,
+                    );
+                }
+                TurnStreamEventKind::Error => {
+                    if let Some(turn) = find_turn_mut(&mut snapshot, &turn_id) {
+                        set_string_value(turn, "status", "failed");
+                        if let Some(message) = event.error.as_ref().or(event.message.as_ref()) {
+                            set_string_value(turn, "error", message);
+                        }
+                        let turn = turn.clone();
+                        emitted_payloads.push(build_turn_upsert_payload(&snapshot, &turn));
+                    }
+                }
+                TurnStreamEventKind::ContentCompleted
+                | TurnStreamEventKind::ToolCallCompleted
+                | TurnStreamEventKind::ToolCallFailed
+                | TurnStreamEventKind::ContextCompactionCompleted => {}
+                _ => continue,
+            }
+            if let Some(segment) =
+                materialize_segment_for_event(&mut snapshot, &turn_id, &event, Some(&record))
+            {
+                emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
+            }
+        }
+        // Provider question requests live in process memory, so a question
+        // left pending by a previous process can never be answered.
+        let now = iso_now();
+        let pending_requests: Vec<(String, Map<String, Value>)> = snapshot
+            .get("segments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|segment| {
+                segment.get("turn_id").and_then(Value::as_str) == Some(turn_id.as_str())
+                    && segment.get("kind").and_then(Value::as_str) == Some("request_user_input")
+                    && segment.get("status").and_then(Value::as_str) == Some("pending")
+            })
+            .filter_map(|segment| {
+                Some((
+                    segment.get("id")?.as_str()?.to_string(),
+                    segment
+                        .get("request_user_input")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default(),
+                ))
+            })
+            .collect();
+        for (segment_id, request_record) in pending_requests {
+            expire_request_user_input_answer_in_snapshot(
+                &mut snapshot,
+                &segment_id,
+                request_record,
+                &now,
+                &mut emitted_payloads,
+            );
+        }
+        let completed_without_answer = turn_completed
+            && finalized_assistant_segment(&snapshot, &turn_id).is_none()
+            && finalized_plan_segment(&snapshot, &turn_id).is_none()
+            && failed_assistant_state(&snapshot, &turn_id).is_none();
+        if completed_without_answer {
+            // The logged TurnCompleted is authoritative even without a final answer.
+            if let Some(turn) = find_turn_mut(&mut snapshot, &turn_id) {
+                set_string_value(turn, "status", "complete");
+            }
+            emit_assistant_turn_upsert(&snapshot, &turn_id, &mut emitted_payloads);
+        } else if turn_completed {
+            finalize_agent_turn_output(
+                &mut snapshot,
+                &turn_id,
+                None,
+                None,
+                None,
+                None,
+                &mut emitted_payloads,
+            );
+        } else {
+            for segment in
+                spark_common::segments::finalize_turn_segments(&mut snapshot, &turn_id, false, &now)
+            {
+                emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
+            }
+            fail_assistant_turn_and_segments(
+                &mut snapshot,
+                &turn_id,
+                "Spark restarted before this turn finished.",
+                None,
+                None,
+                true,
+                &mut emitted_payloads,
+            );
+        }
         commit_conversation_mutations(
             &repository,
             conversation_id,
@@ -4150,44 +4281,60 @@ impl LiveConversationTurnState {
             }
             _ => self.emit_materialized_segment(&event, &provenance, &mut emitted_payloads),
         }
-        if event.kind == TurnStreamEventKind::RequestUserInputRequested {
-            // Pending user input must survive a restart, so everything the
-            // turn has streamed so far commits now; other stream updates stay
-            // transient until turn completion.
-            self.pending_payloads
-                .extend(emitted_payloads.iter().cloned());
-            let committed =
-                mutations_from_emitted_payloads(&self.pending_payloads).and_then(|mutations| {
-                    if mutations.is_empty() {
-                        return Ok(None);
-                    }
-                    commit_conversation_mutations(
-                        &self.repository,
-                        &self.conversation_id,
-                        &self.project_path,
-                        self.base_revision,
-                        mutations,
-                    )
-                    .map(Some)
-                });
-            if let Ok(Some(commit)) = committed {
-                self.snapshot = commit.snapshot;
-                self.base_revision = commit.revision;
-                self.pending_payloads.clear();
-                for payload in commit.journal_payloads {
-                    (self.progress)(payload);
-                }
-            }
-            return Ok(());
-        }
         self.pending_payloads
             .extend(emitted_payloads.iter().cloned());
+        // The running turn is its conversation's only writer, so it commits
+        // each finished segment itself: a client opening the conversation
+        // mid-turn sees everything done so far, and a crash loses at most the
+        // segment in progress. Pending user input must survive a restart too.
+        if matches!(
+            event.kind,
+            TurnStreamEventKind::ContentCompleted
+                | TurnStreamEventKind::ToolCallCompleted
+                | TurnStreamEventKind::ToolCallFailed
+                | TurnStreamEventKind::ContextCompactionCompleted
+                | TurnStreamEventKind::RequestUserInputRequested
+        ) && self.commit_pending()
+        {
+            return Ok(());
+        }
         for payload in emitted_payloads {
             if let Some(delta) = self.transient_wire_payload(&payload) {
                 (self.progress)(delta);
             }
         }
         Ok(())
+    }
+
+    /// Commits the working view's pending upserts and publishes them as
+    /// durable journal events. Returns false when there was nothing to commit
+    /// or the commit failed; the upserts then stay pending for the turn's
+    /// final commit.
+    fn commit_pending(&mut self) -> bool {
+        let committed =
+            mutations_from_emitted_payloads(&self.pending_payloads).and_then(|mutations| {
+                if mutations.is_empty() {
+                    return Ok(None);
+                }
+                commit_conversation_mutations(
+                    &self.repository,
+                    &self.conversation_id,
+                    &self.project_path,
+                    self.base_revision,
+                    mutations,
+                )
+                .map(Some)
+            });
+        let Ok(Some(commit)) = committed else {
+            return false;
+        };
+        self.snapshot = commit.snapshot;
+        self.base_revision = commit.revision;
+        self.pending_payloads.clear();
+        for payload in commit.journal_payloads {
+            (self.progress)(payload);
+        }
+        true
     }
 
     /// Convert a working-view upsert into a transient stream delta. Deltas

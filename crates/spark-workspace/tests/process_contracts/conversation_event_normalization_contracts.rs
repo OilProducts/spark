@@ -274,7 +274,7 @@ fn project_chat_event_and_transcript_share_externalized_tool_output() {
 }
 
 #[test]
-fn recovered_terminal_provider_unit_stays_visible_across_reopens() {
+fn settling_an_orphaned_turn_keeps_its_logged_provider_unit_across_reopens() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = WorkspaceConversationService::new(settings.clone());
@@ -290,7 +290,7 @@ fn recovered_terminal_provider_unit_stays_visible_across_reopens() {
         .expect("start turn");
     let repository = ConversationRepository::new(&settings.data_dir);
     let mut completed = content_completed("assistant", "recovered", "app-turn", "answer");
-    let provider_event = repository
+    repository
         .append_provider_event(
             "conversation-recovered-provider-unit",
             "/projects/recovered-provider-unit",
@@ -298,16 +298,17 @@ fn recovered_terminal_provider_unit_stays_visible_across_reopens() {
             &mut completed,
         )
         .expect("persist terminal provider event");
-
-    for _ in 0..2 {
-        let snapshot = ConversationRepository::new(&settings.data_dir)
+    let read = || {
+        ConversationRepository::new(&settings.data_dir)
             .read_snapshot(
                 "conversation-recovered-provider-unit",
                 Some("/projects/recovered-provider-unit"),
             )
             .expect("reopen")
-            .expect("snapshot");
-        let recovered = snapshot["segments"]
+            .expect("snapshot")
+    };
+    let recovered_count = |snapshot: &Value| {
+        snapshot["segments"]
             .as_array()
             .expect("segments")
             .iter()
@@ -315,34 +316,28 @@ fn recovered_terminal_provider_unit_stays_visible_across_reopens() {
                 segment["turn_id"] == prepared.assistant_turn_id
                     && segment["content"] == "recovered"
             })
-            .count();
-        assert_eq!(recovered, 1);
-    }
+            .count()
+    };
 
-    let project = ProjectRegistry::new(&settings.data_dir)
-        .ensure_project_paths("/projects/recovered-provider-unit")
-        .expect("project paths");
-    let activity = ActivityRepository::new(
-        project
-            .conversations_dir
-            .join("conversation-recovered-provider-unit"),
-    );
-    let recovered_records = activity
-        .read_transcript_records()
-        .expect("transcript records");
-    assert_eq!(
-        recovered_records
+    // Reads never replay the provider log.
+    let before = read();
+    assert_eq!(recovered_count(&before), 0);
+    assert_eq!(read()["revision"], before["revision"]);
+
+    service.settle_orphaned_turns().expect("settle");
+    service.settle_orphaned_turns().expect("settle again");
+    for _ in 0..2 {
+        let snapshot = read();
+        assert_eq!(recovered_count(&snapshot), 1);
+        let turn = snapshot["turns"]
+            .as_array()
+            .expect("turns")
             .iter()
-            .into_iter()
-            .filter(|record| matches!(record, spark_storage::TranscriptRecord::SegmentUpsert { segment, source_event_sequence, .. } if segment.turn_id == prepared.assistant_turn_id && segment.content == "recovered" && *source_event_sequence == provider_event.sequence))
-            .count(),
-        1
-    );
-    assert!(activity
-        .uncommitted_event_suffix()
-        .expect("suffix")
-        .into_iter()
-        .all(|record| record.event["type"] != "provider_event"));
+            .find(|turn| turn["id"] == prepared.assistant_turn_id)
+            .expect("assistant turn");
+        assert_eq!(turn["status"], "failed");
+        assert_eq!(turn["error"], "Spark restarted before this turn finished.");
+    }
 }
 
 #[test]
