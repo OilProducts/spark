@@ -22,6 +22,9 @@ import {
 } from '../model/visitModel'
 import { RunTranscriptRowItem, useTranscriptExpansion } from './RunTranscriptGroups'
 
+const FOLD_HEAD = 5
+const FOLD_TAIL = 3
+
 const MARKS: Record<VisitMark, { glyph: string; label: string; className: string }> = {
     did_not_pass: { glyph: '!', label: "Didn't pass", className: 'text-warning' },
     failed: { glyph: '✕', label: 'Failed', className: 'text-destructive' },
@@ -331,6 +334,9 @@ function RunVisitView({
     const next = visits.find((candidate) => candidate.key === visit.next?.key) ?? null
     const prompt = visitPrompt(visit, prompts)
     const rows = useMemo(() => visitTranscriptRows(visit, segments), [visit, segments])
+    // A long visit shows its opening and closing steps; the middle folds.
+    const [showAllSteps, setShowAllSteps] = useState(false)
+    const folded = !showAllSteps && rows.length > FOLD_HEAD + FOLD_TAIL + 3
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
     const outcomeClass = OUTCOME_CLASSES[visit.outcome]
@@ -438,10 +444,25 @@ function RunVisitView({
                         <p className="text-sm text-muted-foreground">No child run was recorded for this visit.</p>
                     )
                 ) : rows.length > 0 ? (
-                    <ul className="list-none space-y-2" data-testid="run-visit-transcript">
-                        {rows.map((row) => (
+                    <ul className="max-w-[80ch] list-none space-y-1.5" data-testid="run-visit-transcript">
+                        {(folded ? rows.slice(0, FOLD_HEAD) : rows).map((row) => (
                             <RunTranscriptRowItem key={row.segment.id} row={row} expansion={expansion} />
                         ))}
+                        {folded ? (
+                            <li className="text-center">
+                                <button
+                                    type="button"
+                                    data-testid="run-visit-transcript-unfold"
+                                    onClick={() => setShowAllSteps(true)}
+                                    className="text-xs text-muted-foreground hover:text-foreground"
+                                >
+                                    ⋯ {rows.length - FOLD_HEAD - FOLD_TAIL} more steps ⋯
+                                </button>
+                            </li>
+                        ) : null}
+                        {folded ? rows.slice(-FOLD_TAIL).map((row) => (
+                            <RunTranscriptRowItem key={row.segment.id} row={row} expansion={expansion} />
+                        )) : null}
                     </ul>
                 ) : (
                     <p className="text-sm text-muted-foreground">No transcript was recorded for this visit.</p>

@@ -1,8 +1,7 @@
 import { memo } from 'react'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
-import { ChevronDown, ChevronUp } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { ChevronRight } from 'lucide-react'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { TranscriptCopyButton } from './TranscriptCopyButton'
 
@@ -95,6 +94,10 @@ export const parseThinkingSummaryContent = (content: string): { heading: string 
     return { heading, details }
 }
 
+// Air transcript: one line per step, no boxes. A tool call is its command in
+// muted mono with a status word only when it didn't simply complete; a thought
+// is a muted italic line; a reply is plain text. Timestamps sit in tooltips.
+
 export const ToolCallRow = memo(function ToolCallRow({
     entry,
     fullOutput = null,
@@ -116,74 +119,62 @@ export const ToolCallRow = memo(function ToolCallRow({
     const summaryDetail = summarizeToolCallDetail(entry.toolCall)
     const displayedOutput = fullOutput ?? entry.toolCall.output
     const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
+    const isCommand = entry.toolCall.kind === 'command_execution' && Boolean(entry.toolCall.command)
 
     return (
-        <li className="flex min-w-0 justify-start">
-            <div className="min-w-0 w-full rounded-md border border-border px-3 py-2">
-                <Button
-                    type="button"
-                    data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
-                    aria-expanded={isExpanded}
-                    onClick={() => onToggleToolCallExpanded(entry.toolCall.id)}
-                    variant="ghost"
-                    size="sm"
-                    className="h-auto w-full justify-start px-0 py-0 text-left hover:bg-transparent"
-                >
-                    {isExpanded ? (
-                        <ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <p className="shrink-0 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        {entry.toolCall.kind === 'file_change' ? 'File change' : 'Tool call'}
-                    </p>
-                    <span className={getSurfaceToneClassName(statusPresentation.tone)}>
+        <li className="min-w-0">
+            <button
+                type="button"
+                data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
+                aria-expanded={isExpanded}
+                onClick={() => onToggleToolCallExpanded(entry.toolCall.id)}
+                className="group flex w-full min-w-0 items-center gap-2 text-left text-xs"
+            >
+                <ChevronRight className={`h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                {isCommand ? null : (
+                    <span className="shrink-0 text-muted-foreground">{entry.toolCall.title}</span>
+                )}
+                <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground group-hover:text-foreground">
+                    {summaryDetail ?? (entry.toolCall.status === 'running' ? '' : 'No additional details')}
+                </span>
+                {entry.toolCall.status === 'completed' ? null : (
+                    <span className={`shrink-0 ${SURFACE_TONE_CLASS_MAP[statusPresentation.tone]}`}>
                         {statusPresentation.label}
                     </span>
-                    <p className="min-w-0 truncate text-sm font-medium text-foreground">{entry.toolCall.title}</p>
-                    {summaryDetail ? (
-                        <p className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-                            {summaryDetail}
+                )}
+            </button>
+            {isExpanded ? (
+                <div className="mt-1.5 mb-2 space-y-2 pl-5">
+                    {entry.toolCall.command ? (
+                        <p className="whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
+                            {entry.toolCall.command}
                         </p>
-                    ) : (
-                        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                            {entry.toolCall.status === 'running' ? 'Running...' : 'No additional details'}
+                    ) : null}
+                    {entry.toolCall.filePaths.length > 0 ? (
+                        <ul className="space-y-1">
+                            {entry.toolCall.filePaths.map((path) => (
+                                <li key={path} className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                                    {path}
+                                </li>
+                            ))}
+                        </ul>
+                    ) : null}
+                    {displayedOutput ? (
+                        <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                            {displayedOutput}
+                        </pre>
+                    ) : null}
+                    {hasPreviewOnly || isLoadingFullOutput || loadFullOutputError ? (
+                        <p className="text-xs text-muted-foreground">
+                            {isLoadingFullOutput
+                                ? 'Loading full output...'
+                                : loadFullOutputError
+                                    ? loadFullOutputError
+                                    : `Showing preview${entry.toolCall.outputSize ? ` of ${entry.toolCall.outputSize.toLocaleString()} bytes` : ''}.`}
                         </p>
-                    )}
-                </Button>
-                {isExpanded ? (
-                    <div className="mt-2 space-y-2">
-                        {entry.toolCall.command ? (
-                            <p className="whitespace-pre-wrap break-words rounded border border-border/60 bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
-                                {entry.toolCall.command}
-                            </p>
-                        ) : null}
-                        {entry.toolCall.filePaths.length > 0 ? (
-                            <ul className="space-y-1">
-                                {entry.toolCall.filePaths.map((path) => (
-                                    <li key={path} className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                                        {path}
-                                    </li>
-                                ))}
-                            </ul>
-                        ) : null}
-                        {displayedOutput ? (
-                            <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-muted px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                                {displayedOutput}
-                            </pre>
-                        ) : null}
-                        {hasPreviewOnly || isLoadingFullOutput || loadFullOutputError ? (
-                            <p className="text-xs text-muted-foreground">
-                                {isLoadingFullOutput
-                                    ? 'Loading full output...'
-                                    : loadFullOutputError
-                                        ? loadFullOutputError
-                                        : `Showing preview${entry.toolCall.outputSize ? ` of ${entry.toolCall.outputSize.toLocaleString()} bytes` : ''}.`}
-                            </p>
-                        ) : null}
-                    </div>
-                ) : null}
-            </div>
+                    ) : null}
+                </div>
+            ) : null}
         </li>
     )
 })
@@ -202,42 +193,35 @@ export const ThinkingRow = memo(function ThinkingRow({
     testIdPrefix?: string
 }) {
     const parsedThinking = parseThinkingSummaryContent(entry.content)
-    const heading = parsedThinking.heading || 'Thinking'
+    const heading = (
+        <>
+            {parsedThinking.heading ? <span aria-hidden="true">Thought: </span> : null}
+            <span>{parsedThinking.heading || 'Thinking'}</span>
+        </>
+    )
     const details = parsedThinking.details
     const isExpandable = details.length > 0
 
     return (
-        <li className="flex min-w-0 justify-start">
-            <div className="min-w-0 max-w-[85%] rounded border border-border/80 bg-background px-3 py-2 text-muted-foreground">
-                {isExpandable ? (
-                    <Button
-                        type="button"
-                        data-testid={`${testIdPrefix}-thinking-toggle-${entry.id}`}
-                        aria-expanded={isExpanded}
-                        onClick={() => onToggleThinkingEntryExpanded(entry.id)}
-                        variant="ghost"
-                        size="sm"
-                        className="h-auto w-full justify-start px-0 py-0 text-left hover:bg-transparent"
-                    >
-                        {isExpanded ? (
-                            <ChevronUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        ) : (
-                            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        )}
-                        <p className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
-                            {heading}
-                        </p>
-                    </Button>
-                ) : (
-                    <p className="text-sm font-semibold text-foreground">{heading}</p>
-                )}
-                {isExpanded && details ? (
-                    <div className="mt-2">
-                        <ProjectConversationMarkdown content={details} />
-                    </div>
-                ) : null}
-                <p className="mt-1 text-xs opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
-            </div>
+        <li className="min-w-0 text-xs text-muted-foreground" title={formatConversationTimestamp(entry.timestamp)}>
+            {isExpandable ? (
+                <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-thinking-toggle-${entry.id}`}
+                    aria-expanded={isExpanded}
+                    onClick={() => onToggleThinkingEntryExpanded(entry.id)}
+                    className="max-w-full truncate text-left italic hover:text-foreground"
+                >
+                    {heading}
+                </button>
+            ) : (
+                <p className="italic">{heading}</p>
+            )}
+            {isExpanded && details ? (
+                <div className="mt-1 mb-2 border-l border-border pl-3 text-sm">
+                    <ProjectConversationMarkdown content={details} />
+                </div>
+            ) : null}
         </li>
     )
 })
@@ -275,26 +259,25 @@ export const MessageRow = memo(function MessageRow({
     )
 
     return (
-        <li
-            className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
-        >
+        <li className={`flex min-w-0 ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div
-                className={`min-w-0 max-w-[85%] rounded border px-3 py-2 ${
+                title={formatConversationTimestamp(entry.timestamp)}
+                className={`group relative min-w-0 ${
                     entry.role === 'user'
-                        ? 'border-primary/40 text-foreground'
+                        ? 'max-w-[85%] rounded-md bg-muted px-3 py-2 text-foreground'
                         : entry.presentation === 'thinking'
-                            ? 'border-border/80 bg-background text-muted-foreground'
-                            : 'border-border text-foreground'
+                            ? 'max-w-[80ch] text-muted-foreground'
+                            : entry.status === 'failed'
+                                ? 'max-w-[80ch] text-destructive'
+                                : 'max-w-[80ch] text-foreground'
                 }`}
             >
-                <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium uppercase tracking-wide opacity-70">
-                        {entry.role === 'assistant'
-                            ? (entry.presentation === 'thinking' ? 'Thinking' : 'Spark')
-                            : entry.role}
-                    </p>
-                    {canCopy ? <TranscriptCopyButton label="Copy message" text={entry.content} /> : null}
-                </div>
+                {canCopy ? (
+                    <div className="absolute -top-1 right-0 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        <TranscriptCopyButton label="Copy message" text={entry.content} />
+                    </div>
+                ) : null}
+                <span className="sr-only">{entry.role === 'user' ? 'You' : entry.presentation === 'thinking' ? 'Thinking' : 'Spark'}: </span>
                 {shouldRenderAssistantMarkdown ? (
                     <ProjectConversationMarkdown content={entry.content} enableCodeCopy={enableCopy && entry.status === 'complete'} />
                 ) : (
@@ -308,7 +291,6 @@ export const MessageRow = memo(function MessageRow({
                     </p>
                 )}
                 {needsCodexLogin && <CodexReconnect />}
-                <p className="mt-1 text-xs opacity-70">{formatConversationTimestamp(entry.timestamp)}</p>
             </div>
         </li>
     )

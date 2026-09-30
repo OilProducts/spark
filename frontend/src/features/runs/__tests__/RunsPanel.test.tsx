@@ -1359,7 +1359,7 @@ describe('RunsPanel', () => {
     renderRunsWorkspace()
 
     await waitFor(() => {
-      expect(screen.getByText('Selected · original topic')).toBeVisible()
+      expect(screen.getByText('original topic')).toBeVisible()
     })
     await user.click(screen.getByTestId('run-history-row'))
 

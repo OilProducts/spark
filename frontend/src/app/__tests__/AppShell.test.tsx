@@ -1089,7 +1089,7 @@ describe('App shell behavior', () => {
         ),
       ).toBe(true)
     })
-    expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-two')
+    expect(await screen.findByTestId('runs-scope-active-project')).toHaveAttribute('title', expect.stringContaining('project-two'))
     expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
     expect(screen.getByText('Review Two')).toBeVisible()
   })

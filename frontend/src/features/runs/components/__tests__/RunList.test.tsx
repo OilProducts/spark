@@ -101,18 +101,20 @@ describe('RunList', () => {
             />,
         )
         const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
-        expect(titles()).toEqual(['Tighten the review loop', 'Merge Change · changes/CR-1/request.md'])
+        expect(titles()).toEqual(['Tighten the review loop', 'changes/CR-1/request.md'])
         expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^Implement Change · /)
+        // An untitled run leads with its input; the flow moves to the meta line.
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^Merge Change · /)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Failed'])
 
         const toggle = screen.getByTestId('run-history-children-toggle')
-        expect(toggle).toHaveTextContent('1 child run')
+        expect(toggle).toHaveAccessibleName('Show 1 child run')
         fireEvent.click(toggle)
-        expect(titles()).toEqual(['Tighten the review loop', 'Implement Task', 'Merge Change · changes/CR-1/request.md'])
+        expect(titles()).toEqual(['Tighten the review loop', 'Implement Task', 'changes/CR-1/request.md'])
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Running', ' · Failed'])
 
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'merge' } })
-        expect(titles()).toEqual(['Merge Change · changes/CR-1/request.md'])
+        expect(titles()).toEqual(['changes/CR-1/request.md'])
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'nothing like it' } })
         expect(screen.getByTestId('run-list-search-empty')).toBeVisible()
     })
@@ -135,7 +137,7 @@ describe('RunList', () => {
         )
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'cr-9' } })
         expect(screen.getAllByTestId('run-history-row-title').map((row) => row.textContent))
-            .toEqual(['Merge Change · changes/CR-9/request.md'])
+            .toEqual(['changes/CR-9/request.md'])
     })
 
     it('keeps ancestors of a matching child run and reveals the match on search', () => {
@@ -164,6 +166,6 @@ describe('RunList', () => {
 
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'Parent work' } })
         expect(titles()).toEqual(['Parent work'])
-        expect(screen.getByTestId('run-history-children-toggle')).toHaveTextContent('2 child runs')
+        expect(screen.getByTestId('run-history-children-toggle')).toHaveAttribute('title', '2 child runs')
     })
 })

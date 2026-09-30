@@ -69,7 +69,7 @@ function RunsSidebar({ activeProjectPath, scopeMode, selectedRunId }: {
             }}
             runs={scopedRuns}
             selectedRunId={selectedRunId}
-            summaryLabel={`${summary.total} runs · ${summary.running} running${summary.queued > 0 ? ` · ${summary.queued} queued` : ''}`}
+            summaryLabel={`${summary.total} runs${summary.queued > 0 ? ` · ${summary.queued} queued` : ''}`}
         />
     )
 }

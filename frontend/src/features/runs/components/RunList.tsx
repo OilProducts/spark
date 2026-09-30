@@ -4,9 +4,6 @@ import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { InlineError } from '@/components/app/inline-error'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import {
     Empty,
     EmptyDescription,
@@ -15,7 +12,7 @@ import {
 import { formatProjectPathLabel } from '@/lib/projectPaths'
 import type { RunRecord } from '../model/shared'
 import { formatDuration } from '../model/shared'
-import { flowTitle, formatRunAge, runTitle } from '../model/runOverviewModel'
+import { flowTitle, formatRunDate, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -73,9 +70,6 @@ export function RunList({
         : activeProjectPath
             ? 'Run history for the active project.'
             : 'Choose an active project or switch to all projects.'
-    const activeProjectLabel = activeProjectPath
-        ? formatProjectPathLabel(activeProjectPath)
-        : 'No active project'
     const compactProjectLabel = (projectPath?: string | null) => {
         return projectPath ? formatProjectPathLabel(projectPath) : null
     }
@@ -132,7 +126,7 @@ export function RunList({
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const metaParts = [
             title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
-            formatRunAge(run.started_at, now),
+            formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
             projectLabel,
         ].filter((value): value is string => Boolean(value) && value !== '—')
@@ -167,15 +161,40 @@ export function RunList({
                     selectedRunId === run.run_id && 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]',
                 )}
             >
-                <div data-testid="run-history-row-title" className="truncate text-sm font-normal" title={`${title} · ${run.run_id}`}>
+                <div data-testid="run-history-row-title" className="line-clamp-2 text-sm font-normal leading-snug" title={`${title} · ${run.run_id}`}>
                     {title}
                 </div>
-                <div data-testid="run-history-row-meta" className="truncate text-xs leading-4 text-muted-foreground">
-                    {metaParts.join(' · ')}
-                    {attention ? (
-                        <span data-testid="run-history-row-status" className={attention.className}>
-                            {metaParts.length > 0 ? ' · ' : ''}{attention.label}
-                        </span>
+                <div className="mt-0.5 flex min-w-0 items-baseline gap-2 text-xs leading-4 text-muted-foreground">
+                    <span data-testid="run-history-row-meta" className="min-w-0 flex-1 truncate">
+                        {metaParts.join(' · ')}
+                        {attention ? (
+                            <span data-testid="run-history-row-status" className={attention.className}>
+                                {metaParts.length > 0 ? ' · ' : ''}{attention.label}
+                            </span>
+                        ) : null}
+                    </span>
+                    {childRuns.length > 0 ? (
+                        <button
+                            type="button"
+                            data-testid="run-history-children-toggle"
+                            aria-expanded={childrenExpanded}
+                            aria-label={`${childrenExpanded ? 'Hide' : 'Show'} ${childRuns.length} child ${childRuns.length === 1 ? 'run' : 'runs'}`}
+                            title={`${childRuns.length} child ${childRuns.length === 1 ? 'run' : 'runs'}`}
+                            onClick={(event) => {
+                                event.stopPropagation()
+                                setExpandedParents((current) => {
+                                    const next = new Set(current)
+                                    if (!next.delete(run.run_id)) {
+                                        next.add(run.run_id)
+                                    }
+                                    return next
+                                })
+                            }}
+                            onKeyDown={(event) => event.stopPropagation()}
+                            className="shrink-0 tabular-nums hover:text-primary"
+                        >
+                            {childRuns.length} {childrenExpanded ? '▾' : '▸'}
+                        </button>
                     ) : null}
                 </div>
                 {holdsExecutionLock ? (
@@ -191,28 +210,9 @@ export function RunList({
                     </div>
                 ) : null}
             </article>
-            {childRuns.length > 0 ? (
-                <div className="ml-3">
-                    <button
-                        type="button"
-                        data-testid="run-history-children-toggle"
-                        aria-expanded={childrenExpanded}
-                        onClick={() => setExpandedParents((current) => {
-                            const next = new Set(current)
-                            if (!next.delete(run.run_id)) {
-                                next.add(run.run_id)
-                            }
-                            return next
-                        })}
-                        className="px-3 text-xs text-muted-foreground hover:text-foreground"
-                    >
-                        {childrenExpanded ? '▾' : '▸'} {childRuns.length} child {childRuns.length === 1 ? 'run' : 'runs'}
-                    </button>
-                    {childrenExpanded ? (
-                        <div data-testid="run-history-children" className="space-y-1">
-                            {childRuns.map((child) => renderRunRow(child, depth + 1))}
-                        </div>
-                    ) : null}
+            {childRuns.length > 0 && childrenExpanded ? (
+                <div data-testid="run-history-children" className="ml-3 space-y-1">
+                    {childRuns.map((child) => renderRunRow(child, depth + 1))}
                 </div>
             ) : null}
             </div>
@@ -250,57 +250,53 @@ export function RunList({
             data-testid="run-list-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className={`bg-background flex shrink-0 flex-col overflow-hidden z-40 ${
-                isNarrowViewport ? 'w-full max-h-[46vh] rounded-md border' : 'w-64 border-r'
+                isNarrowViewport ? 'w-full max-h-[46vh] rounded-md border' : 'w-72 border-r'
             }`}
         >
             <div className="space-y-2 px-3 pb-2 pt-3">
-                <div className="flex items-center justify-between gap-2">
-                    <Badge
-                        data-testid="runs-project-context-chip"
-                        variant="outline"
-                        className="min-w-0"
+                <div className="flex items-center gap-3 text-xs">
+                    <button
+                        type="button"
+                        data-testid="runs-scope-active-project"
+                        aria-pressed={scopeMode === 'active'}
+                        onClick={() => onScopeModeChange('active')}
+                        disabled={!activeProjectPath}
                         title={activeProjectPath || 'No active project'}
+                        className={cn(
+                            'shrink-0 underline-offset-4 disabled:opacity-50',
+                            scopeMode === 'active' ? 'text-foreground underline' : 'text-muted-foreground hover:text-foreground',
+                        )}
                     >
-                        <span className="text-muted-foreground">Project:</span>
-                        <span className="max-w-28 truncate">{activeProjectLabel}</span>
-                    </Badge>
+                        This project
+                    </button>
+                    <button
+                        type="button"
+                        data-testid="runs-scope-all-projects"
+                        aria-pressed={scopeMode === 'all'}
+                        onClick={() => onScopeModeChange('all')}
+                        className={cn(
+                            'shrink-0 underline-offset-4',
+                            scopeMode === 'all' ? 'text-foreground underline' : 'text-muted-foreground hover:text-foreground',
+                        )}
+                    >
+                        All projects
+                    </button>
                     <span
                         data-testid="runs-scope-description"
-                        className="min-w-0 truncate text-xs text-muted-foreground"
+                        className="ml-auto min-w-0 truncate text-muted-foreground"
                         title={scopeDescription}
                     >
                         {summaryLabel}
                     </span>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                        type="button"
-                        data-testid="runs-scope-active-project"
-                        onClick={() => onScopeModeChange('active')}
-                        variant={scopeMode === 'active' ? 'secondary' : 'outline'}
-                        size="xs"
-                        disabled={!activeProjectPath}
-                    >
-                        Active project
-                    </Button>
-                    <Button
-                        type="button"
-                        data-testid="runs-scope-all-projects"
-                        onClick={() => onScopeModeChange('all')}
-                        variant={scopeMode === 'all' ? 'secondary' : 'outline'}
-                        size="xs"
-                    >
-                        All projects
-                    </Button>
-                </div>
-                <Input
+                <input
                     type="search"
                     value={searchQuery}
                     onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder="Search runs…"
+                    placeholder="Search"
                     aria-label="Search runs by title or flow"
                     data-testid="run-list-search-input"
-                    className="h-7 text-sm"
+                    className="w-full border-0 border-b border-border bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground focus:border-primary"
                 />
                 {error ? (
                     <InlineError>{error}</InlineError>

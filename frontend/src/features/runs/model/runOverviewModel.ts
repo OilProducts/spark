@@ -16,18 +16,25 @@ export function flowTitle(flowName: string | null | undefined): string {
         : base.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
-/** "5m ago", "3d ago", or a date once it's more than a week old. */
-export function formatRunAge(timestamp: string | null | undefined, now: number): string {
+/** "14:05" today, "Sep 27" this year, "Sep 27, 2025" before. */
+export function formatRunDate(timestamp: string | null | undefined, now: number): string {
     const time = timestamp ? Date.parse(timestamp) : Number.NaN
     if (!Number.isFinite(time)) {
         return ''
     }
-    const minutes = Math.floor((now - time) / 60_000)
-    if (minutes < 1) return 'just now'
-    if (minutes < 60) return `${minutes}m ago`
-    if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`
-    if (minutes < 7 * 24 * 60) return `${Math.floor(minutes / (24 * 60))}d ago`
-    return new Date(time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    const date = new Date(time)
+    const today = new Date(now)
+    if (date.toDateString() === today.toDateString()) {
+        return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    }
+    return date.toLocaleDateString(undefined, date.getFullYear() === today.getFullYear()
+        ? { month: 'short', day: 'numeric' }
+        : { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+/** "5.5M", "193k", "812". */
+export function formatCompactCount(value: number): string {
+    return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value).replace('K', 'k')
 }
 
 // ponytail: inputs come in key order, not the flow's declared order; read the
@@ -42,14 +49,14 @@ const firstLaunchInput = (run: Pick<RunRecord, 'launch_context' | 'first_launch_
     return run.first_launch_input?.trim() || null
 }
 
-/** The run's generated title, else its flow title and the first launch input it was given. */
+/** The run's generated title, else the first launch input it was given, else its flow title. */
 export function runTitle(run: Pick<RunRecord, 'title' | 'flow_name' | 'launch_context' | 'first_launch_input'>): string {
     const title = run.title?.trim()
     if (title) {
         return title
     }
     const input = firstLaunchInput(run)
-    return input ? `${flowTitle(run.flow_name)} · ${input}` : flowTitle(run.flow_name)
+    return input ?? flowTitle(run.flow_name)
 }
 
 // The runtime's error text is the only record of what failed: a backend,

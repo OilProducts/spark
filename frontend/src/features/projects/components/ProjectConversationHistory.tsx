@@ -445,7 +445,7 @@ export function ProjectConversationHistory({
                     </EmptyHeader>
                 </Empty>
             ) : (
-                <ol data-testid="project-ai-conversation-history-list" className="space-y-3">
+                <ol data-testid="project-ai-conversation-history-list" className="space-y-2.5">
                     {activeConversationHistory.map((entry) => {
                         const key = conversationEntryKey(entry)
                         if (entry.kind === 'tool_call') {

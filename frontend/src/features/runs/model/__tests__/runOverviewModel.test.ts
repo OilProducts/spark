@@ -5,6 +5,8 @@ import {
   classifyRunFailure,
   didNotPassVisits,
   runTitle,
+  formatRunDate,
+  formatCompactCount,
 } from '../runOverviewModel'
 import type { RunVisit, VisitOutcome } from '../visitModel'
 
@@ -116,15 +118,30 @@ describe('classifyRunFailure', () => {
 })
 
 describe('runTitle', () => {
-  it('uses the generated title, else the flow title and first launch input', () => {
+  it('uses the generated title, else the first launch input, else the flow title', () => {
     expect(runTitle({ title: 'Tighten the review loop', flow_name: 'implement-change.yaml' })).toBe('Tighten the review loop')
     expect(runTitle({
       title: null,
       flow_name: 'software-development/implement-change.yaml',
       launch_context: { 'context.request.artifact_path': 'changes/CR-1/request.md', 'context.request.validation_command': 'just test' },
-    })).toBe('Implement Change · changes/CR-1/request.md')
+    })).toBe('changes/CR-1/request.md')
     expect(runTitle({ title: '  ', flow_name: 'Implement Task', launch_context: null })).toBe('Implement Task')
     // The runs list carries only the first input.
-    expect(runTitle({ flow_name: 'merge-change.yaml', first_launch_input: 'changes/CR-2/request.md' })).toBe('Merge Change · changes/CR-2/request.md')
+    expect(runTitle({ flow_name: 'merge-change.yaml', first_launch_input: 'changes/CR-2/request.md' })).toBe('changes/CR-2/request.md')
+  })
+})
+
+describe('formatRunDate and formatCompactCount', () => {
+  const now = Date.parse('2026-09-29T15:00:00')
+  it('dates a run by time today, month and day this year, and adds the year before that', () => {
+    expect(formatRunDate('2026-09-29T09:05:00', now)).toMatch(/9:05/)
+    expect(formatRunDate('2026-09-27T09:05:00', now)).toBe('Sep 27')
+    expect(formatRunDate('2025-12-01T09:05:00', now)).toBe('Dec 1, 2025')
+    expect(formatRunDate(null, now)).toBe('')
+  })
+  it('shortens counts', () => {
+    expect(formatCompactCount(5_517_077)).toBe('5.5M')
+    expect(formatCompactCount(193_400)).toBe('193.4k')
+    expect(formatCompactCount(812)).toBe('812')
   })
 })

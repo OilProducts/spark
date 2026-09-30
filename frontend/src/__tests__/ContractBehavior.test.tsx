@@ -2216,7 +2216,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
         ),
       ).toBe(true)
     })
-    expect(await screen.findByTestId('runs-project-context-chip')).toHaveTextContent('project-beta')
+    expect(await screen.findByTestId('runs-scope-active-project')).toHaveAttribute('title', expect.stringContaining('project-beta'))
     expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
     expect(screen.getByText('Beta')).toBeVisible()
   })

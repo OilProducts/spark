@@ -555,7 +555,7 @@ test('run checkpoint refreshes on revisit for item 9.2-01', async ({ page }) => 
   await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(1)
 
   await page.getByRole('button', { name: 'All projects', exact: true }).click()
-  await page.getByRole('button', { name: 'Active project', exact: true }).click()
+  await page.getByRole('button', { name: 'This project', exact: true }).click()
   await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(2)
   await page.screenshot({ path: screenshotPath('08d-runs-panel-checkpoint-viewer.png'), fullPage: true })
 })
@@ -801,12 +801,17 @@ test('run visits list a review loop and show one visit at a time', async ({ page
     })
   })
   await page.route(`**/attractor/pipelines/${run.run_id}/executions/*/*/transcript`, async (route) => {
-    const isRejection = new URL(route.request().url()).pathname.endsWith('/evaluate/2-0/transcript')
+    const path = new URL(route.request().url()).pathname
+    const isRejection = path.endsWith('/evaluate/2-0/transcript')
+    // A long visit: twelve steps fold to the first five and last three.
+    const longSteps = path.endsWith('/implement/1-0/transcript')
+      ? Array.from({ length: 12 }, (_, step) => ({ type: 'segment_upsert', source_event_sequence: step + 1, segment: segment(`step-${step}`, step + 1, `Step ${step + 1} of the draft.`) }))
+      : []
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        records: isRejection
+        records: longSteps.length > 0 ? longSteps : isRejection
           ? [
             { type: 'turn_upsert', turn: { id: 'prompt', role: 'user', kind: 'message', content: 'Judge the implementation against the contract.' } },
             { type: 'segment_upsert', source_event_sequence: 1, segment: segment('reply', 1, 'Checked the diff; the loop has no regression test.') },
@@ -867,6 +872,16 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(rows.nth(2).locator('[data-mark="did_not_pass"]')).toBeVisible()
   await expect(rows.nth(2).locator('[data-mark="loop_back"]')).toBeVisible()
   await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
+
+  // A long visit folds its middle steps until asked.
+  await rows.nth(1).click()
+  const work = page.getByTestId('run-visit-work')
+  await expect(page.getByTestId('run-visit-transcript-unfold')).toHaveText('⋯ 4 more steps ⋯')
+  await expect(work).toContainText('Step 5 of the draft.')
+  await expect(work).not.toContainText('Step 6 of the draft.')
+  await expect(work).toContainText('Step 10 of the draft.')
+  await page.getByTestId('run-visit-transcript-unfold').click()
+  await expect(work).toContainText('Step 6 of the draft.')
 
   // The Evaluate visit that didn't pass: instructions, transcript, reason, writes.
   await rows.nth(2).click()

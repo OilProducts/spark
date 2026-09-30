@@ -9,8 +9,7 @@ import {
     formatRunStatusLabel,
     statusToneClassName,
 } from '../model/shared'
-import { formatTokenCount } from '../model/runSummaryFormat'
-import { formatRunAge, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
+import { formatCompactCount, formatRunDate, flowTitle as flowTitleFromName, runTitle } from '../model/runOverviewModel'
 
 // The run's masthead: flow and run title, one line of facts, and actions.
 // Everything else about the run lives in the status item.
@@ -44,63 +43,40 @@ export function RunHeaderBar({
     const inactive = canContinueRun(run.status)
     const showCancel = canCancelRun(run.status) || CANCELING_STATUSES.has(run.status)
     // An active run's duration already says how long it has been going.
-    const when = inactive ? formatRunAge(run.ended_at || run.started_at, now) : ''
+    const when = inactive ? formatRunDate(run.ended_at || run.started_at, now) : ''
     const tokens = run.token_usage_breakdown?.total_tokens ?? run.token_usage
     const commit = run.git_commit?.trim()
     const facts = [
         `${formatDuration(run.started_at, run.ended_at, run.status, now)}`,
-        ...(typeof tokens === 'number' ? [`${formatTokenCount(tokens)} tokens`] : []),
+        ...(typeof tokens === 'number' ? [`${formatCompactCount(tokens)} tokens`] : []),
         ...(commit ? [commit.slice(0, 7)] : []),
     ].filter((fact) => fact && fact !== '—')
+    const title = runTitle(run)
+    const flow = flowTitle || flowTitleFromName(run.flow_name)
 
     return (
         <header data-testid="run-summary-panel" className="space-y-1 border-b border-border pb-3">
             <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-0 flex-1">
-                    <p data-testid="run-header-flow" className="truncate text-xs text-muted-foreground">
-                        {flowTitle || flowTitleFromName(run.flow_name)}
-                    </p>
+                    {flow !== title ? (
+                        <p data-testid="run-header-flow" className="truncate text-xs text-muted-foreground">
+                            {flow}
+                        </p>
+                    ) : null}
                     <h3
                         data-testid="run-header-title"
                         className="truncate text-2xl font-light tracking-tight text-foreground"
-                        title={`${runTitle(run)} · ${run.run_id}`}
+                        title={`${title} · ${run.run_id}`}
                     >
-                        {runTitle(run)}
+                        {title}
                     </h3>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                    {inactive ? (
-                        <Button
-                            type="button"
-                            data-testid="run-summary-continue-button"
-                            onClick={() => onContinueFromRun(run)}
-                            title={selectedVisitLabel
-                                ? `Start a new run from ${selectedVisitLabel}`
-                                : 'Start a new run from a node you pick on the graph'}
-                            variant="ghost"
-                            size="xs"
-                        >
-                            Continue from here
-                        </Button>
-                    ) : null}
-                    {inactive ? (
-                        <Button
-                            type="button"
-                            data-testid="run-summary-rerun-button"
-                            onClick={() => onRerunRun(run)}
-                            title="Launch a new run of this flow with the same inputs"
-                            variant="ghost"
-                            size="xs"
-                        >
-                            Re-run
-                        </Button>
-                    ) : null}
+                <div className="flex flex-wrap items-center gap-1">
                     {canRetryRun(run.status) ? (
                         <Button
                             type="button"
                             data-testid="run-summary-retry-button"
                             onClick={() => onRequestRetry(run.run_id, run.status)}
-                            variant="outline"
                             size="xs"
                         >
                             Retry
@@ -112,10 +88,35 @@ export function RunHeaderBar({
                             data-testid="run-summary-cancel-button"
                             onClick={() => onRequestCancel(run.run_id, run.status)}
                             disabled={!canCancelRun(run.status)}
-                            variant="outline"
                             size="xs"
                         >
                             {cancelRunActionLabel(run.status)}
+                        </Button>
+                    ) : null}
+                    {inactive ? (
+                        <Button
+                            type="button"
+                            data-testid="run-summary-continue-button"
+                            onClick={() => onContinueFromRun(run)}
+                            title={selectedVisitLabel
+                                ? `Start a new run from ${selectedVisitLabel}`
+                                : 'Start a new run from a node you pick on the graph'}
+                            variant="outline"
+                            size="xs"
+                        >
+                            {selectedVisitLabel ? 'Continue from here' : 'Continue from…'}
+                        </Button>
+                    ) : null}
+                    {inactive ? (
+                        <Button
+                            type="button"
+                            data-testid="run-summary-rerun-button"
+                            onClick={() => onRerunRun(run)}
+                            title="Launch a new run of this flow with the same inputs"
+                            variant="outline"
+                            size="xs"
+                        >
+                            Re-run
                         </Button>
                     ) : null}
                 </div>

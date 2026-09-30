@@ -55,8 +55,15 @@ describe('RunHeaderBar', () => {
 
         expect(screen.getByTestId('run-header-flow')).toHaveTextContent('Review Changes')
         expect(screen.getByTestId('run-header-title')).toHaveTextContent('Tighten the review loop')
-        expect(screen.getByTestId('run-header-facts')).toHaveTextContent('Completed 5m ago · 5m · 1,234 tokens · abcdef0')
+        expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^Completed \S.* · 5m · 1\.2k tokens · abcdef0$/)
         expect(screen.queryByText(/Node:/)).not.toBeInTheDocument()
+    })
+
+    it('drops the flow line when the title is the flow title', () => {
+        renderHeader(makeRun({ title: 'Review Changes' }))
+
+        expect(screen.queryByTestId('run-header-flow')).not.toBeInTheDocument()
+        expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Changes')
     })
 
     it('offers Retry only for failed runs and Cancel only for active ones', () => {
@@ -64,12 +71,14 @@ describe('RunHeaderBar', () => {
         expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
         expect(screen.queryByTestId('run-summary-cancel-button')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-summary-rerun-button')).toBeVisible()
-        expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from here')
+        // With no visit selected, Continue asks for the node to start from.
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from…')
         unmount()
 
         const failed = renderHeader(makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' }), 'Transform')
         expect(screen.getByTestId('run-summary-retry-button')).toBeVisible()
         expect(screen.queryByTestId('run-summary-cancel-button')).not.toBeInTheDocument()
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveTextContent('Continue from here')
         expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('title', 'Start a new run from Transform')
         failed.unmount()
 

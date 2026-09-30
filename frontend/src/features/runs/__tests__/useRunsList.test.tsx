@@ -171,13 +171,13 @@ it('keeps the launch-input title fallback through initial load, live updates and
     status: 200, headers: { 'Content-Type': 'application/json' },
   })))
   const titles = () => useStore.getState().runsListSession.runs.map(runTitle)
-  expect(titles()).toEqual(['Implement Change · changes/CR-1/request.md'])
+  expect(titles()).toEqual(['changes/CR-1/request.md'])
 
   const upsert = (run: object) => act(() => {
     window.dispatchEvent(new CustomEvent('spark:run-upsert', { detail: { run } }))
   })
   upsert(record('a', 'changes/CR-1/request.md', { status: 'completed' }))
-  expect(titles()).toEqual(['Implement Change · changes/CR-1/request.md'])
+  expect(titles()).toEqual(['changes/CR-1/request.md'])
   upsert(record('b', 'changes/CR-2/request.md'))
-  expect(titles()).toEqual(['Implement Change · changes/CR-2/request.md', 'Implement Change · changes/CR-1/request.md'])
+  expect(titles()).toEqual(['changes/CR-2/request.md', 'changes/CR-1/request.md'])
 })
