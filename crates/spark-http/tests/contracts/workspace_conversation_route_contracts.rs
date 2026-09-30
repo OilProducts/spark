@@ -181,6 +181,72 @@ async fn conversation_routes_return_snapshot_tool_output_settings_and_delete_con
 }
 
 #[tokio::test]
+async fn empty_thread_created_through_settings_persists_until_deleted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = "/projects/http-empty";
+    let project = ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project_path)
+        .expect("project");
+    let app = build_app(settings.clone());
+
+    let created = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/conversation-empty/settings",
+        Some(json!({"project_path": project_path, "expected_revision": "0"})),
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    assert_eq!(created.1["conversation_id"], "conversation-empty");
+    assert_eq!(created.1["turns"], json!([]));
+
+    // A fresh app reads only what was persisted, like a browser reload.
+    let reloaded_app = build_app(settings.clone());
+    let listed = request_json(
+        reloaded_app.clone(),
+        "GET",
+        "/workspace/api/projects/conversations?project_path=/projects/http-empty",
+        None,
+    )
+    .await;
+    assert_eq!(listed.0, StatusCode::OK);
+    assert_eq!(listed.1.as_array().expect("list").len(), 1);
+    assert_eq!(listed.1[0]["conversation_id"], "conversation-empty");
+    assert_eq!(listed.1[0]["revision"], created.1["revision"]);
+    let reloaded = request_json(
+        reloaded_app.clone(),
+        "GET",
+        "/workspace/api/conversations/conversation-empty?project_path=/projects/http-empty",
+        None,
+    )
+    .await;
+    assert_eq!(reloaded.0, StatusCode::OK);
+    assert_eq!(reloaded.1["revision"], created.1["revision"]);
+
+    let deleted = request_json(
+        reloaded_app.clone(),
+        "DELETE",
+        "/workspace/api/conversations/conversation-empty?project_path=/projects/http-empty",
+        None,
+    )
+    .await;
+    assert_eq!(deleted.0, StatusCode::OK);
+    assert!(!project
+        .conversations_dir
+        .join("conversation-empty")
+        .exists());
+    let listed = request_json(
+        reloaded_app,
+        "GET",
+        "/workspace/api/projects/conversations?project_path=/projects/http-empty",
+        None,
+    )
+    .await;
+    assert_eq!(listed.1, json!([]));
+}
+
+#[tokio::test]
 async fn project_conversation_list_allocates_missing_summary_handles() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

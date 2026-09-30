@@ -3,9 +3,12 @@ import { useCallback, type MutableRefObject } from 'react'
 import {
     deleteConversationValidated,
     fetchProjectConversationListValidated,
+    updateConversationSettingsValidated,
+    type ConversationSnapshotResponse,
     type ConversationSummaryResponse,
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
+import { useStore } from '@/store'
 import {
     buildProjectConversationId,
     extractApiErrorMessage,
@@ -30,6 +33,7 @@ type UseProjectThreadActionsArgs = {
     conversationCacheRef: ConversationCacheRef
     setConversationSummaryList: (projectPath: string, summaries: ConversationSummaryResponse[]) => void
     activateConversationThread: (projectPath: string, conversationId: string, source?: string) => void
+    applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
     resetComposer: () => void
     setConversationId: (conversationId: string | null) => void
     updateProjectSessionState: (projectPath: string, patch: Record<string, unknown>) => void
@@ -50,6 +54,7 @@ export function useProjectThreadActions({
     conversationCacheRef,
     setConversationSummaryList,
     activateConversationThread,
+    applyConversationSnapshot,
     resetComposer,
     setConversationId,
     updateProjectSessionState,
@@ -61,32 +66,36 @@ export function useProjectThreadActions({
 }: UseProjectThreadActionsArgs) {
     const { confirm } = useDialogController()
 
-    const onCreateConversationThread = useCallback(() => {
+    const onCreateConversationThread = useCallback(async () => {
         if (!activeProjectPath) {
             return
         }
-        const now = new Date().toISOString()
         const conversationId = buildProjectConversationId(activeProjectPath)
+        const selectedConversationId = useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
         setPanelError(null)
-        setConversationSummaryList(activeProjectPath, [
-            {
-                conversation_id: conversationId,
-                conversation_handle: '',
+        try {
+            // Persist first so an empty thread survives reload and can be deleted.
+            const snapshot = await updateConversationSettingsValidated(conversationId, {
                 project_path: activeProjectPath,
-                title: 'New thread',
-                created_at: now,
-                updated_at: now,
-                revision: 0,
-                last_message_preview: null,
-            },
-            ...(conversationCacheRef.current.summariesByProjectPath[activeProjectPath] || []),
-        ])
-        activateConversationThread(activeProjectPath, conversationId, 'create-thread')
+                expected_revision: '0',
+            })
+            applyConversationSnapshot(activeProjectPath, snapshot, 'create-thread')
+            // Only select it if the user is still on the thread they were on when creating it.
+            const state = useStore.getState()
+            if (
+                state.activeProjectPath !== activeProjectPath
+                || (state.projectSessionsByPath[activeProjectPath]?.conversationId ?? null) !== selectedConversationId
+            ) {
+                return
+            }
+            activateConversationThread(activeProjectPath, conversationId, 'create-thread')
+        } catch (error) {
+            setPanelError(extractApiErrorMessage(error, 'Unable to create the thread.'))
+        }
     }, [
         activeProjectPath,
         activateConversationThread,
-        conversationCacheRef,
-        setConversationSummaryList,
+        applyConversationSnapshot,
         setPanelError,
     ])
 
