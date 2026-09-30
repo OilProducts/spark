@@ -866,12 +866,13 @@ test('run visits list a review loop and show one visit at a time', async ({ page
 
   // One row per visit, n/x for repeated nodes, marks only where notable.
   const rows = page.getByTestId('run-visit-row')
-  await expect(rows).toHaveCount(6)
-  await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1/2', '1/2', '2/2', '2/2', ''])
-  await expect(rows.nth(2).locator('[data-mark]')).toHaveCount(2)
+  // The exit node that simply succeeded is left out; each row has at most one mark.
+  await expect(rows).toHaveCount(5)
+  await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1/2', '1/2', '2/2', '2/2'])
+  await expect(rows.nth(2).locator('[data-mark]')).toHaveCount(1)
   await expect(rows.nth(2).locator('[data-mark="did_not_pass"]')).toBeVisible()
-  await expect(rows.nth(2).locator('[data-mark="loop_back"]')).toBeVisible()
   await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
+  await expect(page.getByTestId('run-visit-item-context')).toContainText(/\d+ keys?/)
 
   // A long visit folds its middle steps until asked.
   await rows.nth(1).click()
@@ -890,9 +891,12 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(page.getByTestId('run-visit-view-outcome')).toHaveText("Didn't pass")
   const instructions = page.getByTestId('run-visit-instructions')
   await expect(instructions).not.toHaveAttribute('open', '')
+  // Collapsed, the instructions still show how they begin.
+  await expect(page.getByTestId('run-visit-instructions-preview')).toHaveText('Judge the implementation against the contract.')
   await instructions.locator('summary').click()
+  await expect(page.getByTestId('run-visit-instructions-preview')).toBeHidden()
   await expect(instructions).toContainText('Judge the implementation against the contract.')
-  await expect(page.getByTestId('run-visit-reads')).toContainText('context.task.objective')
+  await expect(page.getByTestId('run-visit-reads')).toContainText('task.objective')
   await expect(page.getByTestId('run-visit-work')).toContainText('the loop has no regression test')
   await expect(page.getByTestId('run-visit-work')).not.toContainText('"outcome"')
   await expect(page.getByTestId('run-visit-reason')).toHaveText('Missing regression tests.')

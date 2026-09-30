@@ -12,7 +12,7 @@ import {
     formatVisitDuration,
     visitContextWrites,
     visitDurationMs,
-    visitMarks,
+    visitMark,
     visitPrompt,
     visitToolResult,
     visitTranscriptRows,
@@ -26,11 +26,11 @@ const FOLD_HEAD = 5
 const FOLD_TAIL = 3
 
 const MARKS: Record<VisitMark, { glyph: string; label: string; className: string }> = {
-    did_not_pass: { glyph: '!', label: "Didn't pass", className: 'text-warning' },
+    did_not_pass: { glyph: '↻', label: "Didn't pass", className: 'text-warning' },
     failed: { glyph: '✕', label: 'Failed', className: 'text-destructive' },
-    interrupted: { glyph: '‖', label: 'Interrupted', className: 'text-warning' },
+    interrupted: { glyph: '–', label: 'Interrupted', className: 'text-warning' },
     waiting: { glyph: '?', label: 'Waiting on a question', className: 'text-info' },
-    loop_back: { glyph: '↩\uFE0E', label: 'Looped back', className: 'text-info' },
+    loop_back: { glyph: '↩\uFE0E', label: 'Looped back', className: 'text-muted-foreground' },
 }
 
 const OUTCOME_CLASSES: Partial<Record<RunVisit['outcome'], string>> = {
@@ -67,7 +67,9 @@ interface RunVisitsCardProps {
     onSelectNode: (nodeId: string | null) => void
     onOpenRun: (runId: string) => void
     /** The status item's row: what it says and whether it needs attention. */
-    statusRow: { label: string; className?: string }
+    statusRow: { label: string; className?: string; mark?: string; markClassName?: string; detail?: string }
+    /** How many keys the Context item lists. */
+    contextKeyCount: number
     renderStatus: (selectVisit: (visit: RunVisit) => void) => ReactNode
     renderContext: (focusKey: string | null, selectVisit: (visit: RunVisit) => void) => ReactNode
     artifactEntries: ArtifactListEntry[]
@@ -77,7 +79,7 @@ interface RunVisitsCardProps {
 }
 
 export function RunVisitsCard({
-    visits,
+    visits: allVisits,
     flowNodes,
     segments,
     prompts,
@@ -91,12 +93,18 @@ export function RunVisitsCard({
     onSelectNode,
     onOpenRun,
     statusRow,
+    contextKeyCount,
     renderStatus,
     renderContext,
     artifactEntries,
     onViewArtifact,
     toolbar,
 }: RunVisitsCardProps) {
+    // An exit node that simply succeeded says nothing the status item doesn't.
+    const visits = useMemo(
+        () => allVisits.filter((visit) => visit.kind !== 'exit' || visit.outcome !== 'succeeded'),
+        [allVisits],
+    )
     // The status item leads and is selected when a run opens.
     const [selectedKey, setSelectedKey] = useState<string>('status')
     const [contextFocusKey, setContextFocusKey] = useState<string | null>(null)
@@ -152,7 +160,7 @@ export function RunVisitsCard({
         }
     }
     const itemRowClass = (isSelected: boolean) => cn(
-        'flex w-full items-center gap-2 py-1.5 pl-1 pr-1 text-left text-sm',
+        'flex w-full items-center gap-2 py-1 pl-1 pr-1 text-left text-sm',
         isSelected ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50',
     )
 
@@ -195,7 +203,7 @@ export function RunVisitsCard({
                     aria-label="Visits"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
-                    className={cn('divide-y divide-border overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
+                    className={cn('overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
                 >
                     {(['status', 'context'] as const).map((item) => (
                         <button
@@ -209,12 +217,18 @@ export function RunVisitsCard({
                             onClick={() => select(item)}
                             className={itemRowClass(!showJournal && selected === item)}
                         >
-                            <span className="w-7 shrink-0" />
+                            <span className={cn('w-5 shrink-0 text-center text-xs', item === 'status' ? statusRow.markClassName ?? statusRow.className : 'text-muted-foreground')}>
+                                {item === 'status' ? statusRow.mark : '{}'}
+                            </span>
                             <span className={cn('min-w-0 flex-1 truncate', item === 'status' && statusRow.className)}>
                                 {item === 'status' ? statusRow.label : 'Context'}
                             </span>
+                            <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                                {item === 'status' ? statusRow.detail : `${contextKeyCount} ${contextKeyCount === 1 ? 'key' : 'keys'}`}
+                            </span>
                         </button>
                     ))}
+                    <div className="my-1.5 border-t border-border" />
                     {visits.length === 0 ? (
                         <p data-testid="run-visits-empty" className="py-2 text-sm text-muted-foreground">
                             No visits have been recorded for this run yet.
@@ -222,6 +236,7 @@ export function RunVisitsCard({
                     ) : null}
                     {visits.map((visit) => {
                         const isSelected = !showJournal && visit === selected
+                        const mark = visitMark(visit)
                         return (
                             <button
                                 key={visit.key}
@@ -242,10 +257,9 @@ export function RunVisitsCard({
                                     visit.nodeId === selectedNodeId && !isSelected && 'bg-accent/30',
                                 )}
                             >
-                                <span className="flex w-7 shrink-0 gap-0.5 text-xs" data-testid="run-visit-row-marks">
-                                    {visitMarks(visit).map((mark) => (
+                                <span className="w-5 shrink-0 text-center text-xs" data-testid="run-visit-row-marks">
+                                    {mark ? (
                                         <span
-                                            key={mark}
                                             data-mark={mark}
                                             title={MARKS[mark].label}
                                             aria-label={MARKS[mark].label}
@@ -253,11 +267,13 @@ export function RunVisitsCard({
                                         >
                                             {MARKS[mark].glyph}
                                         </span>
-                                    ))}
+                                    ) : null}
                                 </span>
-                                <span className="min-w-0 flex-1 truncate">{visit.label}</span>
-                                <span data-testid="run-visit-row-count" className="shrink-0 text-xs text-muted-foreground">
-                                    {visitCountLabel(visit)}
+                                <span className="min-w-0 flex-1 truncate">
+                                    {visit.label}
+                                    <span data-testid="run-visit-row-count" className="ml-1.5 text-xs text-muted-foreground">
+                                        {visitCountLabel(visit)}
+                                    </span>
                                 </span>
                                 <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                                     {formatVisitDuration(visitDurationMs(visit, now))}
@@ -353,9 +369,10 @@ function RunVisitView({
                 event.preventDefault()
                 onOpenContextKey(key)
             }}
-            className="text-foreground/80 hover:underline hover:underline-offset-4"
+            title={key}
+            className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/80 hover:text-primary"
         >
-            <code>{key}</code>
+            {key.replace(/^context\./, '')}
         </button>
     )
 
@@ -394,8 +411,13 @@ function RunVisitView({
 
             {visit.parentKey === null ? (
                 <details data-testid="run-visit-instructions" className="group">
-                    <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">
-                        Instructions
+                    <summary className="cursor-pointer list-none text-sm [&::-webkit-details-marker]:hidden">
+                        <span className="font-medium text-foreground">Instructions</span>
+                        {prompt ? (
+                            <span data-testid="run-visit-instructions-preview" className="ml-2 text-muted-foreground group-open:hidden">
+                                {prompt.replace(/\s+/g, ' ').slice(0, 180)}{prompt.length > 180 ? '…' : ''}
+                            </span>
+                        ) : null}
                     </summary>
                     <div className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words border-l border-border pl-3 text-sm text-foreground/90">
                         {prompt ?? <span className="text-muted-foreground">No instructions were recorded for this visit.</span>}
@@ -403,13 +425,10 @@ function RunVisitView({
                 </details>
             ) : null}
             {flowNode && flowNode.readsContext.length > 0 ? (
-                <p data-testid="run-visit-reads" className="text-xs text-muted-foreground">
-                    Reads{' '}
-                    {flowNode.readsContext.map((key, index) => (
-                        <span key={key}>
-                            {index > 0 ? ', ' : ''}
-                            {contextKeyButton(key)}
-                        </span>
+                <p data-testid="run-visit-reads" className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                    Reads
+                    {flowNode.readsContext.map((key) => (
+                        <span key={key}>{contextKeyButton(key)}</span>
                     ))}
                 </p>
             ) : null}

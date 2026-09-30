@@ -81,14 +81,17 @@ const renderStatus = (record: RunRecord, visits: RunVisit[], hasQuestion = false
 
 describe('RunStatusItem', () => {
   it('shows a completed run result, its source, what did not pass, and its outputs', () => {
-    const review = visit('review', 1, 'did_not_pass', { reason: 'Missing a test.' })
+    const review = visit('review', 1, 'did_not_pass', {
+      reason: 'Missing a test.',
+      status: { outcome: 'fail', context_updates: { 'context.review.required_changes': 'Add a test.', 'internal.retry': 1 } },
+    })
     const { onSelectVisit, onViewArtifact } = renderStatus(run(), [review, visit('commit', 2, 'succeeded')])
 
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
     expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, raw output')
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
     expect(didNotPass).toHaveTextContent('Didn’t pass (1)')
-    expect(didNotPass).toHaveTextContent('Review: Missing a test.')
+    expect(didNotPass).toHaveTextContent('Review: Missing a test. · wrote review.required_changes')
     fireEvent.click(within(didNotPass).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(review)
 

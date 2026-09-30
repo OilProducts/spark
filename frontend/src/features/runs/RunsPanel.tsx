@@ -23,7 +23,7 @@ import { RunList } from './components/RunList'
 import { RunContinuationPanel } from './components/RunContinuationPanel'
 import { RunHeaderBar } from './components/RunHeaderBar'
 import { RunQuestionsPanel } from './components/RunQuestionsPanel'
-import { type RunRecord } from './model/shared'
+import { formatDuration, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind } from './model/runOverviewModel'
@@ -37,11 +37,11 @@ const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
 
 const STATUS_ROWS = {
-    waiting: { label: 'Needs input', className: 'text-warning' },
-    failed: { label: 'Failed', className: 'text-destructive' },
-    completed: { label: 'Result' },
-    running: { label: 'Running' },
-    ended: { label: 'Status' },
+    waiting: { label: 'Needs input', className: 'text-warning', mark: '?' },
+    failed: { label: 'Failed', className: 'text-destructive', mark: '✕' },
+    completed: { label: 'Result', mark: '✓', markClassName: 'text-success' },
+    running: { label: 'Running', className: 'text-info', mark: '•' },
+    ended: { label: 'Status', mark: '–' },
 }
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
@@ -541,7 +541,11 @@ export function RunsPanel() {
                                                 {showGraph ? 'Hide graph' : 'Graph'}
                                             </button>
                                         }
-                                        statusRow={STATUS_ROWS[statusKind]}
+                                        statusRow={{
+                                            ...STATUS_ROWS[statusKind],
+                                            detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
+                                        }}
+                                        contextKeyCount={contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
                                         renderStatus={(selectVisit) => (
                                             <RunStatusItem
                                                 run={selectedRun}

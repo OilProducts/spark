@@ -6,7 +6,7 @@ import {
   buildRunVisits,
   visitContextWrites,
   visitFlowNodesFromSnapshot,
-  visitMarks,
+  visitMark,
   visitPrompt,
   visitTranscriptRows,
   type RunVisit,
@@ -126,7 +126,7 @@ describe('buildRunVisits', () => {
       'Done 1/1 succeeded',
     ])
     const firstEvaluate = visits[2]
-    expect(visitMarks(firstEvaluate)).toEqual(['did_not_pass', 'loop_back'])
+    expect(visitMark(firstEvaluate)).toBe('did_not_pass')
     expect(firstEvaluate.next).toEqual({ key: visits[3].key, loopBack: true })
     expect(firstEvaluate.startedAt).not.toBeNull()
     expect(firstEvaluate.endedAt).not.toBeNull()
@@ -180,7 +180,7 @@ describe('buildRunVisits', () => {
     const journal = [...stage('start', 0), started('ask', 1)]
     const visits = build({ journal, runStatus: 'running', waitingNodeIds: ['ask'] })
     expect(visits[1].outcome).toBe('waiting')
-    expect(visitMarks(visits[1])).toEqual(['waiting'])
+    expect(visitMark(visits[1])).toBe('waiting')
   })
 
   it('links a subflow visit to the child run it started', () => {

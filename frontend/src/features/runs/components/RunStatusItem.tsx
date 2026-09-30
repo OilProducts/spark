@@ -27,7 +27,7 @@ import {
     runFailureMessage,
     type RunStatusKind,
 } from '../model/runOverviewModel'
-import type { RunVisit, VisitFlowNode } from '../model/visitModel'
+import { visitContextWrites, type RunVisit, type VisitFlowNode } from '../model/visitModel'
 
 type ViewArtifact = (entry: { path: string; viewable: boolean }) => void
 
@@ -53,10 +53,28 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
             data-testid="run-visit-link"
             data-visit-key={visit.key}
             onClick={() => onSelect(visit)}
-            className="text-foreground underline decoration-border underline-offset-4 hover:decoration-foreground"
+            className="text-primary underline-offset-4 hover:underline"
         >
             {visit.label}{visit.count > 1 ? ` ${visit.number}/${visit.count}` : ''}
         </button>
+    )
+}
+
+// The keys a visit wrote, named without the "context." prefix.
+function VisitWrites({ visit }: { visit: RunVisit }) {
+    const { writes } = visitContextWrites(visit)
+    if (writes.length === 0) {
+        return null
+    }
+    return (
+        <span data-testid="run-status-did-not-pass-writes" className="text-muted-foreground">
+            {' · wrote '}
+            {writes.map(([key]) => (
+                <code key={key} className="mr-1 rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground/80">
+                    {key.replace(/^context\./, '')}
+                </code>
+            ))}
+        </span>
     )
 }
 
@@ -178,6 +196,7 @@ export function RunStatusItem({
                                 {visit.reason
                                     ? <span className="whitespace-pre-wrap break-words text-foreground/90">{visit.reason}</span>
                                     : <span className="text-muted-foreground">no reason recorded</span>}
+                                <VisitWrites visit={visit} />
                             </li>
                         ))}
                     </ul>

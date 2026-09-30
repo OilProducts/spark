@@ -375,17 +375,13 @@ export function formatVisitDuration(durationMs: number | null): string {
 
 export type VisitMark = 'did_not_pass' | 'failed' | 'interrupted' | 'waiting' | 'loop_back'
 
-/** The marks a visit row shows; only notable visits get any. */
-export function visitMarks(visit: RunVisit): VisitMark[] {
-    const marks: VisitMark[] = []
-    if (visit.outcome === 'did_not_pass' || visit.outcome === 'failed'
-        || visit.outcome === 'interrupted' || visit.outcome === 'waiting') {
-        marks.push(visit.outcome)
+/** The one mark a visit row shows, most urgent first; only notable visits get one. */
+export function visitMark(visit: RunVisit): VisitMark | null {
+    if (visit.outcome === 'failed' || visit.outcome === 'waiting'
+        || visit.outcome === 'interrupted' || visit.outcome === 'did_not_pass') {
+        return visit.outcome
     }
-    if (visit.next?.loopBack) {
-        marks.push('loop_back')
-    }
-    return marks
+    return visit.next?.loopBack ? 'loop_back' : null
 }
 
 // System keys are runtime bookkeeping: anything outside the context.
