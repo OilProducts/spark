@@ -10,7 +10,7 @@ import { InlineError } from '@/components/app/inline-error'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { MissionConflict, request, statusLabels, type Budget, type Mission } from './MissionsPanel'
+import { MissionConflict, request, statusLabels, type Budget, type Mission, type Playbook } from './MissionsPanel'
 import { MissionTranscript, RunLink } from './MissionTranscript'
 import { useMissionConversation } from './hooks/useMissionConversation'
 import { formatMissionDate, joinRuns, readQuestion, runMarks, shortLine, totalTokens, type MissionRun } from './model/missionModel'
@@ -57,6 +57,28 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const [budget, setBudget] = useState<Budget | null>(null)
     const [model, setModel] = useState<{ revision: number; draft: ModelSettings | null } | null>(null)
     const [objectiveOpen, setObjectiveOpen] = useState(false)
+    const [objectiveClipped, setObjectiveClipped] = useState(false)
+    const objectiveText = useRef<HTMLParagraphElement>(null)
+    useEffect(() => {
+        const element = objectiveText.current
+        if (!element) return
+        const measure = () => setObjectiveClipped(element.scrollHeight > element.clientHeight)
+        measure()
+        const observer = new ResizeObserver(measure)
+        observer.observe(element)
+        return () => observer.disconnect()
+    }, [mission.fields.description])
+    // A draft names its playbook; Start freezes the text into mission.playbook.
+    const draftPlaybook = mission.playbook ? null : mission.fields.playbook
+    const [loadedPlaybook, setLoadedPlaybook] = useState<Playbook | null>(null)
+    useEffect(() => {
+        setLoadedPlaybook(null)
+        if (!draftPlaybook) return
+        let disposed = false
+        void fetch(`/workspace/api/playbooks/${encodeURIComponent(draftPlaybook)}`).then(response => response.ok ? response.json() : null).then(value => { if (!disposed) setLoadedPlaybook(value) }).catch(() => {})
+        return () => { disposed = true }
+    }, [draftPlaybook])
+    const playbook = mission.playbook ?? (loadedPlaybook?.name === draftPlaybook ? loadedPlaybook : null)
     const conversation = useMissionConversation(mission, project)
     const { conversationId } = conversation
     const inherited = useInheritedModelSettings(project)
@@ -106,7 +128,6 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const stored = conversation.snapshot?.model_settings_view?.stored
     const modelLabel = [stored?.model || stored?.llm_profile || stored?.provider, stored?.reasoning_effort].filter(Boolean).join(' · ') || 'Project default'
     const objective = mission.fields.description || 'No objective'
-    const longObjective = objective.length > 280 || objective.split('\n').length > 4
     return <section aria-label="Mission details" className={`flex min-h-0 min-w-0 flex-col border-l border-border ${narrow ? 'w-full border-l-0' : 'flex-1'}`} onKeyDown={e => {
         // Menu keys arrive through the portal; only the pane's own Escape dismisses it.
         if (e.key === 'Escape' && !e.defaultPrevented && !e.nativeEvent.isComposing && !busy && e.currentTarget.contains(e.target as Node)) { e.stopPropagation(); close() }
@@ -168,13 +189,13 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
             </div>
             <aside aria-label="Mission overview" className={`text-sm ${narrow ? 'border-t border-border px-4 py-4' : 'w-80 shrink-0 overflow-y-auto border-l border-border px-5 py-4'}`}>
                 <RailSection label="Objective">
-                    <p tabIndex={0} className={`whitespace-pre-wrap break-words leading-relaxed text-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${objectiveOpen ? '' : 'line-clamp-4'}`}>{objective}</p>
-                    {longObjective && <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs" aria-expanded={objectiveOpen} onClick={() => setObjectiveOpen(!objectiveOpen)}>{objectiveOpen ? 'Show less' : 'Show the whole objective'}</Button>}
+                    <p ref={objectiveText} tabIndex={0} className={`whitespace-pre-wrap break-words leading-relaxed text-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${objectiveOpen ? '' : 'line-clamp-4'}`}>{objective}</p>
+                    {(objectiveOpen || objectiveClipped) && <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs" aria-expanded={objectiveOpen} onClick={() => setObjectiveOpen(!objectiveOpen)}>{objectiveOpen ? 'Show less' : 'Show the whole objective'}</Button>}
                 </RailSection>
                 {(mission.playbook || mission.fields.playbook) && <RailSection label="Playbook">
-                    {mission.playbook
-                        ? <details><summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.playbook.name}</summary>
-                            <p className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">{mission.playbook.text}</p></details>
+                    {playbook
+                        ? <details><summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{playbook.name}</summary>
+                            <p className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">{playbook.text}</p></details>
                         : <p>{mission.fields.playbook}</p>}
                 </RailSection>}
                 <RailSection label="Runs">

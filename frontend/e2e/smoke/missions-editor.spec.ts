@@ -14,8 +14,8 @@ const mission = (id: string, title: string, status: string, day: number, extra: 
   ...extra,
 })
 const roster = (run_id: string, flow_name: string, summary: string, status: string) => ({ run_id, flow_name, summary, launched_at: at(12), status })
-const initialMissions = () => [
-  mission('mission-draft', 'Draft the importer', 'draft', 10),
+const initialMissions = (draft: Record<string, unknown> = {}) => [
+  mission('mission-draft', 'Draft the importer', 'draft', 10, draft),
   mission('mission-running', 'Ship search ranking with a title long enough to wrap onto a second line', 'running', 12, { runs: [roster('run-build', 'software-development/implement-change.yaml', 'Implement ranking', 'running')], playbook: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }),
   mission('mission-gate', 'Review the ranking change', 'needs_you', 11, { runs: [roster('run-build', 'software-development/implement-change.yaml', 'Implement ranking', 'completed'), roster('run-review', 'software-development/review-change.yaml', 'Review ranking', 'waiting')], question }),
   mission('mission-closed', 'Retire the old index', 'closed', 9, { closed: { status: 'done', reason: closingSummary, at: at(9), actor: 'assistant' } }),
@@ -37,8 +37,8 @@ const transcript = (id: string) => ({
   ],
 })
 
-async function stubMissions(page: Page) {
-  const missions = initialMissions()
+async function stubMissions(page: Page, draft: Record<string, unknown> = {}) {
+  const missions = initialMissions(draft)
   const posts: { url: string; body: unknown }[] = []
   await page.route('**/workspace/api/live/events**', route => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }))
   await stubProjectMetadata(page)
@@ -46,6 +46,7 @@ async function stubMissions(page: Page) {
   await page.route('**/workspace/api/conversations/mission-*', route => route.request().method() === 'GET'
     ? route.fulfill({ json: transcript(new URL(route.request().url()).pathname.split('/').pop()!) })
     : route.fallback())
+  await page.route('**/workspace/api/playbooks/bug-report', route => route.fulfill({ json: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }))
   await page.route('**/workspace/api/playbooks', route => route.fulfill({ json: [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }))
   await page.route('**/workspace/api/missions**', route => {
     const request = route.request()
@@ -188,4 +189,26 @@ test('missions rail stacks below the conversation at a narrow width', async ({ p
   expect(rail!.width).toBeGreaterThan(300)
   await expect(detail.getByRole('region', { name: 'Waiting on you' })).toBeVisible()
   await page.screenshot({ animations: 'disabled', fullPage: true, path: test.info().outputPath('narrow.png') })
+})
+
+test('missions rail expands a short objective that wraps past four lines and a draft playbook', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const description = 'Rank search results by relevance across every indexed project so the best matches appear first, and keep the change small with tests covering ties and empty queries too.'
+  expect(description.length).toBeLessThan(200)
+  await stubMissions(page, { fields: { title: 'Draft the importer', description, archived: false, playbook: 'bug-report' } })
+  await gotoWithRegisteredProject(page, project)
+  await page.getByTestId('nav-mode-missions').click()
+  await page.getByRole('button', { name: 'Draft the importer' }).click()
+  const rail = page.getByRole('complementary', { name: 'Mission overview' })
+  const objective = rail.getByRole('region', { name: 'Objective' })
+  const text = objective.getByText(description)
+  expect(await text.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
+  await objective.getByRole('button', { name: 'Show the whole objective' }).click()
+  expect(await text.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(false)
+  await expect(objective.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
+  // Before Start the playbook's text loads and expands.
+  const playbook = rail.getByRole('region', { name: 'Playbook' })
+  await expect(playbook.getByText('Reproduce the defect first.')).toBeHidden()
+  await playbook.getByText('bug-report').click()
+  await expect(playbook.getByText('Reproduce the defect first.')).toBeVisible()
 })

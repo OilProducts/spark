@@ -11,7 +11,7 @@ import {
     hydrateConversationRecordFromSnapshot,
 } from '@/features/projects/model/projectsHomeState'
 import { flowTitle, formatRunDate } from '@/features/runs/model/runOverviewModel'
-import type { ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
+import { submitConversationRequestUserInputValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
 import { parseTurn, runMarks } from './model/missionModel'
 
 export function openRun(runId: string) {
@@ -40,11 +40,24 @@ function EventLine({ mark, tone = '', at, children }: { mark: string; tone?: str
 }
 
 const noop = () => {}
-type Conversation = { conversationId: string; snapshot: ConversationSnapshotResponse | null; loading: boolean; error: string }
+type Conversation = { conversationId: string; snapshot: ConversationSnapshotResponse | null; loading: boolean; error: string; reload: () => void }
 
 /** The mission's conversation in the Air transcript rows, with its events as quiet lines. */
 export function MissionTranscript({ conversation, project, runTitles }: { conversation: Conversation; project: string; runTitles: Map<string, string> }) {
-    const { conversationId, snapshot, loading, error } = conversation
+    const { conversationId, snapshot, loading, error, reload } = conversation
+    const [submitting, setSubmitting] = useState<Record<string, boolean>>({})
+    const [inputError, setInputError] = useState<string | null>(null)
+    // The agent can ask through its own question tool mid-turn; the answer resumes that turn.
+    async function submitInput(requestId: string, answers: Record<string, string>) {
+        setInputError(null)
+        setSubmitting(current => ({ ...current, [requestId]: true }))
+        try {
+            await submitConversationRequestUserInputValidated(conversationId, requestId, { project_path: project, answers })
+            reload()
+        } catch (e) { setInputError(e instanceof Error ? e.message : String(e)) } finally {
+            setSubmitting(current => { const next = { ...current }; delete next[requestId]; return next })
+        }
+    }
     const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({})
     const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({})
     const record = useMemo(() => snapshot ? hydrateConversationRecordFromSnapshot(snapshot) : null, [snapshot])
@@ -67,10 +80,10 @@ export function MissionTranscript({ conversation, project, runTitles }: { conver
         expandedThinkingEntries={expandedThinking}
         pendingFlowRunRequestId={null}
         pendingProposedPlanId={null}
-        requestUserInputActionError={null}
-        submittingRequestUserInputIds={{}}
+        requestUserInputActionError={inputError}
+        submittingRequestUserInputIds={submitting}
         formatConversationTimestamp={formatTime}
-        onSubmitRequestUserInput={noop}
+        onSubmitRequestUserInput={submitInput}
         onToggleToolCallExpanded={id => setExpandedToolCalls(current => ({ ...current, [id]: !current[id] }))}
         onToggleThinkingEntryExpanded={id => setExpandedThinking(current => ({ ...current, [id]: !current[id] }))}
         onReviewFlowRunRequest={noop}

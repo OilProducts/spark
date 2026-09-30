@@ -313,7 +313,20 @@ impl WorkspaceMissionService {
             mission.status = MissionStatus::Running;
         }
         if mission.status == MissionStatus::NeedsYou {
-            // The newest question from a run still waiting on a gate.
+            // The newest question still unanswered in a run waiting on a gate.
+            let runtime = attractor_api::AttractorApiService::new(self.settings.clone());
+            let pending: Vec<Value> = mission
+                .runs
+                .iter()
+                .filter(|run| run.status == "waiting")
+                .flat_map(|run| {
+                    let response = runtime.list_pipeline_questions(&run.run_id);
+                    response.body["questions"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect();
             mission.question = self
                 .scope(&mission.project_path)
                 .and_then(|scope| {
@@ -324,9 +337,9 @@ impl WorkspaceMissionService {
                 .rev()
                 .find(|event| {
                     event.kind == "run.question"
-                        && mission.runs.iter().any(|run| {
-                            run.status == "waiting"
-                                && event.payload["root_run_id"] == run.run_id.as_str()
+                        && pending.iter().any(|question| {
+                            question["run_id"] == event.payload["run_id"]
+                                && question["question_id"] == event.payload["question_id"]
                         })
                 })
                 .map(|event| event.payload);

@@ -1247,6 +1247,94 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
 }
 
 #[test]
+fn the_offered_question_is_one_still_unanswered() {
+    let harness = Harness::new();
+    let mission = harness.create(json!({"title": "Answered questions"}));
+    harness
+        .missions
+        .start(&harness.project, &mission.id)
+        .unwrap();
+    harness.wait_turns(1);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    owned_run(
+        &harness.settings,
+        &harness.project,
+        &mission.id,
+        "root",
+        "running",
+    );
+    let store = attractor_runtime::RunStore::for_settings(&harness.settings);
+    for (index, (id, prompt)) in [("child-a", "First?"), ("child-b", "Second?")]
+        .into_iter()
+        .enumerate()
+    {
+        let mut record = attractor_core::RunRecord::new(id, &harness.project);
+        record.parent_run_id = Some("root".into());
+        record.root_run_id = Some("root".into());
+        record.status = "waiting".into();
+        let paths = store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record,
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .append_event(
+                &paths,
+                attractor_runtime::human_gate_pending_event(
+                    id,
+                    "gate-0",
+                    "gate",
+                    "work",
+                    prompt,
+                    None,
+                    vec![],
+                ),
+            )
+            .unwrap();
+        harness.missions.deliver_run_events(id).unwrap();
+        harness.wait_turns(index + 2);
+        harness.agent.release(1);
+        harness.wait_idle(&mission.id);
+    }
+    let api = attractor_api::AttractorApiService::new(harness.settings.clone());
+    let answer = |run: &str| {
+        let response = api.answer_pipeline_question(
+            run,
+            "gate-0",
+            serde_json::from_value(json!({"selected_value":"yes"})).unwrap(),
+        );
+        assert_eq!(response.status_code, 200);
+        harness.missions.deliver_run_events(run).unwrap();
+    };
+    assert_eq!(
+        harness.get(&mission.id).question.unwrap()["prompt"],
+        "Second?"
+    );
+    // Answering the newer question leaves the root waiting on the older one.
+    answer("child-b");
+    let waiting = harness.get(&mission.id);
+    assert_eq!(waiting.status, MissionStatus::NeedsYou);
+    assert_eq!(waiting.question.unwrap()["prompt"], "First?");
+    answer("child-a");
+    // A later recovery wait must not offer an answered question again.
+    let paths = store.find_run_root("root").unwrap().unwrap();
+    let mut record = store.read_run_record(&paths).unwrap().unwrap();
+    record.status = "waiting".into();
+    record.outcome_reason_code = Some("recovery_decision_required".into());
+    store.write_run_record(&paths, &record).unwrap();
+    harness.missions.deliver_run_events("root").unwrap();
+    harness.wait_turns(4);
+    harness.agent.release(1);
+    harness.wait_idle(&mission.id);
+    let recovery = harness.get(&mission.id);
+    assert_eq!(recovery.status, MissionStatus::NeedsYou);
+    assert_eq!(recovery.runs[0].status, "waiting");
+    assert!(recovery.question.is_none());
+}
+
+#[test]
 fn answering_a_live_child_gate_resumes_the_run_tree() {
     let harness = Harness::new();
     harness.agent_requestable(

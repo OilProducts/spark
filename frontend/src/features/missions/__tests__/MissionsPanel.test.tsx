@@ -29,6 +29,7 @@ beforeEach(() => {
             return { ok: true, json: async () => task }
         }
         if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
+        if (url === '/workspace/api/playbooks/bug-report') return { ok: true, json: async () => ({ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the draft first.' }) }
         if (url === '/workspace/api/playbooks') return { ok: true, json: async () => [{ name: 'bug-report', title: 'Bug report', description: 'Fix a bug.' }] }
         return { ok: true, json: async () => ({ missions: [task] }) }
     }))
@@ -227,6 +228,19 @@ it('renders inline flow launches in the transcript with a link to the run', asyn
     expect(useStore.getState().viewMode).toBe('runs')
 })
 
+it('answers a question the agent asks through its own tool mid-turn', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    const at = '2026-09-20T10:00:00Z'
+    snapshot = { ...conversation([{ ...turn('a1', 'assistant', ''), status: 'streaming' }]),
+        segments: [{ id: 'seg-ask', turn_id: 'a1', order: 1, kind: 'request_user_input', role: 'system', status: 'pending', timestamp: at, updated_at: at, completed_at: null, content: '', error: null, tool_call: null, source: null,
+            request_user_input: { request_id: 'req-1', status: 'pending', questions: [{ id: 'q1', header: 'Publish?', question: 'Publish the report?', question_type: 'MULTIPLE_CHOICE', options: [{ label: 'Publish', description: null }, { label: 'Hold', description: null }], allow_other: true, is_secret: false }], answers: {}, submitted_at: null } }] }
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    fireEvent.click(await detail().findByRole('button', { name: 'Publish', exact: true }))
+    fireEvent.click(detail().getByRole('button', { name: 'Submit' }))
+    await waitFor(() => expect(calls.at(-1)).toEqual({ url: '/workspace/api/conversations/task-1/request-user-input/req-1/answer', body: { project_path: '/project', answers: { q1: 'Publish' } } }))
+})
+
 it('ends a closed mission with its outcome once, without cancel, close or the reply box', async () => {
     task = mission({ status: 'closed', conversation_id: 'task-1', started_at: 't', closed: { status: 'canceled', reason: 'Canceled by human', at: '2026-09-20 10:00:00.0 +00:00:00' } })
     snapshot = conversation([turn('a1', 'assistant', 'Stopping.'), turn('n1', 'system', 'Closed as canceled: Canceled by human', 'mission_notice')])
@@ -326,15 +340,21 @@ it('creates with a picked playbook and shows it in the rail with its text expand
     fireEvent.click(editor().getByRole('button', { name: 'Create mission' }))
     await waitFor(() => expect(calls).toHaveLength(1))
     expect(calls[0].body.fields).toMatchObject({ title: 'Fix parser', playbook: 'bug-report' })
-    await waitFor(() => expect(within(detail().getByRole('region', { name: 'Playbook' })).getByText('bug-report')).toBeInTheDocument())
+    // Before Start the rail loads the named playbook's current text.
+    const draftPlaybook = within(detail().getByRole('region', { name: 'Playbook' }))
+    const draftText = await draftPlaybook.findByText('Reproduce the draft first.')
+    expect(draftText).not.toBeVisible()
+    fireEvent.click(draftPlaybook.getByText('bug-report'))
+    expect(draftText).toBeVisible()
 
     task = mission({ status: 'running', conversation_id: 'task-new', started_at: 't', playbook: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce first.' } })
     act(() => { window.dispatchEvent(new CustomEvent('spark:mission-live-event', { detail: { projectPath: '/project', mission: task } })) })
     const playbook = within(detail().getByRole('region', { name: 'Playbook' }))
+    // After Start the rail shows the frozen text, still expanded.
     const text = await playbook.findByText('Reproduce first.')
-    expect(text).not.toBeVisible()
-    fireEvent.click(playbook.getByText('bug-report'))
     expect(text).toBeVisible()
+    fireEvent.click(playbook.getByText('bug-report'))
+    expect(text).not.toBeVisible()
 })
 
 it('preserves a new draft on Cancel', async () => {
