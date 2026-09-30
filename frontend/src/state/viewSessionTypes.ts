@@ -24,6 +24,7 @@ export type ResourceStatus = 'idle' | 'loading' | 'ready' | 'error'
 export interface HomeConversationCacheState {
     conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
+    streamSequenceByTurnId?: Record<string, number>
 }
 
 export interface HomeProjectSessionState {

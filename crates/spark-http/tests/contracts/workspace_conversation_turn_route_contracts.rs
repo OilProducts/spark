@@ -1422,6 +1422,7 @@ async fn conversation_stop_routes_to_backend_without_completing_or_failing_turn(
         settings.clone(),
         backend.clone(),
     );
+    let app = build_app_with_agent_turn_backend(settings, backend);
     service
         .start_turn(
             "stop-me",
@@ -1436,7 +1437,6 @@ async fn conversation_stop_routes_to_backend_without_completing_or_failing_turn(
     let before = service
         .get_snapshot("stop-me", Some("/projects/stop"))
         .unwrap();
-    let app = build_app_with_agent_turn_backend(settings, backend);
     let response = request_json(
         app,
         "POST",
@@ -1455,5 +1455,135 @@ async fn conversation_stop_routes_to_backend_without_completing_or_failing_turn(
             .get_snapshot("stop-me", Some("/projects/stop"))
             .unwrap(),
         before
+    );
+}
+
+#[tokio::test]
+async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = "/projects/settle";
+    let service = WorkspaceConversationService::new(settings.clone());
+    let repository = spark_storage::ConversationRepository::new(&settings.data_dir);
+    let start = |conversation_id: &str| {
+        service
+            .start_turn(
+                conversation_id,
+                ConversationTurnRequest {
+                    project_path: project.into(),
+                    message: "Work".into(),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .unwrap()
+            .0
+            .assistant_turn_id
+    };
+    let log = |conversation_id: &str, turn_id: &str, mut event: TurnStreamEvent| {
+        repository
+            .append_provider_event(conversation_id, project, turn_id, &mut event)
+            .unwrap();
+    };
+
+    // Left streaming: one completed unit logged, one tool still running.
+    let interrupted = start("left-streaming");
+    let mut commentary =
+        content_completed(TurnStreamChannel::Assistant, "Halfway.", "app-1", "note");
+    commentary.phase = Some("commentary".into());
+    log("left-streaming", &interrupted, commentary);
+    let snapshot = service
+        .get_snapshot("left-streaming", Some(project))
+        .unwrap();
+    let mut streaming_turn = snapshot["turns"][1].clone();
+    streaming_turn["status"] = json!("streaming");
+    repository
+        .commit_conversation(
+            "left-streaming",
+            project,
+            snapshot["revision"].as_i64().unwrap(),
+            vec![
+                spark_storage::conversation::ConversationMutation::TurnUpserted {
+                    turn: serde_json::from_value(streaming_turn).unwrap(),
+                },
+                spark_storage::conversation::ConversationMutation::SegmentUpserted {
+                    segment: serde_json::from_value(json!({
+                        "id": "segment-tool-running",
+                        "turn_id": interrupted,
+                        "order": 1,
+                        "kind": "tool_call",
+                        "role": "system",
+                        "status": "running",
+                        "timestamp": "2026-09-29T00:00:00Z",
+                        "tool_call": {"id": "exec", "kind": "command_execution", "status": "running", "title": "Run"},
+                    }))
+                    .unwrap(),
+                },
+            ],
+        )
+        .unwrap();
+
+    // Left pending with its TurnCompleted already logged.
+    let completed = start("left-completed");
+    log(
+        "left-completed",
+        &completed,
+        content_completed(TurnStreamChannel::Assistant, "Done.", "app-2", "answer"),
+    );
+    log(
+        "left-completed",
+        &completed,
+        serde_json::from_value(json!({"kind": "turn_completed", "status": "completed"})).unwrap(),
+    );
+
+    let _app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
+    );
+
+    let find = |snapshot: &Value, key: &str, id: &str| {
+        snapshot[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} in {snapshot:#}"))
+    };
+    let settled = service
+        .get_snapshot("left-streaming", Some(project))
+        .unwrap();
+    let turn = find(&settled, "turns", &interrupted);
+    assert_eq!(turn["status"], "failed");
+    assert_eq!(turn["error"], "Spark restarted before this turn finished.");
+    assert!(settled["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|segment| {
+            segment["turn_id"] == interrupted.as_str() && segment["content"] == "Halfway."
+        }));
+    assert_eq!(
+        find(&settled, "segments", "segment-tool-running")["status"],
+        "failed"
+    );
+
+    let settled = service
+        .get_snapshot("left-completed", Some(project))
+        .unwrap();
+    let turn = find(&settled, "turns", &completed);
+    assert_eq!(turn["status"], "complete");
+    assert_eq!(turn["content"], "Done.");
+
+    // Settled once: a later startup changes nothing.
+    let revision = settled["revision"].clone();
+    let _app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
+    );
+    assert_eq!(
+        service
+            .get_snapshot("left-completed", Some(project))
+            .unwrap()["revision"],
+        revision
     );
 }

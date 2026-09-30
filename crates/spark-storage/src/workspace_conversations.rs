@@ -7,7 +7,7 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use spark_common::debug::CODEX_JSONRPC_TRACE_FILE_NAME;
-use spark_common::events::{TurnStreamEvent, TurnStreamEventKind};
+use spark_common::events::TurnStreamEvent;
 use time::OffsetDateTime;
 
 use crate::error::{Result, StorageError};
@@ -538,129 +538,6 @@ impl ConversationRepository {
     }
 
     pub fn read_snapshot(
-        &self,
-        conversation_id: &str,
-        project_path: Option<&str>,
-    ) -> Result<Option<Value>> {
-        let Some(project_paths) =
-            self.project_paths_for_conversation(conversation_id, project_path)?
-        else {
-            return Ok(None);
-        };
-        let record_paths = crate::conversation::ConversationRecordPaths::new(
-            project_paths.conversations_dir.join(conversation_id),
-        );
-        if !record_paths.conversation_json().exists() {
-            return Ok(None);
-        }
-        let Some(mut record) = crate::conversation::read_record(&record_paths)? else {
-            return Ok(None);
-        };
-        let activity = crate::ActivityRepository::new(record_paths.root());
-        let mut snapshot = crate::conversation::snapshot_from_record(&record);
-        // Replay the immutable provider authority on every reopen. Stable ids
-        // and equality checks make current projections mutation-free while
-        // allowing older malformed terminal projections to converge.
-        for provider_record in activity.read_events()? {
-            let Some(turn_id) = provider_record.event.get("turn_id").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(event) = provider_record.event.get("event") else {
-                continue;
-            };
-            let Ok(event) = serde_json::from_value::<TurnStreamEvent>(event.clone()) else {
-                continue;
-            };
-            if !matches!(
-                event.kind,
-                TurnStreamEventKind::ContentCompleted
-                    | TurnStreamEventKind::ToolCallCompleted
-                    | TurnStreamEventKind::ToolCallFailed
-                    | TurnStreamEventKind::ContextCompactionCompleted
-                    | TurnStreamEventKind::Error
-                    | TurnStreamEventKind::TurnCompleted
-            ) {
-                continue;
-            }
-            if event.kind == TurnStreamEventKind::TurnCompleted {
-                let successful = !matches!(
-                    event.status.as_deref(),
-                    Some("failed" | "canceled" | "cancelled")
-                ) && snapshot
-                    .get("turns")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
-                    .and_then(|turn| turn.get("status"))
-                    .and_then(Value::as_str)
-                    != Some("failed");
-                let corrected = spark_common::segments::finalize_turn_segments(
-                    &mut snapshot,
-                    turn_id,
-                    successful,
-                    &provider_record.committed_at,
-                );
-                if !corrected.is_empty() {
-                    let mutations = corrected
-                        .into_iter()
-                        .map(|segment| {
-                            serde_json::from_value(segment)
-                                .map(|segment| crate::conversation::ConversationMutation::RecoveredSegmentUpserted {
-                                    segment,
-                                    source_event_sequence: provider_record.sequence,
-                                })
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .map_err(|source| StorageError::JsonRead {
-                            path: activity.transcript_path(),
-                            source,
-                        })?;
-                    let commit = self.commit_conversation(
-                        conversation_id,
-                        &record.meta.project_path,
-                        record.meta.revision,
-                        mutations,
-                    )?;
-                    record = commit.record;
-                    snapshot = commit.snapshot;
-                }
-            }
-            let Some(segment) = spark_common::segments::materialize_segment_for_event(
-                &mut snapshot,
-                turn_id,
-                &event,
-                &provider_record.committed_at,
-                Some(provider_record.sequence),
-            ) else {
-                continue;
-            };
-            let segment: crate::conversation::TranscriptSegment =
-                serde_json::from_value(segment).map_err(|source| StorageError::JsonRead {
-                    path: activity.transcript_path(),
-                    source,
-                })?;
-            if record.transcript.find_segment(&segment.id).is_some() {
-                continue;
-            }
-            let commit = self.commit_conversation(
-                conversation_id,
-                &record.meta.project_path,
-                record.meta.revision,
-                vec![
-                    crate::conversation::ConversationMutation::RecoveredSegmentUpserted {
-                        segment,
-                        source_event_sequence: provider_record.sequence,
-                    },
-                ],
-            )?;
-            record = commit.record;
-            snapshot = commit.snapshot;
-        }
-        Ok(Some(snapshot))
-    }
-
-    pub(crate) fn read_snapshot_without_recovery(
         &self,
         conversation_id: &str,
         project_path: Option<&str>,

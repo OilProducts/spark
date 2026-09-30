@@ -71,6 +71,8 @@ export type NormalizedConversationRecord = {
 export type ProjectConversationCacheState = {
     conversationsById: Record<string, NormalizedConversationRecord>
     summariesByProjectPath: Record<string, ConversationSummaryResponse[]>
+    // Last applied live update's stream_sequence, by turn id.
+    streamSequenceByTurnId?: Record<string, number>
 }
 
 export type ApplyConversationStreamEventResult =
@@ -681,8 +683,17 @@ export function applyTransientConversationEventToCache(
     current: ProjectConversationCacheState,
     event: ConversationStreamDeltaEventResponse,
 ): ApplyTransientConversationEventResult {
+    // Staleness is per turn: other commits during the turn raise the revision
+    // but don't make its live updates stale.
     const existingRecord = current.conversationsById[event.conversation_id]
-    if (!existingRecord || event.base_revision < existingRecord.revision) {
+    const turnStatus = existingRecord?.turnsById[event.turn_id]?.status
+    const lastSequence = current.streamSequenceByTurnId?.[event.turn_id] ?? 0
+    if (
+        !existingRecord
+        || turnStatus === 'complete'
+        || turnStatus === 'failed'
+        || event.stream_sequence <= lastSequence
+    ) {
         return { status: 'dropped', cache: current }
     }
     let mergedRecord: NormalizedConversationRecord = existingRecord
@@ -759,6 +770,10 @@ export function applyTransientConversationEventToCache(
             conversationsById: {
                 ...current.conversationsById,
                 [event.conversation_id]: mergedRecord,
+            },
+            streamSequenceByTurnId: {
+                ...current.streamSequenceByTurnId,
+                [event.turn_id]: event.stream_sequence,
             },
         },
     }

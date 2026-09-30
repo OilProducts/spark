@@ -774,10 +774,24 @@ describe('applyTransientConversationEventToCache', () => {
     ...overrides,
   })
 
-  const seededCache = () => applyConversationSnapshotToCache(
+  const seededCache = (turnStatus: ConversationTurnResponse['status'] = 'streaming') => applyConversationSnapshotToCache(
     EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
     '/tmp/project-contract-behavior',
-    buildSnapshot({ revision: 3 }),
+    buildSnapshot({
+      revision: 3,
+      turns: [
+        {
+          id: 'turn-user',
+          role: 'user',
+          content: 'Draft a plan.',
+          timestamp: '2026-03-06T15:00:00Z',
+          kind: 'message',
+          status: 'complete',
+          artifact_id: null,
+        },
+        buildTurn({ status: turnStatus }),
+      ],
+    }),
   ).cache
 
   it('applies segment deltas to the timeline without advancing the committed revision', () => {
@@ -811,12 +825,49 @@ describe('applyTransientConversationEventToCache', () => {
     expect(result.record.turnsById['turn-assistant']?.status).toBe('streaming')
   })
 
-  it('drops deltas whose base revision is behind the committed record', () => {
-    const cache = seededCache()
-    const result = applyTransientConversationEventToCache(cache, buildDelta({ base_revision: 2 }))
+  it('applies deltas after an unrelated commit raised the conversation revision', () => {
+    const titled = applyConversationSnapshotToCache(
+      seededCache(),
+      '/tmp/project-contract-behavior',
+      buildSnapshot({
+        revision: 5,
+        title: 'Stored title',
+        turns: [buildTurn({ status: 'streaming' })],
+      }),
+    )
+    const result = applyTransientConversationEventToCache(titled.cache, buildDelta({ base_revision: 3 }))
 
-    expect(result.status).toBe('dropped')
-    expect(result.cache).toBe(cache)
+    expect(result.status).toBe('applied')
+    if (result.status !== 'applied') {
+      return
+    }
+    expect(result.record.revision).toBe(5)
+    expect(result.record.segmentsById['segment-assistant']?.content).toBe('Partial stream')
+  })
+
+  it('drops late deltas for a turn that is already complete or failed', () => {
+    for (const status of ['complete', 'failed'] as const) {
+      const cache = seededCache(status)
+      const result = applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 99 }))
+
+      expect(result.status).toBe('dropped')
+      expect(result.cache).toBe(cache)
+    }
+  })
+
+  it('drops deltas whose stream sequence is not newer than the last applied for the turn', () => {
+    const first = applyTransientConversationEventToCache(seededCache(), buildDelta({ stream_sequence: 2 }))
+    expect(first.status).toBe('applied')
+    for (const stream_sequence of [1, 2]) {
+      const result = applyTransientConversationEventToCache(first.cache, buildDelta({
+        stream_sequence,
+        segment: buildSegment({ status: 'streaming', completed_at: null, content: 'Older' }),
+      }))
+      expect(result.status).toBe('dropped')
+      expect(result.cache).toBe(first.cache)
+    }
+    const newer = applyTransientConversationEventToCache(first.cache, buildDelta({ stream_sequence: 3 }))
+    expect(newer.status).toBe('applied')
   })
 
   it('drops deltas for unknown conversations instead of buffering them', () => {

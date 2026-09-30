@@ -145,6 +145,9 @@ fn build_app_with_live_hub(
             service = service.with_run_event_observer(observer);
         }
         let _ = service.recover_interrupted_runs();
+        // Likewise every chat turn the previous process left in flight.
+        let _ = spark_workspace::WorkspaceConversationService::new((*state.settings).clone())
+            .settle_orphaned_turns();
         let live_hub = state.live_hub.clone();
         spark_workspace::missions::install_runtime(
             &state.settings,
