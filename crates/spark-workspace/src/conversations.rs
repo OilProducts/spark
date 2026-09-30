@@ -4281,44 +4281,60 @@ impl LiveConversationTurnState {
             }
             _ => self.emit_materialized_segment(&event, &provenance, &mut emitted_payloads),
         }
-        if event.kind == TurnStreamEventKind::RequestUserInputRequested {
-            // Pending user input must survive a restart, so everything the
-            // turn has streamed so far commits now; other stream updates stay
-            // transient until turn completion.
-            self.pending_payloads
-                .extend(emitted_payloads.iter().cloned());
-            let committed =
-                mutations_from_emitted_payloads(&self.pending_payloads).and_then(|mutations| {
-                    if mutations.is_empty() {
-                        return Ok(None);
-                    }
-                    commit_conversation_mutations(
-                        &self.repository,
-                        &self.conversation_id,
-                        &self.project_path,
-                        self.base_revision,
-                        mutations,
-                    )
-                    .map(Some)
-                });
-            if let Ok(Some(commit)) = committed {
-                self.snapshot = commit.snapshot;
-                self.base_revision = commit.revision;
-                self.pending_payloads.clear();
-                for payload in commit.journal_payloads {
-                    (self.progress)(payload);
-                }
-            }
-            return Ok(());
-        }
         self.pending_payloads
             .extend(emitted_payloads.iter().cloned());
+        // The running turn is its conversation's only writer, so it commits
+        // each finished segment itself: a client opening the conversation
+        // mid-turn sees everything done so far, and a crash loses at most the
+        // segment in progress. Pending user input must survive a restart too.
+        if matches!(
+            event.kind,
+            TurnStreamEventKind::ContentCompleted
+                | TurnStreamEventKind::ToolCallCompleted
+                | TurnStreamEventKind::ToolCallFailed
+                | TurnStreamEventKind::ContextCompactionCompleted
+                | TurnStreamEventKind::RequestUserInputRequested
+        ) && self.commit_pending()
+        {
+            return Ok(());
+        }
         for payload in emitted_payloads {
             if let Some(delta) = self.transient_wire_payload(&payload) {
                 (self.progress)(delta);
             }
         }
         Ok(())
+    }
+
+    /// Commits the working view's pending upserts and publishes them as
+    /// durable journal events. Returns false when there was nothing to commit
+    /// or the commit failed; the upserts then stay pending for the turn's
+    /// final commit.
+    fn commit_pending(&mut self) -> bool {
+        let committed =
+            mutations_from_emitted_payloads(&self.pending_payloads).and_then(|mutations| {
+                if mutations.is_empty() {
+                    return Ok(None);
+                }
+                commit_conversation_mutations(
+                    &self.repository,
+                    &self.conversation_id,
+                    &self.project_path,
+                    self.base_revision,
+                    mutations,
+                )
+                .map(Some)
+            });
+        let Ok(Some(commit)) = committed else {
+            return false;
+        };
+        self.snapshot = commit.snapshot;
+        self.base_revision = commit.revision;
+        self.pending_payloads.clear();
+        for payload in commit.journal_payloads {
+            (self.progress)(payload);
+        }
+        true
     }
 
     /// Convert a working-view upsert into a transient stream delta. Deltas

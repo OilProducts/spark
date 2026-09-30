@@ -874,8 +874,11 @@ async fn live_plan_route_promotes_authoritative_claude_result_in_place() {
     let mut promoted = None;
     for _ in 0..20 {
         let envelope = sse_data_json(&next_sse_chunk(&mut live_stream).await);
-        if envelope["type"] == "conversation.stream_delta"
-            && envelope["payload"]["delta_kind"] == "segment_delta"
+        // A finished segment arrives committed; a transient delta would also do.
+        let carries_segment = envelope["type"] == "conversation.segment_upsert"
+            || (envelope["type"] == "conversation.stream_delta"
+                && envelope["payload"]["delta_kind"] == "segment_delta");
+        if carries_segment
             && envelope["payload"]["segment"]["source"]["item_id"] == "block-2"
             && envelope["payload"]["segment"]["phase"] == "final_answer"
         {
@@ -1195,7 +1198,8 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         if envelope["type"] != "conversation.stream_delta" {
             continue;
         }
-        assert_eq!(envelope["payload"]["base_revision"], started_revision);
+        // The turn's own commits of finished segments move its base forward.
+        assert!(envelope["payload"]["base_revision"].as_i64().expect("base") >= started_revision);
         last_sequence = envelope["payload"]["stream_sequence"]
             .as_i64()
             .expect("sequence");
@@ -1215,14 +1219,20 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         "/workspace/api/conversations/{conversation_id}?project_path={}",
         url_encode(&project)
     );
+    let mut read_revision = None;
     for _ in 0..2 {
         let snapshot = json_body(request(app.clone(), "GET", &snapshot_uri, None).await).await;
-        assert_eq!(snapshot["revision"], started_revision);
-        assert!(!snapshot["segments"]
+        // Reads leave the revision where the turn's own commits put it...
+        let revision = snapshot["revision"].as_i64().expect("revision");
+        assert_eq!(*read_revision.get_or_insert(revision), revision);
+        // ...and show what the turn has finished so far.
+        assert!(snapshot["segments"]
             .as_array()
             .expect("segments")
             .iter()
-            .any(|segment| segment["turn_id"] == turn_id.as_str()));
+            .any(|segment| segment["turn_id"] == turn_id.as_str()
+                && segment["content"] == "Looking around."
+                && segment["status"] == "complete"));
         let threads = request(
             app.clone(),
             "GET",
