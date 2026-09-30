@@ -116,7 +116,7 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
     task = mission({ status: 'needs_you', conversation_id: 'task-1', started_at: 't', fields: { ...fields, description: 'Ship search' }, question,
         runs: [{ run_id: 'run-build', flow_name: 'work/build.yaml', summary: 'Build', launched_at: 't', status: 'waiting' }] })
     snapshot = conversation([
-        turn('u1', 'user', 'Objective:\nShip search\n\nBegin work on this mission.'),
+        turn('u1', 'user', 'Begin work on this mission.'),
         turn('a1', 'assistant', 'Launched the build.'),
         turn('u2', 'user', 'Run run-build (work/build.yaml, "Build") ended completed.\n\nUser: Prefer small diffs'),
         turn('u3', 'user', `Run question: ${JSON.stringify(question)}`),

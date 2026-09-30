@@ -56,7 +56,7 @@ const RESULT = /^Run (\S+) \(([^,]*), ("(?:[^"\\]|\\.)*")\) (?:ended (\w*)|is wa
 /** Reads the events a mission's user turn carries: its start, run results, run questions, and your replies. */
 export function parseTurn(content: string): TurnEvent[] {
     return content.split(EVENT_START).map((chunk): TurnEvent => {
-        if (chunk.startsWith('Objective:')) return { kind: 'start' }
+        if (chunk === 'Begin work on this mission.') return { kind: 'start' }
         if (chunk.startsWith('User: ')) return { kind: 'reply', text: chunk.slice(6) }
         if (chunk.startsWith('Run question: ')) {
             try {
