@@ -47,7 +47,7 @@ nodes:
       kind: tool
       command: |
         set -eu
-        if [ -n "$(git status --porcelain)" ]; then
+        if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
           echo "target checkout has uncommitted changes; commit or stash before integrating" >&2
           exit 1
         fi
@@ -132,7 +132,7 @@ nodes:
       kind: tool
       command: |
         set -eu
-        if [ -n "$(git status --porcelain)" ]; then
+        if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
           echo "target checkout became dirty during integration" >&2
           exit 1
         fi
