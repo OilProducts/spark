@@ -578,6 +578,25 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
+    let answer_output = AgentTurnOutput {
+        raw_log_lines: vec![AgentRawLogLine {
+            direction: "incoming".to_string(),
+            line: "{\"event\":\"http-live-answer\"}".to_string(),
+        }],
+        events: vec![
+            content_delta("Answered ", "app-turn-live-answer", "final-answer"),
+            content_delta("over live SSE.", "app-turn-live-answer", "final-answer"),
+            token_usage(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
+        ],
+        final_assistant_text: Some("Answered over live SSE.".to_string()),
+        token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
+        ..AgentTurnOutput::default()
+    };
+    // Built first: startup settles turns left in flight, pending questions included.
+    let app = build_app_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(StaticAgentTurnBackend::from_output(answer_output)),
+    );
     let service = WorkspaceConversationService::new(settings.clone());
     let (prepared, _) = service
         .start_turn(
@@ -604,24 +623,6 @@ async fn live_route_streams_backend_ingested_revision_range_for_request_user_inp
     let before_revision = pending_snapshot["revision"]
         .as_i64()
         .expect("pending revision");
-    let answer_output = AgentTurnOutput {
-        raw_log_lines: vec![AgentRawLogLine {
-            direction: "incoming".to_string(),
-            line: "{\"event\":\"http-live-answer\"}".to_string(),
-        }],
-        events: vec![
-            content_delta("Answered ", "app-turn-live-answer", "final-answer"),
-            content_delta("over live SSE.", "app-turn-live-answer", "final-answer"),
-            token_usage(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
-        ],
-        final_assistant_text: Some("Answered over live SSE.".to_string()),
-        token_usage: Some(json!({"total": {"inputTokens": 5, "outputTokens": 3}})),
-        ..AgentTurnOutput::default()
-    };
-    let app = build_app_with_agent_turn_backend(
-        settings.clone(),
-        Arc::new(StaticAgentTurnBackend::from_output(answer_output)),
-    );
 
     let live = request(
         app.clone(),

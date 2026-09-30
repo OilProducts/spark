@@ -1644,10 +1644,6 @@ impl WorkspaceConversationService {
         let Some(turn_id) = active_assistant_turn_id(&snapshot) else {
             return Ok(());
         };
-        // A turn waiting on the user's answer survives restarts: answering resumes it.
-        if has_pending_request_user_input_segment(&snapshot, &turn_id) {
-            return Ok(());
-        }
         prepare_snapshot_core_defaults(&mut snapshot, conversation_id, project_path);
         let base_revision = snapshot_revision(&snapshot);
         let mut emitted_payloads = Vec::new();
@@ -1701,6 +1697,39 @@ impl WorkspaceConversationService {
                 emitted_payloads.push(build_segment_upsert_payload(&snapshot, &segment));
             }
         }
+        // Provider question requests live in process memory, so a question
+        // left pending by a previous process can never be answered.
+        let now = iso_now();
+        let pending_requests: Vec<(String, Map<String, Value>)> = snapshot
+            .get("segments")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|segment| {
+                segment.get("turn_id").and_then(Value::as_str) == Some(turn_id.as_str())
+                    && segment.get("kind").and_then(Value::as_str) == Some("request_user_input")
+                    && segment.get("status").and_then(Value::as_str) == Some("pending")
+            })
+            .filter_map(|segment| {
+                Some((
+                    segment.get("id")?.as_str()?.to_string(),
+                    segment
+                        .get("request_user_input")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default(),
+                ))
+            })
+            .collect();
+        for (segment_id, request_record) in pending_requests {
+            expire_request_user_input_answer_in_snapshot(
+                &mut snapshot,
+                &segment_id,
+                request_record,
+                &now,
+                &mut emitted_payloads,
+            );
+        }
         if turn_completed {
             finalize_agent_turn_output(
                 &mut snapshot,
@@ -1712,7 +1741,6 @@ impl WorkspaceConversationService {
                 &mut emitted_payloads,
             );
         } else {
-            let now = iso_now();
             for segment in
                 spark_common::segments::finalize_turn_segments(&mut snapshot, &turn_id, false, &now)
             {

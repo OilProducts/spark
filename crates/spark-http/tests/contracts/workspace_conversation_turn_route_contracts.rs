@@ -769,6 +769,17 @@ async fn conversation_turn_route_returns_workspace_error_for_backend_trait_failu
 async fn request_user_input_answer_route_continues_pending_requests() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    // Built first: startup settles turns left in flight, pending questions included.
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
+        Vec::new(),
+        vec![AgentTurnOutput {
+            final_assistant_text: Some("Route answer after input.".to_string()),
+            token_usage: Some(json!({"total": {"inputTokens": 4, "outputTokens": 2}})),
+            ..AgentTurnOutput::default()
+        }],
+    );
+    let answer_requests = backend.answer_requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
     let service = WorkspaceConversationService::new(settings.clone());
     let (prepared, _) = service
         .start_turn(
@@ -797,16 +808,6 @@ async fn request_user_input_answer_route_continues_pending_requests() {
             },
         )
         .expect("pending request");
-    let backend = ScriptedAgentTurnBackend::with_answer_outputs(
-        Vec::new(),
-        vec![AgentTurnOutput {
-            final_assistant_text: Some("Route answer after input.".to_string()),
-            token_usage: Some(json!({"total": {"inputTokens": 4, "outputTokens": 2}})),
-            ..AgentTurnOutput::default()
-        }],
-    );
-    let answer_requests = backend.answer_requests();
-    let app = build_app_with_agent_turn_backend(settings, Arc::new(backend));
 
     let answered = request_json(
         app.clone(),
@@ -895,6 +896,9 @@ async fn request_user_input_answer_route_continues_pending_requests() {
 async fn request_user_input_answer_route_returns_backend_errors_without_expiring_request() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::with_answer_outputs(Vec::new(), Vec::new());
+    let answer_requests = backend.answer_requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
     let service = WorkspaceConversationService::new(settings.clone());
     let (prepared, _) = service
         .start_turn(
@@ -918,9 +922,6 @@ async fn request_user_input_answer_route_returns_backend_errors_without_expiring
             },
         )
         .expect("pending request");
-    let backend = ScriptedAgentTurnBackend::with_answer_outputs(Vec::new(), Vec::new());
-    let answer_requests = backend.answer_requests();
-    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
 
     let response = request_json(
         app,
@@ -1535,6 +1536,44 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         serde_json::from_value(json!({"kind": "turn_completed", "status": "completed"})).unwrap(),
     );
 
+    // Left streaming on a question: its provider request died with the process.
+    let asking = start("left-asking");
+    let mut asked = content_completed(TurnStreamChannel::Assistant, "Asking.", "app-3", "note");
+    asked.phase = Some("commentary".into());
+    log("left-asking", &asking, asked);
+    let snapshot = service.get_snapshot("left-asking", Some(project)).unwrap();
+    let mut asking_turn = snapshot["turns"][1].clone();
+    asking_turn["status"] = json!("streaming");
+    repository
+        .commit_conversation(
+            "left-asking",
+            project,
+            snapshot["revision"].as_i64().unwrap(),
+            vec![
+                spark_storage::conversation::ConversationMutation::TurnUpserted {
+                    turn: serde_json::from_value(asking_turn).unwrap(),
+                },
+                spark_storage::conversation::ConversationMutation::SegmentUpserted {
+                    segment: serde_json::from_value(json!({
+                        "id": "segment-question",
+                        "turn_id": asking,
+                        "order": 2,
+                        "kind": "request_user_input",
+                        "role": "system",
+                        "status": "pending",
+                        "timestamp": "2026-09-29T00:00:00Z",
+                        "request_user_input": {
+                            "request_id": "request-1",
+                            "status": "pending",
+                            "questions": [{"id": "q", "header": "Q", "question": "Which?", "options": []}],
+                        },
+                    }))
+                    .unwrap(),
+                },
+            ],
+        )
+        .unwrap();
+
     let _app = build_app_with_agent_turn_backend(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
@@ -1574,8 +1613,20 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
     assert_eq!(turn["status"], "complete");
     assert_eq!(turn["content"], "Done.");
 
+    let asked = service.get_snapshot("left-asking", Some(project)).unwrap();
+    assert_eq!(find(&asked, "turns", &asking)["status"], "failed");
+    let question = find(&asked, "segments", "segment-question");
+    assert_eq!(question["status"], "failed");
+    assert_eq!(question["request_user_input"]["status"], "expired");
+    assert!(asked["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|segment| segment["turn_id"] == asking.as_str() && segment["content"] == "Asking."));
+
     // Settled once: a later startup changes nothing.
     let revision = settled["revision"].clone();
+    let asked_revision = asked["revision"].clone();
     let _app = build_app_with_agent_turn_backend(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
@@ -1585,5 +1636,9 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
             .get_snapshot("left-completed", Some(project))
             .unwrap()["revision"],
         revision
+    );
+    assert_eq!(
+        service.get_snapshot("left-asking", Some(project)).unwrap()["revision"],
+        asked_revision
     );
 }

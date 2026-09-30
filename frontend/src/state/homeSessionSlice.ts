@@ -170,6 +170,7 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
 
             return {
                 homeConversationCache: {
+                    ...state.homeConversationCache,
                     conversationsById: nextConversationsById,
                     summariesByProjectPath: nextSummariesByProjectPath,
                 },
@@ -236,6 +237,7 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
 
             return {
                 homeConversationCache: {
+                    ...state.homeConversationCache,
                     conversationsById: nextConversationsById,
                     summariesByProjectPath: nextSummariesByProjectPath,
                 },

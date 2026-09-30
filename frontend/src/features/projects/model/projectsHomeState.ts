@@ -516,6 +516,7 @@ export function applyConversationSnapshotToCache(
         applied: true,
         record,
         cache: {
+            ...current,
             conversationsById: {
                 ...current.conversationsById,
                 [scopedSnapshot.conversation_id]: record,
@@ -646,6 +647,7 @@ export function applyConversationStreamEventToCache(
         status: 'applied',
         record: mergedRecord,
         cache: {
+            ...current,
             conversationsById: {
                 ...current.conversationsById,
                 [event.conversation_id]: mergedRecord,
@@ -806,6 +808,7 @@ export function removeProjectFromCache(
     })
 
     return {
+        ...current,
         conversationsById: nextConversationsById,
         summariesByProjectPath: nextSummariesByProjectPath,
     }

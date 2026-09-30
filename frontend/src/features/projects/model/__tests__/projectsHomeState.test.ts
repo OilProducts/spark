@@ -870,6 +870,39 @@ describe('applyTransientConversationEventToCache', () => {
     expect(newer.status).toBe('applied')
   })
 
+  it('keeps per-turn stream sequences across snapshot, durable event and project removal updates', () => {
+    const projectPath = '/tmp/project-contract-behavior'
+    const first = applyTransientConversationEventToCache(seededCache(), buildDelta({ stream_sequence: 10 }))
+    expect(first.status).toBe('applied')
+    const unrelatedUpdates = [
+      (cache: typeof first.cache) => applyConversationSnapshotToCache(cache, projectPath, buildSnapshot({
+        revision: 5,
+        title: 'Stored title',
+        turns: [buildTurn({ status: 'streaming' })],
+      })).cache,
+      (cache: typeof first.cache) => applyConversationStreamEventToCache(cache, projectPath, {
+        type: 'turn_upsert',
+        revision: 5,
+        conversation_id: 'conversation-1',
+        project_path: projectPath,
+        title: 'Stored title',
+        updated_at: '2026-03-06T15:02:00Z',
+        turn: buildTurn({ id: 'turn-user', role: 'user', content: 'Draft a plan.' }),
+      }).cache,
+      (cache: typeof first.cache) => removeProjectFromCache(cache, '/tmp/other-project'),
+    ]
+    for (const update of unrelatedUpdates) {
+      const cache = update(first.cache)
+      const older = applyTransientConversationEventToCache(cache, buildDelta({
+        stream_sequence: 9,
+        segment: buildSegment({ status: 'streaming', completed_at: null, content: 'Older' }),
+      }))
+      expect(older.status).toBe('dropped')
+      const newer = applyTransientConversationEventToCache(cache, buildDelta({ stream_sequence: 11 }))
+      expect(newer.status).toBe('applied')
+    }
+  })
+
   it('drops deltas for unknown conversations instead of buffering them', () => {
     const result = applyTransientConversationEventToCache(
       EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
