@@ -1574,6 +1574,17 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         )
         .unwrap();
 
+    // Left pending with only commentary before its logged TurnCompleted.
+    let commentary_only = start("left-commentary-only");
+    let mut note = content_completed(TurnStreamChannel::Assistant, "Noted.", "app-4", "note");
+    note.phase = Some("commentary".into());
+    log("left-commentary-only", &commentary_only, note);
+    log(
+        "left-commentary-only",
+        &commentary_only,
+        serde_json::from_value(json!({"kind": "turn_completed", "status": "completed"})).unwrap(),
+    );
+
     let _app = build_app_with_agent_turn_backend(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
@@ -1624,9 +1635,21 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         .iter()
         .any(|segment| segment["turn_id"] == asking.as_str() && segment["content"] == "Asking."));
 
+    let noted = service
+        .get_snapshot("left-commentary-only", Some(project))
+        .unwrap();
+    assert_eq!(
+        find(&noted, "turns", &commentary_only)["status"],
+        "complete"
+    );
+    assert!(noted["segments"].as_array().unwrap().iter().any(|segment| {
+        segment["turn_id"] == commentary_only.as_str() && segment["content"] == "Noted."
+    }));
+
     // Settled once: a later startup changes nothing.
     let revision = settled["revision"].clone();
     let asked_revision = asked["revision"].clone();
+    let noted_revision = noted["revision"].clone();
     let _app = build_app_with_agent_turn_backend(
         settings.clone(),
         Arc::new(ScriptedAgentTurnBackend::new(Vec::new())),
@@ -1640,5 +1663,11 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
     assert_eq!(
         service.get_snapshot("left-asking", Some(project)).unwrap()["revision"],
         asked_revision
+    );
+    assert_eq!(
+        service
+            .get_snapshot("left-commentary-only", Some(project))
+            .unwrap()["revision"],
+        noted_revision
     );
 }

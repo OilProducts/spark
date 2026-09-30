@@ -1730,7 +1730,17 @@ impl WorkspaceConversationService {
                 &mut emitted_payloads,
             );
         }
-        if turn_completed {
+        let completed_without_answer = turn_completed
+            && finalized_assistant_segment(&snapshot, &turn_id).is_none()
+            && finalized_plan_segment(&snapshot, &turn_id).is_none()
+            && failed_assistant_state(&snapshot, &turn_id).is_none();
+        if completed_without_answer {
+            // The logged TurnCompleted is authoritative even without a final answer.
+            if let Some(turn) = find_turn_mut(&mut snapshot, &turn_id) {
+                set_string_value(turn, "status", "complete");
+            }
+            emit_assistant_turn_upsert(&snapshot, &turn_id, &mut emitted_payloads);
+        } else if turn_completed {
             finalize_agent_turn_output(
                 &mut snapshot,
                 &turn_id,

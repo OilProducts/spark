@@ -478,6 +478,33 @@ function isConversationRecordAtLeastAsFreshAsSnapshot(
     return record.revision >= snapshot.revision
 }
 
+// A mid-turn commit (title, artifacts) publishes a snapshot without a running
+// turn's uncommitted live segments. Keep them until the turn's terminal commit,
+// which is authoritative.
+// ponytail: a segment dropped mid-turn by a snapshot lingers until that commit.
+function withLiveTurnContent(
+    snapshot: ConversationSnapshotResponse,
+    record: NormalizedConversationRecord,
+): ConversationSnapshotResponse {
+    const activeTurnIds = snapshot.turns
+        .filter((turn) => turn.status === 'pending' || turn.status === 'streaming')
+        .map((turn) => turn.id)
+    if (activeTurnIds.length === 0) {
+        return snapshot
+    }
+    const snapshotSegmentIds = new Set(snapshot.segments.map((segment) => segment.id))
+    const liveSegments = activeTurnIds.flatMap((turnId) => (record.orderedSegmentIdsByTurnId[turnId] || [])
+        .map((segmentId) => record.segmentsById[segmentId])
+        .filter((segment) => segment && !snapshotSegmentIds.has(segment.id)))
+    return {
+        ...snapshot,
+        turns: snapshot.turns.map((turn) => (activeTurnIds.includes(turn.id)
+            ? sanitizeStreamingTurnUpsert(record.turnsById[turn.id] || null, turn)
+            : turn)),
+        segments: [...snapshot.segments, ...liveSegments],
+    }
+}
+
 export function setProjectConversationSummaryList(
     current: ProjectConversationCacheState,
     projectPath: string,
@@ -510,7 +537,9 @@ export function applyConversationSnapshotToCache(
             cache: current,
         }
     }
-    const record = hydrateConversationRecordFromSnapshot(scopedSnapshot)
+    const record = hydrateConversationRecordFromSnapshot(
+        existingRecord ? withLiveTurnContent(scopedSnapshot, existingRecord) : scopedSnapshot,
+    )
 
     return {
         applied: true,

@@ -158,6 +158,8 @@ fn run_default(
                         }),
                     );
                     awaiting_request_user_input_response = true;
+                } else if mode == "gated" {
+                    emit_gated_turn(&mut stdout);
                 } else if tool_calls {
                     emit_tool_notifications(&mut stdout);
                     emit_turn_completion(
@@ -214,6 +216,44 @@ fn emit_tool_notifications(stdout: &mut impl Write) {
         let message = serde_json::from_str::<Value>(line).expect("tool notification json");
         write_json(stdout, message);
     }
+}
+
+/// A long turn that streams commentary and a partial answer, then waits for
+/// the `continue` and `finish` files in SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR.
+fn emit_gated_turn(stdout: &mut impl Write) {
+    let gate_dir = PathBuf::from(
+        env::var_os("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR")
+            .expect("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR"),
+    );
+    let wait_for = |name: &str| {
+        while !gate_dir.join(name).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    let delta = |item_id: &str, text: &str| json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": item_id, "delta": text}});
+    let completed = |item_id: &str, text: &str, phase: &str| json!({"method": "item/completed", "params": {"threadId": "thread-test", "turnId": "turn-test", "item": {"type": "AgentMessage", "id": item_id, "content": [{"type": "Text", "text": text}], "phase": phase}}});
+    write_json(stdout, delta("msg-commentary", "Planning the work."));
+    write_json(
+        stdout,
+        completed("msg-commentary", "Planning the work.", "commentary"),
+    );
+    write_json(stdout, delta("msg-answer", "Half done."));
+    wait_for("continue");
+    write_json(stdout, delta("msg-answer", " Still going."));
+    wait_for("finish");
+    write_json(stdout, delta("msg-answer", " All done."));
+    write_json(
+        stdout,
+        completed(
+            "msg-answer",
+            "Half done. Still going. All done.",
+            "final_answer",
+        ),
+    );
+    write_json(
+        stdout,
+        json!({"method": "turn/completed", "params": {"threadId": "thread-test", "turn": {"id": "turn-test", "status": "completed"}}}),
+    );
 }
 
 fn run_steerable(log_path: Option<PathBuf>) {

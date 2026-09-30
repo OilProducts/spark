@@ -903,6 +903,58 @@ describe('applyTransientConversationEventToCache', () => {
     }
   })
 
+  it('keeps a running turn\'s live segments through a mid-turn snapshot until its terminal commit', () => {
+    const projectPath = '/tmp/project-contract-behavior'
+    const commentary = buildSegment({
+      id: 'segment-commentary',
+      order: 1,
+      status: 'complete',
+      content: 'Looking at the repo.',
+    })
+    const answer = buildSegment({
+      id: 'segment-answer',
+      order: 2,
+      status: 'streaming',
+      completed_at: null,
+      content: 'Partial answer',
+    })
+    const running = applyConversationSnapshotToCache(EMPTY_PROJECT_CONVERSATION_CACHE_STATE, projectPath, buildSnapshot({
+      revision: 3,
+      turns: [buildTurn({ status: 'streaming', content: '' })],
+      segments: [],
+    })).cache
+    const withCommentary = applyTransientConversationEventToCache(running, buildDelta({ segment: commentary }))
+    expect(withCommentary.status).toBe('applied')
+    const titled = applyConversationSnapshotToCache(withCommentary.cache, projectPath, buildSnapshot({
+      revision: 4,
+      title: 'Stored title',
+      turns: [buildTurn({ status: 'streaming', content: '' })],
+      segments: [],
+    }))
+    expect(titled.applied).toBe(true)
+    expect(titled.cache.conversationsById['conversation-1']?.title).toBe('Stored title')
+    const withAnswer = applyTransientConversationEventToCache(titled.cache, buildDelta({ stream_sequence: 2, segment: answer }))
+    expect(withAnswer.status).toBe('applied')
+    if (withAnswer.status !== 'applied') {
+      return
+    }
+    expect(withAnswer.record.orderedSegmentIdsByTurnId['turn-assistant']).toEqual(['segment-commentary', 'segment-answer'])
+    expect(withAnswer.record.segmentsById['segment-commentary']?.content).toBe('Looking at the repo.')
+
+    const finalAnswer = buildSegment({ id: 'segment-final', order: 2, content: 'Done.' })
+    const completed = applyConversationSnapshotToCache(withAnswer.cache, projectPath, buildSnapshot({
+      revision: 5,
+      title: 'Stored title',
+      turns: [buildTurn({ status: 'complete', content: 'Done.' })],
+      segments: [commentary, finalAnswer],
+    }))
+    const record = completed.cache.conversationsById['conversation-1']
+    expect(record?.orderedSegmentIdsByTurnId['turn-assistant']).toEqual(['segment-commentary', 'segment-final'])
+    expect(record?.segmentsById['segment-answer']).toBeUndefined()
+    const late = applyTransientConversationEventToCache(completed.cache, buildDelta({ stream_sequence: 3, segment: answer }))
+    expect(late.status).toBe('dropped')
+  })
+
   it('drops deltas for unknown conversations instead of buffering them', () => {
     const result = applyTransientConversationEventToCache(
       EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
