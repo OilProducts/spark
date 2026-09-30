@@ -34,7 +34,7 @@ export function RunLink({ runId, children }: { runId: string; children: ReactNod
 function EventLine({ mark, tone = '', at, children }: { mark: string; tone?: string; at: string; children: ReactNode }) {
     return <li data-testid="mission-event" className="flex items-baseline gap-2 py-0.5 text-xs text-muted-foreground">
         <span aria-hidden="true" className={`w-4 shrink-0 text-center ${tone}`}>{mark}</span>
-        <span className="min-w-0 flex-1 break-words">{children}</span>
+        <span className="min-w-0 flex-1 truncate">{children}</span>
         <time dateTime={at} className="shrink-0 tabular-nums">{formatTime(at)}</time>
     </li>
 }
@@ -110,7 +110,7 @@ export function MissionTranscript({ conversation, project, runTitles }: { conver
                         </EventLine>
                     }
                     case 'question': return <EventLine key={index} mark="?" tone={runMarks.waiting.tone} at={at}>
-                        {event.runId ? <RunLink runId={event.runId}>{title(event.runId, flowTitle(event.flowName))}</RunLink> : flowTitle(event.flowName)} asked “{event.prompt}”{event.options.length > 0 && <span className="text-muted-foreground/70"> ({event.options.join(' / ')})</span>}
+                        {event.runId ? <RunLink runId={event.runId}>{title(event.runId, flowTitle(event.flowName))}</RunLink> : flowTitle(event.flowName)} asked “{event.prompt}”
                     </EventLine>
                     default: return <MessageRow key={index} entry={{ ...entry, id: `${entry.id}:${index}`, content: event.text }} enableCopy formatConversationTimestamp={formatTime} />
                 }

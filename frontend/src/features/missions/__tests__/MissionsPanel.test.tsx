@@ -128,7 +128,7 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
     // The objective shows once, in the rail; the thread opens with a quiet start line.
     expect(detail().getAllByText('Ship search')).toHaveLength(1)
     const events = detail().getAllByTestId('mission-event')
-    expect(events.map(event => [event.firstChild?.textContent, event.children[1].textContent])).toEqual([['▸', 'Mission started'], ['✓', 'Build ended completed'], ['?', 'Build asked “Ship the build?” (Ship it / Hold)']])
+    expect(events.map(event => [event.firstChild?.textContent, event.children[1].textContent])).toEqual([['▸', 'Mission started'], ['✓', 'Build ended completed'], ['?', 'Build asked “Ship the build?”']])
     expect(detail().getByText('Prefer small diffs')).toBeInTheDocument()
     const ask = within(detail().getByRole('region', { name: 'Waiting on you' }))
     expect(ask.getByText('Ship the build?')).toBeInTheDocument()

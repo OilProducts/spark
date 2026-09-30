@@ -8,10 +8,10 @@ import type { Mission, RosterEntry } from '../MissionsPanel'
 const TERMINAL = ['completed', 'failed', 'canceled', 'validation_error']
 const closedWords = { done: 'Done', failed: 'Failed', canceled: 'Canceled' } as const
 
-/** Mission timestamps are UTC `YYYY-MM-DD HH:MM:SS.fraction +00:00:00`; other values pass through. */
+/** Mission timestamps are UTC `YYYY-MM-DD H:MM:SS.fraction +00:00:00` (hour unpadded); other values pass through. */
 export function missionTime(value: string | null | undefined): string {
-    const match = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/.exec(value ?? '')
-    return match ? `${match[1]}T${match[2]}Z` : value ?? ''
+    const match = /^(\d{4}-\d{2}-\d{2}) (\d{1,2})(:\d{2}:\d{2})/.exec(value ?? '')
+    return match ? `${match[1]}T${match[2].padStart(2, '0')}${match[3]}Z` : value ?? ''
 }
 
 export const formatMissionDate = (value: string | null | undefined, now = Date.now()) => formatRunDate(missionTime(value), now)

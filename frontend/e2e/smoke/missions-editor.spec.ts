@@ -14,11 +14,11 @@ const mission = (id: string, title: string, status: string, day: number, extra: 
   ...extra,
 })
 const roster = (run_id: string, flow_name: string, summary: string, status: string) => ({ run_id, flow_name, summary, launched_at: at(12), status })
-const initialMissions = (draft: Record<string, unknown> = {}) => [
+const initialMissions = (draft: Record<string, unknown> = {}, gate: Record<string, unknown> = {}) => [
   mission('mission-draft', 'Draft the importer', 'draft', 10, draft),
   mission('mission-running', 'Ship search ranking with a title long enough to wrap onto a second line', 'running', 12, { runs: [roster('run-build', 'software-development/implement-change.yaml', 'Implement ranking', 'running')], playbook: { name: 'bug-report', title: 'Bug report', description: 'Fix a bug.', text: 'Reproduce the defect first.' } }),
-  mission('mission-gate', 'Review the ranking change', 'needs_you', 11, { runs: [roster('run-build', 'software-development/implement-change.yaml', 'Implement ranking', 'completed'), roster('run-review', 'software-development/review-change.yaml', 'Review ranking', 'waiting')], question }),
-  mission('mission-closed', 'Retire the old index', 'closed', 9, { closed: { status: 'done', reason: closingSummary, at: at(9), actor: 'assistant' } }),
+  mission('mission-gate', 'Review the ranking change', 'needs_you', 11, { runs: [roster('run-build', 'software-development/implement-change.yaml', 'Implement ranking', 'completed'), roster('run-review', 'software-development/review-change.yaml', 'Review ranking', 'waiting')], question, ...gate }),
+  mission('mission-closed', 'Retire the old index', 'closed', 9, { closed: { status: 'done', reason: closingSummary, at: '2026-09-09 9:00:00.5 +00:00:00', actor: 'assistant' } }),
   mission('mission-archived', 'Rename the index files', 'closed', 8, { closed: { status: 'failed', reason: 'Gave up', at: at(8), actor: 'assistant' }, fields: { title: 'Rename the index files', description: 'Rename them.', archived: true } }),
 ]
 const run = (run_id: string, title: string, flow_name: string, status: string, token_usage: number) => ({
@@ -37,8 +37,8 @@ const transcript = (id: string) => ({
   ],
 })
 
-async function stubMissions(page: Page, draft: Record<string, unknown> = {}) {
-  const missions = initialMissions(draft)
+async function stubMissions(page: Page, draft: Record<string, unknown> = {}, gate: Record<string, unknown> = {}) {
+  const missions = initialMissions(draft, gate)
   const posts: { url: string; body: unknown }[] = []
   await page.route('**/workspace/api/live/events**', route => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }))
   await stubProjectMetadata(page)
@@ -172,6 +172,33 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
     { revision: 1, fields: { archived: true }, actor: 'human' },
     { revision: 2, fields: { archived: false }, actor: 'human' },
   ])
+})
+
+test('missions event lines stay one line for long titles, errors and questions', async ({ page }) => {
+  const long = 'Rebuild the search index for every project and verify that ranking stays stable across all of them '.repeat(3)
+  const longQuestion = { ...question, prompt: `${long}Ship it?`, options: [{ label: `Ship it now ${long}` }, { label: 'Hold' }] }
+  await stubMissions(page, {}, { question: longQuestion })
+  await page.route('**/workspace/api/conversations/mission-gate?*', route => route.fulfill({ json: { ...transcript('mission-gate'), turns: [
+    turn('u1', 'user', `Run run-build (software-development/implement-change.yaml, "${long}") ended failed: ${long}\n\nstack trace follows.`),
+    turn('u2', 'user', `Run question: ${JSON.stringify(longQuestion)}`),
+  ] } }))
+  await page.route('**/attractor/runs**', route => route.fulfill({ json: { runs: [] } }))
+  await gotoWithRegisteredProject(page, project)
+  await page.getByTestId('nav-mode-missions').click()
+  await page.getByRole('button', { name: 'Review the ranking change' }).click()
+  const detail = page.getByRole('region', { name: 'Mission details' })
+  const events = detail.getByTestId('mission-event')
+  await expect(events).toHaveCount(2)
+  for (const event of await events.all()) {
+    expect((await event.boundingBox())!.height).toBeLessThan(24)
+    await expect(event.getByRole('link')).toHaveAttribute('href', /^#\/runs\/run-/)
+    await expect(event.locator('time')).toBeVisible()
+  }
+  await expect(events.nth(1)).not.toContainText('Ship it now')
+  // The full question and its options stay in the question section.
+  const ask = detail.getByRole('region', { name: 'Waiting on you' })
+  await expect(ask).toContainText(`${long}Ship it?`)
+  await expect(ask.getByRole('button', { name: /^Ship it now/ })).toBeVisible()
 })
 
 test('missions rail stacks below the conversation at a narrow width', async ({ page }) => {
