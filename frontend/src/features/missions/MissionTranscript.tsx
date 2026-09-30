@@ -64,6 +64,7 @@ export function MissionTranscript({ conversation, project, runTitles }: { conver
     const entries = getConversationTimelineEntries(record)
     const launches = getConversationFlowLaunches(record)
     const launchesById = new Map(launches.map(launch => [launch.id, launch]))
+    const firstTurnId = entries.find(entry => entry.kind === 'message' && entry.role === 'user')?.id
     const title = (runId: string | null, fallback: string) => (runId && runTitles.get(runId)) || fallback || runId || 'Run'
     return <>{error && <InlineError>{error}</InlineError>}<ProjectConversationHistory
         activeConversationId={conversationId}
@@ -99,7 +100,7 @@ export function MissionTranscript({ conversation, project, runTitles }: { conver
             // The outcome closes the thread instead.
             if (entry.kind === 'final_separator' && entry.label.startsWith('Closed as ')) return null
             if (entry.kind !== 'message' || entry.role !== 'user') return undefined
-            return <Fragment key={key}>{parseTurn(entry.content).map((event, index) => {
+            return <Fragment key={key}>{parseTurn(entry.content, entry.id === firstTurnId).map((event, index) => {
                 const at = entry.timestamp
                 switch (event.kind) {
                     case 'start': return <EventLine key={index} mark="▸" at={at}>Mission started</EventLine>

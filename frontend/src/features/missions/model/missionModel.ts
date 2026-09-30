@@ -50,13 +50,17 @@ export type TurnEvent =
     | { kind: 'text'; text: string }
 
 // The runtime joins a turn's events with blank lines; split only where the next event starts.
-const EVENT_START = /\n\n(?=Run \S+ \(|Run question: |User: |Trigger fired: |The user updated this mission)/
+const EVENT = /^(?:Run \S+ \(|Run question: |User: |Trigger fired: |The user updated this mission)/
+const EVENT_START = new RegExp(`\n\n(?=${EVENT.source.slice(1)})`)
 const RESULT = /^Run (\S+) \(([^,]*), ("(?:[^"\\]|\\.)*")\) (?:ended (\w*)|is waiting on a recovery decision)(?:: ([\s\S]*))?\.$/
 
-/** Reads the events a mission's user turn carries: its start, run results, run questions, and your replies. */
-export function parseTurn(content: string): TurnEvent[] {
-    return content.split(EVENT_START).map((chunk): TurnEvent => {
-        if (chunk === 'Begin work on this mission.') return { kind: 'start' }
+/**
+ * Reads the events a mission's user turn carries: its start, run results, run questions, and your replies.
+ * The conversation's first turn opens with the start, whatever its wording; older missions repeated the objective there.
+ */
+export function parseTurn(content: string, first = false): TurnEvent[] {
+    return content.split(EVENT_START).map((chunk, index): TurnEvent => {
+        if (first && index === 0 && !EVENT.test(chunk)) return { kind: 'start' }
         if (chunk.startsWith('User: ')) return { kind: 'reply', text: chunk.slice(6) }
         if (chunk.startsWith('Run question: ')) {
             try {

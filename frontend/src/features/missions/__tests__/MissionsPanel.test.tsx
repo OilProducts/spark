@@ -146,6 +146,19 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
     expect(useStore.getState().viewMode).toBe('runs')
 })
 
+it('opens with the start line when the first turn repeats the objective', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't', fields: { ...fields, description: 'Ship search' } })
+    snapshot = conversation([
+        turn('u1', 'user', 'Objective:\nShip search\n\nBegin work on this mission.'),
+        turn('a1', 'assistant', 'On it.'),
+    ])
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    expect(await detail().findByText('On it.')).toBeInTheDocument()
+    expect(detail().getAllByText('Ship search')).toHaveLength(1)
+    expect(detail().getAllByTestId('mission-event').map(event => event.children[1].textContent)).toEqual(['Mission started'])
+})
+
 it('drives close, cancel and archive from the header, and budget in the rail', async () => {
     task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't', fields: { ...fields, budget: { concurrent_runs: 4, total_runs: 25 } } })
     render(<MissionsPanel active />)

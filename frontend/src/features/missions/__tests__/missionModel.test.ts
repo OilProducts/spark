@@ -31,7 +31,11 @@ it('reads stored timestamps whose hour has one digit', () => {
 })
 
 it('reads the start, run results, run questions and replies from user turns', () => {
-    expect(parseTurn('Begin work on this mission.\n\nUser: Keep it small.')).toEqual([{ kind: 'start' }, { kind: 'reply', text: 'Keep it small.' }])
+    expect(parseTurn('Begin work on this mission.\n\nUser: Keep it small.', true)).toEqual([{ kind: 'start' }, { kind: 'reply', text: 'Keep it small.' }])
+    // Older missions opened by repeating the objective; the first turn is the start either way.
+    expect(parseTurn('Objective:\nFix it.\n\nAgreed fix: persist it.\n\nBegin work on this mission.', true)).toEqual([{ kind: 'start' }])
+    expect(parseTurn('User: Go.', true)).toEqual([{ kind: 'reply', text: 'Go.' }])
+    expect(parseTurn('Objective:\nFix it.')).toEqual([{ kind: 'text', text: 'Objective:\nFix it.' }])
     const question = { flow_name: 'Question Child (test)', options: [{ key: 'B', label: 'Blue', value: 'Blue' }, 'Green'], prompt: 'Which color?', question_id: 'q', root_run_id: 'run-root', run_id: 'child' }
     expect(parseTurn([
         'Run run-a (testing/question-parent.yaml, "Test \\"quoted\\" handling") ended completed.',

@@ -29,7 +29,8 @@ const turn = (id: string, role: string, content: string, kind = 'message') => ({
 const transcript = (id: string) => ({
   schema_version: 5, revision: 5, conversation_id: id, project_path: project, segments: [], event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [],
   turns: [
-    turn('u1', 'user', 'Begin work on this mission.'),
+    // Older missions opened by repeating the objective; the start line replaces it either way.
+    turn('u1', 'user', id === 'mission-gate' ? `Objective:\n${longObjective}\n\nBegin work on this mission.` : 'Begin work on this mission.'),
     turn('a1', 'assistant', 'I launched **implement-change** for the ranking work and will report back when it finishes.'),
     turn('u2', 'user', 'Run run-build (software-development/implement-change.yaml, "Implement ranking") ended completed.\n\nUser: Keep the diff small.'),
     ...(id === 'mission-gate' ? [turn('u3', 'user', `Run question: ${JSON.stringify(question)}`), turn('a2', 'assistant', 'The review asks whether to ship. That is your call.')] : []),
