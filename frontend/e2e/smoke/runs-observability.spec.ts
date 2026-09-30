@@ -874,15 +874,11 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
   await expect(page.getByTestId('run-visit-item-context')).toContainText(/\d+ keys?/)
 
-  // A long visit folds its middle steps until asked.
+  // A long visit shows every step.
   await rows.nth(1).click()
   const work = page.getByTestId('run-visit-work')
-  await expect(page.getByTestId('run-visit-transcript-unfold')).toHaveText('⋯ 4 more steps ⋯')
-  await expect(work).toContainText('Step 5 of the draft.')
-  await expect(work).not.toContainText('Step 6 of the draft.')
-  await expect(work).toContainText('Step 10 of the draft.')
-  await page.getByTestId('run-visit-transcript-unfold').click()
   await expect(work).toContainText('Step 6 of the draft.')
+  await expect(page.getByTestId('run-visit-transcript-unfold')).toHaveCount(0)
 
   // The Evaluate visit that didn't pass: instructions, transcript, reason, writes.
   await rows.nth(2).click()
