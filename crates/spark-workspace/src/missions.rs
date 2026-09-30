@@ -168,6 +168,9 @@ pub struct MissionRecord {
     pub wait_reason: Option<String>,
     #[serde(default, skip_deserializing)]
     pub waiting: bool,
+    /// Derived on read: the run question a Needs you mission waits on, if any.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub question: Option<Value>,
     /// The playbook as it was on Start, so later edits to its file do not change the mission.
     #[serde(default)]
     pub playbook: Option<crate::playbooks::Playbook>,
@@ -209,6 +212,7 @@ fn stored(mission: &MissionRecord) -> Value {
     let mut value = serde_json::to_value(mission).unwrap();
     value.as_object_mut().unwrap().remove("status");
     value.as_object_mut().unwrap().remove("waiting");
+    value.as_object_mut().unwrap().remove("question");
     value
 }
 
@@ -307,6 +311,25 @@ impl WorkspaceMissionService {
                 .any(|t| t.enabled);
         if mission.waiting {
             mission.status = MissionStatus::Running;
+        }
+        if mission.status == MissionStatus::NeedsYou {
+            // The newest question from a run still waiting on a gate.
+            mission.question = self
+                .scope(&mission.project_path)
+                .and_then(|scope| {
+                    Self::read_events(&MissionRepository::new(&scope.root), &mission.id)
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .rev()
+                .find(|event| {
+                    event.kind == "run.question"
+                        && mission.runs.iter().any(|run| {
+                            run.status == "waiting"
+                                && event.payload["root_run_id"] == run.run_id.as_str()
+                        })
+                })
+                .map(|event| event.payload);
         }
         mission
     }

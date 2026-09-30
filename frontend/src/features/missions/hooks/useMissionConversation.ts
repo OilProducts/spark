@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import { fetchConversationSnapshotValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
+import { ApiHttpError } from '@/lib/api/shared'
 import type { Mission } from '../MissionsPanel'
 
 type Loaded = { id: string; snapshot: ConversationSnapshotResponse | null; error: string }
 
 /** Loads the mission's conversation and reloads it as the mission moves. */
 export function useMissionConversation(mission: Mission, project: string) {
-    const conversationId = mission.conversation_id ?? null
+    // A mission's conversation id is the mission id; a draft's exists once its model is set.
+    const conversationId = mission.conversation_id ?? mission.id
     const [loaded, setLoaded] = useState<Loaded | null>(null)
+    const [reloads, setReloads] = useState(0)
     const running = mission.status === 'running'
     useEffect(() => {
-        if (!conversationId) return
         let disposed = false
         let issued = 0
         let applied = 0
@@ -24,7 +26,9 @@ export function useMissionConversation(mission: Mission, project: string) {
             }
             return fetchConversationSnapshotValidated(conversationId, project).then(
                 snapshot => apply(() => ({ id: conversationId, snapshot, error: '' })),
-                (e: unknown) => apply(current => ({ id: conversationId, snapshot: current?.id === conversationId ? current.snapshot : null, error: e instanceof Error ? e.message : String(e) })),
+                (e: unknown) => apply(current => e instanceof ApiHttpError && e.status === 404
+                    ? { id: conversationId, snapshot: null, error: '' }
+                    : { id: conversationId, snapshot: current?.id === conversationId ? current.snapshot : null, error: e instanceof Error ? e.message : String(e) }),
             )
         }
         void load()
@@ -35,8 +39,8 @@ export function useMissionConversation(mission: Mission, project: string) {
         // ponytail: polls while running; subscribe the live stream to mission conversations if this is too chatty.
         const timer = running ? window.setInterval(() => void load(), 2000) : undefined
         return () => { disposed = true; window.removeEventListener('spark:conversation-live-event', onLive); window.clearInterval(timer) }
-    }, [conversationId, project, running, mission.revision, mission.event_seq, mission.cursor, mission.runs?.length])
+    }, [conversationId, project, running, reloads, mission.revision, mission.event_seq, mission.cursor, mission.runs?.length])
     // State from another conversation never shows here.
     const current = loaded && loaded.id === conversationId ? loaded : null
-    return { conversationId, snapshot: current?.snapshot ?? null, loading: Boolean(conversationId) && !current, error: current?.error ?? '' }
+    return { conversationId, snapshot: current?.snapshot ?? null, loading: !current, error: current?.error ?? '', reload: () => setReloads(value => value + 1) }
 }

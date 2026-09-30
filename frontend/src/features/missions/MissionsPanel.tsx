@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { MissionDetail } from './MissionDetail'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { MissionEditor } from './MissionEditor'
+import { shortLine } from './model/missionModel'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
 export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
@@ -16,37 +17,20 @@ export type Playbook = { name: string; title: string; description: string; text?
 export type Status = 'draft' | 'running' | 'needs_you' | 'closed'
 export type RosterEntry = { run_id: string; flow_name: string; summary: string; launched_at: string; status: string }
 export type Mission = {
-    id: string; revision: number; updated_at?: string; fields: Fields; activity: { revision: number; actor: string; at: string; note: string; before?: Fields; after?: Fields }[]
+    id: string; revision: number; created_at?: string; updated_at?: string; fields: Fields; activity: { revision: number; actor: string; at: string; note: string; before?: Fields; after?: Fields }[]
     wait_reason?: string | null; waiting?: boolean
     status?: Status; conversation_id?: string | null; runs?: RosterEntry[]; cursor?: number; event_seq?: number
     closed?: { status: 'done' | 'failed' | 'canceled'; reason: string; at: string; actor?: string } | null; started_at?: string | null
     /** The playbook as it was on Start. */
     playbook?: Playbook | null
+    /** The run question a Needs you mission waits on, as the run asked it. */
+    question?: unknown
 }
 type Draft = { editing: Mission | null; fields: Fields; conflict: boolean }
 export type Board = { missions: Mission[] }
 const empty: Fields = { title: '', description: '', archived: false }
 export const groups: [Status, string][] = [['needs_you', 'Needs you'], ['running', 'Running'], ['draft', 'Drafts'], ['closed', 'Closed']]
 export const statusLabels: Record<Status, string> = { needs_you: 'Needs you', running: 'Running', draft: 'Draft', closed: 'Closed' }
-const terminal = ['completed', 'failed', 'canceled', 'validation_error']
-/** One line saying why a mission is where it is. */
-export function statusLine(mission: Mission): string {
-    const runs = mission.runs ?? []
-    const inFlight = runs.filter(run => !terminal.includes(run.status)).length
-    const gate = runs.find(run => run.status === 'waiting')
-    switch (mission.status ?? 'draft') {
-        case 'draft': return 'Not started'
-        case 'running': return mission.waiting ? `Waiting: ${mission.wait_reason}` : inFlight ? `${inFlight} run${inFlight === 1 ? '' : 's'} in flight` : 'Agent is working'
-        case 'needs_you': return gate ? `${gate.summary || gate.flow_name} is waiting on a human gate` : 'Waiting for your reply'
-        case 'closed': return `Closed as ${mission.closed?.status ?? 'done'}${mission.closed?.reason ? `: ${mission.closed.reason}` : ''}`
-    }
-}
-/** Mission timestamps are UTC `YYYY-MM-DD HH:MM:SS.fraction +00:00:00`. */
-export function formatUpdated(value = ''): string {
-    const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(value)
-    const date = match ? new Date(`${match[1]}T${match[2]}Z`) : null
-    return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : value
-}
 export class MissionConflict extends Error {}
 /** Reads with no body; posts to `action` routes; creates without an id; otherwise patches. */
 export async function request<T>(project: string, id = '', body?: unknown, action = ''): Promise<T> {
@@ -86,6 +70,13 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
     const [error, setError] = useState('')
     const [busy, setBusy] = useState(false)
     const [archived, setArchived] = useState(false)
+    // Re-renders so running missions' elapsed times stay current.
+    const [, setTick] = useState(0)
+    useEffect(() => {
+        if (!active) return
+        const timer = window.setInterval(() => setTick(value => value + 1), 30000)
+        return () => window.clearInterval(timer)
+    }, [active])
     useEffect(() => {
         if (!active) return
         let disposed = false
@@ -190,32 +181,29 @@ function ProjectMissions({ project, selected, active }: { project: string; selec
         <div className="flex shrink-0 flex-wrap items-center gap-2"><h1 ref={boardHeading} tabIndex={-1} className="text-2xl font-light tracking-tight">Missions</h1>
             <Input ref={searchInput} type="search" placeholder="Search titles" aria-label="Search titles" value={search} onChange={e => filter(e.target.value, archived)} className="ml-auto h-8 w-56" />
             {search && <Button type="button" variant="ghost" size="sm" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear search</Button>}
-            <Button type="button" variant="outline" size="sm" className="aria-pressed:bg-accent aria-pressed:text-accent-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>Show archived</Button>
             <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh missions</TooltipContent></Tooltip></TooltipProvider>
-            <Button type="button" size="sm" disabled={busy} onClick={e => open(null, e.currentTarget)}>Create mission</Button>
+            <Button type="button" size="sm" aria-label="New mission" disabled={busy} onClick={e => open(null, e.currentTarget)}>+ New</Button>
         </div>
         {(error || loadError) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
         <div className="flex min-h-0 flex-1 gap-4">
-        <div ref={boardScroll} hidden={narrow && editing !== undefined} className={`min-h-0 min-w-0 space-y-4 overflow-y-auto ${reading && !narrow ? 'w-80 shrink-0' : 'flex-1'}`}>
+        <div ref={boardScroll} hidden={narrow && editing !== undefined} className={`min-h-0 min-w-0 space-y-4 overflow-y-auto ${reading && !narrow ? 'w-72 shrink-0' : 'flex-1'}`}>
             {groups.map(([status, label]) => {
                 const missions = visible.filter(mission => (mission.status ?? 'draft') === status).sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
                 if (!missions.length) return null
                 return <section key={status} aria-label={label} className="space-y-2">
-                    <h2 className="flex items-center justify-between px-1 text-sm font-semibold">{label}<span aria-label={`${missions.length} matching missions`} className="text-xs font-normal text-muted-foreground">{missions.length}</span></h2>
-                    <ul className="space-y-2">{missions.map(mission => <li key={mission.id} className="flex items-stretch gap-2">
-                        <button type="button" disabled={busy} data-mission-id={mission.id} aria-label={mission.fields.title} aria-describedby={`mission-status-${mission.id}`} aria-pressed={editing?.id === mission.id} onClick={e => open(mission, e.currentTarget)} className={`block min-w-0 flex-1 p-3 text-left text-sm break-words transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === mission.id ? 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]' : 'text-card-foreground hover:text-primary'}`}>
-                            <span className="line-clamp-2 font-semibold">{mission.fields.title}</span>
-                            <span id={`mission-status-${mission.id}`} data-testid="mission-status-line" className={`mt-1 block text-xs ${status === 'needs_you' ? 'font-medium text-foreground' : 'text-muted-foreground'}`}>{statusLine(mission)}</span>
-                            <span className="mt-1 block text-xs text-muted-foreground">Updated <time dateTime={mission.updated_at}>{formatUpdated(mission.updated_at)}</time></span>
-                            {mission.fields.archived && <span className="mt-2 inline-block rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>}
+                    <h2 className={`flex items-center justify-between px-3 text-xs font-medium tracking-wider uppercase ${status === 'needs_you' ? 'text-warning' : 'text-muted-foreground'}`}>{label}<span aria-label={`${missions.length} matching missions`} className="font-normal text-muted-foreground">{missions.length}</span></h2>
+                    <ul>{missions.map(mission => <li key={mission.id}>
+                        <button type="button" disabled={busy} data-mission-id={mission.id} aria-label={mission.fields.title} aria-describedby={`mission-status-${mission.id}`} aria-pressed={editing?.id === mission.id} onClick={e => open(mission, e.currentTarget)} className={`group block w-full min-w-0 px-3 py-2 text-left text-sm break-words transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === mission.id ? 'shadow-[inset_2px_0_0_hsl(var(--primary))]' : ''}`}>
+                            <span className={`line-clamp-2 leading-snug ${editing?.id === mission.id ? 'text-primary' : 'text-foreground group-hover:text-primary'}`}>{mission.fields.title}</span>
+                            <span id={`mission-status-${mission.id}`} data-testid="mission-status-line" className={`mt-0.5 block truncate text-xs ${status === 'needs_you' ? 'text-warning' : 'text-muted-foreground'}`}>{shortLine(mission)}{mission.fields.archived && ' · Archived'}</span>
                         </button>
-                        {status === 'closed' && <Button type="button" variant="outline" size="sm" className="h-auto self-stretch" disabled={busy} aria-label={`${mission.fields.archived ? 'Restore' : 'Archive'} ${mission.fields.title}`} onClick={() => void archive(mission, !mission.fields.archived)}>{mission.fields.archived ? 'Restore' : 'Archive'}</Button>}
                     </li>)}</ul>
                 </section>
             })}
             {!visible.length && (loaded && !loadError
                 ? <Empty className="px-3 py-4 text-xs text-muted-foreground"><EmptyDescription>{search ? 'No matches' : 'No missions'}</EmptyDescription></Empty>
                 : <p className="px-1 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
+            <Button type="button" variant="link" size="sm" className="px-3" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
         </div>
         {editing !== undefined && (mode === 'read' && editing ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} /> : <MissionEditor key={editing?.id ?? 'new'} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
             setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)}

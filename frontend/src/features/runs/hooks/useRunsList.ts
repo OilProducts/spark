@@ -50,7 +50,9 @@ export function useRunsList({
     const reconnectSignal = useRunsTransportReconnectSignal(manageSync)
     const usesActiveProjectScope = scopeMode === 'active'
     const hasRunsSession =
+        // A mission's rail joins its roster with these runs.
         viewMode === 'runs'
+        || viewMode === 'missions'
         || selectedRunId !== null
         || runsListSession.status !== 'idle'
         || runsListSession.runs.length > 0

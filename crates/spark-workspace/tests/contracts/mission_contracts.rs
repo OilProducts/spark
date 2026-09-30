@@ -1198,6 +1198,9 @@ fn descendant_questions_trigger_deduplicated_turns_and_recover_after_external_an
     harness.agent.release(1);
     harness.wait_idle(&mission.id);
     assert_eq!(harness.get(&mission.id).status, MissionStatus::NeedsYou);
+    let question = harness.get(&mission.id).question.unwrap();
+    assert_eq!(question["prompt"], "Ready to publish?");
+    assert_eq!(question["options"][0]["label"], "Ship it");
     let attention = WorkspaceConversationService::new(harness.settings.clone())
         .pending_attention()
         .unwrap();
