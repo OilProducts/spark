@@ -10,6 +10,7 @@ import { useOverviewChats } from './hooks/useOverviewChats'
 import {
     finishedSince,
     lastChat,
+    markAttentionSeen,
     markSeen,
     readSeenAt,
     sourceOf,
@@ -71,6 +72,7 @@ export function OverviewPanel() {
         markSeen()
         return () => markSeen()
     }, [])
+    useEffect(() => markAttentionSeen(attention), [attention])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
     const now = Date.now()
 

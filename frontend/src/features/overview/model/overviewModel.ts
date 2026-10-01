@@ -37,14 +37,14 @@ export function missionMark(mission: Mission): Mark {
 const runAt = (run: RunRecord) => timeOf(run.ended_at) || timeOf(run.started_at)
 const missionAt = (mission: Mission) => Math.max(timeOf(mission.closed?.at), timeOf(mission.updated_at), timeOf(mission.started_at))
 
-/** The runs a chat launched and the missions created from it, newest first. */
+/** The runs a chat launched, the missions created from it and those missions' roster runs, each once, newest first. */
 export function startedBy(chat: Chat, runs: RunRecord[], missions: Mission[]): Started[] {
-    const launched = new Set(chat.launched_run_ids ?? [])
+    const own = missions.filter((mission) => mission.source_conversation_id === chat.conversation_id)
+    const launched = new Set([...(chat.launched_run_ids ?? []), ...own.flatMap((mission) => mission.runs?.map((run) => run.run_id) ?? [])])
     return [
         ...runs.filter((run) => launched.has(run.run_id))
             .map((run): Started => ({ kind: 'run', id: run.run_id, run, mark: runMark(run), at: runAt(run) })),
-        ...missions.filter((mission) => mission.source_conversation_id === chat.conversation_id)
-            .map((mission): Started => ({ kind: 'mission', id: mission.id, mission, mark: missionMark(mission), at: missionAt(mission) })),
+        ...own.map((mission): Started => ({ kind: 'mission', id: mission.id, mission, mark: missionMark(mission), at: missionAt(mission) })),
     ].sort((left, right) => right.at - left.at)
 }
 
@@ -92,14 +92,36 @@ export function finishedSince(runs: RunRecord[], missions: Mission[], since: num
     ].filter((item) => item.at > since).sort((left, right) => right.at - left.at)
 }
 
-/** Whether something needs you or finished since your last look. */
-export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], seenAt: number | null, now: number): boolean {
-    const since = windowStart(seenAt, now)
-    return attention.some((item) => timeOf(item.updated_at) > since) || finishedSince(runs, missions, since).length > 0
+const attentionKey = (item: AttentionItem) => `${item.kind}:${item.id}`
+
+/** Whether something needs you that the Overview has not shown, or something finished since your last look. */
+export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], seenAt: number | null, now: number, seenAttention = readSeenAttention()): boolean {
+    const seen = new Set(seenAttention.split('\n'))
+    return attention.some((item) => !seen.has(attentionKey(item))) || finishedSince(runs, missions, windowStart(seenAt, now)).length > 0
 }
 
 const SEEN_KEY = 'spark.overview_seen_at'
+const SEEN_ATTENTION_KEY = 'spark.overview_seen_attention'
 const listeners = new Set<() => void>()
+
+/** The attention the Overview last showed, as newline-joined keys; a string so it is a stable snapshot. */
+export function readSeenAttention(): string {
+    try {
+        return window.localStorage.getItem(SEEN_ATTENTION_KEY) ?? ''
+    } catch {
+        return ''
+    }
+}
+
+/** Records the attention the Overview is showing; only what is pending now is kept. */
+export function markAttentionSeen(attention: AttentionItem[]) {
+    try {
+        window.localStorage.setItem(SEEN_ATTENTION_KEY, attention.map(attentionKey).join('\n'))
+    } catch {
+        // Ignore storage failures (private mode, quota, etc.)
+    }
+    listeners.forEach((listener) => listener())
+}
 
 export function readSeenAt(): number | null {
     try {

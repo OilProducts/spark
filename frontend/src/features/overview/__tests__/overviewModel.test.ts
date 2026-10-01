@@ -7,6 +7,7 @@ import {
     finishedSince,
     hasUnread,
     lastChat,
+    markAttentionSeen,
     markSeen,
     readSeenAt,
     sourceOf,
@@ -59,6 +60,23 @@ describe('you were last in', () => {
         expect(tally(last!.started)).toEqual({ completed: 1, running: 1, failed: 1 })
     })
 
+    it('counts runs on the roster of a mission the chat started, once even when the chat launched them too', () => {
+        const chats = [chat('source', '2026-10-01T08:00:00Z', ['run-roster']), chat('other', '2026-10-01T10:00:00Z')]
+        const runs = [
+            run('run-roster', 'completed', '2026-10-01T09:30:00Z', '2026-10-01T11:00:00Z'),
+            run('run-roster-2', 'failed', '2026-10-01T09:00:00Z', '2026-10-01T09:10:00Z'),
+        ]
+        const missions = [mission('from-source', {
+            source_conversation_id: 'source', updated_at: '2026-10-01 09:00:00.0 +00:00:00',
+            runs: ['run-roster', 'run-roster-2'].map((run_id) => ({ run_id, flow_name: 'f', summary: '', launched_at: '', status: 'completed' })),
+        })]
+        const last = lastChat(chats, runs, missions)
+        expect(last?.chat.conversation_id).toBe('source')
+        expect(last?.at).toBe(at('2026-10-01T11:00:00Z'))
+        expect(last?.started.map((item) => item.id)).toEqual(['run-roster', 'run-roster-2', 'from-source'])
+        expect(tally(last!.started)).toEqual({ completed: 1, failed: 1, running: 1 })
+    })
+
     it('has nothing to show without chats', () => {
         expect(lastChat([], [run('run-a', 'completed', '2026-10-01T08:00:00Z')], [])).toBeNull()
     })
@@ -98,6 +116,26 @@ describe('finished since', () => {
         expect(hasUnread([], runs, missions, readSeenAt(), now)).toBe(false)
         const question: AttentionItem = { kind: 'run_gate', id: 'gate', title: 'Approve?', project_path: '/work/app', run_id: 'run-live', updated_at: '2026-10-02T12:05:00Z' }
         expect(hasUnread([question], runs, missions, readSeenAt(), now)).toBe(true)
+    })
+})
+
+describe('needs you dot', () => {
+    beforeEach(() => window.localStorage.clear())
+    const question = (id: string, updatedAt: string): AttentionItem => ({ kind: 'mission', id, title: id, project_path: '/work/app', updated_at: updatedAt })
+
+    it('shows for attention the Overview has not shown, however old its timestamp, and clears once shown', () => {
+        const now = at('2026-10-02T12:00:00Z')
+        const seen = question('seen', '2026-10-02T11:00:00Z')
+        markSeen(now)
+        markAttentionSeen([seen])
+        expect(hasUnread([seen], [], [], readSeenAt(), now)).toBe(false)
+
+        const older = question('older', '2026-09-01T08:00:00Z')
+        expect(hasUnread([seen, older], [], [], readSeenAt(), now)).toBe(true)
+
+        markAttentionSeen([seen, older])
+        expect(hasUnread([seen, older], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([older], [], [], readSeenAt(), now)).toBe(false)
     })
 })
 
