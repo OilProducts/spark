@@ -7,6 +7,7 @@ import {
 } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { PendingConversationTurnState } from '../model/conversationState'
+import { reconcileRunningChat } from './useChatRunning'
 
 export type ConversationComposerCommand =
     | {
@@ -130,6 +131,8 @@ export function useConversationComposer({
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to send the project chat turn.')
             setPanelError(message)
+            // A rejected send may still have started a turn; the server decides whether the chat runs.
+            void reconcileRunningChat(conversationId, activeProjectPath)
         } finally {
             setPendingConversationTurn(null)
             const running = useStore.getState().runningChats[conversationId]

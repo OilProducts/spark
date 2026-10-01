@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from '@playwright/test'
@@ -10,6 +10,7 @@ const openGate = (name: string) => {
     mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
     writeFileSync(path.join(tmpRoot, 'gates', name), '')
 }
+const closeGates = () => rmSync(path.join(tmpRoot, 'gates'), { recursive: true, force: true })
 const flowYaml = `schema_version: "1"
 id: live-turn-smoke
 title: Live turn smoke
@@ -95,5 +96,60 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     await liveGroup.getByTestId('chats-chat-row').first().click()
     await expect(history).toContainText('Half done. Still going. All done.')
     await expect(page.getByTestId('project-chat-stop')).toHaveCount(0)
+    await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
+})
+
+test('the Chats dot follows a turn started in another tab, across a reload, until it ends while another view is open', async ({ page }) => {
+    test.setTimeout(90_000)
+    closeGates()
+    try {
+        const projectPath = path.join(tmpRoot, 'projects', 'other-tab-turn')
+        mkdirSync(projectPath, { recursive: true })
+        expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
+        await page.addInitScript(() => {
+            localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'runs', activeProjectPath: null, activeFlow: null }))
+        })
+        await page.goto('/')
+        await expect(page.getByTestId('activity-chats')).toBeVisible()
+        await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
+
+        // Another tab starts a long turn.
+        const other = await page.context().newPage()
+        await other.addInitScript(({ projectPath }) => {
+            localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
+        }, { projectPath })
+        await other.goto('/')
+        await other.getByTestId('project-ai-conversation-input').fill('Take your time.')
+        await other.getByTestId('project-ai-conversation-send-button').click()
+        await expect(other.getByTestId('project-ai-conversation-history-list')).toContainText('Half done.')
+        await other.close()
+
+        await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running', { timeout: 15_000 })
+        await page.reload()
+        await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running', { timeout: 15_000 })
+
+        openGate('continue')
+        openGate('finish')
+        await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0, { timeout: 15_000 })
+    } finally {
+        openGate('continue')
+        openGate('finish')
+    }
+})
+
+test('a rejected chat send leaves the Chats dot clear', async ({ page }) => {
+    const projectPath = path.join(tmpRoot, 'projects', 'rejected-send')
+    mkdirSync(projectPath, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
+    await page.route(/\/workspace\/api\/conversations\/[^/]+\/turns$/, (route) => route.request().method() === 'POST'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'Turn rejected.' }) })
+        : route.continue())
+    await page.addInitScript(({ projectPath }) => {
+        localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
+    }, { projectPath })
+    await page.goto('/')
+    await page.getByTestId('project-ai-conversation-input').fill('This send fails.')
+    await page.getByTestId('project-ai-conversation-send-button').click()
+    await expect(page.getByTestId('project-panel-error')).toBeVisible()
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
 })
