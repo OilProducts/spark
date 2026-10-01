@@ -153,3 +153,42 @@ test('a rejected chat send leaves the Chats dot clear', async ({ page }) => {
     await expect(page.getByTestId('project-panel-error')).toBeVisible()
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
 })
+
+test('reopening on Runs finds a running chat behind three newer finished ones, and clears it once it ends', async ({ page }) => {
+    const projectPath = '/tmp/older-running-chat'
+    const timestamp = '2026-09-10T00:00:00Z'
+    let finished = false
+    const chat = (index: number) => ({
+        conversation_id: `older-running-${index}`, project_path: projectPath, title: `Chat ${index}`,
+        created_at: timestamp, updated_at: `2026-09-10T0${9 - index}:00:00Z`,
+        // Only the oldest chat runs; its revision stays put across polls until it finishes.
+        revision: index === 4 && finished ? 3 : 2,
+    })
+    await page.route('**/workspace/api/projects', (route) => route.request().method() === 'GET' ? route.fulfill({ json: [{
+        project_id: 'older-running', project_path: projectPath, display_name: 'Older running', created_at: timestamp,
+        last_opened_at: timestamp, last_accessed_at: timestamp, is_favorite: false, active_conversation_id: null,
+    }] }) : route.continue())
+    await page.route('**/workspace/api/projects/metadata**', (route) => route.fulfill({ json: { name: 'Older running', directory: projectPath, branch: 'main', commit: 'smoke' } }))
+    await page.route('**/workspace/api/projects/conversations**', (route) => route.fulfill({ json: [1, 2, 3, 4].map(chat) }))
+    await page.route(/\/workspace\/api\/conversations\/older-running-\d\?/, (route) => {
+        const summary = chat(Number(new URL(route.request().url()).pathname.split('-').at(-1)))
+        const running = summary.conversation_id === 'older-running-4' && !finished
+        return route.fulfill({ json: {
+            schema_version: 4, ...summary, chat_mode: 'chat',
+            turns: [{ id: 'assistant', role: 'assistant', content: '', timestamp, status: running ? 'streaming' : 'complete', kind: 'message' }],
+            segments: [], event_log: [], flow_run_requests: [], flow_launches: [],
+        } })
+    })
+    await page.addInitScript(() => {
+        localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'runs', activeProjectPath: null, activeFlow: null }))
+    })
+    await page.goto('/')
+    await expect(page.getByTestId('activity-chats')).toBeVisible()
+    await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
+    // It stays found across polls while its revision is unchanged.
+    await page.waitForTimeout(4_000)
+    await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
+
+    finished = true
+    await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0, { timeout: 10_000 })
+})
