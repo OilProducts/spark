@@ -30,7 +30,7 @@ beforeEach(() => {
     useStore.setState({
         viewMode: 'home', activeProjectPath: null, projectPagePath: null,
         homeConversationCache: { conversationsById: {}, summariesByProjectPath: {} },
-        homeThreadSummariesStatusByProjectPath: {}, projectSessionsByPath: {},
+        homeThreadSummariesStatusByProjectPath: {}, projectSessionsByPath: {}, homeProjectSessionsByPath: {},
         projectRegistry: {
             '/work/gone': { directoryPath: '/work/gone', isFavorite: false, lastAccessedAt: '2026-09-30T00:00:00Z', folderExists: false },
             [HOME]: { directoryPath: HOME, displayName: 'Home', isDefault: true, isFavorite: false, lastAccessedAt: null },
@@ -48,7 +48,7 @@ beforeEach(() => {
             settingsWrites.push({ url, body })
             return json(snapshot(String(body.project_path), conversationId))
         }
-        if (conversationId) return json(snapshot('/work/busy', conversationId))
+        if (conversationId) return json(snapshot(conversationId.startsWith('home') ? HOME : '/work/busy', conversationId))
         return json({})
     }))
 })
@@ -132,4 +132,23 @@ it('keeps text typed into the restored chat before the project registry loads, a
     act(() => useStore.setState({ projectRegistry: registry }))
     expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Typed early.')
     await waitFor(() => expect(useStore.getState().homeProjectSessionsByPath['/work/removed']).toBeUndefined())
+})
+
+it.each([
+    ['empties another chat of the first project after visiting a second project', 'busy-5', ''],
+    ['keeps a chat\'s draft when returning to it from another project', 'busy-6', 'Draft for busy-6'],
+])('%s', async (_name, returnTo, expectedDraft) => {
+    const user = userEvent.setup()
+    renderChats()
+    await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
+    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Open thread Chat busy-6' }))
+    const input = () => screen.getByTestId('project-ai-conversation-input')
+    await waitFor(() => expect(input()).toBeEnabled())
+    await user.type(input(), 'Draft for busy-6')
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe(HOME))
+    expect(input()).toHaveValue('')
+    await user.click(within(group('/work/busy')).getAllByTestId('chats-chat-row').find((row) => row.dataset.conversationId === returnTo)!)
+    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
+    expect(input()).toHaveValue(expectedDraft)
 })

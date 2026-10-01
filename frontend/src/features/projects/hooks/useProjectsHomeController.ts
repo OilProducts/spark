@@ -67,7 +67,6 @@ export function useProjectsHomeController() {
     const setRunsSelectedRunId = useStore((state) => state.setRunsSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
 
-    const resetComposerRef = useRef<() => void>(() => {})
     const persistProjectState = usePersistProjectState(upsertProjectRegistryEntry)
 
     const isNarrowViewport = useNarrowViewport()
@@ -201,10 +200,10 @@ export function useProjectsHomeController() {
             projectPath,
             conversationId,
         })
-        // Drafts belong to their project; only switching to another chat within the shown project clears one.
+        // A project's draft belongs to its selected chat; changing that chat clears it, whichever project is shown.
         const state = useStore.getState()
-        if (projectPath === state.activeProjectPath && conversationId !== state.projectSessionsByPath[projectPath]?.conversationId) {
-            resetComposerRef.current()
+        if (conversationId !== state.projectSessionsByPath[projectPath]?.conversationId) {
+            state.updateHomeProjectSession(projectPath, { chatDraft: '', pendingConversationTurn: null })
         }
         updateProjectSessionState(projectPath, { conversationId })
         void persistProjectState(projectPath, {
@@ -278,10 +277,6 @@ export function useProjectsHomeController() {
         setPanelError,
         setPendingConversationTurn,
     })
-
-    useEffect(() => {
-        resetComposerRef.current = resetComposer
-    }, [resetComposer])
 
     const persistChatSettings = useCallback(async (values: ModelSettings | null) => {
         if (!activeProjectPath) return
