@@ -98,6 +98,21 @@ describe('TriggersPanel', () => {
     vi.unstubAllGlobals()
   })
 
+  it('keeps a restored selection while the list loads and falls back once a missing one is known', async () => {
+    let respond: (triggers: unknown[]) => void = () => undefined
+    vi.mocked(fetch).mockImplementation(() => new Promise((resolve) => { respond = (triggers) => resolve(jsonResponse(triggers)) }))
+    act(() => useStore.getState().updateTriggersSession({ selectedTriggerId: 'second' }))
+    renderTriggersPanel()
+    await waitFor(() => expect(fetch).toHaveBeenCalled())
+    expect(useStore.getState().triggersSession.selectedTriggerId).toBe('second')
+    await act(async () => respond([makeTrigger({ id: 'first', name: 'First' }), makeTrigger({ id: 'second', name: 'Second' })]))
+    expect(await screen.findByTestId('trigger-row-second')).toHaveAttribute('aria-current', 'true')
+
+    // A restored trigger that no longer exists falls back to the first.
+    act(() => useStore.getState().updateTriggersSession({ triggers: [makeTrigger({ id: 'first', name: 'First' })] }))
+    await waitFor(() => expect(screen.getByTestId('trigger-row-first')).toHaveAttribute('aria-current', 'true'))
+  })
+
   it('creates a mission action from the project open mission picker', async () => {
     useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
     let saved: Record<string, unknown> | null = null

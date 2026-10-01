@@ -80,6 +80,10 @@ export function TriggersPanel() {
   )
 
   useEffect(() => {
+    // Keep a restored selection until the list has loaded.
+    if (status !== 'ready') {
+      return
+    }
     if (selectedTriggerId && visibleTriggers.some((trigger) => trigger.id === selectedTriggerId)) {
       return
     }
@@ -87,7 +91,7 @@ export function TriggersPanel() {
     if (firstVisibleTriggerId !== selectedTriggerId) {
       setSelectedTriggerId(firstVisibleTriggerId)
     }
-  }, [selectedTriggerId, setSelectedTriggerId, visibleTriggers])
+  }, [selectedTriggerId, setSelectedTriggerId, status, visibleTriggers])
 
   const createFormOpen = triggersSession.createFormOpen
   const openCreateForm = () => {
@@ -121,6 +125,7 @@ export function TriggersPanel() {
                 type="button"
                 data-testid={`trigger-row-${trigger.id}`}
                 data-unregistered-target={unregistered ? 'true' : undefined}
+                aria-current={selectedTriggerId === trigger.id && !createFormOpen ? 'true' : undefined}
                 onClick={() => {
                   setSelectedTriggerId(trigger.id)
                   updateTriggersSession({ createFormOpen: false })

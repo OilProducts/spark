@@ -48,7 +48,7 @@ it('has local default selection, semantic headings, keyboard tabs, and mounted h
     expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(4)
     expect(screen.queryByRole('heading', { name: 'Project model defaults' })).toBeNull()
     first.focus()
-    await user.keyboard('{ArrowRight}')
+    await user.keyboard('{ArrowDown}')
     expect(screen.getByRole('tab', { name: 'Preferences' })).toHaveFocus()
     expect(screen.getByRole('heading', { name: 'Client preferences', level: 3 })).toBeVisible()
     for (const name of ['Editor', 'Layout', 'Runs']) expect(screen.getByRole('heading', { name, level: 4 })).toBeVisible()

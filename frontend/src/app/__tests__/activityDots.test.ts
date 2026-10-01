@@ -13,5 +13,7 @@ it('marks a view waiting when something there needs you, else running while work
     // Waiting outranks running.
     expect(activityDots([item('run_gate')], ['running'], ['running', 'needs_you'])).toEqual({ home: null, missions: 'waiting', runs: 'waiting' })
     expect(activityDots([item('proposed_plan')], [], [])).toMatchObject({ home: 'waiting' })
+    expect(activityDots([], [], [], true)).toMatchObject({ home: 'running' })
+    expect(activityDots([item('proposed_plan')], [], [], true)).toMatchObject({ home: 'waiting' })
     expect(activityDots([item('flow_run_request'), item('mission')], ['waiting'], [])).toEqual({ home: 'waiting', missions: 'waiting', runs: 'waiting' })
 })

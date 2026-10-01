@@ -100,6 +100,15 @@ test('every activity-bar view opens its panel with items from more than one proj
         const unregistered = triggers.getByRole('button', { name: new RegExp(`Unregistered target ${stamp}`) })
         await expect(unregistered).toHaveAttribute('data-unregistered-target', 'true')
         await expect(unregistered).toContainText('Unregistered project · not-a-registered-project')
+        // The selected trigger survives a reload, whichever row it is.
+        const alphaRow = triggers.getByRole('button', { name: new RegExp(`Alpha target ${stamp}`) })
+        for (const row of [unregistered, alphaRow]) {
+            await row.click()
+            await expect(row).toHaveAttribute('aria-current', 'true')
+            await page.reload()
+            await page.getByTestId('activity-triggers').click()
+            await expect(row).toHaveAttribute('aria-current', 'true')
+        }
 
         // Flows: the installed flows, grouped by folder, with the editor in the main area.
         await page.getByTestId('activity-flows').click()
@@ -156,6 +165,16 @@ test('a new mission and a flow run ask which project, suggesting the last used a
             return missions.missions.map((mission: { fields: { title: string } }) => mission.fields.title)
         }).toContain('Mission in alpha')
         await expect(page.getByTestId('missions-view').getByTestId('side-panel').getByRole('button', { name: 'Mission in alpha' })).toContainText('alpha-project')
+        // Creating it made alpha the last-used project, for the next mission and after a reload.
+        for (const reload of [false, true]) {
+            if (reload) {
+                await page.reload()
+                await page.getByTestId('activity-missions').click()
+            }
+            await page.getByRole('button', { name: 'New mission' }).click()
+            await expect(missionPicker.getByTestId('project-picker-item').first()).toHaveAttribute('data-project-path', alpha)
+            await page.keyboard.press('Escape')
+        }
 
         await page.getByTestId('activity-flows').click()
         await page.getByRole('button', { name: flowName }).click()

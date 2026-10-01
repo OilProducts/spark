@@ -20,6 +20,7 @@ import { RuntimeSettingsEditor } from "./RuntimeSettingsEditor"
 import { useSettingsNavigationProtection } from "./hooks/useSettingsNavigationProtection"
 import { useModelSettingsEditor } from "./hooks/useModelSettingsEditor"
 import { SaveStatus } from './SaveStatus'
+import { ViewLayout } from '@/components/app/view-layout'
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -45,6 +46,9 @@ declare global {
 function getTauriInvoke(): TauriInvoke | null {
     return window.__TAURI__?.core?.invoke ?? null
 }
+
+// Category rows look like the other side panels' rows.
+const categoryRow = 'h-auto flex-none rounded-none px-2 py-1.5 after:hidden hover:text-primary data-[state=active]:text-primary data-[state=active]:shadow-[inset_2px_0_0_hsl(var(--primary))]'
 
 export function SettingsPanel() {
     const models = useModelSettingsEditor()
@@ -125,23 +129,27 @@ export function SettingsPanel() {
         }
     }
 
+    // The categories are the side panel; the chosen category fills the main area.
     return (
-        <div data-testid="settings-panel" className="min-w-0 flex-1 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
+        <Tabs className="absolute inset-0 flex-col gap-0" orientation="vertical" value={category} onValueChange={setCategory}>
+        <ViewLayout
+            view="settings"
+            title="Settings"
+            panel={(
+                <TabsList className="w-full items-stretch px-2" aria-label="Settings categories">
+                    <TabsTrigger className={categoryRow} value="models">Models &amp; accounts</TabsTrigger>
+                    <TabsTrigger className={categoryRow} value="preferences">Preferences</TabsTrigger>
+                    <TabsTrigger className={categoryRow} value="execution">Execution</TabsTrigger>
+                    <TabsTrigger className={categoryRow} value="system">System</TabsTrigger>
+                </TabsList>
+            )}
+        >
+        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
-                <div className="space-y-1">
-                    <h2 className="text-2xl font-light tracking-tight text-foreground">Settings</h2>
-                    <p className="text-sm text-muted-foreground">
-                        Model defaults apply to inheriting conversations on their next message.
-                    </p>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                    Model defaults apply to inheriting conversations on their next message.
+                </p>
 
-                <Tabs className="min-w-0" value={category} onValueChange={setCategory}>
-                <div className="max-w-full overflow-x-auto"><TabsList className="w-max" aria-label="Settings categories">
-                    <TabsTrigger value="models">Models &amp; accounts</TabsTrigger>
-                    <TabsTrigger value="preferences">Preferences</TabsTrigger>
-                    <TabsTrigger value="execution">Execution</TabsTrigger>
-                    <TabsTrigger value="system">System</TabsTrigger>
-                </TabsList></div>
                 <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
                 <CodexConnectionSettings />
                 <ClaudeCodeConnectionSettings />
@@ -223,8 +231,9 @@ export function SettingsPanel() {
                 <ConnectionSettingsEditor />
                 <RuntimeSettingsEditor />
                 </TabsContent>
-                </Tabs>
             </div>
         </div>
+        </ViewLayout>
+        </Tabs>
     )
 }

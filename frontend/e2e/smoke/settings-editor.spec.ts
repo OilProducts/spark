@@ -643,9 +643,14 @@ for (const width of [1440, 390]) {
         const models = page.getByRole('tab', { name: 'Models & accounts' })
         await expect(models).toHaveAttribute('aria-selected', 'true')
         await expect(models).toHaveCSS('white-space', 'nowrap')
-        if (width === 390) expect(await page.getByRole('tablist', { name: 'Settings categories' }).evaluate((element) => element.parentElement!.scrollWidth > element.parentElement!.clientWidth)).toBe(true)
+        // The categories are the side panel, beside the main area or stacked above it.
+        const view = page.getByTestId('settings-view')
+        await expect(view).toHaveAttribute('data-responsive-layout', width === 390 ? 'stacked' : 'split')
+        await expect(view.getByTestId('side-panel').getByRole('tablist', { name: 'Settings categories' })).toBeVisible()
+        await expect(view.getByTestId('view-main').getByTestId('settings-panel')).toBeVisible()
+        await expect(page.getByTestId('activity-bar')).toBeInViewport()
         await models.focus()
-        await page.keyboard.press('ArrowRight')
+        await page.keyboard.press('ArrowDown')
         const preferences = page.getByRole('tab', { name: 'Preferences', exact: true })
         await expect(preferences).toBeFocused()
         await expect(page.getByRole('heading', { name: 'Client preferences' })).toBeVisible()
@@ -665,7 +670,7 @@ for (const width of [1440, 390]) {
             await expect.poll(() => panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
             const active = page.getByRole('tabpanel')
             for (const heading of await active.getByRole('heading').all()) await expect(heading).toBeVisible()
-            // The only horizontal scrolling is the category strip; card content and actions fit.
+            // Card content and actions fit without horizontal scrolling.
             for (const card of await active.locator('[data-slot=card]').all()) {
                 expect(await card.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
             }

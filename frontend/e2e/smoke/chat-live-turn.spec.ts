@@ -47,6 +47,8 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     const history = page.getByTestId('project-ai-conversation-history-list')
     await expect(history).toContainText('Planning the work.')
     await expect(history).toContainText('Half done.')
+    // The Chats icon shows the turn running, and clears when it ends.
+    await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
 
     // From here on, content must arrive over the live stream, not by refetching the snapshot.
     let snapshotFetches = 0
@@ -75,4 +77,5 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     openGate('finish')
     await expect(history).toContainText('Half done. Still going. All done.')
     await expect(page.getByTestId('project-chat-stop')).toHaveCount(0)
+    await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
 })

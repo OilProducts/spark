@@ -11,6 +11,9 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
+  // Every test shares one Spark home, and some change workspace-wide settings
+  // (such as the default model provider) that other tests' chats inherit.
+  workers: 1,
   retries: 0,
   reporter: [["list"]],
   use: {

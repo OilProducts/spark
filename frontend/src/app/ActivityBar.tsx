@@ -39,10 +39,11 @@ export function activityDots(
     attention: AttentionItem[],
     runStatuses: string[],
     missionStatuses: string[],
+    chatRunning = false,
 ): Partial<Record<ViewMode, ActivityDot>> {
     const waiting = (kinds: AttentionItem['kind'][]) => attention.some((item) => kinds.includes(item.kind))
     return {
-        home: waiting(['flow_run_request', 'proposed_plan']) ? 'waiting' : null,
+        home: waiting(['flow_run_request', 'proposed_plan']) ? 'waiting' : chatRunning ? 'running' : null,
         missions: waiting(['mission']) || missionStatuses.includes('needs_you')
             ? 'waiting'
             : missionStatuses.includes('running') ? 'running' : null,
@@ -185,12 +186,21 @@ export function ActivityBar() {
     const setViewMode = useStore((state) => state.setViewMode)
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
+    // A chat is running while a sent message awaits the server, in any project, or the open chat's turn is in flight.
+    // ponytail: only the open chat streams live; other chats' turns would need a cross-project turn feed.
+    const chatRunning = useStore((state) => {
+        const openChatId = state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId : null
+        const openChat = openChatId ? state.homeConversationCache.conversationsById[openChatId] : undefined
+        return Object.values(state.homeProjectSessionsByPath).some((session) => session.pendingConversationTurn)
+            || Object.values(openChat?.turnsById ?? {}).some((turn) => turn.status === 'pending' || turn.status === 'streaming')
+    })
     const isNarrowViewport = useNarrowViewport()
     const attention = useAttentionItems()
     const dots = activityDots(
         attention,
         runs.map((run) => run.status),
         missions.map((mission) => mission.status ?? 'draft'),
+        chatRunning,
     )
 
     const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, mode: ViewMode) => {

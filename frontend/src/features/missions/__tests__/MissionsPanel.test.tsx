@@ -10,11 +10,13 @@ const fields = { title: 'Deliver search', description: '', archived: false }
 type Task = { id: string; revision: number; fields: typeof fields; activity: unknown[]; status?: string; updated_at?: string; [key: string]: unknown }
 let task: Task
 let calls: { url: string; body: Record<string, unknown> }[]
+let projectUses: { project_path: string; last_accessed_at?: string }[]
 let snapshot: Record<string, unknown>
 beforeEach(() => {
     window.innerWidth = 1440
     task = { id: 'task-1', project_path: '/project', revision: 1, fields: { ...fields }, activity: [], status: 'draft', updated_at: '2026-09-20 10:00:00.0 +00:00:00' }
     calls = []
+    projectUses = []
     snapshot = conversation([])
     useStore.setState({ activeProjectPath: '/project', viewMode: 'missions', missionBoard: [], selectedMission: null, projectRegistry: {
         '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-09-20T10:00:00Z' },
@@ -23,6 +25,10 @@ beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
         if (url === '/workspace/api/triggers') return { ok: true, json: async () => [] }
         if (url.includes('/chat-models')) return { ok: true, json: async () => ({ models: [{ provider: 'claude-code', id: 'opus', display: 'Opus', is_default: true, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'unavailable', error: null } } }) }
+        if (url.endsWith('/projects/state')) {
+            const body = JSON.parse(String(init!.body)); projectUses.push(body)
+            return { ok: true, status: 200, json: async () => ({ project_id: body.project_path, project_path: body.project_path, display_name: body.project_path.slice(1), created_at: '2026-09-01T00:00:00Z', last_opened_at: null, last_accessed_at: body.last_accessed_at, is_favorite: false, active_conversation_id: null }) }
+        }
         if (init?.body) {
             const body = JSON.parse(String(init.body)); calls.push({ url, body })
             if (url.includes('/conversations/')) return { ok: true, json: async () => snapshot }
@@ -334,7 +340,9 @@ it('keeps unsaved edits while another view is open', async () => {
 
 it('lists every project\'s missions with the project on each row, and asks which project a new one goes to', async () => {
     const board = [mission({ id: 'here', fields: { ...fields, title: 'Here' } }), mission({ id: 'there', project_path: '/other', fields: { ...fields, title: 'There' } })]
+    const base = vi.mocked(fetch).getMockImplementation()!
     vi.mocked(fetch).mockImplementation(async (url, init) => {
+        if (String(url).endsWith('/projects/state')) return base(url, init)
         if (init?.body) { calls.push({ url: String(url), body: JSON.parse(String(init.body)) }); return { ok: true, json: async () => ({ ...board[1], id: 'created', fields: { ...fields, title: 'New there' } }) } as Response }
         return { ok: true, json: async () => ({ missions: board }) } as Response
     })
@@ -350,6 +358,10 @@ it('lists every project\'s missions with the project on each row, and asks which
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New there' } })
     fireEvent.click(editor().getByRole('button', { name: 'Create mission' }))
     await waitFor(() => expect(calls.at(-1)?.url).toBe('/workspace/api/missions?project_path=%2Fother'))
+    // Creating it records the project as last used, so the next new mission suggests it first.
+    await waitFor(() => expect(projectUses).toEqual([expect.objectContaining({ project_path: '/other', last_accessed_at: expect.any(String) })]))
+    fireEvent.keyDown(screen.getByRole('button', { name: 'New mission' }), { key: 'Enter' })
+    expect(screen.getAllByTestId('project-picker-item').map(item => item.dataset.projectPath)).toEqual(['/other', '/project'])
 })
 
 it('creates with only a title, keeps the saved mission open and resets its baseline', async () => {

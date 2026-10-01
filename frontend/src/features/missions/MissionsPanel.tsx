@@ -13,6 +13,7 @@ import { shortLine } from './model/missionModel'
 import { ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
+import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
 export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
@@ -154,6 +155,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
             const saved = await request<Mission>(editing?.project_path ?? newProject ?? '', editing?.id, { revision: editing?.revision, fields: archive === undefined ? draft : { archived: archive }, actor: 'human' })
             drafts.current.delete(editing?.id ?? 'new')
             upsert(saved)
+            if (!editing) void markProjectUsed(saved.project_path)
             if (archive === undefined) { reset(saved); setMode('read'); useStore.getState().setSelectedMission({ id: saved.id, projectPath: saved.project_path }) }
             else { setEditing(saved); setDraft(current => ({ ...current, archived: saved.fields.archived })) }
             await refresh()
