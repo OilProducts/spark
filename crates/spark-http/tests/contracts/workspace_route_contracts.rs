@@ -122,7 +122,8 @@ async fn workspace_project_routes_persist_records_and_return_json_errors() {
 
     let list = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
     assert_eq!(list.0, StatusCode::OK);
-    assert_eq!(list.1.as_array().expect("projects").len(), 1);
+    // The registered project plus the default Home project.
+    assert_eq!(list.1.as_array().expect("projects").len(), 2);
 
     let project_file = settings
         .projects_dir
@@ -322,6 +323,151 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
     assert_eq!(listed.1[0]["title"], "Design thread");
     assert_eq!(listed.1[0]["last_message_preview"], "Design thread preview");
     assert!(listed.1[0].get("turns").is_none());
+}
+
+#[tokio::test]
+async fn home_project_is_default_and_lists_span_projects() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let app = build_app(settings.clone());
+    let home = spark_common::project::normalize_project_path(&std::env::var("HOME").unwrap())
+        .unwrap()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
+    assert_eq!(projects.0, StatusCode::OK);
+    let listed = projects.1.as_array().expect("projects");
+    assert_eq!(listed.len(), 1, "{}", projects.1);
+    assert_eq!(listed[0]["project_path"], home.as_str());
+    assert_eq!(listed[0]["display_name"], "Home");
+    assert_eq!(listed[0]["is_default"], true);
+    assert_eq!(listed[0]["folder_exists"], true);
+    let remove_home = format!("/workspace/api/projects?project_path={home}");
+    let refused = request_json(app.clone(), "DELETE", &remove_home, None).await;
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", refused.1);
+    let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
+    assert_eq!(projects.1.as_array().unwrap().len(), 1);
+
+    let mut paths = vec![];
+    for name in ["project-a", "project-b"] {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir).expect("project dir");
+        let registered = request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/projects/register",
+            Some(json!({"project_path": dir})),
+        )
+        .await;
+        assert_eq!(registered.1["is_default"], false);
+        let project_path = registered.1["project_path"].as_str().unwrap().to_string();
+        let conversation = format!("/workspace/api/conversations/conversation-{name}");
+        let snapshot = request_json(
+            app.clone(),
+            "GET",
+            &format!("{conversation}?project_path={project_path}"),
+            None,
+        )
+        .await;
+        let saved = request_json(
+            app.clone(),
+            "PUT",
+            &format!("{conversation}/settings"),
+            Some(json!({"project_path": project_path, "chat_mode": "plan", "expected_revision": snapshot.1["revision"].to_string()})),
+        )
+        .await;
+        assert_eq!(saved.0, StatusCode::OK, "{}", saved.1);
+        let mission = request_json(
+            app.clone(),
+            "POST",
+            &format!("/workspace/api/missions?project_path={project_path}"),
+            Some(json!({"fields": {"title": name}})),
+        )
+        .await;
+        assert_eq!(mission.0, StatusCode::OK, "{}", mission.1);
+        assert!(mission.1.get("source_conversation_id").is_none());
+        paths.push(project_path);
+    }
+    let project_paths = |items: &Value| {
+        let mut paths: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["project_path"].as_str().unwrap().to_string())
+            .collect();
+        paths.sort();
+        paths
+    };
+
+    let all = request_json(
+        app.clone(),
+        "GET",
+        "/workspace/api/projects/conversations",
+        None,
+    )
+    .await;
+    assert_eq!(all.0, StatusCode::OK, "{}", all.1);
+    assert_eq!(project_paths(&all.1), paths);
+    let scoped = format!(
+        "/workspace/api/projects/conversations?project_path={}",
+        paths[0]
+    );
+    let chats = request_json(app.clone(), "GET", &scoped, None).await;
+    assert_eq!(project_paths(&chats.1), [paths[0].clone()]);
+
+    let all = request_json(app.clone(), "GET", "/workspace/api/missions", None).await;
+    assert_eq!(all.0, StatusCode::OK, "{}", all.1);
+    assert_eq!(project_paths(&all.1["missions"]), paths);
+    let scoped = format!("/workspace/api/missions?project_path={}", paths[1]);
+    let one = request_json(app.clone(), "GET", &scoped, None).await;
+    assert_eq!(project_paths(&one.1["missions"]), [paths[1].clone()]);
+
+    let handle = chats.1[0]["conversation_handle"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let from_chat = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/missions?conversation_handle={handle}"),
+        Some(json!({"fields": {"title": "From chat"}})),
+    )
+    .await;
+    assert_eq!(from_chat.0, StatusCode::OK, "{}", from_chat.1);
+    assert_eq!(from_chat.1["project_path"], paths[0].as_str());
+    assert_eq!(
+        from_chat.1["source_conversation_id"],
+        "conversation-project-a"
+    );
+    let conflicting = request_json(
+        app.clone(),
+        "POST",
+        &format!(
+            "/workspace/api/missions?conversation_handle={handle}&project_path={}",
+            paths[1]
+        ),
+        Some(json!({"fields": {"title": "Wrong project"}})),
+    )
+    .await;
+    assert_eq!(conflicting.0, StatusCode::BAD_REQUEST, "{}", conflicting.1);
+
+    fs::remove_dir_all(root.join("project-b")).expect("remove project folder");
+    let projects = request_json(app, "GET", "/workspace/api/projects", None).await;
+    let folder_exists = |path: &str| {
+        projects
+            .1
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["project_path"] == path)
+            .unwrap()["folder_exists"]
+            .clone()
+    };
+    assert_eq!(folder_exists(&paths[0]), true);
+    assert_eq!(folder_exists(&paths[1]), false);
 }
 
 async fn request_json(

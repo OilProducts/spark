@@ -152,6 +152,9 @@ pub struct MissionRecord {
     /// The mission's conversation, created on Start.
     #[serde(default)]
     pub conversation_id: Option<String>,
+    /// The chat the mission was created from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_conversation_id: Option<String>,
     #[serde(default)]
     pub runs: Vec<RosterEntry>,
     /// Sequence of the newest inbox event delivered to the conversation.
@@ -385,8 +388,21 @@ impl WorkspaceMissionService {
         missions.sort_by(|a, b| (&a.created_at, &a.id).cmp(&(&b.created_at, &b.id)));
         Ok(missions.into_iter().map(|m| self.with_status(m)).collect())
     }
-    pub fn board(&self, project: &str) -> WorkspaceResult<Value> {
-        Ok(json!({"missions": self.list(project)?}))
+    /// One project's missions, or every project's when `project` is `None`.
+    pub fn board(&self, project: Option<&str>) -> WorkspaceResult<Value> {
+        let missions = match project {
+            Some(project) => self.list(project)?,
+            None => {
+                let mut missions = vec![];
+                for project in
+                    ProjectRegistry::new(self.settings.data_dir.clone()).list_project_records()?
+                {
+                    missions.extend(self.list(&project.project_path)?);
+                }
+                missions
+            }
+        };
+        Ok(json!({ "missions": missions }))
     }
     /// The mission whose conversation this is, if any: a mission's
     /// conversation id is the mission id.
@@ -420,6 +436,39 @@ impl WorkspaceMissionService {
             &format!("mission-{}", uuid::Uuid::new_v4()),
             mutation,
             true,
+            None,
+        )
+    }
+    /// Creates a mission in the project of the chat with `handle` and records
+    /// that chat as its source. An explicit project must match the chat's.
+    pub fn create_from_conversation(
+        &self,
+        handle: &str,
+        explicit_project: Option<&str>,
+        mutation: MissionMutation,
+    ) -> WorkspaceResult<MissionRecord> {
+        if mutation.revision.is_some() {
+            return Err(invalid("Creation must omit revision"));
+        }
+        let source = spark_storage::ConversationHandleRepository::new(&self.settings.data_dir)
+            .find_conversation_by_handle(handle)?
+            .ok_or_else(|| {
+                WorkspaceError::NotFound(format!("Unknown conversation handle: {handle}"))
+            })?;
+        let registry = ProjectRegistry::new(self.settings.data_dir.clone());
+        if let Some(explicit) = explicit_project.filter(|path| !path.trim().is_empty()) {
+            if registry.project_paths(explicit)?.project_id != source.project_id {
+                return Err(invalid(
+                    "Explicit --project path does not match the project bound to the conversation handle.",
+                ));
+            }
+        }
+        self.mutate(
+            &source.project_path,
+            &format!("mission-{}", uuid::Uuid::new_v4()),
+            mutation,
+            true,
+            Some(&source.conversation_id),
         )
     }
     pub fn update(
@@ -431,7 +480,7 @@ impl WorkspaceMissionService {
         if mutation.revision.is_none() {
             return Err(invalid("Update requires revision"));
         }
-        self.mutate(project, id, mutation, false)
+        self.mutate(project, id, mutation, false, None)
     }
     fn mutate(
         &self,
@@ -439,6 +488,7 @@ impl WorkspaceMissionService {
         id: &str,
         mutation: MissionMutation,
         create: bool,
+        source_conversation_id: Option<&str>,
     ) -> WorkspaceResult<MissionRecord> {
         let scope = self.scope(project)?;
         if mutation.actor != "human" && mutation.actor != "assistant" {
@@ -456,7 +506,7 @@ impl WorkspaceMissionService {
             let now = now();
             let mut mission = match previous {
                 Some(value) if !create => decode_record(value)?,
-                None if create => decode_record(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": []}))?,
+                None if create => decode_record(json!({"id": id, "project_id": scope.project_id, "project_path": scope.project_path, "created_at": now, "updated_at": now, "revision": 0, "fields": {}, "activity": [], "source_conversation_id": source_conversation_id}))?,
                 _ => return Err(WorkspaceError::NotFound("Unknown project mission".into())),
             };
             if !create && mutation.revision != Some(mission.revision) { return Err(WorkspaceError::Conflict(format!("Mission changed; reload revision {} and reconcile your edits", mission.revision))); }

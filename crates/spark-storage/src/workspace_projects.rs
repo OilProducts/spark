@@ -33,7 +33,15 @@ pub struct ProjectRecord {
     pub is_favorite: bool,
     pub active_conversation_id: Option<String>,
     pub execution_profile_id: Option<String>,
+    /// The Home project, rooted at the user's home folder; it can't be removed.
+    #[serde(default)]
+    pub is_default: bool,
+    /// Derived on read: whether the project's folder is still a directory.
+    #[serde(default)]
+    pub folder_exists: bool,
 }
+
+pub const HOME_PROJECT_NAME: &str = "Home";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeletedProjectRecord {
@@ -125,7 +133,9 @@ impl ProjectRegistry {
             ]
             .iter()
             .all(|key| payload.get(*key).is_none_or(toml::Value::is_str))
-            && payload.get("is_favorite").is_none_or(toml::Value::is_bool);
+            && ["is_favorite", "is_default"]
+                .iter()
+                .all(|key| payload.get(*key).is_none_or(toml::Value::is_bool));
         if valid {
             return Ok(project_paths);
         }
@@ -146,6 +156,8 @@ impl ProjectRegistry {
             execution_profile_id: initial_profile
                 .map(str::to_string)
                 .or_else(|| read_optional_string(&payload, "execution_profile_id")),
+            is_default: read_optional_bool(&payload, "is_default", false),
+            folder_exists: false,
         };
         write_project_record(&project_paths.project_file, &record)?;
         Ok(project_paths)
@@ -210,6 +222,7 @@ impl ProjectRegistry {
             return Ok(None);
         };
         let payload = read_project_payload_lossy(&project_paths.project_file);
+        let folder_exists = Path::new(&project_paths.project_path).is_dir();
         Ok(Some(ProjectRecord {
             project_id: project_paths.project_id,
             project_path: project_paths.project_path,
@@ -222,6 +235,8 @@ impl ProjectRegistry {
             is_favorite: read_optional_bool(&payload, "is_favorite", false),
             active_conversation_id: read_optional_string(&payload, "active_conversation_id"),
             execution_profile_id: read_optional_string(&payload, "execution_profile_id"),
+            is_default: read_optional_bool(&payload, "is_default", false),
+            folder_exists,
         }))
     }
 
@@ -315,10 +330,28 @@ impl ProjectRegistry {
                 .execution_profile_id
                 .map(|value| value.and_then(normalize_optional_string))
                 .unwrap_or_else(|| read_optional_string(&payload, "execution_profile_id")),
+            is_default: read_optional_bool(&payload, "is_default", false),
+            folder_exists: false,
         };
         write_project_record(&project_paths.project_file, &record)?;
         self.read_project_record_by_id(&project_paths.project_id)?
             .ok_or_else(|| invalid_project_path(project_path, "Unable to register project."))
+    }
+
+    /// Registers `home_path` as the Home project, named "Home" and marked as
+    /// the default, keeping any settings it already has.
+    pub fn ensure_home_project(&self, home_path: &str) -> Result<ProjectRecord> {
+        let project_paths = self.ensure_project_paths(home_path)?;
+        let _lock = crate::settings::lock_document(&project_paths.project_file)?;
+        let mut record = self
+            .read_project_record_by_id(&project_paths.project_id)?
+            .ok_or_else(|| invalid_project_path(home_path, "Unable to register project."))?;
+        if !record.is_default || record.display_name != HOME_PROJECT_NAME {
+            record.is_default = true;
+            record.display_name = HOME_PROJECT_NAME.to_string();
+            write_project_record(&project_paths.project_file, &record)?;
+        }
+        Ok(record)
     }
 
     pub fn delete_project_record(&self, project_path: &str) -> Result<DeletedProjectRecord> {
@@ -330,6 +363,16 @@ impl ProjectRegistry {
         };
         if project_paths.project_path != normalized {
             return Err(invalid_project_path(project_path, "Unknown project."));
+        }
+        if read_optional_bool(
+            &read_project_payload_lossy(&project_paths.project_file),
+            "is_default",
+            false,
+        ) {
+            return Err(invalid_project_path(
+                project_path,
+                "The Home project can't be removed.",
+            ));
         }
         let deleted = DeletedProjectRecord {
             project_id: project_paths.project_id.clone(),
@@ -391,6 +434,7 @@ fn write_project_record(path: &Path, record: &ProjectRecord) -> Result<()> {
         "is_favorite",
         "active_conversation_id",
         "execution_profile_id",
+        "is_default",
     ] {
         extra.remove(key);
     }
@@ -425,6 +469,9 @@ fn write_project_record(path: &Path, record: &ProjectRecord) -> Result<()> {
         .filter(|value| !value.is_empty())
     {
         lines.push(format!("execution_profile_id = {}", toml_string(value)));
+    }
+    if record.is_default {
+        lines.push("is_default = true".to_string());
     }
     lines.push(String::new());
     if !extra.is_empty() {

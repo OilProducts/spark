@@ -2570,6 +2570,7 @@ fn build_mission_plan(
         &args[2..],
         &[
             "--project",
+            "--conversation",
             "--id",
             "--json",
             "--message",
@@ -2580,8 +2581,18 @@ fn build_mission_plan(
         &[],
         PositionalMode::None,
     )?;
-    require_values(&options, &["--project"])?;
-    let project = non_empty_value(&options, "--project", "Project is required")?;
+    // A mission created from a chat takes the chat's project.
+    let conversation = trimmed_option(&options, "--conversation").filter(|_| command == "create");
+    let project = if conversation.is_none() {
+        require_values(&options, &["--project"])?;
+        Some(non_empty_value(
+            &options,
+            "--project",
+            "Project is required",
+        )?)
+    } else {
+        trimmed_option(&options, "--project")
+    };
     let mut path = "/workspace/api/missions".to_string();
     if command != "list" && command != "create" {
         let id = non_empty_value(&options, "--id", "Mission ID is required")?;
@@ -2594,10 +2605,19 @@ fn build_mission_plan(
         "send" => path.push_str("/events"),
         _ => {}
     }
-    path.push_str(&format!(
-        "?project_path={}",
-        percent_encode_component(&project)
-    ));
+    let mut separator = '?';
+    for (parameter, value) in [
+        ("conversation_handle", conversation),
+        ("project_path", project),
+    ] {
+        if let Some(value) = value {
+            path.push_str(&format!(
+                "{separator}{parameter}={}",
+                percent_encode_component(&value)
+            ));
+            separator = '&';
+        }
+    }
     let body = match command {
         "create" | "update" => {
             require_values(&options, &["--json"])?;

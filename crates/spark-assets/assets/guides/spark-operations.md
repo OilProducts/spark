@@ -468,6 +468,7 @@ A mission is a project objective plus a long-lived agent conversation that owns 
 spark mission list --project /absolute/project
 spark mission get --project /absolute/project --id mission-ID
 spark mission create --project /absolute/project --json mission.json
+spark mission create --conversation <handle> --json mission.json
 spark mission update --project /absolute/project --id mission-ID --json - < update.json
 spark mission start --project /absolute/project --id mission-ID
 spark mission send --project /absolute/project --id mission-ID --message "Prefer the smaller fix"
@@ -486,7 +487,9 @@ Updates require the revision from get/list, with only changed fields. Editable f
 {"revision":1,"fields":{"description":"Decide which document types are in scope."},"note":"Recorded the scope question","actor":"assistant"}
 ```
 
-Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID.
+Create with `--conversation <handle>` instead of `--project` to make a mission from a chat: it takes the chat's project and records the chat as `source_conversation_id`. A `--project` that names a different project is rejected.
+
+Archive with `fields.archived: true` and restore with `false`. On a revision conflict, reread and reconcile; never blindly retry stale edits. Listing returns `missions`, ordered by creation time then ID; `GET /workspace/api/missions` without `project_path` lists every project's missions.
 
 Starting a mission creates its conversation (`conversation_id`) and sends the objective as the first turn. From then on, the mission's inbox delivers `run.completed`, `run.failed`, `run.canceled`, `run.question`, `run.waiting` (recovery decisions), and `human.message` events to that conversation as new turns: one turn per batch, oldest first, at most one turn in flight. `spark mission send` posts a `human.message`. The mission agent launches flows with `spark convo run-request`; each launch joins the mission's `runs` roster and carries `context.spark_mission`, so its events come back to the mission. A launch over budget is refused with the limit named. The agent closes the mission with `spark mission close`; `POST /workspace/api/missions/{id}/cancel?project_path=...` cancels in-flight runs and closes it.
 

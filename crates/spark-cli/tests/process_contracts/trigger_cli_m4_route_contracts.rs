@@ -790,3 +790,78 @@ async fn playbook_cli_lists_gets_and_validates_mission_playbooks() {
         stderr(&output)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mission_create_from_a_conversation_takes_its_project_and_records_the_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let project = temp.path().join("chat-project");
+    let other = temp.path().join("other-project");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    let paths = spark_storage::ProjectRegistry::new(&settings.data_dir)
+        .ensure_project_paths(project.to_str().unwrap())
+        .unwrap();
+    spark_storage::ConversationHandleRepository::new(&settings.data_dir)
+        .ensure_conversation_handle(
+            "conversation-chat",
+            &paths.project_id,
+            &paths.project_path,
+            "2026-10-01T00:00:00Z",
+            Some("amber-anchor"),
+        )
+        .unwrap();
+    let server = serve(build_app(settings.clone())).await;
+    let payload_file = temp.path().join("mission.json");
+    fs::write(
+        &payload_file,
+        json!({"fields":{"title":"From chat"}}).to_string(),
+    )
+    .unwrap();
+    let create = |extra: &[&str]| {
+        let mut argv = vec![
+            "mission",
+            "create",
+            "--conversation",
+            "amber-anchor",
+            "--json",
+            payload_file.to_str().unwrap(),
+            "--base-url",
+            &server.base_url,
+        ];
+        argv.extend_from_slice(extra);
+        run_spark(temp.path(), argv)
+    };
+
+    let output = create(&[]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let created: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(created["project_path"], paths.project_path.as_str());
+    assert_eq!(created["source_conversation_id"], "conversation-chat");
+
+    let output = create(&["--project", &paths.project_path]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    let output = create(&["--project", other.to_str().unwrap()]);
+    assert_ne!(output.status.code(), Some(0));
+    assert!(
+        stderr(&output).contains("does not match"),
+        "{}",
+        stderr(&output)
+    );
+    let listed: Value = reqwest::Client::new()
+        .get(format!("{}/workspace/api/missions", server.base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let projects: Vec<&str> = listed["missions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|mission| mission["project_path"].as_str().unwrap())
+        .collect();
+    assert_eq!(projects, [paths.project_path.as_str(); 2]);
+}

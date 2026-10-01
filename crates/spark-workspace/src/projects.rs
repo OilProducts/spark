@@ -70,6 +70,15 @@ impl WorkspaceProjectService {
         self.registry().list_project_records().map_err(Into::into)
     }
 
+    /// Startup: registers the user's home folder as the default Home project.
+    pub fn ensure_home_project(&self) -> WorkspaceResult<ProjectRecord> {
+        let home = service_home_dir().map_err(WorkspaceError::Validation)?;
+        let home = normalize_project_path_or_400(&home.to_string_lossy())?;
+        self.registry()
+            .ensure_home_project(&home)
+            .map_err(Into::into)
+    }
+
     pub fn register_project(
         &self,
         request: ProjectRegistrationRequest,
@@ -145,12 +154,26 @@ impl WorkspaceProjectService {
             })
     }
 
+    /// One project's conversations, or every project's when `project_path` is `None`.
     pub fn list_project_conversations(
         &self,
-        project_path: &str,
+        project_path: Option<&str>,
     ) -> WorkspaceResult<Vec<ConversationSummary>> {
-        WorkspaceConversationService::new(self.settings.clone())
-            .list_project_conversations(project_path)
+        let conversations = WorkspaceConversationService::new(self.settings.clone());
+        let Some(project_path) = project_path else {
+            let mut summaries = Vec::new();
+            for project in self.list_projects()? {
+                summaries.extend(conversations.list_project_conversations(&project.project_path)?);
+            }
+            summaries.sort_by(|left, right| {
+                right
+                    .updated_at
+                    .cmp(&left.updated_at)
+                    .then_with(|| left.conversation_id.cmp(&right.conversation_id))
+            });
+            return Ok(summaries);
+        };
+        conversations.list_project_conversations(project_path)
     }
 
     pub fn project_metadata(&self, directory: &str) -> WorkspaceResult<ProjectMetadata> {
