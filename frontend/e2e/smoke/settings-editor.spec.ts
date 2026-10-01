@@ -26,14 +26,14 @@ test('runtime settings Save, Discard, validation, navigation guard, live conflic
     const read = async () => (await page.request.get('/workspace/api/settings')).json()
     const original = (await read()).runtime.stored
     await page.goto('/')
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
         await page.getByRole('tab', { name: 'System', exact: true }).click()
     const input = page.getByLabel('Flows directory', { exact: true })
     await expect(input).toBeVisible()
     const second = await context.newPage()
     try {
         await second.goto('/')
-        await second.getByTestId('nav-mode-settings').click()
+        await second.getByTestId('activity-settings').click()
         await second.getByRole('tab', { name: 'System', exact: true }).click()
         const otherInput = second.getByLabel('Flows directory', { exact: true })
         await expect(otherInput).toBeVisible()
@@ -45,7 +45,7 @@ test('runtime settings Save, Discard, validation, navigation guard, live conflic
         await card(page, 'Runtime paths').getByRole('button', { name: /^Discard\b/ }).click()
         await expect(input).toHaveValue(original.flows_dir ?? '')
         await input.fill('/tmp/spark-settings-first')
-        await page.getByTestId('nav-mode-home').click()
+        await page.getByTestId('activity-chats').click()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
         await expect(page.getByTestId('settings-panel')).toBeVisible()
         await expect(input).toHaveValue('/tmp/spark-settings-first')
@@ -78,7 +78,7 @@ test('workspace model defaults require Save and survive reload; dirty drafts sur
     const read = async () => (await page.request.get('/workspace/api/settings')).json()
     const original = (await read()).models.effective
     await page.goto('/')
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
     const provider = page.getByRole('button', { name: /^Model:/ })
     await expect(provider).toBeEnabled()
     const other = await context.newPage()
@@ -91,7 +91,7 @@ test('workspace model defaults require Save and survive reload; dirty drafts sur
         await expect(provider).toContainText('claude-opus-4-6')
         await customModel(page, 'retained-draft')
         await other.goto('/')
-        await other.getByTestId('nav-mode-settings').click()
+        await other.getByTestId('activity-settings').click()
         await expect(other.getByRole('button', { name: /^Model:/ })).toBeEnabled()
         await chooseModel(other, 'openai', 'gpt-5.5')
         await card(other, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
@@ -116,7 +116,7 @@ test('client preferences save explicitly, survive reload, and stay isolated betw
     const other = await otherContext.newPage()
     try {
         await page.goto('/')
-        await page.getByTestId('nav-mode-settings').click()
+        await page.getByTestId('activity-settings').click()
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         const width = page.getByLabel('Editor sidebar width (pixels)', { exact: true })
         await expect(width).toBeEnabled()
@@ -127,8 +127,6 @@ test('client preferences save explicitly, survive reload, and stay isolated betw
         await page.getByLabel('Show advanced controls', { exact: true }).selectOption('true')
         await page.getByLabel('Expand child flows', { exact: true }).selectOption('true')
         await page.getByLabel('Open graph settings panel', { exact: true }).selectOption('true')
-        await page.getByLabel('Run list scope', { exact: true }).selectOption('all')
-        await page.getByLabel('Trigger list scope', { exact: true }).selectOption('active')
         await card(page, 'Client preferences').getByRole('button', { name: /^Save\b/ }).click()
         await expect(card(page, 'Client preferences').getByText('Saved.', { exact: true })).toBeVisible()
         await page.reload()
@@ -138,16 +136,14 @@ test('client preferences save explicitly, survive reload, and stay isolated betw
         await expect(page.getByLabel('Show advanced controls', { exact: true })).toHaveValue('true')
         await expect(page.getByLabel('Expand child flows', { exact: true })).toHaveValue('true')
         await expect(page.getByLabel('Open graph settings panel', { exact: true })).toHaveValue('true')
-        await expect(page.getByLabel('Run list scope', { exact: true })).toHaveValue('all')
-        await expect(page.getByLabel('Trigger list scope', { exact: true })).toHaveValue('active')
         expect(await page.evaluate(() => localStorage.getItem('spark.client_id'))).toBe(clientId)
         await other.goto(page.url())
-        await other.getByTestId('nav-mode-settings').click()
+        await other.getByTestId('activity-settings').click()
         await other.getByRole('tab', { name: 'Preferences', exact: true }).click()
         const otherWidth = other.getByLabel('Editor sidebar width (pixels)', { exact: true })
         await expect(otherWidth).toBeEnabled()
         await expect(otherWidth).toHaveValue('')
-        for (const label of ['Home sidebar primary split (0–1)', 'Show advanced controls', 'Expand child flows', 'Open graph settings panel', 'Run list scope', 'Trigger list scope']) {
+        for (const label of ['Home sidebar primary split (0–1)', 'Show advanced controls', 'Expand child flows', 'Open graph settings panel']) {
             await expect(other.getByLabel(label, { exact: true })).toHaveValue('')
         }
         expect(await other.evaluate(() => localStorage.getItem('spark.client_id'))).not.toBe(clientId)
@@ -161,8 +157,6 @@ test('client preferences save explicitly, survive reload, and stay isolated betw
         await expect(page.getByLabel('Show advanced controls', { exact: true })).toHaveValue('true')
         await expect(page.getByLabel('Expand child flows', { exact: true })).toHaveValue('true')
         await expect(page.getByLabel('Open graph settings panel', { exact: true })).toHaveValue('true')
-        await expect(page.getByLabel('Run list scope', { exact: true })).toHaveValue('all')
-        await expect(page.getByLabel('Trigger list scope', { exact: true })).toHaveValue('active')
     } finally { await otherContext.close() }
 })
 
@@ -171,7 +165,7 @@ test('profile CRUD saves explicitly, retains conflicts, validates mounts, and su
     const initial = await read()
     const id = `settings-e2e-${Date.now()}`
     await page.goto('/')
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
     try {
         await page.getByRole('button', { name: 'Add LLM profile', exact: true }).click()
         const profile = page.locator('details').filter({ has: page.locator(`[aria-label="LLM profile ${initial.llm_profiles.stored.length + 1} ID"]`) })
@@ -237,7 +231,7 @@ test('connection settings validate, save, preserve running binding, and reload',
     const read = async () => (await page.request.get('/workspace/api/settings')).json()
     const original = (await read()).connections
     await page.goto('/')
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
         await page.getByRole('tab', { name: 'System', exact: true }).click()
     const port = page.getByLabel('Server port', { exact: true })
     const target = page.getByLabel('Client API target', { exact: true })
@@ -272,7 +266,7 @@ test('provider and agent sections validate, save, report references and restart 
     const read = async () => (await page.request.get('/workspace/api/settings')).json()
     const original = await read()
     await page.goto('/')
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
     await page.locator('summary').filter({ hasText: /^OpenAI ·/ }).click()
     const group = page.getByRole('group', { name: 'OpenAI', exact: true })
     const endpoint = group.getByLabel('Base URL', { exact: true })
@@ -376,7 +370,7 @@ test('saved core and Desktop-identity preferences survive a real server restart 
     try {
         const first = await start()
         await page.goto(first)
-        await page.getByTestId('nav-mode-settings').click()
+        await page.getByTestId('activity-settings').click()
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         const width = page.getByLabel('Editor sidebar width (pixels)', { exact: true })
         await width.fill('420')
@@ -393,7 +387,7 @@ test('saved core and Desktop-identity preferences survive a real server restart 
         const second = await start()
         expect(second).not.toBe(first)
         await page.goto(second)
-        await page.getByTestId('nav-mode-settings').click()
+        await page.getByTestId('activity-settings').click()
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         await expect(page.getByLabel('Editor sidebar width (pixels)', { exact: true })).toHaveValue('420')
         await page.getByRole('tab', { name: 'Execution', exact: true }).click()
@@ -405,58 +399,70 @@ test('saved core and Desktop-identity preferences survive a real server restart 
     } finally { await page.goto('about:blank'); await stop() }
 })
 
-for (const transition of ['switch', 'clear']) {
-    test(`project ${transition} confirms draft loss and cancellation preserves the editor`, async ({ page }, testInfo) => {
+const chatsGroup = (page: Page, project: string) => page.locator(`[data-testid="chats-project-group"][data-project-path="${project}"]`)
+const openChat = async (page: Page, project: string, title: string) => {
+    const group = chatsGroup(page, project)
+    if (await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') await group.getByTestId('chats-project-toggle').click()
+    await group.getByRole('button', { name: new RegExp(`Open thread ${title}`) }).click()
+}
+const openProjectPage = async (page: Page, project: string) => {
+    await page.getByTestId('activity-chats').click()
+    await chatsGroup(page, project).getByTestId('chats-project-name').click()
+    await expect(page.getByTestId('project-page-path')).toHaveText(project)
+}
+
+for (const transition of ['switch', 'chat']) {
+    test(`leaving a project page by ${transition} confirms draft loss and cancellation preserves the editor`, async ({ page }, testInfo) => {
         const projects = [testInfo.outputPath('project-one'), testInfo.outputPath('project-two')]
         for (const project of projects) {
             mkdirSync(project, { recursive: true })
             expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
         }
+        const chatId = `conversation-draft-guard-${Date.now()}`
+        expect((await page.request.put(`/workspace/api/conversations/${chatId}/settings`, { data: { project_path: projects[1], expected_revision: '0' } })).ok()).toBeTruthy()
         await page.goto('/')
-        const switcher = page.getByTestId('top-nav-project-switcher')
-        const selectProject = async (project: string) => {
-            await switcher.click()
-            await page.getByRole('option').filter({ hasText: project }).click()
-        }
-        await selectProject(projects[0])
-        await page.getByTestId('nav-mode-settings').click()
-        await page.getByRole('switch', { name: 'Override workspace model settings' }).click()
-        const projectCard = page.locator('[data-slot=card]').filter({ has: page.getByRole('heading', { name: 'Project model defaults', exact: true, includeHidden: true }) })
+        await openProjectPage(page, projects[0])
+        const projectCard = page.getByTestId('project-page').locator('[data-slot=card]').filter({ has: page.getByRole('heading', { name: 'Project model defaults', exact: true }) })
+        await projectCard.getByRole('switch', { name: 'Override workspace model settings' }).click()
         await customModel(page, 'unsaved-project-model', projectCard)
-        const model = projectCard.getByRole('button', { name: /^Model:/, includeHidden: true })
-        await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
+        const model = projectCard.getByRole('button', { name: /^Model:/ })
         const navigate = async () => {
-            if (transition === 'clear') {
-                await page.getByTestId('top-nav-project-settings-button').click()
-                await page.getByTestId('top-nav-project-clear-button').click()
-            } else await selectProject(projects[1])
+            if (transition === 'switch') {
+                await chatsGroup(page, projects[1]).getByTestId('chats-project-name').click()
+                return
+            }
+            const group = chatsGroup(page, projects[1])
+            if (await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') await group.getByTestId('chats-project-toggle').click()
+            await group.getByTestId('chats-chat-row').first().click()
         }
         await navigate()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
         await expect(model).toContainText('unsaved-project-model')
-        await expect(model).toBeHidden()
-        await expect(switcher).toHaveAttribute('title', projects[0])
+        await expect(page.getByTestId('project-page-path')).toHaveText(projects[0])
+        // Other views keep the page mounted, so visiting them keeps the draft without asking.
+        await page.getByTestId('activity-runs').click()
+        await page.getByTestId('activity-chats').click()
+        await expect(model).toContainText('unsaved-project-model')
         const read = async () => (await page.request.get(`/workspace/api/settings?project_path=${encodeURIComponent(projects[0])}`)).json()
         expect((await read()).models.stored).toBeNull()
         await navigate()
         await page.getByRole('button', { name: 'Discard and leave', exact: true }).click()
-        await expect(switcher).toHaveAttribute('title', transition === 'clear' ? 'No active project' : projects[1])
-        await expect(model).toHaveCount(0)
+        if (transition === 'switch') await expect(page.getByTestId('project-page-path')).toHaveText(projects[1])
+        else await expect(page.getByTestId('chat-composer-project')).toContainText('project-two')
+        await expect(page.getByText('unsaved-project-model')).toHaveCount(0)
         expect((await read()).models.stored).toBeNull()
     })
 }
 
-test('project execution dialog protects dismissal and handles clean and dirty external updates', async ({ page }, testInfo) => {
+test('project page execution settings protect leaving and handle clean and dirty external updates', async ({ page }, testInfo) => {
     const defaults = (await (await page.request.get('/workspace/api/settings')).json()).execution_profiles
     expect((await page.request.patch('/workspace/api/settings', { data: { section: 'execution_profiles', expected_revision: defaults.revision, value: defaults.stored } })).ok()).toBeTruthy()
     const project = testInfo.outputPath('execution-project')
     mkdirSync(project, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
     await page.goto('/')
-    await page.getByTestId('top-nav-project-switcher').click()
-    await page.getByRole('option').filter({ hasText: project }).click()
-    await page.getByTestId('top-nav-project-settings-button').click()
-    const dialog = page.getByTestId('project-settings-dialog')
+    await openProjectPage(page, project)
+    const section = page.getByTestId('project-settings-dialog')
     const select = page.getByTestId('project-default-execution-profile')
     await expect(select).toBeEnabled()
     const read = async () => (await page.request.get(`/workspace/api/settings?project_path=${encodeURIComponent(project)}`)).json()
@@ -470,12 +476,11 @@ test('project execution dialog protects dismissal and handles clean and dirty ex
     await expect(select).toContainText(/native/i)
     await select.click()
     await page.getByRole('option', { name: 'Use workspace default', exact: true }).click()
-    await page.keyboard.press('Escape')
+    const home = (await (await page.request.get('/workspace/api/projects')).json()).find((entry: { is_default: boolean }) => entry.is_default)
+    await chatsGroup(page, home.project_path).getByTestId('chats-project-name').click()
     await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
     await expect(select).toContainText('Use workspace default')
-    await page.mouse.click(10, 10)
-    await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
-    await expect(dialog).toBeVisible()
+    await expect(section).toBeVisible()
     await external(null)
     await expect(page.getByText('Project execution settings changed elsewhere. Your draft is retained; Discard reloads the latest values.', { exact: true })).toBeVisible()
     await expect(select).toContainText('Use workspace default')
@@ -487,15 +492,15 @@ test('project execution dialog protects dismissal and handles clean and dirty ex
     await expect(page.getByTestId('project-settings-save-button')).toBeDisabled()
     await select.click()
     await page.getByRole('option').filter({ hasText: /native/i }).click()
-    await page.keyboard.press('Escape')
+    await chatsGroup(page, home.project_path).getByTestId('chats-project-name').click()
     await page.getByRole('button', { name: 'Discard and leave', exact: true }).click()
-    await expect(dialog).toHaveCount(0)
+    await expect(page.getByTestId('project-page-path')).toHaveText(home.project_path)
     expect((await read()).execution.stored).toBeNull()
 })
 
 test('scoped configuration links open existing flow and trigger editors with navigation protection', async ({ page }) => {
     await page.goto('/')
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
     await page.getByRole('tab', { name: 'System', exact: true }).click()
     const draft = page.getByLabel('Flows directory', { exact: true })
     await draft.fill('/tmp/scoped-link-draft')
@@ -507,7 +512,7 @@ test('scoped configuration links open existing flow and trigger editors with nav
     await page.getByRole('button', { name: 'Discard and leave', exact: true }).click()
     await expect(page.getByTestId('settings-panel')).toHaveCount(0)
     await expect(page.getByTestId('editor-no-flow-state')).toBeVisible()
-    await page.getByTestId('nav-mode-settings').click()
+    await page.getByTestId('activity-settings').click()
     await page.getByRole('tab', { name: 'Execution', exact: true }).click()
     await page.getByRole('button', { name: 'Edit triggers', exact: true }).click()
     await expect(page.getByTestId('triggers-panel')).toBeVisible()
@@ -534,9 +539,7 @@ test('conversation effort and model edits preserve an inherited profile; selecti
         expect(created.ok(), await created.text()).toBeTruthy()
         const title = (await created.json()).title as string
         await page.goto('/')
-        await page.getByTestId('top-nav-project-switcher').click()
-        await page.getByRole('option').filter({hasText:project}).click()
-        await page.getByRole('button', {name:new RegExp(`Open thread ${title}`)}).click()
+        await openChat(page, project, title)
         const provider = page.getByRole('button', { name: /^Model:/ })
         await expect(provider).toContainText('model-one')
         // An inherited choice has no effort of its own; choosing a model comes first.
@@ -578,12 +581,12 @@ test('malformed project execution selection is repairable with explicit Save and
     const project = testInfo.outputPath('malformed-execution-project')
     mkdirSync(project, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    // Listing a project's chats, missions or attention items rewrites a project file it finds
+    // malformed; this test repairs it through the project page alone, so the page lists nothing.
+    await page.route('**/workspace/api/projects/conversations**', route => route.fulfill({ json: [] }))
+    await page.route(url => url.pathname === '/workspace/api/missions', route => route.fulfill({ json: { missions: [] } }))
+    await page.route('**/workspace/api/attention', route => route.fulfill({ json: { items: [] } }))
     await page.goto('/')
-    await page.getByTestId('top-nav-project-switcher').click()
-    const activated = page.waitForResponse(response => response.url().endsWith('/workspace/api/projects/state')
-        && response.request().method() === 'PATCH' && response.request().postDataJSON().project_path === project)
-    await page.getByRole('option').filter({ hasText: project }).click()
-    expect((await activated).ok()).toBeTruthy()
     const home = process.env.SPARK_SETTINGS_TEST_HOME ?? path.resolve('.tmp-ui-smoke/spark-home')
     const directory = path.join(home, 'workspace/projects')
     const file = readdirSync(directory).map(id => path.join(directory, id, 'project.toml'))
@@ -596,7 +599,7 @@ test('malformed project execution selection is repairable with explicit Save and
     const initial = await read()
     expect(initial.execution.stored).toBe(42)
     expect(initial.execution.effective).toBeNull()
-    await page.getByTestId('top-nav-project-settings-button').click()
+    await openProjectPage(page, project)
     const select = page.getByTestId('project-default-execution-profile')
     const save = page.getByTestId('project-settings-save-button')
     await expect(page.getByTestId('project-settings-error')).toBeVisible()
@@ -607,8 +610,8 @@ test('malformed project execution selection is repairable with explicit Save and
     await page.getByRole('option').filter({ hasText: /native/i }).click()
     expect(readFileSync(file!, 'utf8')).toBe(malformed)
     await save.click()
-    await expect(page.getByTestId('project-settings-dialog')).toHaveCount(0)
-    expect((await read()).execution.stored).toBe('native')
+    await expect.poll(async () => (await read()).execution.stored).toBe('native')
+    await expect(save).toBeDisabled()
     expect(readFileSync(file!, 'utf8')).toContain('note = "preserve me"')
     const repaired = readFileSync(file!, 'utf8')
     const stale = await page.request.patch('/workspace/api/projects/state', { data: {
@@ -620,14 +623,14 @@ test('malformed project execution selection is repairable with explicit Save and
 
     // Exercise reset from the same malformed stored selection, also without an implicit write.
     writeFileSync(file!, malformed)
-    await page.getByTestId('top-nav-project-settings-button').click()
+    // A settings change elsewhere refetches the clean section.
+    await page.evaluate(() => window.dispatchEvent(new Event('spark:settings-live-event')))
     await expect(select).toContainText('Select a replacement or workspace default')
     await select.click()
     await page.getByRole('option', { name: 'Use workspace default', exact: true }).click()
     expect(readFileSync(file!, 'utf8')).toBe(malformed)
     await save.click()
-    await expect(page.getByTestId('project-settings-dialog')).toHaveCount(0)
-    expect((await read()).execution.stored).toBeNull()
+    await expect.poll(async () => (await read()).execution.stored).toBeNull()
     expect(readFileSync(file!, 'utf8')).toContain('note = "preserve me"')
 })
 
@@ -635,7 +638,7 @@ for (const width of [1440, 390]) {
     test(`Settings categories retain drafts and support keyboard access without overflow at ${width}px`, async ({ page }, testInfo) => {
         await page.setViewportSize({ width, height: 900 })
         await page.goto('/')
-        await page.getByTestId('nav-mode-settings').click()
+        await page.getByTestId('activity-settings').click()
         const panel = page.getByTestId('settings-panel')
         const models = page.getByRole('tab', { name: 'Models & accounts' })
         await expect(models).toHaveAttribute('aria-selected', 'true')
@@ -650,7 +653,7 @@ for (const width of [1440, 390]) {
         await sidebar.fill('12')
         await page.getByRole('tab', { name: 'System', exact: true }).click()
         await expect(sidebar).toBeHidden()
-        await page.getByTestId('nav-mode-home').click()
+        await page.getByTestId('activity-chats').click()
         await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
         await preferences.click()
         await expect(sidebar).toHaveValue('12')
@@ -687,8 +690,8 @@ for (const width of [1440, 390]) {
         await page.keyboard.press('Tab')
         await expect(endpoint).toBeFocused()
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
-        await page.getByTestId('nav-mode-home').click()
-        await page.getByTestId('nav-mode-settings').click()
+        await page.getByTestId('activity-chats').click()
+        await page.getByTestId('activity-settings').click()
         await expect(models).toHaveAttribute('aria-selected', 'true')
     })
 }
@@ -707,9 +710,7 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     const snapshot = await created.json()
     const read = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
     await page.goto('/')
-    await page.getByTestId('top-nav-project-switcher').click()
-    await page.getByRole('option').filter({ hasText: project }).click()
-    await page.getByRole('button', { name: new RegExp(`Open thread ${snapshot.title}`) }).click()
+    await openChat(page, project, snapshot.title)
     const requests: { expected_revision: string; model_settings: unknown }[] = []
     const statuses: number[] = []
     const releases: (() => void)[] = []
@@ -769,17 +770,16 @@ test('picker default persists workspace and project resets', async ({ page }, te
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
     try {
         await page.goto('/')
-        await page.getByTestId('top-nav-project-switcher').click()
-        await page.getByRole('option').filter({ hasText: project }).click()
-        await page.getByTestId('nav-mode-settings').click()
+        await page.getByTestId('activity-settings').click()
         for (const scoped of [false, true]) {
+            // Workspace defaults live in Settings; a project's model defaults live on its project page.
             const scope = card(page, scoped ? 'Project model defaults' : 'Model defaults (Workspace)')
             if (scoped) {
                 const response = await page.request.patch('/workspace/api/settings', { data: { section: 'models', expected_revision: (await read()).models.revision,
                     value: { provider: 'anthropic', llm_profile: null, model: 'workspace-parent', reasoning_effort: 'low' } } })
                 expect(response.ok()).toBeTruthy()
                 await page.reload()
-                await page.getByTestId('nav-mode-settings').click()
+                await openProjectPage(page, project)
                 await page.getByRole('switch', { name: 'Override workspace model settings' }).click()
             }
             await chooseModel(page, 'anthropic', 'claude-opus-4-6', scope)
@@ -808,7 +808,7 @@ test('picker default persists workspace and project resets', async ({ page }, te
                 expect((await saved).status()).toBe(200)
                 await expect.poll(async () => (await read(scoped)).models.stored).toMatchObject({ provider: 'codex', llm_profile: null, model: null, reasoning_effort: 'high' })
                 await page.reload()
-                await page.getByTestId('nav-mode-settings').click()
+                await page.getByTestId('activity-settings').click()
                 await expect(scope.getByRole('button', { name: /^Model:/ })).toContainText('Discovery default · High')
                 await openPicker(page, scope)
                 await page.getByRole('button', { name: /^Use default ·/ }).click()
@@ -821,7 +821,7 @@ test('picker default persists workspace and project resets', async ({ page }, te
             if (scoped) await scope.getByRole('button', { name: /^Discard/ }).click()
         }
         await page.reload()
-        await page.getByTestId('nav-mode-settings').click()
+        await openProjectPage(page, project)
         await expect(page.getByRole('switch', { name: 'Override workspace model settings' })).not.toBeChecked()
     } finally {
         await page.request.patch('/workspace/api/settings', { data: { section: 'models', expected_revision: (await read()).models.revision, value: original.stored ?? original.effective } })
@@ -841,9 +841,7 @@ test('mission picker default persists through the real conversation backend', as
     const mission = await response.json()
     const read = async () => (await page.request.get(`/workspace/api/conversations/${mission.id}?project_path=${encodeURIComponent(project)}`)).json()
     await page.goto('/')
-    await page.getByTestId('top-nav-project-switcher').click()
-    await page.getByRole('option').filter({ hasText: project }).click()
-    await page.getByTestId('nav-mode-missions').click()
+    await page.getByTestId('activity-missions').click()
     await page.getByRole('button', { name: 'Picker reset mission', exact: true }).click()
     const detail = page.getByRole('region', { name: 'Mission details' })
     const openModel = async () => {

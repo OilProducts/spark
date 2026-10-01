@@ -1,4 +1,3 @@
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { RunStream } from '@/features/runs/RunStream'
 import {
@@ -17,7 +16,7 @@ saveState: 'idle',
 saveStateVersion: 0,
 saveErrorMessage: null,
 saveErrorKind: null});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -115,7 +114,7 @@ describe('RunStream save indicator', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     act(() => {
-      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-reconcile')
+      useStore.getState().setRunsSelectedRunId('run-reconcile')
       useStore.getState().updateRunDetailSession(selectSelectedRunId(useStore.getState())!, {
         record: {
           run_id: 'run-reconcile',
@@ -204,7 +203,7 @@ describe('RunStream save indicator', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     act(() => {
-      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-cached-fallback')
+      useStore.getState().setRunsSelectedRunId('run-cached-fallback')
       useStore.getState().updateRunDetailSession(selectSelectedRunId(useStore.getState())!, {
         record: {
           run_id: 'run-cached-fallback',

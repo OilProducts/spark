@@ -8,7 +8,7 @@ import { useRunJournalStore } from '../state/runJournalStore'
 
 const pending: { url: string; resolve: (response: Response) => void }[] = []
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
-const select = (runId: string) => useStore.getState().setRunsSelectedRunIdForScope('all', runId)
+const select = (runId: string) => useStore.getState().setRunsSelectedRunId(runId)
 const question: PendingQuestionSnapshot = { questionId: 'q', nodeId: 'review', prompt: 'Continue?', questionType: 'YES_NO', options: [] }
 const gate = { ...question, eventId: 'q', sequence: 1, receivedAt: '', stageIndex: 0, sourceScope: 'root', sourceParentNodeId: null, sourceFlowName: null, details: null } as PendingInterviewGate
 
@@ -16,7 +16,6 @@ beforeEach(() => {
     pending.length = 0
     useStore.setState(useStore.getInitialState(), true)
     useRunJournalStore.setState({ byRunId: {} })
-    useStore.getState().updateRunsListSession({ scopeMode: 'all' })
     select('a')
     vi.stubGlobal('fetch', vi.fn((url: string) => new Promise<Response>((resolve) => pending.push({ url, resolve }))))
 })

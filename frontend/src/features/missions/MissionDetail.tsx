@@ -82,8 +82,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
     const conversation = useMissionConversation(mission, project)
     const { conversationId } = conversation
     const inherited = useInheritedModelSettings(project)
-    const scopeMode = useStore(state => state.runsListSession.scopeMode)
-    const { scopedRuns } = useRunsList({ activeProjectPath: project, scopeMode, selectedRunId: null, manageSync: false })
+    const { scopedRuns } = useRunsList({ selectedRunId: null, manageSync: false })
     const runs: MissionRun[] = joinRuns(mission.runs ?? [], scopedRuns)
     const runTitles = new Map(runs.map(run => [run.runId, run.title]))
     const tokens = totalTokens(runs)
@@ -239,7 +238,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
                 </RailSection>
                 {tokens !== null && <RailSection label="Spent"><p className="text-xs">{formatCompactCount(tokens)} tokens across runs</p></RailSection>}
                 {triggerError && <InlineError>{triggerError}</InlineError>}
-                {triggers.length > 0 && <RailSection label="Triggers"><ul aria-label="Targeting triggers">{triggers.map(trigger => <li key={trigger.id}><button type="button" className="text-left text-xs text-primary hover:underline" onClick={() => { useStore.getState().updateTriggersSession({ selectedTriggerId: trigger.id, scopeFilter: 'all' }); useStore.getState().setViewMode('triggers') }}>{trigger.name} · {trigger.source_type} · {trigger.enabled ? 'Enabled' : 'Disabled'}</button></li>)}</ul></RailSection>}
+                {triggers.length > 0 && <RailSection label="Triggers"><ul aria-label="Targeting triggers">{triggers.map(trigger => <li key={trigger.id}><button type="button" className="text-left text-xs text-primary hover:underline" onClick={() => { useStore.getState().updateTriggersSession({ selectedTriggerId: trigger.id }); useStore.getState().setViewMode('triggers') }}>{trigger.name} · {trigger.source_type} · {trigger.enabled ? 'Enabled' : 'Disabled'}</button></li>)}</ul></RailSection>}
             </aside>
         </div>
     </section>

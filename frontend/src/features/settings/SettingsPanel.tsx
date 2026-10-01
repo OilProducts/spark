@@ -7,7 +7,6 @@ import { ClaudeCodeConnectionSettings } from "./ClaudeCodeConnectionSettings"
 import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
-import { ProjectModelSettingsEditor } from "./ProjectModelSettingsEditor"
 import { UtilityModelSettingsEditor } from "./UtilityModelSettingsEditor"
 import { useEffect, useState } from "react"
 import { useStore } from "@/store"
@@ -49,7 +48,6 @@ function getTauriInvoke(): TauriInvoke | null {
 
 export function SettingsPanel() {
     const models = useModelSettingsEditor()
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const { confirm } = useDialogController()
     const llmProfiles = useLlmProfiles()
     const [desktopSettings, setDesktopSettings] = useState<DesktopServerSettings | null>(null)
@@ -157,7 +155,7 @@ export function SettingsPanel() {
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
                         {models.pending ? <p role="status">Saving or reloading settings…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
                         {/* The workspace has no parent: its default is the stored Codex group, whose effort can still be set. */}
-                        <ModelChooser disabled={!models.saved || models.pending} inherited={{ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }} value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={next => models.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={activeProjectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />
+                        <ModelChooser disabled={!models.saved || models.pending} inherited={{ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }} value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={next => models.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={null} inheritLabel="Provider default" invalidModel={!!invalidModel} />
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
                             <Button aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
@@ -169,8 +167,7 @@ export function SettingsPanel() {
                     </CardContent>
                 </Card>
 
-                <UtilityModelSettingsEditor projectPath={activeProjectPath} />
-                {activeProjectPath && <ProjectModelSettingsEditor key={activeProjectPath} projectPath={activeProjectPath} />}
+                <UtilityModelSettingsEditor projectPath={null} />
                 <ProviderSettingsEditor />
                 <LlmProfilesEditor />
                 </TabsContent>

@@ -212,46 +212,70 @@ test.beforeAll(() => {
   ensureScreenshotDir()
 })
 
-test('mobile and narrow viewport usability is preserved for core project and operational tasks', async ({ page }) => {
+const VIEWS = [
+  { icon: 'activity-chats', view: 'chats-view' },
+  { icon: 'activity-missions', view: 'missions-view' },
+  { icon: 'activity-runs', view: 'runs-view' },
+  { icon: 'activity-triggers', view: 'triggers-view' },
+  { icon: 'activity-flows', view: 'flows-view' },
+] as const
+
+test('a narrow viewport stacks each view\'s panel above its main area and keeps every view reachable', async ({ page }) => {
   await seedRouteState(page)
   await stubResponsiveSmokeApis(page)
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
 
-  await expect(page.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'stacked')
-  await expect(page.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'stacked')
+  const activityBar = page.getByTestId('activity-bar')
+  await expect(activityBar).toHaveAttribute('data-responsive-layout', 'stacked')
   await expect(page.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
-  await expect(page.getByTestId('top-nav-active-project')).toHaveAttribute('data-responsive-layout', 'stacked')
-  await expect(page.getByTestId('top-nav-project-switcher')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-add-button')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-settings-button')).toBeVisible()
-  await expect(page.getByTestId('nav-mode-settings')).toBeVisible()
+  await expect(page.getByTestId('add-project-button')).toBeVisible()
+  // No top tabs or project selector remain.
+  await expect(page.getByTestId('view-mode-tabs')).toHaveCount(0)
+  await expect(page.getByTestId('top-nav-project-switcher')).toHaveCount(0)
   await page.screenshot({ path: screenshotPath('13a-mobile-projects-operations.png'), fullPage: true })
 
-  await page.getByTestId('nav-mode-runs').click()
+  for (const { icon, view } of VIEWS) {
+    await expect(page.getByTestId(icon)).toBeInViewport()
+    await page.getByTestId(icon).click()
+    const shown = page.getByTestId(view)
+    await expect(shown).toHaveAttribute('data-responsive-layout', 'stacked')
+    const panel = await shown.getByTestId('side-panel').boundingBox()
+    const main = await shown.getByTestId('view-main').boundingBox()
+    expect(panel!.width).toBeGreaterThan(300)
+    expect(main!.y).toBeGreaterThanOrEqual(panel!.y + panel!.height - 1)
+    await expect(activityBar).toBeInViewport()
+  }
+  await page.getByTestId('activity-runs').click()
   await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
   await page.screenshot({ path: screenshotPath('13b-mobile-runs-panel.png'), fullPage: true })
+  await page.getByTestId('activity-settings').click()
+  await expect(page.getByTestId('settings-panel')).toBeVisible()
+  await expect(activityBar).toBeInViewport()
 })
 
-test('viewport regression baselines capture desktop shell layouts for projects and runs surfaces', async ({ page }) => {
+test('viewport regression baselines capture desktop shell layouts for every view', async ({ page }) => {
   await seedRouteState(page)
   await stubResponsiveSmokeApis(page)
 
   await page.setViewportSize({ width: 1366, height: 900 })
   await page.goto('/')
 
-  await expect(page.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'inline')
-  await expect(page.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'inline')
+  await expect(page.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'inline')
   await expect(page.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
-  await expect(page.getByTestId('top-nav-active-project')).toHaveAttribute('data-responsive-layout', 'inline')
-  await expect(page.getByTestId('top-nav-project-switcher')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-add-button')).toBeVisible()
-  await expect(page.getByTestId('top-nav-project-settings-button')).toBeVisible()
-  await expect(page.getByTestId('nav-mode-settings')).toBeVisible()
+  await expect(page.getByTestId('activity-settings')).toBeVisible()
   await page.screenshot({ path: screenshotPath('13c-desktop-projects-operations.png'), fullPage: true })
 
-  await page.getByTestId('nav-mode-runs').click()
+  for (const { icon, view } of VIEWS) {
+    await page.getByTestId(icon).click()
+    const shown = page.getByTestId(view)
+    await expect(shown).toHaveAttribute('data-responsive-layout', 'split')
+    const panel = await shown.getByTestId('side-panel').boundingBox()
+    const main = await shown.getByTestId('view-main').boundingBox()
+    expect(main!.x).toBeGreaterThanOrEqual(panel!.x + panel!.width - 1)
+  }
+  await page.getByTestId('activity-runs').click()
   await expect(page.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
   await page.screenshot({ path: screenshotPath('13d-desktop-runs-panel.png'), fullPage: true })
 })

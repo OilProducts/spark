@@ -1,4 +1,4 @@
-import { unconfirmRunQuestions, getRunsSelectedRunIdForScope } from './runsSessionScope'
+import { unconfirmRunQuestions } from './runsSessionScope'
 import { type StateCreator } from 'zustand'
 import type { AppState } from './store-types'
 import type {
@@ -8,8 +8,8 @@ import type {
 } from './viewSessionTypes'
 
 const DEFAULT_RUNS_LIST_SESSION_STATE: RunsListSessionState = {
-    scopeMode: 'active',
-    selectedRunIdByScopeKey: {},
+    selectedRunId: null,
+    projectFilter: null,
     status: 'idle',
     error: null,
     runs: [],
@@ -117,7 +117,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             // Unselected runs have no detail stream; refreshed summaries must
             // update their cached status as well as their telemetry.
             const refreshInactiveRun = source === 'list'
-                && runId !== getRunsSelectedRunIdForScope(state.runsListSession, state.activeProjectPath)
+                && runId !== state.runsListSession.selectedRunId
             const fields = refreshInactiveRun ? [...LIVE_FIELDS, 'current_node'] as const
                 : source === 'live' ? LIVE_FIELDS : TELEMETRY_FIELDS
             const patch = source === 'journal' ? record : Object.fromEntries(
@@ -171,17 +171,17 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
     updateRunsListSession: (patch, source = 'list') => {
         set((state) => {
             const runsListSession = { ...state.runsListSession, ...patch }
-            const runId = getRunsSelectedRunIdForScope(runsListSession, state.activeProjectPath)
+            const runId = runsListSession.selectedRunId
             const session = runId ? state.runDetailSessionsByRunId[runId] : null
-            return { runsListSession, ...(runId && session && runId !== getRunsSelectedRunIdForScope(state.runsListSession, state.activeProjectPath)
+            return { runsListSession, ...(runId && session && runId !== state.runsListSession.selectedRunId
                 ? { runDetailSessionsByRunId: { ...state.runDetailSessionsByRunId, [runId]: unconfirmRunQuestions(session) } } : {}) }
         })
         if (source === 'list') {
             patch.runs?.forEach((record) => get().reconcileRunRecord(record.run_id, 'list', record))
         }
     },
-    setRunsSelectedRunIdForScope: (scopeKey, runId) =>
-        set((state) => state.runsListSession.selectedRunIdByScopeKey[scopeKey] === runId ? state : ({
+    setRunsSelectedRunId: (runId) =>
+        set((state) => state.runsListSession.selectedRunId === runId ? state : ({
             ...(runId ? { runDetailSessionsByRunId: {
                 ...state.runDetailSessionsByRunId,
                 [runId]: { ...unconfirmRunQuestions(resolveRunDetailSession(state.runDetailSessionsByRunId, runId, state.clientRunPresentation)),
@@ -191,13 +191,7 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
                     selectedNodeId: null,
                 },
             } } : {}),
-            runsListSession: {
-                ...state.runsListSession,
-                selectedRunIdByScopeKey: {
-                    ...state.runsListSession.selectedRunIdByScopeKey,
-                    [scopeKey]: runId,
-                },
-            },
+            runsListSession: { ...state.runsListSession, selectedRunId: runId },
         })),
     updateRunDetailSession: (runId, patch) =>
         set((state) => !state.runDetailSessionsByRunId[runId] ? state : ({
@@ -215,9 +209,8 @@ export const createRunsSessionSlice: StateCreator<AppState, [], [], RunsSessionS
             delete next[runId]
             return {
                 runDetailSessionsByRunId: next,
-                runsListSession: { ...state.runsListSession, selectedRunIdByScopeKey: Object.fromEntries(
-                    Object.entries(state.runsListSession.selectedRunIdByScopeKey).map(([key, id]) => [key, id === runId ? null : id]),
-                ) },
+                runsListSession: { ...state.runsListSession,
+                    selectedRunId: state.runsListSession.selectedRunId === runId ? null : state.runsListSession.selectedRunId },
             }
         }),
 })

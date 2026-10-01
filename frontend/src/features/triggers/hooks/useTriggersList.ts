@@ -7,8 +7,7 @@ export function useTriggersList({ manageSync = true }: { manageSync?: boolean } 
     const triggersSession = useStore((state) => state.triggersSession)
     const updateTriggersSession = useStore((state) => state.updateTriggersSession)
     const hasDraftedTriggerSession =
-        triggersSession.scopeFilter !== 'all'
-        || triggersSession.selectedTriggerId !== null
+        triggersSession.selectedTriggerId !== null
         || triggersSession.newTriggerDraft.form.name.trim().length > 0
         || Object.keys(triggersSession.editTriggerDraftsByTriggerId).length > 0
     const hasTriggersSession =

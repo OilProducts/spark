@@ -32,7 +32,7 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
   expect(rootResponse?.ok()).toBeTruthy()
   expect(rootResponse?.headers()['content-type']).toContain('text/html')
   await expect(page.getByTestId('app-shell')).toBeVisible()
-  await expect(page.getByTestId('top-nav')).toBeVisible()
+  await expect(page.getByTestId('activity-bar')).toBeVisible()
 
   const attractorStatus = await page.request.get('/attractor/status')
   expect(attractorStatus.ok()).toBeTruthy()
@@ -87,9 +87,9 @@ test('Rust product shell serves the built SPA and owns core browser routes', asy
       is_favorite: true,
     })
 
-    await page.getByTestId('nav-mode-editor').click()
+    await page.getByTestId('activity-flows').click()
     await expect(page.getByTestId('canvas-workspace-primary')).toBeVisible()
-    await page.getByTestId('nav-mode-runs').click()
+    await page.getByTestId('activity-runs').click()
     await expect(page.getByTestId('runs-panel')).toBeVisible()
     await page.screenshot({ path: screenshotPath('00-rust-product-shell.png'), fullPage: true })
   } finally {

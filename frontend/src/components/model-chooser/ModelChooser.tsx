@@ -120,7 +120,7 @@ export function ModelChooser({ value, inherited, onChange, projectPath, inheritL
                 <Button type="button" variant="ghost" className="my-1 h-auto w-full justify-start whitespace-normal text-left" aria-pressed={!value.provider && !value.llm_profile && !value.model} onClick={() => { onChange(empty); setOpen(false) }}>
                     Use default · {describe(defaults)}
                 </Button>
-                {projectPath && !discovery && <p role="status" className="px-2 text-xs text-muted-foreground">Loading models…</p>}
+                {!discovery && <p role="status" className="px-2 text-xs text-muted-foreground">Loading models…</p>}
                 <div id={`${id}-list`} role="listbox" aria-label="Models" className="min-h-0 max-h-[min(45vh,20rem)] overflow-y-auto">
                     {groups.map((group, index) => {
                         const entries = rows.filter(row => row.groupIndex === index)

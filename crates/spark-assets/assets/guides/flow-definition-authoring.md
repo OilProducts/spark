@@ -111,7 +111,7 @@ When the run reaches an opted-in exit — or fails, in which case any opted-in
 exit counts — the runtime executes one summarizer agent whose working
 directory is the run's artifact root. It reads the recorded transcripts
 (`events.jsonl`, `checkpoint.json`, `logs/<node>/…`) directly and its markdown
-response becomes the run result shown in the Runs tab. `result_summary_prompt`
+response becomes the run result shown in the Runs view. `result_summary_prompt`
 overrides the default instructions. A summarizer failure never fails the run;
 the result falls back to the exit predecessor's response with the error
 recorded.

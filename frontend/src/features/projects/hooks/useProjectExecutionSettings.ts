@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useDialogController } from '@/components/app/dialog-controller'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 
 import {
@@ -11,7 +10,7 @@ import {
 } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { fetchProjectExecutionSettings } from '@/lib/api/settingsApi'
-import { extractApiErrorMessage, toHydratedProjectRecord } from '@/features/projects/model/projectsHomeState'
+import { extractApiErrorMessage, toHydratedProjectRecord } from '../model/projectsHomeState'
 
 export const WORKSPACE_DEFAULT_VALUE = '__workspace_default__'
 
@@ -32,11 +31,8 @@ function buildSettingsError(settings: WorkspaceSettingsResponse | null, loadErro
     return null
 }
 
-export function useProjectSettingsDialog(
-    open: boolean,
-    projectPath: string | null,
-    onOpenChange: (open: boolean) => void,
-) {
+/** A project's default execution profile, edited in place on its project page. */
+export function useProjectExecutionSettings(projectPath: string) {
     const upsertProjectRegistryEntry = useStore((state) => state.upsertProjectRegistryEntry)
     const [revision, setRevision] = useState<string | null>(null)
     const [settings, setSettings] = useState<WorkspaceSettingsResponse | null>(null)
@@ -50,14 +46,8 @@ export function useProjectSettingsDialog(
     const [savedProfileValue, setSavedProfileValue] = useState(WORKSPACE_DEFAULT_VALUE)
     const [message, setMessage] = useState('')
     const [reload, setReload] = useState(0)
-    const { confirm } = useDialogController()
-    const dirty = open && revision !== null && selectedProfileValue !== savedProfileValue
+    const dirty = revision !== null && selectedProfileValue !== savedProfileValue
     useSettingsNavigationProtection(dirty, isSaving)
-    const requestOpenChange = async (next: boolean) => {
-        if (isSaving) return
-        if (!next && dirty && !await confirm({ title: 'Discard unsaved settings?', description: 'Your unsaved project settings will be lost.', confirmLabel: 'Discard and leave', cancelLabel: 'Keep editing' })) return
-        onOpenChange(next)
-    }
     const discard = () => {
         if (isSaving) return
         setRevision(null)
@@ -75,12 +65,9 @@ export function useProjectSettingsDialog(
         setValidationError(null)
         setMessage('')
         setSaveError(null)
-    }, [open, projectPath])
+    }, [projectPath])
 
     useEffect(() => {
-        if (!open || !projectPath) {
-            return
-        }
         let cancelled = false
         const refresh = () => {
             if (isSaving) return
@@ -126,17 +113,17 @@ export function useProjectSettingsDialog(
             window.removeEventListener('spark:settings-live-event', refresh)
             window.removeEventListener('focus', refresh)
         }
-    }, [open, projectPath, dirty, isSaving, revision, settings, reload])
+    }, [projectPath, dirty, isSaving, revision, settings, reload])
 
     const enabledProfiles = useMemo(
         () => (settings?.execution_placement.profiles ?? []).filter((profile) => profile.enabled && profile.id),
         [settings],
     )
     const settingsError = buildSettingsError(settings, loadError)
-    const canSave = Boolean(projectPath) && Boolean(revision) && !isLoading && !isSaving && !settingsError && Boolean(selectedProfileValue)
+    const canSave = Boolean(revision) && !isLoading && !isSaving && !settingsError && Boolean(selectedProfileValue)
 
     const onSave = async () => {
-        if (!projectPath || !revision || !canSave) {
+        if (!revision || !canSave) {
             return
         }
         setSaving(true)
@@ -148,7 +135,9 @@ export function useProjectSettingsDialog(
                 execution_profile_id: selectedProfileValue === WORKSPACE_DEFAULT_VALUE ? null : selectedProfileValue,
             })
             upsertProjectRegistryEntry(toHydratedProjectRecord(projectRecord))
-            onOpenChange(false)
+            setSavedProfileValue(selectedProfileValue)
+            setRevision(null)
+            setReload((value) => value + 1)
         } catch (error) {
             setSaveError(extractApiErrorMessage(error, 'Unable to save project settings.'))
         } finally {
@@ -160,7 +149,6 @@ export function useProjectSettingsDialog(
         dirty,
         message,
         discard,
-        requestOpenChange,
         enabledProfiles,
         settingsError,
         validationError,

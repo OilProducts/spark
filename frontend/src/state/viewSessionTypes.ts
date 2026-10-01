@@ -42,8 +42,9 @@ export interface HomeConversationSessionState {
 }
 
 export interface RunsListSessionState {
-    scopeMode: 'active' | 'all'
-    selectedRunIdByScopeKey: Record<string, string | null>
+    selectedRunId: string | null
+    /** The project the run list shows, or every project when null. */
+    projectFilter: string | null
     status: ResourceStatus
     error: string | null
     runs: RunRecord[]
@@ -105,14 +106,12 @@ export interface RunDetailSessionState {
 
 export interface TriggerCreateDraftState {
     form: TriggerFormState
-    targetBehavior: 'default' | 'active' | 'manual'
 }
 
 export interface TriggerEditDraftState {
     expectedRevision?: string
     triggerId: string | null
     form: TriggerFormState | null
-    targetBehavior: 'inferred' | 'active' | 'manual'
 }
 
 export interface TriggersSessionState {
@@ -120,7 +119,6 @@ export interface TriggersSessionState {
     error: string | null
     triggers: TriggerResponse[]
     selectedTriggerId: string | null
-    scopeFilter: 'all' | 'active'
     revealedWebhookSecrets: Record<string, string>
     createFormOpen: boolean
     newTriggerDraft: TriggerCreateDraftState
@@ -167,7 +165,7 @@ export interface RunsSessionSlice {
     reconcileRunRecord: (runId: string, source: 'status' | 'list' | 'live' | 'journal', record: Partial<RunRecord>, completedNodes?: string[], requestUpdates?: RunDetailSessionState['recordUpdates']) => void
     optimisticallyPatchRun: (runId: string, patch: Partial<RunRecord>) => () => void
     updateRunsListSession: (patch: Partial<RunsListSessionState>, source?: 'list' | 'live') => void
-    setRunsSelectedRunIdForScope: (scopeKey: string, runId: string | null) => void
+    setRunsSelectedRunId: (runId: string | null) => void
     updateRunDetailSession: (runId: string, patch: Partial<RunDetailSessionState>) => void
     clearRunDetailSession: (runId: string) => void
 }

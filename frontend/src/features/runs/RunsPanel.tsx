@@ -1,4 +1,3 @@
-import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { useShallow } from 'zustand/react/shallow'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -27,7 +26,8 @@ import { formatDuration, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
 import { buildRunContextOverview, runStatusKind } from './model/runOverviewModel'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
+import { ViewLayout } from '@/components/app/view-layout'
+import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { requestRunsTransportReconnect } from './services/runsTransportReconnect'
@@ -47,38 +47,49 @@ const STATUS_ROWS = {
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
 
-function RunsSidebar({ activeProjectPath, scopeMode, selectedRunId }: {
-    activeProjectPath: string | null
-    scopeMode: 'active' | 'all'
-    selectedRunId: string | null
-}) {
-    const { error, scopedRuns, status, summary } = useRunsList({
-        activeProjectPath, scopeMode, selectedRunId, manageSync: false,
-    })
+function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
+    const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
+    const projectFilter = useStore((state) => state.runsListSession.projectFilter)
+    const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
+    const queued = runs.filter((run) => run.status === 'queued').length
     return (
         <RunList
-            activeProjectPath={activeProjectPath}
             error={error}
-            scopeMode={scopeMode}
-            onScopeModeChange={(mode) => { useStore.getState().updateRunsListSession({ scopeMode: mode }); completePreferenceInteraction({ runs_scope: mode }) }}
             status={status}
             onSelectRun={(run) => {
                 const state = useStore.getState()
-                state.setRunsSelectedRunIdForScope(buildRunsScopeKey(scopeMode, activeProjectPath), run.run_id)
+                state.setRunsSelectedRunId(run.run_id)
                 state.reconcileRunRecord(run.run_id, 'list', run)
             }}
-            runs={scopedRuns}
+            runs={runs}
             selectedRunId={selectedRunId}
-            summaryLabel={`${summary.total} runs${summary.queued > 0 ? ` · ${summary.queued} queued` : ''}`}
+            summaryLabel={`${runs.length} runs${queued > 0 ? ` · ${queued} queued` : ''}`}
         />
+    )
+}
+
+function RunsProjectFilter() {
+    const registry = useStore((state) => state.projectRegistry)
+    const projectFilter = useStore((state) => state.runsListSession.projectFilter)
+    return (
+        <select
+            data-testid="runs-project-filter"
+            aria-label="Show runs from project"
+            value={projectFilter ?? ''}
+            onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
+            className="max-w-36 truncate rounded-md border border-border bg-background px-2 py-0.5 text-xs text-foreground"
+        >
+            <option value="">All projects</option>
+            {orderProjects(registry).map((project) => (
+                <option key={project.directoryPath} value={project.directoryPath}>{projectLabel(registry, project.directoryPath)}</option>
+            ))}
+        </select>
     )
 }
 
 export function RunsPanel() {
     const isNarrowViewport = useNarrowViewport()
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const { scopeMode, status, streamError, streamStatus, hasRuns } = useStore(useShallow((state) => ({
-        scopeMode: state.runsListSession.scopeMode,
+    const { status, streamError, streamStatus, hasRuns } = useStore(useShallow((state) => ({
         status: state.runsListSession.status,
         streamError: state.runsListSession.streamError,
         streamStatus: state.runsListSession.streamStatus,
@@ -88,7 +99,6 @@ export function RunsPanel() {
     const selectedRunId = useStore(selectSelectedRunId)
     const selectedRunStatusSync = useStore((state) => selectSelectedRunSession(state)?.statusSync ?? 'idle')
     const selectedRunStatusError = useStore((state) => selectSelectedRunSession(state)?.statusError ?? null)
-    const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const setViewMode = useStore((state) => state.setViewMode)
     const setActiveFlow = useStore((state) => state.setActiveFlow)
     const setPendingEditorNodeSelection = useStore((state) => state.setPendingEditorNodeSelection)
@@ -166,7 +176,6 @@ export function RunsPanel() {
     const showRunSelectionEmptyState =
         status === 'ready'
         && !selectedRunId
-        && (((scopeMode === 'active' && activeProjectPath) || scopeMode === 'all'))
         && hasRuns
         && !selectedRun
     const showRunDetailsRestoringState =
@@ -333,9 +342,6 @@ export function RunsPanel() {
         const projectPath = run.project_path || run.working_directory || null
         const normalizedModel = run.model === 'codex default (config/profile)' ? '' : run.model || ''
 
-        if (projectPath) {
-            setActiveProjectPath(projectPath)
-        }
         setContinuationDraft({
             sourceRunId: run.run_id,
             sourceFlowName: run.flow_name || null,
@@ -361,10 +367,16 @@ export function RunsPanel() {
     }, [continuationDraft, selectedRun])
 
     return (
+        <ViewLayout
+            view="runs"
+            title="Runs"
+            actions={<RunsProjectFilter />}
+            panel={<RunsSidebar selectedRunId={selectedRunId} />}
+        >
         <section
             data-testid="runs-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`h-full flex-1 ${isNarrowViewport ? 'overflow-auto p-3' : 'flex min-h-0 flex-col overflow-hidden p-6'}`}
+            className={`h-full flex-1 ${isNarrowViewport ? 'p-3' : 'flex min-h-0 flex-col overflow-hidden p-6'}`}
         >
             {showRunsTransportReconnectNotice ? (
                 <div className="mb-4">
@@ -390,12 +402,7 @@ export function RunsPanel() {
                 </div>
             ) : null}
             <div className={`w-full ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 overflow-hidden'}`}>
-                <RunsSidebar
-                    activeProjectPath={activeProjectPath}
-                    scopeMode={scopeMode}
-                    selectedRunId={selectedRunId}
-                />
-                <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden pl-6'}`}>
+                <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden'}`}>
                     <div
                         className={isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col gap-4'}
                     >
@@ -414,13 +421,7 @@ export function RunsPanel() {
                                 flowTitle={flowSnapshot?.title ?? null}
                                 selectedVisitLabel={selectedVisitLabel}
                                 onContinueFromRun={beginContinuation}
-                                onRerunRun={(run) => {
-                                    const projectPath = run.project_path || run.working_directory || null
-                                    if (projectPath) {
-                                        setActiveProjectPath(projectPath)
-                                    }
-                                    setRerunRun(run)
-                                }}
+                                onRerunRun={(run) => setRerunRun(run)}
                                 onRequestCancel={(runId, currentStatus) => {
                                     void requestCancel(runId, currentStatus)
                                 }}
@@ -432,7 +433,7 @@ export function RunsPanel() {
                         {selectedRun && activeContinuationDraft && (
                             <RunContinuationPanel
                                 draft={activeContinuationDraft}
-                                activeProjectPath={activeProjectPath}
+                                projectPath={selectedRun.project_path || null}
                                 onDraftChange={(patch) => {
                                     setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
                                 }}
@@ -451,7 +452,7 @@ export function RunsPanel() {
                                 </span>
                             </div>
                         )}
-                        {!selectedRun && scopeMode === 'all' && !hasRuns && (
+                        {!selectedRun && !hasRuns && (
                             <Empty className="text-sm text-muted-foreground">
                                 <EmptyHeader>
                                     <EmptyDescription>No runs have been recorded yet.</EmptyDescription>
@@ -651,7 +652,7 @@ export function RunsPanel() {
                                     displayName: rerunRun.flow_name || null,
                                 },
                             }}
-                            projectPath={rerunRun.project_path || rerunRun.working_directory || activeProjectPath}
+                            projectPath={rerunRun.project_path || rerunRun.working_directory || null}
                             initialLaunchContext={rerunRun.launch_context ?? null}
                             initialWorkingDirectory={rerunRun.working_directory || rerunRun.project_path || ''}
                             initialModel={rerunRun.model === 'codex default (config/profile)' ? '' : rerunRun.model || ''}
@@ -667,5 +668,6 @@ export function RunsPanel() {
                 </DialogContent>
             </Dialog>
         </section>
+        </ViewLayout>
     )
 }

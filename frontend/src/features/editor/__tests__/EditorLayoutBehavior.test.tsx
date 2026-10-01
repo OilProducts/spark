@@ -264,8 +264,9 @@ const buildSavedLayout = (
   buildCanvasEdges(pairs),
 ).layout
 
+// Flow layouts belong to the flow, whichever project a chat has open.
 const storageKeyFor = (flowName: string) => buildSavedFlowLayoutStorageKey(
-  PROJECT_PATH,
+  null,
   flowName,
   'editor-parent-only',
 )

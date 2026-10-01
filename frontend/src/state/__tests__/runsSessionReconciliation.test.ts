@@ -2,7 +2,6 @@ import { beforeEach, expect, it } from 'vitest'
 import { useStore } from '@/store'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { selectSelectedRunId, selectSelectedRunSession } from '../runsSessionSelectors'
-import { buildRunsScopeKey } from '../runsSessionScope'
 
 const record = (runId = 'a', patch: Partial<RunRecord> = {}): RunRecord => ({
     run_id: runId, flow_name: 'flow.yaml', status: 'running', working_directory: '/a',
@@ -11,8 +10,7 @@ const record = (runId = 'a', patch: Partial<RunRecord> = {}): RunRecord => ({
 
 beforeEach(() => {
     useStore.setState(useStore.getInitialState(), true)
-    useStore.getState().setRunsSelectedRunIdForScope('all', 'a')
-    useStore.getState().updateRunsListSession({ scopeMode: 'all' })
+    useStore.getState().setRunsSelectedRunId('a')
 })
 
 it('seeds summaries before status, then preserves details while accepting available list telemetry', () => {
@@ -67,13 +65,12 @@ it('optimistically cancels an uninspected list row without creating a session', 
 
 it('clears references to a missing run without deselecting a newer run or accepting late writes', () => {
     const state = useStore.getState()
-    state.setRunsSelectedRunIdForScope('project:/a', 'a')
-    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.setRunsSelectedRunId('a')
+    state.setRunsSelectedRunId('b')
     state.clearRunDetailSession('a')
     state.updateRunDetailSession('a', { statusError: 'late failure' })
     state.reconcileRunRecord('a', 'status', record())
     expect(useStore.getState().runDetailSessionsByRunId.a).toBeUndefined()
-    expect(useStore.getState().runsListSession.selectedRunIdByScopeKey['project:/a']).toBeNull()
     expect(selectSelectedRunId(useStore.getState())).toBe('b')
 })
 
@@ -81,30 +78,26 @@ it('prunes removed project sessions, including a selected run whose status has n
     const state = useStore.getState()
     state.registerProject('/a')
     state.registerProject('/b')
-    state.setRunsSelectedRunIdForScope('project:/a', 'unknown-a')
-    state.setRunsSelectedRunIdForScope('project:/b', 'b')
+    state.setRunsSelectedRunId('a')
+    state.setRunsSelectedRunId('b')
     state.reconcileRunRecord('a', 'status', record())
     const rollback = state.optimisticallyPatchRun('a', { status: 'cancel_requested' })
     state.removeProject('/a', '/b')
     rollback()
-    state.updateRunDetailSession('unknown-a', { graphError: 'late graph' })
+    state.updateRunDetailSession('a', { graphError: 'late graph' })
     expect(Object.keys(useStore.getState().runDetailSessionsByRunId)).toEqual(['b'])
+    expect(selectSelectedRunId(useStore.getState())).toBe('b')
 })
 
-it('invalidates question confirmation on project and all-project transitions while retaining cached content', () => {
+it('invalidates question confirmation when the selection changes while retaining cached content', () => {
     const state = useStore.getState()
-    state.registerProject('/a')
-    state.registerProject('/b')
-    state.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/a'), 'a')
-    state.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/b'), 'b')
+    state.setRunsSelectedRunId('a')
+    state.setRunsSelectedRunId('b')
     state.updateRunDetailSession('a', { record: record(), questionsStatus: 'ready', resourceRequestIds: { questions: 1 } })
-    state.updateRunsListSession({ scopeMode: 'active' })
-    state.setActiveProjectPath('/b')
-    state.setActiveProjectPath('/a')
+    state.setRunsSelectedRunId('a')
     expect(selectSelectedRunSession(useStore.getState())).toMatchObject({ questionsStatus: 'idle', resourceRequestIds: { questions: -1 }, record: { run_id: 'a' } })
     state.updateRunDetailSession('b', { questionsStatus: 'ready' })
-    state.setRunsSelectedRunIdForScope('all', 'b')
-    state.updateRunsListSession({ scopeMode: 'all' })
+    state.setRunsSelectedRunId('b')
     expect(selectSelectedRunSession(useStore.getState())?.questionsStatus).toBe('idle')
 })
 
@@ -112,7 +105,7 @@ it('rolls back an optimistic list change when that run is first inspected while 
     const state = useStore.getState()
     state.updateRunsListSession({ runs: [record('b')] })
     const rollback = state.optimisticallyPatchRun('b', { status: 'cancel_requested' })
-    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.setRunsSelectedRunId('b')
     expect(selectSelectedRunSession(useStore.getState())?.record?.status).toBe('cancel_requested')
     rollback()
     expect(useStore.getState().runsListSession.runs[0].status).toBe('running')
@@ -175,7 +168,7 @@ it('refreshes an unselected cached run from list status without losing detailed 
     const state = useStore.getState()
     state.updateRunsListSession({ runs: [record()] })
     state.reconcileRunRecord('a', 'status', record('a', { execution_profile_id: 'native' }), ['start'])
-    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.setRunsSelectedRunId('b')
     state.updateRunsListSession({ runs: [record('a', { status: 'completed', outcome: 'success', current_node: 'done' })] })
     const session = useStore.getState().runDetailSessionsByRunId.a
     expect(session.record).toMatchObject({ status: 'completed', outcome: 'success', current_node: 'done', execution_profile_id: 'native' })
@@ -206,7 +199,7 @@ it('preserves a fresh list confirmation for a cached run after switching away', 
     state.updateRunsListSession({ runs: [record('a', { status: 'failed' })] })
     state.reconcileRunRecord('a', 'status', record('a', { status: 'failed' }))
     const rollback = state.optimisticallyPatchRun('a', { status: 'running' })
-    state.setRunsSelectedRunIdForScope('all', 'b')
+    state.setRunsSelectedRunId('b')
     state.updateRunsListSession({ runs: [record('a')] })
     rollback()
     expect(useStore.getState().runDetailSessionsByRunId.a.record?.status).toBe('running')

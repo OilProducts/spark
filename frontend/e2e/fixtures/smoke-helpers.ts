@@ -123,10 +123,24 @@ export async function stubProjectRegistration(page: Page, projectPath: string) {
   })
 }
 
+export const chatsProjectGroup = (page: Page, projectPath: string) =>
+  page.locator(`[data-testid="chats-project-group"][data-project-path="${projectPath}"]`)
+
 export async function registerProjectForSmokeTest(page: Page, projectPath: string) {
-  await page.getByTestId('top-nav-project-add-button').click()
+  await page.getByTestId('activity-chats').click()
+  await page.getByTestId('add-project-button').click()
   await page.getByTestId('project-browser-select-button').click()
-  await expect(page.getByTestId('top-nav-project-switcher')).toContainText(path.basename(projectPath) || projectPath)
+  // A new project joins the Chats panel, and the composer says chats go to it.
+  await expect(chatsProjectGroup(page, projectPath)).toBeVisible()
+  await expect(page.getByTestId('chat-composer-project')).toContainText(path.basename(projectPath) || projectPath)
+}
+
+/** Opens the editor's Run, which asks which project; picks `projectPath`. */
+export async function runFlowInProject(page: Page, projectPath: string) {
+  await page.getByTestId('editor-run-button').click()
+  const picker = page.getByTestId('run-flow-project-picker')
+  await expect(picker).toBeVisible()
+  await picker.locator(`[data-testid="project-picker-item"][data-project-path="${projectPath}"]`).click()
 }
 
 export async function gotoWithRegisteredProject(page: Page, projectPath: string) {

@@ -16,6 +16,7 @@ import { ModelChooser } from '@/components/model-chooser/ModelChooser'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import { Textarea } from '@/components/ui/textarea'
 import type { ConversationChatMode } from '@/lib/workspaceClient'
+import { useStore } from '@/store'
 
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
@@ -83,8 +84,19 @@ export function ProjectConversationSurface({
             >
                 <CardHeader className="gap-1 px-4">
                     <div className="flex items-center justify-between gap-3">
-                        <CardTitle className="text-lg font-light">
-                            {activeProjectLabel ? `Project Chat - ${activeProjectLabel}` : 'Project Chat'}
+                        <CardTitle className="flex min-w-0 items-baseline gap-2 text-lg font-light">
+                            <span className="shrink-0">Chat</span>
+                            {activeProjectPath && activeProjectLabel ? (
+                                <button
+                                    type="button"
+                                    data-testid="chat-project-link"
+                                    title={activeProjectPath}
+                                    onClick={() => useStore.getState().openProjectPage(activeProjectPath)}
+                                    className="min-w-0 truncate text-sm text-muted-foreground hover:text-primary"
+                                >
+                                    {activeProjectLabel}
+                                </button>
+                            ) : null}
                         </CardTitle>
                         {activeProjectPath && activeChatMode ? (
                             <span
@@ -108,7 +120,7 @@ export function ProjectConversationSurface({
                     <Empty className={`text-sm text-muted-foreground ${isNarrowViewport ? '' : 'flex flex-1 items-center'}`}>
                         <EmptyHeader>
                             <EmptyDescription>
-                                Choose or add a project from the navbar to begin chatting.
+                                Pick a chat, or start a new one.
                             </EmptyDescription>
                         </EmptyHeader>
                     </Empty>
@@ -155,9 +167,12 @@ export function ProjectConversationSurface({
                                 rows={4}
                             />
                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                <p className="text-xs text-muted-foreground">
-                                    Press Enter to send. Use Shift+Enter for a new line.
-                                </p>
+                                <div className="space-y-0.5 text-xs text-muted-foreground">
+                                    <p data-testid="chat-composer-project">
+                                        Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span>
+                                    </p>
+                                    <p>Press Enter to send. Use Shift+Enter for a new line.</p>
+                                </div>
                                 <div className="flex flex-wrap items-center justify-end gap-2">
                                     {onStopTurn && <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button>}
                                     {modelSettingsSource && <span className="text-xs text-muted-foreground">{modelSettingsSource === 'conversation' ? 'Conversation override' : modelSettingsSource === 'project' ? 'Project default' : 'Workspace default'}</span>}

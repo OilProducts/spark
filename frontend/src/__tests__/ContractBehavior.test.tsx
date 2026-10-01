@@ -1,12 +1,11 @@
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import App from '@/App'
 import { HomeSessionController, RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { LaunchPanel, type LaunchPanelProps } from '@/features/launch'
 import { Editor } from '@/features/editor/Editor'
 import { GraphSettings } from '@/features/editor/GraphSettings'
-import { Navbar } from '@/app/Navbar'
+import { ActivityBar } from '@/app/ActivityBar'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { RunStream } from '@/features/runs/RunStream'
 import { RunsPanel } from '@/features/runs/RunsPanel'
@@ -142,8 +141,8 @@ activeProjectPath: '/tmp/project-contract-behavior',
 activeFlow: 'contract-behavior.yaml',
 runsListSession: {
       ...useStore.getState().runsListSession,
-      scopeMode: 'active',
-      selectedRunIdByScopeKey: {},
+      selectedRunId: null,
+      projectFilter: null,
       status: 'idle',
       error: null,
       runs: [],
@@ -197,7 +196,7 @@ uiDefaults: {
       llm_model: 'gpt-5.3',
       reasoning_effort: 'high',
     }});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -757,7 +756,7 @@ describe('Frontend contract behavior', () => {
     )
 
     act(() => {
-      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId)
+      useStore.getState().setRunsSelectedRunId(runId)
     })
 
     renderRunsPanelWithController()
@@ -878,7 +877,7 @@ describe('Frontend contract behavior', () => {
 
     act(() => {
       useStore.getState().setViewMode('runs')
-      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId)
+      useStore.getState().setRunsSelectedRunId(runId)
     })
 
     const user = userEvent.setup()
@@ -1279,7 +1278,7 @@ describe('Frontend contract behavior', () => {
     expect(pipelinePayload.plan_id).toBeUndefined()
   })
 
-  it('[CID:13.1.01] supports keyboard navigation across projects, authoring, and triggers mode tabs', async () => {
+  it('[CID:13.1.01] supports keyboard navigation across the activity bar views', async () => {
     act(() => {
       useStore.setState((state) => ({
         ...state,
@@ -1288,46 +1287,35 @@ describe('Frontend contract behavior', () => {
     })
 
     const user = userEvent.setup()
-    render(<Navbar />)
+    render(<ActivityBar />)
 
-    const projectsTab = screen.getByTestId('nav-mode-projects')
-    const missionsTab = screen.getByTestId('nav-mode-missions')
-    const editorTab = screen.getByTestId('nav-mode-editor')
-    const runsTab = screen.getByTestId('nav-mode-runs')
-    const triggersTab = screen.getByTestId('nav-mode-triggers')
+    const chatsTab = screen.getByTestId('activity-chats')
+    const missionsTab = screen.getByTestId('activity-missions')
+    const runsTab = screen.getByTestId('activity-runs')
+    const triggersTab = screen.getByTestId('activity-triggers')
+    const flowsTab = screen.getByTestId('activity-flows')
+    const settingsTab = screen.getByTestId('activity-settings')
 
-    expect(within(screen.getByTestId('view-mode-tabs')).getAllByRole('button')).toEqual([
-      projectsTab, missionsTab, editorTab, runsTab, triggersTab,
+    // Chats, Missions, Runs, Triggers and Flows, then the bell and Settings at the bottom.
+    expect(within(screen.getByTestId('activity-bar')).getAllByRole('button')).toEqual([
+      chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('attention-bell'), settingsTab,
     ])
-    expect(screen.getByTestId('nav-mode-settings')).toHaveAccessibleName('Settings')
+    expect(settingsTab).toHaveAccessibleName('Settings')
+    expect(chatsTab).toHaveAccessibleName('Chats')
 
-    projectsTab.focus()
-    expect(projectsTab).toHaveFocus()
+    chatsTab.focus()
+    expect(chatsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
 
-    await user.keyboard('{ArrowRight}')
-    expect(missionsTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('missions')
+    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [settingsTab, 'settings'], [chatsTab, 'home']] as const) {
+      await user.keyboard('{ArrowDown}')
+      expect(tab).toHaveFocus()
+      expect(useStore.getState().viewMode).toBe(mode)
+    }
 
-    await user.keyboard('{ArrowRight}')
-    expect(editorTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('editor')
-
-    await user.keyboard('{ArrowRight}')
-    expect(runsTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('runs')
-
-    await user.keyboard('{ArrowRight}')
-    expect(triggersTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('triggers')
-
-    await user.keyboard('{ArrowRight}')
-    expect(projectsTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('home')
-
-    await user.keyboard('{ArrowLeft}')
-    expect(triggersTab).toHaveFocus()
-    expect(useStore.getState().viewMode).toBe('triggers')
+    await user.keyboard('{ArrowUp}')
+    expect(settingsTab).toHaveFocus()
+    expect(useStore.getState().viewMode).toBe('settings')
   })
 
   it('[CID:13.1.02] provides semantic labels and focus-visible states across core interactive controls', () => {
@@ -1363,7 +1351,7 @@ describe('Frontend contract behavior', () => {
       {
 useStore.setState({...useStore.getState(),
 activeProjectPath: '/tmp/project-contract-behavior'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-focus-audit');
+useStore.getState().setRunsSelectedRunId('run-focus-audit');
 }
     })
 
@@ -1376,10 +1364,10 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     act(() => {
       resetContractState()
     })
-    render(<Navbar />)
+    render(<ActivityBar />)
 
-    expect(screen.getByTestId('top-nav-project-add-button').className).toContain('focus-visible')
-    expect(screen.getByTestId('top-nav-project-settings-button').className).toContain('focus-visible')
+    expect(screen.getByTestId('activity-chats').className).toContain('focus-visible')
+    expect(screen.getByTestId('attention-bell').className).toContain('focus-visible')
 
     cleanup()
     act(() => {
@@ -1529,7 +1517,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
 
       act(() => {
         useStore.getState().setViewMode('runs')
-        useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId)
+        useStore.getState().setRunsSelectedRunId(runId)
       })
       renderRunsPanelWithController()
 
@@ -1568,7 +1556,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
         {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-mobile-ops');
+useStore.getState().setRunsSelectedRunId('run-mobile-ops');
 }
       })
       render(<RunsPanel />)
@@ -1592,13 +1580,10 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
           viewMode: 'projects',
         }))
       })
-      render(<Navbar />)
+      render(<ActivityBar />)
 
-      expect(screen.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('top-nav-active-project')).toBeVisible()
-      expect(screen.queryByTestId('top-nav-active-flow')).not.toBeInTheDocument()
-      expect(screen.queryByTestId('top-nav-run-context')).not.toBeInTheDocument()
+      expect(screen.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'stacked')
+      expect(screen.getByTestId('activity-chats')).toBeVisible()
     } finally {
       setViewportWidth(originalViewportWidth)
     }
@@ -1615,9 +1600,8 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
           viewMode: 'projects',
         }))
       })
-      render(<Navbar />)
-      expect(screen.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'inline')
-      expect(screen.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'inline')
+      render(<ActivityBar />)
+      expect(screen.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'inline')
 
       cleanup()
       act(() => {
@@ -1642,9 +1626,8 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
           viewMode: 'projects',
         }))
       })
-      render(<Navbar />)
-      expect(screen.getByTestId('top-nav')).toHaveAttribute('data-responsive-layout', 'stacked')
-      expect(screen.getByTestId('view-mode-tabs')).toHaveAttribute('data-responsive-layout', 'stacked')
+      render(<ActivityBar />)
+      expect(screen.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'stacked')
 
       cleanup()
       act(() => {
@@ -1667,7 +1650,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
         {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-viewport-regression-desktop');
+useStore.getState().setRunsSelectedRunId('run-viewport-regression-desktop');
 }
       })
       render(<RunsPanel />)
@@ -1680,7 +1663,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
         {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-viewport-regression-mobile');
+useStore.getState().setRunsSelectedRunId('run-viewport-regression-mobile');
 }
       })
       render(<RunsPanel />)
@@ -1813,7 +1796,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -1832,7 +1815,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -2016,7 +1999,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -2052,7 +2035,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     expect(screen.getByTestId('run-status-running')).toHaveTextContent(`Now in Stage ${totalEvents - 1}.`)
   })
 
-  it('[CID:14.0.01] propagates navbar project context through Home, Triggers, and Runs', async () => {
+  it('[CID:14.0.01] lists every project\'s chats and runs, each with its own project', async () => {
     const buildProjectRecord = (projectPath: string) => ({
       project_id: projectPath.split('/').filter(Boolean).join('-'),
       project_path: projectPath,
@@ -2155,18 +2138,13 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-alpha')) {
-        return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'alpha.yaml', projectPath: '/tmp/project-alpha', runId: 'run-alpha' })],
-        })
-      }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-beta')) {
-        return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'beta.yaml', projectPath: '/tmp/project-beta', runId: 'run-beta' })],
-        })
-      }
       if (url.includes('/attractor/runs')) {
-        return jsonResponse({ runs: [] })
+        return jsonResponse({
+          runs: [
+            buildRunRecord({ flowName: 'alpha.yaml', projectPath: '/tmp/project-alpha', runId: 'run-alpha' }),
+            buildRunRecord({ flowName: 'beta.yaml', projectPath: '/tmp/project-beta', runId: 'run-beta' }),
+          ],
+        })
       }
       return jsonResponse({})
     })
@@ -2194,31 +2172,19 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     await waitFor(() => {
       expect(screen.getByText('Alpha thread')).toBeVisible()
     })
-    await user.click(screen.getByTestId('top-nav-project-switcher'))
-    await user.click(await screen.findByText('project-beta'))
+    const beta = screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === '/tmp/project-beta')!
+    await user.click(within(beta).getByTestId('chats-project-toggle'))
+    await user.click(await within(beta).findByRole('button', { name: 'Open thread Beta thread' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Beta thread')).toBeVisible()
+      expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('project-beta')
     })
-    expect(screen.queryByText('Alpha thread')).not.toBeInTheDocument()
+    expect(screen.getByText('Alpha thread')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-triggers'))
-    expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-beta')
-    await user.click(screen.getByTestId('trigger-new-button'))
-    expect(screen.getByLabelText('Execution Target')).toHaveValue('active')
-    expect(screen.getByText('Uses the current active project: /tmp/project-beta')).toBeVisible()
-
-    await user.click(screen.getByTestId('nav-mode-runs'))
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([request]) =>
-          requestUrl(request as RequestInfo | URL).includes('/attractor/runs?project_path=%2Ftmp%2Fproject-beta'),
-        ),
-      ).toBe(true)
-    })
-    expect(await screen.findByTestId('runs-scope-active-project')).toHaveAttribute('title', expect.stringContaining('project-beta'))
-    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
+    await user.click(screen.getByTestId('activity-runs'))
+    expect(await screen.findByText('Alpha')).toBeVisible()
     expect(screen.getByText('Beta')).toBeVisible()
+    expect(fetchMock.mock.calls.map(([request]) => requestUrl(request as RequestInfo | URL)).filter((url) => url.includes('/attractor/runs')).every((url) => !url.includes('project_path='))).toBe(true)
   })
 
   it('[CID:14.0.02] enforces unique project directories while allowing missing Git metadata', async () => {
@@ -2287,8 +2253,8 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       }))
     })
 
-    render(<Navbar />)
-    const newButton = screen.getByTestId('top-nav-project-add-button')
+    render(<DialogProvider><ProjectsPanel /></DialogProvider>)
+    const newButton = screen.getByTestId('add-project-button')
     await user.click(newButton)
     await user.click(await screen.findByTestId('project-browser-select-button'))
 
@@ -2335,13 +2301,9 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       }))
     })
 
-    await user.click(screen.getByTestId('top-nav-project-switcher'))
-    await user.click(await screen.findByText('non-git-existing'))
-
-    await waitFor(() => {
-      expect(useStore.getState().activeProjectPath).toBe('/tmp/non-git-existing')
-    })
-    expect(screen.queryByTestId('top-nav-project-error')).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'non-git-existing' }))
+    expect(useStore.getState().projectPagePath).toBe('/tmp/non-git-existing')
+    expect(screen.queryByTestId('project-browser-error')).not.toBeInTheDocument()
   })
 
   it('[CID:6.3.01] renders edge inspector controls for required edge attrs', async () => {
@@ -2765,7 +2727,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -2780,7 +2742,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     act(() => {
       {
 useStore.setState({...useStore.getState()});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 const inspectedRunId = selectSelectedRunId(useStore.getState());
 if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {humanGate: {
           id: gateId,
@@ -2919,7 +2881,7 @@ if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -3069,7 +3031,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -3229,7 +3191,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -3369,7 +3331,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -3517,7 +3479,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -3708,7 +3670,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -3895,7 +3857,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -4043,7 +4005,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -4215,7 +4177,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -4379,7 +4341,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 
@@ -4519,7 +4481,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
       {
 useStore.setState({...useStore.getState(),
 viewMode: 'runs'});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), runId);
+useStore.getState().setRunsSelectedRunId(runId);
 }
     })
 

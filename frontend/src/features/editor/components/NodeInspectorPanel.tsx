@@ -96,7 +96,6 @@ export function NodeInspectorPanel({
     renderFieldDiagnostics,
 }: NodeInspectorPanelProps) {
     const id = useId()
-    const projectPath = useStore((state) => state.activeProjectPath)
     const flowMetadata = useStore((state) => state.flowMetadata)
     const selectedJoinPolicy = (selectedNode?.data?.join_policy as string) || 'wait_all'
     return (
@@ -540,7 +539,7 @@ export function NodeInspectorPanel({
                                 ) : null}
 
                                 {visibility.showLlmSettings ? (
-                                    <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
+                                    <ModelChooser projectPath={null} inheritLabel="Graph default"
                                             inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}
                                         value={{ provider: (selectedNode?.data?.llm_provider as string) || null,
                                             llm_profile: (selectedNode?.data?.llm_profile as string) || null,

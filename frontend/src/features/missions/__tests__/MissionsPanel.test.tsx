@@ -13,10 +13,13 @@ let calls: { url: string; body: Record<string, unknown> }[]
 let snapshot: Record<string, unknown>
 beforeEach(() => {
     window.innerWidth = 1440
-    task = { id: 'task-1', revision: 1, fields: { ...fields }, activity: [], status: 'draft', updated_at: '2026-09-20 10:00:00.0 +00:00:00' }
+    task = { id: 'task-1', project_path: '/project', revision: 1, fields: { ...fields }, activity: [], status: 'draft', updated_at: '2026-09-20 10:00:00.0 +00:00:00' }
     calls = []
     snapshot = conversation([])
-    useStore.setState({ activeProjectPath: '/project', viewMode: 'missions' })
+    useStore.setState({ activeProjectPath: '/project', viewMode: 'missions', missionBoard: [], selectedMission: null, projectRegistry: {
+        '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-09-20T10:00:00Z' },
+        '/other': { directoryPath: '/other', isFavorite: false, lastAccessedAt: null },
+    } })
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
         if (url === '/workspace/api/triggers') return { ok: true, json: async () => [] }
         if (url.includes('/chat-models')) return { ok: true, json: async () => ({ models: [{ provider: 'claude-code', id: 'opus', display: 'Opus', is_default: true, supported_reasoning_efforts: ['high'] }], providers: { codex: { status: 'unavailable', error: null } } }) }
@@ -48,6 +51,12 @@ function menu(action: string) {
     fireEvent.click(screen.getByRole('menuitem', { name: action }))
 }
 const editMission = () => menu('Edit')
+/** Starts a new mission, picking its project. */
+async function newMission(project = '/project') {
+    fireEvent.keyDown(screen.getByRole('button', { name: 'New mission' }), { key: 'Enter' })
+    fireEvent.click(screen.getAllByTestId('project-picker-item').find(item => item.dataset.projectPath === project)!)
+    await screen.findByLabelText('Title')
+}
 const mission = (overrides: Partial<Task>) => ({ ...task, ...overrides, fields: { ...task.fields, ...(overrides.fields ?? {}) } })
 
 it('groups missions by derived status, newest update first, hiding empty groups', async () => {
@@ -60,7 +69,7 @@ it('groups missions by derived status, newest update first, hiding empty groups'
     vi.mocked(fetch).mockImplementation(async () => ({ ok: true, json: async () => ({ missions: board }) }) as Response)
     render(<MissionsPanel active />)
     await screen.findByRole('button', { name: 'Gated' })
-    expect(screen.getAllByRole('heading', { level: 2 }).map(heading => heading.firstChild?.textContent)).toEqual(['Needs you', 'Running', 'Closed'])
+    expect(screen.getAllByRole('heading', { level: 3 }).map(heading => heading.firstChild?.textContent)).toEqual(['Needs you', 'Running', 'Closed'])
     const running = within(screen.getByRole('region', { name: 'Running' }))
     expect(running.getAllByRole('button').map(button => button.getAttribute('aria-label'))).toEqual(['Newer running', 'Older running'])
     expect(running.getByText(/^Build · /)).toBeInTheDocument()
@@ -292,13 +301,13 @@ it('preserves drafts across refresh and tab activation, and reconciles concurren
     expect(task.fields.description).toBe('Server objective')
 })
 
-it('loads on activation without polling and preserves drafts when opening other missions', async () => {
+it('loads once without polling and preserves drafts when opening other missions', async () => {
     const view = render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     editMission()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unfinished edit' } })
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Unfinished note' } })
-    fireEvent.click(screen.getByRole('button', { name: 'New mission' }))
+    await newMission()
     fireEvent.click(screen.getByRole('button', { name: /Deliver search/ }))
     expect(screen.getByLabelText('Title')).toHaveValue('Unfinished edit')
     expect(screen.getByLabelText('Objective')).toHaveValue('Unfinished note')
@@ -306,27 +315,46 @@ it('loads on activation without polling and preserves drafts when opening other 
     vi.useFakeTimers()
     const count = vi.mocked(fetch).mock.calls.length
     view.rerender(<MissionsPanel active />)
-    expect(vi.mocked(fetch).mock.calls.length).toBe(count + 1)
     await act(async () => { vi.advanceTimersByTime(60000) })
-    expect(vi.mocked(fetch).mock.calls.length).toBe(count + 1)
+    expect(vi.mocked(fetch).mock.calls.length).toBe(count)
 })
 
-it('keeps unsaved edits scoped to their project when switching projects', async () => {
-    render(<MissionsPanel active />)
+it('keeps unsaved edits while another view is open', async () => {
+    const view = render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
     editMission()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Project A draft' } })
     fireEvent.change(screen.getByLabelText('Objective'), { target: { value: 'Project A note' } })
-    await act(async () => { useStore.setState({ activeProjectPath: '/other' }) })
-    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
-    await act(async () => { useStore.setState({ activeProjectPath: '/project' }) })
+    await act(async () => { useStore.setState({ activeProjectPath: '/other', viewMode: 'runs' }) })
+    view.rerender(<MissionsPanel active={false} />)
+    view.rerender(<MissionsPanel active />)
     expect(screen.getByLabelText('Title')).toHaveValue('Project A draft')
     expect(screen.getByLabelText('Objective')).toHaveValue('Project A note')
 })
 
+it('lists every project\'s missions with the project on each row, and asks which project a new one goes to', async () => {
+    const board = [mission({ id: 'here', fields: { ...fields, title: 'Here' } }), mission({ id: 'there', project_path: '/other', fields: { ...fields, title: 'There' } })]
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+        if (init?.body) { calls.push({ url: String(url), body: JSON.parse(String(init.body)) }); return { ok: true, json: async () => ({ ...board[1], id: 'created', fields: { ...fields, title: 'New there' } }) } as Response }
+        return { ok: true, json: async () => ({ missions: board }) } as Response
+    })
+    render(<MissionsPanel active />)
+    await screen.findByRole('button', { name: 'There' })
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe('/workspace/api/missions')
+    expect(screen.getAllByTestId('mission-project').map(row => row.textContent)).toEqual(['project ·', 'other ·'])
+    fireEvent.keyDown(screen.getByRole('button', { name: 'New mission' }), { key: 'Enter' })
+    // The last-used project is suggested first.
+    expect(screen.getAllByTestId('project-picker-item').map(item => item.dataset.projectPath)).toEqual(['/project', '/other'])
+    fireEvent.click(screen.getAllByTestId('project-picker-item')[1])
+    expect(await screen.findByTestId('new-mission-project')).toHaveTextContent('New mission in other')
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New there' } })
+    fireEvent.click(editor().getByRole('button', { name: 'Create mission' }))
+    await waitFor(() => expect(calls.at(-1)?.url).toBe('/workspace/api/missions?project_path=%2Fother'))
+})
+
 it('creates with only a title, keeps the saved mission open and resets its baseline', async () => {
     render(<MissionsPanel active />)
-    fireEvent.click(screen.getByRole('button', { name: 'New mission' }))
+    await newMission()
     expect(screen.getByLabelText('Title')).toHaveFocus()
     expect(screen.getByLabelText('Title')).toHaveAttribute('data-slot', 'input')
     expect(screen.getByLabelText('Objective')).toHaveAttribute('data-slot', 'textarea')
@@ -345,7 +373,7 @@ it('creates with only a title, keeps the saved mission open and resets its basel
 
 it('creates with a picked playbook and shows it in the rail with its text expandable', async () => {
     render(<MissionsPanel active />)
-    fireEvent.click(screen.getByRole('button', { name: 'New mission' }))
+    await newMission()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Fix parser' } })
     expect(screen.getByLabelText('Playbook')).toHaveValue('')
     await screen.findByRole('option', { name: 'Bug report' })
@@ -372,10 +400,10 @@ it('creates with a picked playbook and shows it in the rail with its text expand
 
 it('preserves a new draft on Cancel', async () => {
     render(<MissionsPanel active />)
-    fireEvent.click(screen.getByRole('button', { name: 'New mission' }))
+    await newMission()
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Draft title' } })
     fireEvent.click(editor().getByRole('button', { name: 'Cancel' }))
-    fireEvent.click(screen.getByRole('button', { name: 'New mission' }))
+    await newMission()
     expect(screen.getByLabelText('Title')).toHaveValue('Draft title')
 })
 
@@ -417,15 +445,16 @@ it('locks editing and dismissal during saving and preserves input after failure'
     expect(screen.getByLabelText('Title')).toHaveValue('Keep this')
 })
 
-it('replaces the list at the narrow breakpoint and dismisses on Escape', async () => {
+it('stacks the list above the mission at the narrow breakpoint and dismisses on Escape', async () => {
     window.innerWidth = 1024
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
-    expect(screen.queryByRole('region', { name: 'Drafts' })).not.toBeInTheDocument()
-    fireEvent.keyDown(detail().getByRole('heading', { level: 2 }), { key: 'Escape' })
+    expect(screen.getByTestId('missions-view')).toHaveAttribute('data-responsive-layout', 'stacked')
     expect(screen.getByRole('region', { name: 'Drafts' })).toBeInTheDocument()
-    // jsdom lays nothing out, so focus falls back to the list heading.
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'Missions' })).toHaveFocus())
+    fireEvent.keyDown(detail().getByRole('heading', { level: 2 }), { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Mission details' })).not.toBeInTheDocument()
+    // jsdom lays nothing out, so focus falls back to the list's search.
+    await waitFor(() => expect(screen.getByLabelText('Search titles')).toHaveFocus())
 })
 
 it('keeps conflicts blocked after dismissal when the latest revision cannot be loaded', async () => {
@@ -450,26 +479,17 @@ it('keeps conflicts blocked after dismissal when the latest revision cannot be l
 const live = (projectPath: string, update: unknown) => act(async () => {
     window.dispatchEvent(new CustomEvent('spark:mission-live-event', { detail: { projectPath, mission: update } }))
 })
-it('loads only the selected project and applies live upserts without polling', async () => {
-    const view = render(<MissionsPanel active />)
+it('applies live upserts from every project without polling', async () => {
+    render(<MissionsPanel active />)
     await screen.findByRole('button', { name: /Deliver search/ })
     vi.useFakeTimers()
     vi.mocked(fetch).mockClear()
-    await act(async () => { useStore.setState({ activeProjectPath: '/other' }) })
-    await act(async () => { vi.advanceTimersByTime(30000) })
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(['/workspace/api/missions?project_path=%2Fother'])
-    await live('/project', { ...task, id: 'task-elsewhere', fields: { ...task.fields, title: 'Wrong project' } })
-    expect(screen.queryByRole('button', { name: 'Wrong project' })).not.toBeInTheDocument()
-    await live('/other', { ...task, id: 'task-live', status: 'needs_you', fields: { ...task.fields, title: 'Arrived live' } })
-    expect(within(screen.getByRole('region', { name: 'Needs you' })).getByRole('button', { name: 'Arrived live' })).toBeInTheDocument()
-    vi.mocked(fetch).mockClear()
-    await live('/other', null)
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(['/workspace/api/missions?project_path=%2Fother'])
-    view.rerender(<MissionsPanel active={false} />)
-    vi.mocked(fetch).mockClear()
-    await live('/other', null)
     await act(async () => { vi.advanceTimersByTime(30000) })
     expect(fetch).not.toHaveBeenCalled()
+    await live('/other', { ...task, id: 'task-live', project_path: '/other', status: 'needs_you', fields: { ...task.fields, title: 'Arrived live' } })
+    expect(within(screen.getByRole('region', { name: 'Needs you' })).getByRole('button', { name: 'Arrived live' })).toBeInTheDocument()
+    await live('/other', null)
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual(['/workspace/api/missions'])
 })
 
 it('archives from the editor separately without saving or losing edited fields', async () => {
@@ -526,8 +546,8 @@ it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission 
     task = mission({ status: 'needs_you', started_at: 't' })
     let trigger = { id: 'watcher', revision: '1', name: 'Review watcher', source_type: 'schedule', enabled: true, created_at: '', updated_at: '', action: { mode: 'mission', mission_id: task.id, project_path: '/project' }, source: { kind: 'interval', interval_seconds: 60 }, state: { recent_history: [], next_run_at: null } }
     useStore.setState({ viewMode: 'triggers', triggersSession: {
-        status: 'idle', error: null, triggers: [], selectedTriggerId: null, scopeFilter: 'all', revealedWebhookSecrets: {}, createFormOpen: false,
-        newTriggerDraft: { form: createEmptyTriggerForm(null), targetBehavior: 'default' }, editTriggerDraftsByTriggerId: {},
+        status: 'idle', error: null, triggers: [], selectedTriggerId: null, revealedWebhookSecrets: {}, createFormOpen: false,
+        newTriggerDraft: { form: createEmptyTriggerForm(null) }, editTriggerDraftsByTriggerId: {},
     } })
     const original = vi.mocked(fetch).getMockImplementation()!
     const close = () => {

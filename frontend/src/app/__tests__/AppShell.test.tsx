@@ -1,4 +1,3 @@
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import App from '@/App'
 import { useRunJournalStore } from '@/features/runs/state/runJournalStore'
@@ -122,8 +121,8 @@ saveStateVersion: 0,
 saveErrorMessage: null,
 saveErrorKind: null,
 runsListSession: {
-      scopeMode: 'active',
-      selectedRunIdByScopeKey: {},
+      selectedRunId: null,
+      projectFilter: null,
       status: 'idle',
       error: null,
       runs: [],
@@ -137,16 +136,14 @@ triggersSession: {
       error: null,
       triggers: [],
       selectedTriggerId: null,
-      scopeFilter: 'all',
       revealedWebhookSecrets: {},
       createFormOpen: false,
       newTriggerDraft: {
         form: createEmptyTriggerForm(null),
-        targetBehavior: 'default',
       },
       editTriggerDraftsByTriggerId: {},
     }});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -500,6 +497,23 @@ const installCanvasWorkspaceFetchMock = () => {
   )
 }
 
+const openChat = async (user: ReturnType<typeof userEvent.setup>, projectPath: string, title: string) => {
+  const group = screen.getAllByTestId('chats-project-group').find((entry) => entry.dataset.projectPath === projectPath)!
+  if (within(group).getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') {
+    await user.click(within(group).getByTestId('chats-project-toggle'))
+  }
+  await user.click(await within(group).findByRole('button', { name: `Open thread ${title}` }))
+}
+
+const openProjectPage = async (user: ReturnType<typeof userEvent.setup>, projectPath: string) => {
+  const group = await waitFor(() => {
+    const found = screen.getAllByTestId('chats-project-group').find((entry) => entry.dataset.projectPath === projectPath)
+    expect(found).toBeDefined()
+    return found!
+  })
+  await user.click(within(group).getByTestId('chats-project-name'))
+}
+
 describe('App shell behavior', () => {
   beforeEach(() => {
     resetAppShellState()
@@ -553,44 +567,55 @@ describe('App shell behavior', () => {
 
     expect(screen.getByTestId('app-shell')).toBeVisible()
     expect(screen.getByTestId('app-main')).toBeVisible()
-    expect(screen.getByTestId('top-nav')).toBeVisible()
+    expect(screen.getByTestId('activity-bar')).toBeVisible()
     expect(screen.getByTestId('projects-panel')).toBeVisible()
-    expect(screen.getByTestId('top-nav-project-switcher')).toBeVisible()
-    expect(screen.getByTestId('top-nav-project-add-button')).toBeVisible()
-    expect(screen.getByTestId('top-nav-project-settings-button')).toBeDisabled()
-    expect(screen.queryByTestId('top-nav-active-flow')).not.toBeInTheDocument()
-    expect(screen.queryByTestId('top-nav-run-context')).not.toBeInTheDocument()
+    expect(screen.getByTestId('add-project-button')).toBeVisible()
+    // No top tabs, project selector or project settings button remain.
+    expect(screen.queryByTestId('top-nav')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('view-mode-tabs')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('top-nav-project-switcher')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('top-nav-project-settings-button')).not.toBeInTheDocument()
+    expect(screen.getByTestId('activity-chats')).toHaveAttribute('aria-current', 'page')
 
-    await user.click(screen.getByTestId('nav-mode-triggers'))
+    await user.click(screen.getByTestId('activity-triggers'))
     expect(useStore.getState().viewMode).toBe('triggers')
     expect(screen.getByTestId('triggers-panel')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-settings'))
+    await user.click(screen.getByTestId('activity-settings'))
     expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.getByTestId('settings-panel')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-runs'))
     expect(useStore.getState().viewMode).toBe('runs')
     expect(screen.getByTestId('runs-panel')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('activity-chats'))
     expect(useStore.getState().viewMode).toBe('home')
     expect(screen.getByTestId('projects-panel')).toBeVisible()
   })
 
-  it('hides the no-project missions placeholder after leaving Missions', async () => {
+  it('opens Missions and Flows from the activity bar and moves between views with the arrow keys', async () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-missions'))
-    expect(screen.getByText('Select a project to manage missions.')).toBeVisible()
+    await user.click(screen.getByTestId('activity-missions'))
+    expect(useStore.getState().viewMode).toBe('missions')
+    expect(screen.getByTestId('missions-view')).toBeVisible()
+    expect(screen.getByTestId('activity-missions')).toHaveAttribute('aria-current', 'page')
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
-    expect(useStore.getState().viewMode).toBe('runs')
-    expect(screen.getByText('Select a project to manage missions.')).not.toBeVisible()
+    await user.click(screen.getByTestId('activity-flows'))
+    expect(useStore.getState().viewMode).toBe('editor')
+    expect(screen.getByTestId('flows-view')).toBeVisible()
+
+    screen.getByTestId('activity-flows').focus()
+    await user.keyboard('{ArrowDown}')
+    expect(useStore.getState().viewMode).toBe('settings')
+    expect(screen.getByTestId('activity-settings')).toHaveFocus()
+    await user.keyboard('{ArrowDown}')
+    expect(useStore.getState().viewMode).toBe('home')
   })
 
-  it('opens project settings from the navbar and saves a project execution profile default', async () => {
+  it('opens the project page from the Chats panel and saves a project execution profile default', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-shell')
@@ -632,10 +657,10 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    await openProjectPage(user, '/tmp/project-shell')
     expect(await screen.findByTestId('project-settings-dialog')).toBeVisible()
-    expect(screen.getByRole('heading', { name: '/tmp/project-shell' })).toBeVisible()
-    expect(screen.getByTestId('project-settings-title')).toHaveTextContent('/tmp/project-shell')
+    expect(screen.getByTestId('project-page-title')).toHaveTextContent('project-shell')
+    expect(screen.getByTestId('project-page-path')).toHaveTextContent('/tmp/project-shell')
     await user.click(screen.getByTestId('project-default-execution-profile'))
     expect((await screen.findAllByText('Use workspace default')).length).toBeGreaterThan(0)
     expect(screen.getByText('Local Dev (local-dev)')).toBeVisible()
@@ -705,7 +730,7 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    await openProjectPage(user, '/tmp/project-shell')
     await user.click(await screen.findByTestId('project-default-execution-profile'))
     await user.click(await screen.findByText('Use workspace default'))
     await user.click(screen.getByTestId('project-settings-save-button'))
@@ -760,31 +785,25 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('top-nav-project-settings-button'))
+    await openProjectPage(user, '/tmp/project-shell')
 
     expect(await screen.findByTestId('project-settings-error')).toHaveTextContent('execution mode must be one of: native, local_container')
     expect(screen.getByTestId('project-settings-save-button')).toBeDisabled()
     expect(fetchMock.mock.calls.some(([input]) => resolveRequestUrl(input).includes('/workspace/api/projects/state'))).toBe(false)
   })
 
-  it('allows editor navigation without an active project and keeps the empty state visible', async () => {
+  it('opens the Flows view without a chat project and keeps the empty state visible', async () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
     expect(useStore.getState().viewMode).toBe('editor')
     expect(screen.getByTestId('canvas-workspace-primary')).toBeVisible()
-    expect(screen.getByTestId('inspector-panel')).toBeVisible()
+    expect(screen.getByTestId('editor-flow-tree')).toBeInTheDocument()
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
-
-    act(() => {
-      useStore.getState().registerProject('/tmp/project-shell')
-    })
-
-    expect(screen.getByTestId('top-nav-project-switcher')).toHaveTextContent('project-shell')
   })
 
-  it('adds a project from the remote browser modal and clears the active project', async () => {
+  it('adds a project from the Chats panel and opens a chat in it', async () => {
     const user = userEvent.setup()
     vi.stubGlobal(
       'fetch',
@@ -858,20 +877,17 @@ describe('App shell behavior', () => {
     render(<App />)
     expect(screen.queryByTestId('project-directory-picker-input')).not.toBeInTheDocument()
 
-    await user.click(screen.getByTestId('top-nav-project-add-button'))
+    await user.click(screen.getByTestId('add-project-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
     expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/tmp/project-shell')
     await user.click(screen.getByTestId('project-browser-select-button'))
 
+    // The new project joins the Chats panel, ready for a chat in it.
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-shell')
     })
-    expect(screen.getByTestId('top-nav-project-switcher')).toHaveTextContent('project-shell')
-
-    await user.click(screen.getByTestId('top-nav-project-settings-button'))
-    await user.click(await screen.findByTestId('top-nav-project-clear-button'))
-    expect(useStore.getState().activeProjectPath).toBeNull()
-    await waitFor(() => expect(screen.queryByTestId('project-settings-dialog')).not.toBeInTheDocument())
+    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('project-shell')
+    expect(screen.getAllByTestId('chats-project-group').map((group) => group.dataset.projectPath)).toContain('/tmp/project-shell')
   })
 
   it('navigates the remote browser modal and surfaces browse failures', async () => {
@@ -947,7 +963,7 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('top-nav-project-add-button'))
+    await user.click(screen.getByTestId('add-project-button'))
     expect(await screen.findByTestId('project-browser-dialog')).toBeVisible()
     expect(screen.getByTestId('project-browser-current-path')).toHaveTextContent('/home/spark')
     await user.click(screen.getByTestId('project-browser-root--projects'))
@@ -984,7 +1000,7 @@ describe('App shell behavior', () => {
     })
   })
 
-  it('propagates navbar project switches across Home, Triggers, and Runs', async () => {
+  it('lists every project\'s chats, runs and triggers whichever chat is open', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
@@ -1029,7 +1045,10 @@ describe('App shell behavior', () => {
         return jsonResponse({ detail: 'Unknown conversation' }, { status: 404 })
       }
       if (url.endsWith('/workspace/api/triggers') && method === 'GET') {
-        return jsonResponse([])
+        return jsonResponse([
+          buildTriggerRecord({ id: 'trigger-one', name: 'Trigger one', projectPath: '/tmp/project-one' }),
+          buildTriggerRecord({ id: 'trigger-gone', name: 'Trigger gone', projectPath: '/tmp/unregistered' }),
+        ])
       }
       if (url.includes('/workspace/api/projects')) {
         return jsonResponse([])
@@ -1040,18 +1059,13 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
-        return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'review-one.dot', projectPath: '/tmp/project-one', runId: 'run-one' })],
-        })
-      }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-two')) {
-        return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'review-two.dot', projectPath: '/tmp/project-two', runId: 'run-two' })],
-        })
-      }
       if (url.includes('/attractor/runs')) {
-        return jsonResponse({ runs: [] })
+        return jsonResponse({
+          runs: [
+            buildRunRecord({ flowName: 'review-one.dot', projectPath: '/tmp/project-one', runId: 'run-one' }),
+            buildRunRecord({ flowName: 'review-two.dot', projectPath: '/tmp/project-two', runId: 'run-two' }),
+          ],
+        })
       }
       return jsonResponse({})
     })
@@ -1062,36 +1076,27 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(screen.getByText('Thread one')).toBeVisible()
     })
-    await user.click(screen.getByTestId('top-nav-project-switcher'))
-    await user.click(await screen.findByText('project-two'))
+    // Other projects' chats sit in their own collapsed groups.
+    const projectTwo = screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === '/tmp/project-two')!
+    await user.click(within(projectTwo).getByTestId('chats-project-toggle'))
+    await user.click(await within(projectTwo).findByRole('button', { name: 'Open thread Thread two' }))
 
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-two')
     })
-    await waitFor(() => {
-      expect(screen.getByText('Thread two')).toBeVisible()
-    })
-    expect(screen.queryByText('Thread one')).not.toBeInTheDocument()
-    expect(screen.getByTestId('top-nav-project-switcher')).toHaveTextContent('project-two')
-    expect(screen.getByTestId('top-nav-project-switcher')).not.toHaveTextContent('/tmp/project-two')
+    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('project-two')
+    expect(screen.getByText('Thread one')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-triggers'))
-    expect(await screen.findByTestId('triggers-project-context-chip')).toHaveTextContent('project-two')
-    await user.click(screen.getByTestId('trigger-new-button'))
-    expect(screen.getByLabelText('Execution Target')).toHaveValue('active')
-    expect(screen.getByText('Uses the current active project: /tmp/project-two')).toBeVisible()
+    await user.click(screen.getByTestId('activity-triggers'))
+    expect(await screen.findByTestId('trigger-row-trigger-one')).toHaveTextContent('Project · project-one')
+    expect(screen.getByTestId('trigger-row-trigger-gone')).toHaveAttribute('data-unregistered-target', 'true')
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([request]) =>
-          resolveRequestUrl(request as RequestInfo | URL).includes('/attractor/runs?project_path=%2Ftmp%2Fproject-two'),
-        ),
-      ).toBe(true)
-    })
-    expect(await screen.findByTestId('runs-scope-active-project')).toHaveAttribute('title', expect.stringContaining('project-two'))
-    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
+    await user.click(screen.getByTestId('activity-runs'))
+    expect(await screen.findByText('Review One')).toBeVisible()
     expect(screen.getByText('Review Two')).toBeVisible()
+    const runListRequests = fetchMock.mock.calls.map(([request]) => resolveRequestUrl(request as RequestInfo | URL)).filter((url) => url.includes('/attractor/runs'))
+    expect(runListRequests.length).toBeGreaterThan(0)
+    expect(runListRequests.some((url) => url.includes('project_path='))).toBe(false)
   })
 
   it('preserves the Home thread session across tab switches', async () => {
@@ -1170,8 +1175,8 @@ describe('App shell behavior', () => {
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Need follow-up')
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
-    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('activity-runs'))
+    await user.click(screen.getByTestId('activity-chats'))
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Open thread Thread home' })).toBeVisible()
@@ -1348,8 +1353,8 @@ describe('App shell behavior', () => {
     })
     expect(useStore.getState().homeConversationSessionsById['conversation-home-restore']?.scrollTop).toBe(120)
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
-    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('activity-runs'))
+    await user.click(screen.getByTestId('activity-chats'))
 
     await waitFor(() => {
       expect(within(screen.getByTestId('project-ai-conversation-history')).getByText(/AGENTS\.md/)).toBeVisible()
@@ -1359,7 +1364,7 @@ describe('App shell behavior', () => {
     expect(scrollTop).toBe(120)
   })
 
-  it('closes Home conversation sync while Home is hidden and refreshes when visible again', async () => {
+  it('pauses the hidden chat while another view is shown and resyncs it when visible again', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-home-live')
@@ -1439,8 +1444,10 @@ describe('App shell behavior', () => {
     expect(conversationEventSource?.url).toContain('conversation_id=conversation-home-live')
     expect(conversationEventSource?.url).toContain('conversation_project_path=%2Ftmp%2Fproject-home-live')
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
-    expect(conversationEventSource?.readyState).toBe(MockEventSource.CLOSED)
+    // One live stream covers every view, so leaving Chats keeps it open; the
+    // hidden chat ignores updates and resyncs when shown again.
+    await user.click(screen.getByTestId('activity-runs'))
+    expect(conversationEventSource?.readyState).toBe(MockEventSource.OPEN)
 
     act(() => {
       conversationEventSource?.emitMessage({
@@ -1473,7 +1480,7 @@ describe('App shell behavior', () => {
       })
     })
 
-    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('activity-chats'))
 
     await waitFor(() => {
       expect(
@@ -1489,7 +1496,7 @@ describe('App shell behavior', () => {
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
   })
 
-  it('keeps only the foreground Home project conversation stream connected across active-project changes', async () => {
+  it('keeps only the open chat\'s conversation stream connected as chats in different projects are opened', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-home-one')
@@ -1605,8 +1612,7 @@ describe('App shell behavior', () => {
     expect(projectOneEventSource).not.toBeNull()
     expect(projectOneEventSource?.url).toContain('conversation_id=conversation-home-one')
 
-    await user.click(screen.getByTestId('top-nav-project-switcher'))
-    await user.click(await screen.findByText('project-home-two'))
+    await openChat(user, '/tmp/project-home-two', 'Thread two')
 
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-home-two')
@@ -1616,6 +1622,7 @@ describe('App shell behavior', () => {
         within(screen.getByTestId('project-ai-conversation-history')).getByText('Project two ready'),
       ).toBeVisible()
     })
+    // Opening another project's chat moves the one live stream to that chat.
     expect(projectOneEventSource?.readyState).toBe(MockEventSource.CLOSED)
     const projectTwoEventSource = findLatestEventSource('/workspace/api/live/events')
     expect(projectTwoEventSource).not.toBeNull()
@@ -1653,8 +1660,7 @@ describe('App shell behavior', () => {
       })
     })
 
-    await user.click(screen.getByTestId('top-nav-project-switcher'))
-    await user.click(await screen.findByText('project-home-one'))
+    await openChat(user, '/tmp/project-home-one', 'Thread one')
 
     await waitFor(() => {
       expect(useStore.getState().activeProjectPath).toBe('/tmp/project-home-one')
@@ -1668,7 +1674,7 @@ describe('App shell behavior', () => {
     expect(screen.queryByTestId('project-thread-list-loading')).not.toBeInTheDocument()
   })
 
-  it('removes the active project from the navbar after confirmation', async () => {
+  it('removes a project from its project page after confirmation', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-remove')
@@ -1722,14 +1728,31 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('top-nav-project-settings-button'))
-    await user.click(await screen.findByTestId('top-nav-project-remove-button'))
+    await openProjectPage(user, '/tmp/project-remove')
+    await user.click(await screen.findByTestId('project-page-remove'))
     await user.click(screen.getByTestId('shared-dialog-confirm'))
 
     await waitFor(() => {
       expect(useStore.getState().projectRegistry['/tmp/project-remove']).toBeUndefined()
     })
     expect(useStore.getState().activeProjectPath).toBeNull()
+    expect(useStore.getState().projectPagePath).toBeNull()
+  })
+
+  it('never offers to remove Home from its project page', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useStore.getState().hydrateProjectRegistry([
+        { directoryPath: '/home/me', displayName: 'Home', isDefault: true, isFavorite: false, lastAccessedAt: null },
+      ])
+    })
+
+    render(<App />)
+
+    await openProjectPage(user, '/home/me')
+    expect(await screen.findByTestId('project-page-title')).toHaveTextContent('Home')
+    expect(screen.getByTestId('project-page-remove')).toBeDisabled()
+    expect(screen.getByTestId('project-page-remove-refused')).toHaveTextContent("Home is Spark's default project and can't be removed.")
   })
 
   it('preserves trigger selection and unsaved drafts across tab switches', async () => {
@@ -1781,7 +1804,7 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-triggers'))
+    await user.click(screen.getByTestId('activity-triggers'))
     await waitFor(() => {
       expect(screen.getByText('Custom route')).toBeVisible()
     })
@@ -1792,15 +1815,15 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('trigger-new-button'))
     await user.type(screen.getByLabelText('Name'), ' Draft create')
 
-    await user.click(screen.getByTestId('nav-mode-projects'))
-    await user.click(screen.getByTestId('nav-mode-triggers'))
+    await user.click(screen.getByTestId('activity-chats'))
+    await user.click(screen.getByTestId('activity-triggers'))
 
     expect(screen.getByLabelText('Name')).toHaveValue(' Draft create')
     await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
     expect(screen.getByLabelText('Name')).toHaveValue('Custom route edited')
   })
 
-  it('preserves trigger selection and drafts across active-project changes', async () => {
+  it('preserves trigger selection and drafts when the chat project changes', async () => {
     const user = userEvent.setup()
     act(() => {
       useStore.getState().registerProject('/tmp/project-trigger-one')
@@ -1858,8 +1881,8 @@ describe('App shell behavior', () => {
       useStore.getState().setActiveProjectPath('/tmp/project-trigger-two')
     })
 
-    // The dirty edit draft guards the project switch; keep editing and confirm both drafts survive.
-    await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    // Opening a chat in another project does not touch trigger drafts.
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Name')).toHaveValue(' Draft create')
     await user.click(screen.getByRole('button', { name: 'Cancel new trigger' }))
     expect(screen.getByLabelText('Name')).toHaveValue('Shared route edited')
@@ -1901,7 +1924,7 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
         }
-        if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-loading')) {
+        if (url.endsWith('/attractor/runs')) {
           return runsDeferred.promise
         }
         if (url.endsWith('/workspace/api/triggers')) {
@@ -1919,26 +1942,26 @@ describe('App shell behavior', () => {
     expect(await screen.findByTestId('project-thread-list-loading')).toBeVisible()
     homeThreadsDeferred.resolve(jsonResponse([]))
     await waitFor(() => {
-      expect(screen.getByText('No threads for this project yet.')).toBeVisible()
+      expect(screen.getByText('No chats yet.')).toBeVisible()
     })
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-runs'))
     expect(await screen.findByTestId('run-list-loading')).toBeVisible()
     runsDeferred.resolve(jsonResponse({ runs: [] }))
     await waitFor(() => {
-      expect(screen.getByText('No runs for the active project yet.')).toBeVisible()
+      expect(screen.getByText('No runs yet.')).toBeVisible()
     })
 
-    await user.click(screen.getByTestId('nav-mode-triggers'))
+    await user.click(screen.getByTestId('activity-triggers'))
     expect(await screen.findByTestId('triggers-system-list-loading')).toBeVisible()
     triggersDeferred.resolve(jsonResponse([]))
     await waitFor(() => {
-      expect(screen.getByText('No protected triggers in this scope.')).toBeVisible()
-      expect(screen.getByText('No custom triggers in this scope yet.')).toBeVisible()
+      expect(screen.getByText('No protected triggers.')).toBeVisible()
+      expect(screen.getByText('No custom triggers yet.')).toBeVisible()
     })
   })
 
-  it('preserves runs scope and selected run across tab switches', async () => {
+  it('preserves the run project filter and selected run across view switches', async () => {
     const user = userEvent.setup()
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = resolveRequestUrl(input)
@@ -1948,14 +1971,12 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
-        return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'review-one.dot', projectPath: '/tmp/project-one', runId: 'run-one' })],
-        })
-      }
       if (url.endsWith('/attractor/runs')) {
         return jsonResponse({
-          runs: [buildRunRecord({ flowName: 'review-two.dot', projectPath: '/tmp/project-two', runId: 'run-two' })],
+          runs: [
+            buildRunRecord({ flowName: 'review-one.dot', projectPath: '/tmp/project-one', runId: 'run-one' }),
+            buildRunRecord({ flowName: 'review-two.dot', projectPath: '/tmp/project-two', runId: 'run-two' }),
+          ],
         })
       }
       if (url.includes('/attractor/pipelines/run-two/checkpoint')) {
@@ -2008,6 +2029,7 @@ describe('App shell behavior', () => {
 
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().registerProject('/tmp/project-two')
       useStore.getState().setActiveProjectPath('/tmp/project-one')
       useStore.getState().setViewMode('runs')
     })
@@ -2018,10 +2040,11 @@ describe('App shell behavior', () => {
       expect(screen.getByText('Review One')).toBeVisible()
     })
 
-    await user.click(screen.getByTestId('runs-scope-all-projects'))
+    await user.selectOptions(screen.getByTestId('runs-project-filter'), '/tmp/project-two')
     await waitFor(() => {
       expect(screen.getByText('Review Two')).toBeVisible()
     })
+    expect(screen.queryByText('Review One')).not.toBeInTheDocument()
     const runTwoCard = within(screen.getByTestId('run-list-scroll-region'))
       .getByText('Review Two')
       .closest('[data-testid="run-history-row"]')
@@ -2033,12 +2056,12 @@ describe('App shell behavior', () => {
     })
     expect(selectSelectedRunId(useStore.getState())).toBe('run-two')
 
-    await user.click(screen.getByTestId('nav-mode-projects'))
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-chats'))
+    await user.click(screen.getByTestId('activity-runs'))
     await waitFor(() => {
       expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Two')
     })
-    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history across all projects.')
+    expect(screen.getByTestId('runs-project-filter')).toHaveValue('/tmp/project-two')
     expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Two')
     expect(selectSelectedRunId(useStore.getState())).toBe('run-two')
   })
@@ -2055,7 +2078,7 @@ describe('App shell behavior', () => {
         if (url.includes('/attractor/api/flows')) {
           return jsonResponse([])
         }
-        if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-runs-session')) {
+        if (url.endsWith('/attractor/runs')) {
           return jsonResponse({
             runs: [
               buildRunRecord({
@@ -2265,8 +2288,8 @@ describe('App shell behavior', () => {
       },
     })
 
-    await user.click(screen.getByTestId('nav-mode-projects'))
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-chats'))
+    await user.click(screen.getByTestId('activity-runs'))
 
     await waitFor(() => {
       expect(screen.getByTestId('run-header-title')).toHaveTextContent('Review Session')
@@ -2298,7 +2321,7 @@ describe('App shell behavior', () => {
       if (url.includes('/attractor/api/flows')) {
         return jsonResponse([])
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-hidden-runs')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({
           runs: [
             buildRunRecord({
@@ -2393,7 +2416,7 @@ describe('App shell behavior', () => {
       return source
     })
 
-    await user.click(screen.getByTestId('nav-mode-projects'))
+    await user.click(screen.getByTestId('activity-chats'))
 
     act(() => {
       runEventSource?.emitMessage({
@@ -2407,7 +2430,7 @@ describe('App shell behavior', () => {
       })
     })
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-runs'))
 
     await waitFor(() => {
       expect(within(screen.getByTestId('run-visit-list')).getByText('Review')).toBeVisible()
@@ -2417,13 +2440,16 @@ describe('App shell behavior', () => {
   it('lets the operator resize the editor sidebar and keeps the width across tab switches', async () => {
     const user = userEvent.setup()
     setViewportWidth(1366)
+    installCanvasWorkspaceFetchMock()
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
+    // The inspector column shows once a flow is open.
+    await user.click(within(await screen.findByTestId('editor-flow-tree')).getByRole('button', { name: LINEAR_FLOW_NAME }))
 
-    const inspectorPanel = screen.getByTestId('inspector-panel') as HTMLElement
+    const inspectorPanel = await screen.findByTestId('inspector-panel') as HTMLElement
     const resizeHandle = screen.getByTestId('editor-sidebar-resize-handle')
-    const editorWorkspaceLayout = screen.getByTestId('editor-workspace').firstElementChild as HTMLDivElement
+    const editorWorkspaceLayout = within(screen.getByTestId('editor-workspace')).getByTestId('view-main').firstElementChild as HTMLDivElement
 
     vi.spyOn(editorWorkspaceLayout, 'getBoundingClientRect').mockReturnValue({
       x: 0,
@@ -2446,10 +2472,10 @@ describe('App shell behavior', () => {
     expect(useStore.getState().editorSidebarWidth).toBe(360)
     expect(inspectorPanel.style.width).toBe('360px')
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-runs'))
     expect(screen.getByTestId('runs-panel')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
     expect(useStore.getState().editorSidebarWidth).toBe(360)
     expect(screen.getByTestId('inspector-panel').style.width).toBe('360px')
   })
@@ -2659,13 +2685,13 @@ describe('App shell behavior', () => {
     )
 
     render(<App />)
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
     await user.click(within(editorFlowTree).getByRole('button', { name: LINEAR_FLOW_NAME }))
 
     await waitFor(() => {
       expect(screen.getByTestId('app-shell')).toBeVisible()
-      expect(screen.getByTestId('top-nav')).toBeVisible()
+      expect(screen.getByTestId('activity-bar')).toBeVisible()
       expect(screen.getByTestId('inspector-panel')).toBeVisible()
       expect(screen.getByTestId('flow-browser-panel')).toBeVisible()
       expect(screen.getByTestId('graph-inspector-panel')).toBeVisible()
@@ -2773,7 +2799,7 @@ describe('App shell behavior', () => {
     )
 
     render(<App />)
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
 
     expect(within(editorFlowTree).getByText('team')).toBeVisible()
@@ -2794,8 +2820,7 @@ describe('App shell behavior', () => {
 
     render(<App />)
 
-    await user.click(screen.getByTestId('nav-mode-editor'))
-    expect(screen.getByTestId('inspector-panel')).toBeVisible()
+    await user.click(screen.getByTestId('activity-flows'))
     expect(screen.getByTestId('editor-no-flow-state')).toHaveTextContent('Select a flow to begin authoring.')
     expect(screen.getByTestId('canvas-workspace-primary')).toHaveAttribute('data-canvas-active', 'true')
 
@@ -2808,13 +2833,13 @@ describe('App shell behavior', () => {
     const rawYamlEditor = await screen.findByTestId('raw-yaml-editor')
     await user.type(rawYamlEditor, '\n# editor draft note')
 
-    await user.click(screen.getByTestId('nav-mode-runs'))
+    await user.click(screen.getByTestId('activity-runs'))
     expect(screen.getByTestId('runs-panel')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-triggers'))
+    await user.click(screen.getByTestId('activity-triggers'))
     expect(screen.getByTestId('triggers-panel')).toBeVisible()
 
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
     expect((await screen.findByTestId('raw-yaml-editor') as HTMLTextAreaElement).value).toContain('# editor draft note')
   })
 
@@ -2830,7 +2855,7 @@ describe('App shell behavior', () => {
 
     expect(screen.queryByTestId('nav-mode-execution')).not.toBeInTheDocument()
 
-    await user.click(screen.getByTestId('nav-mode-editor'))
+    await user.click(screen.getByTestId('activity-flows'))
     const editorFlowTree = await screen.findByTestId('editor-flow-tree')
     await user.click(within(editorFlowTree).getByRole('button', { name: REVIEW_FLOW_NAME }))
     await waitFor(() => {
@@ -2840,8 +2865,13 @@ describe('App shell behavior', () => {
     const runButton = screen.getByTestId('editor-run-button')
     await waitFor(() => expect(runButton).toBeEnabled())
     await user.click(runButton)
+    // Running asks which project, suggesting the chat's project first.
+    const projectChoices = await screen.findAllByTestId('project-picker-item')
+    expect(projectChoices[0]).toHaveAttribute('data-project-path', '/tmp/project-shell')
+    await user.click(projectChoices[0])
 
     const editorRunPanel = await screen.findByTestId('editor-run-panel')
+    expect(within(editorRunPanel).getByTestId('launch-panel-start-button')).toHaveTextContent('Run in project-shell')
     expect(editorRunPanel).toContainElement(screen.getByTestId('launch-panel'))
     expect(editorRunPanel).toContainElement(screen.getByTestId('launch-panel-start-button'))
     expect(await screen.findByTestId('execution-launch-input-context.request.summary')).toBeVisible()

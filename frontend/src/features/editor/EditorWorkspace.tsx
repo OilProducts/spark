@@ -8,6 +8,8 @@ import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Editor } from './Editor'
 import { EditorGraphBridgeProvider } from './EditorGraphBridgeContext'
 import { Sidebar } from './Sidebar'
+import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from './FlowsPanel'
+import { ViewLayout } from '@/components/app/view-layout'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas'
 
 const MIN_EDITOR_SIDEBAR_WIDTH = 256
@@ -33,6 +35,8 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
     const isNarrowViewport = useNarrowViewport()
     const editorSidebarWidth = useStore((state) => state.editorSidebarWidth)
     const setEditorSidebarWidth = useStore((state) => state.setEditorSidebarWidth)
+    const hasActiveFlow = useStore((state) => Boolean(state.activeFlow))
+    const catalog = useFlowCatalogPanel()
     const [isEditorSidebarResizing, setIsEditorSidebarResizing] = useState(false)
     const workspaceRef = useRef<HTMLDivElement | null>(null)
     const editorSidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
@@ -163,6 +167,12 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                 isActive ? 'block pointer-events-auto' : 'hidden pointer-events-none'
             }`}
         >
+            <ViewLayout
+                view="flows"
+                title="Flows"
+                actions={<FlowsPanelActions catalog={catalog} />}
+                panel={<FlowsPanelList catalog={catalog} />}
+            >
             <div
                 ref={workspaceRef}
                 className={`flex h-full overflow-hidden ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
@@ -171,7 +181,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                     <CanvasSessionModeProvider mode="editor">
                         <EditorGraphBridgeProvider>
                             <Sidebar desktopWidthPx={editorSidebarWidth} />
-                            {!isNarrowViewport ? (
+                            {!isNarrowViewport && hasActiveFlow ? (
                                 <div
                                     data-testid="editor-sidebar-resize-handle"
                                     role="separator"
@@ -194,6 +204,7 @@ export function EditorWorkspace({ isActive }: { isActive: boolean }) {
                     </CanvasSessionModeProvider>
                 </ReactFlowProvider>
             </div>
+            </ViewLayout>
         </section>
     )
 }

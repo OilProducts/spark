@@ -9,7 +9,7 @@ const initial = useStore.getState()
 afterEach(() => { cleanup(); useStore.setState(initial, true); vi.resetAllMocks() })
 it('applies persisted preferences and saves completed interactions with revisions, retaining failed drafts', async () => {
     const view: ClientPreferencesView = { client_id: 'browser-one', revision: 'first',
-        stored: { editor_mode: 'raw', editor_sidebar_width: 400 }, effective: { editor_mode: 'raw', editor_sidebar_width: 400, show_advanced_controls: true, expand_child_flows: true, graph_settings_open: true, runs_scope: 'all', triggers_scope: 'active', home_sidebar_primary_split_ratio: 0.6 } }
+        stored: { editor_mode: 'raw', editor_sidebar_width: 400 }, effective: { editor_mode: 'raw', editor_sidebar_width: 400, show_advanced_controls: true, expand_child_flows: true, graph_settings_open: true, home_sidebar_primary_split_ratio: 0.6 } }
     vi.mocked(fetchClientPreferences).mockResolvedValue(view)
     vi.mocked(saveClientPreferences).mockRejectedValue(new Error('Preferences changed elsewhere.'))
     render(<ClientPreferencesController />)
@@ -19,8 +19,6 @@ it('applies persisted preferences and saves completed interactions with revision
     expect(useStore.getState().preferredAdvancedControls).toBe(true)
     expect(useStore.getState().preferredExpandChildFlows).toBe(true)
     expect(useStore.getState().preferredGraphSettingsOpen).toBe(true)
-    expect(useStore.getState().runsListSession.scopeMode).toBe('all')
-    expect(useStore.getState().triggersSession.scopeFilter).toBe('active')
     expect(saveClientPreferences).not.toHaveBeenCalled()
     act(() => window.dispatchEvent(new CustomEvent('spark:preferences-completed', { detail: { editor_sidebar_width: 450 } })))
     await screen.findByText('Preferences changed elsewhere.')

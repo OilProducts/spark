@@ -158,7 +158,6 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
     const [draftLlmProfile, setDraftLlmProfile] = useState<string>((data.llm_profile as string) || '')
     const [draftReasoningControls, setDraftReasoningControls] = useState({thinking: (data.thinking as string) || null, thinking_budget_tokens: Number(data.thinking_budget_tokens) || null, reasoning_mode: (data.reasoning_mode as string) || null, reasoning_summary: (data.reasoning_summary as string) || null})
     const [draftReasoningEffort, setDraftReasoningEffort] = useState<string>((data.reasoning_effort as string) || '')
-    const projectPath = useStore((state) => state.activeProjectPath)
     const [draftAutoStatus, setDraftAutoStatus] = useState<boolean>(
         data.auto_status === true || data.auto_status === 'true',
     )
@@ -820,7 +819,7 @@ function BaseWorkflowNode({ id, data, selected, defaultShape }: BaseWorkflowNode
                                 )}
                                 {visibility.showLlmSettings && (
                                     <div className="nodrag nowheel">
-                                        <ModelChooser projectPath={projectPath} inheritLabel="Graph default"
+                                        <ModelChooser projectPath={null} inheritLabel="Graph default"
                                             inherited={{ provider: flowMetadata.llm_provider || null, llm_profile: flowMetadata.llm_profile || null, model: flowMetadata.llm_model || null, reasoning_effort: flowMetadata.reasoning_effort || null, thinking: flowMetadata.thinking || null, thinking_budget_tokens: Number(flowMetadata.thinking_budget_tokens) || null, reasoning_mode: flowMetadata.reasoning_mode || null, reasoning_summary: flowMetadata.reasoning_summary || null }}
                                             value={{ provider: draftLlmProvider || null, llm_profile: draftLlmProfile || null,
                                                 model: draftLlmModel || null, reasoning_effort: draftReasoningEffort || null, ...draftReasoningControls }}

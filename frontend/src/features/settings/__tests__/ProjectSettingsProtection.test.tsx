@@ -1,10 +1,9 @@
 import { customModel } from '@/components/model-chooser/__tests__/picker'
-import { useState } from 'react'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
-import { ProjectSettingsDialog } from '@/app/ProjectSettingsDialog'
+import { ProjectExecutionSettings } from '@/features/projects/components/ProjectExecutionSettings'
 import { useStore } from '@/store'
 import { fetchModelSettings, fetchProjectExecutionSettings } from '@/lib/api/settingsApi'
 import { fetchWorkspaceSettingsValidated, updateProjectStateValidated, type WorkspaceSettingsResponse } from '@/lib/workspaceClient'
@@ -17,7 +16,7 @@ vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [] }))
 
 beforeEach(() => {
     vi.clearAllMocks()
-    useStore.setState({ activeProjectPath: '/project-one', viewMode: 'settings', projectRegistry: {
+    useStore.setState({ activeProjectPath: '/project-one', projectPagePath: '/project-one', viewMode: 'home', projectRegistry: {
         '/project-one': { directoryPath: '/project-one', isFavorite: false, lastAccessedAt: null },
         '/project-two': { directoryPath: '/project-two', isFavorite: false, lastAccessedAt: null },
     } })
@@ -30,7 +29,7 @@ beforeEach(() => {
 })
 
 function Models() {
-    const project = useStore((state) => state.activeProjectPath)
+    const project = useStore((state) => state.projectPagePath)
     return project ? <ProjectModelSettingsEditor key={project} projectPath={project} /> : <p>No project</p>
 }
 
@@ -42,46 +41,51 @@ it.each(['switch', 'switch_and_leave', 'clear', 'remove', 'hydrate', 'rename'] a
     await customModel(user, 'unsaved-model')
     const navigate = () => {
         const state = useStore.getState()
-        if (transition === 'switch') state.setActiveProjectPath('/project-two')
-        if (transition === 'switch_and_leave') { state.setActiveProjectPath('/project-two'); state.setViewMode('home') }
-        if (transition === 'clear') state.setActiveProjectPath(null)
+        if (transition === 'switch') state.openProjectPage('/project-two')
+        if (transition === 'switch_and_leave') { state.openProjectPage('/project-two'); state.setViewMode('runs') }
+        if (transition === 'clear') state.openProjectPage(null)
         if (transition === 'remove') state.removeProject('/project-one', '/project-two')
         if (transition === 'hydrate') state.hydrateProjectRegistry([])
         if (transition === 'rename') state.updateProjectPath('/project-one', '/project-renamed')
     }
     await act(async () => navigate())
     await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
-    expect(useStore.getState().activeProjectPath).toBe('/project-one')
-    expect(useStore.getState().viewMode).toBe('settings')
+    expect(useStore.getState().projectPagePath).toBe('/project-one')
     expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('unsaved-model')
     await act(async () => navigate())
     await user.click(await screen.findByRole('button', { name: 'Discard and leave' }))
-    await waitFor(() => expect(useStore.getState().activeProjectPath).not.toBe('/project-one'))
+    await waitFor(() => expect(useStore.getState().projectPagePath).not.toBe('/project-one'))
     expect(screen.queryByDisplayValue('unsaved-model')).not.toBeInTheDocument()
-    if (transition === 'switch_and_leave') expect(useStore.getState().viewMode).toBe('home')
+    if (transition === 'switch_and_leave') expect(useStore.getState().viewMode).toBe('runs')
 })
 
 function Execution() {
-    const [open, setOpen] = useState(true)
-    return <ProjectSettingsDialog open={open} projectPath="/project-one" onOpenChange={setOpen} />
+    const page = useStore((state) => state.projectPagePath)
+    return page ? <ProjectExecutionSettings projectPath={page} /> : <p>Left the project page</p>
 }
 
-it('confirms Escape and Cancel dismissal and retains the execution draft on cancellation', async () => {
+it('confirms leaving the project page and retains the execution draft on cancellation', async () => {
+    useStore.setState({ projectPagePath: '/project-one', viewMode: 'home' })
     const user = userEvent.setup()
     render(<DialogProvider><Execution /></DialogProvider>)
     await waitFor(() => expect(screen.getByTestId('project-default-execution-profile')).toBeEnabled())
     await user.click(screen.getByTestId('project-default-execution-profile'))
     await user.click(screen.getByRole('option', { name: 'Native (native)' }))
-    await user.keyboard('{Escape}')
+    act(() => useStore.getState().openProjectPage(null))
     await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
     expect(screen.getByTestId('project-default-execution-profile')).toHaveTextContent('Native')
-    await user.click(screen.getByRole('button', { name: 'Cancel', exact: true }))
+    // Other views keep the project page mounted, so switching views keeps the draft without asking.
+    act(() => useStore.getState().setViewMode('runs'))
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('project-default-execution-profile')).toHaveTextContent('Native')
+    act(() => useStore.getState().openProjectPage(null))
     await user.click(await screen.findByRole('button', { name: 'Discard and leave' }))
     await waitFor(() => expect(screen.queryByTestId('project-settings-dialog')).not.toBeInTheDocument())
     expect(updateProjectStateValidated).not.toHaveBeenCalled()
 })
 
 it('refetches clean execution settings, retains dirty drafts on live changes and conflicts, and reloads explicitly', async () => {
+    useStore.setState({ projectPagePath: '/project-one' })
     const user = userEvent.setup()
     render(<DialogProvider><Execution /></DialogProvider>)
     const select = screen.getByTestId('project-default-execution-profile')
@@ -105,7 +109,8 @@ it('refetches clean execution settings, retains dirty drafts on live changes and
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
 })
 
-it('blocks dismissal, navigation and duplicate saves while an execution update is pending', async () => {
+it('blocks navigation and duplicate saves while an execution update is pending', async () => {
+    useStore.setState({ projectPagePath: '/project-one' })
     const user = userEvent.setup()
     render(<DialogProvider><Execution /></DialogProvider>)
     await waitFor(() => expect(screen.getByTestId('project-default-execution-profile')).toBeEnabled())
@@ -116,9 +121,8 @@ it('blocks dismissal, navigation and duplicate saves while an execution update i
     await user.click(screen.getByTestId('project-settings-save-button'))
     expect(screen.getByTestId('project-settings-save-button')).toBeDisabled()
     expect(screen.getByRole('button', { name: /^Discard/ })).toBeDisabled()
-    await user.keyboard('{Escape}')
-    act(() => useStore.getState().setActiveProjectPath(null))
-    expect(useStore.getState().activeProjectPath).toBe('/project-one')
+    act(() => useStore.getState().openProjectPage(null))
+    expect(useStore.getState().projectPagePath).toBe('/project-one')
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
     expect(screen.getByTestId('project-settings-dialog')).toBeVisible()
     expect(updateProjectStateValidated).toHaveBeenCalledTimes(1)

@@ -1,7 +1,7 @@
 import { useStore, type DiagnosticEntry } from "@/store"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo } from "react"
 import { useReactFlow, useStore as useReactFlowStore, type Edge, type Node } from "@xyflow/react"
-import { generateFlowYaml, sanitizeFlowId } from "@/lib/flowYamlUtils"
+import { generateFlowYaml } from "@/lib/flowYamlUtils"
 import { getHandlerType, getNodeFieldVisibility } from "@/lib/nodeVisibility"
 import { getToolHookCommandWarning } from "@/lib/graphAttrValidation"
 import { resolveEdgeFieldDiagnostics, resolveNodeFieldDiagnostics } from "@/lib/inspectorFieldDiagnostics"
@@ -11,13 +11,9 @@ import {
     getShapeNodeStyle,
     normalizeWorkflowNodeShape,
 } from '@/lib/workflowNodeShape'
-import { saveFlowContent } from "@/lib/flowPersistence"
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler'
-import { useDialogController } from '@/components/app/dialog-controller'
-import { deleteFlowCatalogEntry, loadFlowCatalog } from './services/flowCatalog'
 import { EdgeInspectorPanel } from './components/EdgeInspectorPanel'
-import { FlowBrowserPanel } from './components/FlowBrowserPanel'
 import { GraphInspectorPanel } from './components/GraphInspectorPanel'
 import { NodeInspectorPanel } from './components/NodeInspectorPanel'
 import {
@@ -164,9 +160,7 @@ export function applyNodePropertyChangeToData(
 }
 
 export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
-    const { confirm, prompt } = useDialogController()
     const activeFlow = useStore((state) => state.activeFlow)
-    const setActiveFlow = useStore((state) => state.setActiveFlow)
     const selectedNodeId = useStore((state) => state.selectedNodeId)
     const selectedEdgeId = useStore((state) => state.selectedEdgeId)
     const setSelectedNodeId = useStore((state) => state.setSelectedNodeId)
@@ -175,20 +169,13 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
     const diagnostics = useStore((state) => state.diagnostics)
     const edgeDiagnostics = useStore((state) => state.edgeDiagnostics)
     const flowMetadata = useStore((state) => state.flowMetadata)
-    const uiDefaults = useStore((state) => state.uiDefaults)
     const editorNodeInspectorSessionsByNodeId = useStore((state) => state.editorNodeInspectorSessionsByNodeId)
     const preferredAdvancedControls = useStore((state) => state.preferredAdvancedControls)
     const updateEditorNodeInspectorSession = useStore((state) => state.updateEditorNodeInspectorSession)
-    const [flows, setFlows] = useState<string[]>([])
-    const [isRefreshingFlows, setIsRefreshingFlows] = useState(false)
     const editorGraphBridgeRef = useEditorGraphBridgeRef()
-    const activeFlowRef = useRef(activeFlow)
-    const isMountedRef = useRef(true)
-    const refreshRequestIdRef = useRef(0)
     const { getNodes, setNodes, getEdges, setEdges } = useReactFlow()
     const nodes = useReactFlowStore((state) => state.nodes)
     const edges = useReactFlowStore((state) => state.edges)
-    activeFlowRef.current = activeFlow
     const readNodes = () => editorGraphBridgeRef?.current?.getNodes() ?? getNodes()
     const readEdges = () => editorGraphBridgeRef?.current?.getEdges() ?? getEdges()
     const updateNodes = (updater: Parameters<typeof setNodes>[0]) =>
@@ -205,112 +192,6 @@ export function Sidebar({ desktopWidthPx = 288 }: { desktopWidthPx?: number }) {
             flowMetadata,
         ),
     })
-
-    const refreshFlows = async () => {
-        const requestId = refreshRequestIdRef.current + 1
-        refreshRequestIdRef.current = requestId
-        if (isMountedRef.current) {
-            setIsRefreshingFlows(true)
-        }
-
-        try {
-            const data = await loadFlowCatalog()
-            if (!isMountedRef.current || requestId !== refreshRequestIdRef.current) {
-                return
-            }
-            setFlows(data)
-
-            const selectedFlow = activeFlowRef.current
-            if (selectedFlow && !data.includes(selectedFlow)) {
-                setActiveFlow(null)
-            }
-        } catch (error) {
-            console.error(error)
-        } finally {
-            if (isMountedRef.current && requestId === refreshRequestIdRef.current) {
-                setIsRefreshingFlows(false)
-            }
-        }
-    }
-
-    useEffect(() => {
-        isMountedRef.current = true
-        void refreshFlows()
-
-        return () => {
-            isMountedRef.current = false
-        }
-    }, [])
-
-    const createNewFlow = async () => {
-        const name = await prompt({
-            title: 'Create flow',
-            description: 'Enter a flow path such as demos/demo.yaml.',
-            label: 'Flow path',
-            placeholder: 'demos/demo.yaml',
-            confirmLabel: 'Create',
-            requireInput: true,
-        })
-        if (!name) return;
-
-        const hasYamlExtension = /\.(ya?ml)$/i.test(name)
-        const fileName = hasYamlExtension ? name : `${name}.yaml`;
-        const flowId = sanitizeFlowId(fileName);
-        const quoteYaml = (value: string) => JSON.stringify(value)
-        const defaults = [
-            uiDefaults.llm_model ? `  llm_model: ${quoteYaml(uiDefaults.llm_model)}` : '',
-            uiDefaults.llm_provider ? `  llm_provider: ${quoteYaml(uiDefaults.llm_provider)}` : '',
-            uiDefaults.llm_profile ? `  llm_profile: ${quoteYaml(uiDefaults.llm_profile)}` : '',
-            uiDefaults.reasoning_effort ? `  reasoning_effort: ${quoteYaml(uiDefaults.reasoning_effort)}` : '',
-        ].filter(Boolean)
-        const defaultsBlock = defaults.length ? `defaults:\n${defaults.join('\n')}\n` : ''
-
-        const initialContent = `schema_version: "1.0"
-id: ${flowId}
-title: ${quoteYaml(fileName)}
-description: ""
-goal: ""
-${defaultsBlock}nodes:
-  start:
-    kind: start
-    label: Start
-    config:
-      kind: start
-  end:
-    kind: exit
-    label: End
-    config:
-      kind: exit
-edges:
-  - from: start
-    to: end
-`
-
-        const saved = await saveFlowContent(fileName, initialContent)
-        if (!saved) return
-
-        await refreshFlows();
-        setActiveFlow(fileName);
-    }
-
-    const handleDeleteFlow = async (e: React.MouseEvent, fileName: string) => {
-        e.stopPropagation();
-        const confirmed = await confirm({
-            title: 'Delete flow?',
-            description: `Are you sure you want to delete ${fileName}?`,
-            confirmLabel: 'Delete',
-            cancelLabel: 'Keep flow',
-            confirmVariant: 'destructive',
-        })
-        if (!confirmed) return;
-
-        await deleteFlowCatalogEntry(fileName);
-
-        if (activeFlow === fileName) {
-            setActiveFlow(null);
-        }
-        await refreshFlows();
-    };
 
     const applyNodeVisualState = (node: Node, nextData: Record<string, unknown>) => {
         const nextShape = normalizeWorkflowNodeShape((nextData.shape as string) || (node.data?.shape as string) || 'box')
@@ -444,9 +325,6 @@ edges:
     const showNodeInspector = activeInspectorScope === 'node'
     const showEdgeInspector = activeInspectorScope === 'edge'
     const showSecondaryInspector = showGraphInspector || showNodeInspector || showEdgeInspector
-    const flowBrowserClassName = showSecondaryInspector
-        ? `${isNarrowViewport ? 'shrink-0 min-h-40 max-h-52' : 'shrink-0 min-h-44 max-h-[40%]'} border-b border-border/70`
-        : 'flex-1 min-h-0'
 
     const handleEdgePropertyChange = (key: string, value: string | boolean) => {
         if (!selectedEdgeId || !activeFlow) return;
@@ -615,6 +493,11 @@ edges:
         )
     }
 
+    // The flow list lives in the Flows panel; this column only inspects the open flow.
+    if (!showSecondaryInspector) {
+        return null
+    }
+
     return (
         <nav
             data-testid="inspector-panel"
@@ -630,18 +513,6 @@ edges:
             </div>
 
             <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
-                <FlowBrowserPanel
-                    className={flowBrowserClassName}
-                    activeFlow={activeFlow}
-                    flows={flows}
-                    onCreateFlow={createNewFlow}
-                    onDeleteFlow={handleDeleteFlow}
-                    onSelectFlow={setActiveFlow}
-                    onRefresh={refreshFlows}
-                    isRefreshing={isRefreshingFlows}
-                    refreshButtonTestId="editor-flow-refresh-button"
-                />
-
                 {showGraphInspector ? (
                     <GraphInspectorPanel />
                 ) : null}

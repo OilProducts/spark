@@ -30,7 +30,7 @@ it('starts a replacement draft for invalid stored field types and requires expli
 })
 
 it.each([42, 'missing-profile'])('retains the revision and scoped error for stored execution selection %s until explicit repair', async (stored) => {
-    const { ProjectSettingsDialog } = await import('@/app/ProjectSettingsDialog')
+    const { ProjectExecutionSettings } = await import('@/features/projects/components/ProjectExecutionSettings')
     const writes: unknown[] = []
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
         if (init?.method === 'PATCH') {
@@ -46,7 +46,7 @@ it.each([42, 'missing-profile'])('retains the revision and scoped error for stor
         }), { status: 200 })
     }))
     const user = userEvent.setup()
-    render(<DialogProvider><ProjectSettingsDialog open projectPath="/project" onOpenChange={vi.fn()} /></DialogProvider>)
+    render(<DialogProvider><ProjectExecutionSettings projectPath="/project" /></DialogProvider>)
     expect(await screen.findByTestId('project-settings-error')).toHaveTextContent('Invalid project execution profile selection.')
     const select = screen.getByTestId('project-default-execution-profile')
     expect(select).toBeEnabled()

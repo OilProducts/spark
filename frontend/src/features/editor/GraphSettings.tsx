@@ -98,7 +98,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         window.addEventListener('spark:settings-live-event', refresh)
         return () => window.removeEventListener('spark:settings-live-event', refresh)
     }, [catalogDirty, launchPolicySaveState])
-    const projectPath = useStore((state) => state.activeProjectPath)
     const canApplyDefaults = !!activeFlow && viewMode === 'editor'
     const graphFieldDiagnostics = useMemo(() => resolveGraphFieldDiagnostics(diagnostics), [diagnostics])
     const flowMetadataExtensionEntries = useMemo(
@@ -492,7 +491,7 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
                     canApplyDefaults={canApplyDefaults}
                     flowMetadata={flowMetadata}
                     uiDefaults={uiDefaults}
-                    projectPath={projectPath}
+                    projectPath={null}
                     applyDefaultsToNodes={applyDefaultsToNodes}
                     updateFlowMetadata={updateFlowMetadata}
                 />

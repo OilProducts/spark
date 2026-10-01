@@ -58,15 +58,7 @@ export function ClientPreferencesEditor() {
                     <p id="preference-home-split-help" className="text-xs">Proportion of available sidebar height assigned to the primary pane (0–1). Leave blank for automatic sizing. Both panes retain their minimum height.</p>
                     {editor.invalidSplit && <p id="preference-split-error" role="alert">Choose a number from 0 to 1.</p>}
                 </Field>
-                <h4 className="text-sm font-semibold">Runs &amp; triggers</h4>
-                {([['runs_scope', 'Run list scope'], ['triggers_scope', 'Trigger list scope']] as const).map(([key, label]) => <Field key={key}>
-                    <FieldLabel htmlFor={`preference-${key}`}>{label}</FieldLabel>
-                    <NativeSelect id={`preference-${key}`} value={editor.draft?.[key] ?? ''}
-                        onChange={(event) => { const value = event.target.value as 'active' | 'all' | ''; editor.setDraft((draft) => draft && ({ ...draft, [key]: value || null })) }}>
-                        <option value="">Default ({key === 'runs_scope' ? 'active project' : 'all projects'})</option>
-                        <option value="active">Active project</option><option value="all">All projects</option>
-                    </NativeSelect>
-                </Field>)}
+                <h4 className="text-sm font-semibold">Runs</h4>
                 {(Object.keys(runPresentationChoices) as (keyof typeof runPresentationChoices)[]).map((key) => <Field key={key}>
                     <FieldLabel htmlFor={`run-preference-${key}`}>{{ sort: 'Run sort order' }[key]}</FieldLabel>
                     <NativeSelect id={`run-preference-${key}`} value={editor.draft?.run_presentation?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, run_presentation: { ...draft.run_presentation, [key]: event.target.value || null } as RunPresentation }))}>

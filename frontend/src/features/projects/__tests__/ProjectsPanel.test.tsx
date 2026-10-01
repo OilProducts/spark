@@ -1,5 +1,4 @@
 import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { HomeSessionController } from '@/app/AppSessionControllers'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
@@ -243,6 +242,12 @@ const buildPendingSendSnapshot = ({
   event_log: [],
 })
 
+// Opens a chat in the chat project already shown.
+const selectActiveConversation = (conversationId: string | null) => {
+  const projectPath = useStore.getState().activeProjectPath
+  if (projectPath) useStore.getState().updateProjectSessionState(projectPath, { conversationId })
+}
+
 const resetProjectScopeState = () => {
   {
 useStore.setState({...useStore.getState(),
@@ -269,7 +274,7 @@ uiDefaults: {
       llm_provider: '',
       reasoning_effort: '',
     }});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -361,50 +366,29 @@ describe('ProjectsPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders a threads-first sidebar and event log', async () => {
+  it('renders chats grouped by project in the side panel, beside the event log', async () => {
     renderProjectsPanel()
 
-    expect(screen.getByText('Threads')).toBeVisible()
+    expect(screen.getByTestId('side-panel-title')).toHaveTextContent('Chats')
     expect(screen.getByTestId('project-thread-list')).toBeVisible()
     expect(screen.getByTestId('project-event-log-surface')).toBeVisible()
     expect(
-      within(screen.getByTestId('project-thread-list')).getByText(
-        'Choose or add a project from the navbar to view threads.',
-      ),
+      within(screen.getByTestId('project-ai-conversation-surface')).getByText('Pick a chat, or start a new one.'),
     ).toBeVisible()
-    expect(screen.getAllByText(/Choose or add a project from the navbar/)).toHaveLength(2)
 
-    await waitFor(() => {
-      expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
-    })
+    const group = await screen.findByTestId('chats-project-group')
+    expect(group).toHaveAttribute('data-project-path', '/tmp/quick-switch-project')
+    expect(within(group).getByTestId('chats-project-name')).toHaveTextContent('quick-switch-project')
   })
 
   it('uses a full-height split shell on wide viewports', () => {
-    useStore.setState((state) => ({
-      ...state,
-      projectRegistry: {
-        '/tmp/existing-project': {
-          project_id: 'existing-project',
-          project_path: '/tmp/existing-project',
-          display_name: 'existing-project',
-          created_at: new Date().toISOString(),
-          last_opened_at: new Date().toISOString(),
-          last_accessed_at: null,
-          is_favorite: false,
-          active_conversation_id: null,
-        },
-      },
-    }))
-
     renderProjectsPanelWithoutHomeController()
 
     const projectsPanel = screen.getByTestId('projects-panel')
-    const homeMainLayout = screen.getByTestId('home-main-layout')
-
-    expect(projectsPanel).toHaveAttribute('data-responsive-layout', 'split')
     expect(projectsPanel).toHaveClass('h-full')
-    expect(homeMainLayout).toHaveClass('flex-1')
-    expect(homeMainLayout).toHaveClass('min-h-0')
+    expect(screen.getByTestId('chats-view')).toHaveAttribute('data-responsive-layout', 'split')
+    expect(screen.getByTestId('side-panel')).toBeVisible()
+    expect(screen.getByTestId('view-main')).toBeVisible()
   })
 
   it('surfaces a project registry bootstrap error on refresh', async () => {
@@ -561,7 +545,7 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it('points empty states at the navbar project switcher when no project is active', async () => {
+  it('shows empty states when no chat is open', async () => {
     renderProjectsPanelWithoutHomeController()
 
     await waitFor(() => {
@@ -569,24 +553,18 @@ describe('ProjectsPanel', () => {
     })
 
     expect(
-      within(screen.getByTestId('project-thread-list')).getByText(
-        'Choose or add a project from the navbar to view threads.',
-      ),
-    ).toBeVisible()
-    expect(
       within(screen.getByTestId('project-event-log-surface')).getByText(
         'No workflow events recorded yet.',
       ),
     ).toBeVisible()
-    expect(screen.getByTestId('workflow-event-log-scope-active')).toBeDisabled()
     expect(
       within(screen.getByTestId('project-ai-conversation-surface')).getByText(
-        'Choose or add a project from the navbar to begin chatting.',
+        'Pick a chat, or start a new one.',
       ),
     ).toBeVisible()
   })
 
-  it('shows thread controls for the active project', async () => {
+  it('shows the chat\'s project in its composer and a new-chat control', async () => {
     act(() => {
       useStore.getState().registerProject('/tmp/quick-switch-project')
       useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
@@ -595,14 +573,15 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-    expect(screen.getByText('Threads for quick-switch-project.')).toBeVisible()
+    expect(screen.getByTestId('chat-composer-project')).toHaveTextContent('Runs and missions started here go to quick-switch-project')
+    expect(screen.getByTestId('chat-project-link')).toHaveTextContent('quick-switch-project')
+    const group = screen.getAllByTestId('chats-project-group').find((entry) => entry.dataset.projectPath === '/tmp/quick-switch-project')!
     await waitFor(() => {
-      expect(screen.getByText('No threads for this project yet.')).toBeVisible()
+      expect(group).toHaveTextContent('No chats yet.')
     })
   })
 
-  it('renders the global workflow event log with project scoping and run deep links', async () => {
-    const user = userEvent.setup()
+  it('renders the global workflow event log with project labels and run deep links', async () => {
     act(() => {
       useStore.getState().registerProject('/tmp/quick-switch-project')
       useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
@@ -633,8 +612,8 @@ describe('ProjectsPanel', () => {
 
     renderProjectsPanelWithoutHomeController()
 
-    // Global by default: entries from every project render, newest first, with
-    // project labels and deep links into the runs tab.
+    // Entries from every project render, newest first, with project labels and
+    // deep links into the runs view.
     const logList = screen.getByTestId('project-event-log-list')
     const rows = within(logList).getAllByTestId('workflow-event-log-row')
     expect(rows).toHaveLength(2)
@@ -643,12 +622,8 @@ describe('ProjectsPanel', () => {
     expect(rows[0]).toHaveAttribute('href', '#/runs/run-b/deploy')
     expect(rows[0]).toHaveAttribute('data-kind', 'run_failed')
     expect(rows[1]).toHaveAttribute('href', '#/runs/run-a')
-
-    // Scoping to the active project filters the feed.
-    await user.click(screen.getByTestId('workflow-event-log-scope-active'))
-    const scopedRows = within(screen.getByTestId('project-event-log-list')).getAllByTestId('workflow-event-log-row')
-    expect(scopedRows).toHaveLength(1)
-    expect(scopedRows[0]).toHaveTextContent('Started ops/deploy.dot')
+    expect(rows[1]).toHaveTextContent('quick-switch-project')
+    expect(screen.queryByTestId('workflow-event-log-scope-active')).not.toBeInTheDocument()
   })
 
   it('renders the server-created user turn before the assistant response completes', async () => {
@@ -1106,7 +1081,7 @@ describe('ProjectsPanel', () => {
 
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
-    useStore.getState().setConversationId('conversation-ordering-1')
+    selectActiveConversation('conversation-ordering-1')
 
     renderProjectsPanel()
 
@@ -1235,7 +1210,7 @@ describe('ProjectsPanel', () => {
 
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
-    useStore.getState().setConversationId('conversation-tool-collapse-1')
+    selectActiveConversation('conversation-tool-collapse-1')
 
     renderProjectsPanel()
 
@@ -1338,7 +1313,7 @@ describe('ProjectsPanel', () => {
 
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
-    useStore.getState().setConversationId('conversation-thinking-collapse-1')
+    selectActiveConversation('conversation-thinking-collapse-1')
 
     renderProjectsPanel()
 
@@ -1435,7 +1410,7 @@ describe('ProjectsPanel', () => {
 
     useStore.getState().registerProject('/tmp/chat-project')
     useStore.getState().setActiveProjectPath('/tmp/chat-project')
-    useStore.getState().setConversationId('conversation-pre-snapshot-replay')
+    selectActiveConversation('conversation-pre-snapshot-replay')
 
     renderProjectsPanel()
 
@@ -3863,7 +3838,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/chat-project')
       useStore.getState().setActiveProjectPath('/tmp/chat-project')
-      useStore.getState().setConversationId('conversation-segment-upsert')
+      selectActiveConversation('conversation-segment-upsert')
     })
 
     renderProjectsPanel()
@@ -4268,7 +4243,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/thread-project')
       useStore.getState().setActiveProjectPath('/tmp/thread-project')
-      useStore.getState().setConversationId('conversation-thread-a')
+      selectActiveConversation('conversation-thread-a')
     })
 
     renderProjectsPanel()
@@ -4459,7 +4434,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/thread-project')
       useStore.getState().setActiveProjectPath('/tmp/thread-project')
-      useStore.getState().setConversationId('conversation-thread-a')
+      selectActiveConversation('conversation-thread-a')
     })
 
     renderProjectsPanel()
@@ -4657,7 +4632,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/thread-project')
       useStore.getState().setActiveProjectPath('/tmp/thread-project')
-      useStore.getState().setConversationId('conversation-thread-a')
+      selectActiveConversation('conversation-thread-a')
     })
 
     renderProjectsPanel()
@@ -4740,9 +4715,12 @@ describe('ProjectsPanel', () => {
       act(() => {
         useStore.getState().registerProject(projectPath)
         useStore.getState().setActiveProjectPath(projectPath)
-        useStore.getState().setConversationId(conversationId)
+        selectActiveConversation(conversationId)
       })
     }
+    const projectGroup = () => screen.getAllByTestId('chats-project-group').find((group) => group.dataset.projectPath === projectPath)!
+    const newChatInProject = (user: ReturnType<typeof userEvent.setup>) => user.click(within(projectGroup()).getByTestId('chats-project-new-chat'))
+    const noChatsYet = () => waitFor(() => expect(projectGroup()).toHaveTextContent('No chats yet.'))
     const selectedConversationId = () => useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
 
     it('persists the thread before adding or selecting it', async () => {
@@ -4752,12 +4730,12 @@ describe('ProjectsPanel', () => {
       server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
       openProject()
       renderProjectsPanel()
-      await screen.findByText('No threads for this project yet.')
+      await noChatsYet()
 
-      await user.click(screen.getByTestId('project-thread-new-button'))
+      await newChatInProject(user)
       await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
       expect(server.settingsRequests[0]?.body).toMatchObject({ project_path: projectPath, expected_revision: '0' })
-      expect(screen.getByTestId('project-thread-list')).toHaveTextContent('No threads for this project yet.')
+      expect(projectGroup()).toHaveTextContent('No chats yet.')
       expect(selectedConversationId()).toBeNull()
 
       await act(async () => releaseSettings())
@@ -4776,15 +4754,15 @@ describe('ProjectsPanel', () => {
       server.settingsGate = new Promise((resolve) => { releaseSettings = resolve })
       openProject()
       renderProjectsPanel()
-      await screen.findByText('No threads for this project yet.')
-      await user.click(screen.getByTestId('project-thread-new-button'))
+      await noChatsYet()
+      await newChatInProject(user)
       await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
       const createdConversationId = server.settingsRequests[0]!.conversationId
 
       act(() => {
         useStore.getState().registerProject(otherProjectPath)
         useStore.getState().setActiveProjectPath(otherProjectPath)
-        useStore.getState().setConversationId('conversation-other')
+        selectActiveConversation('conversation-other')
       })
       await screen.findByRole('button', { name: 'Open thread Other thread' })
       await user.type(screen.getByTestId('project-ai-conversation-input'), 'Draft in B')
@@ -4796,7 +4774,8 @@ describe('ProjectsPanel', () => {
       })
       expect(useStore.getState().projectSessionsByPath[otherProjectPath]?.conversationId).toBe('conversation-other')
       expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Draft in B')
-      expect(screen.queryByRole('button', { name: 'Open thread New thread' })).not.toBeInTheDocument()
+      // The new chat joins its own project's group without being opened.
+      expect(within(projectGroup()).getByRole('button', { name: 'Open thread New thread' })).not.toHaveAttribute('aria-current')
 
       act(() => useStore.getState().setActiveProjectPath(projectPath))
       await screen.findByRole('button', { name: 'Open thread New thread' })
@@ -4813,7 +4792,7 @@ describe('ProjectsPanel', () => {
       openProject('conversation-first')
       renderProjectsPanel()
       const secondThread = await screen.findByRole('button', { name: 'Open thread Second thread' })
-      await user.click(screen.getByTestId('project-thread-new-button'))
+      await newChatInProject(user)
       await waitFor(() => expect(server.settingsRequests).toHaveLength(1))
 
       await user.click(secondThread)
@@ -4834,7 +4813,7 @@ describe('ProjectsPanel', () => {
       renderProjectsPanel()
       await screen.findByRole('button', { name: 'Open thread Existing thread' })
 
-      await user.click(screen.getByTestId('project-thread-new-button'))
+      await newChatInProject(user)
 
       expect(await screen.findByText('Disk is read-only.')).toBeInTheDocument()
       expect(within(screen.getByTestId('project-thread-list')).getAllByRole('button', { name: /^Open thread/ })).toHaveLength(1)
@@ -4848,8 +4827,8 @@ describe('ProjectsPanel', () => {
       const server = stubThreadServer()
       openProject()
       const { unmount } = renderProjectsPanel()
-      await screen.findByText('No threads for this project yet.')
-      await user.click(screen.getByTestId('project-thread-new-button'))
+      await noChatsYet()
+      await newChatInProject(user)
       await screen.findByRole('button', { name: 'Open thread New thread' })
       const [conversationId] = Object.keys(server.persisted)
 
@@ -4860,7 +4839,7 @@ describe('ProjectsPanel', () => {
       await screen.findByRole('button', { name: 'Open thread New thread' })
 
       await user.click(screen.getByTestId(`project-thread-delete-${conversationId}`))
-      await screen.findByText('No threads for this project yet.')
+      await noChatsYet()
       expect(server.persisted).toEqual({})
     })
   })
@@ -5146,7 +5125,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/mode-project')
       useStore.getState().setActiveProjectPath('/tmp/mode-project')
-      useStore.getState().setConversationId('conversation-thread-a')
+      selectActiveConversation('conversation-thread-a')
     })
 
     renderProjectsPanel()
@@ -5660,7 +5639,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/model-project')
       useStore.getState().setActiveProjectPath('/tmp/model-project')
-      useStore.getState().setConversationId('codex-thread')
+      selectActiveConversation('codex-thread')
     })
     renderProjectsPanel()
     await screen.findByText('Provider default: gpt-5.4')
@@ -5742,7 +5721,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/model-project')
       useStore.getState().setActiveProjectPath('/tmp/model-project')
-      useStore.getState().setConversationId('profile-thread')
+      selectActiveConversation('profile-thread')
     })
     renderProjectsPanel()
     await screen.findByRole('button', { name: /Model: Default: model-one/ })
@@ -5880,7 +5859,7 @@ describe('ProjectsPanel', () => {
     act(() => {
       useStore.getState().registerProject('/tmp/model-project')
       useStore.getState().setActiveProjectPath('/tmp/model-project')
-      useStore.getState().setConversationId('conversation-thread-a')
+      selectActiveConversation('conversation-thread-a')
     })
 
     renderProjectsPanel()

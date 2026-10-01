@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
     createTriggerValidated,
     deleteTriggerValidated,
@@ -15,60 +15,14 @@ import {
 } from '../model/triggerForm'
 import { useSettingsNavigationProtection } from '@/features/settings/hooks/useSettingsNavigationProtection'
 import { useDialogController } from '@/components/app/dialog-controller'
+import { defaultProjectChoice } from '@/features/projects/model/projectChoices'
 type UseTriggerEditorArgs = {
-    activeProjectPath: string | null
     refreshTriggers: () => Promise<void>
     selectedTrigger: TriggerResponse | null
     setError: (value: string | null) => void
     revealWebhookSecret: (triggerId: string, secret: string) => void
     setSelectedTriggerId: (value: string | null) => void
 }
-
-const resolveActiveTargetFields = (activeProjectPath: string | null) => ({
-    targetMode: activeProjectPath ? 'active' as const : 'none' as const,
-    projectPath: activeProjectPath ?? '',
-})
-
-const applyActiveTargetFields = (
-    form: TriggerFormState,
-    activeProjectPath: string | null,
-): TriggerFormState => {
-    const nextTargetFields = resolveActiveTargetFields(activeProjectPath)
-    if (
-        form.targetMode === nextTargetFields.targetMode
-        && form.projectPath === nextTargetFields.projectPath
-    ) {
-        return form
-    }
-    return {
-        ...form,
-        ...nextTargetFields,
-    }
-}
-
-const applyInferredTargetFields = (
-    form: TriggerFormState,
-    selectedTrigger: TriggerResponse,
-    activeProjectPath: string | null,
-): TriggerFormState => {
-    const inferredTarget = triggerToFormState(selectedTrigger, activeProjectPath)
-    if (
-        form.targetMode === inferredTarget.targetMode
-        && form.projectPath === inferredTarget.projectPath
-    ) {
-        return form
-    }
-    return {
-        ...form,
-        targetMode: inferredTarget.targetMode,
-        projectPath: inferredTarget.projectPath,
-    }
-}
-
-const didTriggerTargetChange = (current: TriggerFormState, next: TriggerFormState) => (
-    current.targetMode !== next.targetMode
-    || current.projectPath !== next.projectPath
-)
 
 const buildProtectedTriggerUpdatePayload = (form: TriggerFormState) => ({
     name: form.name,
@@ -79,7 +33,6 @@ const buildProtectedTriggerUpdatePayload = (form: TriggerFormState) => ({
 })
 
 export function useTriggerEditor({
-    activeProjectPath,
     refreshTriggers,
     selectedTrigger,
     setError,
@@ -89,7 +42,7 @@ export function useTriggerEditor({
     const { confirm } = useDialogController()
     const pendingRef = useRef(false)
     const [pending, setPending] = useState(false)
-    const activeProjectPathRef = useRef(activeProjectPath)
+    const projectRegistry = useStore((state) => state.projectRegistry)
     const newTriggerDraft = useStore((state) => state.triggersSession.newTriggerDraft)
     const editTriggerDraftsByTriggerId = useStore((state) => state.triggersSession.editTriggerDraftsByTriggerId)
     const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
@@ -97,8 +50,8 @@ export function useTriggerEditor({
     const updateTriggersSession = useStore((state) => state.updateTriggersSession)
 
     const selectedTriggerForm = useMemo(
-        () => (selectedTrigger ? triggerToFormState(selectedTrigger, activeProjectPath) : null),
-        [activeProjectPath, selectedTrigger],
+        () => (selectedTrigger ? triggerToFormState(selectedTrigger, projectRegistry) : null),
+        [projectRegistry, selectedTrigger],
     )
     const newTriggerForm = newTriggerDraft.form
     const currentEditDraft = selectedTrigger ? editTriggerDraftsByTriggerId[selectedTrigger.id] ?? null : null
@@ -106,44 +59,6 @@ export function useTriggerEditor({
     const dirty = Boolean(currentEditDraft?.form)
     const externalChange = dirty && currentEditDraft?.expectedRevision !== selectedTrigger?.revision
     useSettingsNavigationProtection(dirty, pending)
-
-    useEffect(() => {
-        activeProjectPathRef.current = activeProjectPath
-    }, [activeProjectPath])
-
-    useEffect(() => {
-        if (newTriggerDraft.targetBehavior === 'manual') {
-            return
-        }
-        const syncedForm = applyActiveTargetFields(newTriggerDraft.form, activeProjectPath)
-        if (syncedForm === newTriggerDraft.form) {
-            return
-        }
-        setTriggersSessionNewDraft({
-            ...newTriggerDraft,
-            form: syncedForm,
-        })
-    }, [activeProjectPath, newTriggerDraft, setTriggersSessionNewDraft])
-
-    useEffect(() => {
-        if (!selectedTrigger || !currentEditDraft?.form
-            || (currentEditDraft.expectedRevision && currentEditDraft.expectedRevision !== selectedTrigger.revision)) {
-            return
-        }
-        if (currentEditDraft.targetBehavior === 'manual') {
-            return
-        }
-        const syncedForm = currentEditDraft.targetBehavior === 'active'
-            ? applyActiveTargetFields(currentEditDraft.form, activeProjectPath)
-            : applyInferredTargetFields(currentEditDraft.form, selectedTrigger, activeProjectPath)
-        if (syncedForm === currentEditDraft.form) {
-            return
-        }
-        setTriggersSessionEditDraft(selectedTrigger.id, {
-            ...currentEditDraft,
-            form: syncedForm,
-        })
-    }, [activeProjectPath, currentEditDraft, selectedTrigger, setTriggersSessionEditDraft])
 
     const onCreateTrigger = async () => {
         if (pendingRef.current) return
@@ -161,8 +76,7 @@ export function useTriggerEditor({
                 revealWebhookSecret(created.id, created.webhook_secret)
             }
             setTriggersSessionNewDraft({
-                form: createEmptyTriggerForm(activeProjectPathRef.current),
-                targetBehavior: 'default',
+                form: createEmptyTriggerForm(defaultProjectChoice(useStore.getState().projectRegistry)),
             })
             await refreshTriggers()
             setSelectedTriggerId(created.id)
@@ -253,25 +167,15 @@ export function useTriggerEditor({
                 return
             }
             const currentDraft = currentEditDraft
-            const currentForm = currentDraft?.form ?? selectedTriggerForm ?? next
-            const targetBehavior = currentForm && next && didTriggerTargetChange(currentForm, next)
-                ? (next.targetMode === 'active' ? 'active' : 'manual')
-                : currentDraft?.targetBehavior ?? 'inferred'
             setTriggersSessionEditDraft(selectedTrigger.id, {
                 triggerId: selectedTrigger.id,
                 expectedRevision: currentDraft?.form ? currentDraft.expectedRevision ?? '' : selectedTrigger.revision,
                 form: next,
-                targetBehavior,
             })
         },
         setNewTriggerForm: (next: TriggerFormState) => {
             if (pendingRef.current) return
-            setTriggersSessionNewDraft({
-                form: next,
-                targetBehavior: didTriggerTargetChange(newTriggerDraft.form, next)
-                    ? (next.targetMode === 'active' ? 'active' : 'manual')
-                    : newTriggerDraft.targetBehavior,
-            })
+            setTriggersSessionNewDraft({ form: next })
         },
     }
 }

@@ -14,7 +14,7 @@ export function ClientPreferencesController() {
         const apply = (value: ClientPreferencesView) => {
             saved.current = value
             applyTheme(value.effective.appearance ?? 'system')
-            useStore.setState((state) => ({
+            useStore.setState(() => ({
                 clientPreferencesLoaded: true,
                 clientFlowNodePositions: value.effective.flow_node_positions ?? {},
                 clientFlowEdgePorts: value.effective.flow_edge_ports ?? {},
@@ -25,8 +25,6 @@ export function ClientPreferencesController() {
                 preferredExpandChildFlows: value.effective.expand_child_flows ?? false,
                 preferredGraphSettingsOpen: value.effective.graph_settings_open ?? false,
                 preferredHomeSidebarPrimarySplitRatio: value.effective.home_sidebar_primary_split_ratio ?? null,
-                runsListSession: { ...state.runsListSession, scopeMode: value.effective.runs_scope ?? 'active' },
-                triggersSession: { ...state.triggersSession, scopeFilter: value.effective.triggers_scope ?? 'all' },
             }))
         }
         const refresh = () => {

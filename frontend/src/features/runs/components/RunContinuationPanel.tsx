@@ -17,7 +17,8 @@ import {
 
 interface RunContinuationPanelProps {
     draft: ContinuationDraft
-    activeProjectPath: string | null
+    /** The project the source run belongs to. */
+    projectPath: string | null
     onDraftChange: (patch: Partial<ContinuationDraft>) => void
     onCancel: () => void
     onContinued: (runId: string | null) => void
@@ -25,7 +26,7 @@ interface RunContinuationPanelProps {
 
 export function RunContinuationPanel({
     draft,
-    activeProjectPath,
+    projectPath,
     onDraftChange,
     onCancel,
     onContinued,
@@ -107,7 +108,7 @@ export function RunContinuationPanel({
             const result = await continueFromRun(
                 draft.sourceRunId,
                 {
-                    projectPath: activeProjectPath || draft.sourceWorkingDirectory,
+                    projectPath: projectPath || draft.sourceWorkingDirectory,
                     workingDirectory: draft.workingDir,
                     model: draft.model.trim() || null,
                     llmProvider: selectedLlmProfile ? '' : selectedLlmProvider,

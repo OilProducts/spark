@@ -48,8 +48,6 @@ export interface ClientPreferences {
     show_advanced_controls?: boolean | null
     expand_child_flows?: boolean | null
     graph_settings_open?: boolean | null
-    runs_scope?: 'active' | 'all' | null
-    triggers_scope?: 'active' | 'all' | null
     appearance?: Appearance | null
 }
 export interface ClientPreferencesView {
@@ -105,11 +103,6 @@ export function parseClientPreferences(payload: unknown, endpoint: string): Clie
             const field = fields[key]
             if (field != null && typeof field !== 'boolean') throw new ApiSchemaError(endpoint, `Invalid ${key}.`)
             if (field !== undefined) presentation[key] = field as boolean | null
-        }
-        for (const key of ['runs_scope', 'triggers_scope'] as const) {
-            const field = fields[key]
-            if (field != null && field !== 'active' && field !== 'all') throw new ApiSchemaError(endpoint, `Invalid ${key}.`)
-            if (field !== undefined) presentation[key] = field as 'active' | 'all' | null
         }
         if (fields.appearance != null && fields.appearance !== 'system' && fields.appearance !== 'light' && fields.appearance !== 'dark') throw new ApiSchemaError(endpoint, 'Invalid appearance.')
         if (fields.appearance !== undefined) presentation.appearance = fields.appearance as Appearance | null

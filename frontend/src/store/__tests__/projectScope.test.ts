@@ -1,6 +1,5 @@
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useStore } from '@/store'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { applyConversationSnapshotToCache } from '@/features/projects/model/projectsHomeState'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -39,7 +38,7 @@ homeThreadSummariesErrorByProjectPath: {},
 homeProjectSessionsByPath: {},
 homeConversationSessionsById: {},
 homeProjectGitMetadataByPath: {}});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -137,64 +136,27 @@ describe('project scope store behavior', () => {
     expect(duplicateResult.error).toBe('Project already registered: /tmp/demo/project')
   })
 
-  it('resets run state but preserves selected flows when switching active projects', () => {
+  it('keeps the run and flow selections when the chat project changes', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
     store.registerProject('/tmp/project-b')
 
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-a')
+    store.setRunsSelectedRunId('run-a')
     store.setActiveFlow('preferred.dot')
-    store.setSelectedNodeId('node-a')
-    store.setDiagnostics([
-      {
-        rule_id: 'test',
-        severity: 'warning',
-        message: 'diag',
-      },
-    ])
-    store.setFlowMetadata({ goal: 'A' })
-    store.markSaveSuccess()
     store.setActiveProjectPath('/tmp/project-b')
 
     const next = useStore.getState()
-    expect((selectSelectedRunSession(next)?.record?.status ?? 'idle')).toBe('idle')
-    expect(selectSelectedRunId(next)).toBeNull()
+    expect(selectSelectedRunId(next)).toBe('run-a')
     expect(next.activeFlow).toBe('preferred.dot')
   })
 
-  it('foregrounds the remembered project-scoped selected run when switching active projects', () => {
+  it('shows the chat, not a project page, when a chat project is chosen', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
-    store.registerProject('/tmp/project-b')
-
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-a'), 'run-a')
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-b'), 'run-b')
-    store.updateRunDetailSession('run-a', {
-      record: buildRunRecord('run-a', '/tmp/project-a', 'project-a.dot'),
-      completedNodesSnapshot: ['plan'],
-      statusFetchedAtMs: 101,
-    })
-    store.updateRunDetailSession('run-b', {
-      record: buildRunRecord('run-b', '/tmp/project-b', 'project-b.dot'),
-      completedNodesSnapshot: ['review'],
-      statusFetchedAtMs: 202,
-    })
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-a'), 'run-a')
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-b'), 'run-b')
-
-    store.setActiveProjectPath('/tmp/project-b')
-    let next = useStore.getState()
-    expect(selectSelectedRunId(next)).toBe('run-b')
-    expect(selectSelectedRunSession(next)?.record?.flow_name).toBe('project-b.dot')
-    expect(selectSelectedRunSession(next)?.completedNodesSnapshot).toEqual(['review'])
-    expect(selectSelectedRunSession(next)?.statusFetchedAtMs).toBe(202)
-
+    store.openProjectPage('/tmp/project-a')
+    expect(useStore.getState().projectPagePath).toBe('/tmp/project-a')
     store.setActiveProjectPath('/tmp/project-a')
-    next = useStore.getState()
-    expect(selectSelectedRunId(next)).toBe('run-a')
-    expect(selectSelectedRunSession(next)?.record?.flow_name).toBe('project-a.dot')
-    expect(selectSelectedRunSession(next)?.completedNodesSnapshot).toEqual(['plan'])
-    expect(selectSelectedRunSession(next)?.statusFetchedAtMs).toBe(101)
+    expect(useStore.getState().projectPagePath).toBeNull()
   })
 
   it('tracks user FlowDefinition metadata edits separately from hydrated replacements', () => {
@@ -223,7 +185,7 @@ describe('project scope store behavior', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')
 
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-a')
+    store.setRunsSelectedRunId('run-a')
 
     expect(selectSelectedRunId(useStore.getState())).toBe('run-a')
     expect(useStore.getState().projectSessionsByPath['/tmp/project-a']).toBeDefined()
@@ -280,8 +242,8 @@ describe('project scope store behavior', () => {
     store.registerProject('/tmp/project-a')
     store.registerProject('/tmp/project-b')
     store.setActiveProjectPath('/tmp/project-a')
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-a'), 'run-a')
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-b'), 'run-b')
+    store.setRunsSelectedRunId('run-a')
+    store.setRunsSelectedRunId('run-b')
     store.updateRunDetailSession('run-a', {
       record: buildRunRecord('run-a', '/tmp/project-a', 'project-a.dot'),
       completedNodesSnapshot: ['plan'],
@@ -292,16 +254,15 @@ describe('project scope store behavior', () => {
       completedNodesSnapshot: ['review'],
       statusFetchedAtMs: 202,
     })
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-a'), 'run-a')
-    store.setRunsSelectedRunIdForScope(buildRunsScopeKey('active', '/tmp/project-b'), 'run-b')
+    store.setRunsSelectedRunId('run-a')
+    store.setRunsSelectedRunId('run-b')
 
     store.removeProject('/tmp/project-a', '/tmp/project-b')
 
     const next = useStore.getState()
     expect(next.projectRegistry['/tmp/project-a']).toBeUndefined()
     expect(next.activeProjectPath).toBe('/tmp/project-b')
-    expect(next.runsListSession.selectedRunIdByScopeKey[buildRunsScopeKey('active', '/tmp/project-a')]).toBeUndefined()
-    expect(next.runsListSession.selectedRunIdByScopeKey[buildRunsScopeKey('active', '/tmp/project-b')]).toBe('run-b')
+    expect(selectSelectedRunId(next)).toBe('run-b')
     expect(next.runDetailSessionsByRunId['run-a']).toBeUndefined()
     expect(next.runDetailSessionsByRunId['run-b']?.record?.run_id).toBe('run-b')
   })

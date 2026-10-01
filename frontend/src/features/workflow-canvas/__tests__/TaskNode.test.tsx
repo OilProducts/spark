@@ -1,6 +1,5 @@
 import userEvent from '@testing-library/user-event'
 import { chooseModel, chooseEffort } from '@/components/model-chooser/__tests__/picker'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
 import { nodeTypes } from '@/features/workflow-canvas/flowCanvasShared'
@@ -58,7 +57,7 @@ flowMetadata: {},
 graphAttrs: {},
 nodeDiagnostics: {},
 editorExpandChildFlowsByFlow: {}});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -324,7 +323,7 @@ describe('TaskNode', () => {
     it('renders run waiting and diagnostics overlays on non-rectangular nodes', () => {
         {
 useStore.setState({});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-1');
+useStore.getState().setRunsSelectedRunId('run-1');
 const inspectedRunId = selectSelectedRunId(useStore.getState());
 if (inspectedRunId) useStore.getState().updateRunDetailSession(inspectedRunId, {humanGate: {
                 id: 'gate-1',

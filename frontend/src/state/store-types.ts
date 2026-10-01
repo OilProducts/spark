@@ -79,6 +79,8 @@ export interface RegisteredProject {
     directoryPath: string
     displayName?: string
     isDefault?: boolean
+    /** False when the project's folder is gone from disk. */
+    folderExists?: boolean
     isFavorite: boolean
     lastAccessedAt: string | null
     executionProfileId?: string | null
@@ -111,9 +113,20 @@ export interface UiDefaults {
     reasoning_summary?: string
 }
 
+export interface MissionSelection {
+    id: string
+    projectPath: string
+}
+
+/** Where the app reopens: the view and the last selection in each view. */
 export interface RouteState {
     viewMode: ViewMode
     activeProjectPath: string | null
+    projectPagePath: string | null
+    selectedRunId: string | null
+    selectedTriggerId: string | null
+    selectedMission: MissionSelection | null
+    activeFlow: string | null
 }
 
 export interface CanvasViewportState {
@@ -133,6 +146,7 @@ export interface HydratedProjectRecord {
     directoryPath: string
     displayName?: string
     isDefault?: boolean
+    folderExists?: boolean
     isFavorite: boolean
     lastAccessedAt: string | null
     activeConversationId?: string | null
@@ -142,8 +156,22 @@ export interface HydratedProjectRecord {
 export interface WorkspaceSlice {
     viewMode: ViewMode
     setViewMode: (mode: ViewMode) => void
+    /**
+     * The project of the chat the Chats view shows. It never filters what
+     * other views list: every list spans all projects.
+     */
     activeProjectPath: string | null
     setActiveProjectPath: (projectPath: string | null) => void
+    /** The project whose page the Chats view shows instead of a chat. */
+    projectPagePath: string | null
+    openProjectPage: (projectPath: string | null) => void
+    selectedMission: MissionSelection | null
+    setSelectedMission: (selection: MissionSelection | null) => void
+    /** Every project's missions. */
+    missionBoard: import('@/features/missions/MissionsPanel').Mission[]
+    setMissionBoard: (
+        update: (missions: import('@/features/missions/MissionsPanel').Mission[]) => import('@/features/missions/MissionsPanel').Mission[],
+    ) => void
     projectRegistry: Record<string, RegisteredProject>
     hydrateProjectRegistry: (projects: HydratedProjectRecord[]) => void
     upsertProjectRegistryEntry: (project: HydratedProjectRecord) => void
@@ -158,7 +186,6 @@ export interface WorkspaceSlice {
     clearProjectRegistrationError: () => void
     activeFlow: string | null
     setActiveFlow: (flow: string | null) => void
-    setConversationId: (id: string | null) => void
     updateProjectSessionState: (projectPath: string, patch: ProjectSessionStatePatch) => void
 }
 

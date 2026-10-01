@@ -260,7 +260,9 @@ function stageJournal(stages: Array<[string, number, 'success' | 'fail' | 'runni
 
 async function openRunsForSmokeTest(page: Page, projectPath: string) {
   await gotoWithRegisteredProject(page, projectPath)
-  await page.getByTestId('nav-mode-runs').click()
+  await page.getByTestId('activity-runs').click()
+  // The list spans every project; show only this test's project.
+  await page.getByTestId('runs-project-filter').selectOption(projectPath)
   await expect(page.getByTestId('run-history-row').first()).toBeVisible()
   await page.getByTestId('run-history-row').first().click()
   await expect(page.getByTestId('run-summary-panel')).toBeVisible()
@@ -530,9 +532,10 @@ test('run checkpoint refreshes on revisit for item 9.2-01', async ({ page }) => 
     flow_name: 'CheckpointFlow',
     current_node: 'implement',
   })
+  const other = buildSmokeRun(projectPath, { run_id: `run-checkpoint-other-${Date.now()}`, flow_name: 'OtherFlow' })
   let checkpointFetchCount = 0
 
-  await stubRunSummary(page, run)
+  await stubRunSummary(page, run, [run, other])
   await page.route(`**/attractor/pipelines/${run.run_id}/checkpoint`, async (route) => {
     checkpointFetchCount += 1
     await route.fulfill({
@@ -552,11 +555,15 @@ test('run checkpoint refreshes on revisit for item 9.2-01', async ({ page }) => 
 
   await openRunsForSmokeTest(page, projectPath)
 
+  const row = (runId: string) => page.locator(`[data-testid="run-history-row"][data-run-id="${runId}"]`)
+  await row(run.run_id).click()
   await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(1)
+  const fetchedBefore = checkpointFetchCount
 
-  await page.getByRole('button', { name: 'All projects', exact: true }).click()
-  await page.getByRole('button', { name: 'This project', exact: true }).click()
-  await expect.poll(() => checkpointFetchCount).toBeGreaterThanOrEqual(2)
+  // Leaving the run and coming back refreshes its checkpoint.
+  await row(other.run_id).click()
+  await row(run.run_id).click()
+  await expect.poll(() => checkpointFetchCount).toBeGreaterThan(fetchedBefore)
   await page.screenshot({ path: screenshotPath('08d-runs-panel-checkpoint-viewer.png'), fullPage: true })
 })
 
@@ -721,7 +728,8 @@ test('the run selector lists runs by title, folds child runs, and filters on sea
 
   await stubRunSummary(page, parent, [parent, child, other])
   await gotoWithRegisteredProject(page, projectPath)
-  await page.getByTestId('nav-mode-runs').click()
+  await page.getByTestId('activity-runs').click()
+  await page.getByTestId('runs-project-filter').selectOption(projectPath)
 
   const titles = page.getByTestId('run-history-row-title')
   await expect(titles).toHaveText(['Fix the flaky webhook test', 'Merge the Runs redesign'])

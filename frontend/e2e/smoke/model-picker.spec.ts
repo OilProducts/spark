@@ -27,7 +27,7 @@ for (const theme of ['light', 'dark']) for (const width of [1440, 390]) {
         await page.screenshot({ path: screenshotPath(`model-picker-chat-${theme}-${width}.png`) })
         await page.keyboard.press('Escape')
         await expect(trigger).toBeFocused()
-        await page.getByTestId('nav-mode-editor').click()
+        await page.getByTestId('activity-flows').click()
         await page.getByRole('button', { name: flow, exact: true }).click()
         await page.locator('.react-flow__node').filter({ hasText: 'Ingest Spec' }).click()
         const inspector = page.locator('[data-inspector-scope="node"]')

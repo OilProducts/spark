@@ -14,7 +14,7 @@ const pending: { resolve: (response: Response) => void }[] = []
 beforeEach(() => {
     pending.length = 0
     useStore.setState(useStore.getInitialState(), true)
-    useStore.getState().setRunsSelectedRunIdForScope('all', 'run')
+    useStore.getState().setRunsSelectedRunId('run')
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
         pending.push({ resolve })
     })))

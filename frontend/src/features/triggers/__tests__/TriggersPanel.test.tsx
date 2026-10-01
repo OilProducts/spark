@@ -31,12 +31,10 @@ const resetTriggerState = () => {
       error: null,
       triggers: [],
       selectedTriggerId: null,
-      scopeFilter: 'all',
       revealedWebhookSecrets: {},
       createFormOpen: false,
       newTriggerDraft: {
         form: createEmptyTriggerForm(null),
-        targetBehavior: 'default',
       },
       editTriggerDraftsByTriggerId: {},
     },
@@ -101,7 +99,7 @@ describe('TriggersPanel', () => {
   })
 
   it('creates a mission action from the project open mission picker', async () => {
-    useStore.setState({ activeProjectPath: '/project' })
+    useStore.setState({ projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' } } })
     let saved: Record<string, unknown> | null = null
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = resolveRequestUrl(input)
@@ -230,7 +228,6 @@ describe('TriggersPanel', () => {
     const user = userEvent.setup()
     renderTriggersPanel()
 
-    expect(screen.getByTestId('triggers-project-context-chip')).toHaveTextContent('No active project')
     await user.click(await screen.findByTestId('trigger-row-trigger-webhook'))
     expect(screen.getByText(/POST JSON to/i)).toBeVisible()
     expect(screen.getAllByText(/webhook-key-1/).length).toBeGreaterThan(0)
@@ -242,7 +239,7 @@ describe('TriggersPanel', () => {
     })
   })
 
-  it('serializes active, no-project, and custom execution targets when creating triggers', async () => {
+  it('serializes project, no-project, and custom execution targets when creating triggers', async () => {
     const postPayloads: Array<Record<string, unknown>> = []
     const createdTriggers: Array<ReturnType<typeof makeTrigger>> = []
     const fetchMock = vi.mocked(global.fetch)
@@ -270,10 +267,10 @@ describe('TriggersPanel', () => {
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
 
-    act(() => {
-      useStore.getState().registerProject('/tmp/active-project')
-      useStore.getState().setActiveProjectPath('/tmp/active-project')
-    })
+    useStore.setState({ projectRegistry: {
+      '/tmp/last-used-project': { directoryPath: '/tmp/last-used-project', isFavorite: false, lastAccessedAt: '2026-03-22T00:00:00Z' },
+      '/tmp/retargeted-project': { directoryPath: '/tmp/retargeted-project', isFavorite: false, lastAccessedAt: '2026-03-01T00:00:00Z' },
+    } })
 
     const user = userEvent.setup()
     renderTriggersPanel()
@@ -292,20 +289,12 @@ describe('TriggersPanel', () => {
       executionTargetSelect = createScope.getByLabelText('Execution Target')
     }
 
-    expect(executionTargetSelect).toHaveValue('active')
-    expect(screen.getByText('Uses the current active project: /tmp/active-project')).toBeVisible()
+    // A new trigger starts in the last-used project, and any registered project can be chosen.
+    expect(executionTargetSelect).toHaveValue('project')
+    expect(createScope.getByLabelText('Project')).toHaveValue('/tmp/last-used-project')
+    await user.selectOptions(createScope.getByLabelText('Project'), '/tmp/retargeted-project')
 
-    act(() => {
-      useStore.getState().registerProject('/tmp/retargeted-project')
-      useStore.getState().setActiveProjectPath('/tmp/retargeted-project')
-    })
-
-    await waitFor(() => {
-      expect(executionTargetSelect).toHaveValue('active')
-    })
-    expect(screen.getByText('Uses the current active project: /tmp/retargeted-project')).toBeVisible()
-
-    await user.type(nameInput, 'Active target trigger')
+    await user.type(nameInput, 'Project target trigger')
     await user.clear(targetFlowInput)
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
     await user.click(screen.getByTestId('trigger-create-button'))
@@ -321,15 +310,6 @@ describe('TriggersPanel', () => {
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
     await user.selectOptions(executionTargetSelect, 'none')
     expect(screen.queryByLabelText('Project Path')).not.toBeInTheDocument()
-
-    act(() => {
-      useStore.getState().registerProject('/tmp/ignored-project')
-      useStore.getState().setActiveProjectPath('/tmp/ignored-project')
-    })
-
-    await waitFor(() => {
-      expect(executionTargetSelect).toHaveValue('none')
-    })
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -343,6 +323,7 @@ describe('TriggersPanel', () => {
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
     await user.selectOptions(executionTargetSelect, 'custom')
     await user.type(createScope.getByLabelText('Project Path'), '/tmp/custom-project')
+    expect(createScope.getByTestId('trigger-target-unregistered')).toHaveTextContent('Not a registered project')
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -351,7 +332,7 @@ describe('TriggersPanel', () => {
     expect(postPayloads[2]?.action).toMatchObject({ project_path: '/tmp/custom-project' })
   })
 
-  it('hydrates existing target modes and filters to triggers that target the active project', async () => {
+  it('hydrates existing target modes and marks targets that are not registered projects', async () => {
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
@@ -359,9 +340,9 @@ describe('TriggersPanel', () => {
       if (url.endsWith('/workspace/api/triggers') && method === 'GET') {
         return jsonResponse([
           makeTrigger({
-            id: 'trigger-active-project',
-            name: 'Active project trigger',
-            project_path: '/tmp/active-project',
+            id: 'trigger-registered-project',
+            name: 'Registered project trigger',
+            project_path: '/tmp/registered-project',
           }),
           makeTrigger({
             id: 'trigger-custom-project',
@@ -374,33 +355,35 @@ describe('TriggersPanel', () => {
     })
 
     act(() => {
-      useStore.getState().registerProject('/tmp/active-project')
-      useStore.getState().setActiveProjectPath('/tmp/active-project')
+      useStore.getState().registerProject('/tmp/registered-project')
     })
 
     const user = userEvent.setup()
     renderTriggersPanel()
 
-    const customRow = await screen.findByTestId('trigger-row-trigger-custom-project')
-    expect(customRow).toHaveTextContent('Project · custom-project')
-    await user.click(customRow)
-    const selectedTriggerCard = screen.getByTestId('trigger-save-button').closest('[data-slot="card"]')
-    expect(selectedTriggerCard).not.toBeNull()
-    const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)
+    const registeredRow = await screen.findByTestId('trigger-row-trigger-registered-project')
+    expect(registeredRow).toHaveTextContent('Project · registered-project')
+    expect(registeredRow).not.toHaveAttribute('data-unregistered-target')
+    const customRow = screen.getByTestId('trigger-row-trigger-custom-project')
+    expect(customRow).toHaveTextContent('Unregistered project · custom-project')
+    expect(customRow).toHaveAttribute('data-unregistered-target', 'true')
 
+    await user.click(customRow)
+    let selectedTriggerScope = within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
     await waitFor(() => {
       expect(selectedTriggerScope.getByDisplayValue('Other path')).toBeVisible()
     })
     expect(selectedTriggerScope.getByDisplayValue('/tmp/custom-project')).toBeVisible()
-    expect(selectedTriggerScope.getByText('Target: Project · custom-project')).toBeVisible()
+    expect(selectedTriggerScope.getByTestId('trigger-target-unregistered')).toBeVisible()
+    expect(selectedTriggerScope.getByText('Target: Unregistered project · custom-project')).toBeVisible()
 
-    await user.click(screen.getByTestId('triggers-filter-active-project'))
-
+    await user.click(registeredRow)
+    selectedTriggerScope = within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
     await waitFor(() => {
-      expect(screen.queryByText('Custom project trigger')).not.toBeInTheDocument()
+      expect(selectedTriggerScope.getByLabelText('Execution Target')).toHaveValue('project')
     })
-    expect(screen.getByTestId('trigger-row-trigger-active-project')).toHaveTextContent('Targets active project')
-    expect(selectedTriggerScope.getByText('Target: Targets active project')).toBeVisible()
+    expect(selectedTriggerScope.getByLabelText('Project')).toHaveValue('/tmp/registered-project')
+    expect(selectedTriggerScope.getByText('Target: Project · registered-project')).toBeVisible()
   })
 
   it('keeps protected trigger target and source settings locked while saving only allowed edits', async () => {
@@ -439,11 +422,6 @@ describe('TriggersPanel', () => {
         return jsonResponse(protectedTrigger)
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
-    })
-
-    act(() => {
-      useStore.getState().registerProject('/tmp/active-project')
-      useStore.getState().setActiveProjectPath('/tmp/active-project')
     })
 
     const user = userEvent.setup()
@@ -485,7 +463,7 @@ describe('TriggersPanel', () => {
     expect(actionPayload.static_context).toBeUndefined()
 
     await waitFor(() => {
-      expect(selectedTriggerScope.getByText('Target: Project · protected-project')).toBeVisible()
+      expect(selectedTriggerScope.getByText('Target: Unregistered project · protected-project')).toBeVisible()
     })
   })
   it('retains the draft revision after a live edit and conflict, blocks duplicate saves, and discards explicitly', async () => {

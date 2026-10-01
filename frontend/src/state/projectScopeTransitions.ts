@@ -1,5 +1,4 @@
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
-import { buildRunsScopeKey, getRunsSelectedRunIdForScope, unconfirmRunQuestions } from './runsSessionScope'
 import {
     DEFAULT_WORKING_DIRECTORY,
     pushRecentProjectPath,
@@ -11,7 +10,6 @@ import type {
     HydratedProjectRecord,
     ProjectSessionState,
     RegisteredProject,
-    ViewMode,
 } from './store-types'
 
 type ProjectScopeTransitionState = Pick<
@@ -43,6 +41,8 @@ type ProjectScopeTransitionState = Pick<
     | 'runDetailSessionsByRunId'
 > & Partial<Pick<
     AppState,
+    | 'projectPagePath'
+    | 'selectedMission'
     | 'homeConversationCache'
     | 'homeConversationSessionsById'
     | 'homeThreadSummariesStatusByProjectPath'
@@ -79,9 +79,7 @@ const pruneRunsSessionsForProject = (
     state: Pick<AppState, 'runsListSession' | 'runDetailSessionsByRunId'>,
     projectPath: string,
 ) => {
-    const removedScopeKey = buildRunsScopeKey('active', projectPath)
-    const selectedId = state.runsListSession.selectedRunIdByScopeKey[removedScopeKey]
-    const removedRunIds = new Set<string>(selectedId ? [selectedId] : [])
+    const removedRunIds = new Set<string>()
 
     state.runsListSession.runs.forEach((run) => {
         if (runBelongsToProject(run, projectPath)) {
@@ -95,28 +93,18 @@ const pruneRunsSessionsForProject = (
         }
     })
 
+    const { selectedRunId, projectFilter } = state.runsListSession
     return {
         runsListSession: {
             ...state.runsListSession,
             runs: state.runsListSession.runs.filter((run) => !removedRunIds.has(run.run_id)),
-            selectedRunIdByScopeKey: Object.fromEntries(
-                Object.entries(state.runsListSession.selectedRunIdByScopeKey).filter(([scopeKey, runId]) => (
-                    scopeKey !== removedScopeKey && !removedRunIds.has(runId ?? '')
-                )),
-            ),
+            selectedRunId: selectedRunId && removedRunIds.has(selectedRunId) ? null : selectedRunId,
+            projectFilter: projectFilter === projectPath ? null : projectFilter,
         },
         runDetailSessionsByRunId: Object.fromEntries(
             Object.entries(state.runDetailSessionsByRunId).filter(([runId]) => !removedRunIds.has(runId)),
         ),
     }
-}
-
-const invalidateChangedSelection = (state: AppState, projectPath: string | null) => {
-    const runId = getRunsSelectedRunIdForScope(state.runsListSession, projectPath)
-    const session = runId ? state.runDetailSessionsByRunId[runId] : null
-    return runId && session && runId !== getRunsSelectedRunIdForScope(state.runsListSession, state.activeProjectPath)
-        ? { ...state.runDetailSessionsByRunId, [runId]: unconfirmRunQuestions(session) }
-        : state.runDetailSessionsByRunId
 }
 
 const preserveEditorSession = (state: AppState) => ({
@@ -148,6 +136,7 @@ export const buildRegisteredProject = (project: HydratedProjectRecord): Register
         directoryPath: normalizedPath,
         ...(project.displayName ? { displayName: project.displayName } : {}),
         ...(project.isDefault ? { isDefault: true } : {}),
+        ...(project.folderExists === false ? { folderExists: false } : {}),
         isFavorite: project.isFavorite === true,
         lastAccessedAt: typeof project.lastAccessedAt === 'string' ? project.lastAccessedAt : null,
         ...(typeof project.executionProfileId === 'string' ? { executionProfileId: project.executionProfileId } : {}),
@@ -206,6 +195,7 @@ export const buildHydrateProjectRegistryTransition = (
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         activeProjectPath: nextActiveProjectPath,
+        projectPagePath: state.projectPagePath && nextProjectRegistry[state.projectPagePath] ? state.projectPagePath : null,
         viewMode: nextViewMode,
         workingDir: nextActiveProjectPath
             ? nextActiveProjectScope?.workingDir || DEFAULT_WORKING_DIRECTORY
@@ -214,7 +204,7 @@ export const buildHydrateProjectRegistryTransition = (
             ? pushRecentProjectPath(state.recentProjectPaths, nextActiveProjectPath)
             : state.recentProjectPaths,
         runsListSession: state.runsListSession,
-        runDetailSessionsByRunId: invalidateChangedSelection(state, nextActiveProjectPath),
+        runDetailSessionsByRunId: state.runDetailSessionsByRunId,
     }
 }
 
@@ -280,13 +270,15 @@ export const buildRemoveProjectTransition = (
         )
         : null
     const nextViewMode = resolveViewModeForProjectScope(state.viewMode)
-    const nextRunsSessions = pruneRunsSessionsForProject({ ...state, runDetailSessionsByRunId: invalidateChangedSelection(state, nextResolvedActiveProjectPath) }, normalizedPath)
+    const nextRunsSessions = pruneRunsSessionsForProject(state, normalizedPath)
     return {
         ...preserveEditorSession(state),
         projectRegistry: nextProjectRegistry,
         projectSessionsByPath: nextProjectSessionStates,
         recentProjectPaths: state.recentProjectPaths.filter((path) => path !== normalizedPath),
         activeProjectPath: nextResolvedActiveProjectPath,
+        projectPagePath: state.projectPagePath === normalizedPath ? null : state.projectPagePath,
+        selectedMission: state.selectedMission?.projectPath === normalizedPath ? null : state.selectedMission,
         viewMode: nextViewMode,
         ...nextRunsSessions,
         workingDir: nextResolvedActiveProjectPath
@@ -342,7 +334,7 @@ export const buildSetActiveProjectTransition = (
         viewMode: nextViewMode,
         workingDir: nextProjectPath && nextProjectScope ? nextProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
         runsListSession: state.runsListSession,
-        runDetailSessionsByRunId: invalidateChangedSelection(state, nextProjectPath),
+        runDetailSessionsByRunId: state.runDetailSessionsByRunId,
     }
 }
 
@@ -383,8 +375,3 @@ export const buildRegisterProjectTransition = (
         workingDir: state.activeProjectPath ? state.workingDir : nextActiveProjectScope.workingDir,
     }
 }
-
-export const saveProjectScopeRouteState = (state: Pick<ProjectScopeTransitionState, 'viewMode' | 'activeProjectPath'>) => ({
-    viewMode: state.viewMode as ViewMode,
-    activeProjectPath: state.activeProjectPath,
-})
