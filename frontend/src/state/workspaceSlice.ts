@@ -66,8 +66,12 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     viewMode: restoredRouteState.viewMode,
     setViewMode: (mode) => {
         const nextViewMode = resolveViewModeForProjectScope(mode)
-        set({ viewMode: nextViewMode })
+        // Leaving an open chat remembers its project, so a flow run can default to it.
+        set((state) => state.viewMode === 'home' && !state.projectPagePath && nextViewMode !== 'home'
+            ? { viewMode: nextViewMode, chatOriginProjectPath: state.activeProjectPath }
+            : { viewMode: nextViewMode })
     },
+    chatOriginProjectPath: null,
     projectPagePath: restoredRouteState.projectPagePath,
     openProjectPage: (projectPath) => set({ projectPagePath: projectPath }),
     selectedMission: restoredRouteState.selectedMission,

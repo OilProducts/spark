@@ -198,7 +198,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const rawHandoffError = useStore((state) => state.rawHandoffError);
     const setRawHandoffError = useStore((state) => state.setRawHandoffError);
     // A run defaults to the project of the chat you came from, else the last used.
-    const runDefaultProjectPath = useStore((state) => defaultProjectChoice(state.projectRegistry, state.activeProjectPath));
+    const runDefaultProjectPath = useStore((state) => defaultProjectChoice(state.projectRegistry, state.chatOriginProjectPath));
     const activeFlow = useStore((state) => state.activeFlow);
     const flowMetadata = useStore((state) => state.flowMetadata);
     const uiDefaults = useStore((state) => state.uiDefaults);

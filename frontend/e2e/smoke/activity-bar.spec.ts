@@ -142,6 +142,31 @@ test('starting a chat in a project places it under that project and its composer
     await page.keyboard.press('Escape')
 })
 
+test('a project prompt scrolls on a short narrow viewport, so the last project can be picked', async ({ page }, testInfo) => {
+    await seedProjects(page, testInfo)
+    const extras = Array.from({ length: 16 }, (_, index) => testInfo.outputPath(`extra-project-${String(index).padStart(2, '0')}`))
+    for (const project of extras) {
+        mkdirSync(project, { recursive: true })
+        expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    }
+    try {
+        await page.setViewportSize({ width: 390, height: 600 })
+        await page.goto('/')
+        await page.getByTestId('project-thread-new-button').click()
+        const picker = page.getByTestId('new-chat-project-picker')
+        const box = await picker.boundingBox()
+        expect(box!.y + box!.height).toBeLessThanOrEqual(600)
+        const last = picker.locator('[data-testid="project-picker-item"]:not([data-disabled])').last()
+        const lastPath = await last.getAttribute('data-project-path')
+        await last.click()
+        await expect(page.getByTestId('chat-composer-project')).toContainText(lastPath!.split('/').pop()!)
+    } finally {
+        for (const project of extras) {
+            await page.request.delete(`/workspace/api/projects?project_path=${encodeURIComponent(project)}`).catch(() => undefined)
+        }
+    }
+})
+
 test('each project keeps its unsent draft across chats in other projects, including a new one', async ({ page }, testInfo) => {
     const { alpha, beta } = await seedProjects(page, testInfo)
     const stamp = Date.now()
@@ -206,10 +231,20 @@ test('a new mission and a flow run ask which project, suggesting the last used a
             await page.keyboard.press('Escape')
         }
 
+        // Reopened straight into Flows, with no chat to come from, a run suggests the last used project.
         await page.getByTestId('activity-flows').click()
         await page.getByRole('button', { name: flowName }).click()
+        await page.reload()
         await page.getByTestId('editor-run-button').click()
         const runPicker = page.getByTestId('run-flow-project-picker')
+        await expect(runPicker.getByTestId('project-picker-item').first()).toHaveAttribute('data-project-path', alpha)
+        await page.keyboard.press('Escape')
+
+        // Coming from beta's chat, a run suggests beta.
+        await page.getByTestId('activity-chats').click()
+        await expect(page.getByTestId('chat-composer-project')).toContainText('beta-project')
+        await page.getByTestId('activity-flows').click()
+        await page.getByTestId('editor-run-button').click()
         await expect(runPicker.getByTestId('project-picker-item').first()).toHaveAttribute('data-project-path', beta)
         await runPicker.locator(`[data-project-path="${alpha}"]`).click()
         await expect(page.getByTestId('editor-run-panel')).toBeVisible()

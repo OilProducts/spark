@@ -157,6 +157,8 @@ export interface HydratedProjectRecord {
 export interface WorkspaceSlice {
     viewMode: ViewMode
     setViewMode: (mode: ViewMode) => void
+    /** The project of the chat last left for another view this session, if any. */
+    chatOriginProjectPath: string | null
     /**
      * The project of the chat the Chats view shows. It never filters what
      * other views list: every list spans all projects.

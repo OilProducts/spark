@@ -45,3 +45,24 @@ it('saves each view\'s selection as it changes', async () => {
         settingsCategory: 'system',
     })
 })
+
+it('a flow run defaults to the chat you left, not the Home a session falls back to', async () => {
+    const { useStore } = await import('@/store')
+    const { defaultProjectChoice } = await import('@/features/projects/model/projectChoices')
+    const runDefault = () => defaultProjectChoice(useStore.getState().projectRegistry, useStore.getState().chatOriginProjectPath)
+    useStore.setState({ viewMode: 'editor', chatOriginProjectPath: null, projectPagePath: null })
+    useStore.getState().hydrateProjectRegistry([
+        { directoryPath: '/home/me', isDefault: true, lastAccessedAt: '2026-09-01T00:00:00Z' },
+        { directoryPath: '/work/app', lastAccessedAt: '2026-09-30T00:00:00Z' },
+        { directoryPath: '/work/lib', lastAccessedAt: null },
+    ])
+    // Restored into Flows: Home is the fallback chat project, but no chat was left.
+    expect(useStore.getState().activeProjectPath).toBe('/home/me')
+    expect(runDefault()).toBe('/work/app')
+
+    useStore.getState().setViewMode('home')
+    useStore.getState().setActiveProjectPath('/work/lib')
+    useStore.getState().setViewMode('missions')
+    useStore.getState().setViewMode('editor')
+    expect(runDefault()).toBe('/work/lib')
+})

@@ -40,6 +40,7 @@ export function ProjectPicker({
                     data-testid={testId}
                     align="start"
                     sideOffset={4}
+                    collisionPadding={8}
                     onCloseAutoFocus={(event) => {
                         const projectPath = picked.current
                         picked.current = null
@@ -47,7 +48,7 @@ export function ProjectPicker({
                         event.preventDefault()
                         onPick(projectPath)
                     }}
-                    className="z-50 min-w-60 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+                    className="z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-60 overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
                 >
                     <DropdownMenu.Label className="px-2 pb-1 pt-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">{heading}</DropdownMenu.Label>
                     {projects.length === 0 ? (
