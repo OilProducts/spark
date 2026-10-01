@@ -1,5 +1,6 @@
 import type { RegisteredProject } from '@/state/store-types'
 import { normalizeProjectPath } from '@/lib/projectPaths'
+import { DEFAULT_WORKING_DIRECTORY } from '@/state/store-helpers'
 
 import { formatProjectListLabel } from './projectsHomeState'
 
@@ -37,6 +38,15 @@ export function lastUsedProjectPath(registry: Registry): string | null {
  */
 export function defaultProjectChoice(registry: Registry, origin?: string | null): string | null {
     return origin && registry[origin] ? origin : lastUsedProjectPath(registry)
+}
+
+/**
+ * A flow run's working directory: the editor's explicit choice, else the chosen project.
+ * The editor field follows the chat's project, so a value equal to that project is its default, not a choice.
+ */
+export function launchWorkingDirectory(workingDir: string, workingDirProjectPath: string | null, projectPath: string): string {
+    const explicit = workingDir.trim()
+    return explicit && explicit !== DEFAULT_WORKING_DIRECTORY && explicit !== workingDirProjectPath ? explicit : projectPath
 }
 
 export type ChatGroup<Chat> = { project: RegisteredProject; chats: Chat[] }

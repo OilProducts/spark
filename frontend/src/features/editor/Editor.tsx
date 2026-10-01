@@ -16,7 +16,7 @@ import '@xyflow/react/dist/style.css';
 
 import { useStore, type FlowDefinitionMetadata } from '@/store';
 import { LaunchPanel, loadCatalogFlowContent } from '@/features/launch';
-import { defaultProjectChoice } from '@/features/projects/model/projectChoices';
+import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
@@ -223,6 +223,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const hasValidationErrors = useStore((state) => state.hasValidationErrors);
     const saveState = useStore((state) => state.saveState);
     const workingDir = useStore((state) => state.workingDir);
+    const activeProjectPath = useStore((state) => state.activeProjectPath);
     const model = useStore((state) => state.model);
     const setViewMode = useStore((state) => state.setViewMode);
     const [nodes, setNodes] = useNodesState<Node>([]);
@@ -1579,7 +1580,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             }}
                             key={runProjectPath}
                             projectPath={runProjectPath}
-                            initialWorkingDirectory={runProjectPath ?? workingDir}
+                            initialWorkingDirectory={launchWorkingDirectory(workingDir, activeProjectPath, runProjectPath)}
                             initialModel={model}
                             onLaunched={() => {
                                 if (runProjectPath) void markProjectUsed(runProjectPath);

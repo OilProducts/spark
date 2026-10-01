@@ -7,6 +7,7 @@ import {
     groupChatsByProject,
     isFolderMissing,
     isUnregisteredTarget,
+    launchWorkingDirectory,
     lastUsedProjectPath,
     orderProjects,
     projectLabel,
@@ -76,5 +77,18 @@ describe('project choices', () => {
         expect(isUnregisteredTarget(registry, '/work/new/')).toBe(false)
         expect(isUnregisteredTarget(registry, '/somewhere/else')).toBe(true)
         expect(isUnregisteredTarget(registry, null)).toBe(false)
+    })
+})
+
+describe('launchWorkingDirectory', () => {
+    it('keeps an explicit editor working directory over the chosen project', () => {
+        expect(launchWorkingDirectory('/tmp/explicit', '/work/old', '/work/new')).toBe('/tmp/explicit')
+    })
+
+    it('defaults to the chosen project when no working directory was set', () => {
+        expect(launchWorkingDirectory('./test-app', null, '/work/new')).toBe('/work/new')
+        expect(launchWorkingDirectory('  ', null, '/work/new')).toBe('/work/new')
+        // The field defaults to the chat's project; another chosen project still wins.
+        expect(launchWorkingDirectory('/work/old', '/work/old', '/work/new')).toBe('/work/new')
     })
 })

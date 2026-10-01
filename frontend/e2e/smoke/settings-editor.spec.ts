@@ -1,6 +1,6 @@
 import { chooseModel, customModel, chooseEffort, openPicker } from '../fixtures/model-picker'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { expect, test, type Page } from '@playwright/test'
@@ -590,8 +590,9 @@ test('malformed project execution selection is repairable with explicit Save and
     await page.goto('/')
     const home = process.env.SPARK_SETTINGS_TEST_HOME ?? path.resolve('.tmp-ui-smoke/spark-home')
     const directory = path.join(home, 'workspace/projects')
+    // Removed projects can leave a directory without a project.toml behind.
     const file = readdirSync(directory).map(id => path.join(directory, id, 'project.toml'))
-        .find(file => readFileSync(file, 'utf8').includes(project))
+        .find(file => existsSync(file) && readFileSync(file, 'utf8').includes(project))
     expect(file).toBeDefined()
     const original = readFileSync(file!, 'utf8')
     const malformed = original + '\nexecution_profile_id = 42\n[repair_metadata]\nnote = "preserve me"\n'
@@ -719,6 +720,8 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     const read = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
     await page.goto('/')
     await openChat(page, project, snapshot.title)
+    // Edit only once the chat is open in its own project.
+    await expect(page.getByTestId('chat-composer-project')).toContainText('chat-model-project')
     const requests: { expected_revision: string; model_settings: unknown }[] = []
     const statuses: number[] = []
     const releases: (() => void)[] = []
@@ -744,6 +747,8 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     await page.keyboard.press('Escape')
     await expect(model).toContainText('my-model')
     await release()
+    expect(requests[0].expected_revision).toBe(String(snapshot.revision))
+    expect(statuses).toEqual([200])
     await expect.poll(async () => (await read()).settings.models.stored.model).toBe('my-model')
     await expect(page.getByRole('button', { name: 'Use defaults', exact: true })).toBeEnabled()
 

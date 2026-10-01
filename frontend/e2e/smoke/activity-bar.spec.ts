@@ -249,7 +249,19 @@ test('a new mission and a flow run ask which project, suggesting the last used a
         await runPicker.locator(`[data-project-path="${alpha}"]`).click()
         await expect(page.getByTestId('editor-run-panel')).toBeVisible()
         await expect(page.getByTestId('launch-panel-start-button')).toHaveText('Run in alpha-project')
+        // With no explicit working directory, the run works in the chosen project.
+        await expect(page.getByTestId('launch-panel-working-directory-input')).toHaveValue(alpha)
         await page.screenshot({ path: screenshotPath('20c-run-asks-project.png'), fullPage: true })
+
+        // An explicit editor working directory survives choosing a project.
+        await page.getByTestId('launch-panel-close-button').click()
+        const explicitWorkingDirectory = testInfo.outputPath('explicit-working-directory')
+        await page.locator('#graph-run-working-directory').fill(explicitWorkingDirectory)
+        await page.getByTestId('editor-run-button').click()
+        await runPicker.locator(`[data-project-path="${alpha}"]`).click()
+        await expect(page.getByTestId('launch-panel-working-directory-input')).toHaveValue(explicitWorkingDirectory)
+        await page.getByTestId('launch-panel-close-button').click()
+        await page.locator('#graph-run-working-directory').fill('')
     } finally {
         await deleteFlowAfterSmoke(page, flowName)
     }
