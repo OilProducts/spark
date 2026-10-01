@@ -1,3 +1,4 @@
+import { ActivityBar } from '@/app/ActivityBar'
 import { HomeSessionController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
@@ -176,4 +177,30 @@ it('empties the fallback chat after deleting a project\'s drafted chat while ano
     await user.click(within(group('/work/busy')).getAllByTestId('chats-chat-row').find((row) => row.dataset.conversationId === fallback)!)
     await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
     expect(input()).toHaveValue('')
+})
+
+it.each([
+    ['empties another chat of a project opened from a notification after visiting a second project', 'busy-5', ''],
+    ['keeps a chat\'s draft when a notification reopens that same chat', 'busy-6', 'Draft for busy-6'],
+])('%s', async (_name, notifiedChat, expectedDraft) => {
+    const user = userEvent.setup()
+    vi.mocked(fetch).mockImplementation(((original) => async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('/attention')) {
+            return json({ items: [{ kind: 'proposed_plan', id: 'plan', title: 'Plan', project_path: '/work/busy', conversation_id: notifiedChat }] })
+        }
+        return original(input, init)
+    })(vi.mocked(fetch).getMockImplementation()!))
+    render(<DialogProvider><HomeSessionController /><ActivityBar /><ProjectsPanel /></DialogProvider>)
+    await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
+    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Open thread Chat busy-6' }))
+    const input = () => screen.getByTestId('project-ai-conversation-input')
+    await waitFor(() => expect(input()).toBeEnabled())
+    await user.type(input(), 'Draft for busy-6')
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe(HOME))
+    await user.click(screen.getByTestId('attention-bell'))
+    await user.click(await screen.findByTestId('attention-bell-item'))
+    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
+    expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId).toBe(notifiedChat)
+    expect(input()).toHaveValue(expectedDraft)
 })

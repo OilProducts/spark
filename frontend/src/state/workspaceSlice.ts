@@ -359,15 +359,33 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 ...patch,
             }
             nextProjectSessionStates[normalizedProjectPath] = nextScopedWorkspace
+            // A project's draft belongs to its selected chat, so switching chats clears it.
+            // Restoring a selection onto a project with none keeps text typed meanwhile.
+            const homeSession = state.homeProjectSessionsByPath[normalizedProjectPath]
+            const switchesChat = scoped.conversationId !== null && nextScopedWorkspace.conversationId !== scoped.conversationId
+            const draftReset = homeSession && switchesChat
+                ? {
+                    homeProjectSessionsByPath: {
+                        ...state.homeProjectSessionsByPath,
+                        [normalizedProjectPath]: {
+                            ...homeSession,
+                            chatDraft: '',
+                            pendingConversationTurn: null,
+                        },
+                    },
+                }
+                : {}
             const isActiveScope = state.activeProjectPath === normalizedProjectPath
             if (!isActiveScope) {
                 return {
                     projectSessionsByPath: nextProjectSessionStates,
+                    ...draftReset,
                 }
             }
             return {
                 projectSessionsByPath: nextProjectSessionStates,
                 workingDir: nextScopedWorkspace.workingDir,
+                ...draftReset,
             }
         }),
 })

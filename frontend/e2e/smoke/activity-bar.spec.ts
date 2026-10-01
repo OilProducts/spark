@@ -167,7 +167,7 @@ test('a project prompt scrolls on a short narrow viewport, so the last project c
     }
 })
 
-test('each project keeps its unsent draft across chats in other projects, including a new one', async ({ page }, testInfo) => {
+test('each chat keeps its unsent draft across chats in other projects, and a new chat starts empty', async ({ page }, testInfo) => {
     const { alpha, beta } = await seedProjects(page, testInfo)
     const stamp = Date.now()
     await createChat(page, alpha, `conversation-alpha-${stamp}`)
@@ -188,11 +188,11 @@ test('each project keeps its unsent draft across chats in other projects, includ
     await openChat(alpha, `conversation-alpha-${stamp}`)
     await expect(composer).toHaveValue('alpha draft')
 
-    // Starting a chat in another project leaves both drafts alone.
+    // A new chat in another project starts empty; the shown chat's draft is untouched.
     await group(page, beta).hover()
     await group(page, beta).getByTestId('chats-project-new-chat').click()
     await expect(page.getByTestId('chat-project-link')).toHaveText('beta-project')
-    await expect(composer).toHaveValue('beta draft')
+    await expect(composer).toHaveValue('')
     await openChat(alpha, `conversation-alpha-${stamp}`)
     await expect(composer).toHaveValue('alpha draft')
 })

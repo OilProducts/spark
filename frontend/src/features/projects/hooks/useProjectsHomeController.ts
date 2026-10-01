@@ -200,11 +200,6 @@ export function useProjectsHomeController() {
             projectPath,
             conversationId,
         })
-        // A project's draft belongs to its selected chat; changing that chat clears it, whichever project is shown.
-        const state = useStore.getState()
-        if (conversationId !== state.projectSessionsByPath[projectPath]?.conversationId) {
-            state.updateHomeProjectSession(projectPath, { chatDraft: '', pendingConversationTurn: null })
-        }
         updateProjectSessionState(projectPath, { conversationId })
         void persistProjectState(projectPath, {
             active_conversation_id: conversationId,

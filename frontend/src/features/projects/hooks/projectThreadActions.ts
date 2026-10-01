@@ -137,8 +137,6 @@ export function useProjectThreadActions({
 
             if (useStore.getState().projectSessionsByPath[projectPath]?.conversationId === conversationId) {
                 const fallbackConversationId = remainingSummaries[0]?.conversation_id || null
-                // The deleted chat's draft must not carry into the fallback, whichever project is shown.
-                useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: '', pendingConversationTurn: null })
                 updateProjectSessionState(projectPath, {
                     conversationId: fallbackConversationId,
                 })
