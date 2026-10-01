@@ -198,7 +198,8 @@ export function useProjectsHomeController() {
             projectPath,
             conversationId,
         })
-        resetComposerRef.current()
+        // Drafts belong to their project; only switching chats within the shown project clears one.
+        if (projectPath === useStore.getState().activeProjectPath) resetComposerRef.current()
         updateProjectSessionState(projectPath, { conversationId })
         void persistProjectState(projectPath, {
             active_conversation_id: conversationId,
@@ -217,10 +218,6 @@ export function useProjectsHomeController() {
         activateConversationThread(activeProjectPath, conversationId, 'ensure-conversation')
         return conversationId
     }, [activeConversationId, activeProjectPath, activateConversationThread])
-
-    useEffect(() => {
-        resetComposerRef.current()
-    }, [activeProjectPath])
 
     useEffect(() => {
         setRequestUserInputActionError(null)

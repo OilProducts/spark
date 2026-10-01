@@ -44,6 +44,11 @@ export const initialWorkspaceEditorState = {
     workingDir: restoredProjectScope ? restoredProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
 }
 
+/** Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it. */
+export const requestNavigation = (proceed: () => void) => {
+    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) proceed()
+}
+
 export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (rawSet, get) => {
     // Leaving Settings or a project page unmounts their editors, so those
     // transitions ask first and unsaved edits can block them. Other views stay
@@ -54,8 +59,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         const current = get()
         const navigates = (next.projectPagePath !== undefined && next.projectPagePath !== current.projectPagePath)
             || (current.viewMode === 'settings' && next.viewMode !== undefined && next.viewMode !== current.viewMode)
-        if (navigates && !window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) return
-        proceed()
+        if (navigates) requestNavigation(proceed)
+        else proceed()
     }
     return ({
     viewMode: restoredRouteState.viewMode,

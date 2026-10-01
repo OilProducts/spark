@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { deleteProjectValidated } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import { buildRemoveProjectTransition } from '@/state/projectScopeTransitions'
+import { requestNavigation } from '@/state/workspaceSlice'
 
 import { lastUsedProjectPath, projectLabel } from '../model/projectChoices'
 import { extractApiErrorMessage } from '../model/projectsHomeState'
@@ -25,14 +27,18 @@ export function useRemoveProject(projectPath: string) {
         if (!confirmed) {
             return
         }
+        // Unsaved or saving editors decide before anything is deleted.
+        requestNavigation(() => { void remove() })
+    }
+
+    const remove = async () => {
         setRemoveError(null)
         setRemoving(true)
         try {
             await deleteProjectValidated(projectPath)
-            const state = useStore.getState()
-            const rest = Object.fromEntries(Object.entries(state.projectRegistry).filter(([path]) => path !== projectPath))
-            state.removeProject(projectPath, lastUsedProjectPath(rest))
-            useStore.getState().openProjectPage(null)
+            const rest = Object.fromEntries(Object.entries(useStore.getState().projectRegistry).filter(([path]) => path !== projectPath))
+            // Leaving was already allowed, so the removal is not asked about again.
+            useStore.setState((state) => buildRemoveProjectTransition(state, projectPath, lastUsedProjectPath(rest)) ?? {})
         } catch (error) {
             setRemoveError(extractApiErrorMessage(error, 'Unable to remove the project.'))
         } finally {

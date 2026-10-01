@@ -4,13 +4,14 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { ProjectExecutionSettings } from '@/features/projects/components/ProjectExecutionSettings'
+import { ProjectPage } from '@/features/projects/components/ProjectPage'
 import { useStore } from '@/store'
 import { fetchModelSettings, fetchProjectExecutionSettings } from '@/lib/api/settingsApi'
-import { fetchWorkspaceSettingsValidated, updateProjectStateValidated, type WorkspaceSettingsResponse } from '@/lib/workspaceClient'
+import { deleteProjectValidated, fetchWorkspaceSettingsValidated, updateProjectStateValidated, type WorkspaceSettingsResponse } from '@/lib/workspaceClient'
 import { ProjectModelSettingsEditor } from '../ProjectModelSettingsEditor'
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), fetchProjectExecutionSettings: vi.fn(), saveModelSettings: vi.fn() }))
-vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), fetchWorkspaceSettingsValidated: vi.fn(), updateProjectStateValidated: vi.fn() }))
+vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), deleteProjectValidated: vi.fn(), fetchWorkspaceSettingsValidated: vi.fn(), updateProjectStateValidated: vi.fn() }))
 vi.mock('@/components/model-chooser/useModelOptions', () => ({ useModelOptions: () => ({ projectPath: '/project-one', payload: { providers: { codex: { status: 'available', error: null } }, models: [] } }) }))
 vi.mock('@/lib/useLlmProfiles', () => ({ useLlmProfiles: () => [] }))
 
@@ -129,4 +130,54 @@ it('blocks navigation and duplicate saves while an execution update is pending',
     await act(async () => reject(new Error('Save failed')))
     expect(screen.getByTestId('project-default-execution-profile')).toHaveTextContent('Native')
     expect(screen.getByTestId('project-settings-save-error')).toHaveTextContent('Save failed')
+})
+
+function Page() {
+    const page = useStore((state) => state.projectPagePath)
+    return page ? (
+        <ProjectPage projectPath={page} chats={[]} formatConversationAgeShort={() => ''} pendingDeleteConversationId={null}
+            onCreateConversationThread={() => {}} onSelectConversationThread={() => {}} onDeleteConversationThread={() => {}} />
+    ) : <p>Left the project page</p>
+}
+
+const removeFromPage = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByTestId('project-page-remove'))
+    await user.click(await screen.findByRole('button', { name: 'Remove project' }))
+}
+
+it('asks about unsaved settings before removing a project, and only deletes once leaving is allowed', async () => {
+    vi.mocked(deleteProjectValidated).mockResolvedValue(undefined as never)
+    const user = userEvent.setup()
+    render(<DialogProvider><Page /></DialogProvider>)
+    await waitFor(() => expect(screen.getByRole('switch')).toBeEnabled())
+    await user.click(screen.getByRole('switch'))
+    await customModel(user, 'unsaved-model')
+
+    await removeFromPage(user)
+    await user.click(await screen.findByRole('button', { name: 'Keep editing' }))
+    expect(deleteProjectValidated).not.toHaveBeenCalled()
+    expect(useStore.getState().projectRegistry['/project-one']).toBeDefined()
+    expect(screen.getByRole('button', { name: /^Model:/ })).toHaveTextContent('unsaved-model')
+
+    await removeFromPage(user)
+    await user.click(await screen.findByRole('button', { name: 'Discard and leave' }))
+    await screen.findByText('Left the project page')
+    expect(deleteProjectValidated).toHaveBeenCalledWith('/project-one')
+    expect(useStore.getState().projectRegistry['/project-one']).toBeUndefined()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+})
+
+it('does not remove a project while its settings are saving', async () => {
+    const user = userEvent.setup()
+    render(<DialogProvider><Page /></DialogProvider>)
+    await waitFor(() => expect(screen.getByTestId('project-default-execution-profile')).toBeEnabled())
+    await user.click(screen.getByTestId('project-default-execution-profile'))
+    await user.click(screen.getByRole('option', { name: 'Native (native)' }))
+    vi.mocked(updateProjectStateValidated).mockReturnValue(new Promise(() => {}))
+    await user.click(screen.getByTestId('project-settings-save-button'))
+
+    await removeFromPage(user)
+    expect(deleteProjectValidated).not.toHaveBeenCalled()
+    expect(useStore.getState().projectPagePath).toBe('/project-one')
+    expect(useStore.getState().projectRegistry['/project-one']).toBeDefined()
 })

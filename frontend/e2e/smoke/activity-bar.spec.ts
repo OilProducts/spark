@@ -142,6 +142,36 @@ test('starting a chat in a project places it under that project and its composer
     await page.keyboard.press('Escape')
 })
 
+test('each project keeps its unsent draft across chats in other projects, including a new one', async ({ page }, testInfo) => {
+    const { alpha, beta } = await seedProjects(page, testInfo)
+    const stamp = Date.now()
+    await createChat(page, alpha, `conversation-alpha-${stamp}`)
+    await createChat(page, beta, `conversation-beta-${stamp}`)
+    await page.goto('/')
+    const composer = page.getByTestId('project-ai-conversation-input')
+    const openChat = async (projectPath: string, id: string) => {
+        const rows = group(page, projectPath).getByTestId('chats-chat-row')
+        if (await rows.count() === 0) await group(page, projectPath).getByTestId('chats-project-toggle').click()
+        await group(page, projectPath).locator(`button[data-conversation-id="${id}"]`).click()
+    }
+
+    await openChat(alpha, `conversation-alpha-${stamp}`)
+    await composer.fill('alpha draft')
+    await openChat(beta, `conversation-beta-${stamp}`)
+    await expect(composer).toHaveValue('')
+    await composer.fill('beta draft')
+    await openChat(alpha, `conversation-alpha-${stamp}`)
+    await expect(composer).toHaveValue('alpha draft')
+
+    // Starting a chat in another project leaves both drafts alone.
+    await group(page, beta).hover()
+    await group(page, beta).getByTestId('chats-project-new-chat').click()
+    await expect(page.getByTestId('chat-project-link')).toHaveText('beta-project')
+    await expect(composer).toHaveValue('beta draft')
+    await openChat(alpha, `conversation-alpha-${stamp}`)
+    await expect(composer).toHaveValue('alpha draft')
+})
+
 test('a new mission and a flow run ask which project, suggesting the last used and the chat\'s project', async ({ page }, testInfo) => {
     const { alpha, beta } = await seedProjects(page, testInfo)
     const flowName = await createFlowForSmokeTest(page, 'activity-run-picker')
