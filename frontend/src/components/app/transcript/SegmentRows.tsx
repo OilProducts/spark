@@ -286,7 +286,7 @@ export const MessageRow = memo(function MessageRow({
                     <ProjectConversationMarkdown content={entry.content} enableCodeCopy={enableCopy && entry.status === 'complete'} />
                 ) : (
                     <p
-                        className={`whitespace-pre-wrap text-sm leading-6 ${
+                        className={`whitespace-pre-wrap text-sm leading-6 [overflow-wrap:anywhere] ${
                             entry.presentation === 'thinking' ? 'italic' : ''
                         }`}
                     >

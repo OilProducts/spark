@@ -313,6 +313,7 @@ export function WorkspaceLiveEventsController() {
     const latestRunSequenceById = useRef<Record<string, number>>({})
     const includeRunsOverview =
         viewMode === 'runs'
+        || viewMode === 'missions'
         || selectedRunId !== null
         || runsListSession.status !== 'idle'
         || runsListSession.runs.length > 0

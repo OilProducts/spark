@@ -29,7 +29,6 @@ type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
 type FinalSeparatorEntry = Extract<ConversationTimelineEntry, { kind: 'final_separator' }>
 type ModeChangeEntry = Extract<ConversationTimelineEntry, { kind: 'mode_change' }>
 type ContextCompactionEntry = Extract<ConversationTimelineEntry, { kind: 'context_compaction' }>
-type MessageEntry = Extract<ConversationTimelineEntry, { kind: 'message' }>
 
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
@@ -62,8 +61,8 @@ interface ProjectConversationHistoryProps {
         reviewNote?: string | null,
     ) => void | Promise<void>
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
-    /** Replaces the row for a user message when it returns a row. */
-    renderUserMessage?: (entry: MessageEntry, key: string) => ReactNode
+    /** Replaces an entry's row unless it returns undefined; null hides the entry. */
+    renderEntry?: (entry: ConversationTimelineEntry, key: string) => ReactNode | undefined
 }
 
 function conversationEntryKey(entry: ConversationTimelineEntry) {
@@ -366,7 +365,7 @@ export function ProjectConversationHistory({
     onReviewFlowRunRequest,
     onReviewProposedPlan,
     onOpenFlowRun,
-    renderUserMessage,
+    renderEntry,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
     const [fullToolOutputs, setFullToolOutputs] = useState<Record<string, string>>({})
@@ -448,6 +447,10 @@ export function ProjectConversationHistory({
                 <ol data-testid="project-ai-conversation-history-list" className="space-y-2.5">
                     {activeConversationHistory.map((entry) => {
                         const key = conversationEntryKey(entry)
+                        const customRow = renderEntry?.(entry, key)
+                        if (customRow !== undefined) {
+                            return customRow
+                        }
                         if (entry.kind === 'tool_call') {
                             return (
                                 <ToolCallRow
@@ -556,11 +559,6 @@ export function ProjectConversationHistory({
                         if (entry.kind !== 'message') {
                             return null
                         }
-                        const customRow = entry.role === 'user' ? renderUserMessage?.(entry, key) : null
-                        if (customRow) {
-                            return customRow
-                        }
-
                         return (
                             <MessageRow
                                 key={key}
