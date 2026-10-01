@@ -263,7 +263,7 @@ it('ends a closed mission with its outcome once, without cancel, close or the re
     expect(detail().queryByLabelText('Reply')).not.toBeInTheDocument()
     expect(detail().getByRole('region', { name: 'Outcome' })).toHaveTextContent(/^Closed as canceled · Sep 20.*Canceled by human$/)
     expect(detail().getAllByText(/Canceled by human/)).toHaveLength(1)
-    expect(detail().getByRole('status')).toHaveTextContent(/^Closed · Canceled · Sep 20/)
+    expect(detail().getByRole('status')).toHaveTextContent(/^Canceled · Sep 20/)
     expect(detail().queryByRole('button', { name: 'Close mission' })).not.toBeInTheDocument()
     expect(detail().queryByRole('button', { name: 'Cancel mission' })).not.toBeInTheDocument()
     fireEvent.keyDown(detail().getByRole('button', { name: 'Mission actions' }), { key: 'Enter' })

@@ -106,6 +106,11 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         } catch (e) { setActionError((e as Error).message) } finally { setPending(false) }
     }
     const status = mission.status ?? 'draft'
+    // A draft's or closed mission's short line already leads with its state word.
+    const line = shortLine(mission)
+    const leadsWithState = status === 'draft' || status === 'closed'
+    const stateWord = leadsWithState ? line.split(' · ')[0] : statusLabels[status]
+    const lineRest = leadsWithState ? line.split(' · ').slice(1).join(' · ') : line
     const closed = status === 'closed'
     const disabled = busy || pending
     async function act(work: () => Promise<Mission>, control = false) {
@@ -135,7 +140,7 @@ export function MissionDetail({ mission, project, busy, error, narrow, focusRequ
         <header className="flex shrink-0 flex-wrap items-start gap-2 border-b border-border px-4 pb-3 lg:px-6">
             <div className="min-w-0 flex-1 basis-64">
                 <h2 ref={heading} tabIndex={-1} className="text-xl font-light whitespace-pre-wrap break-words focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{mission.fields.title}</h2>
-                <p role="status" className="mt-0.5 truncate text-xs text-muted-foreground"><span className={stateTones[status]}>{statusLabels[status]}</span> · {shortLine(mission)}{mission.fields.archived ? ' · Archived' : ''}{busy || pending ? ' · Saving…' : ''}</p>
+                <p role="status" className="mt-0.5 truncate text-xs text-muted-foreground"><span className={stateTones[status]}>{stateWord}</span>{lineRest ? ` · ${lineRest}` : ''}{mission.fields.archived ? ' · Archived' : ''}{busy || pending ? ' · Saving…' : ''}</p>
             </div>
             <div className="flex shrink-0 items-center gap-1">
                 {status === 'draft' && <><Button type="button" size="sm" disabled={disabled} onClick={() => void control('start')}>Start</Button>

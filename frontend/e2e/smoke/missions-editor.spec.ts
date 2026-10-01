@@ -149,7 +149,7 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
 
   // A closed mission ends with its outcome and has no reply box.
   await closedRow.click()
-  await expect(detail.getByRole('status')).toHaveText(/^Closed · Done · Sep 9/)
+  await expect(detail.getByRole('status')).toHaveText(/^Done · Sep 9/)
   const outcome = detail.getByRole('region', { name: 'Outcome' })
   await expect(outcome).toContainText('Closed as done · Sep 9')
   await expect(outcome).toContainText('Dropped the legacy tables')
