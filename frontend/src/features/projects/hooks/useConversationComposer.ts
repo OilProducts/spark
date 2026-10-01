@@ -73,11 +73,6 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
-    const resetComposer = () => {
-        setChatDraft('')
-        setPendingConversationTurn(null)
-    }
-
     const onSendChatMessage = async () => {
         if (!activeProjectPath || isChatInputDisabled) {
             return
@@ -155,6 +150,5 @@ export function useConversationComposer({
     return {
         onChatComposerKeyDown,
         onChatComposerSubmit,
-        resetComposer,
     }
 }

@@ -19,14 +19,16 @@ const snapshot = (projectPath: string, id: string) => ({
 const HOME = '/home/me'
 const chatsByProject: Record<string, ReturnType<typeof summary>[]> = {
     [HOME]: [summary(HOME, 'home-1', '2026-09-01T00:00:00Z')],
-    '/work/busy': Array.from({ length: 7 }, (_, index) => summary('/work/busy', `busy-${index}`, `2026-09-1${index}T00:00:00Z`)),
+    '/work/busy': Array.from({ length: 7 }, (_, index) => summary('/work/busy', `busy-${index}`, `2026-09-1${index}T00:00:00Z`)).reverse(),
     '/work/gone': [],
 }
 let settingsWrites: { url: string; body: Record<string, unknown> }[]
+let deletedIds: Set<string>
 
 beforeEach(() => {
     window.innerWidth = 1280
     settingsWrites = []
+    deletedIds = new Set()
     useStore.setState({
         viewMode: 'home', activeProjectPath: null, projectPagePath: null,
         homeConversationCache: { conversationsById: {}, summariesByProjectPath: {} },
@@ -40,9 +42,13 @@ beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         if (url.includes('/projects/conversations')) {
-            return json(chatsByProject[new URL(url, 'http://localhost').searchParams.get('project_path') ?? ''] ?? [])
+            return json((chatsByProject[new URL(url, 'http://localhost').searchParams.get('project_path') ?? ''] ?? []).filter((chat) => !deletedIds.has(chat.conversation_id)))
         }
         const conversationId = decodeURIComponent(url.match(/\/api\/conversations\/([^/?]+)/)?.[1] ?? '')
+        if (conversationId && init?.method === 'DELETE') {
+            deletedIds.add(conversationId)
+            return json({ status: 'deleted', conversation_id: conversationId, project_path: '/work/busy' })
+        }
         if (conversationId && init?.method === 'PUT') {
             const body = JSON.parse(String(init.body))
             settingsWrites.push({ url, body })
@@ -151,4 +157,23 @@ it.each([
     await user.click(within(group('/work/busy')).getAllByTestId('chats-chat-row').find((row) => row.dataset.conversationId === returnTo)!)
     await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
     expect(input()).toHaveValue(expectedDraft)
+})
+
+it('empties the fallback chat after deleting a project\'s drafted chat while another project is shown', async () => {
+    const user = userEvent.setup()
+    renderChats()
+    await user.click(within(group('/work/busy')).getByTestId('chats-project-toggle'))
+    await user.click(await within(group('/work/busy')).findByRole('button', { name: 'Open thread Chat busy-6' }))
+    const input = () => screen.getByTestId('project-ai-conversation-input')
+    await waitFor(() => expect(input()).toBeEnabled())
+    await user.type(input(), 'Draft for busy-6')
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe(HOME))
+    await user.click(within(group('/work/busy')).getByTestId('project-thread-delete-busy-6'))
+    await user.click(await screen.findByRole('button', { name: 'Delete thread' }))
+    await waitFor(() => expect(useStore.getState().projectSessionsByPath['/work/busy']?.conversationId).not.toBe('busy-6'))
+    const fallback = useStore.getState().projectSessionsByPath['/work/busy']!.conversationId!
+    await user.click(within(group('/work/busy')).getAllByTestId('chats-chat-row').find((row) => row.dataset.conversationId === fallback)!)
+    await waitFor(() => expect(useStore.getState().activeProjectPath).toBe('/work/busy'))
+    expect(input()).toHaveValue('')
 })

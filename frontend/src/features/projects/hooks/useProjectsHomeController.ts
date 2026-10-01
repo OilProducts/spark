@@ -259,7 +259,6 @@ export function useProjectsHomeController() {
     const {
         onChatComposerKeyDown,
         onChatComposerSubmit,
-        resetComposer,
     } = useConversationComposer({
         activeProjectPath,
         chatDraft,
@@ -328,13 +327,10 @@ export function useProjectsHomeController() {
         onDeleteConversationThread,
         onSelectConversationThread,
     } = useProjectThreadActions({
-        activeProjectPath,
-        activeConversationId,
         conversationCacheRef,
         setConversationSummaryList,
         activateConversationThread,
         applyConversationSnapshot,
-        resetComposer,
         updateProjectSessionState,
         clearHomeConversationSession,
         setPanelError,

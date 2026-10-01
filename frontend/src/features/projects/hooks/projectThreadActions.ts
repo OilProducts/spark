@@ -29,13 +29,10 @@ type PersistProjectState = (
 type ConversationCacheRef = MutableRefObject<ProjectConversationCacheState>
 
 type UseProjectThreadActionsArgs = {
-    activeProjectPath: string | null
-    activeConversationId: string | null
     conversationCacheRef: ConversationCacheRef
     setConversationSummaryList: (projectPath: string, summaries: ConversationSummaryResponse[]) => void
     activateConversationThread: (projectPath: string, conversationId: string, source?: string) => void
     applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
-    resetComposer: () => void
     updateProjectSessionState: (projectPath: string, patch: Record<string, unknown>) => void
     clearHomeConversationSession: (conversationId: string) => void
     setPanelError: (value: string | null) => void
@@ -49,13 +46,10 @@ type UseProjectThreadActionsArgs = {
 }
 
 export function useProjectThreadActions({
-    activeProjectPath,
-    activeConversationId,
     conversationCacheRef,
     setConversationSummaryList,
     activateConversationThread,
     applyConversationSnapshot,
-    resetComposer,
     updateProjectSessionState,
     clearHomeConversationSession,
     setPanelError,
@@ -143,9 +137,8 @@ export function useProjectThreadActions({
 
             if (useStore.getState().projectSessionsByPath[projectPath]?.conversationId === conversationId) {
                 const fallbackConversationId = remainingSummaries[0]?.conversation_id || null
-                if (projectPath === activeProjectPath && activeConversationId === conversationId) {
-                    resetComposer()
-                }
+                // The deleted chat's draft must not carry into the fallback, whichever project is shown.
+                useStore.getState().updateHomeProjectSession(projectPath, { chatDraft: '', pendingConversationTurn: null })
                 updateProjectSessionState(projectPath, {
                     conversationId: fallbackConversationId,
                 })
@@ -161,12 +154,9 @@ export function useProjectThreadActions({
             setPendingDeleteConversationId(null)
         }
     }, [
-        activeConversationId,
-        activeProjectPath,
         commitConversationCache,
         conversationCacheRef,
         persistProjectState,
-        resetComposer,
         setConversationSummaryList,
         clearHomeConversationSession,
         setPanelError,
