@@ -5,6 +5,7 @@ import {
     type ConversationSnapshotResponse,
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
+import { useStore } from '@/store'
 import type { PendingConversationTurnState } from '../model/conversationState'
 
 export type ConversationComposerCommand =
@@ -110,10 +111,11 @@ export function useConversationComposer({
         }
         const messageToSend = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.message : trimmed
         const chatMode = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.chatMode : null
-        setPendingConversationTurn({
-            conversationId,
-            afterRevision: getCurrentConversationRevision(conversationId),
-        })
+        const afterRevision = getCurrentConversationRevision(conversationId)
+        setPendingConversationTurn({ conversationId, afterRevision })
+        // The activity bar follows the turn even after the chat is left.
+        const { setRunningChat } = useStore.getState()
+        setRunningChat(conversationId, { projectPath: activeProjectPath, revision: afterRevision, sending: true })
         try {
             const snapshot = await sendConversationTurnValidated(conversationId, {
                 project_path: activeProjectPath,
@@ -130,6 +132,8 @@ export function useConversationComposer({
             setPanelError(message)
         } finally {
             setPendingConversationTurn(null)
+            const running = useStore.getState().runningChats[conversationId]
+            if (running) setRunningChat(conversationId, { ...running, sending: false })
         }
     }
 

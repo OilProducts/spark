@@ -34,6 +34,10 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     const projectPath = path.join(tmpRoot, 'projects', 'live-turn')
     mkdirSync(projectPath, { recursive: true })
     expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: projectPath } })).ok()).toBe(true)
+    // A second project, to leave the chat for mid-turn.
+    const otherProject = path.join(tmpRoot, 'projects', 'live-turn-other')
+    mkdirSync(otherProject, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: otherProject } })).ok()).toBe(true)
     expect((await page.request.post('/attractor/api/flows', { data: { name: 'live-turn-smoke.yaml', content: flowYaml } })).ok()).toBe(true)
     await page.addInitScript(({ projectPath }) => {
         localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
@@ -74,7 +78,21 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
     await expect(history).toContainText('live-turn-smoke.yaml')
     expect(snapshotFetches).toBe(0)
 
+    // Leaving the chat for one in another project keeps the dot until the turn ends there.
+    const otherGroup = page.locator(`[data-testid="chats-project-group"][data-project-path="${otherProject}"]`)
+    await otherGroup.hover()
+    await otherGroup.getByTestId('chats-project-new-chat').click()
+    await expect(page.getByTestId('chat-composer-project')).toContainText('live-turn-other')
+    await page.waitForTimeout(3_000)
+    await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
+    await page.getByTestId('activity-runs').click()
+    await expect(page.getByTestId('activity-chats-dot')).toHaveAttribute('data-dot', 'running')
+
     openGate('finish')
+    await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
+    await page.getByTestId('activity-chats').click()
+    const liveGroup = page.locator(`[data-testid="chats-project-group"][data-project-path="${projectPath}"]`)
+    await liveGroup.getByTestId('chats-chat-row').first().click()
     await expect(history).toContainText('Half done. Still going. All done.')
     await expect(page.getByTestId('project-chat-stop')).toHaveCount(0)
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)

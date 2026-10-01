@@ -7,6 +7,7 @@ import { useNarrowViewport } from '@/lib/useNarrowViewport'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { fetchPendingAttention, type AttentionItem } from "@/lib/api/attentionApi"
 import { projectLabel } from '@/features/projects/model/projectChoices'
+import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
 
 type ActivityItem = { mode: ViewMode; label: string; icon: LucideIcon; testId: string }
@@ -186,14 +187,7 @@ export function ActivityBar() {
     const setViewMode = useStore((state) => state.setViewMode)
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
-    // A chat is running while a sent message awaits the server, in any project, or the open chat's turn is in flight.
-    // ponytail: only the open chat streams live; other chats' turns would need a cross-project turn feed.
-    const chatRunning = useStore((state) => {
-        const openChatId = state.activeProjectPath ? state.projectSessionsByPath[state.activeProjectPath]?.conversationId : null
-        const openChat = openChatId ? state.homeConversationCache.conversationsById[openChatId] : undefined
-        return Object.values(state.homeProjectSessionsByPath).some((session) => session.pendingConversationTurn)
-            || Object.values(openChat?.turnsById ?? {}).some((turn) => turn.status === 'pending' || turn.status === 'streaming')
-    })
+    const chatRunning = useChatRunning()
     const isNarrowViewport = useNarrowViewport()
     const attention = useAttentionItems()
     const dots = activityDots(

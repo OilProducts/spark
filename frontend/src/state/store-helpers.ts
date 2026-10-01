@@ -190,6 +190,7 @@ export const DEFAULT_ROUTE_STATE: RouteState = {
     selectedTriggerId: null,
     selectedMission: null,
     activeFlow: null,
+    settingsCategory: 'models',
 }
 
 const asAbsoluteProjectPath = (value: unknown) => {
@@ -221,6 +222,7 @@ export const loadRouteState = (): RouteState => {
             selectedTriggerId: asId(parsed.selectedTriggerId),
             selectedMission: missionId && missionProjectPath ? { id: missionId, projectPath: missionProjectPath } : null,
             activeFlow: asId(parsed.activeFlow),
+            settingsCategory: asId(parsed.settingsCategory) ?? DEFAULT_ROUTE_STATE.settingsCategory,
         }
     } catch {
         return { ...DEFAULT_ROUTE_STATE }

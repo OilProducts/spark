@@ -28,6 +28,7 @@ export const selectRouteState = (state: AppState): RouteState => ({
     selectedTriggerId: state.triggersSession.selectedTriggerId,
     selectedMission: state.selectedMission,
     activeFlow: state.activeFlow,
+    settingsCategory: state.settingsCategory,
 })
 
 // The app reopens where you were: the view and each view's last selection.

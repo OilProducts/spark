@@ -295,11 +295,12 @@ test('provider and agent sections validate, save, report references and restart 
         expect(saved.providers.stored.openai.api_key_env).toBe('CR_SETTINGS_TEST_REFERENCE')
         expect(typeof saved.providers.credential_status.openai).toBe('boolean')
         expect(JSON.stringify(saved)).not.toContain('SECRET')
+        // A reload reopens the category you were on.
         await page.reload()
+        await expect(timeout).toHaveValue('1234')
+        await page.getByRole('tab', { name: 'Models & accounts', exact: true }).click()
         await page.locator('summary').filter({ hasText: /^OpenAI ·/ }).click()
         await expect(endpoint).toHaveValue('https://example.com/v1')
-        await page.getByRole('tab', { name: 'Execution', exact: true }).click()
-        await expect(timeout).toHaveValue('1234')
     } finally {
         for (const section of ['providers', 'agents']) {
             const current = await read()
@@ -694,10 +695,12 @@ for (const width of [1440, 390]) {
         await expect(endpoint).toBeVisible()
         await page.keyboard.press('Tab')
         await expect(endpoint).toBeFocused()
+        // Settings reopens the category you left it on.
         await page.getByRole('tab', { name: 'Preferences', exact: true }).click()
         await page.getByTestId('activity-chats').click()
         await page.getByTestId('activity-settings').click()
-        await expect(models).toHaveAttribute('aria-selected', 'true')
+        await expect(page.getByRole('tab', { name: 'Preferences', exact: true })).toHaveAttribute('aria-selected', 'true')
+        await models.click()
     })
 }
 

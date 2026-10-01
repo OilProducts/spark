@@ -64,7 +64,10 @@ export function SettingsPanel() {
     useSettingsNavigationProtection(desktopDirty, isSavingDesktopSettings)
 
     const invalidModel = !!models.draft && !isModelSelectionValid(models.draft.llm_profile || models.draft.provider || '', models.draft.model, llmProfiles)
-    const [category, setCategory] = useState('models')
+    // The category is route state, so it survives leaving Settings and reloads.
+    const storedCategory = useStore(state => state.settingsCategory)
+    const category = ['models', 'preferences', 'execution', 'system'].includes(storedCategory) ? storedCategory : 'models'
+    const setCategory = useStore(state => state.setSettingsCategory)
     const [desktopRetry, setDesktopRetry] = useState(0)
 
     useEffect(() => {

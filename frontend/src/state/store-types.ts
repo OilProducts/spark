@@ -127,6 +127,7 @@ export interface RouteState {
     selectedTriggerId: string | null
     selectedMission: MissionSelection | null
     activeFlow: string | null
+    settingsCategory: string
 }
 
 export interface CanvasViewportState {
@@ -167,6 +168,9 @@ export interface WorkspaceSlice {
     openProjectPage: (projectPath: string | null) => void
     selectedMission: MissionSelection | null
     setSelectedMission: (selection: MissionSelection | null) => void
+    /** The Settings category the Settings view shows. */
+    settingsCategory: string
+    setSettingsCategory: (category: string) => void
     /** Every project's missions. */
     missionBoard: import('@/features/missions/MissionsPanel').Mission[]
     setMissionBoard: (

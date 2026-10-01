@@ -226,3 +226,50 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await page.getByTestId('shared-dialog-confirm').click()
     await expect(group(page, beta)).toHaveCount(0)
 })
+
+test('a new mission draft belongs to the project it was started in', async ({ page }, testInfo) => {
+    const { alpha, home } = await seedProjects(page, testInfo)
+    const stamp = Date.now()
+    await page.goto('/')
+    await page.getByTestId('activity-missions').click()
+    const picker = page.getByTestId('new-mission-project-picker')
+    const title = page.getByLabel('Title', { exact: true })
+    const startIn = async (projectPath: string) => {
+        await page.getByRole('button', { name: 'New mission' }).click()
+        await picker.locator(`[data-project-path="${projectPath}"]`).click()
+    }
+
+    await startIn(alpha)
+    await title.fill(`Alpha draft ${stamp}`)
+    // Starting one in Home shows a fresh draft, not alpha's.
+    await startIn(home)
+    await expect(page.getByTestId('new-mission-project')).toHaveText('New mission in Home')
+    await expect(title).toHaveValue('')
+    await title.fill(`Home mission ${stamp}`)
+    await page.getByRole('button', { name: 'Create mission' }).click()
+    await expect(page.getByTestId('missions-view').getByTestId('side-panel').getByRole('button', { name: `Home mission ${stamp}` })).toContainText('Home')
+
+    // Alpha's draft is still there, and saves to alpha.
+    await startIn(alpha)
+    await expect(title).toHaveValue(`Alpha draft ${stamp}`)
+    await page.getByRole('button', { name: 'Create mission' }).click()
+    const titles = async (projectPath: string) => (await (await page.request.get(`/workspace/api/missions?project_path=${encodeURIComponent(projectPath)}`)).json())
+        .missions.map((mission: { fields: { title: string } }) => mission.fields.title)
+    await expect.poll(() => titles(alpha)).toContain(`Alpha draft ${stamp}`)
+    expect(await titles(alpha)).not.toContain(`Home mission ${stamp}`)
+    expect(await titles(home)).toContain(`Home mission ${stamp}`)
+    expect(await titles(home)).not.toContain(`Alpha draft ${stamp}`)
+})
+
+test('Settings reopens the category you left it on, across views and reloads', async ({ page }) => {
+    await page.goto('/')
+    await page.getByTestId('activity-settings').click()
+    await page.getByRole('tab', { name: 'Execution' }).click()
+    await expect(page.getByRole('tab', { name: 'Execution' })).toHaveAttribute('aria-selected', 'true')
+    await page.getByTestId('activity-runs').click()
+    await page.getByTestId('activity-settings').click()
+    await expect(page.getByRole('tab', { name: 'Execution' })).toHaveAttribute('aria-selected', 'true')
+    await page.reload()
+    await expect(page.getByRole('tab', { name: 'Execution' })).toHaveAttribute('aria-selected', 'true')
+    await page.getByRole('tab', { name: 'Models & accounts' }).click()
+})

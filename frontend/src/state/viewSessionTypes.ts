@@ -125,6 +125,8 @@ export interface TriggersSessionState {
     editTriggerDraftsByTriggerId: Record<string, TriggerEditDraftState>
 }
 
+export type RunningChat = { projectPath: string; revision: number; sending: boolean }
+
 export interface HomeSessionSlice {
     homeConversationCache: HomeConversationCacheState
     homeThreadSummariesStatusByProjectPath: Record<string, ResourceStatus>
@@ -132,6 +134,12 @@ export interface HomeSessionSlice {
     homeProjectSessionsByPath: Record<string, HomeProjectSessionState>
     homeConversationSessionsById: Record<string, HomeConversationSessionState>
     homeProjectGitMetadataByPath: Record<string, ProjectGitMetadata>
+    /**
+     * Chats with a turn in flight, open or not, by conversation id. `revision`
+     * is the latest revision seen running; `sending` holds while the send request is open.
+     */
+    runningChats: Record<string, RunningChat>
+    setRunningChat: (conversationId: string, value: RunningChat | null) => void
     updateHomeProjectSession: (projectPath: string, patch: Partial<HomeProjectSessionState>) => void
     updateHomeConversationSession: (conversationId: string, patch: Partial<HomeConversationSessionState>) => void
     commitHomeConversationCache: (

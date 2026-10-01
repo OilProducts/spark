@@ -67,6 +67,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     openProjectPage: (projectPath) => set({ projectPagePath: projectPath }),
     selectedMission: restoredRouteState.selectedMission,
     setSelectedMission: (selection) => set({ selectedMission: selection }),
+    settingsCategory: restoredRouteState.settingsCategory,
+    setSettingsCategory: (category) => set({ settingsCategory: category }),
     missionBoard: [],
     setMissionBoard: (update) => rawSet((state) => ({ missionBoard: update(state.missionBoard) })),
     activeProjectPath: restoredRouteState.activeProjectPath,

@@ -13,6 +13,7 @@ it('remembers the view and the last selection in each view', () => {
         selectedTriggerId: 'trigger-1',
         selectedMission: { id: 'mission-1', projectPath: '/work/app' },
         activeFlow: 'team/review.yaml',
+        settingsCategory: 'execution',
     }
     saveRouteState(route)
     expect(loadRouteState()).toEqual(route)
@@ -35,10 +36,12 @@ it('saves each view\'s selection as it changes', async () => {
     useStore.getState().setSelectedMission({ id: 'mission-saved', projectPath: '/work/app' })
     useStore.getState().updateTriggersSession({ selectedTriggerId: 'trigger-saved' })
     useStore.getState().setActiveFlow('saved.yaml')
+    useStore.getState().setSettingsCategory('system')
     expect(JSON.parse(window.localStorage.getItem(ROUTE_STATE_STORAGE_KEY) ?? '{}')).toMatchObject({
         selectedRunId: 'run-saved',
         selectedMission: { id: 'mission-saved', projectPath: '/work/app' },
         selectedTriggerId: 'trigger-saved',
         activeFlow: 'saved.yaml',
+        settingsCategory: 'system',
     })
 })

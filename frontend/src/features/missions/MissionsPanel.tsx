@@ -60,7 +60,9 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const [search, setSearch] = useState('')
     const [draft, setDraft] = useState<Fields>(empty)
     const [conflict, setConflict] = useState(false)
+    // Unsaved drafts by mission id, or `new:<project>` for a new mission in that project.
     const drafts = useRef(new Map<string, Draft>())
+    const newKey = `new:${newProject ?? ''}`
     const searchInput = useRef<HTMLInputElement>(null)
     const boardScroll = useRef<HTMLDivElement>(null)
     const scrollPositions = useRef(new Map<string, number>())
@@ -109,7 +111,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
     }, [search, archived])
     function preserveDraft() {
         if (mode !== 'edit' || editing === undefined) return
-        const key = editing?.id ?? 'new'
+        const key = editing?.id ?? newKey
         if (unsaved || conflict) drafts.current.set(key, { editing, fields: draft, conflict })
         else drafts.current.delete(key)
     }
@@ -120,7 +122,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
         useStore.getState().setSelectedMission(mission ? { id: mission.id, projectPath: mission.project_path } : null)
         setFocusRequest(value => value + 1)
         preserveDraft()
-        const cached = drafts.current.get(mission?.id ?? 'new')
+        const cached = drafts.current.get(mission?.id ?? `new:${project ?? ''}`)
         setMode(cached || !mission ? 'edit' : 'read')
         setEditing(cached?.editing ?? mission); setDraft(cached?.fields ?? mission?.fields ?? { ...empty }); setConflict(cached?.conflict ?? false); setError('')
     }
@@ -140,9 +142,9 @@ export function MissionsPanel({ active }: { active: boolean }) {
             reset(latest ?? editing)
             setMode('read')
         }
-        else { drafts.current.delete('new'); setDraft({ ...empty }); close(false) }
+        else { drafts.current.delete(newKey); setDraft({ ...empty }); close(false) }
     }
-    function reset(mission: Mission | null) { setEditing(mission); setDraft(mission?.fields ?? { ...empty }); setConflict(false); setError(''); drafts.current.delete(mission?.id ?? 'new') }
+    function reset(mission: Mission | null) { setEditing(mission); setDraft(mission?.fields ?? { ...empty }); setConflict(false); setError(''); drafts.current.delete(mission?.id ?? newKey) }
     function reconcile() {
         if (!latest || !editing) return
         const local = Object.fromEntries(Object.entries(draft).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(editing.fields[key as keyof Fields])))
@@ -153,7 +155,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
         setBusy(true); setError('')
         try {
             const saved = await request<Mission>(editing?.project_path ?? newProject ?? '', editing?.id, { revision: editing?.revision, fields: archive === undefined ? draft : { archived: archive }, actor: 'human' })
-            drafts.current.delete(editing?.id ?? 'new')
+            drafts.current.delete(editing?.id ?? newKey)
             upsert(saved)
             if (!editing) void markProjectUsed(saved.project_path)
             if (archive === undefined) { reset(saved); setMode('read'); useStore.getState().setSelectedMission({ id: saved.id, projectPath: saved.project_path }) }
@@ -226,7 +228,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
         <section aria-label="Project missions" className="flex h-full min-h-0 flex-col gap-2 p-3 lg:p-6">
             {editing === null && newProject && <p data-testid="new-mission-project" className="text-sm text-muted-foreground">New mission in <span className="text-foreground">{projectLabel(registry, newProject)}</span></p>}
             <div className="flex min-h-0 flex-1 gap-4">
-                {editing !== undefined ? (mode === 'read' && editing ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} /> : <MissionEditor key={editing?.id ?? 'new'} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
+                {editing !== undefined ? (mode === 'read' && editing ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} /> : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
                     setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
                     : <Empty className="flex-1 text-sm text-muted-foreground"><EmptyDescription>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with + New.'}</EmptyDescription></Empty>}
             </div>

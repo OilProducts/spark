@@ -29,7 +29,7 @@ const savedModel = { provider: 'codex', llm_profile: null, model: 'saved-model',
 const card = (name: string) => within(screen.getByRole('heading', { name, exact: true }).closest<HTMLElement>('[data-slot=card]')!)
 beforeEach(() => {
     vi.resetAllMocks()
-    useStore.setState({ viewMode: 'settings', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
+    useStore.setState({ viewMode: 'settings', settingsCategory: 'models', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
     vi.mocked(fetchModelSettings).mockImplementation(async (path, section) => section === 'utility_models'
         ? { scope: 'workspace', source: 'workspace', revision: 'utility-one', stored: null, effective: null }
         : { scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel })
@@ -55,9 +55,10 @@ it('has local default selection, semantic headings, keyboard tabs, and mounted h
     expect(screen.getByLabelText(/^Model:/)).not.toBeVisible()
     await user.keyboard('{End}')
     expect(screen.getByRole('tab', { name: 'System' })).toHaveFocus()
+    // Settings reopens on the category it was left on.
     view.unmount()
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
-    expect(screen.getByRole('tab', { name: 'Models & accounts' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'System' })).toHaveAttribute('aria-selected', 'true')
 })
 
 it('retains hidden validation and dirty drafts, protects leaving, and discards per editor', async () => {
