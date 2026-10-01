@@ -242,6 +242,17 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
     }
     // No effort was requested, so the CLI keeps its own default.
     assert!(!args.contains("--effort"), "unexpected --effort in: {args}");
+    // Spark's own binaries, the spark CLI among them, come first on the agent's PATH.
+    let spark_bin_dir = std::env::current_exe()
+        .expect("current exe")
+        .parent()
+        .expect("current exe parent")
+        .canonicalize()
+        .expect("canonical exe dir");
+    assert!(
+        args.contains(&format!("PATH_FIRST={}", spark_bin_dir.display())),
+        "spark binaries not first on PATH in: {args}"
+    );
 }
 
 #[test]

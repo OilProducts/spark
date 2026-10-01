@@ -1907,15 +1907,8 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
             }
         }
     }
-    if let Some(spark_home) = CODEX_SPARK_HOME.get() {
-        env_map.insert(
-            "SPARK_HOME".to_string(),
-            spark_home.to_string_lossy().into_owned(),
-        );
-    }
-    if let Some(base_url) = CODEX_API_BASE_URL.get() {
-        env_map.insert("SPARK_API_BASE_URL".to_string(), base_url.clone());
-    }
+    let path = env_map.get("PATH").cloned();
+    env_map.extend(spark_agent_environment(path.as_deref()));
     let original_home = env_map
         .get("HOME")
         .map(PathBuf::from)
@@ -1989,7 +1982,6 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
         "XDG_DATA_HOME".to_string(),
         xdg_data_home.to_string_lossy().into_owned(),
     );
-    prepend_first_party_tool_bins_to_path(&mut env_map);
     Ok(env_map)
 }
 
@@ -2333,19 +2325,29 @@ fn copy_tree_contents(source: &Path, destination: &Path) -> std::io::Result<()> 
     Ok(())
 }
 
-fn prepend_first_party_tool_bins_to_path(env_map: &mut BTreeMap<String, String>) {
-    let tool_bin_dirs = first_party_tool_bin_dirs();
-    if tool_bin_dirs.is_empty() {
-        return;
+/// What every agent shell needs for the `spark` CLI to reach this Spark: its
+/// home, its API, and the app's own binaries (the CLI among them) first on
+/// PATH. Codex and Claude Code sessions get the same.
+pub(crate) fn spark_agent_environment(path: Option<&str>) -> Vec<(String, String)> {
+    let mut vars = Vec::new();
+    if let Some(spark_home) = CODEX_SPARK_HOME.get() {
+        vars.push((
+            "SPARK_HOME".to_string(),
+            spark_home.to_string_lossy().into_owned(),
+        ));
     }
-    let mut path_entries = tool_bin_dirs
+    if let Some(base_url) = CODEX_API_BASE_URL.get() {
+        vars.push(("SPARK_API_BASE_URL".to_string(), base_url.clone()));
+    }
+    let mut path_entries = first_party_tool_bin_dirs()
         .into_iter()
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|dir| dir.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    if let Some(existing_path) = env_map.get("PATH").and_then(|value| non_empty(value)) {
-        path_entries.push(existing_path.to_string());
+    if !path_entries.is_empty() {
+        path_entries.extend(path.and_then(non_empty).map(str::to_string));
+        vars.push(("PATH".to_string(), path_entries.join(path_separator())));
     }
-    env_map.insert("PATH".to_string(), path_entries.join(path_separator()));
+    vars
 }
 
 fn first_party_tool_bin_dirs() -> Vec<PathBuf> {

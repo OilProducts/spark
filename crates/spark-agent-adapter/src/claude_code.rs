@@ -1004,6 +1004,10 @@ fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
         .map(PathBuf::from)
         .unwrap_or_else(claude_code_executable);
     let mut command = Command::new(&executable);
+    // The agent's shell runs the spark CLI against this Spark, as Codex sessions do.
+    command.envs(crate::codex_app_server::spark_agent_environment(
+        env::var("PATH").ok().as_deref(),
+    ));
     if let Some(config_dir) = match native {
         Some(config) => config.claude_config_dir.clone(),
         None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)

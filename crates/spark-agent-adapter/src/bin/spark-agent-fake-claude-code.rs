@@ -42,9 +42,13 @@ fn main() {
                     .and_then(|pair| std::fs::read_to_string(&pair[1]).ok())
                     .map(|text| format!("\nAPPEND_SYSTEM_PROMPT={text}"))
                     .unwrap_or_default();
+                let path_first = env::var_os("PATH")
+                    .and_then(|path| env::split_paths(&path).next())
+                    .map(|dir| dir.display().to_string())
+                    .unwrap_or_default();
                 let _ = writeln!(
                     log,
-                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}{instructions}\n-- invocation --",
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
                     args.join("\n")
                 );
             }
