@@ -17,15 +17,15 @@ const complete = async (index: number, runId = 'run') => {
     { run_id: runId, project_path: new URL(pending[index].url, 'http://localhost').searchParams.get('project_path'), status: 'running' },
   ] }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
 }
-const mount = () => renderHook(({ project, enabled }) => useRunsList({
-  activeProjectPath: project, scopeMode: 'active', selectedRunId: null, manageSync: enabled,
+const mount = () => renderHook(({ enabled }) => useRunsList({
+  selectedRunId: null, manageSync: enabled,
 }), { initialProps: { project: '/one', enabled: true } })
 
 beforeEach(() => {
   pending.length = 0
   useStore.setState(useStore.getInitialState(), true)
   useStore.setState({ viewMode: 'runs', runsListSession: {
-    scopeMode: 'active', selectedRunIdByScopeKey: {}, runs: [], status: 'idle', error: null,
+    selectedRunId: null, projectFilter: null, runs: [], status: 'idle', error: null,
     streamStatus: 'idle', streamError: null,
   } })
   vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
@@ -36,9 +36,8 @@ afterEach(() => vi.unstubAllGlobals())
 
 it('coalesces initial, manual, reconnect and recovery bursts into one trailing request', async () => {
   const { result } = mount()
-  notice('/other')
   expect(pending).toHaveLength(1)
-  for (let i = 0; i < 20; i++) notice()
+  for (let i = 0; i < 20; i++) notice(i % 2 ? '/one' : '/other')
   act(() => { void result.current.fetchRuns(); requestRunsTransportReconnect() })
   expect(pending).toHaveLength(1)
   expect(pending[0].signal?.aborted).toBe(false)
@@ -48,8 +47,6 @@ it('coalesces initial, manual, reconnect and recovery bursts into one trailing r
   await complete(1)
   expect(pending).toHaveLength(3)
   await complete(2)
-  expect(pending).toHaveLength(3)
-  notice('/other')
   expect(pending).toHaveLength(3)
   expect(result.current.status).toBe('ready')
 })
@@ -71,27 +68,11 @@ it('clears pending refresh on failure and retries only when requested', async ()
   expect(result.current.error).toBeNull()
 })
 
-it('aborts on scope change, rejects stale responses and cleanup, and loads the new scope', async () => {
-  const { result, rerender } = mount()
-  await complete(0)
-  notice()
-  notice()
-  rerender({ project: '/two', enabled: true })
-  expect(pending[1].signal?.aborted).toBe(true)
-  expect(pending).toHaveLength(3)
-  expect(new URL(pending[2].url, 'http://localhost').searchParams.get('project_path')).toBe('/two')
-  await complete(1, 'stale')
-  expect(result.current.scopedRuns[0].run_id).not.toBe('stale')
-  expect(result.current.status).toBe('loading')
-  notice('/one')
-  expect(pending).toHaveLength(3)
-  notice('/two')
-  await complete(2, 'new-scope')
-  expect(result.current.scopedRuns[0].run_id).toBe('new-scope')
-  expect(result.current.scopedRuns[0].project_path).toBe('/two')
-  expect(pending).toHaveLength(4)
-  await complete(3, 'new-scope')
-  expect(pending).toHaveLength(4)
+it('lists every project\'s runs', async () => {
+  const { result } = mount()
+  expect(new URL(pending[0].url, 'http://localhost').searchParams.has('project_path')).toBe(false)
+  await complete(0, 'any-project')
+  expect(result.current.scopedRuns[0].run_id).toBe('any-project')
 })
 
 it('aborts and discards pending work when synchronization stops without cancellation errors', async () => {
@@ -115,11 +96,9 @@ it('reconciles only the live upsert row and still accepts fresh list telemetry',
   })
   useStore.setState({ activeProjectPath: '/one' })
   const state = useStore.getState()
-  state.setRunsSelectedRunIdForScope('project:/one', 'b')
-  state.setRunsSelectedRunIdForScope('project:/one', 'a')
-  const list = renderHook(() => useRunsList({
-    activeProjectPath: '/one', scopeMode: 'active', selectedRunId: 'a',
-  }))
+  state.setRunsSelectedRunId('b')
+  state.setRunsSelectedRunId('a')
+  const list = renderHook(() => useRunsList({ selectedRunId: 'a' }))
   const respond = async (index: number, runs: RunRecord[]) => {
     await act(async () => pending[index].resolve(new Response(JSON.stringify({ runs }), {
       status: 200, headers: { 'Content-Type': 'application/json' },
@@ -166,7 +145,7 @@ it('keeps the launch-input title fallback through initial load, live updates and
     status: 'running', model: '', started_at: runId, last_error: '', first_launch_input: input, ...extra,
   })
   useStore.setState({ activeProjectPath: '/one' })
-  renderHook(() => useRunsList({ activeProjectPath: '/one', scopeMode: 'active', selectedRunId: null }))
+  renderHook(() => useRunsList({ selectedRunId: null }))
   await act(async () => pending[0].resolve(new Response(JSON.stringify({ runs: [record('a', 'changes/CR-1/request.md')] }), {
     status: 200, headers: { 'Content-Type': 'application/json' },
   })))

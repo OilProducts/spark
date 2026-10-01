@@ -7,7 +7,6 @@ import { ClaudeCodeConnectionSettings } from "./ClaudeCodeConnectionSettings"
 import { AgentSettingsEditor } from "./AgentSettingsEditor"
 import { LlmProfilesEditor, ExecutionProfilesEditor } from "./ProfileSettingsEditors"
 import { ClientPreferencesEditor } from "./ClientPreferencesEditor"
-import { ProjectModelSettingsEditor } from "./ProjectModelSettingsEditor"
 import { UtilityModelSettingsEditor } from "./UtilityModelSettingsEditor"
 import { useEffect, useState } from "react"
 import { useStore } from "@/store"
@@ -21,6 +20,7 @@ import { RuntimeSettingsEditor } from "./RuntimeSettingsEditor"
 import { useSettingsNavigationProtection } from "./hooks/useSettingsNavigationProtection"
 import { useModelSettingsEditor } from "./hooks/useModelSettingsEditor"
 import { SaveStatus } from './SaveStatus'
+import { ViewLayout } from '@/components/app/view-layout'
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -47,9 +47,11 @@ function getTauriInvoke(): TauriInvoke | null {
     return window.__TAURI__?.core?.invoke ?? null
 }
 
+// Category rows look like the other side panels' rows.
+const categoryRow = 'h-auto flex-none rounded-none px-2 py-1.5 after:hidden hover:text-primary data-[state=active]:text-primary data-[state=active]:shadow-[inset_2px_0_0_hsl(var(--primary))]'
+
 export function SettingsPanel() {
     const models = useModelSettingsEditor()
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
     const { confirm } = useDialogController()
     const llmProfiles = useLlmProfiles()
     const [desktopSettings, setDesktopSettings] = useState<DesktopServerSettings | null>(null)
@@ -62,7 +64,10 @@ export function SettingsPanel() {
     useSettingsNavigationProtection(desktopDirty, isSavingDesktopSettings)
 
     const invalidModel = !!models.draft && !isModelSelectionValid(models.draft.llm_profile || models.draft.provider || '', models.draft.model, llmProfiles)
-    const [category, setCategory] = useState('models')
+    // The category is route state, so it survives leaving Settings and reloads.
+    const storedCategory = useStore(state => state.settingsCategory)
+    const category = ['models', 'preferences', 'execution', 'system'].includes(storedCategory) ? storedCategory : 'models'
+    const setCategory = useStore(state => state.setSettingsCategory)
     const [desktopRetry, setDesktopRetry] = useState(0)
 
     useEffect(() => {
@@ -127,23 +132,27 @@ export function SettingsPanel() {
         }
     }
 
+    // The categories are the side panel; the chosen category fills the main area.
     return (
-        <div data-testid="settings-panel" className="min-w-0 flex-1 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
+        <Tabs className="absolute inset-0 flex-col gap-0" orientation="vertical" value={category} onValueChange={setCategory}>
+        <ViewLayout
+            view="settings"
+            title="Settings"
+            panel={(
+                <TabsList className="w-full items-stretch px-2" aria-label="Settings categories">
+                    <TabsTrigger className={categoryRow} value="models">Models &amp; accounts</TabsTrigger>
+                    <TabsTrigger className={categoryRow} value="preferences">Preferences</TabsTrigger>
+                    <TabsTrigger className={categoryRow} value="execution">Execution</TabsTrigger>
+                    <TabsTrigger className={categoryRow} value="system">System</TabsTrigger>
+                </TabsList>
+            )}
+        >
+        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
-                <div className="space-y-1">
-                    <h2 className="text-2xl font-light tracking-tight text-foreground">Settings</h2>
-                    <p className="text-sm text-muted-foreground">
-                        Model defaults apply to inheriting conversations on their next message.
-                    </p>
-                </div>
+                <p className="text-sm text-muted-foreground">
+                    Model defaults apply to inheriting conversations on their next message.
+                </p>
 
-                <Tabs className="min-w-0" value={category} onValueChange={setCategory}>
-                <div className="max-w-full overflow-x-auto"><TabsList className="w-max" aria-label="Settings categories">
-                    <TabsTrigger value="models">Models &amp; accounts</TabsTrigger>
-                    <TabsTrigger value="preferences">Preferences</TabsTrigger>
-                    <TabsTrigger value="execution">Execution</TabsTrigger>
-                    <TabsTrigger value="system">System</TabsTrigger>
-                </TabsList></div>
                 <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
                 <CodexConnectionSettings />
                 <ClaudeCodeConnectionSettings />
@@ -157,7 +166,7 @@ export function SettingsPanel() {
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
                         {models.pending ? <p role="status">Saving or reloading settings…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
                         {/* The workspace has no parent: its default is the stored Codex group, whose effort can still be set. */}
-                        <ModelChooser disabled={!models.saved || models.pending} inherited={{ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }} value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={next => models.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={activeProjectPath} inheritLabel="Provider default" invalidModel={!!invalidModel} />
+                        <ModelChooser disabled={!models.saved || models.pending} inherited={{ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }} value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={next => models.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={null} inheritLabel="Provider default" invalidModel={!!invalidModel} />
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
                             <Button aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
@@ -169,8 +178,7 @@ export function SettingsPanel() {
                     </CardContent>
                 </Card>
 
-                <UtilityModelSettingsEditor projectPath={activeProjectPath} />
-                {activeProjectPath && <ProjectModelSettingsEditor key={activeProjectPath} projectPath={activeProjectPath} />}
+                <UtilityModelSettingsEditor projectPath={null} />
                 <ProviderSettingsEditor />
                 <LlmProfilesEditor />
                 </TabsContent>
@@ -226,8 +234,9 @@ export function SettingsPanel() {
                 <ConnectionSettingsEditor />
                 <RuntimeSettingsEditor />
                 </TabsContent>
-                </Tabs>
             </div>
         </div>
+        </ViewLayout>
+        </Tabs>
     )
 }

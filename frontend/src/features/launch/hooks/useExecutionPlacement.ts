@@ -18,8 +18,8 @@ export interface ExecutionPlacementState {
     statusMessage: string | null
 }
 
-export function useExecutionPlacement(enabled: boolean): ExecutionPlacementState {
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
+/** The execution profile a launch in `projectPath` uses, defaulting to that project's own. */
+export function useExecutionPlacement(enabled: boolean, projectPath: string | null): ExecutionPlacementState {
     const projectRegistry = useStore((state) => state.projectRegistry)
     const [selectedProfileId, setSelectedProfileId] = useState('')
     const [workspaceSettings, setWorkspaceSettings] = useState<WorkspaceSettingsResponse | null>(null)
@@ -53,8 +53,8 @@ export function useExecutionPlacement(enabled: boolean): ExecutionPlacementState
     }, [enabled])
 
     const executionPlacement = workspaceSettings?.execution_placement ?? null
-    const projectDefaultProfileId = activeProjectPath
-        ? projectRegistry[activeProjectPath]?.executionProfileId || null
+    const projectDefaultProfileId = projectPath
+        ? projectRegistry[projectPath]?.executionProfileId || null
         : null
     const effectiveProfileId = selectedProfileId
         || projectDefaultProfileId

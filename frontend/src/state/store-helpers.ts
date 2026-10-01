@@ -185,7 +185,20 @@ export const resolveProjectSessionState = (
 export const DEFAULT_ROUTE_STATE: RouteState = {
     viewMode: 'home',
     activeProjectPath: null,
+    projectPagePath: null,
+    selectedRunId: null,
+    selectedTriggerId: null,
+    selectedMission: null,
+    activeFlow: null,
+    settingsCategory: 'models',
 }
+
+const asAbsoluteProjectPath = (value: unknown) => {
+    const normalized = typeof value === 'string' ? normalizeProjectPath(value) : null
+    return normalized && isAbsoluteProjectPath(normalized) ? normalized : null
+}
+
+const asId = (value: unknown) => (typeof value === 'string' && value ? value : null)
 
 export const loadRouteState = (): RouteState => {
     if (typeof window === 'undefined') {
@@ -194,23 +207,22 @@ export const loadRouteState = (): RouteState => {
     try {
         const raw = window.localStorage.getItem(ROUTE_STATE_STORAGE_KEY)
         if (!raw) return { ...DEFAULT_ROUTE_STATE }
-        const parsed = JSON.parse(raw) as Partial<RouteState>
-        const isValidViewMode = parsed.viewMode ? VIEW_MODES.includes(parsed.viewMode) : false
-        const requestedViewMode = isValidViewMode ? normalizeViewMode(parsed.viewMode!) : DEFAULT_ROUTE_STATE.viewMode
-        const parsedActiveProjectPath = typeof parsed.activeProjectPath === 'string'
-            ? normalizeProjectPath(parsed.activeProjectPath)
-            : null
-        const restoredActiveProjectPath =
-            parsedActiveProjectPath && isAbsoluteProjectPath(parsedActiveProjectPath)
-                ? parsedActiveProjectPath
-                : null
-        const parsedRouteState: RouteState = {
-            viewMode: requestedViewMode,
-            activeProjectPath: restoredActiveProjectPath,
-        }
+        const parsed = JSON.parse(raw) as Partial<Record<keyof RouteState, unknown>>
+        const viewMode = VIEW_MODES.includes(parsed.viewMode as ViewMode)
+            ? normalizeViewMode(parsed.viewMode as ViewMode)
+            : DEFAULT_ROUTE_STATE.viewMode
+        const mission = parsed.selectedMission as { id?: unknown; projectPath?: unknown } | null | undefined
+        const missionId = asId(mission?.id)
+        const missionProjectPath = asAbsoluteProjectPath(mission?.projectPath)
         return {
-            ...parsedRouteState,
-            viewMode: resolveViewModeForProjectScope(parsedRouteState.viewMode),
+            viewMode,
+            activeProjectPath: asAbsoluteProjectPath(parsed.activeProjectPath),
+            projectPagePath: asAbsoluteProjectPath(parsed.projectPagePath),
+            selectedRunId: asId(parsed.selectedRunId),
+            selectedTriggerId: asId(parsed.selectedTriggerId),
+            selectedMission: missionId && missionProjectPath ? { id: missionId, projectPath: missionProjectPath } : null,
+            activeFlow: asId(parsed.activeFlow),
+            settingsCategory: asId(parsed.settingsCategory) ?? DEFAULT_ROUTE_STATE.settingsCategory,
         }
     } catch {
         return { ...DEFAULT_ROUTE_STATE }

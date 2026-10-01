@@ -1,21 +1,21 @@
-import { completePreferenceInteraction } from '@/features/settings/services/clientPreferences'
 import { Plus } from "lucide-react"
 import { useEffect, useMemo } from "react"
 
 import { TriggerEditor } from "./components/TriggerEditor"
 import {
+  createEmptyTriggerForm,
   formatTriggerTimestamp,
   SHARED_WEBHOOK_ENDPOINT,
   triggerTargetSummary,
-  triggerTargetsActiveProject,
   triggerSourceSummary,
 } from "./model/triggerForm"
 import { useTriggersList } from "./hooks/useTriggersList"
 import { useTriggerEditor } from "./hooks/useTriggerEditor"
 import { useWebhookSecretRegeneration } from "./hooks/useWebhookSecretRegeneration"
 import { useStore } from "@/store"
+import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
+import { ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import {
@@ -23,13 +23,12 @@ import {
   EmptyDescription,
   EmptyHeader,
 } from "@/components/ui/empty"
-import { formatProjectPathLabel } from "@/lib/projectPaths"
 export function TriggersPanel() {
-  const activeProjectPath = useStore((state) => state.activeProjectPath)
+  const projectRegistry = useStore((state) => state.projectRegistry)
   const triggersSession = useStore((state) => state.triggersSession)
   const updateTriggersSession = useStore((state) => state.updateTriggersSession)
+  const setTriggersSessionNewDraft = useStore((state) => state.setTriggersSessionNewDraft)
   const revealedWebhookSecrets = triggersSession.revealedWebhookSecrets
-  const scopeFilter = triggersSession.scopeFilter
   const {
     customTriggers,
     error,
@@ -63,7 +62,6 @@ export function TriggersPanel() {
     setEditTriggerForm,
     setNewTriggerForm,
   } = useTriggerEditor({
-    activeProjectPath,
     refreshTriggers,
     selectedTrigger,
     setError,
@@ -76,33 +74,16 @@ export function TriggersPanel() {
     setError,
     revealWebhookSecret,
   })
-  const filteredSystemTriggers = useMemo(
-    () => scopeFilter === 'active' && activeProjectPath
-      ? systemTriggers.filter((trigger) => triggerTargetsActiveProject(trigger, activeProjectPath))
-      : systemTriggers,
-    [activeProjectPath, scopeFilter, systemTriggers],
-  )
-  const filteredCustomTriggers = useMemo(
-    () => scopeFilter === 'active' && activeProjectPath
-      ? customTriggers.filter((trigger) => triggerTargetsActiveProject(trigger, activeProjectPath))
-      : customTriggers,
-    [activeProjectPath, customTriggers, scopeFilter],
-  )
   const visibleTriggers = useMemo(
-    () => [...filteredCustomTriggers, ...filteredSystemTriggers],
-    [filteredCustomTriggers, filteredSystemTriggers],
+    () => [...customTriggers, ...systemTriggers],
+    [customTriggers, systemTriggers],
   )
-  const projectLabel = activeProjectPath
-    ? formatProjectPathLabel(activeProjectPath)
-    : 'No active project'
 
   useEffect(() => {
-    if (scopeFilter === 'active' && !activeProjectPath) {
-      updateTriggersSession({ scopeFilter: 'all' })
+    // Keep a restored selection until the list has loaded.
+    if (status !== 'ready') {
+      return
     }
-  }, [activeProjectPath, scopeFilter, updateTriggersSession])
-
-  useEffect(() => {
     if (selectedTriggerId && visibleTriggers.some((trigger) => trigger.id === selectedTriggerId)) {
       return
     }
@@ -110,137 +91,104 @@ export function TriggersPanel() {
     if (firstVisibleTriggerId !== selectedTriggerId) {
       setSelectedTriggerId(firstVisibleTriggerId)
     }
-  }, [selectedTriggerId, setSelectedTriggerId, visibleTriggers])
+  }, [selectedTriggerId, setSelectedTriggerId, status, visibleTriggers])
 
   const createFormOpen = triggersSession.createFormOpen
-  const hasDetail = createFormOpen || selectedTrigger !== null
+  const openCreateForm = () => {
+    // An untouched draft starts in the last-used project.
+    if (!newTriggerForm.name.trim() && !newTriggerForm.projectPath) {
+      setTriggersSessionNewDraft({ form: createEmptyTriggerForm(defaultProjectChoice(projectRegistry)) })
+    }
+    updateTriggersSession({ createFormOpen: true })
+  }
   const triggerGroups = [
-    { title: 'Custom', note: null, triggers: filteredCustomTriggers, loadingTestId: 'triggers-custom-list-loading', emptyText: 'No custom triggers in this scope yet.' },
-    { title: 'System', note: 'Protected approval and review routing.', triggers: filteredSystemTriggers, loadingTestId: 'triggers-system-list-loading', emptyText: 'No protected triggers in this scope.' },
+    { title: 'Custom', note: null, triggers: customTriggers, loadingTestId: 'triggers-custom-list-loading', emptyText: 'No custom triggers yet.' },
+    { title: 'System', note: 'Protected approval and review routing.', triggers: systemTriggers, loadingTestId: 'triggers-system-list-loading', emptyText: 'No protected triggers.' },
   ]
 
-  return (
-    <section data-testid="triggers-panel" className="flex-1 overflow-auto p-6">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 space-y-1">
-            <h2 className="text-2xl font-light tracking-tight text-foreground">Triggers</h2>
-            <p className="text-sm text-muted-foreground">
-              Automations that start flows on a schedule, on events, or from webhooks.
-            </p>
-            {activeProjectPath ? (
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <Button
-                  type="button"
-                  data-testid="triggers-filter-all"
-                  onClick={() => { updateTriggersSession({ scopeFilter: 'all' }); completePreferenceInteraction({ triggers_scope: 'all' }) }}
-                  variant={scopeFilter === 'all' ? 'secondary' : 'outline'}
-                  size="xs"
-                >
-                  All triggers
-                </Button>
-                <Button
-                  type="button"
-                  data-testid="triggers-filter-active-project"
-                  onClick={() => { updateTriggersSession({ scopeFilter: 'active' }); completePreferenceInteraction({ triggers_scope: 'active' }) }}
-                  variant={scopeFilter === 'active' ? 'secondary' : 'outline'}
-                  size="xs"
-                >
-                  Targets active project
-                </Button>
-              </div>
-            ) : null}
+  const panel = (
+    <div className="space-y-5 px-2">
+      {triggerGroups.map((group) => (
+        <div key={group.title} className="space-y-1">
+          <div className="px-2">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.title}</h3>
+            {group.note ? <p className="text-xs text-muted-foreground">{group.note}</p> : null}
           </div>
-          <div className="flex items-center gap-2">
-            <Badge
-              data-testid="triggers-project-context-chip"
-              variant="outline"
-              title={activeProjectPath || 'No active project'}
-            >
-              <span className="text-muted-foreground">Project:</span>
-              <span className="max-w-40 truncate">{projectLabel}</span>
-            </Badge>
-            <Button
-              type="button"
-              data-testid="trigger-new-button"
-              size="sm"
-              onClick={() => updateTriggersSession({ createFormOpen: true })}
-            >
-              <Plus />
-              New trigger
-            </Button>
-          </div>
+          {status !== 'ready' && status !== 'error' ? (
+            <p data-testid={group.loadingTestId} className="px-2 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
+          ) : null}
+          {group.triggers.map((trigger) => {
+            const unregistered = isUnregisteredTarget(projectRegistry, trigger.action.project_path)
+            return (
+              <button
+                key={trigger.id}
+                type="button"
+                data-testid={`trigger-row-${trigger.id}`}
+                data-unregistered-target={unregistered ? 'true' : undefined}
+                aria-current={selectedTriggerId === trigger.id && !createFormOpen ? 'true' : undefined}
+                onClick={() => {
+                  setSelectedTriggerId(trigger.id)
+                  updateTriggersSession({ createFormOpen: false })
+                }}
+                className={`block w-full px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring ${selectedTriggerId === trigger.id && !createFormOpen ? 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]' : 'hover:text-primary'}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-sm">{trigger.name}</span>
+                  <span className={`shrink-0 text-xs ${trigger.enabled ? 'text-success' : 'text-muted-foreground'}`}>{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
+                </div>
+                <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                  <span
+                    data-testid="trigger-row-target"
+                    title={trigger.action.project_path ?? undefined}
+                    className={unregistered ? 'text-warning' : undefined}
+                  >
+                    {triggerTargetSummary(trigger, projectRegistry)}
+                  </span>
+                  {' · '}{triggerSourceSummary(trigger)}
+                </div>
+              </button>
+            )
+          })}
+          {status === 'ready' && group.triggers.length === 0 ? (
+            <Empty className="px-3 py-3 text-xs text-muted-foreground">
+              <EmptyHeader>
+                <EmptyDescription>{group.emptyText}</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          ) : null}
         </div>
+      ))}
+    </div>
+  )
+
+  return (
+    <ViewLayout
+      view="triggers"
+      title="Triggers"
+      actions={(
+        <>
+          <Button type="button" variant="ghost" size="xs" onClick={() => void refreshTriggers()}>
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </Button>
+          <Button type="button" data-testid="trigger-new-button" variant="ghost" size="xs" onClick={openCreateForm}>
+            <Plus />
+            New
+          </Button>
+        </>
+      )}
+      panel={panel}
+    >
+    <section data-testid="triggers-panel" className="h-full overflow-auto p-6">
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+        <p className="text-sm text-muted-foreground">
+          Automations that start flows on a schedule, on events, or from webhooks.
+        </p>
 
         {error ? (
           <InlineError>{error}</InlineError>
         ) : null}
 
-        <div className={hasDetail ? 'grid items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]' : 'grid gap-6'}>
-          <Card className="gap-4 py-4">
-            <CardHeader className="flex flex-row items-center justify-between gap-2 px-4">
-              <CardTitle className="text-lg font-light">Triggers</CardTitle>
-              <Button
-                type="button"
-                onClick={() => void refreshTriggers()}
-                variant="outline"
-                size="xs"
-              >
-                {loading ? 'Refreshing…' : 'Refresh'}
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-6 px-4 pt-0">
-              {triggerGroups.map((group) => (
-                <div key={group.title} className="space-y-2">
-                  <div>
-                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.title}</h3>
-                    {group.note ? <p className="text-xs text-muted-foreground">{group.note}</p> : null}
-                  </div>
-                  {status !== 'ready' && status !== 'error' ? (
-                    <p data-testid={group.loadingTestId} className="text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
-                  ) : null}
-                  {group.triggers.map((trigger) => (
-                    <Button
-                      key={trigger.id}
-                      type="button"
-                      data-testid={`trigger-row-${trigger.id}`}
-                      onClick={() => setSelectedTriggerId(trigger.id)}
-                      variant="ghost"
-                      className={`h-auto w-full justify-start whitespace-normal rounded-md px-3 py-2 text-left ${selectedTriggerId === trigger.id ? 'rounded-none text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]' : 'hover:text-primary'}`}
-                    >
-                      <div className="w-full min-w-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="truncate text-sm font-medium">{trigger.name}</span>
-                          <Badge
-                            variant="outline"
-                            className={trigger.enabled ? 'text-success' : 'text-muted-foreground'}
-                          >
-                            {trigger.enabled ? 'Enabled' : 'Disabled'}
-                          </Badge>
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                          <span className="max-w-full truncate">{triggerSourceSummary(trigger)}</span>
-                          <span aria-hidden="true">→</span>
-                          <span className="max-w-full truncate font-mono">{trigger.action.mode === 'mission' ? `Mission · ${trigger.action.mission_id}` : trigger.action.flow_name}</span>
-                          <Badge variant="outline">
-                            {triggerTargetSummary(trigger, activeProjectPath)}
-                          </Badge>
-                        </div>
-                      </div>
-                    </Button>
-                  ))}
-                  {status === 'ready' && group.triggers.length === 0 ? (
-                    <Empty className="px-3 py-4 text-xs text-muted-foreground">
-                      <EmptyHeader>
-                        <EmptyDescription>{group.emptyText}</EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
-                  ) : null}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
+        <div className="grid gap-6">
           {createFormOpen ? (
             <Card className="gap-4 py-4">
               <CardHeader className="gap-1 px-4">
@@ -252,7 +200,6 @@ export function TriggersPanel() {
                   onChange={setNewTriggerForm}
                   mode="create"
                   protectedTrigger={false}
-                  activeProjectPath={activeProjectPath}
                 />
                 <div className="mt-4 flex justify-end gap-2">
                   <Button
@@ -305,7 +252,6 @@ export function TriggersPanel() {
                   onChange={setEditTriggerForm}
                   mode="edit"
                   protectedTrigger={selectedTrigger.protected}
-                  activeProjectPath={activeProjectPath}
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (
@@ -333,7 +279,7 @@ export function TriggersPanel() {
                 <div className="mt-4 grid gap-3 lg:grid-cols-2">
                   <div className="rounded-md border border-border p-3 text-sm">
                     <div className="font-medium text-foreground">Runtime</div>
-                    <div className="mt-2 text-muted-foreground">Target: {triggerTargetSummary(selectedTrigger, activeProjectPath)}</div>
+                    <div className="mt-2 text-muted-foreground">Target: {triggerTargetSummary(selectedTrigger, projectRegistry)}</div>
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
                     <div className="text-muted-foreground">Last result: {selectedTrigger.state.last_result ?? 'Never'}</div>
@@ -380,5 +326,6 @@ export function TriggersPanel() {
         </div>
       </div>
     </section>
+    </ViewLayout>
   )
 }

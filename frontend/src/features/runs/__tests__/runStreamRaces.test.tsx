@@ -19,7 +19,7 @@ vi.mock('../services/runStreamTransport', async (original) => ({
 }))
 
 const pending: { runId: string; resolve: (value: PipelineStatusResponse) => void; reject: (error: Error) => void }[] = []
-const select = (runId: string) => act(() => useStore.getState().setRunsSelectedRunIdForScope('all', runId))
+const select = (runId: string) => act(() => useStore.getState().setRunsSelectedRunId(runId))
 const snapshot = (runId: string, status = 'running') => ({
     run_id: runId, pipeline_id: runId, status, flow_name: 'flow', project_path: '/a',
     working_directory: '/a', model: '', started_at: '', last_error: '', completed_nodes: ['done'],
@@ -33,7 +33,6 @@ beforeEach(() => {
     useRunJournalStore.setState(useRunJournalStore.getInitialState(), true)
     useRunTranscriptStore.setState(useRunTranscriptStore.getInitialState(), true)
     useStore.setState(useStore.getInitialState(), true)
-    useStore.getState().updateRunsListSession({ scopeMode: 'all' })
     vi.mocked(loadSelectedRunStatus).mockImplementation((runId) => new Promise((resolve, reject) => pending.push({ runId, resolve, reject })))
     vi.mocked(loadSelectedRunJournal).mockResolvedValue({ pipeline_id: 'a', entries: [], oldest_sequence: null, newest_sequence: null, has_older: false })
     vi.mocked(loadRunTranscript).mockResolvedValue({ run_id: 'a', segments: [], newest_sequence: null })
@@ -49,7 +48,7 @@ it('ignores an old 404 and status response through A → B → A without restart
     render(<RunStream />)
     select('b')
     await act(async () => pending[0].reject(new ApiHttpError('/status', 404, 'missing')))
-    expect(useStore.getState().runsListSession.selectedRunIdByScopeKey.all).toBe('b')
+    expect(useStore.getState().runsListSession.selectedRunId).toBe('b')
     select('a')
     await act(async () => pending[2].resolve(snapshot('a', 'completed')))
     await act(async () => pending[1].resolve(snapshot('b')))
@@ -202,7 +201,7 @@ it.each([false, true])('hydrates authoritative status after an intervening valid
     if (cached) useStore.getState().updateRunsListSession({ runs: [{ ...snapshot('a'), flow_name: 'cached summary' }] })
     expect(selectSelectedRunSession(useStore.getState())?.record?.flow_name ?? null).toBe(cached ? 'cached summary' : null)
     render(<RunStream />)
-    const list = renderHook(() => useRunsList({ activeProjectPath: null, scopeMode: 'all', selectedRunId: 'a' }))
+    const list = renderHook(() => useRunsList({ selectedRunId: 'a' }))
     await respond('/runs', { runs: [{ ...snapshot('a'), flow_name: 'refreshed summary', current_node: 'stale', last_error: 'summary error' }] })
     expect(selectSelectedRunSession(useStore.getState())?.record?.flow_name).toBe('refreshed summary')
     await respond('/pipelines/a', { ...snapshot('a', 'completed'), current_node: 'done', git_commit: 'durable', completed_nodes: ['start', 'done'] })
@@ -234,7 +233,7 @@ it.each(['live', 'journal'])('retains the latest %s write matching a summary dur
     select('a')
     useStore.getState().updateRunsListSession({ runs: [{ ...snapshot('a'), flow_name: 'cached summary' }] })
     render(<RunStream />)
-    const list = renderHook(() => useRunsList({ activeProjectPath: null, scopeMode: 'all', selectedRunId: 'a' }))
+    const list = renderHook(() => useRunsList({ selectedRunId: 'a' }))
     const emit = (status: string) => source === 'live'
         ? dispatch('spark:run-upsert', { run: snapshot('a', status) })
         : dispatch('spark:run-journal-entry', { runId: 'a', entry: { type: 'runtime', status } })

@@ -5,7 +5,9 @@ import {
     type ConversationSnapshotResponse,
     updateConversationSettingsValidated,
 } from '@/lib/workspaceClient'
+import { useStore } from '@/store'
 import type { PendingConversationTurnState } from '../model/conversationState'
+import { reconcileRunningChat } from './useChatRunning'
 
 export type ConversationComposerCommand =
     | {
@@ -71,11 +73,6 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
-    const resetComposer = () => {
-        setChatDraft('')
-        setPendingConversationTurn(null)
-    }
-
     const onSendChatMessage = async () => {
         if (!activeProjectPath || isChatInputDisabled) {
             return
@@ -110,10 +107,11 @@ export function useConversationComposer({
         }
         const messageToSend = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.message : trimmed
         const chatMode = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.chatMode : null
-        setPendingConversationTurn({
-            conversationId,
-            afterRevision: getCurrentConversationRevision(conversationId),
-        })
+        const afterRevision = getCurrentConversationRevision(conversationId)
+        setPendingConversationTurn({ conversationId, afterRevision })
+        // The activity bar follows the turn even after the chat is left.
+        const { setRunningChat } = useStore.getState()
+        setRunningChat(conversationId, { projectPath: activeProjectPath, revision: afterRevision, sending: true })
         try {
             const snapshot = await sendConversationTurnValidated(conversationId, {
                 project_path: activeProjectPath,
@@ -128,8 +126,12 @@ export function useConversationComposer({
         } catch (error) {
             const message = formatErrorMessage(error, 'Unable to send the project chat turn.')
             setPanelError(message)
+            // A rejected send may still have started a turn; the server decides whether the chat runs.
+            void reconcileRunningChat(conversationId, activeProjectPath)
         } finally {
             setPendingConversationTurn(null)
+            const running = useStore.getState().runningChats[conversationId]
+            if (running) setRunningChat(conversationId, { ...running, sending: false })
         }
     }
 
@@ -148,6 +150,5 @@ export function useConversationComposer({
     return {
         onChatComposerKeyDown,
         onChatComposerSubmit,
-        resetComposer,
     }
 }

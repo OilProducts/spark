@@ -8,12 +8,10 @@ const DEFAULT_TRIGGERS_SESSION_STATE: TriggersSessionState = {
     error: null,
     triggers: [],
     selectedTriggerId: null,
-    scopeFilter: 'all',
     revealedWebhookSecrets: {},
     createFormOpen: false,
     newTriggerDraft: {
         form: createEmptyTriggerForm(null),
-        targetBehavior: 'default',
     },
     editTriggerDraftsByTriggerId: {},
 }

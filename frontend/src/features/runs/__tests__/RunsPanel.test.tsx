@@ -1,6 +1,5 @@
 import { RunVisitsCard } from '../components/RunVisitsCard'
 import { RunGraphCard } from '../components/RunGraphCard'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { RunsSessionController, WorkspaceLiveEventsController } from '@/app/AppSessionControllers'
 import { RunsPanel } from '@/features/runs/RunsPanel'
@@ -45,8 +44,8 @@ projectRegistry: {},
 projectSessionsByPath: {},
 recentProjectPaths: [],
 runsListSession: {
-      scopeMode: 'active',
-      selectedRunIdByScopeKey: {},
+      selectedRunId: null,
+      projectFilter: null,
       status: 'idle',
       error: null,
       runs: [],
@@ -54,7 +53,7 @@ runsListSession: {
       streamError: null,
     },
 runDetailSessionsByRunId: {}});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -260,9 +259,9 @@ describe('RunsPanel', () => {
     const state = useStore.getState()
     const a = makeRun({ run_id: 'a', flow_name: 'a.dot' })
     const b = makeRun({ run_id: 'b', flow_name: 'b.dot' })
-    state.updateRunsListSession({ scopeMode: 'all', status: 'ready', runs: [a, b] })
-    state.setRunsSelectedRunIdForScope('all', 'b')
-    state.setRunsSelectedRunIdForScope('all', 'a')
+    state.updateRunsListSession({ status: 'ready', runs: [a, b] })
+    state.setRunsSelectedRunId('b')
+    state.setRunsSelectedRunId('a')
     render(<DialogProvider><RunsPanel /></DialogProvider>)
     fireEvent.keyDown(window, { key: 'g' })
     const row = (name: string) => screen.getAllByText(name)
@@ -309,8 +308,7 @@ describe('RunsPanel', () => {
       requests.push({ url: resolveRequestUrl(input), resolve })
     }))
     const state = useStore.getState()
-    state.updateRunsListSession({ scopeMode: 'all' })
-    state.setRunsSelectedRunIdForScope('all', 'cached')
+    state.setRunsSelectedRunId('cached')
     state.reconcileRunRecord('cached', 'list', makeRun({ run_id: 'cached', last_error: '' }))
     state.updateRunDetailSession('cached', {
       contextStatus: 'ready', contextData: { pipeline_id: 'cached', context: { 'context.cached_key': 'cached value' } },
@@ -320,9 +318,9 @@ describe('RunsPanel', () => {
         summary_enabled: false, summary_prompt: null, summary_error: null, error: null,
       },
     })
-    state.setRunsSelectedRunIdForScope('all', 'other')
+    state.setRunsSelectedRunId('other')
     render(<DialogProvider><RunsPanel /></DialogProvider>)
-    act(() => state.setRunsSelectedRunIdForScope('all', 'cached'))
+    act(() => state.setRunsSelectedRunId('cached'))
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('cached result')
 
     fireEvent.click(screen.getByTestId('run-visit-item-context'))
@@ -340,8 +338,7 @@ describe('RunsPanel', () => {
   it('takes the header and output commit from the run record, never from flow context', () => {
     vi.mocked(global.fetch).mockImplementation(() => new Promise<Response>(() => {}))
     const state = useStore.getState()
-    state.updateRunsListSession({ scopeMode: 'all' })
-    state.setRunsSelectedRunIdForScope('all', 'git')
+    state.setRunsSelectedRunId('git')
     state.reconcileRunRecord('git', 'list', makeRun({ run_id: 'git', last_error: '', git_commit: 'abcdef0', git_branch: 'main' }))
     state.updateRunDetailSession('git', {
       contextStatus: 'ready', contextData: { pipeline_id: 'git', context: {
@@ -349,9 +346,9 @@ describe('RunsPanel', () => {
         'context.integration.merge_commit': '2222222bbbb', 'context.anything.commit': '3333333cccc',
       } },
     })
-    state.setRunsSelectedRunIdForScope('all', 'other')
+    state.setRunsSelectedRunId('other')
     render(<DialogProvider><RunsPanel /></DialogProvider>)
-    act(() => state.setRunsSelectedRunIdForScope('all', 'git'))
+    act(() => state.setRunsSelectedRunId('git'))
     expect(screen.getByTestId('run-header-facts')).toHaveTextContent('abcdef0')
     expect(screen.getByTestId('run-output-commit')).toHaveTextContent('abcdef0 on main')
     for (const testId of ['run-header-facts', 'run-output-commit']) {
@@ -388,38 +385,16 @@ describe('RunsPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('defaults to the active project scope and can switch to all projects', async () => {
+  it('lists every project\'s runs with the project on each row and filters by project', async () => {
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
       const method = init?.method ?? 'GET'
-      if (method !== 'GET') {
-        throw new Error(`Unhandled request: ${method} ${url}`)
-      }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (method === 'GET' && url.endsWith('/attractor/runs')) {
         return jsonResponse({
           runs: [
-            makeRun({
-              run_id: 'run-project-one',
-              flow_name: 'project-one.dot',
-              project_path: '/tmp/project-one',
-            }),
-          ],
-        })
-      }
-      if (url.endsWith('/attractor/runs')) {
-        return jsonResponse({
-          runs: [
-            makeRun({
-              run_id: 'run-project-one',
-              flow_name: 'project-one.dot',
-              project_path: '/tmp/project-one',
-            }),
-            makeRun({
-              run_id: 'run-project-two',
-              flow_name: 'project-two.dot',
-              project_path: '/tmp/project-two',
-            }),
+            makeRun({ run_id: 'run-project-one', flow_name: 'project-one.dot', project_path: '/tmp/project-one' }),
+            makeRun({ run_id: 'run-project-two', flow_name: 'project-two.dot', project_path: '/tmp/project-two' }),
           ],
         })
       }
@@ -428,6 +403,7 @@ describe('RunsPanel', () => {
 
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
+      useStore.getState().registerProject('/tmp/project-two')
       useStore.getState().setActiveProjectPath('/tmp/project-one')
     })
 
@@ -436,26 +412,17 @@ describe('RunsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Project One')).toBeVisible()
-    })
-    expect(
-      fetchMock.mock.calls.some(([request]) =>
-        resolveRequestUrl(request as RequestInfo | URL).includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one'),
-      ),
-    ).toBe(true)
-    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history for the active project.')
-
-    await user.click(screen.getByTestId('runs-scope-all-projects'))
-
-    await waitFor(() => {
       expect(screen.getByText('Project Two')).toBeVisible()
     })
-    expect(
-      fetchMock.mock.calls.some(([request]) => {
-        const url = resolveRequestUrl(request as RequestInfo | URL)
-        return url.endsWith('/attractor/runs') && !url.includes('project_path=')
-      }),
-    ).toBe(true)
-    expect(screen.getByTestId('runs-scope-description')).toHaveAttribute('title', 'Run history across all projects.')
+    expect(screen.getAllByTestId('run-history-row-project').map((label) => label.textContent?.replace(' · ', ''))).toEqual(['project-one', 'project-two'])
+    expect(screen.queryByTestId('runs-scope-all-projects')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('runs-scope-active-project')).not.toBeInTheDocument()
+
+    await user.selectOptions(screen.getByTestId('runs-project-filter'), '/tmp/project-two')
+    expect(screen.queryByText('Project One')).not.toBeInTheDocument()
+    expect(screen.getByText('Project Two')).toBeVisible()
+    await user.selectOptions(screen.getByTestId('runs-project-filter'), '')
+    expect(screen.getByText('Project One')).toBeVisible()
   })
 
   it('renders execution lock holders and groups queued attempts by lock identity', async () => {
@@ -466,7 +433,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({
           runs: [
             makeRun({
@@ -527,52 +494,24 @@ describe('RunsPanel', () => {
     expect(screen.getByText('Queued for execution lock · position 1')).toBeVisible()
   })
 
-  it('switches between active and all scopes by replacing the scoped runs stream', async () => {
+  it('follows every project\'s runs on one live stream', async () => {
     const fetchMock = vi.mocked(global.fetch)
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = resolveRequestUrl(input)
       const method = init?.method ?? 'GET'
-      if (method !== 'GET') {
-        throw new Error(`Unhandled request: ${method} ${url}`)
-      }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
-        return jsonResponse({
-          runs: [
-            makeRun({
-              run_id: 'run-project-one',
-              flow_name: 'project-one.dot',
-              project_path: '/tmp/project-one',
-            }),
-          ],
-        })
-      }
-      if (url.endsWith('/attractor/runs')) {
-        return jsonResponse({
-          runs: [
-            makeRun({
-              run_id: 'run-project-one',
-              flow_name: 'project-one.dot',
-              project_path: '/tmp/project-one',
-            }),
-            makeRun({
-              run_id: 'run-project-two',
-              flow_name: 'project-two.dot',
-              project_path: '/tmp/project-two',
-            }),
-          ],
-        })
+      if (method === 'GET' && url.endsWith('/attractor/runs')) {
+        return jsonResponse({ runs: [makeRun({ run_id: 'run-project-one', flow_name: 'project-one.dot', project_path: '/tmp/project-one' })] })
       }
       throw new Error(`Unhandled request: ${method} ${url}`)
     })
 
-    const { CLOSED, latestSourceMatching } = installControllableEventSource()
+    const { latestSourceMatching } = installControllableEventSource()
 
     act(() => {
       useStore.getState().registerProject('/tmp/project-one')
       useStore.getState().setActiveProjectPath('/tmp/project-one')
     })
 
-    const user = userEvent.setup()
     renderRunsWorkspace()
 
     await waitFor(() => {
@@ -580,12 +519,12 @@ describe('RunsPanel', () => {
       expect(latestSourceMatching('/workspace/api/live/events')).toBeTruthy()
     })
 
-    const activeScopeSource = latestSourceMatching('/workspace/api/live/events')
-    expect(activeScopeSource?.url).toContain('runs_project_path=%2Ftmp%2Fproject-one')
-    expect(activeScopeSource?.url).toContain('include_runs_overview=true')
+    const source = latestSourceMatching('/workspace/api/live/events')
+    expect(source?.url).toContain('include_runs_overview=true')
+    expect(source?.url).not.toContain('runs_project_path=')
 
     act(() => {
-      activeScopeSource?.emit({
+      source?.emit({
         type: 'run.upsert',
         resource: { kind: 'runs_overview', id: null },
         payload: {
@@ -596,18 +535,14 @@ describe('RunsPanel', () => {
           },
         },
       })
-    })
-    expect(screen.queryByText('Incomplete Live Upsert')).not.toBeInTheDocument()
-
-    act(() => {
-      activeScopeSource?.emit({
+      source?.emit({
         type: 'run.upsert',
         resource: { kind: 'runs_overview', id: null },
         payload: {
           run: makeRun({
-            run_id: 'run-streamed-active',
-            flow_name: 'streamed-active.dot',
-            project_path: '/tmp/project-one',
+            run_id: 'run-streamed-elsewhere',
+            flow_name: 'streamed-elsewhere.dot',
+            project_path: '/tmp/project-three',
             status: 'running',
             outcome: null,
             ended_at: null,
@@ -618,97 +553,9 @@ describe('RunsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText('Streamed Active')).toBeVisible()
+      expect(screen.getByText('Streamed Elsewhere')).toBeVisible()
     })
-
-    await user.click(screen.getByTestId('runs-scope-all-projects'))
-
-    await waitFor(() => {
-      expect(screen.getByText('Project Two')).toBeVisible()
-    })
-
-    const allProjectsSource = latestSourceMatching('/workspace/api/live/events')
-    expect(allProjectsSource).not.toBe(activeScopeSource)
-    expect(activeScopeSource?.readyState).toBe(CLOSED)
-    expect(allProjectsSource?.url).toContain('/workspace/api/live/events')
-    expect(allProjectsSource?.url).toContain('include_runs_overview=true')
-    expect(allProjectsSource?.url).not.toContain('project_path=')
-
-    act(() => {
-      activeScopeSource?.emit({
-        type: 'run.upsert',
-        resource: { kind: 'runs_overview', id: null },
-        payload: {
-          run: makeRun({
-            run_id: 'run-closed-source',
-            flow_name: 'closed-source-update.dot',
-            project_path: '/tmp/project-one',
-          }),
-        },
-      })
-      allProjectsSource?.emit({
-        type: 'run.upsert',
-        resource: { kind: 'runs_overview', id: null },
-        payload: {
-          run: makeRun({
-            run_id: 'run-streamed-all',
-            flow_name: 'streamed-all.dot',
-            project_path: '/tmp/project-three',
-            started_at: '2026-03-22T00:07:00Z',
-          }),
-        },
-      })
-    })
-
-    await waitFor(() => {
-      expect(screen.getByText('Streamed All')).toBeVisible()
-    })
-    expect(screen.queryByText('Closed Source Update')).not.toBeInTheDocument()
-
-    await user.click(screen.getByTestId('runs-scope-active-project'))
-
-    await waitFor(() => {
-      expect(screen.getByText('Project One')).toBeVisible()
-      expect(screen.queryByText('Project Two')).not.toBeInTheDocument()
-    })
-
-    const restoredActiveScopeSource = latestSourceMatching('/workspace/api/live/events')
-    expect(restoredActiveScopeSource).not.toBe(allProjectsSource)
-    expect(allProjectsSource?.readyState).toBe(CLOSED)
-    expect(restoredActiveScopeSource?.url).toContain('runs_project_path=%2Ftmp%2Fproject-one')
-  })
-
-  it('shows an explicit no-project notice before fetching all-project runs', async () => {
-    const fetchMock = vi.mocked(global.fetch)
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = resolveRequestUrl(input)
-      const method = init?.method ?? 'GET'
-      if (url.endsWith('/attractor/runs') && method === 'GET') {
-        return jsonResponse({
-          runs: [
-            makeRun({
-              run_id: 'run-global',
-              flow_name: 'global.dot',
-              project_path: '/tmp/project-two',
-            }),
-          ],
-        })
-      }
-      throw new Error(`Unhandled request: ${method} ${url}`)
-    })
-
-    const user = userEvent.setup()
-    renderRunsWorkspace()
-
-    expect(screen.getByText('Choose an active project or switch to all projects to view run history.')).toBeVisible()
-    expect(fetchMock).not.toHaveBeenCalled()
-
-    await user.click(screen.getByTestId('runs-scope-all-projects'))
-
-    await waitFor(() => {
-      expect(screen.getByText('Global')).toBeVisible()
-    })
-    expect(fetchMock).toHaveBeenCalled()
+    expect(screen.queryByText('Incomplete Live Upsert')).not.toBeInTheDocument()
   })
 
   it('keeps the run selector ahead of the detail stack, folds monitoring into the summary, and collapses advanced evidence by default', async () => {
@@ -738,7 +585,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({
           runs: [selectedRun, secondaryRun],
         })
@@ -859,8 +706,10 @@ describe('RunsPanel', () => {
     expect(screen.getByTestId('runs-panel')).toHaveAttribute('data-responsive-layout', 'split')
     expect(screen.getByTestId('runs-panel')).toHaveClass('h-full')
 
+    // The run list sits in the Runs view's side panel, beside the run.
     const runListPanel = screen.getByTestId('run-list-panel')
-    expect(runListPanel).toHaveClass('border-r')
+    expect(screen.getByTestId('side-panel')).toContainElement(screen.getByTestId('run-list-panel'))
+    expect(screen.getByTestId('view-main')).toContainElement(screen.getByTestId('runs-panel'))
 
     const scrollRegion = screen.getByTestId('run-list-scroll-region')
     expect(scrollRegion).toHaveClass('flex-1')
@@ -993,7 +842,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({
           runs: [primaryRun, selectedRun],
         })
@@ -1122,7 +971,7 @@ describe('RunsPanel', () => {
       if (url.endsWith('/attractor/api/flows')) {
         return jsonResponse(['selected.dot'])
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
       if (url.includes('/attractor/pipelines/run-to-continue/checkpoint')) {
@@ -1285,7 +1134,7 @@ describe('RunsPanel', () => {
       if (url.endsWith('/attractor/api/flows')) {
         return jsonResponse(['selected.dot'])
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
       if (url.includes(`/attractor/pipelines/${runId}/artifacts/artifacts/flow/flow-source.yaml`)) {
@@ -1519,7 +1368,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [runningRun] })
       }
       if (url.includes('/attractor/pipelines/run-running/checkpoint')) {
@@ -1632,7 +1481,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [failedRun, lineageRun] })
       }
       const pipelineMatch = url.match(/\/attractor\/pipelines\/([^/]+)\/([^/?#]+)/)
@@ -1737,7 +1586,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [staleRun] })
       }
       if (url.includes('/attractor/pipelines/run-stale-status/checkpoint')) {
@@ -1906,7 +1755,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
       if (url.includes('/attractor/pipelines/run-live-status/checkpoint')) {
@@ -2036,7 +1885,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
       if (url.includes('/attractor/pipelines/run-stream-count/checkpoint')) {
@@ -2188,7 +2037,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
       if (url.includes('/attractor/pipelines/run-live-usage/checkpoint')) {
@@ -2373,7 +2222,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun, otherRun] })
       }
       const pipelineStatusMatch = url.match(/\/attractor\/pipelines\/([^/?#]+)$/)
@@ -2565,7 +2414,7 @@ describe('RunsPanel', () => {
       project_path: '/tmp/project-one',
     })
     const pipelineStatusUrl = '/attractor/pipelines/run-reconnect'
-    const scopedRunsUrl = '/attractor/runs?project_path=%2Ftmp%2Fproject-one'
+    const scopedRunsUrl = '/attractor/runs'
     const liveEventsUrl = '/workspace/api/live/events'
 
     const fetchMock = vi.mocked(global.fetch)
@@ -2814,7 +2663,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun, otherRun] })
       }
       const pipelineStatusMatch = url.match(/\/attractor\/pipelines\/([^/?#]+)$/)
@@ -3083,7 +2932,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
       if (/\/attractor\/pipelines\/run-live-gap$/.test(url)) {
@@ -3117,7 +2966,7 @@ describe('RunsPanel', () => {
 
     act(() => {
       useStore.getState().setViewMode('runs')
-      useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-live-gap')
+      useStore.getState().setRunsSelectedRunId('run-live-gap')
     })
     renderRunsWorkspace()
 
@@ -3269,7 +3118,7 @@ describe('RunsPanel', () => {
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
-      if (url.includes('/attractor/runs?project_path=%2Ftmp%2Fproject-one')) {
+      if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun, otherRun] })
       }
       const pipelineStatusMatch = url.match(/\/attractor\/pipelines\/([^/?#]+)$/)

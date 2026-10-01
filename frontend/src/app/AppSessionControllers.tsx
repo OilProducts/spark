@@ -21,7 +21,6 @@ import type {
 import type { ConversationStreamDeltaEventResponse } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { parseConversationSummaryResponse } from '@/lib/api/conversationsApi'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
@@ -151,42 +150,8 @@ export function HomeSessionController() {
         updateProjectSessionState,
     })
 
-    const homeProjectPaths = useMemo(() => {
-        const nextProjectPaths = new Set<string>()
-        const isHomeVisible = viewMode === 'home' || viewMode === 'projects'
-
-        if (isHomeVisible && activeProjectPath) {
-            nextProjectPaths.add(activeProjectPath)
-        }
-
-        Object.entries(projectSessionsByPath).forEach(([projectPath, session]) => {
-            if (session?.conversationId) {
-                nextProjectPaths.add(projectPath)
-            }
-        })
-        Object.keys(homeProjectSessionsByPath).forEach((projectPath) => {
-            nextProjectPaths.add(projectPath)
-        })
-        Object.keys(homeThreadSummariesStatusByProjectPath).forEach((projectPath) => {
-            nextProjectPaths.add(projectPath)
-        })
-        Object.keys(homeConversationCache.summariesByProjectPath).forEach((projectPath) => {
-            nextProjectPaths.add(projectPath)
-        })
-        Object.values(homeConversationCache.conversationsById).forEach((conversation) => {
-            nextProjectPaths.add(conversation.project_path)
-        })
-
-        return [...nextProjectPaths].filter((projectPath) => Boolean(projectRegistry[projectPath]))
-    }, [
-        activeProjectPath,
-        homeConversationCache,
-        homeProjectSessionsByPath,
-        homeThreadSummariesStatusByProjectPath,
-        projectRegistry,
-        projectSessionsByPath,
-        viewMode,
-    ])
+    // The Chats panel lists every project's chats.
+    const homeProjectPaths = useMemo(() => Object.keys(projectRegistry), [projectRegistry])
 
     useProjectGitMetadata({
         projectPaths: homeProjectPaths,
@@ -207,6 +172,11 @@ export function HomeSessionController() {
 
     useEffect(() => {
         const registeredPaths = new Set(Object.keys(projectRegistry))
+        // A loaded registry always holds Home; until it loads, every project would look removed,
+        // and pruning then drops a draft typed into the restored chat.
+        if (registeredPaths.size === 0) {
+            return
+        }
         const knownHomeProjectPaths = new Set<string>()
 
         Object.keys(homeProjectSessionsByPath).forEach((projectPath) => {
@@ -275,10 +245,8 @@ export function HomeSessionController() {
 }
 
 export function RunsSessionController() {
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const scopeMode = useStore((state) => state.runsListSession.scopeMode)
     const selectedRunId = useStore(selectSelectedRunId)
-    useRunsList({ activeProjectPath, scopeMode, selectedRunId, manageSync: true })
+    useRunsList({ selectedRunId, manageSync: true })
     useRunDetailResources({ selectedRunId, manageSync: true })
     return null
 }
@@ -290,11 +258,9 @@ export function TriggersSessionController() {
 
 export function WorkspaceLiveEventsController() {
     const reconnectSignal = useRunsTransportReconnectSignal(true)
-    const viewMode = useStore((state) => state.viewMode)
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
     const homeConversationCache = useStore((state) => state.homeConversationCache)
-    const runsListSession = useStore((state) => state.runsListSession)
     const selectedRunId = useStore(selectSelectedRunId)
     const selectedRunLifetime = useStore((state) => (
         selectedRunId ? state.runDetailSessionsByRunId[selectedRunId]?.lifetime : undefined
@@ -311,20 +277,7 @@ export function WorkspaceLiveEventsController() {
         : null
     const latestConversationRevisionById = useRef<Record<string, number>>({})
     const latestRunSequenceById = useRef<Record<string, number>>({})
-    const includeRunsOverview =
-        viewMode === 'runs'
-        || viewMode === 'missions'
-        || selectedRunId !== null
-        || runsListSession.status !== 'idle'
-        || runsListSession.runs.length > 0
-        || runsListSession.scopeMode !== 'active'
-    const includeTriggers = viewMode === 'triggers'
-    const missionsProjectPath = viewMode === 'missions' ? activeProjectPath : null
     const conversationProjectPath = activeConversationId ? activeProjectPath : null
-    const runsProjectPath = includeRunsOverview && runsListSession.scopeMode === 'active'
-        ? activeProjectPath
-        : null
-    const triggersProjectPath = includeTriggers ? activeProjectPath : null
 
     useEffect(() => {
         if (
@@ -357,22 +310,10 @@ export function WorkspaceLiveEventsController() {
         if (selectedRunId && selectedRunLiveReady) {
             params.set('run_id', selectedRunId)
         }
-        if (includeRunsOverview) {
-            params.set('include_runs_overview', 'true')
-            if (runsProjectPath) {
-                params.set('runs_project_path', runsProjectPath)
-            }
-        }
-        if (includeTriggers) {
-            params.set('include_triggers', 'true')
-            if (triggersProjectPath) {
-                params.set('triggers_project_path', triggersProjectPath)
-            }
-        }
-        if (missionsProjectPath) {
-            params.set('include_missions', 'true')
-            params.set('missions_project_path', missionsProjectPath)
-        }
+        // Runs, triggers and missions follow every project, so every list stays live.
+        params.set('include_runs_overview', 'true')
+        params.set('include_triggers', 'true')
+        params.set('include_missions', 'true')
         // The workflow event log is a global, always-on feed for the Home pane.
         params.set('include_workflow_log', 'true')
         params.set('include_conversations', 'true')
@@ -381,13 +322,8 @@ export function WorkspaceLiveEventsController() {
     }, [
         activeConversationId,
         conversationProjectPath,
-        includeRunsOverview,
-        includeTriggers,
-        missionsProjectPath,
-        runsProjectPath,
         selectedRunLiveReady,
         selectedRunId,
-        triggersProjectPath,
     ])
 
     useEffect(() => {
@@ -476,7 +412,7 @@ export function WorkspaceLiveEventsController() {
                             detail: {
                                 type: envelope.type,
                                 conversationId: envelope.resource.id,
-                                projectPath: envelope.project_path ?? activeProjectPath,
+                                projectPath: envelope.project_path ?? null,
                                 payload,
                             },
                         }))
@@ -486,15 +422,15 @@ export function WorkspaceLiveEventsController() {
                         }))
                     } else if (envelope.resource?.kind === 'runs_overview') {
                         window.dispatchEvent(new CustomEvent('spark:runs-overview-resync-required', {
-                            detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
+                            detail: { projectPath: envelope.project_path ?? null, reason: payload.reason },
                         }))
                     } else if (envelope.resource?.kind === 'mission') {
                         window.dispatchEvent(new CustomEvent('spark:mission-live-event', {
-                            detail: { projectPath: envelope.project_path ?? activeProjectPath, mission: null },
+                            detail: { projectPath: envelope.project_path ?? null, mission: null },
                         }))
                     } else if (envelope.resource?.kind === 'trigger') {
                         window.dispatchEvent(new CustomEvent('spark:triggers-resync-required', {
-                            detail: { projectPath: envelope.project_path ?? activeProjectPath, reason: payload.reason },
+                            detail: { projectPath: envelope.project_path ?? null, reason: payload.reason },
                         }))
                     }
                     return
@@ -508,7 +444,7 @@ export function WorkspaceLiveEventsController() {
                 }
                 if (envelope.type === 'mission.upsert' && envelope.resource?.kind === 'mission') {
                     window.dispatchEvent(new CustomEvent('spark:mission-live-event', {
-                        detail: { projectPath: envelope.project_path ?? activeProjectPath, mission: payload.mission },
+                        detail: { projectPath: envelope.project_path ?? null, mission: payload.mission },
                     }))
                     return
                 }
@@ -554,7 +490,7 @@ export function WorkspaceLiveEventsController() {
                         detail: {
                             type: envelope.type,
                             conversationId: envelope.resource.id,
-                            projectPath: envelope.project_path ?? activeProjectPath,
+                            projectPath: envelope.project_path ?? null,
                             payload,
                         },
                     }))
@@ -569,7 +505,7 @@ export function WorkspaceLiveEventsController() {
                     window.dispatchEvent(new CustomEvent('spark:trigger-live-event', {
                         detail: {
                             type: envelope.type,
-                            projectPath: envelope.project_path ?? activeProjectPath,
+                            projectPath: envelope.project_path ?? null,
                             payload,
                         },
                     }))
@@ -611,7 +547,7 @@ export function WorkspaceLiveEventsController() {
             }
             eventSource?.close()
         }
-    }, [activeConversationId, activeProjectPath, liveEventsUrl, reconnectSignal, selectedRunId, selectedRunLifetime])
+    }, [activeConversationId, liveEventsUrl, reconnectSignal, selectedRunId, selectedRunLifetime])
 
     return null
 }
@@ -639,7 +575,7 @@ export function RunsHashRoutingController() {
                 state.setViewMode('runs')
             }
             if (selectSelectedRunId(state) !== route.runId) {
-                state.setRunsSelectedRunIdForScope(buildRunsScopeKey(state.runsListSession.scopeMode, state.activeProjectPath), route.runId)
+                state.setRunsSelectedRunId(route.runId)
             }
             const currentNodeId = state.runDetailSessionsByRunId[route.runId]?.selectedNodeId ?? null
             if (currentNodeId !== route.nodeId) {

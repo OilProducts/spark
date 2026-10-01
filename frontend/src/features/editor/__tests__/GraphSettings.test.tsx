@@ -1,5 +1,4 @@
 import { chooseModel, customModel, chooseEffort, openPicker } from '@/components/model-chooser/__tests__/picker'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { GraphSettings } from '@/features/editor/GraphSettings'
 import { SettingsPanel } from '@/features/settings/SettingsPanel'
 import { StylesheetEditor } from '@/features/editor/components/StylesheetEditor'
@@ -71,7 +70,7 @@ uiDefaults: {
       llm_model: 'gpt-5.3',
       reasoning_effort: 'high',
     }});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
 }
 
@@ -245,7 +244,7 @@ describe('Graph and settings behavior', () => {
       ? new Promise<Response>((resolve, reject) => { requests.push({ resolve, reject }) }) : originalFetch(input, init)))
     render(<SettingsPanel />)
     await waitFor(() => expect(requests).toHaveLength(1))
-    act(() => useStore.setState({ activeProjectPath: '/tmp/next-project' }))
+    act(() => { window.dispatchEvent(new Event('spark:settings-live-event')) })
     expect(requests).toHaveLength(2)
     const payload = (id: string) => Response.json({ models: [{ provider: 'openai', id, display: id }], providers: { codex: { status: 'available', error: null } } })
     await act(async () => requests[1].resolve(payload('current-model')))
@@ -257,9 +256,6 @@ describe('Graph and settings behavior', () => {
     expect(await screen.findByRole('option', { name: 'current-model' })).toBeVisible()
     expect(screen.queryByRole('option', { name: 'stale-model' })).toBeNull()
     expect(screen.queryByText('Loading models…')).toBeNull()
-    act(() => useStore.setState({ activeProjectPath: null }))
-    expect(screen.queryByRole('option', { name: 'current-model' })).toBeNull()
-    expect(screen.queryByRole('option')).not.toBeInTheDocument()
     expect(useStore.getState().uiDefaults.llm_model).toBe('gpt-5.3')
   })
 

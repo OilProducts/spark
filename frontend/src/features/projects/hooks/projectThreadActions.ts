@@ -9,6 +9,7 @@ import {
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
+import { requestNavigation } from '@/state/workspaceSlice'
 import {
     buildProjectConversationId,
     extractApiErrorMessage,
@@ -28,14 +29,10 @@ type PersistProjectState = (
 type ConversationCacheRef = MutableRefObject<ProjectConversationCacheState>
 
 type UseProjectThreadActionsArgs = {
-    activeProjectPath: string | null
-    activeConversationId: string | null
     conversationCacheRef: ConversationCacheRef
     setConversationSummaryList: (projectPath: string, summaries: ConversationSummaryResponse[]) => void
     activateConversationThread: (projectPath: string, conversationId: string, source?: string) => void
     applyConversationSnapshot: (projectPath: string, snapshot: ConversationSnapshotResponse, source?: string) => unknown
-    resetComposer: () => void
-    setConversationId: (conversationId: string | null) => void
     updateProjectSessionState: (projectPath: string, patch: Record<string, unknown>) => void
     clearHomeConversationSession: (conversationId: string) => void
     setPanelError: (value: string | null) => void
@@ -49,14 +46,10 @@ type UseProjectThreadActionsArgs = {
 }
 
 export function useProjectThreadActions({
-    activeProjectPath,
-    activeConversationId,
     conversationCacheRef,
     setConversationSummaryList,
     activateConversationThread,
     applyConversationSnapshot,
-    resetComposer,
-    setConversationId,
     updateProjectSessionState,
     clearHomeConversationSession,
     setPanelError,
@@ -66,55 +59,53 @@ export function useProjectThreadActions({
 }: UseProjectThreadActionsArgs) {
     const { confirm } = useDialogController()
 
-    const onCreateConversationThread = useCallback(async () => {
-        if (!activeProjectPath) {
-            return
+    // Each chat carries its project: opening one shows it, in its project.
+    // Leaving a project page asks first, so a cancelled leave changes nothing.
+    const onSelectConversationThread = useCallback((projectPath: string, conversationId: string) => {
+        const open = () => {
+            useStore.setState({ projectPagePath: null })
+            setPanelError(null)
+            activateConversationThread(projectPath, conversationId, 'select-thread')
+            useStore.getState().setActiveProjectPath(projectPath)
         }
-        const conversationId = buildProjectConversationId(activeProjectPath)
-        const selectedConversationId = useStore.getState().projectSessionsByPath[activeProjectPath]?.conversationId ?? null
+        if (useStore.getState().projectPagePath) requestNavigation(open)
+        else open()
+    }, [
+        activateConversationThread,
+        setPanelError,
+    ])
+
+    const onCreateConversationThread = useCallback(async (projectPath: string) => {
+        const conversationId = buildProjectConversationId(projectPath)
+        const whereYouWere = () => {
+            const state = useStore.getState()
+            const shownProjectPath = state.activeProjectPath
+            return JSON.stringify([shownProjectPath, state.projectPagePath,
+                shownProjectPath ? state.projectSessionsByPath[shownProjectPath]?.conversationId ?? null : null])
+        }
+        const before = whereYouWere()
         setPanelError(null)
         try {
             // Persist first so an empty thread survives reload and can be deleted.
             const snapshot = await updateConversationSettingsValidated(conversationId, {
-                project_path: activeProjectPath,
+                project_path: projectPath,
                 expected_revision: '0',
             })
-            applyConversationSnapshot(activeProjectPath, snapshot, 'create-thread')
-            // Only select it if the user is still on the thread they were on when creating it.
-            const state = useStore.getState()
-            if (
-                state.activeProjectPath !== activeProjectPath
-                || (state.projectSessionsByPath[activeProjectPath]?.conversationId ?? null) !== selectedConversationId
-            ) {
-                return
+            applyConversationSnapshot(projectPath, snapshot, 'create-thread')
+            // Only open it if you are still where you were when you asked for it.
+            if (whereYouWere() === before) {
+                onSelectConversationThread(projectPath, conversationId)
             }
-            activateConversationThread(activeProjectPath, conversationId, 'create-thread')
         } catch (error) {
             setPanelError(extractApiErrorMessage(error, 'Unable to create the thread.'))
         }
     }, [
-        activeProjectPath,
-        activateConversationThread,
         applyConversationSnapshot,
+        onSelectConversationThread,
         setPanelError,
     ])
 
-    const onSelectConversationThread = useCallback((conversationId: string) => {
-        if (!activeProjectPath) {
-            return
-        }
-        setPanelError(null)
-        activateConversationThread(activeProjectPath, conversationId, 'select-thread')
-    }, [
-        activeProjectPath,
-        activateConversationThread,
-        setPanelError,
-    ])
-
-    const onDeleteConversationThread = useCallback(async (conversationId: string, title: string) => {
-        if (!activeProjectPath) {
-            return
-        }
+    const onDeleteConversationThread = useCallback(async (projectPath: string, conversationId: string, title: string) => {
         const confirmed = await confirm({
             title: 'Delete thread?',
             description: `Delete thread "${title}"?`,
@@ -128,32 +119,28 @@ export function useProjectThreadActions({
         setPanelError(null)
         setPendingDeleteConversationId(conversationId)
         try {
-            await deleteConversationValidated(conversationId, activeProjectPath)
+            await deleteConversationValidated(conversationId, projectPath)
             commitConversationCache((current) => removeConversationFromCache(current, conversationId))
             clearHomeConversationSession(conversationId)
             const localRemainingSummaries = (
-                conversationCacheRef.current.summariesByProjectPath[activeProjectPath] || []
+                conversationCacheRef.current.summariesByProjectPath[projectPath] || []
             ).filter((entry) => entry.conversation_id !== conversationId)
-            setConversationSummaryList(activeProjectPath, localRemainingSummaries)
+            setConversationSummaryList(projectPath, localRemainingSummaries)
 
             let remainingSummaries = localRemainingSummaries
             try {
-                remainingSummaries = await fetchProjectConversationListValidated(activeProjectPath)
-                setConversationSummaryList(activeProjectPath, remainingSummaries)
+                remainingSummaries = await fetchProjectConversationListValidated(projectPath)
+                setConversationSummaryList(projectPath, remainingSummaries)
             } catch {
                 // Keep the local optimistic removal if the follow-up refresh fails.
             }
 
-            if (activeConversationId === conversationId) {
+            if (useStore.getState().projectSessionsByPath[projectPath]?.conversationId === conversationId) {
                 const fallbackConversationId = remainingSummaries[0]?.conversation_id || null
-                resetComposer()
-                setConversationId(fallbackConversationId)
-                if (fallbackConversationId) {
-                    updateProjectSessionState(activeProjectPath, {
-                        conversationId: fallbackConversationId,
-                    })
-                }
-                void persistProjectState(activeProjectPath, {
+                updateProjectSessionState(projectPath, {
+                    conversationId: fallbackConversationId,
+                })
+                void persistProjectState(projectPath, {
                     active_conversation_id: fallbackConversationId,
                     last_accessed_at: new Date().toISOString(),
                 })
@@ -165,13 +152,9 @@ export function useProjectThreadActions({
             setPendingDeleteConversationId(null)
         }
     }, [
-        activeConversationId,
-        activeProjectPath,
-            commitConversationCache,
+        commitConversationCache,
         conversationCacheRef,
         persistProjectState,
-        resetComposer,
-        setConversationId,
         setConversationSummaryList,
         clearHomeConversationSession,
         setPanelError,

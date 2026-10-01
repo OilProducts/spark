@@ -2,6 +2,7 @@ import { LayoutDashboard, RotateCcw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
+import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 
 type EditorCanvasToolbarProps = {
     mode: 'structured' | 'raw'
@@ -14,7 +15,9 @@ type EditorCanvasToolbarProps = {
     onArrange: () => void
     onReset: () => void
     onAddNode: () => void
-    onRun: () => void
+    /** The project a run starts in unless another is picked. */
+    runDefaultProjectPath: string | null
+    onRun: (projectPath: string) => void
 }
 
 const segmentClass = 'px-3 text-muted-foreground hover:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground'
@@ -30,6 +33,7 @@ export function EditorCanvasToolbar({
     onArrange,
     onReset,
     onAddNode,
+    runDefaultProjectPath,
     onRun,
 }: EditorCanvasToolbarProps) {
     const isStructured = mode === 'structured'
@@ -82,9 +86,11 @@ export function EditorCanvasToolbar({
             {isStructured ? (
                 <div role="group" aria-label="Actions" className="ml-auto flex shrink-0 items-center gap-2">
                     {canEditLayout ? <Button type="button" size="sm" variant="outline" onClick={onAddNode}>+ Node</Button> : null}
-                    <Button data-testid="editor-run-button" type="button" size="sm" onClick={onRun} disabled={Boolean(runDisabledReason)} title={runDisabledReason ?? undefined}>
-                        Run
-                    </Button>
+                    <ProjectPicker heading="Run in" testId="run-flow-project-picker" defaultProjectPath={runDefaultProjectPath} onPick={onRun}>
+                        <Button data-testid="editor-run-button" type="button" size="sm" disabled={Boolean(runDisabledReason)} title={runDisabledReason ?? undefined}>
+                            Run…
+                        </Button>
+                    </ProjectPicker>
                 </div>
             ) : null}
         </div>

@@ -134,6 +134,7 @@ export function toHydratedProjectRecord(project: {
     project_path: string
     display_name?: string
     is_default?: boolean
+    folder_exists?: boolean
     is_favorite: boolean
     last_accessed_at?: string | null
     active_conversation_id?: string | null
@@ -143,6 +144,7 @@ export function toHydratedProjectRecord(project: {
         directoryPath: project.project_path,
         ...(project.display_name ? { displayName: project.display_name } : {}),
         ...(project.is_default ? { isDefault: true } : {}),
+        ...(project.folder_exists === false ? { folderExists: false } : {}),
         isFavorite: project.is_favorite === true,
         lastAccessedAt: typeof project.last_accessed_at === 'string' ? project.last_accessed_at : null,
         activeConversationId: typeof project.active_conversation_id === 'string' ? project.active_conversation_id : null,
@@ -193,34 +195,6 @@ export function extractApiErrorMessage(error: unknown, fallback: string) {
         return error.message
     }
     return fallback
-}
-
-export function buildOrderedProjects<ProjectRecord extends { directoryPath: string }>(
-    projects: ProjectRecord[],
-    projectRegistry: Record<string, ProjectRecord>,
-    recentProjectPaths: string[],
-) {
-    const seenProjectPaths = new Set<string>()
-    const items: ProjectRecord[] = []
-
-    recentProjectPaths.forEach((projectPath) => {
-        const project = projectRegistry[projectPath]
-        if (!project || seenProjectPaths.has(projectPath)) {
-            return
-        }
-        items.push(project)
-        seenProjectPaths.add(projectPath)
-    })
-
-    projects.forEach((project) => {
-        if (seenProjectPaths.has(project.directoryPath)) {
-            return
-        }
-        items.push(project)
-        seenProjectPaths.add(project.directoryPath)
-    })
-
-    return items
 }
 
 export function resolveProjectPathValidation(

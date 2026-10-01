@@ -8,7 +8,8 @@ import {
     parseLaunchInputDefinitions,
     type LaunchInputFormValues,
 } from '@/lib/flowContracts'
-import { formatProjectListLabel } from '@/features/projects/model/projectsHomeState'
+import { projectLabel } from '@/features/projects/model/projectChoices'
+import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { InlineError } from '@/components/app/inline-error'
@@ -50,7 +51,7 @@ export function LaunchPanel({
 }: LaunchPanelProps) {
     const isNarrowViewport = useNarrowViewport()
     const { startFromFlowContent, logUnexpectedLaunchError } = useStartPipeline()
-    const placement = useExecutionPlacement(true)
+    const placement = useExecutionPlacement(true, projectPath)
     const lockMetadata = useFlowLaunchMetadata(target.previewSource.kind === 'flow' ? target.flowName : null)
     const {
         isLoadingPreview,
@@ -103,9 +104,10 @@ export function LaunchPanel({
 
     const showValidationWarningBanner = diagnostics.some((diag) => diag.severity === 'warning') && !hasValidationErrors
     const visibleDiagnostics = diagnostics.slice(0, 8)
-    const executeLabel = projectPath ? `Run in ${formatProjectListLabel(projectPath)}` : 'Run'
+    const projectRegistry = useStore((state) => state.projectRegistry)
+    const executeLabel = projectPath ? `Run in ${projectLabel(projectRegistry, projectPath)}` : 'Run'
     const executeDisabledReason = !projectPath
-        ? 'Select an active project before running.'
+        ? 'Choose a project before running.'
         : isLoadingPreview
             ? 'Loading flow preview for launch inputs.'
             : hasValidationErrors
@@ -201,8 +203,8 @@ export function LaunchPanel({
                         className="text-xs leading-5 text-muted-foreground"
                     >
                         {projectPath
-                            ? `${executeLabel} using the active project context.`
-                            : 'Select an active project to enable launching.'}
+                            ? `Runs in ${projectPath}.`
+                            : 'Choose a project to enable launching.'}
                     </p>
                     {target.flowName ? (
                         <span

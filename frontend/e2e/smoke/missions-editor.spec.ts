@@ -8,7 +8,7 @@ const longObjective = 'Search should return matching documents across every inde
 const closingSummary = 'Old index removed.\n- Dropped the legacy tables\n- Rebuilt the search cache\n- Verified every project still indexes\n- Cleaned up the migration scripts\n- Updated the docs'
 const question = { flow_name: 'software-development/review-change.yaml', node_id: 'confirm', options: [{ key: 'S', label: 'Ship it', value: 'Ship it' }, { key: 'H', label: 'Hold', value: 'Hold' }], prompt: 'Ship the ranking change?', question_id: 'confirm-1', root_run_id: 'run-review', run_id: 'run-review' }
 const mission = (id: string, title: string, status: string, day: number, extra: Record<string, unknown> = {}) => ({
-  id, revision: 1, status, created_at: at(day), updated_at: at(day), started_at: status === 'draft' ? null : at(day), conversation_id: status === 'draft' ? null : id,
+  id, project_path: project, revision: 1, status, created_at: at(day), updated_at: at(day), started_at: status === 'draft' ? null : at(day), conversation_id: status === 'draft' ? null : id,
   fields: { title, description: longObjective, archived: false, budget: { concurrent_runs: 4, total_runs: 25 } },
   activity: [],
   ...extra,
@@ -66,10 +66,12 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   const posts = await stubMissions(page)
   await gotoWithRegisteredProject(page, project)
   await page.evaluate(theme => document.documentElement.classList.toggle('dark', theme === 'dark'), theme)
-  await page.getByTestId('nav-mode-missions').click()
+  await page.getByTestId('activity-missions').click()
 
-  // One list grouped by state, each row one short line; archived missions stay hidden.
-  await expect(page.getByRole('heading', { level: 2 })).toHaveText(['Needs you1', 'Running1', 'Drafts1', 'Closed1'])
+  // One list in the side panel grouped by state, each row naming its project in one short line; archived missions stay hidden.
+  const panel = page.getByTestId('missions-view').getByTestId('side-panel')
+  await expect(panel.getByRole('heading', { level: 3 })).toHaveText(['Needs you1', 'Running1', 'Drafts1', 'Closed1'])
+  await expect(panel.getByTestId('mission-project').first()).toContainText('missions-editor-smoke')
   await expect(page.getByRole('button', { name: 'Review the ranking change' })).toHaveAccessibleDescription('Ship the ranking change?')
   await expect(page.getByRole('button', { name: 'Draft the importer' })).toHaveAccessibleDescription(/^Draft · created Sep 10/)
   const closedRow = page.getByRole('button', { name: 'Retire the old index', exact: true })
@@ -131,7 +133,7 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   // Following a run link opens it on the Runs page.
   await runs.getByRole('link', { name: 'Rank search results by relevance' }).click()
   await expect(detail).toBeHidden()
-  await page.getByTestId('nav-mode-missions').click()
+  await page.getByTestId('activity-missions').click()
   await detail.getByRole('button', { name: 'Close details' }).click()
 
   // A draft shows an empty thread, Start and Edit, and a disabled reply box.
@@ -185,7 +187,7 @@ test('missions event lines stay one line for long titles, errors and questions',
   ] } }))
   await page.route('**/attractor/runs**', route => route.fulfill({ json: { runs: [] } }))
   await gotoWithRegisteredProject(page, project)
-  await page.getByTestId('nav-mode-missions').click()
+  await page.getByTestId('activity-missions').click()
   await page.getByRole('button', { name: 'Review the ranking change' }).click()
   const detail = page.getByRole('region', { name: 'Mission details' })
   const events = detail.getByTestId('mission-event')
@@ -206,11 +208,13 @@ test('missions rail stacks below the conversation at a narrow width', async ({ p
   await page.setViewportSize({ width: 390, height: 800 })
   await stubMissions(page)
   await gotoWithRegisteredProject(page, project)
-  await page.getByTestId('nav-mode-missions').click()
+  await page.getByTestId('activity-missions').click()
   const row = page.getByRole('button', { name: 'Review the ranking change' })
   await row.click()
   const detail = page.getByRole('region', { name: 'Mission details' })
-  await expect(row).toBeHidden()
+  // The list panel stacks above the mission.
+  await expect(page.getByTestId('missions-view')).toHaveAttribute('data-responsive-layout', 'stacked')
+  expect((await row.boundingBox())!.y).toBeLessThan((await detail.boundingBox())!.y)
   const conversation = await detail.getByTestId('mission-conversation').boundingBox()
   const rail = await detail.getByRole('complementary', { name: 'Mission overview' }).boundingBox()
   expect(rail!.y).toBeGreaterThanOrEqual(conversation!.y + conversation!.height - 1)
@@ -225,7 +229,7 @@ test('missions header keeps one short line for long summaries and questions at a
   const longQuestion = { ...question, prompt: `${long}Ship it?` }
   const posts = await stubMissions(page, {}, { question: longQuestion }, { runs: [roster('run-build', 'software-development/implement-change.yaml', long, 'running')] })
   await gotoWithRegisteredProject(page, project)
-  await page.getByTestId('nav-mode-missions').click()
+  await page.getByTestId('activity-missions').click()
   for (const name of ['Ship search ranking with a title long enough to wrap onto a second line', 'Review the ranking change']) {
     await page.getByRole('button', { name }).click()
     const detail = page.getByRole('region', { name: 'Mission details' })
@@ -255,7 +259,7 @@ test('missions rail expands a short objective that wraps past four lines and a d
   expect(description.length).toBeLessThan(200)
   await stubMissions(page, { fields: { title: 'Draft the importer', description, archived: false, playbook: 'bug-report' } })
   await gotoWithRegisteredProject(page, project)
-  await page.getByTestId('nav-mode-missions').click()
+  await page.getByTestId('activity-missions').click()
   await page.getByRole('button', { name: 'Draft the importer' }).click()
   const rail = page.getByRole('complementary', { name: 'Mission overview' })
   const objective = rail.getByRole('region', { name: 'Objective' })

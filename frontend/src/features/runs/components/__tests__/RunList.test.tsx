@@ -36,12 +36,9 @@ describe('RunList', () => {
     it('shows the cold-load notice only when no runs have been loaded yet', () => {
         render(
             <RunList
-                activeProjectPath="/tmp/project-one"
                 error={null}
-                onScopeModeChange={vi.fn()}
                 onSelectRun={vi.fn()}
                 runs={[]}
-                scopeMode="active"
                 selectedRunId={null}
                 status="loading"
                 summaryLabel="0 total runs · 0 running"
@@ -55,12 +52,9 @@ describe('RunList', () => {
     it('renders run rows without polling-era refresh affordances', () => {
         render(
             <RunList
-                activeProjectPath="/tmp/project-one"
                 error={null}
-                onScopeModeChange={vi.fn()}
                 onSelectRun={vi.fn()}
                 runs={[makeRun({ flow_name: 'refreshing.dot' })]}
-                scopeMode="active"
                 selectedRunId={null}
                 status="ready"
                 summaryLabel="1 total runs · 1 running"
@@ -89,12 +83,9 @@ describe('RunList', () => {
         })
         render(
             <RunList
-                activeProjectPath="/tmp/project-one"
                 error={null}
-                onScopeModeChange={vi.fn()}
                 onSelectRun={vi.fn()}
                 runs={[parent, child, untitled]}
-                scopeMode="active"
                 selectedRunId={null}
                 status="ready"
                 summaryLabel="3 total runs · 1 running"
@@ -102,9 +93,9 @@ describe('RunList', () => {
         )
         const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
         expect(titles()).toEqual(['Tighten the review loop', 'changes/CR-1/request.md'])
-        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^Implement Change · /)
-        // An untitled run leads with its input; the flow moves to the meta line.
-        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^Merge Change · /)
+        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^project-one · Implement Change · /)
+        // Each row names its project; an untitled run leads with its input and the flow moves to the meta line.
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^project-one · Merge Change · /)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Failed'])
 
         const toggle = screen.getByTestId('run-history-children-toggle')
@@ -124,12 +115,9 @@ describe('RunList', () => {
         const other = makeRun({ run_id: 'other', title: 'Other work' })
         render(
             <RunList
-                activeProjectPath="/tmp/project-one"
                 error={null}
-                onScopeModeChange={vi.fn()}
                 onSelectRun={vi.fn()}
                 runs={[listed, other]}
-                scopeMode="active"
                 selectedRunId={null}
                 status="ready"
                 summaryLabel="2 total runs · 2 running"
@@ -147,12 +135,9 @@ describe('RunList', () => {
         const grandchild = makeRun({ run_id: 'grandchild', flow_name: 'Question Child', parent_run_id: 'child', root_run_id: 'parent' })
         render(
             <RunList
-                activeProjectPath="/tmp/project-one"
                 error={null}
-                onScopeModeChange={vi.fn()}
                 onSelectRun={vi.fn()}
                 runs={[parent, child, sibling, grandchild]}
-                scopeMode="active"
                 selectedRunId={null}
                 status="ready"
                 summaryLabel="4 total runs · 3 running"

@@ -1,78 +1,34 @@
-import { useMemo, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 
 import { useStore } from '@/store'
 import {
     ApiHttpError,
-    deleteProjectValidated,
     fetchProjectBrowseValidated,
     fetchProjectMetadataValidated,
     registerProjectValidated,
     type ProjectBrowseResponse,
-    updateProjectStateValidated,
 } from '@/lib/workspaceClient'
-import { useDialogController } from '@/components/app/dialog-controller'
-import { useProjectRegistryBootstrap } from '@/features/projects/hooks/useProjectRegistryBootstrap'
 import {
-    buildOrderedProjects,
     extractApiErrorMessage,
-    formatProjectListLabel,
     resolveProjectPathValidation,
     toHydratedProjectRecord,
-} from '@/features/projects/model/projectsHomeState'
+} from '../model/projectsHomeState'
 
-export function useProjectSwitcherControls() {
-    const { confirm } = useDialogController()
-    const viewMode = useStore((state) => state.viewMode)
-    const hydrateProjectRegistry = useStore((state) => state.hydrateProjectRegistry)
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
+/** Adds a project by browsing to its folder, then opens a chat composer in it. */
+export function useAddProject() {
     const projectRegistry = useStore((state) => state.projectRegistry)
-    const recentProjectPaths = useStore((state) => state.recentProjectPaths)
     const registerProject = useStore((state) => state.registerProject)
     const removeProject = useStore((state) => state.removeProject)
-    const setActiveProjectPath = useStore((state) => state.setActiveProjectPath)
     const upsertProjectRegistryEntry = useStore((state) => state.upsertProjectRegistryEntry)
     const projectRegistrationError = useStore((state) => state.projectRegistrationError)
     const setProjectRegistrationError = useStore((state) => state.setProjectRegistrationError)
     const clearProjectRegistrationError = useStore((state) => state.clearProjectRegistrationError)
 
-    const [bootstrapError, setBootstrapError] = useState<string | null>(null)
-    const [controllerError, setControllerError] = useState<string | null>(null)
     const [isProjectBrowserOpen, setProjectBrowserOpen] = useState(false)
     const [isProjectBrowserLoading, setProjectBrowserLoading] = useState(false)
     const [projectBrowserState, setProjectBrowserState] = useState<ProjectBrowseResponse | null>(null)
     const [projectBrowserError, setProjectBrowserError] = useState<string | null>(null)
     const projectBrowserRequestIdRef = useRef(0)
-
-    const orderedProjects = useMemo(
-        () => buildOrderedProjects(Object.values(projectRegistry), projectRegistry, recentProjectPaths),
-        [projectRegistry, recentProjectPaths],
-    )
-    const shouldBootstrapRegistry = orderedProjects.length === 0 && viewMode !== 'home'
-
-    useProjectRegistryBootstrap({
-        hydrateProjectRegistry,
-        enabled: shouldBootstrapRegistry,
-        onError: setBootstrapError,
-    })
-
-    const persistProjectState = async (
-        projectPath: string,
-        patch: {
-            last_accessed_at?: string | null
-            active_conversation_id?: string | null
-            is_favorite?: boolean | null
-        },
-    ) => {
-        try {
-            const project = await updateProjectStateValidated({
-                project_path: projectPath,
-                ...patch,
-            })
-            upsertProjectRegistryEntry(toHydratedProjectRecord(project))
-        } catch {
-            // Keep the shell responsive if the background state sync fails.
-        }
-    }
 
     const ensureProjectGitRepository = async (projectPath: string) => {
         try {
@@ -90,7 +46,6 @@ export function useProjectSwitcherControls() {
     }
 
     const registerProjectFromPath = async (rawProjectPath: string) => {
-        setControllerError(null)
         const validation = resolveProjectPathValidation(rawProjectPath, projectRegistry)
         if (!validation.ok || !validation.normalizedPath) {
             setProjectRegistrationError(validation.error ?? 'Project directory path is required.')
@@ -113,6 +68,7 @@ export function useProjectSwitcherControls() {
             const projectRecord = await registerProjectValidated(normalizedProjectPath)
             upsertProjectRegistryEntry(toHydratedProjectRecord(projectRecord))
             clearProjectRegistrationError()
+            useStore.getState().setActiveProjectPath(normalizedProjectPath)
             return true
         } catch (error) {
             removeProject(normalizedProjectPath)
@@ -156,7 +112,6 @@ export function useProjectSwitcherControls() {
 
     const onOpenProjectDirectoryChooser = async () => {
         clearProjectRegistrationError()
-        setControllerError(null)
         setProjectBrowserOpen(true)
         setProjectBrowserState(null)
         await browseProjectDirectory()
@@ -177,70 +132,12 @@ export function useProjectSwitcherControls() {
         }
     }
 
-    const onActivateProject = async (projectPath: string) => {
-        if (!projectPath || projectPath === activeProjectPath) {
-            return
-        }
-        setControllerError(null)
-        const gitReady = await ensureProjectGitRepository(projectPath)
-        if (!gitReady) {
-            return
-        }
-        clearProjectRegistrationError()
-        setActiveProjectPath(projectPath)
-        void persistProjectState(projectPath, {
-            last_accessed_at: new Date().toISOString(),
-        })
-    }
-
-    const onClearActiveProject = () => {
-        setControllerError(null)
-        clearProjectRegistrationError()
-        setActiveProjectPath(null)
-    }
-
-    const onDeleteActiveProject = async () => {
-        if (!activeProjectPath) {
-            return
-        }
-        const projectLabel = formatProjectListLabel(activeProjectPath)
-        const confirmed = await confirm({
-            title: 'Remove project?',
-            description: `Remove project "${projectLabel}" from Spark? This deletes its local threads, workflow history, and runs, but does not delete the project files.`,
-            confirmLabel: 'Remove project',
-            cancelLabel: 'Keep project',
-            confirmVariant: 'destructive',
-        })
-        if (!confirmed) {
-            return
-        }
-
-        clearProjectRegistrationError()
-        setControllerError(null)
-        try {
-            await deleteProjectValidated(activeProjectPath)
-            const fallbackProjectPath = orderedProjects.find(
-                (project) => project.directoryPath !== activeProjectPath,
-            )?.directoryPath || null
-            removeProject(activeProjectPath, fallbackProjectPath)
-        } catch (error) {
-            setControllerError(extractApiErrorMessage(error, 'Unable to remove the project.'))
-        }
-    }
-
     return {
-        activeProjectPath,
-        clearProjectRegistrationError,
         isProjectBrowserLoading,
         isProjectBrowserOpen,
-        orderedProjects,
         projectBrowserErrorMessage: projectBrowserError || projectRegistrationError,
         projectBrowserState,
-        projectErrorMessage: projectRegistrationError || controllerError || bootstrapError,
-        onActivateProject,
         onBrowseProjectDirectory,
-        onClearActiveProject,
-        onDeleteActiveProject,
         onOpenProjectDirectoryChooser,
         onSelectProjectBrowserDirectory,
         onSetProjectBrowserOpen: (nextOpen: boolean) => {

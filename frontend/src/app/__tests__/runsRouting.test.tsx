@@ -1,4 +1,3 @@
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId } from '@/state/runsSessionSelectors'
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -39,7 +38,7 @@ describe('RunsHashRoutingController', () => {
         {
 useStore.setState({viewMode: 'home',
 runDetailSessionsByRunId: {}});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
     })
 
@@ -84,7 +83,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
         act(() => {
             const state = useStore.getState()
             state.setViewMode('runs')
-            state.setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-store')
+            state.setRunsSelectedRunId('run-store')
             state.updateRunDetailSession('run-store', { selectedNodeId: 'lint' })
         })
 
@@ -99,7 +98,7 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
         act(() => {
             const state = useStore.getState()
             state.setViewMode('runs')
-            state.setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), 'run-leaving')
+            state.setRunsSelectedRunId('run-leaving')
         })
         await waitFor(() => {
             expect(isRunsHash(window.location.hash)).toBe(true)

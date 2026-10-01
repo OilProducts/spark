@@ -16,6 +16,8 @@ import '@xyflow/react/dist/style.css';
 
 import { useStore, type FlowDefinitionMetadata } from '@/store';
 import { LaunchPanel, loadCatalogFlowContent } from '@/features/launch';
+import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
+import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
     clearFlowYamlSerializationContext,
@@ -195,7 +197,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const setRawYamlDraft = useStore((state) => state.setRawYamlDraft);
     const rawHandoffError = useStore((state) => state.rawHandoffError);
     const setRawHandoffError = useStore((state) => state.setRawHandoffError);
-    const activeProjectPath = useStore((state) => state.activeProjectPath);
+    // A run defaults to the project of the chat you came from, else the last used.
+    const runDefaultProjectPath = useStore((state) => defaultProjectChoice(state.projectRegistry, state.chatOriginProjectPath));
     const activeFlow = useStore((state) => state.activeFlow);
     const flowMetadata = useStore((state) => state.flowMetadata);
     const uiDefaults = useStore((state) => state.uiDefaults);
@@ -220,6 +223,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     const hasValidationErrors = useStore((state) => state.hasValidationErrors);
     const saveState = useStore((state) => state.saveState);
     const workingDir = useStore((state) => state.workingDir);
+    const activeProjectPath = useStore((state) => state.activeProjectPath);
     const model = useStore((state) => state.model);
     const setViewMode = useStore((state) => state.setViewMode);
     const [nodes, setNodes] = useNodesState<Node>([]);
@@ -252,7 +256,8 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     });
     const [isDragging, setIsDragging] = useState(false);
     const [isRawHandoffInFlight, setIsRawHandoffInFlight] = useState(false);
-    const [isRunPanelOpen, setIsRunPanelOpen] = useState(false);
+    const [runProjectPath, setRunProjectPath] = useState<string | null>(null);
+    const isRunPanelOpen = runProjectPath !== null;
     const [isHydrated, setIsHydrated] = useState(false);
     const [lastLayoutMs, setLastLayoutMs] = useState(0);
     const [lastPreviewMs, setLastPreviewMs] = useState(0);
@@ -280,12 +285,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
     useRegisterEditorGraphBridge(editorGraphBridge);
 
     useEffect(() => {
-        setIsRunPanelOpen(false);
+        setRunProjectPath(null);
     }, [flowName]);
 
-    const runDisabledReason = !activeProjectPath
-        ? 'Select an active project before running.'
-        : hasValidationErrors
+    const runDisabledReason = hasValidationErrors
             ? 'Fix validation errors before running.'
             : saveState === 'saving'
                 ? 'Waiting for the flow to finish saving.'
@@ -350,13 +353,13 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             return
         }
         saveSavedFlowLayout(
-            activeProjectPath,
+            null,
             flowName,
             EDITOR_LAYOUT_CANVAS_KIND,
             nextLayout,
             userControlled,
         )
-    }, [activeProjectPath, flowName])
+    }, [flowName])
 
     const runEdgeRouting = useCallback(async (
         nextNodes: Node[],
@@ -572,7 +575,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         try {
             const savedLayout = options?.expandChildren || !flowName
                 ? null
-                : await loadSavedFlowLayout(activeProjectPath, flowName, EDITOR_LAYOUT_CANVAS_KIND);
+                : await loadSavedFlowLayout(null, flowName, EDITOR_LAYOUT_CANVAS_KIND);
             const layoutGraph = await layoutWithElk(hydratedGraph.nodes, hydratedGraph.edges, {
                 savedLayout,
                 forceFreshLayout: options?.forceFreshLayout,
@@ -606,7 +609,6 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             edgeIdToLayoutKey,
         };
     }, [
-        activeProjectPath,
         flowName,
         resolvedUiDefaults,
     ]);
@@ -1110,7 +1112,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
             return
         }
 
-        clearSavedFlowLayout(activeProjectPath, flowName, EDITOR_LAYOUT_CANVAS_KIND)
+        clearSavedFlowLayout(null, flowName, EDITOR_LAYOUT_CANVAS_KIND)
         edgeSideIntentRef.current = {}
         routeRevisionRef.current += 1
         if (liveRouteTimerRef.current) {
@@ -1124,7 +1126,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         })
         setLastLayoutMs(Math.max(0, nowMs() - layoutStart))
         applyLaidOutGraph(layoutGraph)
-    }, [activeProjectPath, applyLaidOutGraph, edges, expandChildFlows, flowName, nodes])
+    }, [applyLaidOutGraph, edges, expandChildFlows, flowName, nodes])
 
     const enterRawYamlMode = useCallback((persistPreference = true) => {
         if (!flowName) return;
@@ -1445,9 +1447,10 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         void onResetSavedLayout()
                     }}
                     onAddNode={onAddNode}
-                    onRun={() => {
+                    runDefaultProjectPath={runDefaultProjectPath}
+                    onRun={(projectPath) => {
                         flushPendingSave()
-                        setIsRunPanelOpen(true)
+                        setRunProjectPath(projectPath)
                     }}
                 />
             )}
@@ -1575,14 +1578,16 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                                 loadFlowContent: () => loadCatalogFlowContent(flowName),
                                 previewSource: { kind: 'flow', flowName },
                             }}
-                            projectPath={activeProjectPath}
-                            initialWorkingDirectory={workingDir}
+                            key={runProjectPath}
+                            projectPath={runProjectPath}
+                            initialWorkingDirectory={launchWorkingDirectory(workingDir, activeProjectPath, runProjectPath)}
                             initialModel={model}
                             onLaunched={() => {
-                                setIsRunPanelOpen(false);
+                                if (runProjectPath) void markProjectUsed(runProjectPath);
+                                setRunProjectPath(null);
                                 setViewMode('runs');
                             }}
-                            onClose={() => setIsRunPanelOpen(false)}
+                            onClose={() => setRunProjectPath(null)}
                         />
                     </div>
                 ) : null}

@@ -124,10 +124,6 @@ describe('Sidebar node shape authoring', () => {
             />,
         )
 
-        await waitFor(() => {
-            expect(fetchFlowListMock).toHaveBeenCalled()
-        })
-
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
 
         const inspectorPanel = screen.getByTestId('inspector-panel')
@@ -161,10 +157,6 @@ describe('Sidebar node shape authoring', () => {
             />,
         )
 
-        await waitFor(() => {
-            expect(fetchFlowListMock).toHaveBeenCalled()
-        })
-
         expect(screen.queryByTestId('node-shape-type-warning')).not.toBeInTheDocument()
         expect(screen.getByText('Node Kind')).toBeInTheDocument()
         expect(screen.getByTestId('workflow-node-frame-box')).toBeInTheDocument()
@@ -189,10 +181,6 @@ describe('Sidebar node shape authoring', () => {
         const firstRender = renderWithFlowProvider(
             <SidebarShapeHarness nodes={initialNodes} />,
         )
-
-        await waitFor(() => {
-            expect(fetchFlowListMock).toHaveBeenCalled()
-        })
 
         fireEvent.change(screen.getByTestId('node-reads-context-editor-textarea'), {
             target: { value: 'draft.invalid' },

@@ -13,7 +13,6 @@ import {
     pushRecentProjectPath,
     resolveProjectSessionState,
     resolveViewModeForProjectScope,
-    saveRouteState,
 } from './store-helpers'
 import type {
     AppState,
@@ -41,35 +40,46 @@ const restoredProjectScope = restoredRouteState.activeProjectPath
     : null
 
 export const initialWorkspaceEditorState = {
-    activeFlow: null,
+    activeFlow: restoredRouteState.activeFlow,
     workingDir: restoredProjectScope ? restoredProjectScope.workingDir : DEFAULT_WORKING_DIRECTORY,
 }
 
+/** Runs proceed once open editors allow leaving; a cancelled or blocked leave never runs it. */
+export const requestNavigation = (proceed: () => void) => {
+    if (window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) proceed()
+}
+
 export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice> = (rawSet, get) => {
-    // All project transitions must confirm before changing the scope of mounted editors.
+    // Leaving Settings or a project page unmounts their editors, so those
+    // transitions ask first and unsaved edits can block them. Other views stay
+    // mounted and keep their drafts.
     const set = (update: Partial<AppState> | ((state: AppState) => Partial<AppState>)) => {
         const next = typeof update === 'function' ? update(get()) : update
-        const proceed = () => rawSet((state) => {
-            const patch = typeof update === 'function' ? update(state) : update
-            if ('activeProjectPath' in patch || 'viewMode' in patch) {
-                saveRouteState({
-                    viewMode: patch.viewMode ?? state.viewMode,
-                    activeProjectPath: patch.activeProjectPath === undefined ? state.activeProjectPath : patch.activeProjectPath,
-                })
-            }
-            return patch
-        })
-        if ((next.activeProjectPath !== undefined && next.activeProjectPath !== get().activeProjectPath
-            || get().viewMode === 'settings' && next.viewMode !== undefined && next.viewMode !== get().viewMode)
-            && !window.dispatchEvent(new CustomEvent('spark:before-navigation', { cancelable: true, detail: { proceed } }))) return
-        proceed()
+        const proceed = () => rawSet((state) => typeof update === 'function' ? update(state) : update)
+        const current = get()
+        const navigates = (next.projectPagePath !== undefined && next.projectPagePath !== current.projectPagePath)
+            || (current.viewMode === 'settings' && next.viewMode !== undefined && next.viewMode !== current.viewMode)
+        if (navigates) requestNavigation(proceed)
+        else proceed()
     }
     return ({
     viewMode: restoredRouteState.viewMode,
     setViewMode: (mode) => {
         const nextViewMode = resolveViewModeForProjectScope(mode)
-        set({ viewMode: nextViewMode })
+        // Leaving an open chat remembers its project, so a flow run can default to it.
+        set((state) => state.viewMode === 'home' && !state.projectPagePath && nextViewMode !== 'home'
+            ? { viewMode: nextViewMode, chatOriginProjectPath: state.activeProjectPath }
+            : { viewMode: nextViewMode })
     },
+    chatOriginProjectPath: null,
+    projectPagePath: restoredRouteState.projectPagePath,
+    openProjectPage: (projectPath) => set({ projectPagePath: projectPath }),
+    selectedMission: restoredRouteState.selectedMission,
+    setSelectedMission: (selection) => set({ selectedMission: selection }),
+    settingsCategory: restoredRouteState.settingsCategory,
+    setSettingsCategory: (category) => set({ settingsCategory: category }),
+    missionBoard: [],
+    setMissionBoard: (update) => rawSet((state) => ({ missionBoard: update(state.missionBoard) })),
     activeProjectPath: restoredRouteState.activeProjectPath,
     projectRegistry: initialProjectRegistry,
     recentProjectPaths: restoredRouteState.activeProjectPath ? [restoredRouteState.activeProjectPath] : [],
@@ -122,7 +132,8 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
             if (!nextState) {
                 return state
             }
-            return nextState
+            // Choosing a chat's project shows the chat, not a project page.
+            return { ...nextState, projectPagePath: null }
         }),
     projectRegistrationError: null,
     registerProject: (directoryPath) => {
@@ -299,6 +310,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 projectRegistry: nextProjectRegistry,
                 projectSessionsByPath: nextProjectSessionStates,
                 activeProjectPath: nextActiveProjectPath,
+                projectPagePath: state.projectPagePath === normalizedCurrentPath ? normalizedNextPath : state.projectPagePath,
                 workingDir: nextWorkingDir,
                 recentProjectPaths: nextRecentProjectPaths,
                 homeConversationCache: nextHomeConversationCache,
@@ -334,21 +346,6 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
     activeFlow: initialWorkspaceEditorState.activeFlow,
     setActiveFlow: (flow) =>
         set({ activeFlow: flow }),
-    setConversationId: (id) =>
-        set((state) => {
-            if (!state.activeProjectPath) {
-                return {}
-            }
-            const nextProjectSessionStates = { ...state.projectSessionsByPath }
-            const scoped = resolveProjectSessionState(nextProjectSessionStates[state.activeProjectPath], state.activeProjectPath)
-            nextProjectSessionStates[state.activeProjectPath] = {
-                ...scoped,
-                conversationId: id,
-            }
-            return {
-                projectSessionsByPath: nextProjectSessionStates,
-            }
-        }),
     updateProjectSessionState: (projectPath, patch) =>
         set((state) => {
             const normalizedProjectPath = normalizeProjectPath(projectPath)
@@ -362,15 +359,33 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
                 ...patch,
             }
             nextProjectSessionStates[normalizedProjectPath] = nextScopedWorkspace
+            // A project's draft belongs to its selected chat, so switching chats clears it.
+            // Restoring a selection onto a project with none keeps text typed meanwhile.
+            const homeSession = state.homeProjectSessionsByPath[normalizedProjectPath]
+            const switchesChat = scoped.conversationId !== null && nextScopedWorkspace.conversationId !== scoped.conversationId
+            const draftReset = homeSession && switchesChat
+                ? {
+                    homeProjectSessionsByPath: {
+                        ...state.homeProjectSessionsByPath,
+                        [normalizedProjectPath]: {
+                            ...homeSession,
+                            chatDraft: '',
+                            pendingConversationTurn: null,
+                        },
+                    },
+                }
+                : {}
             const isActiveScope = state.activeProjectPath === normalizedProjectPath
             if (!isActiveScope) {
                 return {
                     projectSessionsByPath: nextProjectSessionStates,
+                    ...draftReset,
                 }
             }
             return {
                 projectSessionsByPath: nextProjectSessionStates,
                 workingDir: nextScopedWorkspace.workingDir,
+                ...draftReset,
             }
         }),
 })

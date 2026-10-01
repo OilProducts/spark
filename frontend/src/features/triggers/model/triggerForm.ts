@@ -1,9 +1,12 @@
 import type { TriggerResponse, TriggerSourceType } from '@/lib/workspaceClient'
 import { normalizeProjectPath } from '@/lib/projectPaths'
+import type { RegisteredProject } from '@/state/store-types'
+import { isUnregisteredTarget, projectLabel } from '@/features/projects/model/projectChoices'
 
 export type { TriggerSourceType }
 
-export type TriggerTargetMode = 'active' | 'none' | 'custom'
+/** A registered project, no project, or another path. */
+export type TriggerTargetMode = 'project' | 'none' | 'custom'
 
 export type TriggerFormState = {
     name: string
@@ -53,10 +56,10 @@ const BASE_TRIGGER_FORM: Omit<TriggerFormState, 'targetMode' | 'projectPath'> = 
     flowEventStatuses: 'completed,failed',
 }
 
-export const createEmptyTriggerForm = (activeProjectPath: string | null): TriggerFormState => ({
+export const createEmptyTriggerForm = (projectPath: string | null): TriggerFormState => ({
     ...BASE_TRIGGER_FORM,
-    targetMode: activeProjectPath ? 'active' : 'none',
-    projectPath: activeProjectPath || '',
+    targetMode: projectPath ? 'project' : 'none',
+    projectPath: projectPath || '',
 })
 
 export const SHARED_WEBHOOK_ENDPOINT = '/workspace/api/webhooks'
@@ -82,35 +85,28 @@ export function triggerSourceSummary(trigger: TriggerResponse): string {
     return `Flow event · ${String(trigger.source.flow_name ?? 'any flow')}`
 }
 
-const formatProjectLabel = (projectPath: string) => {
-    const normalizedPath = normalizeProjectPath(projectPath)
-    const segments = normalizedPath.split('/').filter(Boolean)
-    return segments[segments.length - 1] || normalizedPath
-}
+type Registry = Record<string, RegisteredProject>
 
-export function triggerTargetsActiveProject(trigger: TriggerResponse, activeProjectPath: string | null): boolean {
-    return Boolean(activeProjectPath) && trigger.action.project_path === activeProjectPath
-}
-
-export function triggerTargetSummary(trigger: TriggerResponse, activeProjectPath: string | null): string {
+/** The project a trigger targets, marking a target that is not a registered project. */
+export function triggerTargetSummary(trigger: TriggerResponse, registry: Registry): string {
     if (!trigger.action.project_path) {
         return 'No project'
     }
-    if (triggerTargetsActiveProject(trigger, activeProjectPath)) {
-        return 'Targets active project'
-    }
-    return `Project · ${formatProjectLabel(trigger.action.project_path)}`
+    const label = projectLabel(registry, normalizeProjectPath(trigger.action.project_path))
+    return isUnregisteredTarget(registry, trigger.action.project_path)
+        ? `Unregistered project · ${label}`
+        : `Project · ${label}`
 }
 
 export function resolveTriggerTargetMode(
     projectPath: string | null | undefined,
-    activeProjectPath: string | null,
+    registry: Registry,
 ): TriggerTargetMode {
     const normalizedProjectPath = typeof projectPath === 'string' ? projectPath.trim() : ''
     if (!normalizedProjectPath) {
         return 'none'
     }
-    return activeProjectPath && normalizedProjectPath === activeProjectPath ? 'active' : 'custom'
+    return isUnregisteredTarget(registry, normalizedProjectPath) ? 'custom' : 'project'
 }
 
 export function buildTriggerSourcePayload(form: TriggerFormState): Record<string, unknown> {
@@ -162,7 +158,7 @@ export function buildTriggerActionPayload(form: TriggerFormState): Record<string
     }
 }
 
-export function triggerToFormState(trigger: TriggerResponse, activeProjectPath: string | null): TriggerFormState {
+export function triggerToFormState(trigger: TriggerResponse, registry: Registry): TriggerFormState {
     const source = trigger.source
     const projectPath = trigger.action.project_path ?? ''
     return {
@@ -172,7 +168,7 @@ export function triggerToFormState(trigger: TriggerResponse, activeProjectPath: 
         actionMode: trigger.action.mode ?? 'static',
         missionId: trigger.action.mission_id ?? '',
         flowName: trigger.action.flow_name,
-        targetMode: resolveTriggerTargetMode(projectPath, activeProjectPath),
+        targetMode: resolveTriggerTargetMode(projectPath, registry),
         projectPath,
         staticContextText: JSON.stringify(trigger.action.static_context ?? {}, null, 2),
         scheduleKind: (typeof source.kind === 'string' ? source.kind : 'interval') as 'once' | 'interval' | 'weekly',

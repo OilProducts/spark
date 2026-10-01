@@ -5,6 +5,7 @@ import {
   deleteFlowAfterSmoke,
   ensureScreenshotDir,
   gotoWithRegisteredProject,
+  runFlowInProject,
   screenshotPath,
   stubProjectMetadata,
 } from '../fixtures/smoke-helpers'
@@ -93,7 +94,7 @@ test("warning-only diagnostics still allow the editor run with explicit banner f
     })
 
     await gotoWithRegisteredProject(page, projectPath)
-    await page.getByTestId("nav-mode-editor").click()
+    await page.getByTestId("activity-flows").click()
     const flowButton = page.getByRole("button", { name: flowName })
     await expect(flowButton).toBeVisible()
     const previewRequest = page.waitForRequest(
@@ -106,7 +107,7 @@ test("warning-only diagnostics still allow the editor run with explicit banner f
     await previewRequest
 
     await expect(page.getByTestId("editor-run-button")).toBeEnabled()
-    await page.getByTestId("editor-run-button").click()
+    await runFlowInProject(page, projectPath)
     await expect(page.getByTestId("editor-run-panel")).toBeVisible()
     await expect(page.getByTestId("launch-panel-start-button")).toBeEnabled()
     await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
@@ -210,7 +211,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
     })
 
     await gotoWithRegisteredProject(page, projectPath)
-    await page.getByTestId("nav-mode-editor").click()
+    await page.getByTestId("activity-flows").click()
 
     const waitForPreviewToken = (token: string) =>
       page.waitForRequest(
@@ -230,7 +231,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
     await page.getByRole('button', { name: warningFlowName }).click()
     await warningPreviewRequest
     await expect(page.getByTestId("editor-run-button")).toBeEnabled()
-    await page.getByTestId("editor-run-button").click()
+    await runFlowInProject(page, projectPath)
     await expect(page.getByTestId("editor-run-panel")).toBeVisible()
     await expect(page.getByTestId("execute-warning-banner")).toBeVisible()
     await expect(page.getByTestId("execute-warning-banner")).toContainText("Warnings present; run allowed.")
@@ -241,7 +242,7 @@ test("diagnostics transitions toggle the editor run blocking and warning state f
     await cleanPreviewRequest
     // Switching flows closes the run panel; reopen it for the clean flow.
     await expect(page.getByTestId("editor-run-button")).toBeEnabled()
-    await page.getByTestId("editor-run-button").click()
+    await runFlowInProject(page, projectPath)
     await expect(page.getByTestId("editor-run-panel")).toBeVisible()
     await expect(page.getByTestId("launch-panel-start-button")).toBeEnabled()
     await expect(page.getByTestId("execute-warning-banner")).toHaveCount(0)
@@ -268,13 +269,13 @@ test("launch failures surface diagnostics and retry affordances for direct runs"
     })
 
     await gotoWithRegisteredProject(page, projectPath)
-    await page.getByTestId("nav-mode-editor").click()
+    await page.getByTestId("activity-flows").click()
     const flowButton = page.getByRole("button", { name: flowName })
     await expect(flowButton).toBeVisible()
     await flowButton.click()
 
     await expect(page.getByTestId("editor-run-button")).toBeEnabled()
-    await page.getByTestId("editor-run-button").click()
+    await runFlowInProject(page, projectPath)
     await expect(page.getByTestId("editor-run-panel")).toBeVisible()
     await expect(page.getByTestId("launch-panel-flow-name")).toContainText(flowName)
     await expect(page.getByTestId("launch-panel-start-button")).toBeEnabled()

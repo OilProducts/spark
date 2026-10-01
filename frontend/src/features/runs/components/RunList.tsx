@@ -2,14 +2,14 @@ import { useState } from 'react'
 
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { InlineError } from '@/components/app/inline-error'
 import {
     Empty,
     EmptyDescription,
     EmptyHeader,
 } from '@/components/ui/empty'
-import { formatProjectPathLabel } from '@/lib/projectPaths'
+import { useStore } from '@/store'
+import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
 import { formatDuration } from '../model/shared'
 import { flowTitle, formatRunDate, runTitle } from '../model/runOverviewModel'
@@ -31,10 +31,7 @@ const ATTENTION: Record<string, { label: string; className: string }> = {
 }
 
 interface RunListProps {
-    activeProjectPath: string | null
     error: string | null
-    scopeMode: 'active' | 'all'
-    onScopeModeChange: (mode: 'active' | 'all') => void
     status: 'idle' | 'loading' | 'ready' | 'error'
     onSelectRun: (run: RunRecord) => void
     runs: RunRecord[]
@@ -43,10 +40,7 @@ interface RunListProps {
 }
 
 export function RunList({
-    activeProjectPath,
     error,
-    scopeMode,
-    onScopeModeChange,
     status,
     onSelectRun,
     runs,
@@ -54,6 +48,7 @@ export function RunList({
     summaryLabel,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
+    const projectRegistry = useStore((state) => state.projectRegistry)
     const [searchQuery, setSearchQuery] = useState('')
     const [expandedParents, setExpandedParents] = useState<Set<string>>(() => new Set())
     // eslint-disable-next-line react-hooks/purity -- render-time clock for run ages; the list re-renders on run updates
@@ -65,14 +60,6 @@ export function RunList({
         || flowTitle(run.flow_name).toLowerCase().includes(query)
         || run.flow_name.toLowerCase().includes(query)
     )
-    const scopeDescription = scopeMode === 'all'
-        ? 'Run history across all projects.'
-        : activeProjectPath
-            ? 'Run history for the active project.'
-            : 'Choose an active project or switch to all projects.'
-    const compactProjectLabel = (projectPath?: string | null) => {
-        return projectPath ? formatProjectPathLabel(projectPath) : null
-    }
     const queuedLockGroups = runs.reduce<Array<{ identity: string; label: string; runs: RunRecord[] }>>((groups, run) => {
         const executionLock = run.execution_lock
         if (run.status !== 'queued' || !executionLock?.identity) {
@@ -121,14 +108,13 @@ export function RunList({
     )
 
     const renderRunRow = (run: RunRecord, depth = 0) => {
-        const projectLabel = scopeMode === 'all' ? compactProjectLabel(run.project_path) : null
+        const runProject = run.project_path ? projectLabel(projectRegistry, run.project_path) : null
         const attention = ATTENTION[run.status]
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const metaParts = [
             title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
             formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
-            projectLabel,
         ].filter((value): value is string => Boolean(value) && value !== '—')
         const holdsExecutionLock = run.execution_lock?.state === 'holding'
         const queuedForExecutionLock = run.execution_lock?.state === 'queued'
@@ -166,6 +152,11 @@ export function RunList({
                 </div>
                 <div className="mt-0.5 flex min-w-0 items-baseline gap-2 text-xs leading-4 text-muted-foreground">
                     <span data-testid="run-history-row-meta" className="min-w-0 flex-1 truncate">
+                        {runProject ? (
+                            <span data-testid="run-history-row-project" title={run.project_path ?? undefined} className="text-foreground/80">
+                                {runProject}{metaParts.length > 0 ? ' · ' : ''}
+                            </span>
+                        ) : null}
                         {metaParts.join(' · ')}
                         {attention ? (
                             <span data-testid="run-history-row-status" className={attention.className}>
@@ -249,42 +240,14 @@ export function RunList({
         <nav
             data-testid="run-list-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`bg-background flex shrink-0 flex-col overflow-hidden z-40 ${
-                isNarrowViewport ? 'w-full max-h-[46vh] rounded-md border' : 'w-72 border-r'
-            }`}
+            className="flex h-full min-h-0 w-full flex-col overflow-hidden"
         >
             <div className="space-y-2 px-3 pb-2 pt-3">
-                <div className="flex items-center gap-3 text-xs">
-                    <button
-                        type="button"
-                        data-testid="runs-scope-active-project"
-                        aria-pressed={scopeMode === 'active'}
-                        onClick={() => onScopeModeChange('active')}
-                        disabled={!activeProjectPath}
-                        title={activeProjectPath || 'No active project'}
-                        className={cn(
-                            'shrink-0 underline-offset-4 disabled:opacity-50',
-                            scopeMode === 'active' ? 'text-foreground underline' : 'text-muted-foreground hover:text-foreground',
-                        )}
-                    >
-                        This project
-                    </button>
-                    <button
-                        type="button"
-                        data-testid="runs-scope-all-projects"
-                        aria-pressed={scopeMode === 'all'}
-                        onClick={() => onScopeModeChange('all')}
-                        className={cn(
-                            'shrink-0 underline-offset-4',
-                            scopeMode === 'all' ? 'text-foreground underline' : 'text-muted-foreground hover:text-foreground',
-                        )}
-                    >
-                        All projects
-                    </button>
+                <div className="flex items-center text-xs">
                     <span
                         data-testid="runs-scope-description"
-                        className="ml-auto min-w-0 truncate text-muted-foreground"
-                        title={scopeDescription}
+                        className="min-w-0 truncate text-muted-foreground"
+                        title="Runs across all projects"
                     >
                         {summaryLabel}
                     </span>
@@ -301,13 +264,6 @@ export function RunList({
                 {error ? (
                     <InlineError>{error}</InlineError>
                 ) : null}
-                {scopeMode === 'active' && !activeProjectPath ? (
-                    <Alert className="border-border px-3 py-2 text-muted-foreground">
-                        <AlertDescription className="text-inherit">
-                            Choose an active project or switch to all projects to view run history.
-                        </AlertDescription>
-                    </Alert>
-                ) : null}
             </div>
             {status !== 'ready' && status !== 'error' && runs.length === 0 ? (
                 <div className="px-4 pb-4">
@@ -317,13 +273,7 @@ export function RunList({
                 <div className="px-4 pb-4">
                     <Empty className="px-3 py-4 text-xs text-muted-foreground">
                         <EmptyHeader>
-                            <EmptyDescription>
-                                {scopeMode === 'all'
-                                    ? 'No runs yet.'
-                                    : activeProjectPath
-                                        ? 'No runs for the active project yet.'
-                                        : 'Choose an active project or switch to all projects.'}
-                            </EmptyDescription>
+                            <EmptyDescription>No runs yet.</EmptyDescription>
                         </EmptyHeader>
                     </Empty>
                 </div>

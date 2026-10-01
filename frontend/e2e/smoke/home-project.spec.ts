@@ -6,12 +6,12 @@ test('a fresh session chats in the Home project without choosing one', async ({ 
     expect(home.display_name).toBe('Home')
 
     await page.goto('/')
-    const switcher = page.getByTestId('top-nav-project-switcher')
-    await expect(switcher).toHaveText('Home')
-    await expect(switcher).toHaveAttribute('title', home.project_path)
-    await switcher.click()
-    await expect(page.getByRole('option').and(page.locator(`[title="${home.project_path}"]`))).toContainText('Home')
-    await page.keyboard.press('Escape')
+    // Home leads the Chats panel, named Home, and the composer says chats go there.
+    const homeGroup = page.getByTestId('chats-project-group').first()
+    await expect(homeGroup).toHaveAttribute('data-project-path', home.project_path)
+    await expect(homeGroup.getByTestId('chats-project-name')).toHaveText('Home')
+    await expect(homeGroup.getByTestId('chats-project-name')).toHaveAttribute('title', home.project_path)
+    await expect(page.getByTestId('chat-composer-project')).toContainText('Home')
 
     const turnPosted = page.waitForResponse((response) => response.request().method() === 'POST' && /\/workspace\/api\/conversations\/[^/]+\/turns$/.test(response.url()))
     await page.getByTestId('project-ai-conversation-input').fill('Hello from Home.')

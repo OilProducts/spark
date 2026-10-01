@@ -1,20 +1,17 @@
 import type { UiDefaults } from '@/state/store-types'
 import type {
     ConversationChatMode,
-    ConversationSummaryResponse,
 } from '@/lib/workspaceClient'
 
 import type { PendingConversationTurnState } from './conversationState'
 import type { ProjectGitMetadata } from './presentation'
 import {
     EMPTY_PROJECT_GIT_METADATA,
-    formatProjectListLabel,
     getConversationFlowLaunches,
     getConversationFlowRunRequests,
     getConversationProposedPlans,
     getConversationTimelineEntries,
     type NormalizedConversationRecord,
-    type ProjectConversationCacheState,
 } from './projectsHomeState'
 import type {
     ConversationTimelineEntry,
@@ -27,7 +24,6 @@ type BuildProjectsHomeViewModelArgs = {
     activeConversationId: string | null
     activeConversationRecord: NormalizedConversationRecord | null
     activeProjectPath: string | null
-    conversationCache: ProjectConversationCacheState
     pendingConversationTurn: PendingConversationTurnState | null
     projectGitMetadata: Record<string, ProjectGitMetadata>
     uiDefaults: UiDefaults
@@ -42,9 +38,7 @@ export type ProjectsHomeViewModel = {
     activeFlowLaunchesById: Map<string, ProjectFlowLaunch>
     activeFlowRunRequestsById: Map<string, ProjectFlowRunRequest>
     activeProposedPlansById: Map<string, ProjectProposedPlan>
-    activeProjectConversationSummaries: ConversationSummaryResponse[]
     activeProjectGitMetadata: ProjectGitMetadata
-    activeProjectLabel: string | null
     chatSendButtonLabel: string
     hasActiveAssistantTurn: boolean
     hasRenderableConversationHistory: boolean
@@ -65,7 +59,6 @@ export function buildProjectsHomeViewModel({
     activeConversationId,
     activeConversationRecord,
     activeProjectPath,
-    conversationCache,
     pendingConversationTurn,
     projectGitMetadata,
     uiDefaults,
@@ -119,13 +112,9 @@ export function buildProjectsHomeViewModel({
         activeFlowLaunchesById: buildIdMap(activeFlowLaunches),
         activeFlowRunRequestsById: buildIdMap(activeFlowRunRequests),
         activeProposedPlansById: buildIdMap(activeProposedPlans),
-        activeProjectConversationSummaries: activeProjectPath
-            ? conversationCache.summariesByProjectPath[activeProjectPath] || []
-            : [],
         activeProjectGitMetadata: activeProjectPath
             ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
             : EMPTY_PROJECT_GIT_METADATA,
-        activeProjectLabel: activeProjectPath ? formatProjectListLabel(activeProjectPath) : null,
         chatSendButtonLabel: isConversationTurnStarting ? 'Sending...' : hasActiveAssistantTurn ? 'Thinking...' : 'Send',
         hasActiveAssistantTurn,
         hasRenderableConversationHistory,

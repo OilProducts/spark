@@ -1,15 +1,17 @@
+import { ActivityBar } from "@/app/ActivityBar"
 import { AppSessionControllers } from "@/app/AppSessionControllers"
-import { Navbar } from "@/app/Navbar"
 import { EditorWorkspace } from "@/features/editor"
 import { ProjectsPanel } from "@/features/projects"
 import { RunStream, RunsPanel } from "@/features/runs"
 import { SettingsPanel } from "@/features/settings"
 import { TriggersPanel } from "@/features/triggers"
 import { useStore } from "@/store"
+import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
 function App() {
   const viewMode = useStore((state) => state.viewMode)
+  const isNarrowViewport = useNarrowViewport()
   const isHomeMode = viewMode === 'home' || viewMode === 'projects'
   const isCanvasMode = viewMode === 'editor'
   const isRunsMode = viewMode === 'runs'
@@ -20,9 +22,13 @@ function App() {
     <DialogProvider>
       <AppSessionControllers />
       <RunStream />
-      <div data-testid="app-shell" className="h-screen flex flex-col antialiased bg-background text-foreground">
-        <Navbar />
-        <main data-testid="app-main" className="flex-1 relative flex flex-col overflow-hidden">
+      <div
+        data-testid="app-shell"
+        data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
+        className={`h-screen flex antialiased bg-background text-foreground ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
+      >
+        <ActivityBar />
+        <main data-testid="app-main" className="flex-1 min-w-0 min-h-0 relative flex flex-col overflow-hidden">
           <div
             data-testid="canvas-workspace-primary"
             data-canvas-active={String(isCanvasMode)}

@@ -53,6 +53,14 @@ export const createHomeSessionSlice: StateCreator<AppState, [], [], HomeSessionS
     homeProjectSessionsByPath: {},
     homeConversationSessionsById: {},
     homeProjectGitMetadataByPath: {},
+    runningChats: {},
+    setRunningChat: (conversationId, value) =>
+        set((state) => {
+            const runningChats = { ...state.runningChats }
+            if (value) runningChats[conversationId] = value
+            else delete runningChats[conversationId]
+            return { runningChats }
+        }),
     updateHomeProjectSession: (projectPath, patch) =>
         set((state) => ({
             homeProjectSessionsByPath: {

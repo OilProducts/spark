@@ -12,7 +12,6 @@ import {
     type PipelineContinueFlowSourceMode,
     type RunInitiationFormState,
 } from '@/lib/pipelineStartPayload'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { useStore } from '@/store'
 
 export type StartPipelineResult =
@@ -41,10 +40,7 @@ export function launchErrorMessage(error: unknown): string {
 
 export function useStartPipeline() {
     const { confirm } = useDialogController()
-    const activeProjectPath = useStore((state) => state.activeProjectPath)
-    const projectWasRegistered = useStore((state) => Boolean(activeProjectPath && state.projectRegistry[activeProjectPath]))
-    const runsScopeMode = useStore((state) => state.runsListSession.scopeMode)
-    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
+    const setRunsSelectedRunId = useStore((state) => state.setRunsSelectedRunId)
 
     const confirmGitPolicyGate = async (projectPath: string): Promise<GitPolicyGateResult> => {
         if (!projectPath) {
@@ -69,18 +65,16 @@ export function useStartPipeline() {
         }
     }
 
-    const finalizeLaunch = (runData: PipelineStartResponse): { runId: string | null; queued: boolean } => {
+    // A run launched in a project removed meanwhile is not selected.
+    const finalizeLaunch = (runData: PipelineStartResponse, projectPath: string, projectWasRegistered: boolean): { runId: string | null; queued: boolean } => {
         if (runData.status !== 'started' && runData.status !== 'queued') {
             const reason = runData.error || runData.status || 'Unknown run error'
             throw new Error(`Run not started: ${reason}`)
         }
         const runId = typeof runData.pipeline_id === 'string' ? runData.pipeline_id : null
         const queued = runData.status === 'queued'
-        if (runId && (!projectWasRegistered || !activeProjectPath || useStore.getState().projectRegistry[activeProjectPath])) {
-            setRunsSelectedRunIdForScope(
-                buildRunsScopeKey(runsScopeMode, activeProjectPath),
-                runId,
-            )
+        if (runId && (!projectWasRegistered || useStore.getState().projectRegistry[projectPath])) {
+            setRunsSelectedRunId(runId)
         }
         return { runId, queued }
     }
@@ -90,6 +84,7 @@ export function useStartPipeline() {
         flowContent: string,
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
+        const projectWasRegistered = Boolean(useStore.getState().projectRegistry[form.projectPath])
         const gate = await confirmGitPolicyGate(form.projectPath)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {
@@ -101,7 +96,7 @@ export function useStartPipeline() {
             flowContent,
         )
         const runData = await fetchPipelineStartValidated(payload)
-        return { status: 'launched', ...finalizeLaunch(runData) }
+        return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
     }
 
     const continueFromRun = async (
@@ -114,6 +109,7 @@ export function useStartPipeline() {
         },
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
+        const projectWasRegistered = Boolean(useStore.getState().projectRegistry[form.projectPath])
         const gate = await confirmGitPolicyGate(form.projectPath)
         options.onGitPolicyWarning?.(gate.warning)
         if (!gate.allowed) {
@@ -121,7 +117,7 @@ export function useStartPipeline() {
         }
         const payload = buildPipelineContinuePayload(form, continuation)
         const runData = await fetchPipelineContinueValidated(sourceRunId, payload)
-        return { status: 'launched', ...finalizeLaunch(runData) }
+        return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
     }
 
     return { startFromFlowContent, continueFromRun, logUnexpectedLaunchError }

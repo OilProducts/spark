@@ -52,7 +52,7 @@ describe('RunGraphCard', () => {
 
     it('shows restoring state before the first authoritative graph load instead of an empty placeholder', async () => {
         const run = makeRun()
-        useStore.getState().setRunsSelectedRunIdForScope('all', run.run_id)
+        useStore.getState().setRunsSelectedRunId(run.run_id)
         let resolvePreview!: (value: unknown) => void
         loadRunGraphPreviewMock.mockImplementation(() => new Promise((resolve) => {
             resolvePreview = resolve
@@ -96,7 +96,7 @@ describe('RunGraphCard', () => {
 
     it('reloads the run graph with expanded child previews when the toggle is enabled', async () => {
         const run = makeRun('run-expanded')
-        useStore.getState().setRunsSelectedRunIdForScope('all', run.run_id)
+        useStore.getState().setRunsSelectedRunId(run.run_id)
         loadRunGraphPreviewMock.mockResolvedValue({
             status: 'ok',
             graph: {
@@ -138,7 +138,7 @@ describe('RunGraphCard', () => {
 
     it('insets canvas controls inside the default-height viewport', async () => {
         const run = makeRun('run-controls')
-        useStore.getState().setRunsSelectedRunIdForScope('all', run.run_id)
+        useStore.getState().setRunsSelectedRunId(run.run_id)
         loadRunGraphPreviewMock.mockResolvedValue({
             status: 'ok',
             graph: {
@@ -175,14 +175,14 @@ describe('RunGraphCard', () => {
 it('rejects a delayed graph failure after its session is removed and recreated', async () => {
     useStore.setState(useStore.getInitialState(), true)
     const run = makeRun('recreated')
-    useStore.getState().setRunsSelectedRunIdForScope('all', run.run_id)
+    useStore.getState().setRunsSelectedRunId(run.run_id)
     let rejectPreview!: (error: Error) => void
     loadRunGraphPreviewMock.mockImplementation(() => new Promise((_, reject) => { rejectPreview = reject }))
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     render(<RunGraphCard run={run} nodeStatusesById={{}} selectedNodeId={null} onSelectNode={() => {}} />)
     act(() => {
         useStore.getState().clearRunDetailSession(run.run_id)
-        useStore.getState().setRunsSelectedRunIdForScope('all', run.run_id)
+        useStore.getState().setRunsSelectedRunId(run.run_id)
     })
     await act(async () => rejectPreview(new Error('obsolete graph failure')))
     expect(useStore.getState().runDetailSessionsByRunId[run.run_id].graphError).toBeNull()
@@ -192,7 +192,7 @@ it('rejects a delayed graph failure after its session is removed and recreated',
 it('retains a cached graph on refresh failure and hides it when the child variant changes', async () => {
     useStore.setState(useStore.getInitialState(), true)
     const run = makeRun('cached-variant')
-    useStore.getState().setRunsSelectedRunIdForScope('all', run.run_id)
+    useStore.getState().setRunsSelectedRunId(run.run_id)
     useStore.getState().updateRunDetailSession(run.run_id, {
         graphExpanded: false, graphStatus: 'ready',
         graphNodes: [{ id: 'cached', type: 'default', position: { x: 0, y: 0 }, data: { label: 'Cached graph node' } }],

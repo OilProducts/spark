@@ -1,4 +1,3 @@
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -139,7 +138,7 @@ describe('LaunchPanel', () => {
 useStore.setState({...useStore.getState(),
 activeProjectPath: TEST_PROJECT,
 projectRegistry: {}});
-useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getState().runsListSession.scopeMode, useStore.getState().activeProjectPath), null);
+useStore.getState().setRunsSelectedRunId(null);
 }
   })
 
@@ -204,13 +203,13 @@ useStore.getState().setRunsSelectedRunIdForScope(buildRunsScopeKey(useStore.getS
     expect(onClose).toHaveBeenCalledTimes(2)
   })
 
-  it('disables launching without an active project', async () => {
+  it('disables launching without a project', async () => {
     installLaunchFetchMock()
     renderLaunchPanel({ projectPath: null })
 
     const startButton = await screen.findByTestId('launch-panel-start-button')
     expect(startButton).toBeDisabled()
-    expect(startButton).toHaveAttribute('title', 'Select an active project before running.')
+    expect(startButton).toHaveAttribute('title', 'Choose a project before running.')
   })
 
   it('asks for confirmation when the git policy gate cannot verify project state', async () => {

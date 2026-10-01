@@ -1,6 +1,5 @@
 import { useInheritedModelSettings } from '@/components/model-chooser/useInheritedModelSettings'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -19,6 +18,7 @@ import { usePersistProjectState } from './usePersistProjectState'
 import { useProjectThreadActions } from './projectThreadActions'
 import { debugProjectChat } from '../model/projectChatDebug'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
+import { projectLabel } from '../model/projectChoices'
 import type { ConversationTimelineEntry } from '../model/types'
 import {
     buildProjectConversationId,
@@ -58,17 +58,15 @@ export function useProjectsHomeController() {
     const activeProjectPath = useStore((state) => state.activeProjectPath)
     const projectSessionsByPath = useStore((state) => state.projectSessionsByPath)
     const homeThreadSummariesStatusByProjectPath = useStore((state) => state.homeThreadSummariesStatusByProjectPath)
+    const projectRegistry = useStore((state) => state.projectRegistry)
     const clearHomeConversationSession = useStore((state) => state.clearHomeConversationSession)
-    const setConversationId = useStore((state) => state.setConversationId)
     const updateProjectSessionState = useStore((state) => state.updateProjectSessionState)
     const projectGitMetadata = useStore((state) => state.homeProjectGitMetadataByPath)
     const model = useStore((state) => state.model)
     const uiDefaults = useStore((state) => state.uiDefaults)
-    const scopeKey = useStore((state) => buildRunsScopeKey(state.runsListSession.scopeMode, state.activeProjectPath))
-    const setRunsSelectedRunIdForScope = useStore((state) => state.setRunsSelectedRunIdForScope)
+    const setRunsSelectedRunId = useStore((state) => state.setRunsSelectedRunId)
     const setViewMode = useStore((state) => state.setViewMode)
 
-    const resetComposerRef = useRef<() => void>(() => {})
     const persistProjectState = usePersistProjectState(upsertProjectRegistryEntry)
 
     const isNarrowViewport = useNarrowViewport()
@@ -128,14 +126,10 @@ export function useProjectsHomeController() {
         syncConversationPinnedState,
     } = useHomeSidebarLayout(isNarrowViewport, activeProjectPath, activeConversationId)
     const isConversationPinnedToBottomRef = useRef(isConversationPinnedToBottom)
-    const activeProjectConversationSummariesStatus = activeProjectPath
-        ? (homeThreadSummariesStatusByProjectPath[activeProjectPath] ?? 'idle')
-        : 'idle'
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
         activeConversationRecord,
         activeProjectPath,
-        conversationCache,
         pendingConversationTurn,
         projectGitMetadata,
         uiDefaults,
@@ -144,7 +138,6 @@ export function useProjectsHomeController() {
         activeConversationRecord,
         activeProjectPath,
         activeProjectScope,
-        conversationCache,
         pendingConversationTurn,
         projectGitMetadata,
         uiDefaults,
@@ -158,8 +151,6 @@ export function useProjectsHomeController() {
         activeFlowLaunchesById,
         activeFlowRunRequestsById,
         activeProposedPlansById,
-        activeProjectConversationSummaries,
-        activeProjectLabel,
         chatSendButtonLabel,
         hasRenderableConversationHistory,
         isChatInputDisabled,
@@ -174,6 +165,9 @@ export function useProjectsHomeController() {
         model: storedChatModel || null,
         reasoning_effort: storedChatReasoningEffort || null,
     }, [pendingChatSettings, effectiveModelSettings, activeConversationRecord, uiDefaults.llm_profile, storedChatProvider, storedChatModel, storedChatReasoningEffort])
+    // A saved chat's revision is unknown until its snapshot loads, so its settings can't be edited yet.
+    const isConversationHydrating = Boolean(activeProjectPath && activeConversationId && !activeConversationRecord
+        && conversationCache.summariesByProjectPath[activeProjectPath]?.some((entry) => entry.conversation_id === activeConversationId))
     const editableModelSettings = pendingChatSettings ?? activeConversationRecord?.model_settings_view?.stored ?? INHERITED_MODEL_SETTINGS
     const discovery = useModelOptions(activeProjectPath)
     const activeProjectChatModelsResponse = discovery?.payload
@@ -206,14 +200,12 @@ export function useProjectsHomeController() {
             projectPath,
             conversationId,
         })
-        resetComposerRef.current()
-        setConversationId(conversationId)
         updateProjectSessionState(projectPath, { conversationId })
         void persistProjectState(projectPath, {
             active_conversation_id: conversationId,
             last_accessed_at: new Date().toISOString(),
         })
-    }, [persistProjectState, setConversationId, updateProjectSessionState])
+    }, [persistProjectState, updateProjectSessionState])
 
     const ensureConversationId = useCallback(() => {
         if (!activeProjectPath) {
@@ -226,10 +218,6 @@ export function useProjectsHomeController() {
         activateConversationThread(activeProjectPath, conversationId, 'ensure-conversation')
         return conversationId
     }, [activeConversationId, activeProjectPath, activateConversationThread])
-
-    useEffect(() => {
-        resetComposerRef.current()
-    }, [activeProjectPath])
 
     useEffect(() => {
         setRequestUserInputActionError(null)
@@ -266,7 +254,6 @@ export function useProjectsHomeController() {
     const {
         onChatComposerKeyDown,
         onChatComposerSubmit,
-        resetComposer,
     } = useConversationComposer({
         activeProjectPath,
         chatDraft,
@@ -284,10 +271,6 @@ export function useProjectsHomeController() {
         setPanelError,
         setPendingConversationTurn,
     })
-
-    useEffect(() => {
-        resetComposerRef.current = resetComposer
-    }, [resetComposer])
 
     const persistChatSettings = useCallback(async (values: ModelSettings | null) => {
         if (!activeProjectPath) return
@@ -339,14 +322,10 @@ export function useProjectsHomeController() {
         onDeleteConversationThread,
         onSelectConversationThread,
     } = useProjectThreadActions({
-        activeProjectPath,
-        activeConversationId,
         conversationCacheRef,
         setConversationSummaryList,
         activateConversationThread,
         applyConversationSnapshot,
-        resetComposer,
-        setConversationId,
         updateProjectSessionState,
         clearHomeConversationSession,
         setPanelError,
@@ -373,9 +352,9 @@ export function useProjectsHomeController() {
         if (!request.run_id) {
             return
         }
-        setRunsSelectedRunIdForScope(scopeKey, request.run_id)
+        setRunsSelectedRunId(request.run_id)
         setViewMode('runs')
-    }, [scopeKey, setRunsSelectedRunIdForScope, setViewMode])
+    }, [setRunsSelectedRunId, setViewMode])
 
     const onStopTurn = useCallback(async () => {
         if (!activeConversationId || !activeProjectPath) return
@@ -451,11 +430,10 @@ export function useProjectsHomeController() {
             homeSidebarPrimaryHeight,
             activeProjectPath,
             activeConversationId,
-            activeProjectLabel,
-            activeProjectConversationSummaries,
-            activeProjectConversationSummariesStatus,
+            conversationSummariesByProjectPath: conversationCache.summariesByProjectPath,
+            conversationSummariesStatusByProjectPath: homeThreadSummariesStatusByProjectPath,
             pendingDeleteConversationId,
-                isHomeSidebarResizing,
+            isHomeSidebarResizing,
             onCreateConversationThread,
             onSelectConversationThread,
             onDeleteConversationThread,
@@ -465,7 +443,7 @@ export function useProjectsHomeController() {
             formatConversationTimestamp,
         },
         surfaceProps: {
-            activeProjectLabel,
+            activeProjectLabel: activeProjectPath ? projectLabel(projectRegistry, activeProjectPath) : null,
             activeProjectPath,
             activeChatMode,
             // The picker edits what this conversation stores; effective settings would hide inheritance.
@@ -474,6 +452,7 @@ export function useProjectsHomeController() {
             inheritedModelSettings: editableModelSettings === INHERITED_MODEL_SETTINGS ? currentModelSettings : inheritedModelSettings,
             defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
+            isModelSettingsLoading: isConversationHydrating,
             chatModelAvailabilityMessage,
             hasRenderableConversationHistory,
             isConversationPinnedToBottom,

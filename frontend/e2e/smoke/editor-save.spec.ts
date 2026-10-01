@@ -123,7 +123,7 @@ edges:
   })
 
   await gotoWithRegisteredProject(page, projectPath)
-  await page.getByTestId("nav-mode-editor").click()
+  await page.getByTestId("activity-flows").click()
 
   const flowButton = page.getByRole("button", { name: flowName })
   await expect(flowButton).toBeVisible()

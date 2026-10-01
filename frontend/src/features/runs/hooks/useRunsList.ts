@@ -32,48 +32,24 @@ const mergeRunUpsert = (currentRuns: RunRecord[], nextRun: RunRecord) => {
     return sortRuns(nextRuns)
 }
 
+/** Every project's runs; each run names its own project. */
 export function useRunsList({
-    activeProjectPath,
-    scopeMode,
     selectedRunId,
     manageSync = true,
 }: {
-    activeProjectPath: string | null
-    scopeMode: 'active' | 'all'
     selectedRunId: string | null
     manageSync?: boolean
 }) {
     const sort = useStore((state) => state.clientRunPresentation.sort)
-    const viewMode = useStore((state) => state.viewMode)
     const runsListSession = useStore((state) => state.runsListSession)
     const updateRunsListSession = useStore((state) => state.updateRunsListSession)
     const reconnectSignal = useRunsTransportReconnectSignal(manageSync)
-    const usesActiveProjectScope = scopeMode === 'active'
-    const hasRunsSession =
-        // A mission's rail joins its roster with these runs.
-        viewMode === 'runs'
-        || viewMode === 'missions'
-        || selectedRunId !== null
-        || runsListSession.status !== 'idle'
-        || runsListSession.runs.length > 0
-        || runsListSession.scopeMode !== 'active'
-
     const requestRefresh = useRef<() => Promise<void>>(async () => {})
     const fetchRuns = useCallback(() => requestRefresh.current(), [])
 
     useEffect(() => {
-        if (!manageSync || !hasRunsSession) {
-            return
-        }
-
-        if (usesActiveProjectScope && !activeProjectPath) {
-            updateRunsListSession({
-                runs: [],
-                error: null,
-                status: 'ready',
-                streamStatus: 'idle',
-                streamError: null,
-            })
+        // The run list always loads: the activity bar shows what is running.
+        if (!manageSync) {
             return
         }
 
@@ -85,9 +61,6 @@ export function useRunsList({
             const detail = event instanceof CustomEvent ? event.detail : null
             const nextRun = parseRunRecordPayload(detail?.run)
             if (!nextRun) {
-                return
-            }
-            if (usesActiveProjectScope && activeProjectPath && nextRun.project_path !== activeProjectPath) {
                 return
             }
             useStore.getState().reconcileRunRecord(nextRun.run_id, 'live', nextRun)
@@ -116,10 +89,7 @@ export function useRunsList({
             })
             let succeeded = false
             try {
-                const data = await fetchRunsListValidated(
-                    usesActiveProjectScope ? activeProjectPath : null,
-                    request.signal,
-                )
+                const data = await fetchRunsListValidated(null, request.signal)
                 if (activeRequest !== request || request.signal.aborted) return
                 updateRunsListSession({
                     runs: data.runs,
@@ -148,9 +118,7 @@ export function useRunsList({
             }
         }
         requestRefresh.current = refresh
-        const handleRecovery = (event: Event) => {
-            const projectPath = event instanceof CustomEvent ? event.detail?.projectPath : null
-            if (usesActiveProjectScope && projectPath && projectPath !== activeProjectPath) return
+        const handleRecovery = () => {
             void refresh()
         }
 
@@ -167,16 +135,13 @@ export function useRunsList({
             window.removeEventListener('spark:runs-overview-resync-required', handleRecovery)
         }
     }, [
-        activeProjectPath,
-        hasRunsSession,
         manageSync,
         updateRunsListSession,
-        usesActiveProjectScope,
     ])
 
     useEffect(() => {
         void fetchRuns()
-    }, [fetchRuns, reconnectSignal, activeProjectPath, usesActiveProjectScope, manageSync, hasRunsSession])
+    }, [fetchRuns, reconnectSignal, manageSync])
 
     const displayedRuns = useStore(useShallow((state) => state.runsListSession.runs.map((run) => state.runDetailSessionsByRunId[run.run_id]?.record ?? run)))
     const summary = useMemo(() => {
@@ -205,6 +170,5 @@ export function useRunsList({
         streamError: runsListSession.streamError,
         streamStatus: runsListSession.streamStatus,
         summary,
-        usesActiveProjectScope,
     }
 }

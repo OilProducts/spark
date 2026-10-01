@@ -8,6 +8,10 @@ import { fetchModelSettings, saveModelSettings, type ModelSettings } from '@/lib
 import { fetchClientPreferences } from '../services/clientPreferences'
 import { useModelOptions } from '@/components/model-chooser/useModelOptions'
 import { SettingsPanel } from '../SettingsPanel'
+import { ProjectModelSettingsEditor } from '../ProjectModelSettingsEditor'
+
+// Project model defaults live on the project page; these tests edit them beside the workspace defaults.
+const WithProject = () => <><SettingsPanel /><ProjectModelSettingsEditor projectPath="/project" /></>
 
 vi.mock('@/lib/api/settingsApi', () => ({ fetchModelSettings: vi.fn(), saveModelSettings: vi.fn() }))
 vi.mock('../services/clientPreferences', async (original) => ({ ...await original<object>(), fetchClientPreferences: vi.fn() }))
@@ -25,7 +29,7 @@ const savedModel = { provider: 'codex', llm_profile: null, model: 'saved-model',
 const card = (name: string) => within(screen.getByRole('heading', { name, exact: true }).closest<HTMLElement>('[data-slot=card]')!)
 beforeEach(() => {
     vi.resetAllMocks()
-    useStore.setState({ viewMode: 'settings', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
+    useStore.setState({ viewMode: 'settings', settingsCategory: 'models', activeProjectPath: '/project', projectRegistry: { '/project': { directoryPath: '/project', isFavorite: false, lastAccessedAt: null } } })
     vi.mocked(fetchModelSettings).mockImplementation(async (path, section) => section === 'utility_models'
         ? { scope: 'workspace', source: 'workspace', revision: 'utility-one', stored: null, effective: null }
         : { scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : savedModel, effective: savedModel })
@@ -42,21 +46,22 @@ it('has local default selection, semantic headings, keyboard tabs, and mounted h
     expect(first).toHaveAttribute('aria-selected', 'true')
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
     expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(4)
-    expect(screen.getByRole('heading', { name: 'Project model defaults', level: 3 })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Project model defaults' })).toBeNull()
     first.focus()
-    await user.keyboard('{ArrowRight}')
+    await user.keyboard('{ArrowDown}')
     expect(screen.getByRole('tab', { name: 'Preferences' })).toHaveFocus()
     expect(screen.getByRole('heading', { name: 'Client preferences', level: 3 })).toBeVisible()
-    for (const name of ['Editor', 'Layout', 'Runs & triggers']) expect(screen.getByRole('heading', { name, level: 4 })).toBeVisible()
+    for (const name of ['Editor', 'Layout', 'Runs']) expect(screen.getByRole('heading', { name, level: 4 })).toBeVisible()
     expect(screen.getByLabelText(/^Model:/)).not.toBeVisible()
     await user.keyboard('{End}')
     expect(screen.getByRole('tab', { name: 'System' })).toHaveFocus()
+    // Settings reopens on the category it was left on.
     view.unmount()
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
-    expect(screen.getByRole('tab', { name: 'Models & accounts' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'System' })).toHaveAttribute('aria-selected', 'true')
 })
 
-it('retains hidden validation and dirty drafts, protects leaving and project changes, and discards per editor', async () => {
+it('retains hidden validation and dirty drafts, protects leaving, and discards per editor', async () => {
     const user = userEvent.setup()
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
     await user.click(screen.getByRole('tab', { name: 'Preferences' }))
@@ -71,22 +76,22 @@ it('retains hidden validation and dirty drafts, protects leaving and project cha
     await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
     expect(useStore.getState().viewMode).toBe('settings')
-    act(() => useStore.getState().setActiveProjectPath(null))
+    act(() => useStore.getState().setViewMode('runs'))
     await user.click(screen.getByRole('button', { name: 'Keep editing' }))
-    expect(useStore.getState().activeProjectPath).toBe('/project')
+    expect(useStore.getState().viewMode).toBe('settings')
     await user.click(screen.getByRole('tab', { name: 'Preferences' }))
     expect(width).toHaveValue(12)
     expect(width).toHaveAccessibleDescription(/Choose a whole number from 256 to 560/)
     expect(screen.getByRole('button', { name: /^Save/ })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /^Discard/ }))
     await waitFor(() => expect(width).toHaveValue(null))
-    act(() => useStore.getState().setActiveProjectPath(null))
-    expect(useStore.getState().activeProjectPath).toBeNull()
+    act(() => useStore.getState().setViewMode('runs'))
+    expect(useStore.getState().viewMode).toBe('runs')
 })
 
 it('shares discovery fallback, profiles, custom values and compatibility with project overrides and labels saved values', async () => {
     const user = userEvent.setup()
-    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    render(<DialogProvider><WithProject /></DialogProvider>)
     const workspace = card('Model defaults (Workspace)')
     const project = card('Project model defaults')
     await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())
@@ -129,9 +134,8 @@ it('keeps hidden requests mounted and blocks navigation before another dirty edi
     await user.click(card('Model defaults (Workspace)').getByRole('button', { name: /^Save/ }))
     await user.click(screen.getByRole('tab', { name: 'Execution' }))
     await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
-    act(() => useStore.getState().setActiveProjectPath(null))
+    act(() => useStore.getState().setViewMode('runs'))
     expect(useStore.getState().viewMode).toBe('settings')
-    expect(useStore.getState().activeProjectPath).toBe('/project')
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(saveModelSettings).toHaveBeenCalledTimes(1)
     await act(async () => reject(new Error('Save conflict')))
@@ -145,7 +149,7 @@ it('uses discovered suggestions in both editors and displays inherited saved pro
     const effective = { provider: null, llm_profile: 'team', model: null, reasoning_effort: 'low' }
     vi.mocked(fetchModelSettings).mockImplementation(async (path) => ({ scope: path ? 'project' : 'workspace', source: 'workspace', revision: 'one', stored: path ? null : effective, effective }))
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered' }], providers: { codex: { status: 'available', error: null } } } })
-    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    render(<DialogProvider><WithProject /></DialogProvider>)
     const project = card('Project model defaults')
     await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('Team models team · Model: team-one · Reasoning effort: low')
@@ -164,7 +168,7 @@ it.each([false, true])('resolves reset from the parent instead of the saved over
     vi.mocked(fetchModelSettings).mockImplementation(async path => ({ scope: path ? 'project' : 'workspace', source: path ? 'project' : 'workspace', revision: 'one',
         stored: path || !projectScope ? override : workspace, effective: path || !projectScope ? override : workspace }))
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered', is_default: true, default_reasoning_effort: 'medium' }], providers: { codex: { status: 'available', error: null } } } })
-    render(<DialogProvider><SettingsPanel /></DialogProvider>)
+    render(<DialogProvider><WithProject /></DialogProvider>)
     const scope = card(projectScope ? 'Project model defaults' : 'Model defaults (Workspace)')
     await waitFor(() => expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-override · High'))
     await openPicker(user, scope)

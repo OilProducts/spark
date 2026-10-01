@@ -1,6 +1,5 @@
 import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import { useStore } from '@/store'
-import { buildRunsScopeKey } from '@/state/runsSessionScope'
 import { buildRunsHash } from '@/app/runsRouting'
 import { InlineError } from '@/components/app/inline-error'
 import { MessageRow } from '@/components/app/transcript/SegmentRows'
@@ -16,7 +15,7 @@ import { parseTurn, runMarks } from './model/missionModel'
 
 export function openRun(runId: string) {
     const state = useStore.getState()
-    state.setRunsSelectedRunIdForScope(buildRunsScopeKey(state.runsListSession.scopeMode, state.activeProjectPath), runId)
+    state.setRunsSelectedRunId(runId)
     state.setViewMode('runs')
 }
 

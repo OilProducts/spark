@@ -1,5 +1,6 @@
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { Sidebar } from '@/features/editor/Sidebar'
+import { FlowsPanelActions, FlowsPanelList, useFlowCatalogPanel } from '@/features/editor/FlowsPanel'
 import { CanvasSessionModeProvider } from '@/features/workflow-canvas/canvasSessionContext'
 import { useStore } from '@/store'
 import { ReactFlow, ReactFlowProvider, useEdgesState, useNodesState } from '@xyflow/react'
@@ -69,6 +70,12 @@ const resetSidebarState = (activeFlow: string | null = null) => {
     })
 }
 
+// The flow list lives in the Flows panel beside the editor's inspector column.
+const FlowsPanelHarness = () => {
+    const catalog = useFlowCatalogPanel()
+    return <><FlowsPanelActions catalog={catalog} /><FlowsPanelList catalog={catalog} /></>
+}
+
 const SidebarHarness = () => {
     const [nodes, , onNodesChange] = useNodesState([])
     const [edges, , onEdgesChange] = useEdgesState([])
@@ -84,6 +91,7 @@ const SidebarHarness = () => {
                     fitView
                 />
             </div>
+            <FlowsPanelHarness />
             <Sidebar />
         </CanvasSessionModeProvider>
     )

@@ -1,5 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { request, type Board, type Mission } from '@/features/missions/MissionsPanel'
+import { defaultProjectChoice, isUnregisteredTarget, orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
+import { useStore } from '@/store'
 
 import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -38,14 +40,13 @@ export function TriggerEditor({
     onChange,
     mode,
     protectedTrigger,
-    activeProjectPath,
 }: {
     form: TriggerFormState
     onChange: (value: TriggerFormState) => void
     mode: 'create' | 'edit'
     protectedTrigger: boolean
-    activeProjectPath: string | null
 }) {
+    const projectRegistry = useStore((state) => state.projectRegistry)
     const [missions, setMissions] = useState<Mission[]>([])
     const [missionError, setMissionError] = useState('')
     useEffect(() => {
@@ -59,18 +60,16 @@ export function TriggerEditor({
     const sourceTypeDisabled = protectedTrigger || mode === 'edit'
     const executionTargetDisabled = protectedTrigger
     const sourceConfigurationDisabled = protectedTrigger
-    const activeTargetUnavailable = !activeProjectPath
     const fieldId = (suffix: string) => `${mode}-trigger-${suffix}`
 
     const onTargetModeChange = (nextTargetMode: TriggerTargetMode) => {
-        if (nextTargetMode === 'active') {
-            if (!activeProjectPath) {
-                return
-            }
+        if (nextTargetMode === 'project') {
             onChange({
                 ...form,
-                targetMode: 'active',
-                projectPath: activeProjectPath,
+                targetMode: 'project',
+                projectPath: form.projectPath && projectRegistry[form.projectPath]
+                    ? form.projectPath
+                    : defaultProjectChoice(projectRegistry) ?? '',
             })
             return
         }
@@ -145,7 +144,7 @@ export function TriggerEditor({
                         disabled={executionTargetDisabled}
                         className="text-sm"
                     >
-                        <option value="active" disabled={activeTargetUnavailable}>Active project</option>
+                        <option value="project">Project</option>
                         <option value="none">No project</option>
                         <option value="custom">Other path</option>
                     </NativeSelect>
@@ -160,16 +159,29 @@ export function TriggerEditor({
                 </Label>
             </div>
 
-            {form.targetMode === 'active' ? (
-                <div className="rounded-md border border-border px-3 py-2 text-xs text-muted-foreground">
-                    {activeProjectPath
-                        ? `Uses the current active project: ${activeProjectPath}`
-                        : 'No active project is available. Choose "No project" or "Other path".'}
-                </div>
+            {form.targetMode === 'project' ? (
+                <TriggerField label="Project" htmlFor={fieldId('project-choice')} className="text-sm">
+                    <NativeSelect
+                        id={fieldId('project-choice')}
+                        value={form.projectPath}
+                        onChange={(event) => onChange({ ...form, projectPath: event.target.value })}
+                        disabled={protectedTrigger}
+                        className="text-sm"
+                    >
+                        {orderProjects(projectRegistry).map((project) => (
+                            <option key={project.directoryPath} value={project.directoryPath}>
+                                {projectLabel(projectRegistry, project.directoryPath)}
+                            </option>
+                        ))}
+                    </NativeSelect>
+                </TriggerField>
             ) : null}
 
             {form.targetMode === 'custom' ? (
                 <TriggerField label="Project Path" htmlFor={fieldId('project-target')} className="text-sm">
+                    {form.projectPath.trim() && isUnregisteredTarget(projectRegistry, form.projectPath) ? (
+                        <p data-testid="trigger-target-unregistered" className="text-xs text-warning">Not a registered project</p>
+                    ) : null}
                     <Input
                         id={fieldId('project-target')}
                         value={form.projectPath}

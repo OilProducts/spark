@@ -29,11 +29,11 @@ it('reuses presentation defaults in new run sessions while keeping record and ca
     window.addEventListener('spark:preferences-completed', completed)
     try {
         useStore.getState().setClientRunPresentation({ graph_height: 640, sort: 'oldest' })
-        useStore.getState().setRunsSelectedRunIdForScope('all', 'first-presentation-run')
+        useStore.getState().setRunsSelectedRunId('first-presentation-run')
         const first = useStore.getState().runDetailSessionsByRunId['first-presentation-run']
         expect(first.graphPaneHeight).toBe(640)
         useStore.getState().setClientRunPresentation({ graph_height: 720 })
-        useStore.getState().setRunsSelectedRunIdForScope('all', 'second-presentation-run')
+        useStore.getState().setRunsSelectedRunId('second-presentation-run')
         expect(useStore.getState().runDetailSessionsByRunId['second-presentation-run'].graphPaneHeight).toBe(720)
         expect(useStore.getState().runDetailSessionsByRunId['first-presentation-run'].graphPaneHeight).toBe(640)
         const payload = JSON.stringify(completed.mock.calls.map(([event]) => event.detail))

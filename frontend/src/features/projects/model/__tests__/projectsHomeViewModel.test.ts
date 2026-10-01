@@ -81,24 +81,6 @@ describe('buildProjectsHomeViewModel', () => {
       activeConversationId: 'conversation-1',
       activeConversationRecord: hydrateConversationRecordFromSnapshot(snapshot),
       activeProjectPath: '/tmp/project-alpha',
-      conversationCache: {
-        conversationsById: {
-          'conversation-1': hydrateConversationRecordFromSnapshot(snapshot),
-        },
-        summariesByProjectPath: {
-          '/tmp/project-alpha': [
-            {
-              conversation_id: 'conversation-1',
-              conversation_handle: 'thread-1',
-              project_path: '/tmp/project-alpha',
-              title: 'Conversation',
-              created_at: '2026-03-24T18:00:00Z',
-              updated_at: '2026-03-24T18:01:00Z',
-              last_message_preview: 'Start planning.',
-            },
-          ],
-        },
-      },
       pendingConversationTurn: null,
       projectGitMetadata: {
         '/tmp/project-alpha': {
@@ -113,7 +95,6 @@ describe('buildProjectsHomeViewModel', () => {
       },
     })
 
-    expect(viewModel.activeProjectLabel).toBe('project-alpha')
     expect(viewModel.activeChatMode).toBe('chat')
     expect(viewModel.activeProjectChatModel).toBe('gpt-5.4')
     expect(viewModel.activeProjectChatReasoningEffort).toBe('')
@@ -121,7 +102,6 @@ describe('buildProjectsHomeViewModel', () => {
       branch: 'main',
       commit: 'abc123',
     })
-    expect(viewModel.activeProjectConversationSummaries).toHaveLength(1)
     expect(viewModel.latestFlowRunRequestId).toBe('request-1')
     expect(viewModel.latestFlowLaunchId).toBe('launch-1')
     expect(viewModel.activeFlowRunRequestsById.get('request-1')?.run_id).toBe('run-7')
@@ -144,12 +124,6 @@ describe('buildProjectsHomeViewModel', () => {
       activeConversationId: 'conversation-1',
       activeConversationRecord: record,
       activeProjectPath: '/tmp/project-alpha',
-      conversationCache: {
-        conversationsById: {
-          'conversation-1': record,
-        },
-        summariesByProjectPath: {},
-      },
       pendingConversationTurn: {
         conversationId: 'conversation-1',
         afterRevision: record.revision,
