@@ -172,6 +172,11 @@ export function HomeSessionController() {
 
     useEffect(() => {
         const registeredPaths = new Set(Object.keys(projectRegistry))
+        // A loaded registry always holds Home; until it loads, every project would look removed,
+        // and pruning then drops a draft typed into the restored chat.
+        if (registeredPaths.size === 0) {
+            return
+        }
         const knownHomeProjectPaths = new Set<string>()
 
         Object.keys(homeProjectSessionsByPath).forEach((projectPath) => {

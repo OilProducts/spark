@@ -2,7 +2,7 @@ import { HomeSessionController } from '@/app/AppSessionControllers'
 import { DialogProvider } from '@/components/app/dialog-controller'
 import { ProjectsPanel } from '@/features/projects/ProjectsPanel'
 import { useStore } from '@/store'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -118,4 +118,18 @@ it('opens Home\'s project page without a way to remove it', async () => {
     expect(screen.getByTestId('project-page-title')).toHaveTextContent('Home')
     expect(screen.getByTestId('project-page-remove')).toBeDisabled()
     expect(screen.getByTestId('project-page-remove-refused')).toBeVisible()
+})
+
+it('keeps text typed into the restored chat before the project registry loads, and prunes removed projects once it has', async () => {
+    const user = userEvent.setup()
+    const registry = useStore.getState().projectRegistry
+    useStore.setState({ projectRegistry: {}, activeProjectPath: '/work/busy', homeProjectSessionsByPath: { '/work/removed': { chatDraft: 'stale', panelError: null, pendingConversationTurn: null, pendingDeleteConversationId: null } } })
+    renderChats()
+    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Typed early.')
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Typed early.')
+    expect(useStore.getState().homeProjectSessionsByPath['/work/removed']).toBeDefined()
+
+    act(() => useStore.setState({ projectRegistry: registry }))
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Typed early.')
+    await waitFor(() => expect(useStore.getState().homeProjectSessionsByPath['/work/removed']).toBeUndefined())
 })

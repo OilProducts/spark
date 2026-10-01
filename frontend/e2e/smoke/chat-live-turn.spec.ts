@@ -147,8 +147,21 @@ test('a rejected chat send leaves the Chats dot clear', async ({ page }) => {
     await page.addInitScript(({ projectPath }) => {
         localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
     }, { projectPath })
+    // Hold the project registry until the text is typed: the restored chat must keep it once the registry loads.
+    let releaseRegistry = () => {}
+    const registryHeld = new Promise<void>((resolve) => { releaseRegistry = resolve })
+    await page.route('**/workspace/api/projects', async (route) => {
+        if (route.request().method() === 'GET') await registryHeld
+        await route.continue()
+    })
     await page.goto('/')
-    await page.getByTestId('project-ai-conversation-input').fill('This send fails.')
+    const input = page.getByTestId('project-ai-conversation-input')
+    await input.fill('This send fails.')
+    const registryLoaded = page.waitForResponse((response) => response.request().method() === 'GET' && response.url().endsWith('/workspace/api/projects'))
+    releaseRegistry()
+    await registryLoaded
+    await expect(page.getByTestId('chat-composer-project')).toContainText('rejected-send')
+    await expect(input).toHaveValue('This send fails.')
     await page.getByTestId('project-ai-conversation-send-button').click()
     await expect(page.getByTestId('project-panel-error')).toBeVisible()
     await expect(page.getByTestId('activity-chats-dot')).toHaveCount(0)
