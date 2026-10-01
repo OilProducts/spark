@@ -9,6 +9,7 @@ import {
 } from '@/lib/workspaceClient'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
+import { requestNavigation } from '@/state/workspaceSlice'
 import {
     buildProjectConversationId,
     extractApiErrorMessage,
@@ -65,10 +66,16 @@ export function useProjectThreadActions({
     const { confirm } = useDialogController()
 
     // Each chat carries its project: opening one shows it, in its project.
+    // Leaving a project page asks first, so a cancelled leave changes nothing.
     const onSelectConversationThread = useCallback((projectPath: string, conversationId: string) => {
-        setPanelError(null)
-        activateConversationThread(projectPath, conversationId, 'select-thread')
-        useStore.getState().setActiveProjectPath(projectPath)
+        const open = () => {
+            useStore.setState({ projectPagePath: null })
+            setPanelError(null)
+            activateConversationThread(projectPath, conversationId, 'select-thread')
+            useStore.getState().setActiveProjectPath(projectPath)
+        }
+        if (useStore.getState().projectPagePath) requestNavigation(open)
+        else open()
     }, [
         activateConversationThread,
         setPanelError,

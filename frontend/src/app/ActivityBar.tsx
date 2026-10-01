@@ -2,6 +2,7 @@ import { type KeyboardEvent, useEffect, useRef, useState } from "react"
 import { Bell, GitBranch, MessageSquare, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
 
 import { useStore, type ViewMode } from "@/store"
+import { requestNavigation } from '@/state/workspaceSlice'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 // ponytail: retain the existing attention poll here; extracting it is outside the run-session migration.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
@@ -115,11 +116,21 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
             state.setViewMode('missions')
             return
         }
-        if (item.conversation_id && item.project_path) {
-            state.updateProjectSessionState(item.project_path, { conversationId: item.conversation_id })
-            state.setActiveProjectPath(item.project_path)
+        const projectPath = item.project_path
+        const conversationId = item.conversation_id
+        if (!conversationId || !projectPath) {
+            state.setViewMode('home')
+            return
         }
-        state.setViewMode('home')
+        // Leaving a project page asks first, so a cancelled leave keeps the shown chat.
+        const open = () => {
+            useStore.setState({ projectPagePath: null })
+            useStore.getState().updateProjectSessionState(projectPath, { conversationId })
+            useStore.getState().setActiveProjectPath(projectPath)
+            useStore.getState().setViewMode('home')
+        }
+        if (state.projectPagePath) requestNavigation(open)
+        else open()
     }
 
     return (

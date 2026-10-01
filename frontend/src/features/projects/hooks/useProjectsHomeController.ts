@@ -166,6 +166,9 @@ export function useProjectsHomeController() {
         model: storedChatModel || null,
         reasoning_effort: storedChatReasoningEffort || null,
     }, [pendingChatSettings, effectiveModelSettings, activeConversationRecord, uiDefaults.llm_profile, storedChatProvider, storedChatModel, storedChatReasoningEffort])
+    // A saved chat's revision is unknown until its snapshot loads, so its settings can't be edited yet.
+    const isConversationHydrating = Boolean(activeProjectPath && activeConversationId && !activeConversationRecord
+        && conversationCache.summariesByProjectPath[activeProjectPath]?.some((entry) => entry.conversation_id === activeConversationId))
     const editableModelSettings = pendingChatSettings ?? activeConversationRecord?.model_settings_view?.stored ?? INHERITED_MODEL_SETTINGS
     const discovery = useModelOptions(activeProjectPath)
     const activeProjectChatModelsResponse = discovery?.payload
@@ -198,8 +201,11 @@ export function useProjectsHomeController() {
             projectPath,
             conversationId,
         })
-        // Drafts belong to their project; only switching chats within the shown project clears one.
-        if (projectPath === useStore.getState().activeProjectPath) resetComposerRef.current()
+        // Drafts belong to their project; only switching to another chat within the shown project clears one.
+        const state = useStore.getState()
+        if (projectPath === state.activeProjectPath && conversationId !== state.projectSessionsByPath[projectPath]?.conversationId) {
+            resetComposerRef.current()
+        }
         updateProjectSessionState(projectPath, { conversationId })
         void persistProjectState(projectPath, {
             active_conversation_id: conversationId,
@@ -460,6 +466,7 @@ export function useProjectsHomeController() {
             inheritedModelSettings: editableModelSettings === INHERITED_MODEL_SETTINGS ? currentModelSettings : inheritedModelSettings,
             defaultModel: isCodexProvider && !currentModelSettings.model ? activeProjectChatModel : undefined,
             onModelSettingsChange: (value: ModelSettings) => { void persistChatSettings(value) },
+            isModelSettingsLoading: isConversationHydrating,
             chatModelAvailabilityMessage,
             hasRenderableConversationHistory,
             isConversationPinnedToBottom,

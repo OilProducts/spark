@@ -718,10 +718,19 @@ test('chat coalesces rapid custom model edits against real backend revisions', a
     expect(created.ok()).toBeTruthy()
     const snapshot = await created.json()
     const read = async () => (await page.request.get(`${conversationPath}?project_path=${encodeURIComponent(project)}`)).json()
+    // Hold the chat's snapshot: until it loads, its revision is unknown and the picker must stay disabled.
+    let hydrate!: () => void
+    const hydrated = new Promise<void>((resolve) => { hydrate = resolve })
+    await page.route(`**${conversationPath}?*`, async (route) => {
+        await hydrated
+        await route.continue()
+    })
     await page.goto('/')
     await openChat(page, project, snapshot.title)
-    // Edit only once the chat is open in its own project.
     await expect(page.getByTestId('chat-composer-project')).toContainText('chat-model-project')
+    await expect(page.getByRole('button', { name: /^Model:/ })).toBeDisabled()
+    hydrate()
+    await expect(page.getByRole('button', { name: /^Model:/ })).toBeEnabled()
     const requests: { expected_revision: string; model_settings: unknown }[] = []
     const statuses: number[] = []
     const releases: (() => void)[] = []

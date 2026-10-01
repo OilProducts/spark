@@ -26,6 +26,7 @@ interface ProjectConversationSurfaceProps {
     modelSettings: ModelSettings
     inheritedModelSettings?: ModelSettings
     onModelSettingsChange: (value: ModelSettings) => void
+    isModelSettingsLoading?: boolean
     chatModelAvailabilityMessage: string | null
     hasRenderableConversationHistory: boolean
     isConversationPinnedToBottom: boolean
@@ -55,6 +56,7 @@ export function ProjectConversationSurface({
     modelSettings,
     inheritedModelSettings,
     onModelSettingsChange,
+    isModelSettingsLoading = false,
     chatModelAvailabilityMessage,
     hasRenderableConversationHistory,
     isConversationPinnedToBottom,
@@ -179,7 +181,7 @@ export function ProjectConversationSurface({
                                     {modelSettingsSource === 'conversation' && onUseModelDefaults && <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>}
                                     <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
                                         projectPath={activeProjectPath} inheritLabel="Provider default"
-                                        layout="compact" disabled={controlsDisabled} />
+                                        layout="compact" disabled={controlsDisabled || isModelSettingsLoading} />
                                     {defaultModel && <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span>}
                                     <Button
                                         data-testid="project-ai-conversation-send-button"

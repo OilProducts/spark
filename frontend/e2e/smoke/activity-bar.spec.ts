@@ -197,6 +197,50 @@ test('each project keeps its unsent draft across chats in other projects, includ
     await expect(composer).toHaveValue('alpha draft')
 })
 
+test('a chat keeps its unsent draft across its project page, and a cancelled leave changes nothing', async ({ page }, testInfo) => {
+    const { alpha, beta } = await seedProjects(page, testInfo)
+    const stamp = Date.now()
+    const alphaChat = `conversation-alpha-${stamp}`
+    const betaChat = `conversation-beta-${stamp}`
+    await createChat(page, alpha, alphaChat)
+    await createChat(page, beta, betaChat)
+    await page.goto('/')
+    const composer = page.getByTestId('project-ai-conversation-input')
+    const chatButton = (projectPath: string, id: string) => group(page, projectPath).locator(`button[data-conversation-id="${id}"]`)
+    const openChat = async (projectPath: string, id: string) => {
+        if (await chatButton(projectPath, id).count() === 0) await group(page, projectPath).getByTestId('chats-project-toggle').click()
+        await chatButton(projectPath, id).click()
+    }
+    const betaActiveChat = async () => (await (await page.request.get('/workspace/api/projects')).json())
+        .find((entry: { project_path: string }) => entry.project_path === beta)?.active_conversation_id ?? null
+
+    // Visiting the chat's project page and reopening the same chat keeps the draft.
+    await openChat(alpha, alphaChat)
+    await composer.fill('alpha draft')
+    await page.getByTestId('chat-project-link').click()
+    await expect(page.getByTestId('project-page-path')).toHaveText(alpha)
+    await openChat(alpha, alphaChat)
+    await expect(composer).toHaveValue('alpha draft')
+
+    // Cancelling the leave from a page with unsaved settings keeps the page, the draft and every selection.
+    await page.getByTestId('chat-project-link').click()
+    const select = page.getByTestId('project-default-execution-profile')
+    await expect(select).toBeEnabled()
+    const before = await select.textContent()
+    await select.click()
+    await page.getByRole('option').filter({ hasNotText: before ?? '' }).first().click()
+    const betaBefore = await betaActiveChat()
+    await openChat(beta, betaChat)
+    await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
+    await expect(page.getByTestId('project-page-path')).toHaveText(alpha)
+    expect(await betaActiveChat()).toBe(betaBefore)
+    await openChat(alpha, alphaChat)
+    await page.getByRole('button', { name: 'Discard and leave', exact: true }).click()
+    await expect(page.getByTestId('chat-composer-project')).toContainText('alpha-project')
+    await expect(composer).toHaveValue('alpha draft')
+    expect(await betaActiveChat()).toBe(betaBefore)
+})
+
 test('a new mission and a flow run ask which project, suggesting the last used and the chat\'s project', async ({ page }, testInfo) => {
     const { alpha, beta } = await seedProjects(page, testInfo)
     const flowName = await createFlowForSmokeTest(page, 'activity-run-picker')
