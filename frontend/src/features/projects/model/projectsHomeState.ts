@@ -132,6 +132,8 @@ export function formatProjectListLabel(projectPath: string) {
 
 export function toHydratedProjectRecord(project: {
     project_path: string
+    display_name?: string
+    is_default?: boolean
     is_favorite: boolean
     last_accessed_at?: string | null
     active_conversation_id?: string | null
@@ -139,6 +141,8 @@ export function toHydratedProjectRecord(project: {
 }): HydratedProjectRecord {
     return {
         directoryPath: project.project_path,
+        ...(project.display_name ? { displayName: project.display_name } : {}),
+        ...(project.is_default ? { isDefault: true } : {}),
         isFavorite: project.is_favorite === true,
         lastAccessedAt: typeof project.last_accessed_at === 'string' ? project.last_accessed_at : null,
         activeConversationId: typeof project.active_conversation_id === 'string' ? project.active_conversation_id : null,

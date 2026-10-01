@@ -303,7 +303,6 @@ async fn update_conversation_settings(
     payload: Result<Json<ConversationSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
-    let project_path = request.project_path.clone();
     let changes_models = request.model_settings.is_some()
         || request.provider.is_some()
         || request.llm_profile.is_some()
@@ -311,6 +310,10 @@ async fn update_conversation_settings(
         || request.reasoning_effort.is_some();
     let service = WorkspaceConversationService::new((*settings).clone());
     let updated = service.update_conversation_settings(&conversation_id, request)?;
+    let project_path = updated["project_path"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     publish_conversation_snapshot(&settings, &live_hub, &conversation_id, &project_path);
     if changes_models {
         live_hub.publish_settings_change(

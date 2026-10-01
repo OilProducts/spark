@@ -261,6 +261,20 @@ describe('project scope store behavior', () => {
     expect(next.activeFlow).toBeNull()
   })
 
+  it('hydrates into the default Home project only when no registered project is active', () => {
+    const projects = [
+      { directoryPath: '/tmp/project-a', isFavorite: false, lastAccessedAt: null },
+      { directoryPath: '/home/user', displayName: 'Home', isDefault: true, isFavorite: false, lastAccessedAt: null },
+    ]
+    useStore.getState().hydrateProjectRegistry(projects)
+    expect(useStore.getState().activeProjectPath).toBe('/home/user')
+    expect(useStore.getState().projectRegistry['/home/user']?.displayName).toBe('Home')
+
+    useStore.getState().setActiveProjectPath('/tmp/project-a')
+    useStore.getState().hydrateProjectRegistry(projects)
+    expect(useStore.getState().activeProjectPath).toBe('/tmp/project-a')
+  })
+
   it('falls back to another registered project when removing the active project', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')

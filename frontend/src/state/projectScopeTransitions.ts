@@ -139,13 +139,15 @@ const preserveEditorSession = (state: AppState) => ({
     saveErrorKind: state.saveErrorKind,
 })
 
-const buildRegisteredProject = (project: HydratedProjectRecord): RegisteredProject | null => {
+export const buildRegisteredProject = (project: HydratedProjectRecord): RegisteredProject | null => {
     const normalizedPath = normalizeProjectPath(project.directoryPath)
     if (!normalizedPath || !isAbsoluteProjectPath(normalizedPath)) {
         return null
     }
     return {
         directoryPath: normalizedPath,
+        ...(project.displayName ? { displayName: project.displayName } : {}),
+        ...(project.isDefault ? { isDefault: true } : {}),
         isFavorite: project.isFavorite === true,
         lastAccessedAt: typeof project.lastAccessedAt === 'string' ? project.lastAccessedAt : null,
         ...(typeof project.executionProfileId === 'string' ? { executionProfileId: project.executionProfileId } : {}),
@@ -190,8 +192,11 @@ export const buildHydrateProjectRegistryTransition = (
         )
     })
 
+    // A fresh session works in the default (Home) project until another is chosen.
     const nextActiveProjectPath =
-        state.activeProjectPath && nextProjectRegistry[state.activeProjectPath] ? state.activeProjectPath : null
+        state.activeProjectPath && nextProjectRegistry[state.activeProjectPath]
+            ? state.activeProjectPath
+            : Object.values(nextProjectRegistry).find((project) => project.isDefault)?.directoryPath ?? null
     const nextActiveProjectScope = nextActiveProjectPath
         ? resolveProjectSessionState(nextProjectSessionStates[nextActiveProjectPath], nextActiveProjectPath)
         : null

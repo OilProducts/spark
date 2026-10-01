@@ -66,6 +66,8 @@ pub struct ConversationSettingsUpdate {
         deserialize_with = "spark_common::settings::deserialize_nullable_patch"
     )]
     pub model_settings: Option<Option<ModelSettings>>,
+    /// Empty means the conversation's own project, or Home for a new chat.
+    #[serde(default)]
     pub project_path: String,
     #[serde(default)]
     pub chat_mode: Option<String>,
@@ -81,6 +83,8 @@ pub struct ConversationSettingsUpdate {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ConversationTurnRequest {
+    /// Empty means the conversation's own project, or Home for a new chat.
+    #[serde(default)]
     pub project_path: String,
     pub message: String,
     #[serde(default)]
@@ -756,6 +760,25 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    /// The project a chat write belongs to: the requested one, else the
+    /// conversation's existing binding, else the Home project for a new chat.
+    fn chat_project_path(&self, conversation_id: &str, requested: &str) -> WorkspaceResult<String> {
+        if !requested.trim().is_empty() {
+            return normalize_project_path_or_400(requested);
+        }
+        if let Some(path) = self
+            .repository()
+            .read_snapshot(conversation_id, None)?
+            .as_ref()
+            .and_then(snapshot_project_path)
+        {
+            return Ok(path);
+        }
+        Ok(crate::WorkspaceProjectService::new(self.settings.clone())
+            .ensure_home_project()?
+            .project_path)
+    }
+
     pub fn update_conversation_settings(
         &self,
         conversation_id: &str,
@@ -763,7 +786,7 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<Value> {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
-        let project_path = normalize_project_path_or_400(&request.project_path)?;
+        let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
         let chat_mode = request
             .chat_mode
             .as_deref()
@@ -903,7 +926,7 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<(PreparedConversationTurn, Value)> {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
-        let project_path = normalize_project_path_or_400(&request.project_path)?;
+        let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
         let message = non_empty_string(&request.message)
             .ok_or_else(|| WorkspaceError::Validation("Message is required.".to_string()))?;
         let chat_mode = request

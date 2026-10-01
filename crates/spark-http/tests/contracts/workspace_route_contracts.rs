@@ -311,7 +311,7 @@ async fn project_conversations_route_returns_summary_shape_for_existing_state() 
         "GET",
         &format!(
             "/workspace/api/projects/conversations?project_path={}",
-            register.1["project_path"].as_str().expect("project path")
+            crate::encode_query(register.1["project_path"].as_str().expect("project path"))
         ),
         None,
     )
@@ -345,7 +345,10 @@ async fn home_project_is_default_and_lists_span_projects() {
     assert_eq!(listed[0]["display_name"], "Home");
     assert_eq!(listed[0]["is_default"], true);
     assert_eq!(listed[0]["folder_exists"], true);
-    let remove_home = format!("/workspace/api/projects?project_path={home}");
+    let remove_home = format!(
+        "/workspace/api/projects?project_path={}",
+        crate::encode_query(&home)
+    );
     let refused = request_json(app.clone(), "DELETE", &remove_home, None).await;
     assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{}", refused.1);
     let projects = request_json(app.clone(), "GET", "/workspace/api/projects", None).await;
@@ -368,7 +371,10 @@ async fn home_project_is_default_and_lists_span_projects() {
         let snapshot = request_json(
             app.clone(),
             "GET",
-            &format!("{conversation}?project_path={project_path}"),
+            &format!(
+                "{conversation}?project_path={}",
+                crate::encode_query(&project_path)
+            ),
             None,
         )
         .await;
@@ -383,7 +389,10 @@ async fn home_project_is_default_and_lists_span_projects() {
         let mission = request_json(
             app.clone(),
             "POST",
-            &format!("/workspace/api/missions?project_path={project_path}"),
+            &format!(
+                "/workspace/api/missions?project_path={}",
+                crate::encode_query(&project_path)
+            ),
             Some(json!({"fields": {"title": name}})),
         )
         .await;
@@ -413,7 +422,7 @@ async fn home_project_is_default_and_lists_span_projects() {
     assert_eq!(project_paths(&all.1), paths);
     let scoped = format!(
         "/workspace/api/projects/conversations?project_path={}",
-        paths[0]
+        crate::encode_query(&paths[0])
     );
     let chats = request_json(app.clone(), "GET", &scoped, None).await;
     assert_eq!(project_paths(&chats.1), [paths[0].clone()]);
@@ -421,7 +430,10 @@ async fn home_project_is_default_and_lists_span_projects() {
     let all = request_json(app.clone(), "GET", "/workspace/api/missions", None).await;
     assert_eq!(all.0, StatusCode::OK, "{}", all.1);
     assert_eq!(project_paths(&all.1["missions"]), paths);
-    let scoped = format!("/workspace/api/missions?project_path={}", paths[1]);
+    let scoped = format!(
+        "/workspace/api/missions?project_path={}",
+        crate::encode_query(&paths[1])
+    );
     let one = request_json(app.clone(), "GET", &scoped, None).await;
     assert_eq!(project_paths(&one.1["missions"]), [paths[1].clone()]);
 
@@ -447,7 +459,7 @@ async fn home_project_is_default_and_lists_span_projects() {
         "POST",
         &format!(
             "/workspace/api/missions?conversation_handle={handle}&project_path={}",
-            paths[1]
+            crate::encode_query(&paths[1])
         ),
         Some(json!({"fields": {"title": "Wrong project"}})),
     )
@@ -468,6 +480,110 @@ async fn home_project_is_default_and_lists_span_projects() {
     };
     assert_eq!(folder_exists(&paths[0]), true);
     assert_eq!(folder_exists(&paths[1]), false);
+}
+
+#[tokio::test]
+async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_runs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path().canonicalize().expect("canonical tempdir");
+    let settings = settings(&root);
+    let flow = settings.flows_dir.join("ops/review.yaml");
+    fs::create_dir_all(flow.parent().unwrap()).unwrap();
+    fs::write(&flow, "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n").unwrap();
+    spark_storage::set_flow_launch_policy(
+        &settings.config_dir,
+        "ops/review.yaml",
+        "agent_requestable",
+    )
+    .unwrap();
+    let project = root.join("bound-project");
+    fs::create_dir_all(&project).unwrap();
+    let project = project.to_string_lossy().into_owned();
+    let agent = std::sync::Arc::new(GatedAgent::default());
+    agent.release();
+    let app = spark_http::build_app_with_agent_turn_backend(settings, agent);
+    let home = spark_common::project::normalize_project_path(&std::env::var("HOME").unwrap())
+        .unwrap()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    // New chats with no project, through either write that creates a chat.
+    let settings_chat = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/home-settings-chat/settings",
+        Some(json!({"chat_mode": "plan", "expected_revision": "0"})),
+    )
+    .await;
+    assert_eq!(settings_chat.0, StatusCode::OK, "{}", settings_chat.1);
+    assert_eq!(settings_chat.1["project_path"], home.as_str());
+    let turn_chat = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/home-turn-chat/turns",
+        Some(json!({"message": "Hello"})),
+    )
+    .await;
+    assert_eq!(turn_chat.0, StatusCode::OK, "{}", turn_chat.1);
+    assert_eq!(turn_chat.1["project_path"], home.as_str());
+
+    // An explicit project still binds, and later writes keep that binding.
+    let bound = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/bound-chat/settings",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(bound.1["project_path"], project.as_str(), "{}", bound.1);
+    let rebound = request_json(
+        app.clone(),
+        "PUT",
+        "/workspace/api/conversations/bound-chat/settings",
+        Some(json!({"chat_mode": "plan", "expected_revision": bound.1["revision"].to_string()})),
+    )
+    .await;
+    assert_eq!(rebound.0, StatusCode::OK, "{}", rebound.1);
+    assert_eq!(rebound.1["project_path"], project.as_str());
+
+    let handle = turn_chat.1["conversation_handle"].as_str().unwrap();
+    let mission = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/missions?conversation_handle={handle}"),
+        Some(json!({"fields": {"title": "From a Home chat"}})),
+    )
+    .await;
+    assert_eq!(mission.0, StatusCode::OK, "{}", mission.1);
+    assert_eq!(mission.1["project_path"], home.as_str());
+    let run = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
+        Some(json!({"flow_name": "ops/review.yaml", "summary": "Run from Home."})),
+    )
+    .await;
+    assert_eq!(run.0, StatusCode::OK, "{}", run.1);
+    let runs = request_json(
+        app,
+        "GET",
+        &format!(
+            "/attractor/runs?project_path={}",
+            crate::encode_query(&home)
+        ),
+        None,
+    )
+    .await;
+    assert!(
+        runs.1["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|listed| listed["run_id"] == run.1["run_id"]),
+        "{}",
+        runs.1
+    );
 }
 
 async fn request_json(
@@ -609,7 +725,10 @@ impl spark_agent_adapter::AgentTurnBackend for ScriptedMissionAgent {
         } else if reported == 2 {
             let closed = self.call(
                 "POST",
-                &format!("/workspace/api/missions/{mission}/close?project_path={project}"),
+                &format!(
+                    "/workspace/api/missions/{mission}/close?project_path={}",
+                    crate::encode_query(&project)
+                ),
                 json!({"status": "done", "reason": "Both runs completed", "actor": "assistant"}),
             );
             assert_eq!(closed.0, StatusCode::OK, "{}", closed.1);
@@ -690,16 +809,25 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
     let created = request_json(
         app.clone(),
         "POST",
-        &format!("/workspace/api/missions?project_path={project}"),
+        &format!(
+            "/workspace/api/missions?project_path={}",
+            crate::encode_query(&project)
+        ),
         Some(json!({"fields": {"title": "Ship", "description": "Build and test the change."}})),
     )
     .await;
     let id = created.1["id"].as_str().unwrap().to_string();
-    let at = format!("/workspace/api/missions/{id}?project_path={project}");
+    let at = format!(
+        "/workspace/api/missions/{id}?project_path={}",
+        crate::encode_query(&project)
+    );
     let started = request_json(
         app.clone(),
         "POST",
-        &format!("/workspace/api/missions/{id}/start?project_path={project}"),
+        &format!(
+            "/workspace/api/missions/{id}/start?project_path={}",
+            crate::encode_query(&project)
+        ),
         None,
     )
     .await;
@@ -717,7 +845,10 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
         transcript = request_json(
             app.clone(),
             "GET",
-            &format!("/workspace/api/conversations/{id}?project_path={project}"),
+            &format!(
+                "/workspace/api/conversations/{id}?project_path={}",
+                crate::encode_query(&project)
+            ),
             None,
         )
         .await
@@ -768,7 +899,10 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
     let threads = request_json(
         app,
         "GET",
-        &format!("/workspace/api/projects/conversations?project_path={project}"),
+        &format!(
+            "/workspace/api/projects/conversations?project_path={}",
+            crate::encode_query(&project)
+        ),
         None,
     )
     .await;
@@ -784,7 +918,10 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     fs::create_dir_all(&project).unwrap();
     let agent = std::sync::Arc::new(GatedAgent::default());
     let app = spark_http::build_app_with_agent_turn_backend(settings, agent.clone());
-    let list_uri = format!("/workspace/api/missions?project_path={}", project.display());
+    let list_uri = format!(
+        "/workspace/api/missions?project_path={}",
+        crate::encode_query(project.to_string_lossy())
+    );
     let refused = request_json(
         app.clone(),
         "POST",
@@ -810,7 +947,7 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     let at = |suffix: &str| {
         format!(
             "/workspace/api/missions/{id}{suffix}?project_path={}",
-            project.display()
+            crate::encode_query(project.to_string_lossy())
         )
     };
     let updated = request_json(
@@ -920,7 +1057,7 @@ async fn mission_routes_enforce_records_revisions_messages_and_controls() {
     fs::create_dir(&other).unwrap();
     let other_uri = format!(
         "/workspace/api/missions/{id}?project_path={}",
-        other.display()
+        crate::encode_query(other.to_string_lossy())
     );
     assert_eq!(
         request_json(app, "GET", &other_uri, None).await.0,
@@ -1559,7 +1696,10 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
             let uri = if scope == "workspace" {
                 "/workspace/api/settings".to_owned()
             } else {
-                format!("/workspace/api/settings?project_path={}", project.display())
+                format!(
+                    "/workspace/api/settings?project_path={}",
+                    crate::encode_query(project.to_string_lossy())
+                )
             };
             let read = request_json(app.clone(), "GET", &uri, None).await;
             assert_eq!(read.0, StatusCode::OK, "{scope}: {group}: {read:?}");
