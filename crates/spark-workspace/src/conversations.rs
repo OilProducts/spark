@@ -66,6 +66,8 @@ pub struct ConversationSettingsUpdate {
         deserialize_with = "spark_common::settings::deserialize_nullable_patch"
     )]
     pub model_settings: Option<Option<ModelSettings>>,
+    /// Empty means the conversation's own project, or Home for a new chat.
+    #[serde(default)]
     pub project_path: String,
     #[serde(default)]
     pub chat_mode: Option<String>,
@@ -81,6 +83,8 @@ pub struct ConversationSettingsUpdate {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct ConversationTurnRequest {
+    /// Empty means the conversation's own project, or Home for a new chat.
+    #[serde(default)]
     pub project_path: String,
     pub message: String,
     #[serde(default)]
@@ -756,6 +760,25 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    /// The project a chat write belongs to: the requested one, else the
+    /// conversation's existing binding, else the Home project for a new chat.
+    fn chat_project_path(&self, conversation_id: &str, requested: &str) -> WorkspaceResult<String> {
+        if !requested.trim().is_empty() {
+            return normalize_project_path_or_400(requested);
+        }
+        if let Some(path) = self
+            .repository()
+            .read_snapshot(conversation_id, None)?
+            .as_ref()
+            .and_then(snapshot_project_path)
+        {
+            return Ok(path);
+        }
+        Ok(crate::WorkspaceProjectService::new(self.settings.clone())
+            .ensure_home_project()?
+            .project_path)
+    }
+
     pub fn update_conversation_settings(
         &self,
         conversation_id: &str,
@@ -763,7 +786,7 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<Value> {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
-        let project_path = normalize_project_path_or_400(&request.project_path)?;
+        let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
         let chat_mode = request
             .chat_mode
             .as_deref()
@@ -903,7 +926,7 @@ impl WorkspaceConversationService {
     ) -> WorkspaceResult<(PreparedConversationTurn, Value)> {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
-        let project_path = normalize_project_path_or_400(&request.project_path)?;
+        let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
         let message = non_empty_string(&request.message)
             .ok_or_else(|| WorkspaceError::Validation("Message is required.".to_string()))?;
         let chat_mode = request
@@ -3796,7 +3819,7 @@ fn workspace_assistant_frame(project_path: &str, conversation_handle: &str) -> S
         Spark is a workspace system that helps a user work on the active software project through conversation. Inspect the relevant project files and workspace-visible state, answer questions about the current work, and use the Spark control surface for workspace actions.\n\n\
         Treat the active project repository as the source of truth for project questions. Prefer directly observed facts over assumptions, and say plainly when something is inferred. For simple factual questions, answer directly after the minimum required inspection; do not turn them into planning theater or workflow artifacts.\n\n\
         Don't add requirements the user didn't request unless they're necessary for correctness. Keep optional implementation suggestions out of acceptance criteria.\n\n\
-        To run a playbook against an issue: `spark playbook list` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --project {project_path} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`.\n\n\
+        To run a playbook against an issue: `spark playbook list` to pick one, create a mission with the playbook and the issue as its objective (`spark mission create --conversation {handle} --json -` with a JSON body whose `fields` object holds `title`, `description` set to the issue, and `playbook` set to its name), then start it with `spark mission start --project {project_path} --id <mission id>`.\n\n\
         {control}\n\n\
         Conversation handle: {handle}\n\
         Project path: {project_path}",

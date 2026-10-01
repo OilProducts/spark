@@ -2,6 +2,7 @@ import { type StateCreator } from 'zustand'
 import { isAbsoluteProjectPath, normalizeProjectPath } from '@/lib/projectPaths'
 import {
     buildHydrateProjectRegistryTransition,
+    buildRegisteredProject,
     buildRegisterProjectTransition,
     buildRemoveProjectTransition,
     buildSetActiveProjectTransition,
@@ -80,18 +81,14 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         }),
     upsertProjectRegistryEntry: (project) =>
         set((state) => {
-            const normalizedPath = normalizeProjectPath(project.directoryPath)
-            if (!normalizedPath || !isAbsoluteProjectPath(normalizedPath)) {
+            const registeredProject = buildRegisteredProject(project)
+            if (!registeredProject) {
                 return state
             }
+            const normalizedPath = registeredProject.directoryPath
             const nextProjectRegistry = {
                 ...state.projectRegistry,
-                [normalizedPath]: {
-                    directoryPath: normalizedPath,
-                    isFavorite: project.isFavorite === true,
-                    lastAccessedAt: typeof project.lastAccessedAt === 'string' ? project.lastAccessedAt : null,
-                    ...(typeof project.executionProfileId === 'string' ? { executionProfileId: project.executionProfileId } : {}),
-                },
+                [normalizedPath]: registeredProject,
             }
             const nextProjectSessionStates = {
                 ...state.projectSessionsByPath,

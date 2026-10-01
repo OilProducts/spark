@@ -102,3 +102,17 @@ fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json
             .expect("conversation handle");
     }
 }
+
+/// Percent-encodes a query value, so paths with spaces make valid URIs.
+fn encode_query(value: impl AsRef<str>) -> String {
+    value
+        .as_ref()
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}

@@ -73,6 +73,7 @@ export interface ProjectRecordResponse {
     is_favorite: boolean
     active_conversation_id?: string | null
     execution_profile_id?: string | null
+    is_default: boolean
 }
 
 function parseProjectRecordResponse(value: unknown): ProjectRecordResponse | null {
@@ -97,6 +98,7 @@ function parseProjectRecordResponse(value: unknown): ProjectRecordResponse | nul
         is_favorite: record.is_favorite === true,
         active_conversation_id: asOptionalNullableString(record.active_conversation_id),
         execution_profile_id: asOptionalNullableString(record.execution_profile_id),
+        is_default: record.is_default === true,
     }
 }
 

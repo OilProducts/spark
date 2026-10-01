@@ -289,7 +289,7 @@ fn project_service_lists_conversation_summaries_for_python_created_state() {
     );
 
     let summaries = service
-        .list_project_conversations(&project.project_path)
+        .list_project_conversations(Some(&project.project_path))
         .expect("conversations");
 
     assert_eq!(

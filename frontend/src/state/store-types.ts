@@ -77,6 +77,8 @@ export type GraphAttrErrors = FlowMetadataErrors
 
 export interface RegisteredProject {
     directoryPath: string
+    displayName?: string
+    isDefault?: boolean
     isFavorite: boolean
     lastAccessedAt: string | null
     executionProfileId?: string | null
@@ -129,6 +131,8 @@ export type ProjectSessionStatePatch = Partial<ProjectSessionState>
 
 export interface HydratedProjectRecord {
     directoryPath: string
+    displayName?: string
+    isDefault?: boolean
     isFavorite: boolean
     lastAccessedAt: string | null
     activeConversationId?: string | null

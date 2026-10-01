@@ -228,7 +228,8 @@ export function Navbar() {
 
     const hasRegisteredProjects = orderedProjects.length > 0
     const closedProjectLabel = activeProjectPath
-        ? formatProjectListLabel(activeProjectPath)
+        ? orderedProjects.find((project) => project.directoryPath === activeProjectPath)?.displayName
+            ?? formatProjectListLabel(activeProjectPath)
         : hasRegisteredProjects
             ? 'Choose project'
             : 'No projects'
@@ -317,7 +318,7 @@ export function Navbar() {
                             >
                                 <div className="flex min-w-0 flex-col">
                                     <span className="truncate font-medium">
-                                        {formatProjectListLabel(project.directoryPath)}
+                                        {project.displayName ?? formatProjectListLabel(project.directoryPath)}
                                     </span>
                                     <span className="truncate text-xs text-muted-foreground">
                                         {project.directoryPath}

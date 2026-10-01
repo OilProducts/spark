@@ -146,6 +146,8 @@ fn build_app_with_live_hub(
         if let Some(observer) = state.run_event_observer.0.clone() {
             service = service.with_run_event_observer(observer);
         }
+        let _ = spark_workspace::WorkspaceProjectService::new((*state.settings).clone())
+            .ensure_home_project();
         let _ = service.recover_interrupted_runs();
         // Likewise every chat turn the previous process left in flight.
         let _ = spark_workspace::WorkspaceConversationService::new((*state.settings).clone())

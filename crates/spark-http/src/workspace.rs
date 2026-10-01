@@ -275,11 +275,11 @@ async fn delete_project(
 
 async fn list_project_conversations(
     State(settings): State<Arc<SparkSettings>>,
-    payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Vec<ConversationSummary>> {
-    let query = query_payload(payload)?;
+    let query = optional_query_payload(payload)?;
     WorkspaceProjectService::new((*settings).clone())
-        .list_project_conversations(&query.project_path)
+        .list_project_conversations(query.project_path.as_deref())
         .map(Json)
         .map_err(Into::into)
 }
@@ -303,7 +303,6 @@ async fn update_conversation_settings(
     payload: Result<Json<ConversationSettingsUpdate>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
-    let project_path = request.project_path.clone();
     let changes_models = request.model_settings.is_some()
         || request.provider.is_some()
         || request.llm_profile.is_some()
@@ -311,6 +310,10 @@ async fn update_conversation_settings(
         || request.reasoning_effort.is_some();
     let service = WorkspaceConversationService::new((*settings).clone());
     let updated = service.update_conversation_settings(&conversation_id, request)?;
+    let project_path = updated["project_path"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
     publish_conversation_snapshot(&settings, &live_hub, &conversation_id, &project_path);
     if changes_models {
         live_hub.publish_settings_change(
@@ -1503,10 +1506,12 @@ async fn get_playbook(
 
 async fn list_missions(
     State(settings): State<Arc<SparkSettings>>,
-    payload: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    payload: Result<Query<ConversationQuery>, QueryRejection>,
 ) -> ApiResult<Value> {
-    let query = query_payload(payload)?;
-    Ok(Json(mission_service(&settings).board(&query.project_path)?))
+    let query = optional_query_payload(payload)?;
+    Ok(Json(
+        mission_service(&settings).board(query.project_path.as_deref())?,
+    ))
 }
 async fn get_mission(
     State(settings): State<Arc<SparkSettings>>,
@@ -1518,14 +1523,29 @@ async fn get_mission(
         mission_service(&settings).get(&query.project_path, &id)?,
     ))
 }
+#[derive(Debug, Default, Deserialize)]
+struct MissionCreateQuery {
+    project_path: Option<String>,
+    conversation_handle: Option<String>,
+}
+
 async fn create_mission(
     State(settings): State<Arc<SparkSettings>>,
-    query: Result<Query<ProjectConversationsQuery>, QueryRejection>,
+    query: Result<Query<MissionCreateQuery>, QueryRejection>,
     payload: Result<Json<MissionMutation>, JsonRejection>,
 ) -> ApiResult<MissionRecord> {
-    let query = query_payload(query)?;
+    let query = optional_query_payload(query)?;
     let mutation = json_payload(payload)?;
-    mission_call(move || mission_service(&settings).create(&query.project_path, mutation)).await
+    mission_call(move || {
+        let service = mission_service(&settings);
+        match query.conversation_handle.as_deref() {
+            Some(handle) => {
+                service.create_from_conversation(handle, query.project_path.as_deref(), mutation)
+            }
+            None => service.create(query.project_path.as_deref().unwrap_or_default(), mutation),
+        }
+    })
+    .await
 }
 async fn update_mission(
     State(settings): State<Arc<SparkSettings>>,
