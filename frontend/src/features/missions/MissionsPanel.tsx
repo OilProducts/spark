@@ -187,6 +187,13 @@ export function MissionsPanel({ active }: { active: boolean }) {
         const mission = missions.find(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
         if (mission) { setMode('read'); setEditing(mission); setDraft(mission.fields); setConflict(false); setError('') }
     }, [missions, selectedMission, editing, mode, busy])
+    // A removed project takes its open mission and unsaved drafts with it.
+    useEffect(() => {
+        if (!Object.keys(registry).length) return
+        for (const [key, saved] of drafts.current) if (!registry[saved.editing?.project_path ?? key.slice('new:'.length)]) drafts.current.delete(key)
+        const project = editing ? editing.project_path : editing === null ? newProject : null
+        if (project && !registry[project]) { setEditing(undefined); setNewProject(null); setMode('read'); setDraft({ ...empty }); setConflict(false); setError('') }
+    }, [registry, editing, newProject])
     const latest = editing ? board.missions.find(t => t.id === editing.id) : undefined
     const changed = latest && latest.revision > (editing?.revision ?? 0)
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)

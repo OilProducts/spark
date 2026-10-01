@@ -267,6 +267,21 @@ describe('project scope store behavior', () => {
     expect(next.runDetailSessionsByRunId['run-b']?.record?.run_id).toBe('run-b')
   })
 
+  it('drops the removed project missions and selection but keeps other projects', () => {
+    const store = useStore.getState()
+    store.registerProject('/tmp/project-a')
+    store.registerProject('/tmp/project-b')
+    const mission = (id: string, projectPath: string) => ({ id, project_path: projectPath, revision: 1, fields: { title: id, description: '', archived: false }, activity: [] })
+    store.setMissionBoard(() => [mission('m-a', '/tmp/project-a'), mission('m-b', '/tmp/project-b')])
+    store.setSelectedMission({ id: 'm-a', projectPath: '/tmp/project-a' })
+
+    store.removeProject('/tmp/project-a', '/tmp/project-b')
+
+    const next = useStore.getState()
+    expect(next.missionBoard.map((entry) => entry.id)).toEqual(['m-b'])
+    expect(next.selectedMission).toBeNull()
+  })
+
   it('renames normalized home conversation cache entries with project path updates', () => {
     const store = useStore.getState()
     store.registerProject('/tmp/project-a')

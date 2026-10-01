@@ -75,6 +75,8 @@ export function ProjectsPanel() {
                         formatConversationAgeShort={sidebarProps.formatConversationAgeShort}
                         onCreateConversationThread={sidebarProps.onCreateConversationThread}
                         onSelectConversationThread={sidebarProps.onSelectConversationThread}
+                        onDeleteConversationThread={sidebarProps.onDeleteConversationThread}
+                        pendingDeleteConversationId={sidebarProps.pendingDeleteConversationId}
                     />
                 ) : (
                     <div className={sidebarProps.isNarrowViewport ? "p-3" : "h-full p-6"}>

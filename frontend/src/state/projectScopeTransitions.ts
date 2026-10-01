@@ -43,6 +43,7 @@ type ProjectScopeTransitionState = Pick<
     AppState,
     | 'projectPagePath'
     | 'selectedMission'
+    | 'missionBoard'
     | 'homeConversationCache'
     | 'homeConversationSessionsById'
     | 'homeThreadSummariesStatusByProjectPath'
@@ -279,6 +280,7 @@ export const buildRemoveProjectTransition = (
         activeProjectPath: nextResolvedActiveProjectPath,
         projectPagePath: state.projectPagePath === normalizedPath ? null : state.projectPagePath,
         selectedMission: state.selectedMission?.projectPath === normalizedPath ? null : state.selectedMission,
+        missionBoard: state.missionBoard.filter((mission) => mission.project_path !== normalizedPath),
         viewMode: nextViewMode,
         ...nextRunsSessions,
         workingDir: nextResolvedActiveProjectPath

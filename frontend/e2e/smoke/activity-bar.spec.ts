@@ -273,3 +273,45 @@ test('Settings reopens the category you left it on, across views and reloads', a
     await expect(page.getByRole('tab', { name: 'Execution' })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('tab', { name: 'Models & accounts' }).click()
 })
+
+test('chats beyond the recent five can be deleted from the project page', async ({ page }, testInfo) => {
+    const { alpha } = await seedProjects(page, testInfo)
+    const ids = Array.from({ length: 6 }, (_, index) => `conversation-older-${Date.now()}-${index}`)
+    for (const id of ids) await createChat(page, alpha, id)
+    await page.goto('/')
+    await group(page, alpha).getByRole('button', { name: 'Expand alpha-project' }).click()
+    await expect(group(page, alpha).getByTestId('chats-chat-row')).toHaveCount(5)
+    const shown = await group(page, alpha).getByTestId('chats-chat-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-conversation-id')))
+    const hidden = ids.find((id) => !shown.includes(id))!
+
+    await group(page, alpha).getByTestId('chats-project-more').click()
+    const projectPage = page.getByTestId('project-page')
+    await expect(projectPage.getByTestId('project-page-chat')).toHaveCount(6)
+    await projectPage.getByTestId(`project-page-chat-delete-${hidden}`).click()
+    await page.getByTestId('shared-dialog-confirm').click()
+    await expect(projectPage.getByTestId('project-page-chat')).toHaveCount(5)
+    await expect.poll(async () => (await (await page.request.get(`/workspace/api/projects/conversations?project_path=${encodeURIComponent(alpha)}`)).json())
+        .map((chat: { conversation_id: string }) => chat.conversation_id)).not.toContain(hidden)
+})
+
+test('removing a project while one of its missions is selected drops it from Missions', async ({ page }, testInfo) => {
+    const { alpha, beta } = await seedProjects(page, testInfo)
+    const stamp = Date.now()
+    await createMission(page, alpha, `Alpha mission ${stamp}`)
+    await createMission(page, beta, `Beta mission ${stamp}`)
+    await page.goto('/')
+    await page.getByTestId('activity-missions').click()
+    const missions = page.getByTestId('missions-view')
+    await missions.getByTestId('side-panel').getByRole('button', { name: `Alpha mission ${stamp}` }).click()
+    await expect(missions.getByRole('button', { name: `Alpha mission ${stamp}` })).toHaveAttribute('aria-pressed', 'true')
+
+    await page.getByTestId('activity-chats').click()
+    await group(page, alpha).getByTestId('chats-project-name').click()
+    await page.getByTestId('project-page').getByTestId('project-page-remove').click()
+    await page.getByTestId('shared-dialog-confirm').click()
+    await expect(group(page, alpha)).toHaveCount(0)
+
+    await page.getByTestId('activity-missions').click()
+    await expect(missions.getByTestId('side-panel').getByRole('button', { name: `Beta mission ${stamp}` })).toBeVisible()
+    await expect(missions).not.toContainText(`Alpha mission ${stamp}`)
+})

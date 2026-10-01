@@ -18,12 +18,16 @@ export function ProjectPage({
     formatConversationAgeShort,
     onCreateConversationThread,
     onSelectConversationThread,
+    onDeleteConversationThread,
+    pendingDeleteConversationId,
 }: {
     projectPath: string
     chats: ProjectConversationSummary[]
     formatConversationAgeShort: (value: string) => string
     onCreateConversationThread: (projectPath: string) => void | Promise<void>
     onSelectConversationThread: (projectPath: string, conversationId: string) => void
+    onDeleteConversationThread: (projectPath: string, conversationId: string, title: string) => void | Promise<void>
+    pendingDeleteConversationId: string | null
 }) {
     const registry = useStore((state) => state.projectRegistry)
     const project = registry[projectPath]
@@ -74,16 +78,26 @@ export function ProjectPage({
                     ) : (
                         <ul data-testid="project-page-chats" className="divide-y divide-border border-y border-border">
                             {sortedChats.map((chat) => (
-                                <li key={chat.conversation_id}>
+                                <li key={chat.conversation_id} className="flex items-center gap-2">
                                     <button
                                         type="button"
                                         data-testid="project-page-chat"
                                         onClick={() => onSelectConversationThread(projectPath, chat.conversation_id)}
-                                        className="flex w-full items-baseline gap-3 py-2 text-left text-sm outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
+                                        className="flex min-w-0 flex-1 items-baseline gap-3 py-2 text-left text-sm outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring"
                                     >
                                         <span className="min-w-0 flex-1 truncate">{chat.title}</span>
                                         {chat.conversation_handle ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{chat.conversation_handle}</span> : null}
                                         <span className="shrink-0 text-xs text-muted-foreground">{formatConversationAgeShort(chat.updated_at)}</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        aria-label={`Delete thread ${chat.title}`}
+                                        data-testid={`project-page-chat-delete-${chat.conversation_id}`}
+                                        disabled={pendingDeleteConversationId === chat.conversation_id}
+                                        onClick={() => { void onDeleteConversationThread(projectPath, chat.conversation_id, chat.title) }}
+                                        className="shrink-0 rounded-sm p-1 text-muted-foreground outline-none hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
+                                    >
+                                        <Trash2 className="size-3.5" />
                                     </button>
                                 </li>
                             ))}
