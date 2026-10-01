@@ -49,7 +49,7 @@ function Section({ label, testId, children }: { label: ReactNode; testId: string
 const linkClass = 'text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring rounded-sm'
 
 function Link({ onClick, children, testId }: { onClick: () => void; children: ReactNode; testId?: string }) {
-    return <Button type="button" variant="link" data-testid={testId} onClick={onClick} className={`h-auto min-w-0 justify-start truncate p-0 text-left ${linkClass}`}>{children}</Button>
+    return <Button type="button" variant="link" data-testid={testId} onClick={onClick} className={`h-auto min-w-0 max-w-full shrink justify-start p-0 text-left ${linkClass}`}><span className="min-w-0 truncate">{children}</span></Button>
 }
 
 const itemTitle = (item: Started) => (item.kind === 'run' ? runTitle(item.run) : item.mission.fields.title || 'Untitled mission')
@@ -82,8 +82,8 @@ export function OverviewPanel() {
     const sourceLink = (source: Source | null) => {
         if (!source) return null
         return source.kind === 'chat'
-            ? <> · from <Link testId="overview-source-link" onClick={() => openChat(source.chat.project_path, source.chat.conversation_id)}>{source.chat.title}</Link></>
-            : <> · from <Link testId="overview-source-link" onClick={() => openMission(source.mission.id, source.mission.project_path)}>{source.mission.fields.title || 'Untitled mission'}</Link></>
+            ? <><span className="shrink-0 whitespace-pre"> · from </span><Link testId="overview-source-link" onClick={() => openChat(source.chat.project_path, source.chat.conversation_id)}>{source.chat.title}</Link></>
+            : <><span className="shrink-0 whitespace-pre"> · from </span><Link testId="overview-source-link" onClick={() => openMission(source.mission.id, source.mission.project_path)}>{source.mission.fields.title || 'Untitled mission'}</Link></>
     }
 
     return (
@@ -168,8 +168,8 @@ export function OverviewPanel() {
                                     <StatusMark mark={item.mark} />
                                     <span className="min-w-0">
                                         <Link onClick={() => openItem(item)}>{itemTitle(item)}</Link>
-                                        <span className="block truncate text-xs text-muted-foreground">
-                                            {item.kind === 'run' ? flowTitle(item.run.flow_name) : 'Mission'}
+                                        <span className="flex min-w-0 items-baseline text-xs text-muted-foreground">
+                                            <span className="shrink-0">{item.kind === 'run' ? flowTitle(item.run.flow_name) : 'Mission'}</span>
                                             {sourceLink(sourceOf(item, chats, missions))}
                                         </span>
                                     </span>
