@@ -17,9 +17,10 @@ export const DEFAULT_UI_DEFAULTS: UiDefaults = {
 }
 
 export const ROUTE_STATE_STORAGE_KEY = 'spark.ui_route_state'
+export const VIEW_MODE_SESSION_KEY = 'spark.ui_view_mode'
+const VIEW_MODES: ViewMode[] = ['overview', 'home', 'projects', 'missions', 'editor', 'triggers', 'settings', 'runs']
 export const DEFAULT_WORKING_DIRECTORY = './test-app'
 export const RECENT_PROJECT_LIMIT = 5
-export const VIEW_MODES: ViewMode[] = ['home', 'projects', 'missions', 'editor', 'triggers', 'settings', 'runs']
 
 export const DEFAULT_PROJECT_SESSION_STATE: ProjectSessionState = {
     workingDir: DEFAULT_WORKING_DIRECTORY,
@@ -183,7 +184,6 @@ export const resolveProjectSessionState = (
 }
 
 export const DEFAULT_ROUTE_STATE: RouteState = {
-    viewMode: 'home',
     activeProjectPath: null,
     projectPagePath: null,
     selectedRunId: null,
@@ -208,14 +208,10 @@ export const loadRouteState = (): RouteState => {
         const raw = window.localStorage.getItem(ROUTE_STATE_STORAGE_KEY)
         if (!raw) return { ...DEFAULT_ROUTE_STATE }
         const parsed = JSON.parse(raw) as Partial<Record<keyof RouteState, unknown>>
-        const viewMode = VIEW_MODES.includes(parsed.viewMode as ViewMode)
-            ? normalizeViewMode(parsed.viewMode as ViewMode)
-            : DEFAULT_ROUTE_STATE.viewMode
         const mission = parsed.selectedMission as { id?: unknown; projectPath?: unknown } | null | undefined
         const missionId = asId(mission?.id)
         const missionProjectPath = asAbsoluteProjectPath(mission?.projectPath)
         return {
-            viewMode,
             activeProjectPath: asAbsoluteProjectPath(parsed.activeProjectPath),
             projectPagePath: asAbsoluteProjectPath(parsed.projectPagePath),
             selectedRunId: asId(parsed.selectedRunId),
@@ -226,6 +222,24 @@ export const loadRouteState = (): RouteState => {
         }
     } catch {
         return { ...DEFAULT_ROUTE_STATE }
+    }
+}
+
+/** Spark opens on the Overview; a reload keeps the view you were on. */
+export const loadSessionViewMode = (): ViewMode => {
+    try {
+        const mode = window.sessionStorage.getItem(VIEW_MODE_SESSION_KEY) as ViewMode
+        return VIEW_MODES.includes(mode) ? normalizeViewMode(mode) : 'overview'
+    } catch {
+        return 'overview'
+    }
+}
+
+export const saveSessionViewMode = (mode: ViewMode) => {
+    try {
+        window.sessionStorage.setItem(VIEW_MODE_SESSION_KEY, mode)
+    } catch {
+        // Ignore storage failures (private mode, quota, etc.)
     }
 }
 

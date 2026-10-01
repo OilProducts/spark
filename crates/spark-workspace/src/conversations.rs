@@ -55,6 +55,8 @@ pub struct ConversationSummary {
     pub revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_preview: Option<String>,
+    /// The runs this chat launched, oldest first, from its flow launches.
+    pub launched_run_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -5637,6 +5639,14 @@ fn conversation_summary_from_snapshot(
         .and_then(non_empty_string)
         .unwrap_or_else(|| derive_conversation_title(turns));
     let last_message_preview = build_conversation_preview(turns);
+    let launched_run_ids = payload
+        .get("flow_launches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|launch| launch.get("run_id").and_then(Value::as_str))
+        .filter_map(non_empty_string)
+        .collect();
     Some(ConversationSummary {
         conversation_id,
         conversation_handle,
@@ -5646,6 +5656,7 @@ fn conversation_summary_from_snapshot(
         updated_at,
         revision,
         last_message_preview,
+        launched_run_ids,
     })
 }
 

@@ -1296,9 +1296,9 @@ describe('Frontend contract behavior', () => {
     const flowsTab = screen.getByTestId('activity-flows')
     const settingsTab = screen.getByTestId('activity-settings')
 
-    // Chats, Missions, Runs, Triggers and Flows, then the bell and Settings at the bottom.
+    // Overview, Chats, Missions, Runs, Triggers and Flows, then the bell and Settings at the bottom.
     expect(within(screen.getByTestId('activity-bar')).getAllByRole('button')).toEqual([
-      chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('attention-bell'), settingsTab,
+      screen.getByTestId('activity-overview'), chatsTab, missionsTab, runsTab, triggersTab, flowsTab, screen.getByTestId('attention-bell'), settingsTab,
     ])
     expect(settingsTab).toHaveAccessibleName('Settings')
     expect(chatsTab).toHaveAccessibleName('Chats')
@@ -1307,12 +1307,14 @@ describe('Frontend contract behavior', () => {
     expect(chatsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('projects')
 
-    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [settingsTab, 'settings'], [chatsTab, 'home']] as const) {
+    for (const [tab, mode] of [[missionsTab, 'missions'], [runsTab, 'runs'], [triggersTab, 'triggers'], [flowsTab, 'editor'], [settingsTab, 'settings'], [screen.getByTestId('activity-overview'), 'overview'], [chatsTab, 'home']] as const) {
       await user.keyboard('{ArrowDown}')
       expect(tab).toHaveFocus()
       expect(useStore.getState().viewMode).toBe(mode)
     }
 
+    await user.keyboard('{ArrowUp}')
+    expect(useStore.getState().viewMode).toBe('overview')
     await user.keyboard('{ArrowUp}')
     expect(settingsTab).toHaveFocus()
     expect(useStore.getState().viewMode).toBe('settings')

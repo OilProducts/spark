@@ -6,6 +6,7 @@ test('a fresh session chats in the Home project without choosing one', async ({ 
     expect(home.display_name).toBe('Home')
 
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     // Home leads the Chats panel, named Home, and the composer says chats go there.
     const homeGroup = page.getByTestId('chats-project-group').first()
     await expect(homeGroup).toHaveAttribute('data-project-path', home.project_path)

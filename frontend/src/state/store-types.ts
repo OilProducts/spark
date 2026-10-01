@@ -7,7 +7,7 @@ import type {
 } from './viewSessionTypes'
 import type { WorkflowEventLogSlice } from './workflowEventLogSlice'
 
-export type ViewMode = 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs' | 'missions'
+export type ViewMode = 'overview' | 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs' | 'missions'
 export type EditorMode = 'structured' | 'raw'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'failed' | 'waiting'
 export type DiagnosticSeverity = 'error' | 'warning' | 'info'
@@ -120,7 +120,6 @@ export interface MissionSelection {
 
 /** Where the app reopens: the view and the last selection in each view. */
 export interface RouteState {
-    viewMode: ViewMode
     activeProjectPath: string | null
     projectPagePath: string | null
     selectedRunId: string | null

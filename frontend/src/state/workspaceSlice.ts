@@ -10,6 +10,7 @@ import {
 import {
     DEFAULT_WORKING_DIRECTORY,
     loadRouteState,
+    loadSessionViewMode,
     pushRecentProjectPath,
     resolveProjectSessionState,
     resolveViewModeForProjectScope,
@@ -63,7 +64,7 @@ export const createWorkspaceSlice: StateCreator<AppState, [], [], WorkspaceSlice
         else proceed()
     }
     return ({
-    viewMode: restoredRouteState.viewMode,
+    viewMode: loadSessionViewMode(),
     setViewMode: (mode) => {
         const nextViewMode = resolveViewModeForProjectScope(mode)
         // Leaving an open chat remembers its project, so a flow run can default to it.

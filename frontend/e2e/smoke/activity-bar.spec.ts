@@ -63,6 +63,7 @@ test('every activity-bar view opens its panel with items from more than one proj
 
     try {
         await page.goto('/')
+        await page.getByTestId('activity-chats').click()
         await expect(page.getByTestId('activity-bar')).toBeVisible()
         await expect(page.getByTestId('view-mode-tabs')).toHaveCount(0)
         await expect(page.getByTestId('top-nav-project-switcher')).toHaveCount(0)
@@ -127,6 +128,7 @@ test('every activity-bar view opens its panel with items from more than one proj
 test('starting a chat in a project places it under that project and its composer names it', async ({ page }, testInfo) => {
     const { alpha } = await seedProjects(page, testInfo)
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     const alphaGroup = group(page, alpha)
     await alphaGroup.hover()
     await alphaGroup.getByTestId('chats-project-new-chat').click()
@@ -152,6 +154,7 @@ test('a project prompt scrolls on a short narrow viewport, so the last project c
     try {
         await page.setViewportSize({ width: 390, height: 600 })
         await page.goto('/')
+        await page.getByTestId('activity-chats').click()
         await page.getByTestId('project-thread-new-button').click()
         const picker = page.getByTestId('new-chat-project-picker')
         const box = await picker.boundingBox()
@@ -173,6 +176,7 @@ test('each chat keeps its unsent draft across chats in other projects, and a new
     await createChat(page, alpha, `conversation-alpha-${stamp}`)
     await createChat(page, beta, `conversation-beta-${stamp}`)
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     const composer = page.getByTestId('project-ai-conversation-input')
     const openChat = async (projectPath: string, id: string) => {
         const rows = group(page, projectPath).getByTestId('chats-chat-row')
@@ -205,6 +209,7 @@ test('a chat keeps its unsent draft across its project page, and a cancelled lea
     await createChat(page, alpha, alphaChat)
     await createChat(page, beta, betaChat)
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     const composer = page.getByTestId('project-ai-conversation-input')
     const chatButton = (projectPath: string, id: string) => group(page, projectPath).locator(`button[data-conversation-id="${id}"]`)
     const openChat = async (projectPath: string, id: string) => {
@@ -246,6 +251,7 @@ test('a new mission and a flow run ask which project, suggesting the last used a
     const flowName = await createFlowForSmokeTest(page, 'activity-run-picker')
     try {
         await page.goto('/')
+        await page.getByTestId('activity-chats').click()
         // Opening a chat in beta makes it the chat you came from.
         await group(page, beta).hover()
         await group(page, beta).getByTestId('chats-project-new-chat').click()
@@ -316,6 +322,7 @@ test('the project page shows its chats and settings, marks a missing folder, and
     await createChat(page, alpha, `conversation-page-${Date.now()}`)
     rmSync(beta, { recursive: true, force: true })
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
 
     await expect(group(page, beta)).toHaveAttribute('data-folder-missing', 'true')
     await expect(group(page, beta).getByTestId('chats-project-missing')).toHaveText('folder missing')
@@ -400,6 +407,7 @@ test('chats beyond the recent five can be deleted from the project page', async 
     const ids = Array.from({ length: 6 }, (_, index) => `conversation-older-${Date.now()}-${index}`)
     for (const id of ids) await createChat(page, alpha, id)
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     await group(page, alpha).getByRole('button', { name: 'Expand alpha-project' }).click()
     await expect(group(page, alpha).getByTestId('chats-chat-row')).toHaveCount(5)
     const shown = await group(page, alpha).getByTestId('chats-chat-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-conversation-id')))

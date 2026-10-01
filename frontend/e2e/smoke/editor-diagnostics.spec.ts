@@ -34,6 +34,7 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
   try {
     await stubProjectRegistration(page, projectPath)
     await page.goto("/")
+    await page.getByTestId("activity-chats").click()
 
     await expect(page.getByTestId("activity-bar")).toBeVisible()
     await expect(page.getByTestId("activity-chats")).toBeVisible()

@@ -612,7 +612,7 @@ describe('App shell behavior', () => {
     expect(useStore.getState().viewMode).toBe('settings')
     expect(screen.getByTestId('activity-settings')).toHaveFocus()
     await user.keyboard('{ArrowDown}')
-    expect(useStore.getState().viewMode).toBe('home')
+    expect(useStore.getState().viewMode).toBe('overview')
   })
 
   it('opens the project page from the Chats panel and saves a project execution profile default', async () => {

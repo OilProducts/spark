@@ -97,6 +97,12 @@ export function MissionsPanel({ active }: { active: boolean }) {
         window.addEventListener('spark:mission-live-event', onLive)
         return () => { disposed = true; window.removeEventListener('spark:mission-live-event', onLive); window.removeEventListener('spark:trigger-live-event', load) }
     }, [])
+    // The Overview's New mission opens a draft here, in the project it picked.
+    useEffect(() => {
+        const onNewMission = (event: Event) => open(null, null, (event as CustomEvent<string>).detail)
+        window.addEventListener('spark:new-mission', onNewMission)
+        return () => window.removeEventListener('spark:new-mission', onNewMission)
+    })
     function upsert(saved: Mission) {
         setMissionBoard(current => current.some(mission => mission.id === saved.id) ? current.map(mission => mission.id === saved.id ? saved : mission) : [...current, saved])
     }
