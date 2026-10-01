@@ -182,10 +182,11 @@ export function MissionsPanel({ active }: { active: boolean }) {
     // Reopen the last selected mission, or one chosen elsewhere (such as the bell).
     const selectedMission = useStore(s => s.selectedMission)
     useEffect(() => {
-        if (!selectedMission || (editing && editing.id === selectedMission.id)) return
-        if (editing !== undefined && (mode === 'edit' || busy)) return
+        if (!selectedMission || busy || (editing && editing.id === selectedMission.id)) return
         const mission = missions.find(m => m.id === selectedMission.id && m.project_path === selectedMission.projectPath)
-        if (mission) { setMode('read'); setEditing(mission); setDraft(mission.fields); setConflict(false); setError('') }
+        // An open editor or new-mission draft is kept, as when picking from the list.
+        if (mission && editing !== undefined && mode === 'edit') open(mission, origin.current)
+        else if (mission) { setMode('read'); setEditing(mission); setDraft(mission.fields); setConflict(false); setError('') }
     }, [missions, selectedMission, editing, mode, busy])
     // A removed project takes its open mission and unsaved drafts with it.
     useEffect(() => {

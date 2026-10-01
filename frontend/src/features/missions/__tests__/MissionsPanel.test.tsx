@@ -325,6 +325,28 @@ it('loads once without polling and preserves drafts when opening other missions'
     expect(vi.mocked(fetch).mock.calls.length).toBe(count)
 })
 
+it('switches to a mission selected elsewhere while editing or drafting, keeping the draft', async () => {
+    const other = mission({ id: 'task-2', fields: { ...fields, title: 'Other mission' } })
+    vi.mocked(fetch).mockImplementation(async () => ({ ok: true, json: async () => ({ missions: [task, other] }) }) as Response)
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
+    editMission()
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unfinished edit' } })
+    await act(async () => { useStore.getState().setSelectedMission({ id: 'task-2', projectPath: '/project' }) })
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Other mission' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: /Deliver search/ }))
+    expect(screen.getByLabelText('Title')).toHaveValue('Unfinished edit')
+
+    await newMission()
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New draft' } })
+    await act(async () => { useStore.getState().setSelectedMission({ id: 'task-2', projectPath: '/project' }) })
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Other mission' })).toHaveAttribute('aria-pressed', 'true')
+    await newMission()
+    expect(screen.getByLabelText('Title')).toHaveValue('New draft')
+})
+
 it('keeps unsaved edits while another view is open', async () => {
     const view = render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: /Deliver search/ }))
