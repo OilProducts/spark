@@ -148,18 +148,23 @@ export function forgetResolvedAttention(attention: AttentionItem[]) {
 
 /**
  * Records every finished run and mission as seen while the Overview shows them: those it lists, and on the first
- * visit those older than its day, so the next visit does not list them all. Marks nothing until something has finished.
+ * visit those older than its day, so the next visit does not list them all. Once both lists were fetched, records the
+ * visit even when nothing has finished; before then, with nothing shown, marks nothing.
  */
 export function markFinishedSeen(runs: RunRecord[], missions: Mission[]) {
     const shown = finished(runs, missions).map(finishedKey)
-    if (shown.length === 0) return
+    if (shown.length === 0 && fetched.size < 2) return
     const replaced = new Set(shown.map(unversioned))
     const kept = (readSeenFinished() ?? '').split('\n').filter((key) => key && !replaced.has(unversioned(key)))
     writeSeen(SEEN_FINISHED_KEY, [...kept, ...shown])
 }
 
+// The kinds whose full list has been fetched this session.
+const fetched = new Set<Started['kind']>()
+
 /** Forgets shown runs or missions that left their list. Call with each fully fetched list, never a live-updated one. */
 export function forgetRemovedFinished(kind: Started['kind'], ids: string[]) {
+    fetched.add(kind)
     // ponytail: storage stays bounded by the fetched lists; a run that leaves the list and comes back counts as new again.
     const listed = new Set(ids.map((id) => `${kind}:${id}`))
     const seen = (readSeenFinished() ?? '').split('\n').filter(Boolean)

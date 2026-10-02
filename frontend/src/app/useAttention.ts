@@ -15,8 +15,9 @@ export const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
 }
 
 /** Everything waiting on you across projects, polled and refreshed on focus. */
+/** Pending attention, polled; null until the first fetch resolves. */
 export function useAttentionItems() {
-    const [items, setItems] = useState<AttentionItem[]>([])
+    const [items, setItems] = useState<AttentionItem[] | null>(null)
     useEffect(() => {
         let disposed = false
         const refresh = () => {

@@ -58,7 +58,8 @@ const openItem = (item: Started) => (item.kind === 'run' ? openRun(item.id) : op
 /** Pick up where you left off: the chat you were last in, what needs you, what finished, and what to start. */
 export function OverviewPanel() {
     // ponytail: polls beside the activity bar's own poll while open; share one store-held list if the endpoint gets costly.
-    const attention = useAttentionItems()
+    const loadedAttention = useAttentionItems()
+    const attention = loadedAttention ?? []
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
@@ -66,7 +67,7 @@ export function OverviewPanel() {
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
     const [seenFinished] = useState(readSeenFinished)
     const [showRuns, setShowRuns] = useState(false)
-    useEffect(() => markAttentionSeen(attention), [attention])
+    useEffect(() => { if (loadedAttention) markAttentionSeen(loadedAttention) }, [loadedAttention])
     useEffect(() => markFinishedSeen(runs, missions), [runs, missions])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
     const now = Date.now()

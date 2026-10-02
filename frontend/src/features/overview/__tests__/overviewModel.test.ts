@@ -150,6 +150,19 @@ describe('finished since', () => {
         expect(hasUnread([], [runs[1], liveRun], [missions[0], liveMission], now)).toBe(false)
     })
 
+    it('records an empty first visit once both lists loaded, so a completion seen more than a day later is listed', () => {
+        const active = [run('run-live', 'running', '2026-10-02T09:00:00Z')]
+        forgetRemovedFinished('run', ['run-live'])
+        forgetRemovedFinished('mission', [])
+        markFinishedSeen(active, [])
+        expect(readSeenFinished()).toBe('')
+
+        const done = [run('run-live', 'completed', '2026-10-02T09:00:00Z', '2026-10-02T10:00:00Z')]
+        const twoDaysLater = at('2026-10-04T12:00:00Z')
+        expect(finishedSince(done, [], readSeenFinished(), twoDaysLater).map((item) => item.id)).toEqual(['run-live'])
+        expect(hasUnread([], done, [], twoDaysLater)).toBe(true)
+    })
+
     it('drops a seen item that left its fetched list, the last finished one included', () => {
         markFinishedSeen(runs, missions)
         forgetRemovedFinished('run', runs.filter((item) => item.run_id !== 'run-old').map((item) => item.run_id))

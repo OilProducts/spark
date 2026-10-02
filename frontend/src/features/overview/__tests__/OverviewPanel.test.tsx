@@ -5,6 +5,7 @@ import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { useStore } from '@/store'
 import { OverviewPanel } from '../OverviewPanel'
+import { hasUnread, markAttentionSeen } from '../model/overviewModel'
 
 let pending: AttentionItem[] = []
 vi.mock('@/lib/api/attentionApi', () => ({ fetchPendingAttention: () => Promise.resolve(pending) }))
@@ -28,6 +29,16 @@ describe('Overview needs you', () => {
 
         await poll([gate('run-a', 'gate-2'), gate('run-b', 'gate-1')], ['run-a', 'run-b'])
         await poll([gate('run-b', 'gate-1')], ['run-b'])
+    })
+})
+
+describe('Overview needs you seen', () => {
+    it('keeps shown attention seen when the Overview is left before attention loads', () => {
+        window.localStorage.clear()
+        const item = gate('run-a', 'gate-1')
+        markAttentionSeen([item])
+        render(<OverviewPanel />).unmount()
+        expect(hasUnread([item], [], [], Date.now())).toBe(false)
     })
 })
 

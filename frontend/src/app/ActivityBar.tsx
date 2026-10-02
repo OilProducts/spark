@@ -136,7 +136,7 @@ export function ActivityBar() {
     const missions = useStore((state) => state.missionBoard)
     const chatRunning = useChatRunning()
     const isNarrowViewport = useNarrowViewport()
-    const attention = useAttentionItems()
+    const attention = useAttentionItems() ?? []
     const overviewUnread = useOverviewUnread(attention)
     const dots = {
         ...activityDots(
