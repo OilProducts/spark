@@ -78,54 +78,62 @@ export function sourceOf(item: { kind: 'run'; id: string } | { kind: 'mission'; 
     return mission ? { kind: 'mission', mission } : null
 }
 
-/** Where "finished since" starts: your last look, or a day ago on the first visit. */
-export const windowStart = (seenAt: number | null, now: number) => seenAt ?? now - DAY_MS
+const finishedKey = (item: Started) => `${item.kind}:${item.id}`
 
-/** Top-level runs and missions that finished after `since`, newest first. */
-export function finishedSince(runs: RunRecord[], missions: Mission[], since: number): Started[] {
-    return [
-        ...runs.filter((run) => !run.parent_run_id)
-            .map((run): Started => ({ kind: 'run', id: run.run_id, run, mark: runMark(run), at: timeOf(run.ended_at) }))
-            .filter((item) => item.mark !== 'running' && item.mark !== 'waiting'),
-        ...missions.filter((mission) => mission.status === 'closed')
-            .map((mission): Started => ({ kind: 'mission', id: mission.id, mission, mark: missionMark(mission), at: timeOf(mission.closed?.at) })),
-    ].filter((item) => item.at > since).sort((left, right) => right.at - left.at)
+/** Top-level runs and missions that finished and are not yet seen, newest first; with nothing seen yet, those of the last day. */
+export function finishedSince(runs: RunRecord[], missions: Mission[], seenFinished: string | null, now: number): Started[] {
+    const seen = new Set(seenFinished?.split('\n'))
+    return finished(runs, missions)
+        .filter((item) => (seenFinished === null ? item.at > now - DAY_MS : !seen.has(finishedKey(item))))
+        .sort((left, right) => right.at - left.at)
 }
+
+const finished = (runs: RunRecord[], missions: Mission[]) => [
+    ...runs.filter((run) => !run.parent_run_id)
+        .map((run): Started => ({ kind: 'run', id: run.run_id, run, mark: runMark(run), at: timeOf(run.ended_at) }))
+        .filter((item) => item.mark !== 'running' && item.mark !== 'waiting'),
+    ...missions.filter((mission) => mission.status === 'closed')
+        .map((mission): Started => ({ kind: 'mission', id: mission.id, mission, mark: missionMark(mission), at: timeOf(mission.closed?.at) })),
+]
 
 // The version keeps a recurring request with a new timestamp from passing as one already shown.
 const attentionKey = (item: AttentionItem) => `${item.kind}:${item.id}@${item.updated_at}`
 
-/** Whether something needs you that the Overview has not shown, or something finished since your last look. */
-export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], seenAt: number | null, now: number, seenAttention = readSeenAttention()): boolean {
+/** Whether something needs you or has finished that the Overview has not shown. */
+export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], now: number, seenAttention = readSeenAttention(), seenFinished = readSeenFinished()): boolean {
     const seen = new Set(seenAttention.split('\n'))
-    return attention.some((item) => !seen.has(attentionKey(item))) || finishedSince(runs, missions, windowStart(seenAt, now)).length > 0
+    return attention.some((item) => !seen.has(attentionKey(item))) || finishedSince(runs, missions, seenFinished, now).length > 0
 }
 
-const SEEN_KEY = 'spark.overview_seen_at'
+// What the Overview has shown, as newline-joined keys; a string so it is a stable snapshot, null when nothing was ever shown.
 const SEEN_ATTENTION_KEY = 'spark.overview_seen_attention'
+const SEEN_FINISHED_KEY = 'spark.overview_seen_finished'
 const listeners = new Set<() => void>()
 
-/** The attention the Overview last showed, as newline-joined keys; a string so it is a stable snapshot. */
-export function readSeenAttention(): string {
+function readSeen(storageKey: string): string | null {
     try {
-        return window.localStorage.getItem(SEEN_ATTENTION_KEY) ?? ''
+        return window.localStorage.getItem(storageKey)
     } catch {
-        return ''
+        return null
     }
 }
 
-function writeSeenAttention(keys: string[]) {
+function writeSeen(storageKey: string, keys: string[]) {
+    if (readSeen(storageKey) === keys.join('\n')) return
     try {
-        window.localStorage.setItem(SEEN_ATTENTION_KEY, keys.join('\n'))
+        window.localStorage.setItem(storageKey, keys.join('\n'))
     } catch {
         // Ignore storage failures (private mode, quota, etc.)
     }
     listeners.forEach((listener) => listener())
 }
 
+export const readSeenAttention = () => readSeen(SEEN_ATTENTION_KEY) ?? ''
+export const readSeenFinished = () => readSeen(SEEN_FINISHED_KEY)
+
 /** Records the attention the Overview is showing; only what is pending now is kept. */
 export function markAttentionSeen(attention: AttentionItem[]) {
-    writeSeenAttention(attention.map(attentionKey))
+    writeSeen(SEEN_ATTENTION_KEY, attention.map(attentionKey))
 }
 
 /** Forgets shown attention that is no longer pending, so if it comes back it is new again. Call with each fetched list. */
@@ -133,28 +141,23 @@ export function forgetResolvedAttention(attention: AttentionItem[]) {
     const pending = new Set(attention.map(attentionKey))
     const seen = readSeenAttention().split('\n').filter(Boolean)
     const kept = seen.filter((key) => pending.has(key))
-    if (kept.length < seen.length) writeSeenAttention(kept)
+    if (kept.length < seen.length) writeSeen(SEEN_ATTENTION_KEY, kept)
 }
 
-export function readSeenAt(): number | null {
-    try {
-        const value = Number(window.localStorage.getItem(SEEN_KEY))
-        return value > 0 ? value : null
-    } catch {
-        return null
-    }
+/**
+ * Records every finished run and mission as seen while the Overview shows them: those it lists, and on the first
+ * visit those older than its day, so the next visit does not list them all. Marks nothing until something has finished.
+ */
+export function markFinishedSeen(runs: RunRecord[], missions: Mission[]) {
+    const shown = finished(runs, missions).map(finishedKey)
+    if (shown.length === 0) return
+    // ponytail: stores only the finished items still listed, so storage stays bounded; a kind whose list is still
+    // empty (not loaded yet) keeps its stored keys. A run that leaves the list and comes back counts as new again.
+    const kept = (readSeenFinished() ?? '').split('\n').filter((key) => key && (key.startsWith('run:') ? runs : missions).length === 0)
+    writeSeen(SEEN_FINISHED_KEY, [...new Set([...kept, ...shown])])
 }
 
-export function markSeen(now = Date.now()) {
-    try {
-        window.localStorage.setItem(SEEN_KEY, String(now))
-    } catch {
-        // Ignore storage failures (private mode, quota, etc.)
-    }
-    listeners.forEach((listener) => listener())
-}
-
-export function subscribeSeenAt(listener: () => void) {
+export function subscribeSeen(listener: () => void) {
     listeners.add(listener)
     return () => { listeners.delete(listener) }
 }

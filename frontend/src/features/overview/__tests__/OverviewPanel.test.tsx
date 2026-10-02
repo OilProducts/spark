@@ -2,6 +2,8 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AttentionItem } from '@/lib/api/attentionApi'
+import type { RunRecord } from '@/features/runs/model/shared'
+import { useStore } from '@/store'
 import { OverviewPanel } from '../OverviewPanel'
 
 let pending: AttentionItem[] = []
@@ -26,5 +28,36 @@ describe('Overview needs you', () => {
 
         await poll([gate('run-a', 'gate-2'), gate('run-b', 'gate-1')], ['run-a', 'run-b'])
         await poll([gate('run-b', 'gate-1')], ['run-b'])
+    })
+})
+
+const finishedRun = (id: string, hoursAgo: number): RunRecord => ({
+    run_id: id, flow_name: 'review.yaml', status: 'completed', working_directory: '/work/app', project_path: '/work/app', model: 'gpt',
+    started_at: new Date(Date.now() - (hoursAgo + 1) * 3_600_000).toISOString(), ended_at: new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+})
+const setRuns = (runs: RunRecord[]) => act(() => { useStore.setState((state) => ({ runsListSession: { ...state.runsListSession, runs } })) })
+const finished = () => screen.queryAllByTestId('overview-finished-item').map((row) => row.dataset.itemId)
+
+describe('Overview finished since', () => {
+    it('lists the last day on the first visit, then only what it has not shown, live updates included', () => {
+        pending = []
+        window.localStorage.clear()
+        setRuns([])
+        // A visit that closes before the lists load sees nothing.
+        render(<OverviewPanel />).unmount()
+
+        setRuns([finishedRun('run-week', 24 * 7), finishedRun('run-hour', 1)])
+        const first = render(<OverviewPanel />)
+        expect(screen.getByTestId('overview-finished').textContent).toContain('in the last day')
+        expect(finished()).toEqual(['run-hour'])
+        setRuns([finishedRun('run-week', 24 * 7), finishedRun('run-hour', 1), finishedRun('run-live', 0)])
+        expect(finished()).toEqual(['run-live', 'run-hour'])
+        first.unmount()
+
+        const runs = useStore.getState().runsListSession.runs
+        setRuns([...runs, finishedRun('run-after', 0)])
+        render(<OverviewPanel />)
+        expect(screen.getByTestId('overview-finished').textContent).toContain('since you last looked')
+        expect(finished()).toEqual(['run-after'])
     })
 })

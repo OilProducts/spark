@@ -9,11 +9,10 @@ import {
     lastChat,
     forgetResolvedAttention,
     markAttentionSeen,
-    markSeen,
-    readSeenAt,
+    markFinishedSeen,
+    readSeenFinished,
     sourceOf,
     tally,
-    windowStart,
     type Chat,
 } from '../model/overviewModel'
 
@@ -97,37 +96,44 @@ describe('finished since', () => {
     beforeEach(() => window.localStorage.clear())
 
     it('falls back to the last day on the first visit, lists top-level finishes newest first and marks failures', () => {
-        expect(readSeenAt()).toBeNull()
-        const since = windowStart(readSeenAt(), now)
-        expect(since).toBe(at('2026-10-01T12:00:00Z'))
-        const finished = finishedSince(runs, missions, since)
+        expect(readSeenFinished()).toBeNull()
+        const finished = finishedSince(runs, missions, readSeenFinished(), now)
         expect(finished.map((item) => [item.id, item.mark])).toEqual([
             ['closed', 'failed'], ['run-failed', 'failed'], ['run-done', 'completed'],
         ])
+        expect(hasUnread([], runs, missions, now)).toBe(true)
     })
 
-    it('starts at your last look once you have looked, and each look moves it', () => {
-        markSeen(at('2026-10-02T09:30:00Z'))
-        expect(readSeenAt()).toBe(at('2026-10-02T09:30:00Z'))
-        expect(finishedSince(runs, missions, windowStart(readSeenAt(), now)).map((item) => item.id)).toEqual(['closed', 'run-failed'])
-        expect(hasUnread([], runs, missions, readSeenAt(), now)).toBe(true)
+    it('stops listing what was shown, older finishes included, and lists what finished after the visit', () => {
+        markFinishedSeen(runs, missions)
+        expect(finishedSince(runs, missions, readSeenFinished(), now)).toEqual([])
+        expect(hasUnread([], runs, missions, now)).toBe(false)
 
-        markSeen(now)
-        expect(finishedSince(runs, missions, windowStart(readSeenAt(), now))).toEqual([])
-        expect(hasUnread([], runs, missions, readSeenAt(), now)).toBe(false)
-        const question: AttentionItem = { kind: 'run_gate', id: 'gate', title: 'Approve?', project_path: '/work/app', run_id: 'run-live', updated_at: '2026-10-02T12:05:00Z' }
-        expect(hasUnread([question], runs, missions, readSeenAt(), now)).toBe(true)
+        const later = [...runs.filter((item) => item.run_id !== 'run-live'), run('run-live', 'completed', '2026-10-02T09:00:00Z', '2026-10-02T12:30:00Z')]
+        expect(finishedSince(later, missions, readSeenFinished(), now).map((item) => item.id)).toEqual(['run-live'])
+        expect(hasUnread([], later, missions, now)).toBe(true)
+        markFinishedSeen(later, missions)
+        expect(hasUnread([], later, missions, now)).toBe(false)
+    })
+
+    it('marks nothing before the lists load, keeps a kind not loaded yet and drops what left its list', () => {
+        markFinishedSeen([], [])
+        expect(readSeenFinished()).toBeNull()
+
+        markFinishedSeen(runs, missions)
+        markFinishedSeen(runs.filter((item) => item.run_id !== 'run-old'), [])
+        expect(readSeenFinished()?.split('\n').sort()).toEqual(['mission:closed', 'run:run-done', 'run:run-failed'])
     })
 
     it('keeps fractional seconds of mission times at a same-second boundary', () => {
-        const seenAt = at('2026-10-01T12:00:00.100Z')
+        const dayLater = at('2026-10-02T12:00:00.100Z')
         const closedAt = (status: 'done' | 'failed', value: string) => mission(`m-${value}`, { status: 'closed', closed: { status, reason: '', at: value } })
         const earlier = closedAt('done', '2026-10-01 12:00:00.05 +00:00:00')
         const later = closedAt('failed', '2026-10-01 12:00:00.8 +00:00:00')
         const run800 = run('run-mid', 'completed', '2026-10-01T11:00:00Z', '2026-10-01T12:00:00.500Z')
-        expect(finishedSince([run800], [earlier, later], seenAt).map((item) => item.id)).toEqual([later.id, 'run-mid'])
-        expect(hasUnread([], [], [earlier], seenAt, seenAt)).toBe(false)
-        expect(hasUnread([], [], [later], seenAt, seenAt)).toBe(true)
+        expect(finishedSince([run800], [earlier, later], null, dayLater).map((item) => item.id)).toEqual([later.id, 'run-mid'])
+        expect(hasUnread([], [], [earlier], dayLater)).toBe(false)
+        expect(hasUnread([], [], [later], dayLater)).toBe(true)
     })
 })
 
@@ -138,55 +144,51 @@ describe('needs you dot', () => {
     it('shows for attention the Overview has not shown, however old its timestamp, and clears once shown', () => {
         const now = at('2026-10-02T12:00:00Z')
         const seen = question('seen', '2026-10-02T11:00:00Z')
-        markSeen(now)
         markAttentionSeen([seen])
-        expect(hasUnread([seen], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([seen], [], [], now)).toBe(false)
 
         const older = question('older', '2026-09-01T08:00:00Z')
-        expect(hasUnread([seen, older], [], [], readSeenAt(), now)).toBe(true)
+        expect(hasUnread([seen, older], [], [], now)).toBe(true)
 
         markAttentionSeen([seen, older])
-        expect(hasUnread([seen, older], [], [], readSeenAt(), now)).toBe(false)
-        expect(hasUnread([older], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([seen, older], [], [], now)).toBe(false)
+        expect(hasUnread([older], [], [], now)).toBe(false)
     })
 
     it('shows again for a mission that needs you again, seen while the Overview was closed or by its new timestamp', () => {
         const now = at('2026-10-02T12:00:00Z')
         const first = question('mission-a', '2026-10-02T10:00:00Z')
-        markSeen(now)
         markAttentionSeen([first])
         forgetResolvedAttention([first])
-        expect(hasUnread([first], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([first], [], [], now)).toBe(false)
 
         // A poll misses the gap, but the request carries a new timestamp.
         const again = question('mission-a', '2026-10-02T11:30:00Z')
         forgetResolvedAttention([again])
-        expect(hasUnread([again], [], [], readSeenAt(), now)).toBe(true)
+        expect(hasUnread([again], [], [], now)).toBe(true)
         markAttentionSeen([again])
-        expect(hasUnread([again], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([again], [], [], now)).toBe(false)
     })
 
     it('shows again for a successive gate on the same run once a poll saw the first one answered', () => {
         const now = at('2026-10-02T12:00:00Z')
         const gate: AttentionItem = { kind: 'run_gate', id: 'run-a', title: 'flow', project_path: '/work/app', run_id: 'run-a', updated_at: '2026-10-02T09:00:00Z' }
-        markSeen(now)
         markAttentionSeen([gate])
         forgetResolvedAttention([])
-        expect(hasUnread([], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([], [], [], now)).toBe(false)
         forgetResolvedAttention([gate])
-        expect(hasUnread([gate], [], [], readSeenAt(), now)).toBe(true)
+        expect(hasUnread([gate], [], [], now)).toBe(true)
     })
 
     it('shows again for a second gate on an already-seen run even when no poll saw the first one answered', () => {
         const now = at('2026-10-02T12:00:00Z')
         // A run gate is identified by its run and pending question; the run's start time stays the same.
         const gate = (questionId: string): AttentionItem => ({ kind: 'run_gate', id: `run-a:${questionId}`, title: 'flow', project_path: '/work/app', run_id: 'run-a', updated_at: '2026-10-02T09:00:00Z' })
-        markSeen(now)
         markAttentionSeen([gate('gate-1')])
-        expect(hasUnread([gate('gate-1')], [], [], readSeenAt(), now)).toBe(false)
+        expect(hasUnread([gate('gate-1')], [], [], now)).toBe(false)
 
         forgetResolvedAttention([gate('gate-2')])
-        expect(hasUnread([gate('gate-2')], [], [], readSeenAt(), now)).toBe(true)
+        expect(hasUnread([gate('gate-2')], [], [], now)).toBe(true)
     })
 })
 
