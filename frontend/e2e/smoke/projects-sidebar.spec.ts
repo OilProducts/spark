@@ -152,6 +152,7 @@ test('home sidebar thread rows stay within the sidebar width for long titles', a
 
   await page.setViewportSize({ width: 1366, height: 900 })
   await page.goto('/')
+  await page.getByTestId('activity-chats').click()
 
   await expect(page.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
   await expect(page.getByTestId('project-thread-list')).toContainText(

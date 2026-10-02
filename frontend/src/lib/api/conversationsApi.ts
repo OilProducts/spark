@@ -177,6 +177,8 @@ export interface ConversationSummaryResponse {
     updated_at: string
     revision: number
     last_message_preview?: string | null
+    /** The runs this chat launched, oldest first. */
+    launched_run_ids?: string[]
 }
 
 export interface ConversationDeleteResponse {
@@ -566,6 +568,9 @@ export function parseConversationSummaryResponse(value: unknown): ConversationSu
         updated_at: record.updated_at,
         revision: record.revision,
         last_message_preview: asOptionalNullableString(record.last_message_preview),
+        launched_run_ids: Array.isArray(record.launched_run_ids)
+            ? record.launched_run_ids.filter((id): id is string => typeof id === 'string')
+            : [],
     }
 }
 

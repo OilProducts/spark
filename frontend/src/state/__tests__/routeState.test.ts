@@ -1,12 +1,22 @@
 import { beforeEach, expect, it } from 'vitest'
 
-import { DEFAULT_ROUTE_STATE, loadRouteState, ROUTE_STATE_STORAGE_KEY, saveRouteState } from '../store-helpers'
+import { DEFAULT_ROUTE_STATE, loadRouteState, loadSessionViewMode, ROUTE_STATE_STORAGE_KEY, saveRouteState, saveSessionViewMode } from '../store-helpers'
 
-beforeEach(() => window.localStorage.clear())
+beforeEach(() => {
+    window.localStorage.clear()
+    window.sessionStorage.clear()
+})
 
-it('remembers the view and the last selection in each view', () => {
+it('opens on the Overview, and a reload in the same session keeps the view', () => {
+    expect(loadSessionViewMode()).toBe('overview')
+    saveSessionViewMode('runs')
+    expect(loadSessionViewMode()).toBe('runs')
+    saveSessionViewMode('nowhere' as never)
+    expect(loadSessionViewMode()).toBe('overview')
+})
+
+it('remembers the last selection in each view', () => {
     const route = {
-        viewMode: 'runs' as const,
         activeProjectPath: '/work/app',
         projectPagePath: '/home/me',
         selectedRunId: 'run-1',

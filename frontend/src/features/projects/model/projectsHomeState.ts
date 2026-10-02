@@ -263,6 +263,7 @@ function buildConversationSummaryFromRecord(record: NormalizedConversationRecord
         updated_at: record.updated_at,
         revision: record.revision,
         last_message_preview: lastMessageTurn?.content || null,
+        launched_run_ids: getConversationFlowLaunches(record).flatMap((launch) => launch.run_id ? [launch.run_id] : []),
     }
 }
 

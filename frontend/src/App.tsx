@@ -9,6 +9,7 @@ import { useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
+import { OverviewPanel } from "@/features/overview/OverviewPanel"
 function App() {
   const viewMode = useStore((state) => state.viewMode)
   const isNarrowViewport = useNarrowViewport()
@@ -65,6 +66,9 @@ function App() {
           >
             <TriggersPanel />
           </div>
+          {viewMode === 'overview' ? (
+            <div className="absolute inset-0"><OverviewPanel /></div>
+          ) : null}
           <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
           {isSettingsMode ? (
             <SettingsPanel />

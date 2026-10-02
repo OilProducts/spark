@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { FolderPlus, Plus } from "lucide-react"
 
 import { ViewLayout } from "@/components/app/view-layout"
@@ -22,6 +22,14 @@ export function ProjectsPanel() {
     const [registryBootstrapError, setRegistryBootstrapError] = useState<string | null>(null)
     const { historyProps, sidebarProps, surfaceProps } = useProjectsHomeController()
     const addProject = useAddProject()
+    const { onCreateConversationThread } = sidebarProps
+
+    // The Overview's New chat starts one here, in the project it picked.
+    useEffect(() => {
+        const onNewChat = (event: Event) => { void onCreateConversationThread((event as CustomEvent<string>).detail) }
+        window.addEventListener('spark:new-chat', onNewChat)
+        return () => window.removeEventListener('spark:new-chat', onNewChat)
+    }, [onCreateConversationThread])
 
     useProjectRegistryBootstrap({
         hydrateProjectRegistry,

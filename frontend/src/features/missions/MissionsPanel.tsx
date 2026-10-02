@@ -14,6 +14,7 @@ import { ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
+import { forgetRemovedFinished } from '@/features/overview/model/overviewModel'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
 export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
@@ -52,7 +53,11 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const missions = useStore(s => s.missionBoard)
     const setMissionBoard = useStore(s => s.setMissionBoard)
     const board: Board = { missions }
-    const setBoard = (value: Board) => setMissionBoard(() => Array.isArray(value.missions) ? value.missions : [])
+    const setBoard = (value: Board) => {
+        const next = Array.isArray(value.missions) ? value.missions : []
+        forgetRemovedFinished('mission', next.map(mission => mission.id))
+        setMissionBoard(() => next)
+    }
     // The project a new mission is being drafted in.
     const [newProject, setNewProject] = useState<string | null>(null)
     const [editing, setEditing] = useState<Mission | null | undefined>(undefined)
@@ -97,6 +102,12 @@ export function MissionsPanel({ active }: { active: boolean }) {
         window.addEventListener('spark:mission-live-event', onLive)
         return () => { disposed = true; window.removeEventListener('spark:mission-live-event', onLive); window.removeEventListener('spark:trigger-live-event', load) }
     }, [])
+    // The Overview's New mission opens a draft here, in the project it picked.
+    useEffect(() => {
+        const onNewMission = (event: Event) => open(null, null, (event as CustomEvent<string>).detail)
+        window.addEventListener('spark:new-mission', onNewMission)
+        return () => window.removeEventListener('spark:new-mission', onNewMission)
+    })
     function upsert(saved: Mission) {
         setMissionBoard(current => current.some(mission => mission.id === saved.id) ? current.map(mission => mission.id === saved.id ? saved : mission) : [...current, saved])
     }

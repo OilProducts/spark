@@ -44,6 +44,7 @@ test('a long chat turn keeps rendering live updates after it launches a flow par
         localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
     }, { projectPath })
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
 
     const turnPosted = page.waitForRequest((request) => request.method() === 'POST' && /\/workspace\/api\/conversations\/[^/]+\/turns$/.test(request.url()))
     await page.getByTestId('project-ai-conversation-input').fill('Take your time and launch the flow.')
@@ -119,6 +120,7 @@ test('the Chats dot follows a turn started in another tab, across a reload, unti
             localStorage.setItem('spark.ui_route_state', JSON.stringify({ viewMode: 'projects', activeProjectPath: projectPath, activeFlow: null }))
         }, { projectPath })
         await other.goto('/')
+        await other.getByTestId('activity-chats').click()
         await other.getByTestId('project-ai-conversation-input').fill('Take your time.')
         await other.getByTestId('project-ai-conversation-send-button').click()
         await expect(other.getByTestId('project-ai-conversation-history-list')).toContainText('Half done.')
@@ -155,6 +157,7 @@ test('a rejected chat send leaves the Chats dot clear', async ({ page }) => {
         await route.continue()
     })
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     const input = page.getByTestId('project-ai-conversation-input')
     await input.fill('This send fails.')
     const registryLoaded = page.waitForResponse((response) => response.request().method() === 'GET' && response.url().endsWith('/workspace/api/projects'))

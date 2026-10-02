@@ -55,6 +55,8 @@ pub struct ConversationSummary {
     pub revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_message_preview: Option<String>,
+    /// The runs this chat launched, oldest first, from its flow launches.
+    pub launched_run_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -470,30 +472,44 @@ impl WorkspaceConversationService {
                 }
                 let run_id = run.get("run_id").and_then(Value::as_str).unwrap_or("");
                 let questions = self.runtime_api_service().list_pipeline_questions(run_id);
-                let clarifications: Vec<_> = questions
+                let pending = questions
                     .body
                     .get("questions")
                     .and_then(Value::as_array)
                     .into_iter()
-                    .flatten()
+                    .flatten();
+                let clarifications: Vec<_> = pending
+                    .clone()
                     .filter(|question| {
                         question["origin"] == "agent_clarification" && question["run_id"] == run_id
                     })
                     .collect();
                 if !clarifications.is_empty() {
                     for question in clarifications {
+                        let gate_id = format!(
+                            "{run_id}:{}",
+                            question["question_id"].as_str().unwrap_or("")
+                        );
                         items.push(json!({
-                            "kind": "run_gate", "id": question["question_id"], "run_id": run_id,
+                            "kind": "run_gate", "id": gate_id, "run_id": run_id,
                             "title": question["prompt"], "project_path": run["project_path"],
                             "updated_at": run["started_at"],
                         }));
                     }
                     continue;
                 }
+                // Question ids are run-local, so the run id and the pending
+                // question's id together name this gate: a later gate on the
+                // same run is a new item, and runs at the same gate stay apart.
+                let question_id = pending
+                    .filter_map(|question| question.get("question_id").and_then(Value::as_str))
+                    .next()
+                    .unwrap_or("");
+                let gate_id = format!("{run_id}:{question_id}");
                 items.push(json!({
                     "kind": "run_gate",
-                    "id": run.get("run_id").cloned().unwrap_or_default(),
-                    "run_id": run.get("run_id").cloned().unwrap_or_default(),
+                    "id": gate_id,
+                    "run_id": run_id,
                     "title": run.get("flow_name").cloned().unwrap_or_default(),
                     "project_path": run.get("project_path").cloned().unwrap_or_default(),
                     "updated_at": run.get("started_at").cloned().unwrap_or_default(),
@@ -568,6 +584,27 @@ impl WorkspaceConversationService {
                 .cmp(left.get("updated_at").and_then(Value::as_str).unwrap_or(""))
         });
         Ok(items)
+    }
+
+    /// A conversation's Threads-list summary; `None` for a mission's own conversation.
+    pub fn thread_list_summary(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<Option<ConversationSummary>> {
+        let project_paths = self.repository().project_paths(project_path)?;
+        if spark_storage::workspace_missions::MissionRepository::new(&project_paths.root)
+            .read(conversation_id)?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let snapshot = self.get_snapshot(conversation_id, Some(project_path))?;
+        Ok(conversation_summary_from_snapshot(
+            &snapshot,
+            conversation_id,
+            project_path,
+        ))
     }
 
     pub fn list_project_conversations(
@@ -5590,7 +5627,7 @@ fn mode_change_turn_value(chat_mode: &str) -> Value {
     })
 }
 
-fn conversation_summary_from_snapshot(
+pub(crate) fn conversation_summary_from_snapshot(
     snapshot: &Value,
     fallback_conversation_id: &str,
     expected_project_path: &str,
@@ -5637,6 +5674,14 @@ fn conversation_summary_from_snapshot(
         .and_then(non_empty_string)
         .unwrap_or_else(|| derive_conversation_title(turns));
     let last_message_preview = build_conversation_preview(turns);
+    let launched_run_ids = payload
+        .get("flow_launches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|launch| launch.get("run_id").and_then(Value::as_str))
+        .filter_map(non_empty_string)
+        .collect();
     Some(ConversationSummary {
         conversation_id,
         conversation_handle,
@@ -5646,6 +5691,7 @@ fn conversation_summary_from_snapshot(
         updated_at,
         revision,
         last_message_preview,
+        launched_run_ids,
     })
 }
 

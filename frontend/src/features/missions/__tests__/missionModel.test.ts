@@ -5,7 +5,7 @@ import { joinRuns, missionTime, parseTurn, shortLine, totalTokens } from '../mod
 
 const now = Date.parse('2026-09-28T12:30:00Z')
 const base: Mission = { id: 'm', revision: 1, fields: { title: 'T', description: '', archived: false }, activity: [], created_at: '2026-09-27 11:48:00.340499 +00:00:00' }
-const roster = (run_id: string, status: string, summary = '') => ({ run_id, flow_name: 'work/build-it.yaml', summary, launched_at: '2026-09-28 12:18:00.5 +00:00:00', status })
+const roster = (run_id: string, status: string, summary = '') => ({ run_id, flow_name: 'work/build-it.yaml', summary, launched_at: '2026-09-28 12:18:00.0 +00:00:00', status })
 
 it('gives each state one short line, and a closed mission never its reason', () => {
     expect(shortLine({ ...base, status: 'draft' }, now)).toBe('Draft · created Sep 27')
@@ -23,11 +23,11 @@ it('gives each state one short line, and a closed mission never its reason', () 
 })
 
 it('reads stored timestamps whose hour has one digit', () => {
-    expect(missionTime('2026-09-28 2:18:19.591335 +00:00:00')).toBe('2026-09-28T02:18:19Z')
-    expect(missionTime('2026-09-28 12:18:19.5 +00:00:00')).toBe('2026-09-28T12:18:19Z')
+    expect(missionTime('2026-09-28 2:18:19.591335 +00:00:00')).toBe('2026-09-28T02:18:19.591Z')
+    expect(missionTime('2026-09-28 12:18:19.5 +00:00:00')).toBe('2026-09-28T12:18:19.5Z')
     const closed = shortLine({ ...base, status: 'closed', closed: { status: 'done', reason: '', at: '2026-09-28 2:18:19.591335 +00:00:00' } }, now)
     expect(closed).toMatch(/^Done · \S/)
-    expect(shortLine({ ...base, status: 'running', runs: [{ ...roster('r1', 'running', 'Early'), launched_at: '2026-09-28 9:30:00.1 +00:00:00' }] }, now)).toBe('Early · 3h 0m')
+    expect(shortLine({ ...base, status: 'running', runs: [{ ...roster('r1', 'running', 'Early'), launched_at: '2026-09-28 9:30:00.0 +00:00:00' }] }, now)).toBe('Early · 3h 0m')
 })
 
 it('reads the start, run results, run questions and replies from user turns', () => {

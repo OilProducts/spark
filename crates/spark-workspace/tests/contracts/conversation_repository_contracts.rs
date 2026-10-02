@@ -91,6 +91,15 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
         .expect("json"),
     )
     .expect("flow requests");
+    fs::write(
+        root.join("artifacts/flow-launches.json"),
+        serde_json::to_string_pretty(&json!([
+            {"id": "launch-a", "created_at": "2026-01-01T00:00:05Z", "updated_at": "2026-01-01T00:00:05Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant", "status": "launched", "run_id": "run-a"},
+            {"id": "launch-b", "created_at": "2026-01-01T00:00:06Z", "updated_at": "2026-01-01T00:00:06Z", "flow_name": "flow.dot", "summary": "Run", "project_path": project_path, "conversation_id": "conversation-a", "source_turn_id": "turn-assistant", "status": "launch_failed"}
+        ]))
+        .expect("json"),
+    )
+    .expect("flow launches");
 
     let service = WorkspaceConversationService::new(settings);
     let snapshot = service
@@ -124,6 +133,7 @@ fn conversation_service_reads_python_state_sidecars_and_truncates_tool_output_fo
         .expect("summaries");
     assert_eq!(summaries[0].conversation_id, "conversation-a");
     assert_eq!(summaries[0].last_message_preview.as_deref(), Some("Done"));
+    assert_eq!(summaries[0].launched_run_ids, vec!["run-a".to_string()]);
 }
 
 #[test]

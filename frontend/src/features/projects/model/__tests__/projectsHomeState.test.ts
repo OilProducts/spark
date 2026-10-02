@@ -7,6 +7,7 @@ import {
   hydrateConversationRecordFromSnapshot,
   removeProjectFromCache,
 } from '@/features/projects/model/projectsHomeState'
+import { lastChat, sourceOf, tally } from '@/features/overview/model/overviewModel'
 import type {
   ConversationSegmentResponse,
   ConversationSnapshotResponse,
@@ -753,6 +754,58 @@ describe('applyConversationSnapshotToCache', () => {
     expect(result.summariesByProjectPath[projectSnapshot.project_path]).toBeUndefined()
     expect(result.conversationsById[otherSnapshot.conversation_id]?.project_path).toBe(otherSnapshot.project_path)
     expect(result.summariesByProjectPath[otherSnapshot.project_path]).toHaveLength(1)
+  })
+})
+
+describe('thread-list summaries the Overview reads', () => {
+  const projectPath = '/tmp/project-contract-behavior'
+  const run = (run_id: string, status: string, ended_at: string) => ({
+    run_id, flow_name: 'implementation.dot', status, working_directory: projectPath, project_path: projectPath, model: 'gpt', started_at: '2026-03-06T15:00:30Z', ended_at,
+  })
+  const chats = (cache: typeof EMPTY_PROJECT_CONVERSATION_CACHE_STATE) => cache.summariesByProjectPath[projectPath] ?? []
+
+  it('keep a chat\'s launched runs through snapshot and committed stream updates', () => {
+    const seeded = {
+      ...EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      summariesByProjectPath: {
+        [projectPath]: [{
+          conversation_id: 'conversation-1', project_path: projectPath, title: 'Contract behavior',
+          created_at: '2026-03-06T15:00:00Z', updated_at: '2026-03-06T15:00:30Z', revision: 0, launched_run_ids: ['run'],
+        }],
+      },
+    }
+    const runs = [run('run', 'completed', '2026-03-06T16:00:00Z')]
+
+    const afterSnapshot = applyConversationSnapshotToCache(seeded, projectPath, buildSnapshot({
+      revision: 1,
+      flow_launches: [buildFlowLaunch({ status: 'launched', run_id: 'run' }), buildFlowLaunch({ id: 'launch-pending' })],
+    })).cache
+    expect(chats(afterSnapshot)[0]?.launched_run_ids).toEqual(['run'])
+    expect(sourceOf({ kind: 'run', id: 'run' }, chats(afterSnapshot), [])).toEqual({ kind: 'chat', chat: chats(afterSnapshot)[0] })
+    const last = lastChat(chats(afterSnapshot), runs, [])
+    expect(last?.at).toBe(Date.parse('2026-03-06T16:00:00Z'))
+    expect(tally(last!.started)).toEqual({ completed: 1 })
+
+    // A message turn carries no launches; one that launches another run adds it.
+    const afterTurn = applyConversationStreamEventToCache(afterSnapshot, projectPath, {
+      type: 'turn_upsert', revision: 2, conversation_id: 'conversation-1', project_path: projectPath, title: 'Contract behavior',
+      updated_at: '2026-03-06T15:02:00Z', turn: buildTurn({ id: 'turn-next', content: 'More.', timestamp: '2026-03-06T15:02:00Z' }),
+    })
+    if (afterTurn.status !== 'applied') throw new Error('turn not applied')
+    expect(chats(afterTurn.cache)[0]?.launched_run_ids).toEqual(['run'])
+
+    const afterLaunch = applyConversationStreamEventToCache(afterTurn.cache, projectPath, {
+      type: 'segment_upsert', revision: 3, conversation_id: 'conversation-1', project_path: projectPath, title: 'Contract behavior',
+      updated_at: '2026-03-06T15:03:00Z', segment: buildSegment({ id: 'segment-launch-2', turn_id: 'turn-next', kind: 'flow_launch', artifact_id: 'launch-2' }),
+      flow_launches: [buildFlowLaunch({ id: 'launch-2', status: 'launched', run_id: 'run-2' })],
+    })
+    if (afterLaunch.status !== 'applied') throw new Error('launch not applied')
+    const latest = chats(afterLaunch.cache)
+    expect(latest[0]?.launched_run_ids).toEqual(['run', 'run-2'])
+    expect(sourceOf({ kind: 'run', id: 'run' }, latest, [])).toEqual({ kind: 'chat', chat: latest[0] })
+    const withSecond = lastChat(latest, [...runs, run('run-2', 'failed', '2026-03-06T17:00:00Z')], [])
+    expect(withSecond?.at).toBe(Date.parse('2026-03-06T17:00:00Z'))
+    expect(tally(withSecond!.started)).toEqual({ completed: 1, failed: 1 })
   })
 })
 

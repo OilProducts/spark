@@ -226,6 +226,7 @@ test('a narrow viewport stacks each view\'s panel above its main area and keeps 
 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')
+  await page.getByTestId('activity-chats').click()
 
   const activityBar = page.getByTestId('activity-bar')
   await expect(activityBar).toHaveAttribute('data-responsive-layout', 'stacked')
@@ -261,6 +262,7 @@ test('viewport regression baselines capture desktop shell layouts for every view
 
   await page.setViewportSize({ width: 1366, height: 900 })
   await page.goto('/')
+  await page.getByTestId('activity-chats').click()
 
   await expect(page.getByTestId('activity-bar')).toHaveAttribute('data-responsive-layout', 'inline')
   await expect(page.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')

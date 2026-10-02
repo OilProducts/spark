@@ -402,6 +402,7 @@ test('saved core and Desktop-identity preferences survive a real server restart 
 
 const chatsGroup = (page: Page, project: string) => page.locator(`[data-testid="chats-project-group"][data-project-path="${project}"]`)
 const openChat = async (page: Page, project: string, title: string) => {
+    await page.getByTestId('activity-chats').click()
     const group = chatsGroup(page, project)
     if (await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded') !== 'true') await group.getByTestId('chats-project-toggle').click()
     await group.getByRole('button', { name: new RegExp(`Open thread ${title}`) }).click()

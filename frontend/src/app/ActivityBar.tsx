@@ -1,20 +1,19 @@
 import { type KeyboardEvent, useEffect, useRef, useState } from "react"
-import { Bell, GitBranch, MessageSquare, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
+import { Bell, GitBranch, House, MessageSquare, Play, Settings, Target, Zap, type LucideIcon } from "lucide-react"
 
 import { useStore, type ViewMode } from "@/store"
-import { requestNavigation } from '@/state/workspaceSlice'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
-// ponytail: retain the existing attention poll here; extracting it is outside the run-session migration.
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { fetchPendingAttention, type AttentionItem } from "@/lib/api/attentionApi"
+import type { AttentionItem } from "@/lib/api/attentionApi"
+import { useOverviewUnread } from '@/features/overview/hooks/useOverviewUnread'
+import { ATTENTION_KIND_LABELS, openAttentionItem, useAttentionItems } from './useAttention'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import { useChatRunning } from '@/features/projects/hooks/useChatRunning'
 import { cn } from '@/lib/utils'
 
 type ActivityItem = { mode: ViewMode; label: string; icon: LucideIcon; testId: string }
 
-// The first slot is left for the Overview (CR-2026-0142).
 export const ACTIVITY_ITEMS: ActivityItem[] = [
+    { mode: 'overview', label: 'Overview', icon: House, testId: 'activity-overview' },
     { mode: 'home', label: 'Chats', icon: MessageSquare, testId: 'activity-chats' },
     { mode: 'missions', label: 'Missions', icon: Target, testId: 'activity-missions' },
     { mode: 'runs', label: 'Runs', icon: Play, testId: 'activity-runs' },
@@ -23,18 +22,10 @@ export const ACTIVITY_ITEMS: ActivityItem[] = [
 ]
 const ACTIVITY_ORDER: ViewMode[] = [...ACTIVITY_ITEMS.map((item) => item.mode), 'settings']
 
-const ATTENTION_POLL_MS = 30_000
-
-const ATTENTION_KIND_LABELS: Record<AttentionItem['kind'], string> = {
-    run_gate: 'Run waiting for input',
-    flow_run_request: 'Flow run request',
-    proposed_plan: 'Plan pending review',
-    mission: 'Mission needs you',
-}
-
 const RUNNING_RUN_STATUSES = new Set(['running', 'queued', 'pause_requested', 'abort_requested', 'cancel_requested'])
 
-type ActivityDot = 'waiting' | 'running' | null
+type ActivityDot = 'waiting' | 'running' | 'unread' | null
+const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked' }
 
 /** Which views have something waiting on you or running, for the dots on their icons. */
 export function activityDots(
@@ -53,34 +44,6 @@ export function activityDots(
             ? 'waiting'
             : runStatuses.some((status) => RUNNING_RUN_STATUSES.has(status)) ? 'running' : null,
     }
-}
-
-function useAttentionItems() {
-    const [items, setItems] = useState<AttentionItem[]>([])
-    useEffect(() => {
-        let disposed = false
-        const refresh = () => {
-            fetchPendingAttention()
-                .then((next) => {
-                    if (!disposed) {
-                        setItems(next)
-                    }
-                })
-                .catch(() => {
-                    // Transient poll failures keep the last known items.
-                })
-        }
-        refresh()
-        const interval = window.setInterval(refresh, ATTENTION_POLL_MS)
-        const onFocus = () => refresh()
-        window.addEventListener('focus', onFocus)
-        return () => {
-            disposed = true
-            window.clearInterval(interval)
-            window.removeEventListener('focus', onFocus)
-        }
-    }, [])
-    return items
 }
 
 function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: boolean }) {
@@ -103,34 +66,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
 
     const openItem = (item: AttentionItem) => {
         setOpen(false)
-        const state = useStore.getState()
-        if (item.kind === 'run_gate' && item.run_id) {
-            state.setRunsSelectedRunId(item.run_id)
-            state.setViewMode('runs')
-            return
-        }
-        if (item.kind === 'mission') {
-            if (item.project_path) {
-                state.setSelectedMission({ id: item.id, projectPath: item.project_path })
-            }
-            state.setViewMode('missions')
-            return
-        }
-        const projectPath = item.project_path
-        const conversationId = item.conversation_id
-        if (!conversationId || !projectPath) {
-            state.setViewMode('home')
-            return
-        }
-        // Leaving a project page asks first, so a cancelled leave keeps the shown chat.
-        const open = () => {
-            useStore.setState({ projectPagePath: null })
-            useStore.getState().updateProjectSessionState(projectPath, { conversationId })
-            useStore.getState().setActiveProjectPath(projectPath)
-            useStore.getState().setViewMode('home')
-        }
-        if (state.projectPagePath) requestNavigation(open)
-        else open()
+        openAttentionItem(item)
     }
 
     return (
@@ -200,13 +136,17 @@ export function ActivityBar() {
     const missions = useStore((state) => state.missionBoard)
     const chatRunning = useChatRunning()
     const isNarrowViewport = useNarrowViewport()
-    const attention = useAttentionItems()
-    const dots = activityDots(
-        attention,
-        runs.map((run) => run.status),
-        missions.map((mission) => mission.status ?? 'draft'),
-        chatRunning,
-    )
+    const attention = useAttentionItems() ?? []
+    const overviewUnread = useOverviewUnread(attention)
+    const dots = {
+        ...activityDots(
+            attention,
+            runs.map((run) => run.status),
+            missions.map((mission) => mission.status ?? 'draft'),
+            chatRunning,
+        ),
+        overview: overviewUnread ? 'unread' as const : null,
+    }
 
     const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, mode: ViewMode) => {
         const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key]
@@ -229,7 +169,7 @@ export function ActivityBar() {
                 type="button"
                 data-testid={testId}
                 data-activity-mode={mode}
-                aria-label={dot ? `${label} (${dot === 'waiting' ? 'waiting on you' : 'running'})` : label}
+                aria-label={dot ? `${label} (${DOT_LABELS[dot]})` : label}
                 aria-current={isActive ? 'page' : undefined}
                 title={label}
                 onClick={() => setViewMode(mode)}

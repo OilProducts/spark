@@ -1,0 +1,242 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { expect, test } from '@playwright/test'
+import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
+
+const run = (runId: string, projectPath: string, status: string, endedAt: string | null, title: string) => ({
+    run_id: runId, title, flow_name: 'smoke/overview-review.yaml', status, outcome: status === 'completed' ? 'success' : status === 'failed' ? 'failure' : null,
+    working_directory: projectPath, project_path: projectPath, model: 'gpt-5', started_at: new Date(Date.now() - 3_600_000).toISOString(),
+    ended_at: endedAt, last_error: status === 'failed' ? 'boom' : '', token_usage: null,
+})
+
+test.beforeAll(() => {
+    ensureScreenshotDir()
+})
+
+test('Spark opens on the Overview: last chat, what needs you, what finished and where it came from, and an unread dot', async ({ page }, testInfo) => {
+    const stamp = Date.now()
+    const project = testInfo.outputPath('overview-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    const lastChat = `conversation-overview-last-${stamp}`
+    const otherChat = `conversation-overview-other-${stamp}`
+    // The other chat has the newer message; the last chat wins on the run it launched, which ends later still.
+    for (const id of [lastChat, otherChat]) {
+        expect((await page.request.put(`/workspace/api/conversations/${id}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+    }
+    const created = await page.request.post(`/workspace/api/missions?project_path=${encodeURIComponent(project)}`, {
+        data: { fields: { title: `Overview mission ${stamp}`, description: 'Overview smoke', archived: false }, actor: 'human' },
+    })
+    expect(created.ok(), await created.text()).toBeTruthy()
+    const missionId = (await created.json()).id as string
+
+    const doneRun = `run-overview-done-${stamp}`
+    const failedRun = `run-overview-failed-${stamp}`
+    const waitingRun = `run-overview-waiting-${stamp}`
+    await page.waitForTimeout(20)
+    const doneAt = new Date().toISOString()
+    await page.route('**/attractor/runs', (route) => route.fulfill({ json: { runs: [
+        run(doneRun, project, 'completed', doneAt, 'Reviewed the change'),
+        run(failedRun, project, 'failed', new Date(Date.now() - 60_000).toISOString(), 'Mission build'),
+        run(waitingRun, project, 'waiting', null, 'Waiting for approval'),
+    ] } }))
+    // The chat launched the completed run; the mission's roster holds the failed one.
+    await page.route((url) => url.pathname === '/workspace/api/projects/conversations', async (route) => {
+        const response = await route.fetch()
+        const chats = (await response.json()) as { conversation_id: string; launched_run_ids?: string[] }[]
+        await route.fulfill({ response, json: chats.map((chat) => chat.conversation_id === lastChat ? { ...chat, launched_run_ids: [doneRun] } : chat) })
+    })
+    await page.route('**/workspace/api/missions', async (route) => {
+        const response = await route.fetch()
+        const board = (await response.json()) as { missions: { id: string }[] }
+        await route.fulfill({ response, json: { ...board, missions: board.missions.map((mission) => mission.id === missionId
+            ? { ...mission, runs: [{ run_id: failedRun, flow_name: 'smoke/overview-review.yaml', summary: '', launched_at: '', status: 'failed' }] }
+            : mission) } })
+    })
+    let attention = [{ kind: 'run_gate', id: `gate-${stamp}`, title: 'Approve the deploy?', project_path: project, run_id: waitingRun, updated_at: new Date(Date.now() - 120_000).toISOString() }]
+    await page.route('**/workspace/api/attention', (route) => route.fulfill({ json: { items: attention } }))
+
+    await page.goto('/')
+    await expect(page.getByTestId('overview-view')).toBeVisible()
+    await expect(page.getByTestId('activity-overview')).toHaveAttribute('aria-current', 'page')
+
+    // Needs you: the pending question.
+    const needsYou = page.getByTestId('overview-needs-you-item')
+    await expect(needsYou).toHaveCount(1)
+    await expect(needsYou).toContainText('Approve the deploy?')
+
+    // Finished since: the completed and failed runs, each with where it came from, and the failure counted.
+    const finished = page.getByTestId('overview-finished')
+    const done = finished.locator(`[data-item-id="${doneRun}"]`)
+    const failed = finished.locator(`[data-item-id="${failedRun}"]`)
+    await expect(done.locator('[data-mark="completed"]')).toBeVisible()
+    await expect(failed.locator('[data-mark="failed"]')).toBeVisible()
+    await expect(done.getByTestId('overview-source-link')).toBeVisible()
+    await expect(failed.getByTestId('overview-source-link')).toHaveText(`Overview mission ${stamp}`)
+    await expect(page.getByTestId('overview-failure-count')).toContainText('1 failed')
+    const doneIndex = await finished.getByTestId('overview-finished-item').evaluateAll((rows, id) => rows.findIndex((row) => row.getAttribute('data-item-id') === id), doneRun)
+    const failedIndex = await finished.getByTestId('overview-finished-item').evaluateAll((rows, id) => rows.findIndex((row) => row.getAttribute('data-item-id') === id), failedRun)
+    expect(doneIndex).toBeLessThan(failedIndex)
+
+    // You were last in: the chat that launched the latest run, with its tally and runs.
+    await expect(page.getByTestId('overview-tally')).toContainText('1')
+    await page.getByTestId('overview-show-runs').click()
+    await expect(page.getByTestId('overview-started-item')).toHaveCount(1)
+    await expect(page.getByTestId('overview-started-item')).toContainText('Reviewed the change')
+    await page.screenshot({ path: screenshotPath('30a-overview.png'), fullPage: true })
+
+    // Continue opens that chat in the Chats view.
+    await page.getByTestId('overview-continue').click()
+    await expect(page.getByTestId('activity-chats')).toHaveAttribute('aria-current', 'page')
+    await expect(page.locator(`[data-testid="chats-chat-row"][data-conversation-id="${lastChat}"]`)).toHaveAttribute('aria-current', 'true')
+
+    // Something new needs you while you are away: the Overview icon shows a dot until you look.
+    await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
+    attention = [...attention, { kind: 'run_gate', id: `gate-new-${stamp}`, title: 'Another question', project_path: project, run_id: waitingRun, updated_at: new Date().toISOString() }]
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByTestId('activity-overview-dot')).toBeVisible()
+    await page.getByTestId('activity-overview').click()
+    await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
+    await page.getByTestId('activity-runs').click()
+    await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
+
+    // While you are away a seen question is answered, then the same run asks again: that is new, so the dot returns.
+    const repeated = attention[1]
+    attention = [attention[0]]
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('spark.overview_seen_attention') ?? '')).not.toContain(repeated.id)
+    await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
+    attention = [attention[0], repeated]
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByTestId('activity-overview-dot')).toBeVisible()
+
+    // A pending question opens where it can be answered: its run.
+    await page.getByTestId('activity-overview').click()
+    // The mocked run has no record behind it, so its opening shows as the Runs view fetching it.
+    const opened = page.waitForRequest((request) => request.url().includes(`/attractor/pipelines/${waitingRun}`))
+    await page.getByTestId('overview-needs-you-item').first().click()
+    await expect(page.getByTestId('activity-runs')).toHaveAttribute('aria-current', 'page')
+    await opened
+})
+
+const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
+const flowYaml = `schema_version: "1"
+id: overview-live-smoke
+title: Overview live smoke
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: done
+`
+
+test('an open Overview follows a background chat that launches a run', async ({ page }, testInfo) => {
+    const stamp = Date.now()
+    const project = testInfo.outputPath('overview-live-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    expect((await page.request.post('/attractor/api/flows', { data: { name: 'overview-live-smoke.yaml', content: flowYaml } })).ok()).toBeTruthy()
+    // The background chat had a turn, so it can own a launch; the other chat is where you were last.
+    // The smoke server's chat turns finish once their gates are open (see chat-live-turn.spec.ts).
+    mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
+    for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
+    const backgroundChat = `conversation-overview-background-${stamp}`
+    const otherChat = `conversation-overview-recent-${stamp}`
+    const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+    expect((await page.request.post(`/workspace/api/conversations/${backgroundChat}/turns`, { data: { project_path: project, message: 'Get ready.' } })).ok()).toBeTruthy()
+    await expect.poll(async () => (await snapshotOf(backgroundChat)).turns.at(-1)?.status, { timeout: 15_000 }).toBe('complete')
+    // Chat times are stored to the second.
+    await page.waitForTimeout(1_100)
+    expect((await page.request.put(`/workspace/api/conversations/${otherChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+    const snapshot = await snapshotOf(backgroundChat)
+
+    await page.goto('/')
+    await expect(page.getByTestId('overview-view')).toBeVisible()
+    const title = page.getByTestId('overview-last-chat-title')
+    await expect(title).toHaveAttribute('data-conversation-id', otherChat)
+
+    // The background chat launches a flow, as the spark CLI does; it runs to completion.
+    const launched = await page.request.post('/workspace/api/runs/launch', {
+        data: { flow_name: 'overview-live-smoke.yaml', summary: 'Launch from a background chat.', conversation_handle: snapshot.conversation_handle },
+    })
+    expect(launched.ok(), await launched.text()).toBeTruthy()
+    const runId = (await launched.json()).run_id as string
+
+    // Without leaving the Overview: the launching chat becomes the last one, with its tally and runs,
+    // and the finished run links back to it.
+    await expect(title).toHaveAttribute('data-conversation-id', backgroundChat)
+    await expect(page.getByTestId('overview-tally').locator('[data-mark="completed"]')).toBeVisible()
+    await page.getByTestId('overview-show-runs').click()
+    await expect(page.getByTestId('overview-started-item')).toHaveCount(1)
+    const done = page.getByTestId('overview-finished').locator(`[data-item-id="${runId}"]`)
+    await expect(done.locator('[data-mark="completed"]')).toBeVisible()
+    await expect(done.getByTestId('overview-source-link')).toHaveText(await title.innerText())
+    await expect(page.getByTestId('activity-overview')).toHaveAttribute('aria-current', 'page')
+})
+
+test('a mission launching a flow credits the chat that started it, not its own conversation', async ({ page }, testInfo) => {
+    const stamp = Date.now()
+    const project = testInfo.outputPath('overview-mission-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    const flowName = 'overview-mission-smoke.yaml'
+    expect((await page.request.post('/attractor/api/flows', { data: { name: flowName, content: flowYaml } })).ok()).toBeTruthy()
+    const flow = await (await page.request.get(`/workspace/api/flows/${flowName}`)).json()
+    const policy = await page.request.put(`/workspace/api/flows/${flowName}/launch-policy`, { data: { launch_policy: 'agent_requestable', expected_revision: flow.revision } })
+    expect(policy.ok(), await policy.text()).toBeTruthy()
+    mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
+    for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
+    const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+
+    // The user's chat starts a mission; the mission's agent runs in its own conversation.
+    const userChat = `conversation-overview-mission-source-${stamp}`
+    expect((await page.request.put(`/workspace/api/conversations/${userChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+    const created = await page.request.post(`/workspace/api/missions?conversation_handle=${(await snapshotOf(userChat)).conversation_handle}`, {
+        data: { fields: { title: `Overview mission ${stamp}`, description: 'Overview mission smoke', archived: false }, actor: 'human' },
+    })
+    expect(created.ok(), await created.text()).toBeTruthy()
+    const missionId = (await created.json()).id as string
+    const started = await page.request.post(`/workspace/api/missions/${missionId}/start?project_path=${encodeURIComponent(project)}`)
+    expect(started.ok(), await started.text()).toBeTruthy()
+    await expect.poll(async () => (await snapshotOf(missionId)).turns?.at(-1)?.status, { timeout: 15_000 }).toBe('complete')
+    // Chat times are stored to the second.
+    await page.waitForTimeout(1_100)
+    const otherChat = `conversation-overview-mission-other-${stamp}`
+    expect((await page.request.put(`/workspace/api/conversations/${otherChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+
+    await page.goto('/')
+    await expect(page.getByTestId('overview-view')).toBeVisible()
+    const title = page.getByTestId('overview-last-chat-title')
+    await expect(title).toHaveAttribute('data-conversation-id', otherChat)
+
+    // The mission's agent launches a flow through its conversation handle, as the spark CLI does.
+    const launched = await page.request.post(`/workspace/api/conversations/by-handle/${(await snapshotOf(missionId)).conversation_handle}/flow-run-requests`, {
+        data: { flow_name: flowName, summary: 'Launch from a mission.' },
+    })
+    expect(launched.ok(), await launched.text()).toBeTruthy()
+    const runId = (await launched.json()).run_id as string
+
+    // The finished run links to its mission, and the user's chat gets the credit through the roster.
+    const done = page.getByTestId('overview-finished').locator(`[data-item-id="${runId}"]`)
+    await expect(done.locator('[data-mark="completed"]')).toBeVisible()
+    await expect(done.getByTestId('overview-source-link')).toHaveText(`Overview mission ${stamp}`)
+    await expect(title).toHaveAttribute('data-conversation-id', userChat)
+    await expect(title).not.toHaveAttribute('data-conversation-id', missionId)
+
+    // The mission's own conversation stays out of Chats.
+    await page.getByTestId('activity-chats').click()
+    const group = page.locator(`[data-testid="chats-project-group"][data-project-path="${project}"]`)
+    if ((await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded')) !== 'true') await group.getByTestId('chats-project-toggle').click()
+    await expect(group.locator(`[data-conversation-id="${userChat}"]`)).toBeVisible()
+    await expect(group.locator(`[data-conversation-id="${missionId}"]`)).toHaveCount(0)
+})

@@ -27,6 +27,7 @@ test('real chat math and Mermaid render while streaming and contain wide content
     } }))
     await page.route('**/workspace/api/live/events**', (route) => route.fulfill({ contentType: 'text/event-stream', body: ': smoke\n\n' }))
     await page.goto('/')
+    await page.getByTestId('activity-chats').click()
     const history = page.getByTestId('project-ai-conversation-history-list')
     await expect(history.locator('.katex').first()).toBeVisible()
     await expect(history.locator('.katex-display')).toBeVisible()
