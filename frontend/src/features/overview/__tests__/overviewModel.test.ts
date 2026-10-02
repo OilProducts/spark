@@ -118,6 +118,17 @@ describe('finished since', () => {
         const question: AttentionItem = { kind: 'run_gate', id: 'gate', title: 'Approve?', project_path: '/work/app', run_id: 'run-live', updated_at: '2026-10-02T12:05:00Z' }
         expect(hasUnread([question], runs, missions, readSeenAt(), now)).toBe(true)
     })
+
+    it('keeps fractional seconds of mission times at a same-second boundary', () => {
+        const seenAt = at('2026-10-01T12:00:00.100Z')
+        const closedAt = (status: 'done' | 'failed', value: string) => mission(`m-${value}`, { status: 'closed', closed: { status, reason: '', at: value } })
+        const earlier = closedAt('done', '2026-10-01 12:00:00.05 +00:00:00')
+        const later = closedAt('failed', '2026-10-01 12:00:00.8 +00:00:00')
+        const run800 = run('run-mid', 'completed', '2026-10-01T11:00:00Z', '2026-10-01T12:00:00.500Z')
+        expect(finishedSince([run800], [earlier, later], seenAt).map((item) => item.id)).toEqual([later.id, 'run-mid'])
+        expect(hasUnread([], [], [earlier], seenAt, seenAt)).toBe(false)
+        expect(hasUnread([], [], [later], seenAt, seenAt)).toBe(true)
+    })
 })
 
 describe('needs you dot', () => {
