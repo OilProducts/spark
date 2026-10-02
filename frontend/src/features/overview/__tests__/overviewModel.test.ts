@@ -179,8 +179,8 @@ describe('needs you dot', () => {
 
     it('shows again for a second gate on an already-seen run even when no poll saw the first one answered', () => {
         const now = at('2026-10-02T12:00:00Z')
-        // A run gate is identified by its pending question; the run's start time stays the same.
-        const gate = (questionId: string): AttentionItem => ({ kind: 'run_gate', id: questionId, title: 'flow', project_path: '/work/app', run_id: 'run-a', updated_at: '2026-10-02T09:00:00Z' })
+        // A run gate is identified by its run and pending question; the run's start time stays the same.
+        const gate = (questionId: string): AttentionItem => ({ kind: 'run_gate', id: `run-a:${questionId}`, title: 'flow', project_path: '/work/app', run_id: 'run-a', updated_at: '2026-10-02T09:00:00Z' })
         markSeen(now)
         markAttentionSeen([gate('gate-1')])
         expect(hasUnread([gate('gate-1')], [], [], readSeenAt(), now)).toBe(false)

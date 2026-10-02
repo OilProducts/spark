@@ -486,26 +486,30 @@ impl WorkspaceConversationService {
                     .collect();
                 if !clarifications.is_empty() {
                     for question in clarifications {
+                        let gate_id = format!(
+                            "{run_id}:{}",
+                            question["question_id"].as_str().unwrap_or("")
+                        );
                         items.push(json!({
-                            "kind": "run_gate", "id": question["question_id"], "run_id": run_id,
+                            "kind": "run_gate", "id": gate_id, "run_id": run_id,
                             "title": question["prompt"], "project_path": run["project_path"],
                             "updated_at": run["started_at"],
                         }));
                     }
                     continue;
                 }
-                // The pending question's id names this gate, so a later gate on
-                // the same run is a new item rather than one already shown.
-                let gate_id = pending
-                    .filter_map(|question| question.get("question_id"))
+                // Question ids are run-local, so the run id and the pending
+                // question's id together name this gate: a later gate on the
+                // same run is a new item, and runs at the same gate stay apart.
+                let question_id = pending
+                    .filter_map(|question| question.get("question_id").and_then(Value::as_str))
                     .next()
-                    .or_else(|| run.get("run_id"))
-                    .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or("");
+                let gate_id = format!("{run_id}:{question_id}");
                 items.push(json!({
                     "kind": "run_gate",
                     "id": gate_id,
-                    "run_id": run.get("run_id").cloned().unwrap_or_default(),
+                    "run_id": run_id,
                     "title": run.get("flow_name").cloned().unwrap_or_default(),
                     "project_path": run.get("project_path").cloned().unwrap_or_default(),
                     "updated_at": run.get("started_at").cloned().unwrap_or_default(),

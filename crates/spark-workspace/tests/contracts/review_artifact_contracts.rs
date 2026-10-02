@@ -862,29 +862,33 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
 }
 
 #[test]
-fn successive_gates_on_one_run_are_distinct_attention_items() {
+fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     let service = WorkspaceConversationService::new(settings.clone());
     let store = attractor_runtime::RunStore::for_settings(&settings);
-    let mut waiting =
-        attractor_core::RunRecord::new("run-two-gates", project_path.to_string_lossy());
-    waiting.status = "waiting".to_string();
-    store
-        .create_run(attractor_runtime::CreateRunRequest {
-            record: waiting,
-            ..attractor_runtime::CreateRunRequest::default()
-        })
-        .expect("create run");
-    let paths = store
-        .find_run_root("run-two-gates")
-        .expect("find run")
-        .expect("run root");
-    let gate = |question_id: &str| {
+    let mut paths = Vec::new();
+    for run_id in ["run-a", "run-b"] {
+        let mut waiting = attractor_core::RunRecord::new(run_id, project_path.to_string_lossy());
+        waiting.status = "waiting".to_string();
+        store
+            .create_run(attractor_runtime::CreateRunRequest {
+                record: waiting,
+                ..attractor_runtime::CreateRunRequest::default()
+            })
+            .expect("create run");
+        paths.push(
+            store
+                .find_run_root(run_id)
+                .expect("find run")
+                .expect("run root"),
+        );
+    }
+    let gate = |run_id: &str, question_id: &str| {
         attractor_runtime::human_gate_pending_event(
-            "run-two-gates",
+            run_id,
             question_id,
             question_id,
             "flow",
@@ -893,36 +897,57 @@ fn successive_gates_on_one_run_are_distinct_attention_items() {
             Vec::new(),
         )
     };
-    let attention_key = || {
-        let items = service.pending_attention().expect("attention items");
-        assert_eq!(items.len(), 1, "{items:?}");
-        assert_eq!(items[0]["run_id"], "run-two-gates");
-        format!("{}@{}", items[0]["id"], items[0]["updated_at"])
+    let attention = || {
+        let mut items: Vec<(String, String)> = service
+            .pending_attention()
+            .expect("attention items")
+            .iter()
+            .filter(|item| item["kind"] == "run_gate")
+            .map(|item| {
+                (
+                    item["run_id"].as_str().unwrap().to_string(),
+                    format!("{}@{}", item["id"], item["updated_at"]),
+                )
+            })
+            .collect();
+        items.sort();
+        items
     };
 
-    store.append_event(&paths, gate("gate-1")).expect("gate 1");
-    let first = attention_key();
+    // Question ids are run-local: both runs wait at a gate with the same id.
+    store
+        .append_event(&paths[0], gate("run-a", "gate-1"))
+        .expect("run-a gate 1");
+    store
+        .append_event(&paths[1], gate("run-b", "gate-1"))
+        .expect("run-b gate 1");
+    let first = attention();
+    assert_eq!(first.len(), 2, "{first:?}");
+    assert_eq!(first[0].0, "run-a");
+    assert_eq!(first[1].0, "run-b");
+    assert_ne!(
+        first[0].1, first[1].1,
+        "runs at the same gate must be distinct items"
+    );
+
     store
         .append_event(
-            &paths,
+            &paths[0],
             attractor_runtime::human_gate_answered_event(
-                "run-two-gates",
-                "gate-1",
-                None,
-                None,
-                None,
-                "yes",
-                None,
+                "run-a", "gate-1", None, None, None, "yes", None,
             ),
         )
-        .expect("answer gate 1");
-    store.append_event(&paths, gate("gate-2")).expect("gate 2");
-    let second = attention_key();
-
+        .expect("answer run-a gate 1");
+    store
+        .append_event(&paths[0], gate("run-a", "gate-2"))
+        .expect("run-a gate 2");
+    let second = attention();
+    assert_eq!(second.len(), 2, "{second:?}");
     assert_ne!(
-        first, second,
+        first[0].1, second[0].1,
         "a new gate on the same run must be a new item"
     );
+    assert_eq!(first[1], second[1], "the other run's gate is unchanged");
 }
 
 #[test]
