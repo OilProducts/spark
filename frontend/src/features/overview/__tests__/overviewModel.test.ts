@@ -7,6 +7,7 @@ import {
     finishedSince,
     hasUnread,
     lastChat,
+    forgetRemovedFinished,
     forgetResolvedAttention,
     markAttentionSeen,
     markFinishedSeen,
@@ -116,13 +117,29 @@ describe('finished since', () => {
         expect(hasUnread([], later, missions, now)).toBe(false)
     })
 
-    it('marks nothing before the lists load, keeps a kind not loaded yet and drops what left its list', () => {
+    it('marks nothing before the lists load and keeps what was seen through a partial live list until a full fetch', () => {
         markFinishedSeen([], [])
         expect(readSeenFinished()).toBeNull()
 
+        // Seen on an earlier visit; at startup a live completion arrives before the full lists, and you leave.
+        markFinishedSeen([runs[1]], [missions[0]])
+        const liveRun = run('run-b', 'completed', '2026-10-02T11:00:00Z', '2026-10-02T11:30:00Z')
+        const liveMission = mission('m-b', { status: 'closed', closed: { status: 'done', reason: '', at: '2026-10-02 11:40:00.0 +00:00:00' } })
+        markFinishedSeen([liveRun], [liveMission])
+        forgetRemovedFinished('run', [runs[1].run_id, liveRun.run_id])
+        forgetRemovedFinished('mission', [missions[0].id, liveMission.id])
+        expect(finishedSince([runs[1], liveRun], [missions[0], liveMission], readSeenFinished(), now)).toEqual([])
+        expect(hasUnread([], [runs[1], liveRun], [missions[0], liveMission], now)).toBe(false)
+    })
+
+    it('drops a seen item that left its fetched list, the last finished one included', () => {
         markFinishedSeen(runs, missions)
-        markFinishedSeen(runs.filter((item) => item.run_id !== 'run-old'), [])
+        forgetRemovedFinished('run', runs.filter((item) => item.run_id !== 'run-old').map((item) => item.run_id))
         expect(readSeenFinished()?.split('\n').sort()).toEqual(['mission:closed', 'run:run-done', 'run:run-failed'])
+        // Only an active run is left, and the closed mission is gone.
+        forgetRemovedFinished('run', ['run-live'])
+        forgetRemovedFinished('mission', [])
+        expect(readSeenFinished()).toBe('')
     })
 
     it('keeps fractional seconds of mission times at a same-second boundary', () => {

@@ -151,10 +151,16 @@ export function forgetResolvedAttention(attention: AttentionItem[]) {
 export function markFinishedSeen(runs: RunRecord[], missions: Mission[]) {
     const shown = finished(runs, missions).map(finishedKey)
     if (shown.length === 0) return
-    // ponytail: stores only the finished items still listed, so storage stays bounded; a kind whose list is still
-    // empty (not loaded yet) keeps its stored keys. A run that leaves the list and comes back counts as new again.
-    const kept = (readSeenFinished() ?? '').split('\n').filter((key) => key && (key.startsWith('run:') ? runs : missions).length === 0)
-    writeSeen(SEEN_FINISHED_KEY, [...new Set([...kept, ...shown])])
+    writeSeen(SEEN_FINISHED_KEY, [...new Set([...(readSeenFinished() ?? '').split('\n').filter(Boolean), ...shown])])
+}
+
+/** Forgets shown runs or missions that left their list. Call with each fully fetched list, never a live-updated one. */
+export function forgetRemovedFinished(kind: Started['kind'], ids: string[]) {
+    // ponytail: storage stays bounded by the fetched lists; a run that leaves the list and comes back counts as new again.
+    const listed = new Set(ids.map((id) => `${kind}:${id}`))
+    const seen = (readSeenFinished() ?? '').split('\n').filter(Boolean)
+    const kept = seen.filter((key) => !key.startsWith(`${kind}:`) || listed.has(key))
+    if (kept.length < seen.length) writeSeen(SEEN_FINISHED_KEY, kept)
 }
 
 export function subscribeSeen(listener: () => void) {
