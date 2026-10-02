@@ -25,7 +25,7 @@ const MARKS: Record<Mark, { symbol: string; label: string; className: string }> 
     running: { symbol: '•', label: 'Running', className: 'text-primary' },
     completed: { symbol: '✓', label: 'Completed', className: 'text-success' },
     failed: { symbol: '✕', label: 'Failed', className: 'text-destructive' },
-    ended: { symbol: '–', label: 'Canceled', className: 'text-muted-foreground' },
+    ended: { symbol: '–', label: 'Stopped', className: 'text-muted-foreground' },
     draft: { symbol: '○', label: 'Draft', className: 'text-muted-foreground' },
 }
 const MARK_ORDER: Mark[] = ['waiting', 'running', 'completed', 'failed', 'ended', 'draft']
