@@ -99,6 +99,16 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
     await page.getByTestId('activity-runs').click()
     await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
 
+    // While you are away a seen question is answered, then the same run asks again: that is new, so the dot returns.
+    const repeated = attention[1]
+    attention = [attention[0]]
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('spark.overview_seen_attention') ?? '')).not.toContain(repeated.id)
+    await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
+    attention = [attention[0], repeated]
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await expect(page.getByTestId('activity-overview-dot')).toBeVisible()
+
     // A pending question opens where it can be answered: its run.
     await page.getByTestId('activity-overview').click()
     // The mocked run has no record behind it, so its opening shows as the Runs view fetching it.

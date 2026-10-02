@@ -92,7 +92,8 @@ export function finishedSince(runs: RunRecord[], missions: Mission[], since: num
     ].filter((item) => item.at > since).sort((left, right) => right.at - left.at)
 }
 
-const attentionKey = (item: AttentionItem) => `${item.kind}:${item.id}`
+// The version keeps a recurring request with a new timestamp from passing as one already shown.
+const attentionKey = (item: AttentionItem) => `${item.kind}:${item.id}@${item.updated_at}`
 
 /** Whether something needs you that the Overview has not shown, or something finished since your last look. */
 export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], seenAt: number | null, now: number, seenAttention = readSeenAttention()): boolean {
@@ -113,14 +114,26 @@ export function readSeenAttention(): string {
     }
 }
 
-/** Records the attention the Overview is showing; only what is pending now is kept. */
-export function markAttentionSeen(attention: AttentionItem[]) {
+function writeSeenAttention(keys: string[]) {
     try {
-        window.localStorage.setItem(SEEN_ATTENTION_KEY, attention.map(attentionKey).join('\n'))
+        window.localStorage.setItem(SEEN_ATTENTION_KEY, keys.join('\n'))
     } catch {
         // Ignore storage failures (private mode, quota, etc.)
     }
     listeners.forEach((listener) => listener())
+}
+
+/** Records the attention the Overview is showing; only what is pending now is kept. */
+export function markAttentionSeen(attention: AttentionItem[]) {
+    writeSeenAttention(attention.map(attentionKey))
+}
+
+/** Forgets shown attention that is no longer pending, so if it comes back it is new again. Call with each fetched list. */
+export function forgetResolvedAttention(attention: AttentionItem[]) {
+    const pending = new Set(attention.map(attentionKey))
+    const seen = readSeenAttention().split('\n').filter(Boolean)
+    const kept = seen.filter((key) => pending.has(key))
+    if (kept.length < seen.length) writeSeenAttention(kept)
 }
 
 export function readSeenAt(): number | null {

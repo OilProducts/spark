@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useStore } from '@/store'
 import { requestNavigation } from '@/state/workspaceSlice'
 import { fetchPendingAttention, type AttentionItem } from '@/lib/api/attentionApi'
+import { forgetResolvedAttention } from '@/features/overview/model/overviewModel'
 
 const ATTENTION_POLL_MS = 30_000
 
@@ -21,6 +22,8 @@ export function useAttentionItems() {
         const refresh = () => {
             fetchPendingAttention()
                 .then((next) => {
+                    // Every poll, the Overview open or not, so resolved attention that returns shows the dot.
+                    forgetResolvedAttention(next)
                     if (!disposed) {
                         setItems(next)
                     }

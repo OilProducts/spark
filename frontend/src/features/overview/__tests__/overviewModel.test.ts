@@ -7,6 +7,7 @@ import {
     finishedSince,
     hasUnread,
     lastChat,
+    forgetResolvedAttention,
     markAttentionSeen,
     markSeen,
     readSeenAt,
@@ -136,6 +137,34 @@ describe('needs you dot', () => {
         markAttentionSeen([seen, older])
         expect(hasUnread([seen, older], [], [], readSeenAt(), now)).toBe(false)
         expect(hasUnread([older], [], [], readSeenAt(), now)).toBe(false)
+    })
+
+    it('shows again for a mission that needs you again, seen while the Overview was closed or by its new timestamp', () => {
+        const now = at('2026-10-02T12:00:00Z')
+        const first = question('mission-a', '2026-10-02T10:00:00Z')
+        markSeen(now)
+        markAttentionSeen([first])
+        forgetResolvedAttention([first])
+        expect(hasUnread([first], [], [], readSeenAt(), now)).toBe(false)
+
+        // A poll misses the gap, but the request carries a new timestamp.
+        const again = question('mission-a', '2026-10-02T11:30:00Z')
+        forgetResolvedAttention([again])
+        expect(hasUnread([again], [], [], readSeenAt(), now)).toBe(true)
+        markAttentionSeen([again])
+        expect(hasUnread([again], [], [], readSeenAt(), now)).toBe(false)
+    })
+
+    it('shows again for a successive gate on the same run once a poll saw the first one answered', () => {
+        const now = at('2026-10-02T12:00:00Z')
+        // Run gates keep the run's id and start time from one gate to the next.
+        const gate: AttentionItem = { kind: 'run_gate', id: 'run-a', title: 'flow', project_path: '/work/app', run_id: 'run-a', updated_at: '2026-10-02T09:00:00Z' }
+        markSeen(now)
+        markAttentionSeen([gate])
+        forgetResolvedAttention([])
+        expect(hasUnread([], [], [], readSeenAt(), now)).toBe(false)
+        forgetResolvedAttention([gate])
+        expect(hasUnread([gate], [], [], readSeenAt(), now)).toBe(true)
     })
 })
 
