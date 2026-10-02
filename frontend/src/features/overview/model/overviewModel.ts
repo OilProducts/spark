@@ -78,7 +78,9 @@ export function sourceOf(item: { kind: 'run'; id: string } | { kind: 'mission'; 
     return mission ? { kind: 'mission', mission } : null
 }
 
-const finishedKey = (item: Started) => `${item.kind}:${item.id}`
+// Versioned by completion time, as attention keys are, so a retried run that finishes again is new again.
+const finishedKey = (item: Started) => `${item.kind}:${item.id}@${item.at}`
+const unversioned = (key: string) => key.slice(0, key.lastIndexOf('@'))
 
 /** Top-level runs and missions that finished and are not yet seen, newest first; with nothing seen yet, those of the last day. */
 export function finishedSince(runs: RunRecord[], missions: Mission[], seenFinished: string | null, now: number): Started[] {
@@ -151,7 +153,9 @@ export function forgetResolvedAttention(attention: AttentionItem[]) {
 export function markFinishedSeen(runs: RunRecord[], missions: Mission[]) {
     const shown = finished(runs, missions).map(finishedKey)
     if (shown.length === 0) return
-    writeSeen(SEEN_FINISHED_KEY, [...new Set([...(readSeenFinished() ?? '').split('\n').filter(Boolean), ...shown])])
+    const replaced = new Set(shown.map(unversioned))
+    const kept = (readSeenFinished() ?? '').split('\n').filter((key) => key && !replaced.has(unversioned(key)))
+    writeSeen(SEEN_FINISHED_KEY, [...kept, ...shown])
 }
 
 /** Forgets shown runs or missions that left their list. Call with each fully fetched list, never a live-updated one. */
@@ -159,7 +163,7 @@ export function forgetRemovedFinished(kind: Started['kind'], ids: string[]) {
     // ponytail: storage stays bounded by the fetched lists; a run that leaves the list and comes back counts as new again.
     const listed = new Set(ids.map((id) => `${kind}:${id}`))
     const seen = (readSeenFinished() ?? '').split('\n').filter(Boolean)
-    const kept = seen.filter((key) => !key.startsWith(`${kind}:`) || listed.has(key))
+    const kept = seen.filter((key) => !key.startsWith(`${kind}:`) || listed.has(unversioned(key)))
     if (kept.length < seen.length) writeSeen(SEEN_FINISHED_KEY, kept)
 }
 

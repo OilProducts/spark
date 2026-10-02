@@ -117,6 +117,24 @@ describe('finished since', () => {
         expect(hasUnread([], later, missions, now)).toBe(false)
     })
 
+    it('lists a shown failure again when a retry under the same id finishes later, failed or completed', () => {
+        markFinishedSeen(runs, missions)
+        const retry = (status: string, endedAt: string | null) =>
+            runs.map((item) => (item.run_id === 'run-failed' ? run('run-failed', status, '2026-10-02T11:00:00Z', endedAt) : item))
+        // Retried while away: running is not finished, and keeps the shown version.
+        markFinishedSeen(retry('running', null), missions)
+        for (const status of ['failed', 'completed']) {
+            const done = retry(status, status === 'failed' ? '2026-10-02T11:45:00Z' : '2026-10-02T11:50:00Z')
+            expect(finishedSince(done, missions, readSeenFinished(), now).map((item) => [item.id, item.mark])).toEqual([['run-failed', status]])
+            expect(hasUnread([], done, missions, now)).toBe(true)
+            markFinishedSeen(done, missions)
+            expect(finishedSince(done, missions, readSeenFinished(), now)).toEqual([])
+            expect(hasUnread([], done, missions, now)).toBe(false)
+        }
+        // The newer version replaced the older one.
+        expect(readSeenFinished()?.split('\n').filter((key) => key.startsWith('run:run-failed@'))).toHaveLength(1)
+    })
+
     it('marks nothing before the lists load and keeps what was seen through a partial live list until a full fetch', () => {
         markFinishedSeen([], [])
         expect(readSeenFinished()).toBeNull()
@@ -135,7 +153,7 @@ describe('finished since', () => {
     it('drops a seen item that left its fetched list, the last finished one included', () => {
         markFinishedSeen(runs, missions)
         forgetRemovedFinished('run', runs.filter((item) => item.run_id !== 'run-old').map((item) => item.run_id))
-        expect(readSeenFinished()?.split('\n').sort()).toEqual(['mission:closed', 'run:run-done', 'run:run-failed'])
+        expect(readSeenFinished()?.split('\n').map((key) => key.split('@')[0]).sort()).toEqual(['mission:closed', 'run:run-done', 'run:run-failed'])
         // Only an active run is left, and the closed mission is gone.
         forgetRemovedFinished('run', ['run-live'])
         forgetRemovedFinished('mission', [])
