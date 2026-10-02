@@ -862,6 +862,70 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
 }
 
 #[test]
+fn successive_gates_on_one_run_are_distinct_attention_items() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let service = WorkspaceConversationService::new(settings.clone());
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let mut waiting =
+        attractor_core::RunRecord::new("run-two-gates", project_path.to_string_lossy());
+    waiting.status = "waiting".to_string();
+    store
+        .create_run(attractor_runtime::CreateRunRequest {
+            record: waiting,
+            ..attractor_runtime::CreateRunRequest::default()
+        })
+        .expect("create run");
+    let paths = store
+        .find_run_root("run-two-gates")
+        .expect("find run")
+        .expect("run root");
+    let gate = |question_id: &str| {
+        attractor_runtime::human_gate_pending_event(
+            "run-two-gates",
+            question_id,
+            question_id,
+            "flow",
+            "Proceed?",
+            None,
+            Vec::new(),
+        )
+    };
+    let attention_key = || {
+        let items = service.pending_attention().expect("attention items");
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["run_id"], "run-two-gates");
+        format!("{}@{}", items[0]["id"], items[0]["updated_at"])
+    };
+
+    store.append_event(&paths, gate("gate-1")).expect("gate 1");
+    let first = attention_key();
+    store
+        .append_event(
+            &paths,
+            attractor_runtime::human_gate_answered_event(
+                "run-two-gates",
+                "gate-1",
+                None,
+                None,
+                None,
+                "yes",
+                None,
+            ),
+        )
+        .expect("answer gate 1");
+    store.append_event(&paths, gate("gate-2")).expect("gate 2");
+    let second = attention_key();
+
+    assert_ne!(
+        first, second,
+        "a new gate on the same run must be a new item"
+    );
+}
+
+#[test]
 fn turns_pin_the_assistant_frame_as_instructions_and_send_the_raw_message() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

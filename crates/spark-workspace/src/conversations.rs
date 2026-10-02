@@ -472,12 +472,14 @@ impl WorkspaceConversationService {
                 }
                 let run_id = run.get("run_id").and_then(Value::as_str).unwrap_or("");
                 let questions = self.runtime_api_service().list_pipeline_questions(run_id);
-                let clarifications: Vec<_> = questions
+                let pending = questions
                     .body
                     .get("questions")
                     .and_then(Value::as_array)
                     .into_iter()
-                    .flatten()
+                    .flatten();
+                let clarifications: Vec<_> = pending
+                    .clone()
                     .filter(|question| {
                         question["origin"] == "agent_clarification" && question["run_id"] == run_id
                     })
@@ -492,9 +494,17 @@ impl WorkspaceConversationService {
                     }
                     continue;
                 }
+                // The pending question's id names this gate, so a later gate on
+                // the same run is a new item rather than one already shown.
+                let gate_id = pending
+                    .filter_map(|question| question.get("question_id"))
+                    .next()
+                    .or_else(|| run.get("run_id"))
+                    .cloned()
+                    .unwrap_or_default();
                 items.push(json!({
                     "kind": "run_gate",
-                    "id": run.get("run_id").cloned().unwrap_or_default(),
+                    "id": gate_id,
                     "run_id": run.get("run_id").cloned().unwrap_or_default(),
                     "title": run.get("flow_name").cloned().unwrap_or_default(),
                     "project_path": run.get("project_path").cloned().unwrap_or_default(),
