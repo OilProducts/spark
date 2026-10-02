@@ -1018,14 +1018,9 @@ pub fn conversation_summary_envelope_for(
 ) -> WorkspaceResult<Option<LiveEnvelope>> {
     // Launch responses can carry a handle record's unresolved spelling of the path.
     let project_path = normalized_record_path(project_path).unwrap_or_else(|| project_path.into());
-    let service = WorkspaceConversationService::new(settings.clone());
-    let snapshot = service.get_snapshot(conversation_id, Some(&project_path))?;
-    Ok(crate::conversations::conversation_summary_from_snapshot(
-        &snapshot,
-        conversation_id,
-        &project_path,
-    )
-    .map(|summary| conversation_summary_envelope(&summary)))
+    Ok(WorkspaceConversationService::new(settings.clone())
+        .thread_list_summary(conversation_id, &project_path)?
+        .map(|summary| conversation_summary_envelope(&summary)))
 }
 
 pub fn mission_upsert_envelope(mission: &crate::missions::MissionRecord) -> LiveEnvelope {

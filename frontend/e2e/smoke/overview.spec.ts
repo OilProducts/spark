@@ -183,3 +183,60 @@ test('an open Overview follows a background chat that launches a run', async ({ 
     await expect(done.getByTestId('overview-source-link')).toHaveText(await title.innerText())
     await expect(page.getByTestId('activity-overview')).toHaveAttribute('aria-current', 'page')
 })
+
+test('a mission launching a flow credits the chat that started it, not its own conversation', async ({ page }, testInfo) => {
+    const stamp = Date.now()
+    const project = testInfo.outputPath('overview-mission-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    const flowName = 'overview-mission-smoke.yaml'
+    expect((await page.request.post('/attractor/api/flows', { data: { name: flowName, content: flowYaml } })).ok()).toBeTruthy()
+    const flow = await (await page.request.get(`/workspace/api/flows/${flowName}`)).json()
+    const policy = await page.request.put(`/workspace/api/flows/${flowName}/launch-policy`, { data: { launch_policy: 'agent_requestable', expected_revision: flow.revision } })
+    expect(policy.ok(), await policy.text()).toBeTruthy()
+    mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
+    for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
+    const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+
+    // The user's chat starts a mission; the mission's agent runs in its own conversation.
+    const userChat = `conversation-overview-mission-source-${stamp}`
+    expect((await page.request.put(`/workspace/api/conversations/${userChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+    const created = await page.request.post(`/workspace/api/missions?conversation_handle=${(await snapshotOf(userChat)).conversation_handle}`, {
+        data: { fields: { title: `Overview mission ${stamp}`, description: 'Overview mission smoke', archived: false }, actor: 'human' },
+    })
+    expect(created.ok(), await created.text()).toBeTruthy()
+    const missionId = (await created.json()).id as string
+    const started = await page.request.post(`/workspace/api/missions/${missionId}/start?project_path=${encodeURIComponent(project)}`)
+    expect(started.ok(), await started.text()).toBeTruthy()
+    await expect.poll(async () => (await snapshotOf(missionId)).turns?.at(-1)?.status, { timeout: 15_000 }).toBe('complete')
+    // Chat times are stored to the second.
+    await page.waitForTimeout(1_100)
+    const otherChat = `conversation-overview-mission-other-${stamp}`
+    expect((await page.request.put(`/workspace/api/conversations/${otherChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+
+    await page.goto('/')
+    await expect(page.getByTestId('overview-view')).toBeVisible()
+    const title = page.getByTestId('overview-last-chat-title')
+    await expect(title).toHaveAttribute('data-conversation-id', otherChat)
+
+    // The mission's agent launches a flow through its conversation handle, as the spark CLI does.
+    const launched = await page.request.post(`/workspace/api/conversations/by-handle/${(await snapshotOf(missionId)).conversation_handle}/flow-run-requests`, {
+        data: { flow_name: flowName, summary: 'Launch from a mission.' },
+    })
+    expect(launched.ok(), await launched.text()).toBeTruthy()
+    const runId = (await launched.json()).run_id as string
+
+    // The finished run links to its mission, and the user's chat gets the credit through the roster.
+    const done = page.getByTestId('overview-finished').locator(`[data-item-id="${runId}"]`)
+    await expect(done.locator('[data-mark="completed"]')).toBeVisible()
+    await expect(done.getByTestId('overview-source-link')).toHaveText(`Overview mission ${stamp}`)
+    await expect(title).toHaveAttribute('data-conversation-id', userChat)
+    await expect(title).not.toHaveAttribute('data-conversation-id', missionId)
+
+    // The mission's own conversation stays out of Chats.
+    await page.getByTestId('activity-chats').click()
+    const group = page.locator(`[data-testid="chats-project-group"][data-project-path="${project}"]`)
+    if ((await group.getByTestId('chats-project-toggle').getAttribute('aria-expanded')) !== 'true') await group.getByTestId('chats-project-toggle').click()
+    await expect(group.locator(`[data-conversation-id="${userChat}"]`)).toBeVisible()
+    await expect(group.locator(`[data-conversation-id="${missionId}"]`)).toHaveCount(0)
+})

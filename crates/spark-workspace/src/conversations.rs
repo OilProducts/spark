@@ -572,6 +572,27 @@ impl WorkspaceConversationService {
         Ok(items)
     }
 
+    /// A conversation's Threads-list summary; `None` for a mission's own conversation.
+    pub fn thread_list_summary(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<Option<ConversationSummary>> {
+        let project_paths = self.repository().project_paths(project_path)?;
+        if spark_storage::workspace_missions::MissionRepository::new(&project_paths.root)
+            .read(conversation_id)?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let snapshot = self.get_snapshot(conversation_id, Some(project_path))?;
+        Ok(conversation_summary_from_snapshot(
+            &snapshot,
+            conversation_id,
+            project_path,
+        ))
+    }
+
     pub fn list_project_conversations(
         &self,
         project_path: &str,
