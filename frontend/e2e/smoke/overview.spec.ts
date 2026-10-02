@@ -1,4 +1,6 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { expect, test } from '@playwright/test'
 import { ensureScreenshotDir, screenshotPath } from '../fixtures/smoke-helpers'
 
@@ -116,4 +118,68 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
     await page.getByTestId('overview-needs-you-item').first().click()
     await expect(page.getByTestId('activity-runs')).toHaveAttribute('aria-current', 'page')
     await opened
+})
+
+const tmpRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.tmp-ui-smoke')
+const flowYaml = `schema_version: "1"
+id: overview-live-smoke
+title: Overview live smoke
+nodes:
+  start:
+    kind: start
+    label: Start
+    config:
+      kind: start
+  done:
+    kind: exit
+    label: Done
+    config:
+      kind: exit
+edges:
+  - from: start
+    to: done
+`
+
+test('an open Overview follows a background chat that launches a run', async ({ page }, testInfo) => {
+    const stamp = Date.now()
+    const project = testInfo.outputPath('overview-live-project')
+    mkdirSync(project, { recursive: true })
+    expect((await page.request.post('/workspace/api/projects/register', { data: { project_path: project } })).ok()).toBeTruthy()
+    expect((await page.request.post('/attractor/api/flows', { data: { name: 'overview-live-smoke.yaml', content: flowYaml } })).ok()).toBeTruthy()
+    // The background chat had a turn, so it can own a launch; the other chat is where you were last.
+    // The smoke server's chat turns finish once their gates are open (see chat-live-turn.spec.ts).
+    mkdirSync(path.join(tmpRoot, 'gates'), { recursive: true })
+    for (const gate of ['continue', 'finish']) writeFileSync(path.join(tmpRoot, 'gates', gate), '')
+    const backgroundChat = `conversation-overview-background-${stamp}`
+    const otherChat = `conversation-overview-recent-${stamp}`
+    const snapshotOf = async (id: string) => (await page.request.get(`/workspace/api/conversations/${id}?project_path=${encodeURIComponent(project)}`)).json()
+    expect((await page.request.post(`/workspace/api/conversations/${backgroundChat}/turns`, { data: { project_path: project, message: 'Get ready.' } })).ok()).toBeTruthy()
+    await expect.poll(async () => (await snapshotOf(backgroundChat)).turns.at(-1)?.status, { timeout: 15_000 }).toBe('complete')
+    // Chat times are stored to the second.
+    await page.waitForTimeout(1_100)
+    expect((await page.request.put(`/workspace/api/conversations/${otherChat}/settings`, { data: { project_path: project, expected_revision: '0' } })).ok()).toBeTruthy()
+    const snapshot = await snapshotOf(backgroundChat)
+
+    await page.goto('/')
+    await expect(page.getByTestId('overview-view')).toBeVisible()
+    const title = page.getByTestId('overview-last-chat-title')
+    await expect(title).toHaveAttribute('data-conversation-id', otherChat)
+
+    // The background chat launches a flow, as the spark CLI does; it runs to completion.
+    const launched = await page.request.post('/workspace/api/runs/launch', {
+        data: { flow_name: 'overview-live-smoke.yaml', summary: 'Launch from a background chat.', conversation_handle: snapshot.conversation_handle },
+    })
+    expect(launched.ok(), await launched.text()).toBeTruthy()
+    const runId = (await launched.json()).run_id as string
+
+    // Without leaving the Overview: the launching chat becomes the last one, with its tally and runs,
+    // and the finished run links back to it.
+    await expect(title).toHaveAttribute('data-conversation-id', backgroundChat)
+    await expect(page.getByTestId('overview-tally').locator('[data-mark="completed"]')).toBeVisible()
+    await page.getByTestId('overview-show-runs').click()
+    await expect(page.getByTestId('overview-started-item')).toHaveCount(1)
+    const done = page.getByTestId('overview-finished').locator(`[data-item-id="${runId}"]`)
+    await expect(done.locator('[data-mark="completed"]')).toBeVisible()
+    await expect(done.getByTestId('overview-source-link')).toHaveText(await title.innerText())
+    await expect(page.getByTestId('activity-overview')).toHaveAttribute('aria-current', 'page')
 })

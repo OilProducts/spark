@@ -24,8 +24,9 @@ use spark_workspace::conversations::{
 };
 use spark_workspace::live::{
     conversation_envelopes_after, conversation_event_envelope, conversation_snapshot_envelope,
-    envelope_matches_query, initial_live_envelopes, lagged_resync_envelopes, latest_run_sequence,
-    trigger_delete_envelope, trigger_upsert_envelope, validate_live_query, RawLiveQuery,
+    conversation_summary_envelope_for, envelope_matches_query, initial_live_envelopes,
+    lagged_resync_envelopes, latest_run_sequence, trigger_delete_envelope, trigger_upsert_envelope,
+    validate_live_query, RawLiveQuery,
 };
 use spark_workspace::missions::{MissionMutation, MissionRecord};
 use spark_workspace::projects::{ProjectRegistrationRequest, ProjectStateUpdate};
@@ -1362,7 +1363,25 @@ fn publish_conversation_after(
                 live_hub.publish(envelope);
             }
         }
-        _ => publish_conversation_snapshot(settings, live_hub, conversation_id, project_path),
+        _ => {
+            return publish_conversation_snapshot(settings, live_hub, conversation_id, project_path)
+        }
+    }
+    publish_conversation_summary(settings, live_hub, conversation_id, project_path);
+}
+
+/// Thread lists outside the conversation, such as the Overview, follow its
+/// activity and launches through its summary; streamed deltas do not send one.
+fn publish_conversation_summary(
+    settings: &SparkSettings,
+    live_hub: &WorkspaceLiveHub,
+    conversation_id: &str,
+    project_path: &str,
+) {
+    if let Ok(Some(envelope)) =
+        conversation_summary_envelope_for(settings, conversation_id, project_path)
+    {
+        live_hub.publish(envelope);
     }
 }
 
@@ -1375,6 +1394,7 @@ fn publish_conversation_snapshot(
     if let Ok(envelope) = conversation_snapshot_envelope(settings, conversation_id, project_path) {
         live_hub.publish(envelope);
     }
+    publish_conversation_summary(settings, live_hub, conversation_id, project_path);
 }
 
 fn publish_optional_conversation_snapshot_from_value(

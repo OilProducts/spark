@@ -98,7 +98,7 @@ export function OverviewPanel() {
                     <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">You were last in</h2>
                     {last ? (
                         <>
-                            <p data-testid="overview-last-chat-title" className="mt-1 truncate text-lg font-light">{last.chat.title}</p>
+                            <p data-testid="overview-last-chat-title" data-conversation-id={last.chat.conversation_id} className="mt-1 truncate text-lg font-light">{last.chat.title}</p>
                             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                                 {project(last.chat.project_path)}
                                 <span>{when(last.at, now)}</span>

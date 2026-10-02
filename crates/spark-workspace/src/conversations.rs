@@ -5592,7 +5592,7 @@ fn mode_change_turn_value(chat_mode: &str) -> Value {
     })
 }
 
-fn conversation_summary_from_snapshot(
+pub(crate) fn conversation_summary_from_snapshot(
     snapshot: &Value,
     fallback_conversation_id: &str,
     expected_project_path: &str,

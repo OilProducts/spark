@@ -1337,6 +1337,74 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
 }
 
 #[tokio::test]
+async fn thread_list_feed_receives_a_background_chats_launch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project");
+    let project = project_path.to_string_lossy().to_string();
+    let conversation_id = "conversation-background";
+    seed_conversation(&settings, &project_path, conversation_id);
+    write_flow(&settings, "ops/live.yaml");
+    let app = build_app(settings.clone());
+    let handle = json_body(
+        request(
+            app.clone(),
+            "GET",
+            &format!(
+                "/workspace/api/conversations/{conversation_id}?project_path={}",
+                url_encode(&project)
+            ),
+            None,
+        )
+        .await,
+    )
+    .await["conversation_handle"]
+        .as_str()
+        .expect("handle")
+        .to_string();
+
+    // A client following thread lists, not this conversation.
+    let live = request(
+        app.clone(),
+        "GET",
+        "/workspace/api/live/events?include_conversations=true",
+        None,
+    )
+    .await;
+    let mut live_stream = live.into_body().into_data_stream();
+    assert_eq!(next_sse_chunk(&mut live_stream).await, ": keepalive\n\n");
+
+    let launched = request(
+        app.clone(),
+        "POST",
+        "/workspace/api/runs/launch",
+        Some(json!({
+            "flow_name": "ops/live.yaml",
+            "summary": "Launch from a background chat",
+            "conversation_handle": handle,
+        })),
+    )
+    .await;
+    assert_eq!(launched.status(), StatusCode::OK);
+    let run_id = json_body(launched).await["run_id"]
+        .as_str()
+        .expect("run id")
+        .to_string();
+
+    let summary = sse_data_json(&next_sse_chunk(&mut live_stream).await);
+    assert_eq!(summary["type"], "conversation.summary_upsert");
+    assert_eq!(
+        summary["payload"]["conversation"]["conversation_id"],
+        conversation_id
+    );
+    assert_eq!(
+        summary["payload"]["conversation"]["launched_run_ids"],
+        json!([run_id])
+    );
+}
+
+#[tokio::test]
 async fn live_route_replays_run_journals_and_runs_overview() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
