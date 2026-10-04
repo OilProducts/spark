@@ -93,6 +93,7 @@ export function useRunsList({
                 if (activeRequest !== request || request.signal.aborted) return
                 updateRunsListSession({
                     runs: data.runs,
+                    fetched: true,
                     status: 'ready',
                     error: null,
                     streamStatus: 'ready',

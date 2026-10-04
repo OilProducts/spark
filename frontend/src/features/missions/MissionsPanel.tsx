@@ -54,7 +54,7 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const board: Board = { missions }
     const setBoard = (value: Board) => {
         const next = Array.isArray(value.missions) ? value.missions : []
-        setMissionBoard(() => next)
+        useStore.setState({ missionBoard: next, missionBoardLoaded: true })
     }
     // The project a new mission is being drafted in.
     const [newProject, setNewProject] = useState<string | null>(null)

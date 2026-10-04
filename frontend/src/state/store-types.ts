@@ -173,6 +173,8 @@ export interface WorkspaceSlice {
     setSettingsCategory: (category: string) => void
     /** Every project's missions. */
     missionBoard: import('@/features/missions/MissionsPanel').Mission[]
+    /** Whether a full mission board fetch has succeeded; live upserts alone don't count. */
+    missionBoardLoaded: boolean
     setMissionBoard: (
         update: (missions: import('@/features/missions/MissionsPanel').Mission[]) => import('@/features/missions/MissionsPanel').Mission[],
     ) => void

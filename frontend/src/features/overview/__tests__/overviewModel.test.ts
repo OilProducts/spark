@@ -124,7 +124,7 @@ describe('finished since', () => {
         expect(hasUnread([], retried, missions, now)).toBe(true)
     })
 
-    it('never moves the watermark backward, and not before the lists load', () => {
+    it('never moves the watermark backward, nor records one with nothing finished', () => {
         markFinishedSeen([], [])
         expect(readFinishedWatermark()).toBeNull()
         markFinishedSeen(runs, missions)

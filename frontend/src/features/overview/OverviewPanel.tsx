@@ -63,12 +63,13 @@ export function OverviewPanel() {
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
+    const listsLoaded = useStore((state) => Boolean(state.runsListSession.fetched) && state.missionBoardLoaded)
     const { chats, loaded } = useOverviewChats()
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
     const [finishedWatermark] = useState(readFinishedWatermark)
     const [showRuns, setShowRuns] = useState(false)
     useEffect(() => { if (loadedAttention) markAttentionSeen(loadedAttention) }, [loadedAttention])
-    useEffect(() => markFinishedSeen(runs, missions), [runs, missions])
+    useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
     const now = Date.now()
 
