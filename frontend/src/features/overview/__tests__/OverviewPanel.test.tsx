@@ -1,10 +1,11 @@
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AttentionItem } from '@/lib/api/attentionApi'
 import type { RunRecord } from '@/features/runs/model/shared'
 import { useStore } from '@/store'
 import { OverviewPanel } from '../OverviewPanel'
+import { useOverviewUnread } from '../hooks/useOverviewUnread'
 import { hasUnread, markAttentionSeen } from '../model/overviewModel'
 
 let pending: AttentionItem[] = []
@@ -39,6 +40,19 @@ describe('Overview needs you seen', () => {
         markAttentionSeen([item])
         render(<OverviewPanel />).unmount()
         expect(hasUnread([item], [], [], Date.now())).toBe(false)
+    })
+})
+
+describe('Overview dot', () => {
+    it('stays off while the Overview is open, and shows elsewhere for what it has not shown', () => {
+        window.localStorage.clear()
+        const item = gate('run-a', 'gate-1')
+        act(() => { useStore.getState().setViewMode('overview') })
+        const { result, rerender } = renderHook(() => useOverviewUnread([item]))
+        expect(result.current).toBe(false)
+        act(() => { useStore.getState().setViewMode('runs') })
+        rerender()
+        expect(result.current).toBe(true)
     })
 })
 

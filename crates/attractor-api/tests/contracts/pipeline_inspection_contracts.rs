@@ -371,8 +371,18 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     assert!(!journal_json.contains("\"kind\":\"request_user_input\""));
     assert!(!journal_json.contains("\"request_user_input\""));
 
-    let questions = service.list_pipeline_questions("run-journal");
+    let mut questions = service.list_pipeline_questions("run-journal");
     assert_eq!(questions.status_code, 200);
+    let asked_at = questions.body["questions"][0]
+        .as_object_mut()
+        .and_then(|question| question.remove("asked_at"));
+    assert!(
+        asked_at
+            .as_ref()
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.is_empty()),
+        "a pending question carries when it was asked: {asked_at:?}"
+    );
     assert_eq!(
         questions.body,
         json!({

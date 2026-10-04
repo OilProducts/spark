@@ -14,7 +14,6 @@ import { ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState'
-import { forgetRemovedFinished } from '@/features/overview/model/overviewModel'
 
 export type Budget = { concurrent_runs: number; total_runs: number }
 export type Fields = { title: string; description: string; archived: boolean; budget?: Budget; playbook?: string | null }
@@ -55,7 +54,6 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const board: Board = { missions }
     const setBoard = (value: Board) => {
         const next = Array.isArray(value.missions) ? value.missions : []
-        forgetRemovedFinished('mission', next.map(mission => mission.id))
         setMissionBoard(() => next)
     }
     // The project a new mission is being drafted in.

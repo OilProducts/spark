@@ -472,7 +472,7 @@ impl WorkspaceConversationService {
                 }
                 let run_id = run.get("run_id").and_then(Value::as_str).unwrap_or("");
                 let questions = self.runtime_api_service().list_pipeline_questions(run_id);
-                let pending = questions
+                let mut pending = questions
                     .body
                     .get("questions")
                     .and_then(Value::as_array)
@@ -493,7 +493,7 @@ impl WorkspaceConversationService {
                         items.push(json!({
                             "kind": "run_gate", "id": gate_id, "run_id": run_id,
                             "title": question["prompt"], "project_path": run["project_path"],
-                            "updated_at": run["started_at"],
+                            "updated_at": question["asked_at"],
                         }));
                     }
                     continue;
@@ -501,9 +501,9 @@ impl WorkspaceConversationService {
                 // Question ids are run-local, so the run id and the pending
                 // question's id together name this gate: a later gate on the
                 // same run is a new item, and runs at the same gate stay apart.
-                let question_id = pending
-                    .filter_map(|question| question.get("question_id").and_then(Value::as_str))
-                    .next()
+                let question = pending.find(|question| question["question_id"].is_string());
+                let question_id = question
+                    .and_then(|question| question["question_id"].as_str())
                     .unwrap_or("");
                 let gate_id = format!("{run_id}:{question_id}");
                 items.push(json!({
@@ -512,7 +512,8 @@ impl WorkspaceConversationService {
                     "run_id": run_id,
                     "title": run.get("flow_name").cloned().unwrap_or_default(),
                     "project_path": run.get("project_path").cloned().unwrap_or_default(),
-                    "updated_at": run.get("started_at").cloned().unwrap_or_default(),
+                    // When the gate asked, so a later gate on the same run is newer.
+                    "updated_at": question.map_or(&run["started_at"], |question| &question["asked_at"]),
                 }));
             }
         }

@@ -886,8 +886,8 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
                 .expect("run root"),
         );
     }
-    let gate = |run_id: &str, question_id: &str| {
-        attractor_runtime::human_gate_pending_event(
+    let gate = |run_id: &str, question_id: &str, asked_at: &str| {
+        let mut event = attractor_runtime::human_gate_pending_event(
             run_id,
             question_id,
             question_id,
@@ -895,7 +895,9 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
             "Proceed?",
             None,
             Vec::new(),
-        )
+        );
+        event.emitted_at = asked_at.to_string();
+        event
     };
     let attention = || {
         let mut items: Vec<(String, String)> = service
@@ -916,10 +918,10 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
 
     // Question ids are run-local: both runs wait at a gate with the same id.
     store
-        .append_event(&paths[0], gate("run-a", "gate-1"))
+        .append_event(&paths[0], gate("run-a", "gate-1", "2026-10-02T09:00:00Z"))
         .expect("run-a gate 1");
     store
-        .append_event(&paths[1], gate("run-b", "gate-1"))
+        .append_event(&paths[1], gate("run-b", "gate-1", "2026-10-02T09:00:00Z"))
         .expect("run-b gate 1");
     let first = attention();
     assert_eq!(first.len(), 2, "{first:?}");
@@ -939,13 +941,17 @@ fn run_gate_attention_items_are_distinct_across_gates_and_runs() {
         )
         .expect("answer run-a gate 1");
     store
-        .append_event(&paths[0], gate("run-a", "gate-2"))
+        .append_event(&paths[0], gate("run-a", "gate-2", "2026-10-02T10:00:00Z"))
         .expect("run-a gate 2");
     let second = attention();
     assert_eq!(second.len(), 2, "{second:?}");
     assert_ne!(
         first[0].1, second[0].1,
         "a new gate on the same run must be a new item"
+    );
+    assert!(
+        second[0].1.ends_with("@\"2026-10-02T10:00:00Z\""),
+        "a gate's update time is when it asked: {second:?}"
     );
     assert_eq!(first[1], second[1], "the other run's gate is unchanged");
 }

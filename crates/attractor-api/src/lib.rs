@@ -3648,6 +3648,7 @@ fn pending_question_payload(event: &RawRuntimeEvent, pipeline_id: &str) -> Optio
         "flow_name": flow_name,
         "prompt": prompt,
         "options": options,
+        "asked_at": event.emitted_at,
     });
     for key in [
         "origin",

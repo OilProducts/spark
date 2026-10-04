@@ -5,7 +5,6 @@ import type {
     RunsSessionSlice,
     TriggersSessionSlice,
 } from './viewSessionTypes'
-import type { WorkflowEventLogSlice } from './workflowEventLogSlice'
 
 export type ViewMode = 'overview' | 'home' | 'projects' | 'editor' | 'triggers' | 'settings' | 'runs' | 'missions'
 export type EditorMode = 'structured' | 'raw'
@@ -283,7 +282,6 @@ export interface EditorSlice {
 
 export type AppState =
     & WorkspaceSlice
-    & WorkflowEventLogSlice
     & RunsSessionSlice
     & TriggersSessionSlice
     & HomeSessionSlice

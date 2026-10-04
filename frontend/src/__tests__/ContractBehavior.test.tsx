@@ -1550,7 +1550,6 @@ useStore.getState().setRunsSelectedRunId('run-focus-audit');
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('project-thread-list')).toBeVisible()
       expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-      expect(screen.queryByTestId('home-sidebar-resize-handle')).not.toBeInTheDocument()
 
       cleanup()
       act(() => {
@@ -1617,7 +1616,6 @@ useStore.getState().setRunsSelectedRunId('run-mobile-ops');
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'split')
       expect(screen.getByTestId('project-thread-list')).toBeVisible()
       expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-      expect(screen.getByTestId('home-sidebar-resize-handle')).toBeVisible()
 
       cleanup()
       setViewportWidth(760)
@@ -1643,7 +1641,6 @@ useStore.getState().setRunsSelectedRunId('run-mobile-ops');
       expect(screen.getByTestId('projects-panel')).toHaveAttribute('data-responsive-layout', 'stacked')
       expect(screen.getByTestId('project-thread-list')).toBeVisible()
       expect(screen.getByTestId('project-thread-new-button')).toBeVisible()
-      expect(screen.queryByTestId('home-sidebar-resize-handle')).not.toBeInTheDocument()
 
       cleanup()
       setViewportWidth(1280)

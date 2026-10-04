@@ -101,13 +101,12 @@ test('Spark opens on the Overview: last chat, what needs you, what finished and 
     await page.getByTestId('activity-runs').click()
     await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
 
-    // While you are away a seen question is answered, then the same run asks again: that is new, so the dot returns.
+    // While you are away a seen question is answered, then the same run asks again later: that is new, so the dot returns.
     const repeated = attention[1]
     attention = [attention[0]]
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-    await expect.poll(() => page.evaluate(() => window.localStorage.getItem('spark.overview_seen_attention') ?? '')).not.toContain(repeated.id)
     await expect(page.getByTestId('activity-overview-dot')).toHaveCount(0)
-    attention = [attention[0], repeated]
+    attention = [attention[0], { ...repeated, updated_at: new Date(Date.now() + 1_000).toISOString() }]
     await page.evaluate(() => window.dispatchEvent(new Event('focus')))
     await expect(page.getByTestId('activity-overview-dot')).toBeVisible()
 
