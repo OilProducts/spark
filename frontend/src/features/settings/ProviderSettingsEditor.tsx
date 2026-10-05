@@ -13,8 +13,8 @@ export function ProviderSettingsEditor() {
     return <Card>
         <CardHeader><h3 className="text-lg font-light">Provider connections</h3></CardHeader>
         <CardContent className="space-y-3">
-        {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="text-xs">Credentials stay in environment variables. Environment overrides take precedence; saved connections apply to new work.</p>
+        {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+            <p className="text-xs">Credentials stay in environment variables.</p>
             {editor.draft && providers.map((provider) => <details key={provider} ref={(node) => { if (node && (Object.entries(editor.draft?.[provider] ?? {}).some(([key, value]) => !!providerFieldError(key as keyof ProviderConnection, value ?? '')))) node.open = true }}>
                 <summary className="cursor-pointer">{providerNames[provider]} · {editor.saved?.credential_status[provider] ? 'Configured' : 'Missing credentials'}</summary>
                 <fieldset disabled={editor.pending} className="space-y-2">
@@ -34,7 +34,7 @@ export function ProviderSettingsEditor() {
             <Button aria-label="Save provider connections" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
             <Button variant="outline" aria-label="Discard provider connections changes" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
             </div>
-            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

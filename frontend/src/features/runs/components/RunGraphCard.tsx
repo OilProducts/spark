@@ -269,7 +269,6 @@ export function RunGraphCard({
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     <h3
                         className="shrink-0 whitespace-nowrap text-lg font-light text-foreground"
-                        title="Live node states for the selected run. Click a node to focus its activity; click the background to clear the selection."
                     >
                         Run Graph
                     </h3>

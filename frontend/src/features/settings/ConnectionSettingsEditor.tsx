@@ -10,8 +10,8 @@ export function ConnectionSettingsEditor() {
     return <Card>
         <CardHeader><h3 className="text-lg font-light">Server and client connections</h3></CardHeader>
         <CardContent className="space-y-3">
-        {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="text-xs">Server binding changes require restart. CLI and environment overrides take precedence. Desktop uses its native remote-access control and an automatically assigned port.</p>
+        {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+            <p className="text-xs">Desktop uses its native remote-access control and an automatically assigned port.</p>
             {editor.saved?.running_server && <p className="text-xs">Running server: {editor.saved.running_server.server_host}:{editor.saved.running_server.server_port}</p>}
             {editor.draft && editor.saved && <>
                 <Field><FieldLabel htmlFor="connection-host">Server host</FieldLabel>
@@ -38,7 +38,7 @@ export function ConnectionSettingsEditor() {
                     <Button aria-label="Discard server and client connections changes" variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
                 </div>
             </>}
-            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

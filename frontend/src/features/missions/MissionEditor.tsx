@@ -43,9 +43,9 @@ export function MissionEditor({ editing, draft, latest, busy, conflict, error, u
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={e => { e.preventDefault(); void save() }}>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-4 text-sm">
             {error && <InlineError>{error}</InlineError>}
-            {conflict && !changed && <p role="status">Refresh to load the latest revision and reconcile before saving. Your draft is preserved.</p>}
+            {conflict && !changed && <p role="status">This mission changed. Refresh to see the latest version; your draft is kept.</p>}
             {changed && <div role="status" className="space-y-3 rounded-md border border-border p-3">
-                <p>A newer revision is available. Your draft is preserved. Review the latest values; your edited fields take precedence when reconciling.</p>
+                <p>A newer version exists. Your edits are kept and win when you reconcile.</p>
                 <dl className="space-y-2">{(Object.keys(fieldLabels) as Core[]).filter(key => latest.fields[key] !== editing?.fields[key]).map(key => <div key={key}><dt className="font-medium">{fieldLabels[key]}</dt><dd className="whitespace-pre-wrap break-words text-muted-foreground">{display(latest.fields[key])}</dd></div>)}</dl>
                 <Button variant="secondary" type="button" disabled={busy} onClick={reconcile}>Reconcile with latest revision</Button>
             </div>}

@@ -17,7 +17,7 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
     return <Card className="gap-4 py-4">
         <CardHeader className="px-4"><h3 className="text-lg font-light">Project model defaults</h3></CardHeader>
         <CardContent className="space-y-3 px-4">
-            {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+            {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <p className="break-all text-xs text-muted-foreground">{projectPath}</p>
             <p className="text-xs">Overrides for this project. Unsaved edits do not change the saved effective values below.</p>
             <p className="text-xs">Saved effective: {editor.saved?.effective ? <>
@@ -33,7 +33,7 @@ export function ProjectModelSettingsEditor({ projectPath }: { projectPath: strin
             </fieldset>
             <div className="flex flex-wrap gap-2"><Button aria-label="Save project model defaults" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
                 <Button aria-label="Discard project model defaults changes" size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button></div>
-            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

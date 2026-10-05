@@ -426,7 +426,6 @@ export function GraphSettings({ inline = false }: GraphSettingsProps) {
         <InspectorScaffold
             scopeLabel="Graph"
             title="Settings"
-            description="Use the same inspect-edit flow as node and edge inspectors."
             entityLabel="Flow"
             entityValue={activeFlow || undefined}
         >

@@ -24,8 +24,6 @@ import { LaunchInputsEditor } from '../LaunchInputsEditor'
 import type { FlowExecutionLockResponse, FlowLaunchPolicy } from '../../services/graphLaunchPolicy'
 
 export const FLOW_METADATA_HELP: Record<string, string> = {
-    title: 'Human-friendly flow title stored in the FlowDefinition.',
-    description: 'Short flow description stored in the FlowDefinition.',
     inputs: 'Structured launch-time context fields Spark should collect before starting a run.',
     result_node: 'Optional node whose response becomes the run result.',
     result_summary_enabled: 'When true, summarize the selected run result before display.',
@@ -182,13 +180,11 @@ export function GraphMetadataSection({
         <section className="space-y-3">
             <GraphSettingsSectionIntro
                 title="Flow Metadata"
-                description="Human-facing title and description stored in the FlowDefinition."
             />
             <div className="space-y-3">
                 <GraphSettingsField
                     label="Title"
                     htmlFor="graph-attr-spark-title"
-                    helper={FLOW_METADATA_HELP.title}
                 >
                     <Input
                         id="graph-attr-spark-title"
@@ -201,7 +197,6 @@ export function GraphMetadataSection({
                 <GraphSettingsField
                     label="Description"
                     htmlFor="graph-attr-spark-description"
-                    helper={FLOW_METADATA_HELP.description}
                 >
                     <Textarea
                         id="graph-attr-spark-description"
@@ -340,13 +335,11 @@ export function GraphExecutionDefaultsSection({
         <section className="space-y-3">
             <GraphSettingsSectionIntro
                 title="Execution Defaults"
-                description="FlowDefinition defaults that shape retry behavior and baseline run context."
             />
             <GraphSettingsNotice
                 data-testid="flow-metadata-help"
                 className="text-xs"
             >
-                <p>FlowDefinition defaults are used when node runtime settings omit a value.</p>
                 <p>Leave blank to omit the field from YAML output.</p>
             </GraphSettingsNotice>
             <div className="space-y-3">
@@ -544,7 +537,6 @@ export function GraphAdvancedAttrsSection({
         <section className="space-y-3">
             <GraphSettingsSectionIntro
                 title="Extension Metadata"
-                description="Non-core FlowDefinition metadata stored under the flow metadata map."
                 action={(
                     <Button
                         type="button"
@@ -569,11 +561,7 @@ export function GraphAdvancedAttrsSection({
                         reservedKeys={CORE_FLOW_METADATA_KEYS}
                     />
                 </div>
-            ) : (
-                <GraphSettingsNotice className="text-xs">
-                    Extension metadata stays available for non-core FlowDefinition annotations.
-                </GraphSettingsNotice>
-            )}
+            ) : null}
         </section>
     )
 }
@@ -599,7 +587,6 @@ export function GraphLlmDefaultsSection({
         <section className="space-y-3">
             <GraphSettingsSectionIntro
                 title="Model Defaults"
-                description="Flow-local LLM defaults layered on top of the current global snapshot."
             />
             <div className="space-y-3">
                 <ModelChooser projectPath={projectPath} inheritLabel="Workspace default"

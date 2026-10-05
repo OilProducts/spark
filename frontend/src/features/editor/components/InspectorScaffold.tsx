@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 interface InspectorScaffoldProps {
     scopeLabel: 'Graph' | 'Node' | 'Edge'
     title: string
-    description: string
+    description?: string
     entityLabel?: string
     entityValue?: string
     children: ReactNode
@@ -34,7 +34,7 @@ export function InspectorScaffold({
                     </span>
                     <h2 className="text-lg font-light tracking-tight text-foreground">{title}</h2>
                 </div>
-                <p className="text-xs text-muted-foreground">{description}</p>
+                {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
                 {entityValue ? (
                     <div className="rounded border border-border/80 px-2 py-1 text-xs text-muted-foreground">
                         <span className="font-semibold text-foreground">{entityLabel || 'Selection'}:</span>{' '}

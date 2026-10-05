@@ -24,7 +24,7 @@ export function AdvancedKeyValueEditor({
     onAdd,
     reservedKeys,
     title = 'Extension Attributes',
-    description = 'Edit non-core attributes as generic key/value pairs.',
+    description,
 }: AdvancedKeyValueEditorProps) {
     const id = useId()
     const [newKey, setNewKey] = useState('')
@@ -54,9 +54,11 @@ export function AdvancedKeyValueEditor({
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                 {title}
             </p>
-            <p className="text-xs text-muted-foreground">
-                {description}
-            </p>
+            {description ? (
+                <p className="text-xs text-muted-foreground">
+                    {description}
+                </p>
+            ) : null}
 
             {entries.length === 0 ? (
                 <p

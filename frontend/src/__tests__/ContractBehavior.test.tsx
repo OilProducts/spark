@@ -903,7 +903,7 @@ describe('Frontend contract behavior', () => {
       expect(screen.getByTestId('run-graph-canvas')).toBeVisible()
     })
     expect(screen.getByTestId('run-partial-api-failure-banner')).toHaveTextContent(
-      'Some run detail endpoints are unavailable.',
+      "Some run details couldn't load.",
     )
   })
 

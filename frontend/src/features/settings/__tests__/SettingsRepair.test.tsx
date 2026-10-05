@@ -21,7 +21,7 @@ it('starts a replacement draft for invalid stored field types and requires expli
     const user = userEvent.setup()
     render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
     await screen.findByText('Invalid runtime section.')
-    await user.click(screen.getByRole('button', {name:'Start replacement draft with defaults'}))
+    await user.click(screen.getByRole('button', {name:'Reset to defaults'}))
     expect(writes).toHaveLength(0)
     await user.type(screen.getByLabelText('Flows directory'), '/replacement')
     await user.click(screen.getByRole('button', {name: /^Save/}))

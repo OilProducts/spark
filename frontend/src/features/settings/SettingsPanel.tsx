@@ -150,7 +150,7 @@ export function SettingsPanel() {
         <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
                 <p className="text-sm text-muted-foreground">
-                    Model defaults apply to inheriting conversations on their next message.
+                    Saved settings apply to new work. Environment and command-line overrides take precedence over saved values.
                 </p>
 
                 <TabsContent value="models" forceMount hidden={category !== 'models'} className="space-y-6">
@@ -162,9 +162,9 @@ export function SettingsPanel() {
                         <h3 className="text-lg font-light">Model defaults (Workspace)</h3>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
-                        <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations.</p>
+                        <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations. Changes apply on their next message.</p>
                         <fieldset disabled={!models.saved || models.pending} className="space-y-3">
-                        {models.pending ? <p role="status">Saving or reloading settings…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
+                        {models.pending ? <p role="status">Updating…</p> : !models.saved && !models.error ? <p role="status">Loading settings…</p> : null}
                         {/* The workspace has no parent: its default is the stored Codex group, whose effort can still be set. */}
                         <ModelChooser disabled={!models.saved || models.pending} inherited={{ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }} value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={next => models.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={null} inheritLabel="Provider default" invalidModel={!!invalidModel} />
                         </fieldset>
@@ -172,7 +172,7 @@ export function SettingsPanel() {
                             <Button aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
                             <Button aria-label="Discard workspace model defaults changes" size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
                         </div>
-                        {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+                        {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
                         <SaveStatus message={models.message} error={models.error} dirty={models.dirty} />
                     </CardContent>
@@ -198,7 +198,6 @@ export function SettingsPanel() {
                 </Card>
                 </TabsContent>
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
-                <p className="text-xs text-muted-foreground">Server/Desktop configuration. Environment overrides take precedence over saved values.</p>
                 {getTauriInvoke() ? (
                     <Card className="gap-4 py-4">
                         <CardHeader className="gap-1 px-4"><h3 className="text-lg font-light">Desktop Server</h3></CardHeader>
@@ -224,7 +223,7 @@ export function SettingsPanel() {
                                         .finally(() => setIsSavingDesktopSettings(false))
                                 }}>Discard</Button>
                             </div>
-                            {isSavingDesktopSettings && <p role="status">Saving or reloading settings…</p>}
+                            {isSavingDesktopSettings && <p role="status">Updating…</p>}
                             {desktopSettings.requires_restart ? <div className="border-0 border-l border-warning px-3 py-2 text-xs text-warning">Restart Spark Desktop to apply the server binding change.</div> : null}
                             </> : desktopSettingsError ? <Button variant="outline" onClick={() => { setDesktopSettingsError(null); setDesktopRetry((value) => value + 1) }}>Retry Desktop settings</Button> : <p role="status">Loading Desktop settings…</p>}
                             <SaveStatus message={desktopMessage} error={desktopSettingsError} dirty={desktopDirty} />

@@ -1523,7 +1523,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             <div className="max-w-md rounded-lg border border-dashed border-border px-6 py-5 text-center">
                                 <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
                                 <p className="mt-2 text-sm text-muted-foreground">
-                                    Flows are shared authoring assets. Choose one from the Flows panel.
+                                    Choose one from the Flows panel.
                                 </p>
                             </div>
                         </div>
@@ -1559,7 +1559,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         ) : null}
                         {isExpandedReadOnlyPreview ? (
                             <div className="inline-flex items-center rounded-md border border-border/70 bg-background px-3 py-1.5 text-xs text-muted-foreground">
-                                Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.
+                                Read-only preview. Switch to Parent only to edit.
                             </div>
                         ) : null}
                     </div>

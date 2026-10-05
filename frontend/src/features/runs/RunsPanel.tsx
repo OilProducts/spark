@@ -446,7 +446,7 @@ export function RunsPanel() {
                                 data-testid="run-partial-api-failure-banner"
                                 className="rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
                             >
-                                Some run detail endpoints are unavailable. Non-dependent panels remain functional.
+                                Some run details couldn't load.
                                 <span className="ml-1 text-xs">
                                     Affected surfaces: {degradedRunPanels.join(', ')}.
                                 </span>

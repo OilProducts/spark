@@ -150,7 +150,7 @@ export function RunContinuationPanel({
                 <div className="space-y-1">
                     <h3 className="text-lg font-light text-foreground">Continue Run</h3>
                     <p className="text-xs leading-5 text-muted-foreground">
-                        Create a derived run from <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span> using inherited checkpoint context.
+                        From run <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span>
                     </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">

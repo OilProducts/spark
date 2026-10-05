@@ -751,14 +751,14 @@ describe('Editor layout behavior', () => {
     await user.click(screen.getByRole('button', { name: 'Expanded' }))
 
     await waitFor(() => {
-      expect(screen.getByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')).toBeInTheDocument()
+      expect(screen.getByText('Read-only preview. Switch to Parent only to edit.')).toBeInTheDocument()
       expect(readSavedLayout('flow-a.dot')).toEqual(parentLayout)
     })
 
     await user.click(screen.getByRole('button', { name: 'Parent' }))
 
     await waitFor(() => {
-      expect(screen.queryByText('Expanded child-flow mode is a read-only canvas preview. Switch to Parent Only to edit.')).not.toBeInTheDocument()
+      expect(screen.queryByText('Read-only preview. Switch to Parent only to edit.')).not.toBeInTheDocument()
       expect(readSavedLayout('flow-a.dot')).toEqual(parentLayout)
     })
   })

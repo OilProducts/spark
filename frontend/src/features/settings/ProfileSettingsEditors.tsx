@@ -23,7 +23,7 @@ export function LlmProfilesEditor() {
         || (profile.api_key_env && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(profile.api_key_env)))
     const change = (index: number, patch: Partial<LlmProfileSettings>) => editor.setDraft(profiles.map((profile, at) => at === index ? { ...profile, ...patch } : profile))
     return <Card><CardHeader><h3 className="text-lg font-light">LLM profiles</h3></CardHeader><CardContent className="space-y-3">
-        {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+        {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         <p className="text-xs text-muted-foreground">Workspace profiles. Credentials remain in environment variables; only their names are saved.</p>
         <fieldset disabled={editor.pending || !editor.saved} className="space-y-4">
             {profiles.map((profile, index) => {
@@ -55,7 +55,7 @@ export function LlmProfilesEditor() {
         {duplicateIds(profiles) && <p role="alert">Enter unique, nonempty profile IDs without surrounding whitespace.</p>}
         <div className="flex flex-wrap gap-2"><Button aria-label="Save LLM profiles" disabled={!editor.dirty || editor.pending || !!invalid || profiles.some((p) => p.models.some((m) => !m.trim()))} onClick={() => void editor.save()}>Save</Button>
             <Button aria-label="Discard LLM profiles changes" variant="outline" disabled={editor.pending || !editor.saved} onClick={() => void editor.discard()}>Discard</Button></div>
-        {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+        {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
     </CardContent></Card>
@@ -109,8 +109,8 @@ export function ExecutionProfilesEditor() {
     const invalid = duplicateIds(profiles) || profiles.some((profile) => !profile.label.trim() || (profile.mode === 'local_container' && !profile.image?.trim())) || Object.values(invalidMetadata).some(Boolean)
     const change = (index: number, patch: Partial<ExecutionProfileSettings>) => editor.setDraft((draft) => draft && ({ ...draft, profiles: draft.profiles.map((profile, at) => at === index ? { ...profile, ...patch } : profile) }))
     return <Card><CardHeader><h3 className="text-lg font-light">Execution profiles</h3></CardHeader><CardContent className="space-y-3">
-        {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-        <p className="text-xs text-muted-foreground">Workspace defaults. Saved changes apply to new work; active runs retain their captured profiles.</p>
+        {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+        <p className="text-xs text-muted-foreground">Active runs keep the profiles they started with.</p>
         <fieldset disabled={editor.pending || !editor.saved} className="space-y-3">
             <label className="block">Default execution profile<NativeSelect aria-label="Default execution profile" value={editor.draft?.default_execution_profile_id ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, default_execution_profile_id: event.target.value || null }))}>
                 <option value="">Runtime default</option>{profiles.filter((profile) => profile.enabled).map((profile, index) => <option key={index} value={profile.id}>{profile.label || profile.id}</option>)}
@@ -120,11 +120,11 @@ export function ExecutionProfilesEditor() {
                 remove={() => { if (Object.values(invalidMetadata).some(Boolean)) return; editor.setDraft((draft) => draft && ({ ...draft, profiles: profiles.filter((_, at) => at !== index) })); setGeneration((value) => value + 1); setInvalidMetadata({}) }} />)}
             <Button variant="outline" onClick={() => editor.setDraft((draft) => draft && ({ ...draft, profiles: [...profiles, { id: '', label: '', mode: 'native', enabled: true, capabilities: [], metadata: {} }] }))}>Add execution profile</Button>
         </fieldset>
-        {Object.values(invalidMetadata).some(Boolean) && <p id="execution-delete-help" role="alert">Fix invalid metadata JSON before deleting any execution profile. This protects local drafts.</p>}
+        {Object.values(invalidMetadata).some(Boolean) && <p id="execution-delete-help" role="alert">Fix invalid metadata JSON before deleting any execution profile.</p>}
         {duplicateIds(profiles) && <p role="alert">Enter unique, nonempty profile IDs without surrounding whitespace.</p>}
         <div className="flex flex-wrap gap-2"><Button aria-label="Save execution profiles" disabled={!editor.dirty || editor.pending || invalid} onClick={() => void editor.save()}>Save</Button>
             <Button aria-label="Discard execution profiles changes" variant="outline" disabled={editor.pending || !editor.saved} onClick={() => { void editor.discard().then((discarded) => { if (discarded) { setGeneration((value) => value + 1); setInvalidMetadata({}) } }) }}>Discard</Button></div>
-        {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+        {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
     </CardContent></Card>

@@ -13,8 +13,7 @@ export function ClientPreferencesEditor() {
     return <Card>
         <CardHeader><h3 className="text-lg font-light">Client preferences</h3></CardHeader>
         <CardContent className="space-y-3">
-            {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-            <p className="text-xs">Preferences for this browser/Desktop client. Sidebar width applies after saving. Editor mode and graph choices are defaults for newly opened flows.</p>
+            {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.draft || editor.pending} className="space-y-3">
                 <h4 className="text-sm font-semibold">Appearance</h4>
                 <Field><FieldLabel htmlFor="preference-appearance">Theme</FieldLabel>
@@ -24,6 +23,7 @@ export function ClientPreferencesEditor() {
                     </NativeSelect>
                 </Field>
                 <h4 className="text-sm font-semibold">Editor</h4>
+                <p className="text-xs">Defaults for newly opened flows.</p>
                 <Field><FieldLabel htmlFor="preference-editor-mode">Editor mode</FieldLabel>
                     <NativeSelect id="preference-editor-mode" value={editor.draft?.editor_mode ?? ''}
                         onChange={(event) => { const mode = event.target.value as 'structured' | 'raw' | ''; editor.setDraft((draft) => draft && ({ ...draft, editor_mode: mode || null })) }}>
@@ -47,7 +47,7 @@ export function ClientPreferencesEditor() {
                         aria-invalid={editor.invalidWidth} aria-describedby="preference-sidebar-help preference-sidebar-error"
                         value={editor.draft?.editor_sidebar_width ?? ''}
                         onChange={(event) => { const width = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, editor_sidebar_width: width })) }} />
-                    <p id="preference-sidebar-help" className="text-xs">256–560 pixels. Leave blank for the default of 288.</p>
+                    <p id="preference-sidebar-help" className="text-xs">256–560 pixels. Leave blank for the default of 288. Applies after saving.</p>
                     {editor.invalidWidth && <p id="preference-sidebar-error" role="alert">Choose a whole number from 256 to 560.</p>}
                 </Field>
                 <Field><FieldLabel htmlFor="preference-home-split">Home sidebar primary split (0–1)</FieldLabel>
@@ -55,7 +55,7 @@ export function ClientPreferencesEditor() {
                         aria-invalid={editor.invalidSplit} aria-describedby="preference-home-split-help preference-split-error"
                         value={editor.draft?.home_sidebar_primary_split_ratio ?? ''}
                         onChange={(event) => { const ratio = event.target.value === '' ? null : Number(event.target.value); editor.setDraft((draft) => draft && ({ ...draft, home_sidebar_primary_split_ratio: ratio })) }} />
-                    <p id="preference-home-split-help" className="text-xs">Proportion of available sidebar height assigned to the primary pane (0–1). Leave blank for automatic sizing. Both panes retain their minimum height.</p>
+                    <p id="preference-home-split-help" className="text-xs">Share of sidebar height for the top pane. Leave blank for automatic sizing.</p>
                     {editor.invalidSplit && <p id="preference-split-error" role="alert">Choose a number from 0 to 1.</p>}
                 </Field>
                 <h4 className="text-sm font-semibold">Runs</h4>

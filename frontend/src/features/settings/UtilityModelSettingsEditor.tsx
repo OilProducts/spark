@@ -26,7 +26,7 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
         <CardHeader className="gap-1 px-4"><h3 className="text-lg font-light">Utility model</h3></CardHeader>
         <CardContent className="space-y-3 px-4 pt-0">
             <p className="text-xs text-muted-foreground">A small, fast model Spark uses for housekeeping, such as naming threads. Off until you choose one; Spark does not fall back to the chat model.</p>
-            {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
+            {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.saved || editor.pending} className="space-y-3">
                 <Label className="flex items-center gap-2 text-sm"><Switch checked={editor.draft !== null}
                     onCheckedChange={(checked) => editor.setDraft(checked ? { ...utilityDefault } : null)} />Use a utility model</Label>
@@ -36,7 +36,7 @@ export function UtilityModelSettingsEditor({ projectPath }: { projectPath: strin
                 <Button aria-label="Save utility model" size="sm" disabled={!editor.dirty || editor.pending || !!invalidModel} onClick={() => void editor.save()}>Save</Button>
                 <Button aria-label="Discard utility model changes" size="sm" variant="outline" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
             </div>
-            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Start replacement draft with defaults</Button>}
+            {!editor.draft && editor.saved?.repair_defaults && <Button variant="outline" disabled={editor.pending} onClick={() => editor.setDraft(editor.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {editor.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

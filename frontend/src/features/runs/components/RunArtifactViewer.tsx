@@ -41,7 +41,7 @@ export function RunArtifactViewer({
                 </div>
                 {entry && 'context_capture_kind' in entry && entry.context_capture_kind === 'codex_turn_input' ? (
                     <p data-testid="run-artifact-codex-context-note" className="text-xs text-muted-foreground">
-                        Codex may add internal instructions that are not observable by Spark.
+                        Codex may add instructions Spark can't see.
                     </p>
                 ) : null}
                 {isLoading ? (

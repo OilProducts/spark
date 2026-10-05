@@ -103,7 +103,6 @@ export function NodeInspectorPanel({
             <InspectorScaffold
                 scopeLabel="Node"
                 title="Configuration"
-                description="Use the same inspect-edit flow as graph and edge inspectors."
                 entityLabel="Node ID"
                 entityValue={selectedNodeId || undefined}
             >

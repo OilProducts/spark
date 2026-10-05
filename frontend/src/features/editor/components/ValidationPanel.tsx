@@ -229,7 +229,7 @@ export function ValidationPanel() {
                                 </div>
                                 {!hasDirectMapping(diag) ? (
                                     <div data-testid="validation-diagnostic-fallback-hint" className="mt-1 text-xs text-muted-foreground">
-                                        No direct canvas target. Click to open graph-level review.
+                                        Applies to the whole flow.
                                     </div>
                                 ) : null}
                             </div>

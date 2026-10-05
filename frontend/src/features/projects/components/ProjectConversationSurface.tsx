@@ -173,7 +173,6 @@ export function ProjectConversationSurface({
                                     <p data-testid="chat-composer-project">
                                         Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span>
                                     </p>
-                                    <p>Press Enter to send. Use Shift+Enter for a new line.</p>
                                 </div>
                                 <div className="flex flex-wrap items-center justify-end gap-2">
                                     {onStopTurn && <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button>}

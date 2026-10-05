@@ -13,14 +13,14 @@ export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
     return <Card><CardHeader><h3 className="text-lg font-light">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
-        {editor.pending ? <p role="status">Saving or reloading settings…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
-        <p className="text-xs">Settings apply to new work. Agent homes and seed locations require restart. Zero turn limits mean unlimited. Codex retains its standard service tier, never-ask approval policy, and full-access sandbox policy.</p>
+        {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         {editor.draft && <fieldset disabled={editor.pending} className="space-y-2">
             {(['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'loop_detection_window', 'max_subagent_depth'] as const).map((key) => {
                 const value = editor.draft![key]
                 const invalid = !Number.isSafeInteger(value) || value < 0 || (key === 'default_command_timeout_ms' && value <= 0) || (key === 'max_command_timeout_ms' && value < editor.draft!.default_command_timeout_ms) || (key === 'loop_detection_window' && editor.draft!.enable_loop_detection && value <= 0)
                 return <Field key={key}>
                 <FieldLabel htmlFor={`agent-${key}`}>{labels[key]}</FieldLabel>
+                {(key === 'max_turns' || key === 'max_tool_rounds_per_input') && <p className="text-xs">0 means unlimited.</p>}
                 <Input id={`agent-${key}`} aria-invalid={invalid} aria-describedby={invalid ? "agent-limits-error" : undefined} type="number" min={0} step={1} value={editor.draft![key]} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, [key]: Number(event.target.value) }))} />
             </Field>})}
             <label><input type="checkbox" checked={editor.draft.enable_loop_detection} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, enable_loop_detection: event.target.checked }))} /> Enable loop detection</label>

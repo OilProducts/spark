@@ -50,7 +50,6 @@ export function EdgeInspectorPanel({
             <InspectorScaffold
                 scopeLabel="Edge"
                 title="Properties"
-                description="Use the same inspect-edit flow as graph and node inspectors."
                 entityLabel="Edge"
                 entityValue={selectedEdge ? `${selectedEdge.source} -> ${selectedEdge.target}` : undefined}
             >

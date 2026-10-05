@@ -281,7 +281,7 @@ describe('Graph and settings behavior', () => {
     wrapWithFlowProvider(<GraphSettings inline />)
 
     expect(screen.getByTestId('graph-structured-form')).toBeVisible()
-    expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('FlowDefinition defaults')
+    expect(screen.getByTestId('flow-metadata-help')).toHaveTextContent('Leave blank to omit the field from YAML output.')
     expect(screen.getByRole('button', { name: 'Apply To Nodes' })).toBeEnabled()
     await openPicker(user)
     expect(screen.getByRole('button', { name: 'XHigh' })).toBeVisible()
