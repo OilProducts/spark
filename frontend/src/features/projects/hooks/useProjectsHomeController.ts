@@ -116,15 +116,10 @@ export function useProjectsHomeController() {
     const chatSettingsSaves = useRef(new Map<string, { values: ModelSettings | null }>())
     const {
         conversationBodyRef,
-        homeSidebarRef,
-        homeSidebarPrimaryHeight,
         isConversationPinnedToBottom,
-        isHomeSidebarResizing,
-        onHomeSidebarResizeKeyDown,
-        onHomeSidebarResizePointerDown,
         scrollConversationToBottom,
         syncConversationPinnedState,
-    } = useHomeSidebarLayout(isNarrowViewport, activeProjectPath, activeConversationId)
+    } = useHomeSidebarLayout(activeConversationId)
     const isConversationPinnedToBottomRef = useRef(isConversationPinnedToBottom)
     const projectsHomeViewModel = useMemo(() => buildProjectsHomeViewModel({
         activeConversationId,
@@ -426,21 +421,15 @@ export function useProjectsHomeController() {
         },
         sidebarProps: {
             isNarrowViewport,
-            homeSidebarRef,
-            homeSidebarPrimaryHeight,
             activeProjectPath,
             activeConversationId,
             conversationSummariesByProjectPath: conversationCache.summariesByProjectPath,
             conversationSummariesStatusByProjectPath: homeThreadSummariesStatusByProjectPath,
             pendingDeleteConversationId,
-            isHomeSidebarResizing,
             onCreateConversationThread,
             onSelectConversationThread,
             onDeleteConversationThread,
-            onHomeSidebarResizePointerDown,
-            onHomeSidebarResizeKeyDown,
             formatConversationAgeShort,
-            formatConversationTimestamp,
         },
         surfaceProps: {
             activeProjectLabel: activeProjectPath ? projectLabel(projectRegistry, activeProjectPath) : null,

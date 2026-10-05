@@ -20,31 +20,6 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
-const notifyResizeObserver = (target: Element) => {
-  ;(globalThis.ResizeObserver as unknown as { notify: (target: Element) => void }).notify(target)
-}
-
-const mockSidebarStackRect = (node: HTMLDivElement, initialHeight: number) => {
-  let height = initialHeight
-  vi.spyOn(node, 'getBoundingClientRect').mockImplementation(() => ({
-    x: 0,
-    y: 0,
-    top: 0,
-    right: 320,
-    bottom: height,
-    left: 0,
-    width: 320,
-    height,
-    toJSON: () => ({}),
-  } as DOMRect))
-
-  return {
-    setHeight(nextHeight: number) {
-      height = nextHeight
-    },
-  }
-}
-
 const resolveRequestUrl = (input: RequestInfo | URL): string => {
   if (typeof input === 'string') return input
   if (input instanceof URL) return input.toString()
@@ -366,12 +341,12 @@ describe('ProjectsPanel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders chats grouped by project in the side panel, beside the event log', async () => {
+  it('renders chats grouped by project in the side panel, with no event log', async () => {
     renderProjectsPanel()
 
     expect(screen.getByTestId('side-panel-title')).toHaveTextContent('Chats')
     expect(screen.getByTestId('project-thread-list')).toBeVisible()
-    expect(screen.getByTestId('project-event-log-surface')).toBeVisible()
+    expect(screen.queryByTestId('project-event-log-surface')).not.toBeInTheDocument()
     expect(
       within(screen.getByTestId('project-ai-conversation-surface')).getByText('Pick a chat, or start a new one.'),
     ).toBeVisible()
@@ -435,116 +410,6 @@ describe('ProjectsPanel', () => {
     expect(useStore.getState().projectRegistry).toEqual({})
   })
 
-  it('lets the operator resize sidebar sections in desktop layout', async () => {
-    act(() => {
-      useStore.getState().registerProject('/tmp/quick-switch-project')
-      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
-    })
-
-    renderProjectsPanelWithoutHomeController()
-
-    const sidebarStack = screen.getByTestId('home-sidebar-stack')
-    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
-    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
-    mockSidebarStackRect(sidebarStack as HTMLDivElement, 720)
-
-    expect(sidebarPrimarySurface.style.height).toBe('320px')
-
-    const completed = vi.fn()
-    window.addEventListener('spark:preferences-completed', completed)
-    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
-    fireEvent.pointerMove(window, { clientY: 300 })
-    expect(completed).not.toHaveBeenCalled()
-    fireEvent.pointerUp(window)
-    window.removeEventListener('spark:preferences-completed', completed)
-    expect(completed).toHaveBeenCalledTimes(1)
-    expect((completed.mock.calls[0][0] as CustomEvent).detail.home_sidebar_primary_split_ratio).toBeCloseTo(380 / 708, 5)
-
-    await waitFor(() => {
-      expect(sidebarPrimarySurface.style.height).toBe('380px')
-    })
-    expect(
-      useStore.getState().preferredHomeSidebarPrimarySplitRatio,
-    ).toBeCloseTo(380 / (720 - 12), 5)
-  })
-
-  it('grows the thread pane proportionally when the observed sidebar container grows', async () => {
-    act(() => {
-      useStore.getState().registerProject('/tmp/quick-switch-project')
-      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
-    })
-
-    renderProjectsPanelWithoutHomeController()
-
-    const sidebarStack = screen.getByTestId('home-sidebar-stack') as HTMLDivElement
-    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
-    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
-    const sidebarRect = mockSidebarStackRect(sidebarStack, 720)
-
-    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
-    fireEvent.pointerMove(window, { clientY: 300 })
-    fireEvent.pointerUp(window)
-
-    await waitFor(() => {
-      expect(sidebarPrimarySurface.style.height).toBe('380px')
-    })
-
-    const persistedRatio = useStore.getState().preferredHomeSidebarPrimarySplitRatio
-    expect(persistedRatio).not.toBeNull()
-
-    sidebarRect.setHeight(900)
-    act(() => {
-      notifyResizeObserver(sidebarStack)
-    })
-
-    await waitFor(() => {
-      expect(parseFloat(sidebarPrimarySurface.style.height)).toBe(Math.round((persistedRatio ?? 0) * (900 - 12)))
-    })
-  })
-
-  it('keeps the split proportional on container shrink while respecting pane minimums', async () => {
-    act(() => {
-      useStore.getState().registerProject('/tmp/quick-switch-project')
-      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
-    })
-
-    renderProjectsPanelWithoutHomeController()
-
-    const sidebarStack = screen.getByTestId('home-sidebar-stack') as HTMLDivElement
-    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
-    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
-    const sidebarRect = mockSidebarStackRect(sidebarStack, 720)
-
-    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
-    fireEvent.pointerMove(window, { clientY: 300 })
-    fireEvent.pointerUp(window)
-
-    await waitFor(() => {
-      expect(sidebarPrimarySurface.style.height).toBe('380px')
-    })
-
-    const persistedRatio = useStore.getState().preferredHomeSidebarPrimarySplitRatio
-    expect(persistedRatio).not.toBeNull()
-
-    sidebarRect.setHeight(520)
-    act(() => {
-      notifyResizeObserver(sidebarStack)
-    })
-
-    await waitFor(() => {
-      expect(parseFloat(sidebarPrimarySurface.style.height)).toBe(Math.round((persistedRatio ?? 0) * (520 - 12)))
-    })
-
-    sidebarRect.setHeight(430)
-    act(() => {
-      notifyResizeObserver(sidebarStack)
-    })
-
-    await waitFor(() => {
-      expect(sidebarPrimarySurface.style.height).toBe('210px')
-    })
-  })
-
   it('shows empty states when no chat is open', async () => {
     renderProjectsPanelWithoutHomeController()
 
@@ -552,11 +417,6 @@ describe('ProjectsPanel', () => {
       expect(useStore.getState().projectRegistry['/tmp/quick-switch-project']).toBeDefined()
     })
 
-    expect(
-      within(screen.getByTestId('project-event-log-surface')).getByText(
-        'No workflow events recorded yet.',
-      ),
-    ).toBeVisible()
     expect(
       within(screen.getByTestId('project-ai-conversation-surface')).getByText(
         'Pick a chat, or start a new one.',
@@ -579,51 +439,6 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(group).toHaveTextContent('No chats yet.')
     })
-  })
-
-  it('renders the global workflow event log with project labels and run deep links', async () => {
-    act(() => {
-      useStore.getState().registerProject('/tmp/quick-switch-project')
-      useStore.getState().setActiveProjectPath('/tmp/quick-switch-project')
-      useStore.getState().applyWorkflowLogEntries([
-        {
-          id: 'run-a:run_started',
-          seq: 0,
-          timestamp: '2026-03-24T12:00:00Z',
-          kind: 'run_started',
-          message: 'Started ops/deploy.dot',
-          project_path: '/tmp/quick-switch-project',
-          run_id: 'run-a',
-          flow_name: 'ops/deploy.dot',
-        },
-        {
-          id: 'run-b:run_failed',
-          seq: 1,
-          timestamp: '2026-03-24T12:05:00Z',
-          kind: 'run_failed',
-          message: 'ops/other.dot failed: boom',
-          project_path: '/tmp/other-project',
-          run_id: 'run-b',
-          flow_name: 'ops/other.dot',
-          node_id: 'deploy',
-        },
-      ])
-    })
-
-    renderProjectsPanelWithoutHomeController()
-
-    // Entries from every project render, newest first, with project labels and
-    // deep links into the runs view.
-    const logList = screen.getByTestId('project-event-log-list')
-    const rows = within(logList).getAllByTestId('workflow-event-log-row')
-    expect(rows).toHaveLength(2)
-    expect(rows[0]).toHaveTextContent('ops/other.dot failed: boom')
-    expect(rows[0]).toHaveTextContent('other-project')
-    expect(rows[0]).toHaveAttribute('href', '#/runs/run-b/deploy')
-    expect(rows[0]).toHaveAttribute('data-kind', 'run_failed')
-    expect(rows[1]).toHaveAttribute('href', '#/runs/run-a')
-    expect(rows[1]).toHaveTextContent('quick-switch-project')
-    expect(screen.queryByTestId('workflow-event-log-scope-active')).not.toBeInTheDocument()
   })
 
   it('renders the server-created user turn before the assistant response completes', async () => {

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
 import { LaunchPanel, loadRunSnapshotFlowContent, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { useRunsList } from './hooks/useRunsList'
 import { useRunActions } from './hooks/useRunActions'
@@ -72,18 +73,19 @@ function RunsProjectFilter() {
     const registry = useStore((state) => state.projectRegistry)
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     return (
-        <select
+        <NativeSelect
+            size="sm"
             data-testid="runs-project-filter"
             aria-label="Show runs from project"
             value={projectFilter ?? ''}
             onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
-            className="max-w-36 truncate rounded-md border border-border bg-background px-2 py-0.5 text-xs text-foreground"
+            className="h-6 max-w-36 truncate py-0 pl-2 pr-8 text-xs data-[size=sm]:h-6 data-[size=sm]:py-0"
         >
-            <option value="">All projects</option>
+            <NativeSelectOption value="">All projects</NativeSelectOption>
             {orderProjects(registry).map((project) => (
-                <option key={project.directoryPath} value={project.directoryPath}>{projectLabel(registry, project.directoryPath)}</option>
+                <NativeSelectOption key={project.directoryPath} value={project.directoryPath}>{projectLabel(registry, project.directoryPath)}</NativeSelectOption>
             ))}
-        </select>
+        </NativeSelect>
     )
 }
 

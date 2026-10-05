@@ -78,15 +78,11 @@ export function sourceOf(item: { kind: 'run'; id: string } | { kind: 'mission'; 
     return mission ? { kind: 'mission', mission } : null
 }
 
-// Versioned by completion time, as attention keys are, so a retried run that finishes again is new again.
-const finishedKey = (item: Started) => `${item.kind}:${item.id}@${item.at}`
-const unversioned = (key: string) => key.slice(0, key.lastIndexOf('@'))
-
-/** Top-level runs and missions that finished and are not yet seen, newest first; with nothing seen yet, those of the last day. */
-export function finishedSince(runs: RunRecord[], missions: Mission[], seenFinished: string | null, now: number): Started[] {
-    const seen = new Set(seenFinished?.split('\n'))
+/** Top-level runs and missions that finished after the watermark, newest first; with no watermark yet, those of the last day. */
+export function finishedSince(runs: RunRecord[], missions: Mission[], watermark: number | null, now: number): Started[] {
+    const after = watermark ?? now - DAY_MS
     return finished(runs, missions)
-        .filter((item) => (seenFinished === null ? item.at > now - DAY_MS : !seen.has(finishedKey(item))))
+        .filter((item) => item.at > after)
         .sort((left, right) => right.at - left.at)
 }
 
@@ -98,81 +94,54 @@ const finished = (runs: RunRecord[], missions: Mission[]) => [
         .map((mission): Started => ({ kind: 'mission', id: mission.id, mission, mark: missionMark(mission), at: timeOf(mission.closed?.at) })),
 ]
 
-// The version keeps a recurring request with a new timestamp from passing as one already shown.
-const attentionKey = (item: AttentionItem) => `${item.kind}:${item.id}@${item.updated_at}`
-
-/** Whether something needs you or has finished that the Overview has not shown. */
-export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], now: number, seenAttention = readSeenAttention(), seenFinished = readSeenFinished()): boolean {
-    const seen = new Set(seenAttention.split('\n'))
-    return attention.some((item) => !seen.has(attentionKey(item))) || finishedSince(runs, missions, seenFinished, now).length > 0
+/** Whether something needs you or has finished after what the Overview has shown. */
+export function hasUnread(attention: AttentionItem[], runs: RunRecord[], missions: Mission[], now: number, attentionWatermark = readAttentionWatermark(), finishedWatermark = readFinishedWatermark()): boolean {
+    return attention.some((item) => attentionWatermark === null || timeOf(item.updated_at) > attentionWatermark)
+        || finishedSince(runs, missions, finishedWatermark, now).length > 0
 }
 
-// What the Overview has shown, as newline-joined keys; a string so it is a stable snapshot, null when nothing was ever shown.
-const SEEN_ATTENTION_KEY = 'spark.overview_seen_attention'
-const SEEN_FINISHED_KEY = 'spark.overview_seen_finished'
+// The newest server time the Overview has shown in each section; null before the first visit.
+// ponytail: an item that finished (or was updated) earlier than one already shown but reached its list later is not new.
+const ATTENTION_WATERMARK_KEY = 'spark.overview_attention_watermark'
+const FINISHED_WATERMARK_KEY = 'spark.overview_finished_watermark'
 const listeners = new Set<() => void>()
 
-function readSeen(storageKey: string): string | null {
+function readWatermark(storageKey: string): number | null {
     try {
-        return window.localStorage.getItem(storageKey)
+        const value = window.localStorage.getItem(storageKey)
+        return value === null ? null : Number(value) || 0
     } catch {
         return null
     }
 }
 
-function writeSeen(storageKey: string, keys: string[]) {
-    if (readSeen(storageKey) === keys.join('\n')) return
+/** Moves a watermark forward to the newest of the given times; never back, and not at all without times. */
+function advance(storageKey: string, times: number[]) {
+    const current = readWatermark(storageKey)
+    const newest = Math.max(...times)
+    if (times.length === 0 || (current !== null && newest <= current)) return
     try {
-        window.localStorage.setItem(storageKey, keys.join('\n'))
+        window.localStorage.setItem(storageKey, String(newest))
     } catch {
         // Ignore storage failures (private mode, quota, etc.)
     }
     listeners.forEach((listener) => listener())
 }
 
-export const readSeenAttention = () => readSeen(SEEN_ATTENTION_KEY) ?? ''
-export const readSeenFinished = () => readSeen(SEEN_FINISHED_KEY)
+export const readAttentionWatermark = () => readWatermark(ATTENTION_WATERMARK_KEY)
+export const readFinishedWatermark = () => readWatermark(FINISHED_WATERMARK_KEY)
 
-/** Records the attention the Overview is showing; only what is pending now is kept. */
+/** Records the newest pending attention the Overview is showing. */
 export function markAttentionSeen(attention: AttentionItem[]) {
-    writeSeen(SEEN_ATTENTION_KEY, attention.map(attentionKey))
+    advance(ATTENTION_WATERMARK_KEY, attention.map((item) => timeOf(item.updated_at)))
 }
 
-/** Forgets shown attention that is no longer pending, so if it comes back it is new again. Call with each fetched list. */
-export function forgetResolvedAttention(attention: AttentionItem[]) {
-    const pending = new Set(attention.map(attentionKey))
-    const seen = readSeenAttention().split('\n').filter(Boolean)
-    const kept = seen.filter((key) => pending.has(key))
-    if (kept.length < seen.length) writeSeen(SEEN_ATTENTION_KEY, kept)
-}
-
-/**
- * Records every finished run and mission as seen while the Overview shows them: those it lists, and on the first
- * visit those older than its day, so the next visit does not list them all. Once both lists were fetched, records the
- * visit even when nothing has finished; before then, with nothing shown, marks nothing.
- */
+/** Records the newest finish the Overview is showing; on a first visit that also covers those older than its day. */
 export function markFinishedSeen(runs: RunRecord[], missions: Mission[]) {
-    const shown = finished(runs, missions).map(finishedKey)
-    if (shown.length === 0 && fetched.size < 2) return
-    const replaced = new Set(shown.map(unversioned))
-    const kept = (readSeenFinished() ?? '').split('\n').filter((key) => key && !replaced.has(unversioned(key)))
-    writeSeen(SEEN_FINISHED_KEY, [...kept, ...shown])
+    advance(FINISHED_WATERMARK_KEY, finished(runs, missions).map((item) => item.at))
 }
 
-// The kinds whose full list has been fetched this session.
-const fetched = new Set<Started['kind']>()
-
-/** Forgets shown runs or missions that left their list. Call with each fully fetched list, never a live-updated one. */
-export function forgetRemovedFinished(kind: Started['kind'], ids: string[]) {
-    fetched.add(kind)
-    // ponytail: storage stays bounded by the fetched lists; a run that leaves the list and comes back counts as new again.
-    const listed = new Set(ids.map((id) => `${kind}:${id}`))
-    const seen = (readSeenFinished() ?? '').split('\n').filter(Boolean)
-    const kept = seen.filter((key) => !key.startsWith(`${kind}:`) || listed.has(unversioned(key)))
-    if (kept.length < seen.length) writeSeen(SEEN_FINISHED_KEY, kept)
-}
-
-export function subscribeSeen(listener: () => void) {
+export function subscribeWatermarks(listener: () => void) {
     listeners.add(listener)
     return () => { listeners.delete(listener) }
 }

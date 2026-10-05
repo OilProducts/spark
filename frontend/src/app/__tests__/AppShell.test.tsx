@@ -62,21 +62,6 @@ const setViewportWidth = (width: number) => {
   window.dispatchEvent(new Event('resize'))
 }
 
-const mockSidebarStackRect = (node: HTMLDivElement, initialHeight: number) => {
-  const height = initialHeight
-  vi.spyOn(node, 'getBoundingClientRect').mockImplementation(() => ({
-    x: 0,
-    y: 0,
-    top: 0,
-    right: 320,
-    bottom: height,
-    left: 0,
-    width: 320,
-    height,
-    toJSON: () => ({}),
-  } as DOMRect))
-}
-
 const resetAppShellState = () => {
   useRunJournalStore.setState({ byRunId: {} })
   {
@@ -1306,19 +1291,6 @@ describe('App shell behavior', () => {
     await user.click(screen.getByTestId('project-tool-call-toggle-tool-ls'))
     expect(within(screen.getByTestId('project-ai-conversation-history')).getByText(/AGENTS\.md/)).toBeVisible()
 
-    const sidebarStack = screen.getByTestId('home-sidebar-stack')
-    const sidebarPrimarySurface = screen.getByTestId('home-sidebar-primary-surface') as HTMLDivElement
-    const resizeHandle = screen.getByTestId('home-sidebar-resize-handle')
-    mockSidebarStackRect(sidebarStack as HTMLDivElement, 720)
-
-    fireEvent.pointerDown(resizeHandle, { clientY: 240 })
-    fireEvent.pointerMove(window, { clientY: 300 })
-    fireEvent.pointerUp(window)
-
-    await waitFor(() => {
-      expect(sidebarPrimarySurface.style.height).toBe('380px')
-    })
-
     const conversationBody = screen.getByTestId('project-ai-conversation-body') as HTMLDivElement
     let scrollTop = 120
     Object.defineProperty(conversationBody, 'clientHeight', {
@@ -1345,9 +1317,6 @@ describe('App shell behavior', () => {
       expect(screen.getByTestId('project-ai-conversation-jump-to-bottom')).toBeVisible()
     })
 
-    expect(
-      useStore.getState().preferredHomeSidebarPrimarySplitRatio,
-    ).toBeCloseTo(380 / (720 - 12), 5)
     expect(useStore.getState().homeConversationSessionsById['conversation-home-restore']?.expandedToolCalls).toMatchObject({
       'tool-ls': true,
     })
@@ -1359,7 +1328,6 @@ describe('App shell behavior', () => {
     await waitFor(() => {
       expect(within(screen.getByTestId('project-ai-conversation-history')).getByText(/AGENTS\.md/)).toBeVisible()
     })
-    expect(sidebarPrimarySurface.style.height).toBe('380px')
     expect(screen.getByTestId('project-ai-conversation-jump-to-bottom')).toBeVisible()
     expect(scrollTop).toBe(120)
   })

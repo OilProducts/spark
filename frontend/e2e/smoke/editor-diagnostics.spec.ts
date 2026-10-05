@@ -47,7 +47,7 @@ test("primary UI shells render and can be navigated", async ({ page }) => {
 
     await registerProjectForSmokeTest(page, projectPath)
     await expect(page.getByTestId("project-thread-list")).toBeVisible()
-    await expect(page.getByTestId("project-event-log-surface")).toBeVisible()
+    await expect(page.getByTestId("project-event-log-surface")).toHaveCount(0)
     await expect(page.getByTestId("project-ai-conversation-surface")).toBeVisible()
     await page.screenshot({ path: screenshotPath("02-projects-panel.png"), fullPage: true })
 

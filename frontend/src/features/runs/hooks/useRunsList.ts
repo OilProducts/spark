@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { fetchRunsListValidated, parseRunRecordPayload } from '@/lib/attractorClient'
 import { useStore } from '@/store'
-import { forgetRemovedFinished } from '@/features/overview/model/overviewModel'
 
 import type { RunRecord } from '../model/shared'
 import { useRunsTransportReconnectSignal } from '../services/runsTransportReconnect'
@@ -92,9 +91,9 @@ export function useRunsList({
             try {
                 const data = await fetchRunsListValidated(null, request.signal)
                 if (activeRequest !== request || request.signal.aborted) return
-                forgetRemovedFinished('run', data.runs.map((run) => run.run_id))
                 updateRunsListSession({
                     runs: data.runs,
+                    fetched: true,
                     status: 'ready',
                     error: null,
                     streamStatus: 'ready',

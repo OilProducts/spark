@@ -24,7 +24,6 @@ import { parseConversationSummaryResponse } from '@/lib/api/conversationsApi'
 import { resolveRunJournalLiveCursor, useRunJournalStore } from '@/features/runs/state/runJournalStore'
 import { useRunsTransportReconnectSignal } from '@/features/runs/services/runsTransportReconnect'
 import { buildRunsHash, isRunsHash, parseRunsHash } from './runsRouting'
-import type { WorkflowLogEntry } from '@/state/workflowEventLogSlice'
 
 type HomeConversationSyncControllerProps = {
     projectPath: string
@@ -314,8 +313,6 @@ export function WorkspaceLiveEventsController() {
         params.set('include_runs_overview', 'true')
         params.set('include_triggers', 'true')
         params.set('include_missions', 'true')
-        // The workflow event log is a global, always-on feed for the Home pane.
-        params.set('include_workflow_log', 'true')
         params.set('include_conversations', 'true')
         params.set('include_settings', 'true')
         return buildWorkspaceLiveEventsUrl(params)
@@ -383,13 +380,6 @@ export function WorkspaceLiveEventsController() {
                     && Number.isFinite(envelope.cursor.value)
                 ) {
                     latestRunSequenceById.current[envelope.resource.id] = envelope.cursor.value
-                }
-                if (envelope.type === 'workflow_log.entry' && envelope.resource?.kind === 'workflow_log') {
-                    const entry = envelope.payload as WorkflowLogEntry | undefined
-                    if (entry && typeof entry.id === 'string' && typeof entry.seq === 'number') {
-                        useStore.getState().applyWorkflowLogEntries([entry])
-                    }
-                    return
                 }
                 if (typeof envelope.sequence === 'number' && selectedRunId) {
                     window.dispatchEvent(new CustomEvent('spark:run-journal-entry', {

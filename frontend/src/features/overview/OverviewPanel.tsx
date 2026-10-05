@@ -12,7 +12,7 @@ import {
     lastChat,
     markAttentionSeen,
     markFinishedSeen,
-    readSeenFinished,
+    readFinishedWatermark,
     sourceOf,
     tally,
     type Mark,
@@ -63,18 +63,19 @@ export function OverviewPanel() {
     const registry = useStore((state) => state.projectRegistry)
     const runs = useStore((state) => state.runsListSession.runs)
     const missions = useStore((state) => state.missionBoard)
+    const listsLoaded = useStore((state) => Boolean(state.runsListSession.fetched) && state.missionBoardLoaded)
     const { chats, loaded } = useOverviewChats()
     // What this visit lists is judged against what earlier visits showed; what it shows is seen from the next one on.
-    const [seenFinished] = useState(readSeenFinished)
+    const [finishedWatermark] = useState(readFinishedWatermark)
     const [showRuns, setShowRuns] = useState(false)
     useEffect(() => { if (loadedAttention) markAttentionSeen(loadedAttention) }, [loadedAttention])
-    useEffect(() => markFinishedSeen(runs, missions), [runs, missions])
+    useEffect(() => { if (listsLoaded) markFinishedSeen(runs, missions) }, [listsLoaded, runs, missions])
     // eslint-disable-next-line react-hooks/purity -- render-time clock for relative dates; the view re-renders on run and mission updates
     const now = Date.now()
 
     const last = lastChat(chats, runs, missions)
     const counts = last ? tally(last.started) : {}
-    const finished = finishedSince(runs, missions, seenFinished, now)
+    const finished = finishedSince(runs, missions, finishedWatermark, now)
     const failures = finished.filter((item) => item.mark === 'failed').length
     const project = (path: string | null | undefined) => <span className="shrink-0 truncate text-xs text-muted-foreground">{projectLabel(registry, path)}</span>
     const sourceLink = (source: Source | null) => {
@@ -155,7 +156,7 @@ export function OverviewPanel() {
 
                 <Section
                     testId="overview-finished"
-                    label={<>Finished {seenFinished === null ? 'in the last day' : 'since you last looked'} · {finished.length}{failures ? <span data-testid="overview-failure-count" className="text-destructive"> · {failures} failed</span> : null}</>}
+                    label={<>Finished {finishedWatermark === null ? 'in the last day' : 'since you last looked'} · {finished.length}{failures ? <span data-testid="overview-failure-count" className="text-destructive"> · {failures} failed</span> : null}</>}
                 >
                     {finished.length === 0 ? (
                         <p className="mt-2 text-sm text-muted-foreground">Nothing has finished since.</p>

@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react"
-import type { KeyboardEventHandler, MutableRefObject, PointerEventHandler } from "react"
 import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react"
 
-import { buildRunsHash } from "@/app/runsRouting"
 import { useStore } from "@/store"
 import { cn } from "@/lib/utils"
 
@@ -21,42 +19,29 @@ export const RECENT_CHATS_PER_PROJECT = 5
 
 type ProjectsSidebarProps = {
     isNarrowViewport: boolean
-    homeSidebarRef: MutableRefObject<HTMLDivElement | null>
-    homeSidebarPrimaryHeight: number
     activeProjectPath: string | null
     activeConversationId: string | null
     conversationSummariesByProjectPath: Record<string, ProjectConversationSummary[]>
     conversationSummariesStatusByProjectPath: Record<string, 'idle' | 'loading' | 'ready' | 'error'>
     pendingDeleteConversationId: string | null
-    isHomeSidebarResizing: boolean
     onCreateConversationThread: (projectPath: string) => void | Promise<void>
     onSelectConversationThread: (projectPath: string, conversationId: string) => void
     onDeleteConversationThread: (projectPath: string, conversationId: string, title: string) => void | Promise<void>
-    onHomeSidebarResizePointerDown: PointerEventHandler<HTMLDivElement>
-    onHomeSidebarResizeKeyDown: KeyboardEventHandler<HTMLDivElement>
     formatConversationAgeShort: (value: string) => string
-    formatConversationTimestamp: (value: string) => string
 }
 
 export function ProjectsSidebar({
     isNarrowViewport,
-    homeSidebarRef,
-    homeSidebarPrimaryHeight,
     activeProjectPath,
     activeConversationId,
     conversationSummariesByProjectPath,
     conversationSummariesStatusByProjectPath,
     pendingDeleteConversationId,
-    isHomeSidebarResizing,
     onCreateConversationThread,
     onSelectConversationThread,
     onDeleteConversationThread,
-    onHomeSidebarResizePointerDown,
-    onHomeSidebarResizeKeyDown,
     formatConversationAgeShort,
-    formatConversationTimestamp,
 }: ProjectsSidebarProps) {
-    const workflowEventLog = useStore((state) => state.workflowEventLog)
     const projectRegistry = useStore((state) => state.projectRegistry)
     const projectPagePath = useStore((state) => state.projectPagePath)
     const openProjectPage = useStore((state) => state.openProjectPage)
@@ -72,14 +57,12 @@ export function ProjectsSidebar({
     return (
         <HomeProjectSidebar className={isNarrowViewport ? "gap-4" : "h-full"}>
             <div
-                ref={homeSidebarRef}
                 data-testid="home-sidebar-stack"
                 className={`flex ${isNarrowViewport ? "flex-col gap-4" : "h-full min-h-0 flex-col"}`}
             >
                 <div
                     data-testid="home-sidebar-primary-surface"
-                    className={isNarrowViewport ? "" : "min-h-0 overflow-y-auto"}
-                    style={isNarrowViewport ? undefined : { height: `${homeSidebarPrimaryHeight}px` }}
+                    className={isNarrowViewport ? "" : "min-h-0 flex-1 overflow-y-auto"}
                 >
                     <ul data-testid="project-thread-list" aria-label="Chats by project">
                         {groups.length === 0 ? (
@@ -217,66 +200,6 @@ export function ProjectsSidebar({
                             )
                         })}
                     </ul>
-                </div>
-                {!isNarrowViewport ? (
-                    <div
-                        data-testid="home-sidebar-resize-handle"
-                        role="separator"
-                        aria-label="Resize sidebar sections"
-                        aria-orientation="horizontal"
-                        tabIndex={0}
-                        onPointerDown={onHomeSidebarResizePointerDown}
-                        onKeyDown={onHomeSidebarResizeKeyDown}
-                        className={`group flex h-3 shrink-0 cursor-row-resize items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${isHomeSidebarResizing ? "bg-muted" : "hover:bg-muted/60"}`}
-                    >
-                        <span className="h-1 w-12 rounded-full bg-border transition-colors group-hover:bg-muted-foreground/70" />
-                    </div>
-                ) : null}
-                <div
-                    data-testid="project-event-log-surface"
-                    className={`flex min-h-[280px] flex-col border-t border-border p-4 ${isNarrowViewport ? "" : "min-h-0 flex-1 overflow-hidden"}`}
-                >
-                    <h3 className="mb-3 text-sm font-normal text-foreground">Workflow Event Log</h3>
-                    {workflowEventLog.length === 0 ? (
-                        <Empty className="px-3 py-4 text-xs text-muted-foreground">
-                            <EmptyHeader>
-                                <EmptyDescription>
-                                    No workflow events recorded yet.
-                                </EmptyDescription>
-                            </EmptyHeader>
-                        </Empty>
-                    ) : (
-                        <ol data-testid="project-event-log-list" className="flex-1 space-y-2 overflow-y-auto pr-1">
-                            {[...workflowEventLog].reverse().map((entry) => (
-                                <li key={entry.id}>
-                                    <a
-                                        data-testid="workflow-event-log-row"
-                                        data-kind={entry.kind}
-                                        href={buildRunsHash(entry.run_id, entry.node_id ?? null)}
-                                        className={cn(
-                                            'block rounded border border-border border-l-2 px-2 py-1.5 transition-colors hover:bg-muted/40',
-                                            entry.kind === 'run_failed' && 'border-l-destructive/70',
-                                            entry.kind === 'run_waiting_on_input' && 'border-l-info/70',
-                                            entry.kind === 'run_completed' && 'border-l-success/70',
-                                            entry.kind === 'run_canceled' && 'border-l-warning/70',
-                                        )}
-                                    >
-                                        <p className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                                            <span>{formatConversationTimestamp(entry.timestamp)}</span>
-                                            <span
-                                                data-testid="workflow-event-log-row-project"
-                                                className="truncate"
-                                                title={entry.project_path}
-                                            >
-                                                {projectLabel(projectRegistry, entry.project_path)}
-                                            </span>
-                                        </p>
-                                        <p className="text-sm text-foreground">{entry.message}</p>
-                                    </a>
-                                </li>
-                            ))}
-                        </ol>
-                    )}
                 </div>
             </div>
         </HomeProjectSidebar>
