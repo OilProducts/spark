@@ -40,7 +40,13 @@ pub fn validate_model_settings(
         if normalized != provider {
             return Err("Use the canonical provider identifier.".into());
         }
-        if let Some(model) = value.model.as_deref() {
+        // The catalog describes the unified LLM adapter's API models; the codex and
+        // claude-code harnesses discover their own models, which may share ids.
+        if let Some(model) = value
+            .model
+            .as_deref()
+            .filter(|_| !matches!(provider, "codex" | "claude-code"))
+        {
             let models = unified_llm_adapter::list_models(None);
             if models.iter().any(|entry| entry.id == model)
                 && !models

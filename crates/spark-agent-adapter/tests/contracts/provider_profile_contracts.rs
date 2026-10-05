@@ -352,3 +352,28 @@ fn custom_tool_registration_is_latest_wins_by_name_after_profile_creation() {
         Some("replacement")
     );
 }
+
+#[test]
+fn catalog_provider_check_applies_to_api_providers_not_harnesses() {
+    let data = tempfile::tempdir().expect("tempdir");
+    let settings =
+        spark_common::settings::resolve_settings(&spark_common::settings::SettingsOverrides {
+            data_dir: Some(data.path().to_path_buf()),
+            ..Default::default()
+        })
+        .expect("settings");
+    let selection = |provider: &str| spark_common::settings::ModelSettings {
+        provider: Some(provider.into()),
+        model: Some("gpt-6-astra".into()),
+        ..Default::default()
+    };
+    let validate = |provider| {
+        spark_agent_adapter::config::validate_model_settings(&settings, &selection(provider))
+    };
+    assert_eq!(validate("openai"), Ok(()));
+    assert_eq!(validate("codex"), Ok(()));
+    assert_eq!(
+        validate("anthropic"),
+        Err("The model belongs to a different provider.".into())
+    );
+}
