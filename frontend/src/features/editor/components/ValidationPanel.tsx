@@ -150,7 +150,7 @@ export function ValidationPanel() {
             }`}
         >
             <div className="flex items-center justify-between">
-                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Validation</div>
+                <div className="text-sm font-semibold text-foreground">Validation</div>
                 <div className="text-xs font-medium text-muted-foreground">
                     {hasValidationErrors ? 'Errors present' : 'Warnings only'}
                 </div>
@@ -215,7 +215,7 @@ export function ValidationPanel() {
                     >
                         <div className="flex w-full min-w-0 items-start gap-2">
                             <span
-                                className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide ${
+                                className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs font-medium capitalize ${
                                     severityStyles[diag.severity] || 'text-muted-foreground'
                                 }`}
                             >
@@ -237,7 +237,7 @@ export function ValidationPanel() {
                     </Button>
                 ))}
                 {sortedDiagnostics.length === 0 && (
-                    <div className="rounded-md border border-dashed border-border/60 px-2 py-2 text-xs text-muted-foreground">
+                    <div className="rounded-lg bg-muted px-2 py-2 text-xs text-muted-foreground">
                         No diagnostics for current filter.
                     </div>
                 )}

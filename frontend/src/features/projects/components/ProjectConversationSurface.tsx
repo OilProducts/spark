@@ -1,27 +1,37 @@
 import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
-import { HomeWorkspace } from './HomeWorkspace'
+import { ArrowUp, Folder } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
 import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeConnection'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
     Empty,
     EmptyDescription,
     EmptyHeader,
 } from '@/components/ui/empty'
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
+import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import type { ModelSettings } from '@/lib/api/settingsApi'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import type { ConversationChatMode } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
+import { cn } from '@/lib/utils'
+import { formatConversationAgeShort, formatConversationTimestamp } from '../model/projectsHomeState'
 
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
+    activeConversationTitle?: string | null
+    activeConversationUpdatedAt?: string | null
     activeChatMode: ConversationChatMode | null
+    onChatModeChange?: (mode: ConversationChatMode) => void
+    /** Whether the transcript has thinking to reveal; the toggle is omitted otherwise. */
+    hasThinking: boolean
+    showThinking: boolean
+    onShowThinkingChange: (next: boolean) => void
     defaultModel?: string
     modelSettings: ModelSettings
     inheritedModelSettings?: ModelSettings
@@ -48,10 +58,23 @@ interface ProjectConversationSurfaceProps {
     onUseModelDefaults?: () => void
 }
 
+const MODEL_SOURCE_LABELS = {
+    conversation: 'Conversation override',
+    project: 'Project default',
+    workspace: 'Workspace default',
+} as const
+
+/** The chat sheet: header, scrolling transcript and the composer. ViewLayout supplies the sheet itself. */
 export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
+    activeConversationTitle = null,
+    activeConversationUpdatedAt = null,
     activeChatMode,
+    onChatModeChange,
+    hasThinking,
+    showThinking,
+    onShowThinkingChange,
     defaultModel,
     modelSettings,
     inheritedModelSettings,
@@ -78,126 +101,153 @@ export function ProjectConversationSurface({
     onUseModelDefaults,
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
+    const hasProject = Boolean(activeProjectPath && activeProjectLabel)
     return (
-        <HomeWorkspace className={isNarrowViewport ? 'space-y-4' : 'h-full'}>
-            <Card
-                data-testid="project-ai-conversation-surface"
-                className={`gap-4 py-4 ${isNarrowViewport ? '' : 'flex h-full min-h-0 flex-col'}`}
-            >
-                <CardHeader className="gap-1 px-4">
-                    <div className="flex items-center justify-between gap-3">
-                        <CardTitle className="flex min-w-0 items-baseline gap-2 text-lg font-light">
-                            <span className="shrink-0">Chat</span>
-                            {activeProjectPath && activeProjectLabel ? (
-                                <button
-                                    type="button"
-                                    data-testid="chat-project-link"
-                                    title={activeProjectPath}
-                                    onClick={() => useStore.getState().openProjectPage(activeProjectPath)}
-                                    className="min-w-0 truncate text-sm text-muted-foreground hover:text-primary"
-                                >
-                                    {activeProjectLabel}
-                                </button>
-                            ) : null}
-                        </CardTitle>
-                        {activeProjectPath && activeChatMode ? (
-                            <span
-                                data-testid="project-active-chat-mode-badge"
-                                className="inline-flex items-center rounded-full border border-border px-2 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+        <div
+            data-testid="project-ai-conversation-surface"
+            className={cn('flex flex-col', !isNarrowViewport && 'h-full min-h-0')}
+        >
+            <header className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-border px-6 py-4">
+                <div className="min-w-0">
+                    <h1 data-testid="chat-title" className="truncate text-xl font-semibold text-foreground">
+                        {activeConversationTitle || 'Chat'}
+                    </h1>
+                    {hasProject ? (
+                        <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
+                            <button
+                                type="button"
+                                data-testid="chat-project-link"
+                                title={activeProjectPath ?? undefined}
+                                onClick={() => activeProjectPath && useStore.getState().openProjectPage(activeProjectPath)}
+                                className="min-w-0 truncate outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
                             >
-                                {activeChatMode === 'plan' ? 'Plan mode' : 'Chat mode'}
-                            </span>
-                        ) : null}
-                    </div>
-                </CardHeader>
-                <CardContent className={`space-y-3 px-4 ${isNarrowViewport ? '' : 'flex min-h-0 flex-1 flex-col'}`}>
+                                {activeProjectLabel}
+                            </button>
+                            {activeConversationUpdatedAt ? (
+                                <>
+                                    <span aria-hidden="true">·</span>
+                                    <span className="shrink-0" title={formatConversationTimestamp(activeConversationUpdatedAt)}>
+                                        {formatConversationAgeShort(activeConversationUpdatedAt)}
+                                    </span>
+                                </>
+                            ) : null}
+                        </p>
+                    ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                    {hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={onShowThinkingChange} /> : null}
+                    {activeProjectPath && activeChatMode ? (
+                        <NativeSelect
+                            data-testid="project-active-chat-mode-badge"
+                            aria-label="Mode"
+                            size="sm"
+                            value={activeChatMode}
+                            // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
+                            disabled={!activeProjectPath || isChatSendDisabled || !onChatModeChange}
+                            onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
+                            className="rounded-lg"
+                        >
+                            <NativeSelectOption value="chat">Chat</NativeSelectOption>
+                            <NativeSelectOption value="plan">Plan</NativeSelectOption>
+                        </NativeSelect>
+                    ) : null}
+                </div>
+            </header>
+            <div className={cn('flex flex-col', !isNarrowViewport && 'min-h-0 flex-1')}>
                 {panelError ? (
-                    <InlineError data-testid="project-panel-error" dense>
+                    <InlineError data-testid="project-panel-error" dense className="mx-6 mt-4">
                         {panelError}
                         {isCodexAuthError(panelError) && <CodexReconnect />}
                         {isClaudeCodeAuthError(panelError) && <ClaudeCodeReconnect />}
                     </InlineError>
                 ) : null}
                 {!activeProjectPath ? (
-                    <Empty className={`text-sm text-muted-foreground ${isNarrowViewport ? '' : 'flex flex-1 items-center'}`}>
-                        <EmptyHeader>
-                            <EmptyDescription>
-                                Pick a chat, or start a new one.
-                            </EmptyDescription>
-                        </EmptyHeader>
-                    </Empty>
+                    <div className="px-6 py-6">
+                        <Empty>
+                            <EmptyHeader>
+                                <EmptyDescription>
+                                    Pick a chat, or start a new one.
+                                </EmptyDescription>
+                            </EmptyHeader>
+                        </Empty>
+                    </div>
                 ) : (
-                    <div className="flex min-h-0 flex-1 flex-col gap-3">
+                    <>
                         <div
                             ref={conversationBodyRef}
                             data-testid="project-ai-conversation-body"
                             onScroll={onSyncConversationPinnedState}
-                            className={`flex min-h-0 flex-1 flex-col gap-3 ${isNarrowViewport ? '' : 'overflow-y-auto pr-1'}`}
+                            className={cn('px-6 pb-3 pt-6', !isNarrowViewport && 'min-h-0 flex-1 overflow-y-auto')}
                         >
-                            {historyContent}
+                            <div className="mx-auto w-full max-w-3xl">{historyContent}</div>
                         </div>
-                        {!isConversationPinnedToBottom && hasRenderableConversationHistory ? (
-                            <div className="flex justify-end">
-                                <Button
-                                    type="button"
-                                    data-testid="project-ai-conversation-jump-to-bottom"
-                                    onClick={onScrollConversationToBottom}
-                                    variant="outline"
-                                    size="xs"
+                        <div className="shrink-0 px-6 pb-5 pt-2">
+                            <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+                                {!isConversationPinnedToBottom && hasRenderableConversationHistory ? (
+                                    <div className="flex justify-end">
+                                        <Button
+                                            type="button"
+                                            data-testid="project-ai-conversation-jump-to-bottom"
+                                            onClick={onScrollConversationToBottom}
+                                            variant="outline"
+                                            size="xs"
+                                        >
+                                            Jump to bottom
+                                        </Button>
+                                    </div>
+                                ) : null}
+                                {chatModelAvailabilityMessage ? (
+                                    <InlineError data-testid="project-chat-model-availability" dense>{chatModelAvailabilityMessage}</InlineError>
+                                ) : null}
+                                <form
+                                    data-testid="project-ai-conversation-composer"
+                                    onSubmit={onChatComposerSubmit}
+                                    className="flex flex-col rounded-xl border border-input bg-background transition-[color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30"
                                 >
-                                    Jump to bottom
-                                </Button>
+                                    <Textarea
+                                        id="project-ai-conversation-input"
+                                        data-testid="project-ai-conversation-input"
+                                        value={chatDraft}
+                                        onChange={(event) => onChatDraftChange(event.target.value)}
+                                        onKeyDown={onChatComposerKeyDown}
+                                        aria-label="Message"
+                                        placeholder="Reply, or describe a change to work on"
+                                        className="max-h-[40vh] min-h-0 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 pb-1 pt-3 focus-visible:border-0 focus-visible:ring-0"
+                                        rows={2}
+                                    />
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2 pl-3.5 pr-2">
+                                        <p data-testid="chat-composer-project" className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                                            <Folder aria-hidden="true" className="size-3.5 shrink-0" />
+                                            <span className="truncate">Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span></span>
+                                        </p>
+                                        {modelSettingsSource ? <span className="text-xs text-muted-foreground">{MODEL_SOURCE_LABELS[modelSettingsSource]}</span> : null}
+                                        {defaultModel ? <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span> : null}
+                                        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                                            {onStopTurn ? <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button> : null}
+                                            {modelSettingsSource === 'conversation' && onUseModelDefaults ? (
+                                                <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>
+                                            ) : null}
+                                            <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
+                                                projectPath={activeProjectPath} inheritLabel="Provider default"
+                                                layout="compact" disabled={controlsDisabled || isModelSettingsLoading} />
+                                            <Button
+                                                data-testid="project-ai-conversation-send-button"
+                                                type="submit"
+                                                size="icon-sm"
+                                                aria-label={chatSendButtonLabel}
+                                                title={chatSendButtonLabel}
+                                                disabled={chatDraft.trim().length === 0 || isChatSendDisabled}
+                                            >
+                                                <ArrowUp />
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </form>
                             </div>
-                        ) : null}
-                        <form
-                            data-testid="project-ai-conversation-composer"
-                            onSubmit={onChatComposerSubmit}
-                            className="shrink-0 space-y-2 pt-1"
-                        >
-                            {chatModelAvailabilityMessage ? (
-                                <InlineError data-testid="project-chat-model-availability" dense>{chatModelAvailabilityMessage}</InlineError>
-                            ) : null}
-                            <Textarea
-                                id="project-ai-conversation-input"
-                                data-testid="project-ai-conversation-input"
-                                value={chatDraft}
-                                onChange={(event) => onChatDraftChange(event.target.value)}
-                                onKeyDown={onChatComposerKeyDown}
-                                aria-label="Message"
-                                placeholder="Describe the spec change or requirement you want to work on..."
-                                className="h-[clamp(6rem,18vh,12rem)] overflow-y-auto resize-y [field-sizing:fixed]"
-                                rows={4}
-                            />
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="space-y-0.5 text-xs text-muted-foreground">
-                                    <p data-testid="chat-composer-project">
-                                        Runs and missions started here go to <span className="text-foreground">{activeProjectLabel}</span>
-                                    </p>
-                                </div>
-                                <div className="flex flex-wrap items-center justify-end gap-2">
-                                    {onStopTurn && <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button>}
-                                    {modelSettingsSource && <span className="text-xs text-muted-foreground">{modelSettingsSource === 'conversation' ? 'Conversation override' : modelSettingsSource === 'project' ? 'Project default' : 'Workspace default'}</span>}
-                                    {modelSettingsSource === 'conversation' && onUseModelDefaults && <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>}
-                                    <ModelChooser inherited={inheritedModelSettings} value={modelSettings} onChange={onModelSettingsChange}
-                                        projectPath={activeProjectPath} inheritLabel="Provider default"
-                                        layout="compact" disabled={controlsDisabled || isModelSettingsLoading} />
-                                    {defaultModel && <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span>}
-                                    <Button
-                                        data-testid="project-ai-conversation-send-button"
-                                        type="submit"
-                                        disabled={chatDraft.trim().length === 0 || isChatSendDisabled}
-                                        size="sm"
-                                        variant="outline"
-                                    >
-                                        {chatSendButtonLabel}
-                                    </Button>
-                                </div>
-                            </div>
-                        </form>
-                    </div>
+                        </div>
+                    </>
                 )}
-                </CardContent>
-            </Card>
-        </HomeWorkspace>
+            </div>
+        </div>
     )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { InlineError } from '@/components/app/inline-error'
+import { statusTextClassName } from '@/components/app/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { ConversationTimelineEntry } from '../model/types'
@@ -13,6 +14,8 @@ interface ProjectConversationRequestUserInputCardProps {
     isSubmitting: boolean
     onSubmitRequestUserInput: (requestId: string, answers: Record<string, string>) => void | Promise<void>
 }
+
+const cardClassName = 'w-full max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground'
 
 function answeredSummaryValue(
     question: RequestUserInputEntry['requestUserInput']['questions'][number],
@@ -43,10 +46,10 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-summary-${entry.id}`}
-                className="max-w-[85%] rounded-md border-0 border-l border-warning px-3 py-2 text-foreground"
+                className={cardClassName}
             >
-                <p className="text-xs font-medium uppercase tracking-wide text-warning">
-                    Answered Request
+                <p className="text-xs font-medium text-muted-foreground">
+                    Answered request
                 </p>
                 <div className="mt-2 space-y-2">
                     {entry.requestUserInput.questions.map((question) => {
@@ -72,10 +75,10 @@ export function ProjectConversationRequestUserInputCard({
         return (
             <div
                 data-testid={`project-request-user-input-expired-${entry.id}`}
-                className="max-w-[85%] rounded-md border-0 border-l border-destructive px-3 py-2 text-foreground"
+                className={cardClassName}
             >
-                <p className="text-xs font-medium uppercase tracking-wide text-destructive">
-                    Expired Request
+                <p className={`text-xs font-medium ${statusTextClassName('destructive')}`}>
+                    Expired request
                 </p>
                 <p className="mt-2 text-sm text-foreground">
                     The request expired before this answer could be used. Send a new message to continue.
@@ -118,10 +121,10 @@ export function ProjectConversationRequestUserInputCard({
     return (
         <div
             data-testid={`project-request-user-input-card-${entry.id}`}
-            className="w-full max-w-[85%] rounded-md border-0 border-l border-warning px-3 py-2 text-foreground"
+            className={cardClassName}
         >
-            <p className="text-xs font-medium uppercase tracking-wide text-warning">
-                Needs Input
+            <p className={`text-xs font-medium ${statusTextClassName('warning')}`}>
+                Needs input
             </p>
             {validationError || actionError ? (
                 <InlineError data-testid={`project-request-user-input-error-${entry.id}`} className="mt-2" dense>{validationError ?? actionError}</InlineError>
@@ -133,7 +136,7 @@ export function ProjectConversationRequestUserInputCard({
                     return (
                         <div key={question.id} className="space-y-2">
                             <div className="space-y-0.5">
-                                <p className="text-xs font-medium uppercase tracking-wide text-warning">
+                                <p className="text-xs font-medium text-muted-foreground">
                                     {question.header}
                                 </p>
                                 <p className="text-sm text-foreground">{question.question}</p>
@@ -150,6 +153,7 @@ export function ProjectConversationRequestUserInputCard({
                                                 key={`${question.id}-${option.label}`}
                                                 type="button"
                                                 data-testid={optionTestId}
+                                                aria-pressed={isSelected}
                                                 onClick={() => {
                                                     setValidationError(null)
                                                     setDraftAnswers((current) => ({
@@ -160,11 +164,7 @@ export function ProjectConversationRequestUserInputCard({
                                                 disabled={isSubmitting}
                                                 variant="outline"
                                                 size="xs"
-                                                className={`h-7 text-xs ${
-                                                    isSelected
-                                                        ? 'border-primary bg-accent text-accent-foreground'
-                                                        : 'border-border text-foreground hover:text-primary'
-                                                }`}
+                                                className={`h-7 ${isSelected ? 'border-primary bg-accent text-accent-foreground' : ''}`}
                                             >
                                                 {option.label}
                                             </Button>
@@ -217,7 +217,7 @@ export function ProjectConversationRequestUserInputCard({
                     disabled={isSubmitting}
                     variant="outline"
                     size="xs"
-                    className="h-7 text-xs font-medium"
+                    className="h-7"
                 >
                     {isSubmitting ? 'Submitting...' : 'Submit'}
                 </Button>

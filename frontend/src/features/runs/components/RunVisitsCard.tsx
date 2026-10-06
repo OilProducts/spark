@@ -1,7 +1,13 @@
 import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { ArrowRight, ChevronRight, CircleHelp, Minus, Undo2, Workflow, X, type LucideIcon } from 'lucide-react'
 
 import type { RunExecutionPrompt, RunTranscriptSegment } from '@/lib/api/attractorApi'
 import { InlineError } from '@/components/app/inline-error'
+import { SectionHeading } from '@/components/app/section-heading'
+import { SegmentedControl } from '@/components/app/segmented-control'
+import { StatusDot, StatusPill, statusTextClassName, type StatusTone } from '@/components/app/status'
+import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
+import { Well } from '@/components/app/well'
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
 import { Button } from '@/components/ui/button'
@@ -20,22 +26,26 @@ import {
     type VisitFlowNode,
     type VisitMark,
 } from '../model/visitModel'
-import { RunTranscriptRowItem, useTranscriptExpansion } from './RunTranscriptGroups'
+import { RunTranscript } from './RunTranscriptGroups'
 
-
-const MARKS: Record<VisitMark, { glyph: string; label: string; className: string }> = {
-    did_not_pass: { glyph: '↻', label: "Didn't pass", className: 'text-warning' },
-    failed: { glyph: '✕', label: 'Failed', className: 'text-destructive' },
-    interrupted: { glyph: '–', label: 'Interrupted', className: 'text-warning' },
-    waiting: { glyph: '?', label: 'Waiting on a question', className: 'text-info' },
-    loop_back: { glyph: '↩\uFE0E', label: 'Looped back', className: 'text-muted-foreground' },
+// Colour marks exceptions: a successful visit carries no icon, a visit that was sent
+// back (or didn't pass) a warning return arrow, a failure a destructive cross.
+const MARKS: Record<VisitMark, { Icon: LucideIcon; label: string; tone: StatusTone }> = {
+    did_not_pass: { Icon: Undo2, label: "Didn't pass", tone: 'warning' },
+    failed: { Icon: X, label: 'Failed', tone: 'destructive' },
+    interrupted: { Icon: Minus, label: 'Interrupted', tone: 'warning' },
+    waiting: { Icon: CircleHelp, label: 'Waiting on a question', tone: 'info' },
+    loop_back: { Icon: Undo2, label: 'Sent back', tone: 'warning' },
 }
 
-const OUTCOME_CLASSES: Partial<Record<RunVisit['outcome'], string>> = {
-    did_not_pass: 'text-warning',
-    failed: 'text-destructive',
-    interrupted: 'text-warning',
-    waiting: 'text-info',
+const OUTCOME_TONES: Record<RunVisit['outcome'], StatusTone> = {
+    succeeded: 'success',
+    partly_succeeded: 'warning',
+    did_not_pass: 'warning',
+    failed: 'destructive',
+    interrupted: 'warning',
+    running: 'info',
+    waiting: 'info',
 }
 
 // ponytail: fixed file set per execution; list the directory if nodes write more worth reading.
@@ -43,10 +53,13 @@ const VISIT_FILES = ['initial-context.txt', 'prompt.md', 'response.md', 'status.
 
 type ItemKey = 'status' | 'context'
 
-const visitCountLabel = (visit: RunVisit) => (visit.count > 1 ? `${visit.number}/${visit.count}` : '')
-
 const formatValue = (value: unknown): string => (
     typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+)
+
+const railRowClass = (isSelected: boolean) => cn(
+    'flex w-full items-center gap-2 rounded-lg border px-2.5 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    isSelected ? 'border-border bg-background font-medium text-foreground' : 'border-transparent text-foreground hover:bg-background/60',
 )
 
 interface RunVisitsCardProps {
@@ -65,15 +78,15 @@ interface RunVisitsCardProps {
     onSelectNode: (nodeId: string | null) => void
     onOpenRun: (runId: string) => void
     /** The status item's row: what it says and whether it needs attention. */
-    statusRow: { label: string; className?: string; mark?: string; markClassName?: string; detail?: string }
+    statusRow: { label: string; tone?: StatusTone; detail?: string }
     /** How many keys the Context item lists. */
     contextKeyCount: number
     renderStatus: (selectVisit: (visit: RunVisit) => void) => ReactNode
     renderContext: (focusKey: string | null, selectVisit: (visit: RunVisit) => void) => ReactNode
     artifactEntries: ArtifactListEntry[]
     onViewArtifact: (entry: ArtifactListEntry) => void
-    /** Page controls shown in the list header. */
-    toolbar?: ReactNode
+    /** The run graph toggle, shown in the rail's view control. */
+    graph?: { shown: boolean; onToggle: () => void }
 }
 
 export function RunVisitsCard({
@@ -96,7 +109,7 @@ export function RunVisitsCard({
     renderContext,
     artifactEntries,
     onViewArtifact,
-    toolbar,
+    graph,
 }: RunVisitsCardProps) {
     // An exit node that simply succeeded says nothing the status item doesn't.
     const visits = useMemo(
@@ -157,39 +170,53 @@ export function RunVisitsCard({
             listRef.current?.querySelector<HTMLElement>(`[data-visit-key="${CSS.escape(itemKey(target))}"]`)?.focus()
         }
     }
-    const itemRowClass = (isSelected: boolean) => cn(
-        'flex w-full items-center gap-2 py-1 pl-1 pr-1 text-left text-sm',
-        isSelected ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50',
-    )
 
     return (
         <section
             data-testid="run-visits-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={cn('flex gap-4', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
+            className={cn('flex gap-6', isNarrowViewport ? 'flex-col' : 'h-full min-h-0')}
         >
-            <div className={cn('flex shrink-0 flex-col', isNarrowViewport ? undefined : 'min-h-0 w-64 border-r border-border pr-3')}>
-                <div className="flex items-center justify-between gap-2 pb-1 text-xs text-muted-foreground">
-                    <span>
-                        {visits.length} {visits.length === 1 ? 'visit' : 'visits'}
-                        {isLive ? <span className="ml-2 text-info">Live</span> : null}
-                    </span>
-                    {toolbar ? <span className="ml-auto">{toolbar}</span> : null}
-                    <button
-                        type="button"
-                        data-testid="run-journal-toggle"
-                        aria-pressed={showJournal}
-                        onClick={() => setShowJournal((current) => !current)}
-                        className={cn('hover:text-foreground', showJournal && 'text-foreground underline underline-offset-4')}
-                    >
-                        Journal
-                    </button>
+            <Well className={cn('flex shrink-0 flex-col gap-0.5 p-2', isNarrowViewport ? undefined : 'min-h-0 w-64')}>
+                {/* Steps and Journal exclude each other on the track; the graph is additive, so
+                    its toggle stands apart (a pressed segment beside a pressed segment reads wrong). */}
+                <div className="mb-1.5 flex items-center gap-1">
+                    <SegmentedControl
+                        aria-label="View"
+                        className="min-w-0 flex-1"
+                        options={[
+                            { key: 'steps', label: 'Steps', pressed: !showJournal, onPress: () => setShowJournal(false) },
+                            {
+                                key: 'journal',
+                                label: 'Journal',
+                                pressed: showJournal,
+                                onPress: () => setShowJournal((current) => !current),
+                                'data-testid': 'run-journal-toggle',
+                            },
+                        ]}
+                    />
+                    {graph ? (
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            aria-pressed={graph.shown}
+                            aria-keyshortcuts="g"
+                            title="Show or hide the run graph (g)"
+                            data-testid="run-graph-toggle"
+                            onClick={graph.onToggle}
+                            className="shrink-0 px-2 text-xs text-muted-foreground hover:bg-background/60 hover:text-foreground aria-pressed:bg-background aria-pressed:font-semibold aria-pressed:text-foreground"
+                        >
+                            <Workflow className="size-3.5" />
+                            Graph
+                        </Button>
+                    ) : null}
                 </div>
                 {isPerformanceDebugEnabled() ? (
                     <p
                         data-testid="timeline-update-performance-budget"
                         data-budget-ms={TIMELINE_UPDATE_BUDGET_MS}
-                        className="py-1 text-xs text-muted-foreground"
+                        className="px-2.5 py-1 text-xs text-muted-foreground"
                     >
                         Journal update budget: {TIMELINE_UPDATE_BUDGET_MS}ms max per live update batch.
                     </p>
@@ -201,7 +228,7 @@ export function RunVisitsCard({
                     aria-label="Visits"
                     data-testid="run-visit-list"
                     onKeyDown={onListKeyDown}
-                    className={cn('overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
+                    className={cn('flex flex-col gap-0.5 overflow-y-auto', isNarrowViewport ? 'max-h-72' : 'min-h-0 flex-1')}
                 >
                     {(['status', 'context'] as const).map((item) => (
                         <button
@@ -213,12 +240,12 @@ export function RunVisitsCard({
                             data-testid={`run-visit-item-${item}`}
                             data-visit-key={item}
                             onClick={() => select(item)}
-                            className={itemRowClass(!showJournal && selected === item)}
+                            className={cn(railRowClass(!showJournal && selected === item), 'h-8.5')}
                         >
-                            <span className={cn('w-5 shrink-0 text-center text-xs', item === 'status' ? statusRow.markClassName ?? statusRow.className : 'text-muted-foreground')}>
-                                {item === 'status' ? statusRow.mark : '{}'}
+                            <span className="flex w-3.5 shrink-0 justify-center">
+                                {item === 'status' && statusRow.tone ? <StatusDot tone={statusRow.tone} /> : null}
                             </span>
-                            <span className={cn('min-w-0 flex-1 truncate', item === 'status' && statusRow.className)}>
+                            <span className={cn('min-w-0 flex-1 truncate', item === 'status' && statusRow.tone ? statusTextClassName(statusRow.tone) : undefined)}>
                                 {item === 'status' ? statusRow.label : 'Context'}
                             </span>
                             <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
@@ -226,15 +253,27 @@ export function RunVisitsCard({
                             </span>
                         </button>
                     ))}
-                    <div className="my-1.5 border-t border-border" />
+                    <div className="flex items-center justify-between gap-2 px-2.5 pb-1 pt-3 text-xs font-semibold text-muted-foreground">
+                        <span>Steps</span>
+                        <span className="font-normal">
+                            {visits.length} {visits.length === 1 ? 'visit' : 'visits'}
+                            {isLive ? <span className="ml-1.5 text-info">Live</span> : null}
+                        </span>
+                    </div>
                     {visits.length === 0 ? (
-                        <p data-testid="run-visits-empty" className="py-2 text-sm text-muted-foreground">
+                        <p data-testid="run-visits-empty" className="px-2.5 py-2 text-sm text-muted-foreground">
                             No visits have been recorded for this run yet.
                         </p>
                     ) : null}
                     {visits.map((visit) => {
                         const isSelected = !showJournal && visit === selected
                         const mark = visitMark(visit)
+                        const Mark = mark ? MARKS[mark] : null
+                        // Where a loop-back went is generic: the model marks a visit whose next node
+                        // first ran no later than this one, whatever the nodes are called.
+                        const sentBackTo = visit.next?.loopBack
+                            ? visits.find((candidate) => candidate.key === visit.next?.key) ?? null
+                            : null
                         return (
                             <button
                                 key={visit.key}
@@ -249,38 +288,46 @@ export function RunVisitsCard({
                                 data-node-selected={visit.nodeId === selectedNodeId || undefined}
                                 onClick={() => select(visit)}
                                 className={cn(
-                                    'flex w-full items-center gap-2 py-1.5 pr-1 text-left text-sm',
-                                    visit.parentKey ? 'pl-5' : 'pl-1',
-                                    isSelected ? 'bg-accent text-foreground' : 'text-foreground/90 hover:bg-accent/50',
-                                    visit.nodeId === selectedNodeId && !isSelected && 'bg-accent/30',
+                                    railRowClass(isSelected),
+                                    sentBackTo ? 'items-start py-1.5' : 'min-h-8 py-1',
+                                    visit.parentKey && 'pl-6',
+                                    visit.nodeId === selectedNodeId && !isSelected && 'bg-background/40',
                                 )}
                             >
-                                <span className="w-5 shrink-0 text-center text-xs" data-testid="run-visit-row-marks">
-                                    {mark ? (
+                                <span className={cn('flex w-3.5 shrink-0 justify-center', sentBackTo && 'mt-[3px]')} data-testid="run-visit-row-marks">
+                                    {Mark ? (
                                         <span
                                             data-mark={mark}
-                                            title={MARKS[mark].label}
-                                            aria-label={MARKS[mark].label}
-                                            className={MARKS[mark].className}
+                                            role="img"
+                                            title={Mark.label}
+                                            aria-label={Mark.label}
+                                            className={cn('flex', statusTextClassName(Mark.tone))}
                                         >
-                                            {MARKS[mark].glyph}
+                                            <Mark.Icon className="size-3.5" />
                                         </span>
                                     ) : null}
                                 </span>
-                                <span className="min-w-0 flex-1 truncate">
-                                    {visit.label}
-                                    <span data-testid="run-visit-row-count" className="ml-1.5 text-xs text-muted-foreground">
-                                        {visitCountLabel(visit)}
+                                <span className="flex min-w-0 flex-1 flex-col">
+                                    <span className="break-words">
+                                        {visit.label}
+                                        <span data-testid="run-visit-row-count" className="ml-1.5 text-xs font-normal text-muted-foreground">
+                                            {visit.count > 1 ? visit.number : ''}
+                                        </span>
                                     </span>
+                                    {sentBackTo ? (
+                                        <span data-testid="run-visit-row-sent-back" className="break-words text-xs font-normal text-warning">
+                                            Sent back to {sentBackTo.label}
+                                        </span>
+                                    ) : null}
                                 </span>
-                                <span className="w-14 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                                <span className="w-14 shrink-0 text-right text-xs font-normal tabular-nums text-muted-foreground">
                                     {formatVisitDuration(visitDurationMs(visit, now))}
                                 </span>
                             </button>
                         )
                     })}
                 </div>
-            </div>
+            </Well>
             <div className={cn('min-w-0 flex-1', isNarrowViewport ? undefined : 'min-h-0 overflow-y-auto')}>
                 {showJournal ? (
                     <RunJournal journal={journal} timelineError={timelineError} />
@@ -305,15 +352,6 @@ export function RunVisitsCard({
                     />
                 )}
             </div>
-        </section>
-    )
-}
-
-function Section({ title, children, testId }: { title: string; children: ReactNode; testId: string }) {
-    return (
-        <section data-testid={testId} className="space-y-2 border-t border-border pt-3">
-            <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</h4>
-            {children}
         </section>
     )
 }
@@ -343,14 +381,19 @@ function RunVisitView({
     onOpenContextKey: (key: string) => void
     onOpenRun: (runId: string) => void
 }) {
-    const expansion = useTranscriptExpansion()
+    const [showThinking, setShowThinking] = useState(false)
     const nodeVisits = visits.filter((candidate) => candidate.nodeId === visit.nodeId)
     const next = visits.find((candidate) => candidate.key === visit.next?.key) ?? null
     const prompt = visitPrompt(visit, prompts)
     const rows = useMemo(() => visitTranscriptRows(visit, segments), [visit, segments])
+    const hasThinking = rows.some((row) => row.kind === 'thinking')
     const { writes, systemCount } = visitContextWrites(visit)
     const duration = formatVisitDuration(visitDurationMs(visit, now))
-    const outcomeClass = OUTCOME_CLASSES[visit.outcome]
+    const outcomeLabel = VISIT_OUTCOME_LABELS[visit.outcome]
+    const returned = visit.outcome !== 'running' && visit.outcome !== 'waiting'
+    const headerMeta = [visit.count > 1 ? `Visit ${visit.number} of ${visit.count}` : null, duration || null]
+        .filter((part): part is string => part !== null)
+        .join(' · ')
     const filesDir = `logs/${visit.nodeId}/executions/${visit.stageIndex}-${visit.attempt}/`
     const files = visit.parentKey === null
         ? VISIT_FILES.flatMap((name) => artifactEntries.filter((entry) => entry.path === filesDir + name))
@@ -365,70 +408,144 @@ function RunVisitView({
                 onOpenContextKey(key)
             }}
             title={key}
-            className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground/80 hover:text-primary"
+            className="rounded-md border border-border bg-background px-1.5 py-px font-mono text-xs text-foreground/80 hover:text-foreground"
         >
             {key.replace(/^context\./, '')}
         </button>
     )
+    // The pill sits in the Returned well once the visit has returned; until then it is the
+    // live state and belongs beside the title.
+    const outcomePill = (
+        <StatusPill data-testid="run-visit-view-outcome" tone={OUTCOME_TONES[visit.outcome]}>{outcomeLabel}</StatusPill>
+    )
+    const workTitle = visit.kind === 'tool' ? 'Command' : visit.kind === 'subflow' ? 'Child run' : 'Transcript'
 
     return (
-        <article data-testid="run-visit-view" data-visit-key={visit.key} className="space-y-4 pb-6">
-            <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h3 data-testid="run-visit-view-title" className="text-lg font-light text-foreground">{visit.label}</h3>
-                {visit.count > 1 ? (
-                    <span className="text-sm text-muted-foreground">visit {visit.number} of {visit.count}</span>
-                ) : null}
-                <span data-testid="run-visit-view-outcome" className={cn('text-sm', outcomeClass ?? 'text-muted-foreground')}>
-                    {VISIT_OUTCOME_LABELS[visit.outcome]}
-                </span>
-                {duration ? <span className="text-sm tabular-nums text-muted-foreground">{duration}</span> : null}
+        <article data-testid="run-visit-view" data-visit-key={visit.key} className="flex flex-col gap-5 pb-6">
+            <header className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1">
+                    <h3 data-testid="run-visit-view-title" className="text-lg font-semibold text-foreground">{visit.label}</h3>
+                    {headerMeta ? <span className="text-sm text-muted-foreground">{headerMeta}</span> : null}
+                    {returned ? null : outcomePill}
+                </div>
                 {nodeVisits.length > 1 ? (
-                    <span role="group" aria-label={`Visits of ${visit.label}`} data-testid="run-visit-picker" className="ml-auto flex gap-1">
-                        {nodeVisits.map((candidate) => (
-                            <button
-                                key={candidate.key}
-                                type="button"
-                                aria-current={candidate === visit ? 'true' : undefined}
-                                aria-label={`Visit ${candidate.number} of ${candidate.count}`}
-                                onClick={() => onSelectVisit(candidate)}
-                                className={cn(
-                                    'min-w-6 border-b px-1 text-xs tabular-nums',
-                                    candidate === visit ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground',
-                                    OUTCOME_CLASSES[candidate.outcome],
-                                )}
-                            >
-                                {candidate.number}
-                            </button>
-                        ))}
-                    </span>
+                    <SegmentedControl
+                        aria-label={`Visits of ${visit.label}`}
+                        data-testid="run-visit-picker"
+                        className="flex-none"
+                        options={nodeVisits.map((candidate) => {
+                            const mark = visitMark(candidate)
+                            return {
+                                key: candidate.key,
+                                pressed: candidate === visit,
+                                onPress: () => onSelectVisit(candidate),
+                                'aria-label': `Visit ${candidate.number} of ${candidate.count}${candidate.next?.loopBack ? ', sent back' : ''}`,
+                                className: 'flex-none tabular-nums',
+                                label: (
+                                    <>
+                                        {candidate.number}
+                                        {mark ? <StatusDot tone={MARKS[mark].tone} className="size-1.5" /> : null}
+                                    </>
+                                ),
+                            }
+                        })}
+                    />
                 ) : null}
             </header>
 
-            {visit.parentKey === null ? (
-                <details data-testid="run-visit-instructions" className="group">
-                    <summary className="cursor-pointer list-none text-sm [&::-webkit-details-marker]:hidden">
-                        <span className="font-medium text-foreground">Instructions</span>
-                        {prompt ? (
-                            <span data-testid="run-visit-instructions-preview" className="ml-2 text-muted-foreground group-open:hidden">
-                                {prompt.replace(/\s+/g, ' ').slice(0, 180)}{prompt.length > 180 ? '…' : ''}
+            {returned ? (
+                <Well data-testid="run-visit-returned" className="flex flex-col gap-2.5">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                        <SectionHeading as="h4">Returned</SectionHeading>
+                        {outcomePill}
+                        {next ? (
+                            <span className="inline-flex items-center gap-1 text-sm text-muted-foreground">
+                                {visit.next?.loopBack ? 'Sent back to' : 'Next'}
+                                <ArrowRight aria-hidden="true" className="size-3.5" />
+                                <button
+                                    type="button"
+                                    data-testid="run-visit-next"
+                                    onClick={() => onSelectVisit(next)}
+                                    className="font-medium text-foreground underline-offset-4 hover:underline"
+                                >
+                                    {next.label}
+                                    {next.count > 1 ? ` ${next.number}` : ''}
+                                </button>
                             </span>
                         ) : null}
-                    </summary>
-                    <div className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words border-l border-border pl-3 text-sm text-foreground/90">
-                        {prompt ?? <span className="text-muted-foreground">No instructions were recorded for this visit.</span>}
                     </div>
-                </details>
-            ) : null}
-            {flowNode && flowNode.readsContext.length > 0 ? (
-                <p data-testid="run-visit-reads" className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                    Reads
-                    {flowNode.readsContext.map((key) => (
-                        <span key={key}>{contextKeyButton(key)}</span>
-                    ))}
-                </p>
+                    {visit.reason ? (
+                        <p data-testid="run-visit-reason" className="max-w-[72ch] whitespace-pre-wrap break-words text-sm leading-6 text-foreground">{visit.reason}</p>
+                    ) : null}
+                    {writes.length > 0 ? (
+                        <ul data-testid="run-visit-writes" className="flex flex-col gap-1 text-xs text-muted-foreground">
+                            {writes.map(([key, value]) => (
+                                <li key={key} data-testid="run-visit-write" data-key={key} className="min-w-0">
+                                    {value === null ? (
+                                        <p className="flex items-center gap-2">
+                                            {contextKeyButton(key)}
+                                            <span>cleared</span>
+                                        </p>
+                                    ) : (
+                                        <details className="group">
+                                            <summary className="flex cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+                                                <span className="shrink-0">{contextKeyButton(key)}</span>
+                                                <span className="min-w-0 truncate text-foreground/80 group-open:hidden">{formatValue(value)}</span>
+                                                <ChevronRight aria-hidden="true" className="size-3 shrink-0 transition-transform group-open:rotate-90" />
+                                            </summary>
+                                            <pre className="mt-1.5 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-background px-3 py-2 text-xs text-foreground/90">
+                                                {formatValue(value)}
+                                            </pre>
+                                        </details>
+                                    )}
+                                </li>
+                            ))}
+                        </ul>
+                    ) : null}
+                    {systemCount > 0 ? (
+                        <p data-testid="run-visit-system-writes" className="text-xs text-muted-foreground">
+                            {systemCount} system {systemCount === 1 ? 'key' : 'keys'} written
+                        </p>
+                    ) : null}
+                </Well>
             ) : null}
 
-            <Section title="The work" testId="run-visit-work">
+            {visit.parentKey === null || (flowNode && flowNode.readsContext.length > 0) ? (
+                <section className="flex flex-col gap-2">
+                    {visit.parentKey === null ? (
+                        <details data-testid="run-visit-instructions" className="group">
+                            <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 text-sm [&::-webkit-details-marker]:hidden">
+                                <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                                <span className="shrink-0 font-semibold text-foreground">Instructions</span>
+                                {prompt ? (
+                                    <span data-testid="run-visit-instructions-preview" className="min-w-0 truncate text-muted-foreground group-open:hidden">
+                                        {prompt.replace(/\s+/g, ' ').slice(0, 180)}{prompt.length > 180 ? '…' : ''}
+                                    </span>
+                                ) : null}
+                            </summary>
+                            <div className="mt-2 max-h-96 max-w-[72ch] overflow-y-auto whitespace-pre-wrap break-words pl-5.5 text-sm leading-6 text-foreground/90">
+                                {prompt ?? <span className="text-muted-foreground">No instructions were recorded for this visit.</span>}
+                            </div>
+                        </details>
+                    ) : null}
+                    {flowNode && flowNode.readsContext.length > 0 ? (
+                        <p data-testid="run-visit-reads" className={cn('flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground', visit.parentKey === null && 'pl-5.5')}>
+                            Reads
+                            {flowNode.readsContext.map((key) => (
+                                <span key={key}>{contextKeyButton(key)}</span>
+                            ))}
+                        </p>
+                    ) : null}
+                </section>
+            ) : null}
+
+            <section data-testid="run-visit-work" className="flex flex-col gap-3">
+                <SectionHeading
+                    as="h4"
+                    action={hasThinking ? <ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} /> : null}
+                >
+                    {workTitle}
+                </SectionHeading>
                 {visit.kind === 'tool' ? (
                     <ToolWork visit={visit} command={flowNode?.command ?? null} />
                 ) : visit.kind === 'subflow' ? (
@@ -451,85 +568,25 @@ function RunVisitView({
                                 </Button>
                             </p>
                             {visit.childRun.summary ? (
-                                <p className="whitespace-pre-wrap text-foreground/90">{visit.childRun.summary}</p>
+                                <p className="max-w-[72ch] whitespace-pre-wrap text-foreground/90">{visit.childRun.summary}</p>
                             ) : null}
                         </div>
                     ) : (
                         <p className="text-sm text-muted-foreground">No child run was recorded for this visit.</p>
                     )
                 ) : rows.length > 0 ? (
-                    <ul className="max-w-[80ch] list-none space-y-1.5" data-testid="run-visit-transcript">
-                        {rows.map((row) => (
-                            <RunTranscriptRowItem key={row.segment.id} row={row} expansion={expansion} />
-                        ))}
-                    </ul>
+                    <RunTranscript data-testid="run-visit-transcript" rows={rows} showThinking={showThinking} />
                 ) : (
                     <p className="text-sm text-muted-foreground">No transcript was recorded for this visit.</p>
                 )}
-            </Section>
-
-            {visit.outcome !== 'running' && visit.outcome !== 'waiting' ? (
-                <Section title="Returned" testId="run-visit-returned">
-                    <dl className="space-y-1 text-sm">
-                        <div className="flex gap-3">
-                            <dt className="w-20 shrink-0 text-muted-foreground">Outcome</dt>
-                            <dd className={outcomeClass}>{VISIT_OUTCOME_LABELS[visit.outcome]}</dd>
-                        </div>
-                        {next ? (
-                            <div className="flex gap-3">
-                                <dt className="w-20 shrink-0 text-muted-foreground">Next</dt>
-                                <dd>
-                                    <button
-                                        type="button"
-                                        data-testid="run-visit-next"
-                                        onClick={() => onSelectVisit(next)}
-                                        className="text-left hover:underline hover:underline-offset-4"
-                                    >
-                                        {visit.next?.loopBack ? 'Sent back to ' : ''}
-                                        {next.label}
-                                        {next.count > 1 ? ` ${next.number}/${next.count}` : ''}
-                                    </button>
-                                </dd>
-                            </div>
-                        ) : null}
-                        {visit.reason ? (
-                            <div className="flex gap-3">
-                                <dt className="w-20 shrink-0 text-muted-foreground">Reason</dt>
-                                <dd data-testid="run-visit-reason" className="min-w-0 whitespace-pre-wrap break-words">{visit.reason}</dd>
-                            </div>
-                        ) : null}
-                    </dl>
-                    {writes.length > 0 ? (
-                        <ul data-testid="run-visit-writes" className="divide-y divide-border border-y border-border text-sm">
-                            {writes.map(([key, value]) => (
-                                <li key={key} data-testid="run-visit-write" data-key={key}>
-                                    {value === null ? (
-                                        <p className="flex gap-3 py-1">
-                                            <span className="truncate">{contextKeyButton(key)}</span>
-                                            <span className="ml-auto shrink-0 text-muted-foreground">cleared</span>
-                                        </p>
-                                    ) : (
-                                        <details>
-                                            <summary className="flex cursor-pointer gap-3 py-1">
-                                                <span className="shrink-0">{contextKeyButton(key)}</span>
-                                                <span className="min-w-0 truncate text-muted-foreground">{formatValue(value)}</span>
-                                            </summary>
-                                            <pre className="mb-2 max-h-72 overflow-auto whitespace-pre-wrap break-words pl-3 text-xs text-foreground/90">
-                                                {formatValue(value)}
-                                            </pre>
-                                        </details>
-                                    )}
-                                </li>
-                            ))}
-                        </ul>
-                    ) : null}
-                    {systemCount > 0 ? (
-                        <p data-testid="run-visit-system-writes" className="text-xs text-muted-foreground">
-                            {systemCount} system {systemCount === 1 ? 'key' : 'keys'} written
-                        </p>
-                    ) : null}
-                </Section>
-            ) : null}
+                {returned ? (
+                    <div data-testid="run-visit-ended" className="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
+                        <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                        Visit ended · {outcomeLabel}{duration ? ` · ${duration}` : ''}
+                        <span aria-hidden="true" className="h-px flex-1 bg-border" />
+                    </div>
+                ) : null}
+            </section>
             {files.length > 0 ? (
                 <p data-testid="run-visit-files" className="text-xs text-muted-foreground">
                     Files:{' '}
@@ -557,9 +614,9 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
     const { output, exitCode } = visitToolResult(visit)
     return (
         <div data-testid="run-visit-tool" className="space-y-2 text-sm">
-            {command ? <pre className="overflow-x-auto whitespace-pre-wrap border-l border-border pl-3 text-xs">{command}</pre> : null}
+            {command ? <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground">{command}</pre> : null}
             {output ? (
-                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words border-l border-border pl-3 text-xs text-foreground/90">{output}</pre>
+                <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted px-3 py-2 font-mono text-xs text-foreground/90">{output}</pre>
             ) : null}
             {exitCode !== null ? (
                 <p className={cn('text-xs', exitCode === 0 ? 'text-muted-foreground' : 'text-warning')}>Exit code {exitCode}</p>
@@ -573,13 +630,13 @@ function ToolWork({ visit, command }: { visit: RunVisit; command: string | null 
 
 function RunJournal({ journal, timelineError }: { journal: TimelineEventEntry[]; timelineError: string | null }) {
     return (
-        <section data-testid="run-journal-panel" className="space-y-2">
-            <h3 className="text-lg font-light text-foreground">Journal</h3>
+        <section data-testid="run-journal-panel" className="flex flex-col gap-3">
+            <h3 className="text-lg font-semibold text-foreground">Journal</h3>
             {timelineError ? <InlineError data-testid="run-event-timeline-error">{timelineError}</InlineError> : null}
-            <ol className="divide-y divide-border text-sm">
+            <ol className="flex flex-col gap-1 text-sm">
                 {journal.map((event) => (
-                    <li key={event.id} data-testid="run-journal-row" className="flex gap-3 py-1">
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{formatTimestamp(event.receivedAt)}</span>
+                    <li key={event.id} data-testid="run-journal-row" className="flex gap-3">
+                        <span className="shrink-0 text-xs leading-5 tabular-nums text-muted-foreground">{formatTimestamp(event.receivedAt)}</span>
                         <span className={cn(
                             'min-w-0 break-words',
                             event.severity === 'error' ? 'text-destructive' : event.severity === 'warning' ? 'text-warning' : undefined,

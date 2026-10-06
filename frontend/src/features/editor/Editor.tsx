@@ -18,6 +18,7 @@ import { useStore, type FlowDefinitionMetadata } from '@/store';
 import { LaunchPanel, loadCatalogFlowContent } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
+import { Well } from '@/components/app/well';
 import { ValidationPanel } from './components/ValidationPanel';
 import {
     clearFlowYamlSerializationContext,
@@ -1520,12 +1521,12 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                             data-testid="editor-no-flow-state"
                             className="flex h-full items-center justify-center p-6"
                         >
-                            <div className="max-w-md rounded-lg border border-dashed border-border px-6 py-5 text-center">
+                            <Well className="max-w-md px-6 py-5 text-center">
                                 <p className="text-sm font-medium text-foreground">Select a flow to begin authoring.</p>
                                 <p className="mt-2 text-sm text-muted-foreground">
                                     Choose one from the Flows panel.
                                 </p>
-                            </div>
+                            </Well>
                         </div>
                     )
                 )}

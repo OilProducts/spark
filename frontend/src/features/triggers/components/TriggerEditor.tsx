@@ -3,6 +3,7 @@ import { request, type Board, type Mission } from '@/features/missions/MissionsP
 import { defaultProjectChoice, isUnregisteredTarget, orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { useStore } from '@/store'
 
+import { Well } from '@/components/app/well'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -111,7 +112,7 @@ export function TriggerEditor({
                         {missions.map(m => <option key={m.id} value={m.id}>{m.fields.title}</option>)}
                     </NativeSelect>
                     {missionError && <p role="alert">{missionError}</p>}
-                </TriggerField> : <TriggerField label="Target Flow" htmlFor={fieldId('target-flow')} className="text-sm">
+                </TriggerField> : <TriggerField label="Target flow" htmlFor={fieldId('target-flow')} className="text-sm">
                     <Input
                         id={fieldId('target-flow')}
                         value={form.flowName}
@@ -122,7 +123,7 @@ export function TriggerEditor({
             </div>
 
             <div className="grid gap-3 lg:grid-cols-3">
-                <TriggerField label="Source Type" htmlFor={fieldId('source-type')} className="text-sm">
+                <TriggerField label="Source type" htmlFor={fieldId('source-type')} className="text-sm">
                     <NativeSelect
                         id={fieldId('source-type')}
                         value={form.sourceType}
@@ -136,7 +137,7 @@ export function TriggerEditor({
                         <option value="flow_event">Flow Event</option>
                     </NativeSelect>
                 </TriggerField>
-                <TriggerField label="Execution Target" htmlFor={fieldId('execution-target')} className="text-sm">
+                <TriggerField label="Execution target" htmlFor={fieldId('execution-target')} className="text-sm">
                     <NativeSelect
                         id={fieldId('execution-target')}
                         value={form.targetMode}
@@ -178,7 +179,7 @@ export function TriggerEditor({
             ) : null}
 
             {form.targetMode === 'custom' ? (
-                <TriggerField label="Project Path" htmlFor={fieldId('project-target')} className="text-sm">
+                <TriggerField label="Project path" htmlFor={fieldId('project-target')} className="text-sm">
                     {form.projectPath.trim() && isUnregisteredTarget(projectRegistry, form.projectPath) ? (
                         <p data-testid="trigger-target-unregistered" className="text-xs text-warning">Not a registered project</p>
                     ) : null}
@@ -194,7 +195,7 @@ export function TriggerEditor({
 
             {form.sourceType === 'schedule' ? (
                 <div className="grid gap-3 lg:grid-cols-2">
-                    <TriggerField label="Schedule Kind" htmlFor={fieldId('schedule-kind')} className="text-sm">
+                    <TriggerField label="Schedule kind" htmlFor={fieldId('schedule-kind')} className="text-sm">
                         <NativeSelect
                             id={fieldId('schedule-kind')}
                             value={form.scheduleKind}
@@ -208,7 +209,7 @@ export function TriggerEditor({
                         </NativeSelect>
                     </TriggerField>
                     {form.scheduleKind === 'interval' ? (
-                        <TriggerField label="Interval Seconds" htmlFor={fieldId('schedule-interval-seconds')} className="text-sm">
+                        <TriggerField label="Interval seconds" htmlFor={fieldId('schedule-interval-seconds')} className="text-sm">
                             <Input
                                 id={fieldId('schedule-interval-seconds')}
                                 value={form.scheduleIntervalSeconds}
@@ -219,7 +220,7 @@ export function TriggerEditor({
                         </TriggerField>
                     ) : null}
                     {form.scheduleKind === 'once' ? (
-                        <TriggerField label="Run At (ISO UTC)" htmlFor={fieldId('schedule-run-at')} className="text-sm lg:col-span-2">
+                        <TriggerField label="Run at (ISO UTC)" htmlFor={fieldId('schedule-run-at')} className="text-sm lg:col-span-2">
                             <Input
                                 id={fieldId('schedule-run-at')}
                                 value={form.scheduleRunAt}
@@ -278,7 +279,7 @@ export function TriggerEditor({
                             className="text-sm font-mono"
                         />
                     </TriggerField>
-                    <TriggerField label="Interval Seconds" htmlFor={fieldId('poll-interval-seconds')} className="text-sm">
+                    <TriggerField label="Interval seconds" htmlFor={fieldId('poll-interval-seconds')} className="text-sm">
                         <Input
                             id={fieldId('poll-interval-seconds')}
                             value={form.pollIntervalSeconds}
@@ -287,7 +288,7 @@ export function TriggerEditor({
                             className="text-sm"
                         />
                     </TriggerField>
-                    <TriggerField label="Items Path" htmlFor={fieldId('poll-items-path')} className="text-sm">
+                    <TriggerField label="Items path" htmlFor={fieldId('poll-items-path')} className="text-sm">
                         <Input
                             id={fieldId('poll-items-path')}
                             value={form.pollItemsPath}
@@ -296,7 +297,7 @@ export function TriggerEditor({
                             className="text-sm"
                         />
                     </TriggerField>
-                    <TriggerField label="Item ID Path" htmlFor={fieldId('poll-item-id-path')} className="text-sm">
+                    <TriggerField label="Item ID path" htmlFor={fieldId('poll-item-id-path')} className="text-sm">
                         <Input
                             id={fieldId('poll-item-id-path')}
                             value={form.pollItemIdPath}
@@ -319,7 +320,7 @@ export function TriggerEditor({
 
             {form.sourceType === 'flow_event' ? (
                 <div className="grid gap-3 lg:grid-cols-2">
-                    <TriggerField label="Observed Flow" htmlFor={fieldId('flow-event-flow-name')} className="text-sm">
+                    <TriggerField label="Observed flow" htmlFor={fieldId('flow-event-flow-name')} className="text-sm">
                         <Input
                             id={fieldId('flow-event-flow-name')}
                             value={form.flowEventFlowName}
@@ -329,7 +330,7 @@ export function TriggerEditor({
                             placeholder="Leave blank for any observed flow"
                         />
                     </TriggerField>
-                    <TriggerField label="Terminal Statuses" htmlFor={fieldId('flow-event-statuses')} className="text-sm">
+                    <TriggerField label="Terminal statuses" htmlFor={fieldId('flow-event-statuses')} className="text-sm">
                         <Input
                             id={fieldId('flow-event-statuses')}
                             value={form.flowEventStatuses}
@@ -343,12 +344,12 @@ export function TriggerEditor({
             ) : null}
 
             {form.sourceType === 'webhook' ? (
-                <div className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
+                <Well className="p-3 text-sm text-muted-foreground">
                     Webhook triggers use the shared ingress endpoint at <code>{SHARED_WEBHOOK_ENDPOINT}</code>. The key and secret are generated automatically.
-                </div>
+                </Well>
             ) : null}
 
-            {form.actionMode !== 'mission' && <TriggerField label="Static Context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
+            {form.actionMode !== 'mission' && <TriggerField label="Static context JSON" htmlFor={fieldId('static-context-json')} className="text-sm">
                 <Textarea
                     id={fieldId('static-context-json')}
                     value={form.staticContextText}

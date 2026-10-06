@@ -7,6 +7,7 @@ import {
   runTitle,
   formatRunDate,
   formatCompactCount,
+  runDayLabel,
 } from '../runOverviewModel'
 import type { RunVisit, VisitOutcome } from '../visitModel'
 
@@ -138,6 +139,13 @@ describe('formatRunDate and formatCompactCount', () => {
     expect(formatRunDate('2026-09-27T09:05:00', now)).toBe('Sep 27')
     expect(formatRunDate('2025-12-01T09:05:00', now)).toBe('Dec 1, 2025')
     expect(formatRunDate(null, now)).toBe('')
+  })
+  it('groups runs under Today, Yesterday, then the date', () => {
+    expect(runDayLabel('2026-09-29T09:05:00', now)).toBe('Today')
+    expect(runDayLabel('2026-09-28T23:59:00', now)).toBe('Yesterday')
+    expect(runDayLabel('2026-09-27T09:05:00', now)).toBe('Sep 27')
+    expect(runDayLabel('2025-12-01T09:05:00', now)).toBe('Dec 1, 2025')
+    expect(runDayLabel(null, now)).toBe('')
   })
   it('shortens counts', () => {
     expect(formatCompactCount(5_517_077)).toBe('5.5M')

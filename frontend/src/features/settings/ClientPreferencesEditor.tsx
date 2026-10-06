@@ -11,7 +11,7 @@ import { SaveStatus } from './SaveStatus'
 export function ClientPreferencesEditor() {
     const editor = useClientPreferencesEditor()
     return <Card>
-        <CardHeader><h3 className="text-lg font-light">Client preferences</h3></CardHeader>
+        <CardHeader><h3 className="text-lg font-semibold">Client preferences</h3></CardHeader>
         <CardContent className="space-y-3">
             {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
             <fieldset disabled={!editor.draft || editor.pending} className="space-y-3">
@@ -71,8 +71,8 @@ export function ClientPreferencesEditor() {
                 </Field>
             </fieldset>
             <div className="flex flex-wrap gap-2">
-                <Button aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
-                <Button variant="outline" aria-label="Discard client preferences changes" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
+                <Button variant="outline" aria-label="Save client preferences" disabled={!editor.dirty || editor.pending || editor.invalidWidth || editor.invalidSplit || editor.invalidGraphHeight} onClick={() => void editor.save()}>Save</Button>
+                <Button variant="ghost" aria-label="Discard client preferences changes" disabled={!editor.saved || editor.pending} onClick={() => void editor.discard()}>Discard</Button>
             </div>
             <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
         </CardContent>

@@ -267,22 +267,25 @@ describe('RunsPanel', () => {
     const row = (name: string) => screen.getAllByText(name)
       .map((element) => element.closest('[data-testid="run-history-row"]'))
       .find((element) => element !== null)!
+    // Under the Running group the label states the word, so the row's status is its dot.
+    const dotTone = (name: string) => row(name).querySelector('[data-slot="status-dot"]')?.getAttribute('data-tone')
     vi.mocked(RunVisitsCard).mockClear()
     vi.mocked(RunGraphCard).mockClear()
 
     act(() => state.reconcileRunRecord('b', 'live', { ...b, status: 'running' }))
-    expect(row('B')).toHaveTextContent(/running/i)
+    expect(row('B').closest('[data-testid="run-list-group-running"]')).not.toBeNull()
+    expect(dotTone('B')).toBe('info')
     expect(RunVisitsCard).not.toHaveBeenCalled()
     expect(RunGraphCard).not.toHaveBeenCalled()
 
     // Updating the list snapshot for the same live upsert also stays in the sidebar.
     act(() => state.updateRunsListSession({ runs: [a, { ...b, status: 'running' }] }, 'live'))
-    expect(row('B')).toHaveTextContent(/running/i)
+    expect(dotTone('B')).toBe('info')
     expect(RunVisitsCard).not.toHaveBeenCalled()
     expect(RunGraphCard).not.toHaveBeenCalled()
 
     act(() => state.reconcileRunRecord('a', 'live', { ...a, status: 'running' }))
-    expect(row('A')).toHaveTextContent(/running/i)
+    expect(dotTone('A')).toBe('info')
     expect(RunVisitsCard).toHaveBeenCalled()
     expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
       run: expect.objectContaining({ run_id: 'a', status: 'running' }),
@@ -290,7 +293,7 @@ describe('RunsPanel', () => {
 
     vi.mocked(RunVisitsCard).mockClear()
     fireEvent.click(row('B'))
-    expect(row('B')).toHaveAttribute('aria-pressed', 'true')
+    expect(row('B')).toHaveAttribute('aria-current', 'true')
     expect(RunVisitsCard).toHaveBeenCalled()
     expect(RunGraphCard).toHaveBeenLastCalledWith(expect.objectContaining({
       run: expect.objectContaining({ run_id: 'b', status: 'running' }),
@@ -487,11 +490,11 @@ describe('RunsPanel', () => {
 
     renderRunsWorkspace()
 
-    expect(await screen.findByText('Holding execution lock')).toBeVisible()
+    expect(await screen.findByText('Holding lock')).toBeVisible()
     expect(screen.getByText('Queued execution lock · project lock · main-worktree-integration')).toBeVisible()
     expect(screen.getByText('Queued A')).toBeVisible()
     expect(screen.getByText('Queued B')).toBeVisible()
-    expect(screen.getByText('Queued for execution lock · position 1')).toBeVisible()
+    expect(screen.getByText('Lock queue #1')).toBeVisible()
   })
 
   it('follows every project\'s runs on one live stream', async () => {

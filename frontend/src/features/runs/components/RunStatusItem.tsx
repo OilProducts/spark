@@ -1,8 +1,11 @@
 import type { ReactNode } from 'react'
+import { ChevronRight } from 'lucide-react'
 
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { TokenUsageBucketResponse } from '@/lib/api/attractorApi'
 import { InlineError } from '@/components/app/inline-error'
+import { SectionHeading } from '@/components/app/section-heading'
+import { Well } from '@/components/app/well'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import {
     formatDuration,
@@ -55,7 +58,7 @@ export function VisitLink({ visit, onSelect }: { visit: RunVisit; onSelect: (vis
             onClick={() => onSelect(visit)}
             className="text-primary underline-offset-4 hover:underline"
         >
-            {visit.label}{visit.count > 1 ? ` ${visit.number}/${visit.count}` : ''}
+            {visit.label}{visit.count > 1 ? ` ${visit.number}` : ''}
         </button>
     )
 }
@@ -70,16 +73,12 @@ function VisitWrites({ visit }: { visit: RunVisit }) {
         <span data-testid="run-status-did-not-pass-writes" className="text-muted-foreground">
             {' · wrote '}
             {writes.map(([key]) => (
-                <code key={key} className="mr-1 rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground/80">
+                <code key={key} className="mr-1 rounded-md border border-border bg-background px-1.5 py-px font-mono text-xs text-foreground/80">
                     {key.replace(/^context\./, '')}
                 </code>
             ))}
         </span>
     )
-}
-
-function SectionLabel({ children }: { children: ReactNode }) {
-    return <h4 className="pt-4 text-xs font-medium uppercase tracking-wide text-muted-foreground">{children}</h4>
 }
 
 export function RunStatusItem({
@@ -179,18 +178,18 @@ export function RunStatusItem({
 
     const didNotPass = didNotPassVisits(visits)
     return (
-        <article data-testid="run-status-item" data-status-kind={kind} className="space-y-3 pb-6">
+        <article data-testid="run-status-item" data-status-kind={kind} className="flex flex-col gap-5 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h3 className="text-lg font-light text-foreground">{heading}</h3>
+                <h3 className="text-lg font-semibold text-foreground">{heading}</h3>
                 <span className="text-sm text-muted-foreground">{meta}</span>
             </header>
             {body}
             {kind !== 'waiting' && didNotPass.length > 0 ? (
-                <section data-testid="run-status-did-not-pass">
-                    <SectionLabel>Didn’t pass ({didNotPass.length})</SectionLabel>
-                    <ul className="divide-y divide-border text-sm">
+                <Well data-testid="run-status-did-not-pass" className="flex flex-col gap-2">
+                    <SectionHeading as="h4" count={didNotPass.length}>Didn’t pass</SectionHeading>
+                    <ul className="flex flex-col gap-1.5 text-sm">
                         {didNotPass.map((visit) => (
-                            <li key={visit.key} data-testid="run-status-did-not-pass-row" className="py-1.5">
+                            <li key={visit.key} data-testid="run-status-did-not-pass-row" className="max-w-[72ch]">
                                 {link(visit)}
                                 {': '}
                                 {visit.reason
@@ -200,7 +199,7 @@ export function RunStatusItem({
                             </li>
                         ))}
                     </ul>
-                </section>
+                </Well>
             ) : null}
             {kind === 'completed' || kind === 'failed' ? (
                 <RunOutputs run={run} withCommit={kind === 'completed'} artifactEntries={artifactEntries} onViewArtifact={onViewArtifact} />
@@ -224,7 +223,7 @@ function RunResult({ result, resultError }: { result: PipelineResultResponse | n
         return <InlineError data-testid="run-result-resolution-error">{result.error || 'Result resolution failed.'}</InlineError>
     }
     return (
-        <div data-testid="run-result-body" className="text-sm">
+        <div data-testid="run-result-body" className="max-w-[72ch] text-sm">
             <ProjectConversationMarkdown content={result.body_markdown || ''} />
             {result.summary_error ? (
                 <p data-testid="run-result-summary-error" className="mt-2 text-xs text-warning">
@@ -266,6 +265,7 @@ function RunOutputs({
             {label}
         </button>
     )
+    // Outputs and run facts are grouped data: wells, not bordered boxes.
     const rows: Array<[string, ReactNode]> = [
         ...(commit || branch ? [['Commit', (
             <span data-testid="run-output-commit">
@@ -280,8 +280,8 @@ function RunOutputs({
         ...(flowSnapshot ? [['Flow', fileLink(flowSnapshot, 'flow snapshot')] as [string, ReactNode]] : []),
     ]
     return (
-        <section data-testid="run-status-outputs">
-            <SectionLabel>Outputs</SectionLabel>
+        <Well data-testid="run-status-outputs" className="flex flex-col gap-2">
+            <SectionHeading as="h4">Outputs</SectionHeading>
             {commit || branch || resultFiles.length > 0 ? (
                 <dl className="space-y-1 text-sm">
                     {rows.map(([label, value]) => (
@@ -297,7 +297,7 @@ function RunOutputs({
                     {flowSnapshot ? <> {fileLink(flowSnapshot, 'flow snapshot')}</> : null}
                 </p>
             )}
-        </section>
+        </Well>
     )
 }
 
@@ -343,11 +343,12 @@ function RunFacts({ run }: { run: RunRecord }) {
         ...(lineage ? [['lineage', 'Lineage', lineage] as [string, string, ReactNode]] : []),
     ]
     return (
-        <details data-testid="run-status-facts" className="border-t border-border pt-3">
-            <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground">
+        <details data-testid="run-status-facts" className="group">
+            <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-semibold text-foreground [&::-webkit-details-marker]:hidden">
+                <ChevronRight aria-hidden="true" className="size-3.5 text-muted-foreground transition-transform group-open:rotate-90" />
                 Run facts
             </summary>
-            <dl className="mt-2 space-y-1 text-sm">
+            <dl className="mt-2 space-y-1 pl-5.5 text-sm">
                 {facts.map(([id, label, value]) => (
                     <div key={`${id}-${label}`} data-testid={`run-fact-${id}`} className="flex gap-3">
                         <dt className="w-24 shrink-0 truncate whitespace-pre text-muted-foreground" title={label.trim()}>{label}</dt>

@@ -3,6 +3,7 @@ import { FolderPlus, Plus } from "lucide-react"
 
 import { ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
+import { Button } from "@/components/ui/button"
 import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog"
 import { ProjectConversationHistory } from "./components/ProjectConversationHistory"
 import { ProjectConversationSurface } from "./components/ProjectConversationSurface"
@@ -48,29 +49,31 @@ export function ProjectsPanel() {
                         testId="new-chat-project-picker"
                         onPick={(projectPath) => { void sidebarProps.onCreateConversationThread(projectPath) }}
                     >
-                        <button type="button" data-testid="project-thread-new-button" className="flex items-center gap-1 text-sm text-primary hover:underline outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                        <Button type="button" variant="outline" size="sm" data-testid="project-thread-new-button">
                             <Plus className="size-3.5" />
                             New
-                        </button>
+                        </Button>
                     </ProjectPicker>
                 )}
                 panel={(
                     <div className="flex h-full min-h-0 flex-col">
-                        <div className="min-h-0 flex-1">
+                        <div className="min-h-0 flex-1 overflow-y-auto">
                             <ProjectsSidebar {...sidebarProps} />
                         </div>
-                        <div className="shrink-0 border-t border-border px-4 pt-2">
-                            <button
+                        <div className="shrink-0 pt-2">
+                            <Button
                                 type="button"
+                                variant="ghost"
+                                size="sm"
                                 data-testid="add-project-button"
                                 onClick={() => { void addProject.onOpenProjectDirectoryChooser() }}
-                                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                className="text-muted-foreground"
                             >
-                                <FolderPlus className="size-3.5" />
+                                <FolderPlus />
                                 Add project
-                            </button>
+                            </Button>
                             {addProject.projectBrowserErrorMessage && !addProject.isProjectBrowserOpen ? (
-                                <InlineError dense>{addProject.projectBrowserErrorMessage}</InlineError>
+                                <InlineError dense className="mt-2">{addProject.projectBrowserErrorMessage}</InlineError>
                             ) : null}
                         </div>
                     </div>
@@ -87,13 +90,11 @@ export function ProjectsPanel() {
                         pendingDeleteConversationId={sidebarProps.pendingDeleteConversationId}
                     />
                 ) : (
-                    <div className={sidebarProps.isNarrowViewport ? "p-3" : "h-full p-6"}>
-                        <ProjectConversationSurface
-                            {...surfaceProps}
-                            panelError={registryBootstrapError || surfaceProps.panelError}
-                            historyContent={<ProjectConversationHistory {...historyProps} />}
-                        />
-                    </div>
+                    <ProjectConversationSurface
+                        {...surfaceProps}
+                        panelError={registryBootstrapError || surfaceProps.panelError}
+                        historyContent={<ProjectConversationHistory {...historyProps} />}
+                    />
                 )}
             </ViewLayout>
             <ProjectBrowserDialog

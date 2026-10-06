@@ -3,6 +3,7 @@ import { useId, type ReactNode } from 'react'
 import type { Node } from '@xyflow/react'
 
 import { ModelChooser } from '@/components/model-chooser/ModelChooser'
+import { Well } from '@/components/app/well'
 import type { DiagnosticEntry } from '@/store'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -319,13 +320,10 @@ export function NodeInspectorPanel({
                                         Start Child Automatically
                                     </Label>
                                 </div>
-                                <div
-                                    data-testid="manager-child-linkage"
-                                    className="space-y-2 rounded-md border border-border/80 px-3 py-2"
-                                >
+                                <Well data-testid="manager-child-linkage" className="space-y-2 px-3 py-3">
                                     <div>
-                                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                            Child Flow Linkage
+                                        <p className="text-sm font-semibold text-foreground">
+                                            Child flow linkage
                                         </p>
                                         <p id={`${id}-child-flow-help`} className="mt-1 text-xs text-muted-foreground">
                                             Subflow nodes use this node's <code>flow_ref</code> config and optional input map.
@@ -343,7 +341,7 @@ export function NodeInspectorPanel({
                                     >
                                         Open Flow Settings
                                     </Button>
-                                </div>
+                                </Well>
                             </>
                         ) : null}
 
@@ -352,7 +350,7 @@ export function NodeInspectorPanel({
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                className="w-full text-xs font-medium uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="w-full text-xs"
                                 onClick={() => onSetShowAdvanced((current) => !current)}
                             >
                                 {showAdvanced ? 'Hide Advanced' : 'Show Advanced'}

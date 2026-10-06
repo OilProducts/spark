@@ -26,7 +26,8 @@ import { RunQuestionsPanel } from './components/RunQuestionsPanel'
 import { formatDuration, type RunRecord } from './model/shared'
 import { buildRunNodeStatuses } from './model/nodeStatusModel'
 import { nodeOutcomesFromCheckpoint } from './model/runDetailsModel'
-import { buildRunContextOverview, runStatusKind } from './model/runOverviewModel'
+import { buildRunContextOverview, runStatusKind, type RunStatusKind } from './model/runOverviewModel'
+import type { StatusTone } from '@/components/app/status'
 import { ViewLayout } from '@/components/app/view-layout'
 import { orderProjects, projectLabel } from '@/features/projects/model/projectChoices'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -37,12 +38,13 @@ import { openRun } from '@/features/missions/MissionTranscript'
 const EMPTY_NODE_STATUSES = {}
 const EMPTY_FLOW_NODES: Record<string, VisitFlowNode> = {}
 
-const STATUS_ROWS = {
-    waiting: { label: 'Needs input', className: 'text-warning', mark: '?' },
-    failed: { label: 'Failed', className: 'text-destructive', mark: '✕' },
-    completed: { label: 'Result', mark: '✓', markClassName: 'text-success' },
-    running: { label: 'Running', className: 'text-info', mark: '•' },
-    ended: { label: 'Status', mark: '–' },
+// The rail's first row; a dot only when the run needs attention.
+const STATUS_ROWS: Record<RunStatusKind, { label: string; tone?: StatusTone }> = {
+    waiting: { label: 'Needs input', tone: 'warning' },
+    failed: { label: 'Failed', tone: 'destructive' },
+    completed: { label: 'Result' },
+    running: { label: 'Running', tone: 'info' },
+    ended: { label: 'Status' },
 }
 
 const ACTIVE_RUN_STATUSES = new Set(['running', 'pause_requested', 'abort_requested', 'cancel_requested'])
@@ -52,7 +54,6 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
     const { error, scopedRuns, status } = useRunsList({ selectedRunId, manageSync: false })
     const projectFilter = useStore((state) => state.runsListSession.projectFilter)
     const runs = projectFilter ? scopedRuns.filter((run) => run.project_path === projectFilter) : scopedRuns
-    const queued = runs.filter((run) => run.status === 'queued').length
     return (
         <RunList
             error={error}
@@ -64,7 +65,9 @@ function RunsSidebar({ selectedRunId }: { selectedRunId: string | null }) {
             }}
             runs={runs}
             selectedRunId={selectedRunId}
-            summaryLabel={`${runs.length} runs${queued > 0 ? ` · ${queued} queued` : ''}`}
+            summaryLabel={`${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`}
+            // The filter already names the project; rows repeat it only across all projects.
+            showProject={!projectFilter}
         />
     )
 }
@@ -79,7 +82,7 @@ function RunsProjectFilter() {
             aria-label="Show runs from project"
             value={projectFilter ?? ''}
             onChange={(event) => useStore.getState().updateRunsListSession({ projectFilter: event.target.value || null })}
-            className="h-6 max-w-36 truncate py-0 pl-2 pr-8 text-xs data-[size=sm]:h-6 data-[size=sm]:py-0"
+            className="h-7 max-w-36 truncate rounded-lg bg-background py-0 pl-2.5 pr-8 text-xs data-[size=sm]:h-7 data-[size=sm]:py-0"
         >
             <NativeSelectOption value="">All projects</NativeSelectOption>
             {orderProjects(registry).map((project) => (
@@ -98,6 +101,7 @@ export function RunsPanel() {
         hasRuns: state.runsListSession.runs.length > 0,
     })))
     const updateRunDetailSession = useStore((state) => state.updateRunDetailSession)
+    const projectRegistry = useStore((state) => state.projectRegistry)
     const selectedRunId = useStore(selectSelectedRunId)
     const selectedRunStatusSync = useStore((state) => selectSelectedRunSession(state)?.statusSync ?? 'idle')
     const selectedRunStatusError = useStore((state) => selectSelectedRunSession(state)?.statusError ?? null)
@@ -378,10 +382,31 @@ export function RunsPanel() {
         <section
             data-testid="runs-panel"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
-            className={`h-full flex-1 ${isNarrowViewport ? 'p-3' : 'flex min-h-0 flex-col overflow-hidden p-6'}`}
+            className={`h-full flex-1 ${isNarrowViewport ? '' : 'flex min-h-0 flex-col overflow-hidden'}`}
         >
-            {showRunsTransportReconnectNotice ? (
-                <div className="mb-4">
+            {/* The view header sits at the top of the sheet, under one hairline. */}
+            {selectedRun && (
+                <div className={`border-b border-border ${isNarrowViewport ? 'px-4 py-3' : 'px-6 py-4'}`}>
+                    <RunHeaderBar
+                        run={selectedRun}
+                        now={now}
+                        flowTitle={flowSnapshot?.title ?? null}
+                        project={selectedRun.project_path ? projectLabel(projectRegistry, selectedRun.project_path) : null}
+                        selectedVisitLabel={selectedVisitLabel}
+                        continuationOpen={Boolean(activeContinuationDraft)}
+                        onContinueFromRun={beginContinuation}
+                        onRerunRun={(run) => setRerunRun(run)}
+                        onRequestCancel={(runId, currentStatus) => {
+                            void requestCancel(runId, currentStatus)
+                        }}
+                        onRequestRetry={(runId, currentStatus) => {
+                            void requestRetry(runId, currentStatus)
+                        }}
+                    />
+                </div>
+            )}
+            <div className={isNarrowViewport ? 'space-y-6 p-4' : 'flex min-h-0 flex-1 flex-col gap-4 px-6 py-5'}>
+                {showRunsTransportReconnectNotice ? (
                     <Alert
                         data-testid="runs-transport-reconnect-banner"
                         className="border-0 border-l border-warning px-3 py-2 text-warning"
@@ -401,221 +426,187 @@ export function RunsPanel() {
                             </button>
                         </AlertDescription>
                     </Alert>
-                </div>
-            ) : null}
-            <div className={`w-full ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 overflow-hidden'}`}>
-                <div className={`min-w-0 ${isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col overflow-hidden'}`}>
+                ) : null}
+                {showRunSelectionEmptyState && (
+                    <Empty data-testid="run-selection-empty-state">
+                        <EmptyHeader>
+                            <EmptyDescription>Select a run from the sidebar to inspect its details.</EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
+                )}
+                {showRunDetailsRestoringState && (
+                    <p data-testid="run-selection-restoring-state" className="text-sm text-muted-foreground" aria-live="polite">Restoring the selected run session…</p>
+                )}
+                {selectedRun && activeContinuationDraft && (
+                    <RunContinuationPanel
+                        draft={activeContinuationDraft}
+                        projectPath={selectedRun.project_path || null}
+                        onDraftChange={(patch) => {
+                            setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
+                        }}
+                        onCancel={() => setContinuationDraft(null)}
+                        onContinued={() => setContinuationDraft(null)}
+                    />
+                )}
+                {selectedRun && degradedRunPanels.length > 0 && (
                     <div
-                        className={isNarrowViewport ? 'space-y-6' : 'flex min-h-0 flex-1 flex-col gap-4'}
+                        data-testid="run-partial-api-failure-banner"
+                        className="rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
                     >
-                        {showRunSelectionEmptyState && (
-                            <div data-testid="run-selection-empty-state" className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground">
-                                Select a run from the sidebar to inspect its details.
-                            </div>
-                        )}
-                        {showRunDetailsRestoringState && (
-                            <p data-testid="run-selection-restoring-state" className="text-sm text-muted-foreground" aria-live="polite">Restoring the selected run session…</p>
-                        )}
-                        {selectedRun && (
-                            <RunHeaderBar
+                        Some run details couldn't load.
+                        <span className="ml-1 text-xs">
+                            Affected surfaces: {degradedRunPanels.join(', ')}.
+                        </span>
+                    </div>
+                )}
+                {!selectedRun && !hasRuns && (
+                    <Empty>
+                        <EmptyHeader>
+                            <EmptyDescription>No runs have been recorded yet.</EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
+                )}
+                {selectedRun && (
+                    <div className={isNarrowViewport
+                        ? 'space-y-6'
+                        : 'flex min-h-0 flex-1 gap-6'}
+                    >
+                        {/* A continuation picks its restart node on the graph. */}
+                        {showGraph || activeContinuationDraft ? (
+                        <div className={isNarrowViewport
+                            ? undefined
+                            : 'flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
+                        >
+                            <RunGraphCard
+                                key={`graph-${selectedRun.run_id}`}
                                 run={selectedRun}
+                                nodeStatusesById={runNodeStatuses}
+                                selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
+                                onSelectNode={activeContinuationDraft
+                                    ? (nodeId) => {
+                                        setContinuationDraft((draft) => (draft ? { ...draft, startNodeId: nodeId } : draft))
+                                    }
+                                    : selectNode}
+                                onOpenInEditor={() => {
+                                    const flowName = selectedRun.flow_name
+                                    if (!flowName || !flowCatalog.flows.includes(flowName)) {
+                                        return
+                                    }
+                                    setActiveFlow(flowName)
+                                    setPendingEditorNodeSelection({
+                                        flowName,
+                                        nodeId: selectedNodeId ?? currentNodeForSummary ?? null,
+                                    })
+                                    setViewMode('editor')
+                                }}
+                                openInEditorDisabledReason={
+                                    selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
+                                        ? null
+                                        : flowCatalog.isLoaded
+                                            ? "This run's flow is not installed in the catalog."
+                                            : 'Loading the flow catalog…'
+                                }
+                                fillHeight={!isNarrowViewport}
+                            />
+                        </div>
+                        ) : null}
+                        <div className={isNarrowViewport
+                            ? 'mt-6'
+                            : 'flex min-h-0 min-w-0 flex-1 flex-col'}
+                        >
+                        <div
+                            ref={detailsScrollRef}
+                            data-testid="run-details-scroll-region"
+                            className={isNarrowViewport ? undefined : 'flex min-h-0 flex-1 flex-col'}
+                        >
+                            <RunVisitsCard
+                                key={selectedRun.run_id}
+                                visits={visits}
+                                flowNodes={flowNodes}
+                                segments={transcriptState?.segments ?? []}
+                                prompts={transcriptState?.prompts ?? []}
+                                journal={journal}
                                 now={now}
-                                flowTitle={flowSnapshot?.title ?? null}
-                                selectedVisitLabel={selectedVisitLabel}
-                                onContinueFromRun={beginContinuation}
-                                onRerunRun={(run) => setRerunRun(run)}
-                                onRequestCancel={(runId, currentStatus) => {
-                                    void requestCancel(runId, currentStatus)
+                                isNarrowViewport={isNarrowViewport}
+                                isLive={isTimelineLive && isSelectedRunActive}
+                                transcriptError={transcriptError}
+                                timelineError={timelineError}
+                                selectedNodeId={selectedNodeId}
+                                onSelectNode={selectNode}
+                                onOpenRun={openRun}
+                                artifactEntries={artifactEntries}
+                                onViewArtifact={openArtifact}
+                                graph={{ shown: showGraph, onToggle: () => setShowGraph((current) => !current) }}
+                                statusRow={{
+                                    ...STATUS_ROWS[statusKind],
+                                    detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
                                 }}
-                                onRequestRetry={(runId, currentStatus) => {
-                                    void requestRetry(runId, currentStatus)
-                                }}
-                            />
-                        )}
-                        {selectedRun && activeContinuationDraft && (
-                            <RunContinuationPanel
-                                draft={activeContinuationDraft}
-                                projectPath={selectedRun.project_path || null}
-                                onDraftChange={(patch) => {
-                                    setContinuationDraft((draft) => (draft ? { ...draft, ...patch } : draft))
-                                }}
-                                onCancel={() => setContinuationDraft(null)}
-                                onContinued={() => setContinuationDraft(null)}
-                            />
-                        )}
-                        {selectedRun && degradedRunPanels.length > 0 && (
-                            <div
-                                data-testid="run-partial-api-failure-banner"
-                                className="rounded-md border-0 border-l border-warning px-3 py-2 text-sm text-warning"
-                            >
-                                Some run details couldn't load.
-                                <span className="ml-1 text-xs">
-                                    Affected surfaces: {degradedRunPanels.join(', ')}.
-                                </span>
-                            </div>
-                        )}
-                        {!selectedRun && !hasRuns && (
-                            <Empty className="text-sm text-muted-foreground">
-                                <EmptyHeader>
-                                    <EmptyDescription>No runs have been recorded yet.</EmptyDescription>
-                                </EmptyHeader>
-                            </Empty>
-                        )}
-                        {selectedRun && (
-                            <div className={isNarrowViewport
-                                ? 'space-y-6'
-                                : 'flex min-h-0 flex-1 gap-4'}
-                            >
-                                {/* A continuation picks its restart node on the graph. */}
-                                {showGraph || activeContinuationDraft ? (
-                                <div className={isNarrowViewport
-                                    ? undefined
-                                    : 'flex w-[24rem] min-w-[19rem] shrink-0 flex-col min-h-0 2xl:w-[28rem]'}
-                                >
-                                    <RunGraphCard
-                                        key={`graph-${selectedRun.run_id}`}
+                                contextKeyCount={contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
+                                renderStatus={(selectVisit) => (
+                                    <RunStatusItem
                                         run={selectedRun}
-                                        nodeStatusesById={runNodeStatuses}
-                                        selectedNodeId={activeContinuationDraft ? activeContinuationDraft.startNodeId : selectedNodeId}
-                                        onSelectNode={activeContinuationDraft
-                                            ? (nodeId) => {
-                                                setContinuationDraft((draft) => (draft ? { ...draft, startNodeId: nodeId } : draft))
-                                            }
-                                            : selectNode}
-                                        onOpenInEditor={() => {
-                                            const flowName = selectedRun.flow_name
-                                            if (!flowName || !flowCatalog.flows.includes(flowName)) {
-                                                return
-                                            }
-                                            setActiveFlow(flowName)
-                                            setPendingEditorNodeSelection({
-                                                flowName,
-                                                nodeId: selectedNodeId ?? currentNodeForSummary ?? null,
-                                            })
-                                            setViewMode('editor')
-                                        }}
-                                        openInEditorDisabledReason={
-                                            selectedRun.flow_name && flowCatalog.flows.includes(selectedRun.flow_name)
-                                                ? null
-                                                : flowCatalog.isLoaded
-                                                    ? "This run's flow is not installed in the catalog."
-                                                    : 'Loading the flow catalog…'
-                                        }
-                                        fillHeight={!isNarrowViewport}
-                                    />
-                                </div>
-                                ) : null}
-                                <div className={isNarrowViewport
-                                    ? 'mt-6'
-                                    : 'flex min-h-0 min-w-0 flex-1 flex-col'}
-                                >
-                                <div
-                                    ref={detailsScrollRef}
-                                    data-testid="run-details-scroll-region"
-                                    className={isNarrowViewport ? undefined : 'flex min-h-0 flex-1 flex-col'}
-                                >
-                                    <RunVisitsCard
-                                        key={selectedRun.run_id}
+                                        kind={statusKind}
+                                        now={now}
                                         visits={visits}
                                         flowNodes={flowNodes}
-                                        segments={transcriptState?.segments ?? []}
-                                        prompts={transcriptState?.prompts ?? []}
-                                        journal={journal}
-                                        now={now}
-                                        isNarrowViewport={isNarrowViewport}
-                                        isLive={isTimelineLive && isSelectedRunActive}
-                                        transcriptError={transcriptError}
-                                        timelineError={timelineError}
-                                        selectedNodeId={selectedNodeId}
-                                        onSelectNode={selectNode}
-                                        onOpenRun={openRun}
+                                        result={resultData}
+                                        resultError={resultError}
                                         artifactEntries={artifactEntries}
+                                        onSelectVisit={selectVisit}
                                         onViewArtifact={openArtifact}
-                                        toolbar={
-                                            <button
-                                                type="button"
-                                                data-testid="run-graph-toggle"
-                                                aria-pressed={showGraph}
-                                                aria-keyshortcuts="g"
-                                                title="Show or hide the run graph (g)"
-                                                onClick={() => setShowGraph((current) => !current)}
-                                                className="hover:text-foreground"
-                                            >
-                                                {showGraph ? 'Hide graph' : 'Graph'}
-                                            </button>
+                                        question={
+                                            <RunQuestionsPanel
+                                                confirmedQuestionIds={confirmedQuestionIds}
+                                                freeformAnswersByGateId={freeformAnswersByGateId}
+                                                gateNotesByGateId={gateNotesByGateId}
+                                                groupedPendingInterviewGates={groupedPendingInterviewGates}
+                                                onFreeformAnswerChange={(questionId, value) => {
+                                                    setFreeformAnswersByGateId((previous) => ({
+                                                        ...previous,
+                                                        [questionId]: value,
+                                                    }))
+                                                }}
+                                                onGateNoteChange={(questionId, value) => {
+                                                    setGateNotesByGateId((previous) => ({
+                                                        ...previous,
+                                                        [questionId]: value,
+                                                    }))
+                                                }}
+                                                onSubmitPendingGateAnswer={(gate, selectedValue, note) => {
+                                                    void submitPendingGateAnswer(gate, selectedValue, note)
+                                                }}
+                                                pendingGateActionError={pendingGateActionError}
+                                                submittingGateIds={submittingGateIds}
+                                            />
                                         }
-                                        statusRow={{
-                                            ...STATUS_ROWS[statusKind],
-                                            detail: formatDuration(selectedRun.started_at, selectedRun.ended_at, selectedRun.status, now),
-                                        }}
-                                        contextKeyCount={contextOverview.namespaces.reduce((count, namespace) => count + namespace.keys.length, 0)}
-                                        renderStatus={(selectVisit) => (
-                                            <RunStatusItem
-                                                run={selectedRun}
-                                                kind={statusKind}
-                                                now={now}
-                                                visits={visits}
-                                                flowNodes={flowNodes}
-                                                result={resultData}
-                                                resultError={resultError}
-                                                artifactEntries={artifactEntries}
-                                                onSelectVisit={selectVisit}
-                                                onViewArtifact={openArtifact}
-                                                question={
-                                                    <RunQuestionsPanel
-                                                        confirmedQuestionIds={confirmedQuestionIds}
-                                                        freeformAnswersByGateId={freeformAnswersByGateId}
-                                                        gateNotesByGateId={gateNotesByGateId}
-                                                        groupedPendingInterviewGates={groupedPendingInterviewGates}
-                                                        onFreeformAnswerChange={(questionId, value) => {
-                                                            setFreeformAnswersByGateId((previous) => ({
-                                                                ...previous,
-                                                                [questionId]: value,
-                                                            }))
-                                                        }}
-                                                        onGateNoteChange={(questionId, value) => {
-                                                            setGateNotesByGateId((previous) => ({
-                                                                ...previous,
-                                                                [questionId]: value,
-                                                            }))
-                                                        }}
-                                                        onSubmitPendingGateAnswer={(gate, selectedValue, note) => {
-                                                            void submitPendingGateAnswer(gate, selectedValue, note)
-                                                        }}
-                                                        pendingGateActionError={pendingGateActionError}
-                                                        submittingGateIds={submittingGateIds}
-                                                    />
-                                                }
-                                            />
-                                        )}
-                                        renderContext={(focusKey, selectVisit) => (
-                                            <RunContextItem
-                                                overview={contextOverview}
-                                                finalContext={finalContext}
-                                                status={contextStatus}
-                                                contextError={contextError}
-                                                searchQuery={contextSearchQuery}
-                                                onSearchQueryChange={setContextSearchQuery}
-                                                contextCopyStatus={contextCopyStatus}
-                                                contextExportHref={contextExportHref || null}
-                                                onCopy={() => {
-                                                    void copyContextToClipboard()
-                                                }}
-                                                onRefresh={() => {
-                                                    setContextCopyStatus('')
-                                                    void fetchContext()
-                                                }}
-                                                focusKey={focusKey}
-                                                onSelectVisit={selectVisit}
-                                            />
-                                        )}
                                     />
-                                </div>
-                                </div>
-                            </div>
-                        )}
+                                )}
+                                renderContext={(focusKey, selectVisit) => (
+                                    <RunContextItem
+                                        overview={contextOverview}
+                                        finalContext={finalContext}
+                                        status={contextStatus}
+                                        contextError={contextError}
+                                        searchQuery={contextSearchQuery}
+                                        onSearchQueryChange={setContextSearchQuery}
+                                        contextCopyStatus={contextCopyStatus}
+                                        contextExportHref={contextExportHref || null}
+                                        onCopy={() => {
+                                            void copyContextToClipboard()
+                                        }}
+                                        onRefresh={() => {
+                                            setContextCopyStatus('')
+                                            void fetchContext()
+                                        }}
+                                        focusKey={focusKey}
+                                        onSelectVisit={selectVisit}
+                                    />
+                                )}
+                            />
+                        </div>
+                        </div>
                     </div>
-                </div>
+                )}
             </div>
             <RunArtifactViewer
                 entry={selectedArtifactEntry?.path === artifactViewerPath ? selectedArtifactEntry : artifactViewerPath ? { path: artifactViewerPath } : null}

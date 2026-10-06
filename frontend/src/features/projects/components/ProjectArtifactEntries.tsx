@@ -1,14 +1,18 @@
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import { Button } from "@/components/ui/button"
+import { RunCard } from "@/components/app/transcript/SegmentRows"
+import type { StatusTone } from "@/components/app/status"
+import { Well } from "@/components/app/well"
+import { flowTitle } from "@/features/runs/model/runOverviewModel"
+import { formatDuration, formatRunStatusLabel, runStatusTone } from "@/features/runs/model/shared"
 import type { PipelineResultResponse } from "@/lib/attractorClient"
+import { useStore } from "@/store"
 import { loadPipelineResult } from "../services/conversationArtifacts"
 import type {
     ProjectFlowLaunch,
     ProjectFlowRunRequest,
 } from "../model/types"
 import { ProjectConversationMarkdown } from "./ProjectConversationMarkdown"
-
-type SurfaceTone = "neutral" | "info" | "success" | "warning" | "danger"
 
 type ProjectFlowRunRequestEntryProps = {
     flowRunRequest: ProjectFlowRunRequest | null
@@ -17,8 +21,7 @@ type ProjectFlowRunRequestEntryProps = {
     onReviewFlowRunRequest: (request: ProjectFlowRunRequest, disposition: "approved" | "rejected") => void | Promise<void>
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
     formatConversationTimestamp: (value: string) => string
-    getFlowRunRequestStatusPresentation: (status: ProjectFlowRunRequest["status"]) => { label: string; tone: SurfaceTone }
-    getSurfaceToneClassName: (tone: SurfaceTone) => string
+    getFlowRunRequestStatusPresentation: (status: ProjectFlowRunRequest["status"]) => { label: string; tone: StatusTone }
 }
 
 function ProjectFlowResultPreview({ runId }: { runId: string }) {
@@ -48,9 +51,8 @@ function ProjectFlowResultPreview({ runId }: { runId: string }) {
                 onClick={() => {
                     void viewResult()
                 }}
-                variant="outline"
+                variant="ghost"
                 size="xs"
-                className="px-2 text-xs"
             >
                 {isLoading ? "Loading result..." : "View result"}
             </Button>
@@ -65,10 +67,94 @@ function ProjectFlowResultPreview({ runId }: { runId: string }) {
                 <p className="text-destructive">{result.error || "Result resolution failed."}</p>
             ) : null}
             {result?.state === "ready" ? (
-                <div data-testid="project-flow-launch-result-body" className="rounded border border-border/60 px-2 py-2">
+                <div data-testid="project-flow-launch-result-body" className="rounded-lg bg-muted px-3 py-2">
                     <ProjectConversationMarkdown content={result.body_markdown} />
                 </div>
             ) : null}
+        </div>
+    )
+}
+
+type FlowArtifact = Pick<
+    ProjectFlowLaunch,
+    "id" | "flow_name" | "summary" | "updated_at" | "goal" | "launch_context" | "model" | "llm_provider" | "reasoning_effort" | "run_id" | "launch_error"
+>
+
+
+/**
+ * A flow run request or launch as a bordered card: the shared RunCard header (kicker,
+ * title linking to the run, live status) over the artifact's details and actions.
+ */
+function FlowArtifactCard({
+    artifact,
+    kicker,
+    presentation,
+    testId,
+    openRunTestId,
+    onOpenFlowRun,
+    formatConversationTimestamp,
+    children,
+}: {
+    artifact: FlowArtifact
+    kicker: string
+    presentation: { label: string; tone: StatusTone }
+    testId?: string
+    openRunTestId?: string
+    onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
+    formatConversationTimestamp: (value: string) => string
+    children?: ReactNode
+}) {
+    // The run's own record, when the runs list has it, gives the card its live status.
+    const run = useStore((state) => artifact.run_id ? state.runsListSession.runs.find((entry) => entry.run_id === artifact.run_id) : undefined)
+    const launchContextText = artifact.launch_context ? JSON.stringify(artifact.launch_context, null, 2) : null
+    return (
+        <div data-testid={testId} className="w-full max-w-[72ch] rounded-xl border border-border">
+            <RunCard
+                className="rounded-none border-0 p-3"
+                kicker={`${kicker} · ${flowTitle(artifact.flow_name)}`}
+                title={artifact.run_id ? (
+                    <button
+                        type="button"
+                        data-testid={openRunTestId}
+                        onClick={() => onOpenFlowRun(artifact)}
+                        className="max-w-full truncate text-left outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        {artifact.summary}
+                    </button>
+                ) : artifact.summary}
+                tone={run ? runStatusTone(run.status) : presentation.tone}
+                status={run ? formatRunStatusLabel(run) : presentation.label}
+                duration={run ? formatDuration(run.started_at, run.ended_at, run.status) : undefined}
+            />
+            <div className="space-y-2 px-3 pb-3 text-xs text-muted-foreground">
+                <p>
+                    Flow: <span className="font-mono text-foreground">{artifact.flow_name}</span>
+                    {" · "}<span className="font-mono">{artifact.id}</span>
+                    {" · "}Updated {formatConversationTimestamp(artifact.updated_at)}
+                </p>
+                {artifact.goal ? (
+                    <p className="whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 text-sm text-foreground">{artifact.goal}</p>
+                ) : null}
+                {launchContextText ? (
+                    <div className="space-y-1">
+                        <p>Launch context:</p>
+                        <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg bg-muted px-3 py-2 font-mono text-xs text-muted-foreground">
+                            {launchContextText}
+                        </pre>
+                    </div>
+                ) : null}
+                {artifact.model ? <p>Model override: <span className="font-mono text-foreground">{artifact.model}</span></p> : null}
+                {artifact.llm_provider ? <p>Provider override: <span className="font-mono text-foreground">{artifact.llm_provider}</span></p> : null}
+                {artifact.reasoning_effort ? <p>Reasoning effort: <span className="font-mono text-foreground">{artifact.reasoning_effort}</span></p> : null}
+                {children}
+                {artifact.launch_error ? <p className="text-destructive">Launch error: {artifact.launch_error}</p> : null}
+                {artifact.run_id ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span>Run: <span className="font-mono text-foreground">{artifact.run_id}</span></span>
+                        <ProjectFlowResultPreview runId={artifact.run_id} />
+                    </div>
+                ) : null}
+            </div>
         </div>
     )
 }
@@ -81,109 +167,32 @@ export function ProjectFlowRunRequestEntry({
     onOpenFlowRun,
     formatConversationTimestamp,
     getFlowRunRequestStatusPresentation,
-    getSurfaceToneClassName,
 }: ProjectFlowRunRequestEntryProps) {
     if (!flowRunRequest) {
         return (
-            <div className="w-full rounded-md border border-border px-4 py-3 text-xs text-muted-foreground">
+            <Well className="w-full px-4 py-3 text-xs text-muted-foreground">
                 Flow run request artifact unavailable. Refresh the project chat to reload it.
-            </div>
+            </Well>
         )
     }
 
-    const statusPresentation = getFlowRunRequestStatusPresentation(flowRunRequest.status)
     const canReview = flowRunRequest.status === "pending" || flowRunRequest.status === "launch_failed"
-    const launchContextText = flowRunRequest.launch_context
-        ? JSON.stringify(flowRunRequest.launch_context, null, 2)
-        : null
 
     return (
-        <div
-            data-testid={isLatestFlowRunRequest ? "project-flow-run-request-surface" : undefined}
-            className="w-full rounded-md border-0 border-l border-success px-4 py-3"
+        <FlowArtifactCard
+            artifact={flowRunRequest}
+            kicker="Run request"
+            presentation={getFlowRunRequestStatusPresentation(flowRunRequest.status)}
+            testId={isLatestFlowRunRequest ? "project-flow-run-request-surface" : undefined}
+            openRunTestId={isLatestFlowRunRequest ? "project-flow-run-request-open-run-button" : undefined}
+            onOpenFlowRun={onOpenFlowRun}
+            formatConversationTimestamp={formatConversationTimestamp}
         >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-xs font-medium uppercase tracking-wide text-success">
-                            Flow run request
-                        </p>
-                        <span className={getSurfaceToneClassName(statusPresentation.tone)}>
-                            {statusPresentation.label}
-                        </span>
-                    </div>
-                    <p className="text-sm font-medium text-foreground">{flowRunRequest.summary}</p>
-                </div>
-                <div className="space-y-1 text-right text-xs text-muted-foreground">
-                    <p className="font-mono text-foreground">{flowRunRequest.id}</p>
-                    <p>Updated {formatConversationTimestamp(flowRunRequest.updated_at)}</p>
-                </div>
-            </div>
-            <div className="mt-3 space-y-2 text-xs text-muted-foreground">
-                <p>
-                    Flow: <span className="font-mono text-foreground">{flowRunRequest.flow_name}</span>
-                </p>
-                {flowRunRequest.goal ? (
-                    <p className="whitespace-pre-wrap rounded border border-border/60 px-2 py-1 text-sm text-muted-foreground">
-                        {flowRunRequest.goal}
-                    </p>
-                ) : null}
-                {launchContextText ? (
-                    <div className="space-y-1">
-                        <p>
-                            Launch context:
-                        </p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-muted px-2 py-2 font-mono text-xs text-muted-foreground">
-                            {launchContextText}
-                        </pre>
-                    </div>
-                ) : null}
-                {flowRunRequest.model ? (
-                    <p>
-                        Model override: <span className="font-mono text-foreground">{flowRunRequest.model}</span>
-                    </p>
-                ) : null}
-                {flowRunRequest.llm_provider ? (
-                    <p>
-                        Provider override: <span className="font-mono text-foreground">{flowRunRequest.llm_provider}</span>
-                    </p>
-                ) : null}
-                {flowRunRequest.reasoning_effort ? (
-                    <p>
-                        Reasoning effort: <span className="font-mono text-foreground">{flowRunRequest.reasoning_effort}</span>
-                    </p>
-                ) : null}
-                {flowRunRequest.review_message ? (
-                    <p>
-                        Review note: <span className="text-foreground">{flowRunRequest.review_message}</span>
-                    </p>
-                ) : null}
-                {flowRunRequest.launch_error ? (
-                    <p className="text-destructive">
-                        Launch error: {flowRunRequest.launch_error}
-                    </p>
-                ) : null}
-                {flowRunRequest.run_id ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span>
-                            Run: <span className="font-mono text-foreground">{flowRunRequest.run_id}</span>
-                        </span>
-                        <Button
-                            type="button"
-                            data-testid={isLatestFlowRunRequest ? "project-flow-run-request-open-run-button" : undefined}
-                            onClick={() => onOpenFlowRun(flowRunRequest)}
-                            variant="outline"
-                            size="xs"
-                            className="px-2 text-xs"
-                        >
-                            Open run
-                        </Button>
-                        <ProjectFlowResultPreview runId={flowRunRequest.run_id} />
-                    </div>
-                ) : null}
-            </div>
+            {flowRunRequest.review_message ? (
+                <p>Review note: <span className="text-foreground">{flowRunRequest.review_message}</span></p>
+            ) : null}
             {canReview ? (
-                <div className="mt-3 flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 pt-1">
                     <Button
                         data-testid={isLatestFlowRunRequest ? "project-flow-run-request-approve-button" : undefined}
                         type="button"
@@ -193,7 +202,6 @@ export function ProjectFlowRunRequestEntry({
                         disabled={pendingFlowRunRequestId === flowRunRequest.id}
                         variant="outline"
                         size="xs"
-                        className="px-2 text-xs"
                     >
                         Approve run
                     </Button>
@@ -204,15 +212,14 @@ export function ProjectFlowRunRequestEntry({
                             void onReviewFlowRunRequest(flowRunRequest, "rejected")
                         }}
                         disabled={pendingFlowRunRequestId === flowRunRequest.id}
-                        variant="outline"
+                        variant="ghost"
                         size="xs"
-                        className="px-2 text-xs"
                     >
                         Reject run
                     </Button>
                 </div>
             ) : null}
-        </div>
+        </FlowArtifactCard>
     )
 }
 
@@ -221,8 +228,7 @@ type ProjectFlowLaunchEntryProps = {
     isLatestFlowLaunch: boolean
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
     formatConversationTimestamp: (value: string) => string
-    getFlowLaunchStatusPresentation: (status: ProjectFlowLaunch["status"]) => { label: string; tone: SurfaceTone }
-    getSurfaceToneClassName: (tone: SurfaceTone) => string
+    getFlowLaunchStatusPresentation: (status: ProjectFlowLaunch["status"]) => { label: string; tone: StatusTone }
 }
 
 export function ProjectFlowLaunchEntry({
@@ -231,99 +237,24 @@ export function ProjectFlowLaunchEntry({
     onOpenFlowRun,
     formatConversationTimestamp,
     getFlowLaunchStatusPresentation,
-    getSurfaceToneClassName,
 }: ProjectFlowLaunchEntryProps) {
     if (!flowLaunch) {
         return (
-            <div className="w-full rounded-md border border-border px-4 py-3 text-xs text-muted-foreground">
+            <Well className="w-full px-4 py-3 text-xs text-muted-foreground">
                 Flow launch artifact unavailable. Refresh the project chat to reload it.
-            </div>
+            </Well>
         )
     }
 
-    const statusPresentation = getFlowLaunchStatusPresentation(flowLaunch.status)
-    const launchContextText = flowLaunch.launch_context
-        ? JSON.stringify(flowLaunch.launch_context, null, 2)
-        : null
-
     return (
-        <div
-            data-testid={isLatestFlowLaunch ? "project-flow-launch-surface" : undefined}
-            className="w-full rounded-md border-0 border-l border-info px-4 py-3"
-        >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-xs font-medium uppercase tracking-wide text-info">
-                            Flow launch
-                        </p>
-                        <span className={getSurfaceToneClassName(statusPresentation.tone)}>
-                            {statusPresentation.label}
-                        </span>
-                    </div>
-                    <p className="text-sm font-medium text-foreground">{flowLaunch.summary}</p>
-                </div>
-                <div className="space-y-1 text-right text-xs text-muted-foreground">
-                    <p className="font-mono text-foreground">{flowLaunch.id}</p>
-                    <p>Updated {formatConversationTimestamp(flowLaunch.updated_at)}</p>
-                </div>
-            </div>
-            <div className="mt-3 space-y-2 text-xs text-muted-foreground">
-                <p>
-                    Flow: <span className="font-mono text-foreground">{flowLaunch.flow_name}</span>
-                </p>
-                {flowLaunch.goal ? (
-                    <p className="whitespace-pre-wrap rounded border border-border/60 px-2 py-1 text-sm text-muted-foreground">
-                        {flowLaunch.goal}
-                    </p>
-                ) : null}
-                {launchContextText ? (
-                    <div className="space-y-1">
-                        <p>Launch context:</p>
-                        <pre className="overflow-x-auto whitespace-pre-wrap rounded border border-border/60 bg-muted px-2 py-2 font-mono text-xs text-muted-foreground">
-                            {launchContextText}
-                        </pre>
-                    </div>
-                ) : null}
-                {flowLaunch.model ? (
-                    <p>
-                        Model override: <span className="font-mono text-foreground">{flowLaunch.model}</span>
-                    </p>
-                ) : null}
-                {flowLaunch.llm_provider ? (
-                    <p>
-                        Provider override: <span className="font-mono text-foreground">{flowLaunch.llm_provider}</span>
-                    </p>
-                ) : null}
-                {flowLaunch.reasoning_effort ? (
-                    <p>
-                        Reasoning effort: <span className="font-mono text-foreground">{flowLaunch.reasoning_effort}</span>
-                    </p>
-                ) : null}
-                {flowLaunch.launch_error ? (
-                    <p className="text-destructive">
-                        Launch error: {flowLaunch.launch_error}
-                    </p>
-                ) : null}
-                {flowLaunch.run_id ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                        <span>
-                            Run: <span className="font-mono text-foreground">{flowLaunch.run_id}</span>
-                        </span>
-                        <Button
-                            type="button"
-                            data-testid={isLatestFlowLaunch ? "project-flow-launch-open-run-button" : undefined}
-                            onClick={() => onOpenFlowRun(flowLaunch)}
-                            variant="outline"
-                            size="xs"
-                            className="px-2 text-xs"
-                        >
-                            Open run
-                        </Button>
-                        <ProjectFlowResultPreview runId={flowLaunch.run_id} />
-                    </div>
-                ) : null}
-            </div>
-        </div>
+        <FlowArtifactCard
+            artifact={flowLaunch}
+            kicker="Launched run"
+            presentation={getFlowLaunchStatusPresentation(flowLaunch.status)}
+            testId={isLatestFlowLaunch ? "project-flow-launch-surface" : undefined}
+            openRunTestId={isLatestFlowLaunch ? "project-flow-launch-open-run-button" : undefined}
+            onOpenFlowRun={onOpenFlowRun}
+            formatConversationTimestamp={formatConversationTimestamp}
+        />
     )
 }

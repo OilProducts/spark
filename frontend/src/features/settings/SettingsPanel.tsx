@@ -21,6 +21,7 @@ import { useSettingsNavigationProtection } from "./hooks/useSettingsNavigationPr
 import { useModelSettingsEditor } from "./hooks/useModelSettingsEditor"
 import { SaveStatus } from './SaveStatus'
 import { ViewLayout } from '@/components/app/view-layout'
+import { Well } from '@/components/app/well'
 
 type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -48,7 +49,7 @@ function getTauriInvoke(): TauriInvoke | null {
 }
 
 // Category rows look like the other side panels' rows.
-const categoryRow = 'h-auto flex-none rounded-none px-2 py-1.5 after:hidden hover:text-primary data-[state=active]:text-primary data-[state=active]:shadow-[inset_2px_0_0_hsl(var(--primary))]'
+const categoryRow = 'h-auto flex-none justify-start rounded-lg px-2.5 py-2 text-sm font-medium text-foreground after:hidden hover:bg-background/60 hover:text-foreground data-[state=active]:border-border data-[state=active]:bg-background'
 
 export function SettingsPanel() {
     const models = useModelSettingsEditor()
@@ -139,7 +140,7 @@ export function SettingsPanel() {
             view="settings"
             title="Settings"
             panel={(
-                <TabsList className="w-full items-stretch px-2" aria-label="Settings categories">
+                <TabsList className="w-full items-stretch gap-0.5 p-0" aria-label="Settings categories">
                     <TabsTrigger className={categoryRow} value="models">Models &amp; accounts</TabsTrigger>
                     <TabsTrigger className={categoryRow} value="preferences">Preferences</TabsTrigger>
                     <TabsTrigger className={categoryRow} value="execution">Execution</TabsTrigger>
@@ -147,7 +148,7 @@ export function SettingsPanel() {
                 </TabsList>
             )}
         >
-        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
+        <div data-testid="settings-panel" className="absolute inset-0 overflow-auto p-3 sm:p-6 [overflow-wrap:anywhere] [&_fieldset]:min-w-0 [&_summary]:cursor-pointer [&_summary]:rounded [&_summary]:py-2 [&_summary]:focus-visible:outline-2 [&_details>div]:min-w-0 [&_[data-slot=button]]:max-w-full [&_[data-slot=button]]:whitespace-normal [&_[data-slot=button]]:h-auto [&_[data-slot=button]]:min-h-8 [&_[data-slot=card]]:border-0 [&_[data-slot=card]]:gap-4 [&_[data-slot=card]]:py-4 [&_[data-slot=card-header]]:px-4 [&_[data-slot=card-content]]:px-4">
             <div className="mx-auto w-full max-w-3xl space-y-6">
                 <p className="text-sm text-muted-foreground">
                     Saved settings apply to new work. Environment and command-line overrides take precedence over saved values.
@@ -159,7 +160,7 @@ export function SettingsPanel() {
 
                 <Card className="gap-4 py-4">
                     <CardHeader className="gap-1 px-4">
-                        <h3 className="text-lg font-light">Model defaults (Workspace)</h3>
+                        <h3 className="text-lg font-semibold">Model defaults (workspace)</h3>
                     </CardHeader>
                     <CardContent className="space-y-3 px-4 pt-0">
                         <p className="text-xs text-muted-foreground">Workspace-wide defaults for inheriting projects and conversations. Changes apply on their next message.</p>
@@ -169,8 +170,8 @@ export function SettingsPanel() {
                         <ModelChooser disabled={!models.saved || models.pending} inherited={{ provider: 'codex', llm_profile: null, model: null, reasoning_effort: null }} value={models.draft ?? { provider: null, llm_profile: null, model: null, reasoning_effort: null }} onChange={next => models.setDraft(next.provider || next.llm_profile ? next : { ...next, provider: 'codex' })} projectPath={null} inheritLabel="Provider default" invalidModel={!!invalidModel} />
                         </fieldset>
                         <div className="flex flex-wrap gap-2">
-                            <Button aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
-                            <Button aria-label="Discard workspace model defaults changes" size="sm" variant="outline" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
+                            <Button variant="outline" aria-label="Save workspace model defaults" size="sm" disabled={!models.dirty || models.pending || !!invalidModel} onClick={() => void models.save()}>Save</Button>
+                            <Button aria-label="Discard workspace model defaults changes" size="sm" variant="ghost" disabled={!models.saved || models.pending} onClick={() => void models.discard()}>Discard</Button>
                         </div>
                         {!models.draft && models.saved?.repair_defaults && <Button variant="outline" disabled={models.pending} onClick={() => models.setDraft(models.saved!.repair_defaults!)}>Reset to defaults</Button>}
             {models.saved?.validation_errors?.map((error) => <p role="alert" key={error}>{error}</p>)}
@@ -187,7 +188,7 @@ export function SettingsPanel() {
                 <ExecutionProfilesEditor />
                 <AgentSettingsEditor />
                 <Card className="gap-4 py-4">
-                    <CardHeader className="px-4"><h3 className="text-lg font-light">Scoped configuration</h3></CardHeader>
+                    <CardHeader className="px-4"><h3 className="text-lg font-semibold">Scoped configuration</h3></CardHeader>
                     <CardContent className="space-y-3 px-4">
                         <p className="text-xs text-muted-foreground">Edit flow launch permissions and execution locks in the flow editor’s graph settings. Manage automation in the trigger editor.</p>
                         <div className="flex flex-wrap gap-2">
@@ -200,20 +201,20 @@ export function SettingsPanel() {
                 <TabsContent value="system" forceMount hidden={category !== 'system'} className="space-y-6">
                 {getTauriInvoke() ? (
                     <Card className="gap-4 py-4">
-                        <CardHeader className="gap-1 px-4"><h3 className="text-lg font-light">Desktop Server</h3></CardHeader>
+                        <CardHeader className="gap-1 px-4"><h3 className="text-lg font-semibold">Desktop server</h3></CardHeader>
                         <CardContent className="space-y-4 px-4 pt-0">
                             {desktopSettings ? <>
-                            <div className="flex items-center justify-between gap-4 rounded border border-border px-3 py-2">
+                            <Well className="flex items-center justify-between gap-4 px-3 py-2">
                                 <div className="min-w-0 space-y-1">
                                     <div className="text-sm font-medium text-foreground">Remote access</div>
                                     <div className="break-all text-xs text-muted-foreground">{desktopSettings.bind_host} - {desktopSettings.server_url}</div>
                                 </div>
                                 <Switch data-testid="desktop-remote-access-toggle" checked={remoteDraft ?? desktopSettings.remote_access_enabled}
                                     disabled={isSavingDesktopSettings} onCheckedChange={setRemoteDraft} aria-label="Remote desktop server access" />
-                            </div>
+                            </Well>
                             <div className="flex flex-wrap gap-2">
-                                <Button aria-label="Save Desktop Server settings" disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save</Button>
-                                <Button aria-label="Discard Desktop Server changes" variant="outline" disabled={isSavingDesktopSettings || (!desktopDirty && !desktopSettingsError)} onClick={() => {
+                                <Button variant="outline" aria-label="Save Desktop Server settings" disabled={!desktopDirty || isSavingDesktopSettings} onClick={() => void updateRemoteAccess(remoteDraft ?? false)}>Save</Button>
+                                <Button aria-label="Discard Desktop Server changes" variant="ghost" disabled={isSavingDesktopSettings || (!desktopDirty && !desktopSettingsError)} onClick={() => {
                                     const invoke = getTauriInvoke()
                                     if (!invoke) return
                                     setIsSavingDesktopSettings(true)

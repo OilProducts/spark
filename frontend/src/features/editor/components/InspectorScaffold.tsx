@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { Well } from '@/components/app/well'
 
 interface InspectorScaffoldProps {
     scopeLabel: 'Graph' | 'Node' | 'Edge'
@@ -29,14 +30,14 @@ export function InspectorScaffold({
         >
             <div className="space-y-2">
                 <div className="flex items-center gap-2">
-                    <span className="rounded border border-border bg-background px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <span className="rounded-md border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground">
                         {scopeLabel}
                     </span>
-                    <h2 className="text-lg font-light tracking-tight text-foreground">{title}</h2>
+                    <h2 className="text-lg font-semibold text-foreground">{title}</h2>
                 </div>
                 {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
                 {entityValue ? (
-                    <div className="rounded border border-border/80 px-2 py-1 text-xs text-muted-foreground">
+                    <div className="rounded-lg bg-muted px-2.5 py-1.5 text-xs text-muted-foreground">
                         <span className="font-semibold text-foreground">{entityLabel || 'Selection'}:</span>{' '}
                         <span className="font-mono break-all">{entityValue}</span>
                     </div>
@@ -49,11 +50,11 @@ export function InspectorScaffold({
 
 export function InspectorEmptyState({ message }: InspectorEmptyStateProps) {
     return (
-        <div
+        <Well
             data-testid="inspector-empty-state"
-            className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-border/80 px-4 text-center text-sm text-muted-foreground"
+            className="flex min-h-40 items-center justify-center px-4 text-center text-sm text-muted-foreground"
         >
             <p>{message}</p>
-        </div>
+        </Well>
     )
 }

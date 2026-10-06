@@ -1,14 +1,15 @@
 import { expect, it } from 'vitest'
 import type { RunRecord } from '@/features/runs/model/shared'
 import type { Mission } from '../MissionsPanel'
-import { joinRuns, missionTime, parseTurn, shortLine, totalTokens } from '../model/missionModel'
+import { joinRuns, missionTime, missionTone, parseTurn, runStatusLabel, shortLine, totalTokens } from '../model/missionModel'
 
 const now = Date.parse('2026-09-28T12:30:00Z')
 const base: Mission = { id: 'm', revision: 1, fields: { title: 'T', description: '', archived: false }, activity: [], created_at: '2026-09-27 11:48:00.340499 +00:00:00' }
 const roster = (run_id: string, status: string, summary = '') => ({ run_id, flow_name: 'work/build-it.yaml', summary, launched_at: '2026-09-28 12:18:00.0 +00:00:00', status })
 
 it('gives each state one short line, and a closed mission never its reason', () => {
-    expect(shortLine({ ...base, status: 'draft' }, now)).toBe('Draft · created Sep 27')
+    // The Drafts group and the header pill say "Draft"; the line itself does not repeat it.
+    expect(shortLine({ ...base, status: 'draft' }, now)).toBe('created Sep 27')
     expect(shortLine({ ...base, status: 'running' }, now)).toBe('Agent is working')
     expect(shortLine({ ...base, status: 'running', runs: [roster('r0', 'completed'), roster('r1', 'running', 'Build the index')] }, now)).toBe('Build the index · 12m')
     expect(shortLine({ ...base, status: 'running', runs: [roster('r1', 'running')] }, now)).toBe('Build It · 12m')
@@ -43,16 +44,31 @@ it('reads the start, run results, run questions and replies from user turns', ()
         'Run run-c (work/build.yaml, "") is waiting on a recovery decision.',
         `Run question: ${JSON.stringify(question)}`,
         'User: ship it\n\nplease',
-        'Trigger fired: "hook" (webhook)',
+        'Trigger fired: "hook" (webhook)\nExternal data (full payload: 2 bytes):\n> {}',
+        'The user updated this mission; these replace the values in your instructions.\nTitle: New title',
     ].join('\n\n'))).toEqual([
         { kind: 'result', runId: 'run-a', flowName: 'testing/question-parent.yaml', summary: 'Test "quoted" handling', status: 'completed', error: '' },
         { kind: 'result', runId: 'run-b', flowName: 'work/build.yaml', summary: 'Build', status: 'failed', error: 'boom\n\nstill the error' },
         { kind: 'result', runId: 'run-c', flowName: 'work/build.yaml', summary: '', status: 'waiting', error: '' },
         { kind: 'question', prompt: 'Which color?', options: ['Blue', 'Green'], runId: 'run-root', flowName: 'Question Child (test)' },
         { kind: 'reply', text: 'ship it\n\nplease' },
-        { kind: 'text', text: 'Trigger fired: "hook" (webhook)' },
+        // What the runtime told the agent is an event, not the user's prose.
+        { kind: 'event', text: 'Trigger fired: "hook" (webhook)\nExternal data (full payload: 2 bytes):\n> {}' },
+        { kind: 'event', text: 'The user updated this mission; these replace the values in your instructions.\nTitle: New title' },
     ])
     expect(parseTurn('Run question: not json')).toEqual([{ kind: 'text', text: 'Run question: not json' }])
+})
+
+it('colours each state, and names run statuses as the Runs page does', () => {
+    expect(missionTone({ ...base, status: 'draft' })).toBe('neutral')
+    expect(missionTone({ ...base, status: 'running' })).toBe('info')
+    expect(missionTone({ ...base, status: 'needs_you' })).toBe('warning')
+    for (const [status, tone] of [['done', 'success'], ['failed', 'destructive'], ['canceled', 'neutral']] as const) {
+        expect(missionTone({ ...base, status: 'closed', closed: { status, reason: '', at: 't' } })).toBe(tone)
+    }
+    expect(runStatusLabel({ status: 'waiting', kind: 'waiting' })).toBe('Needs input')
+    expect(runStatusLabel({ status: 'canceled', kind: 'ended' })).toBe('Canceled')
+    expect(runStatusLabel({ status: 'something_new', kind: 'ended' })).toBe('Ended')
 })
 
 it('joins the roster with run facts by run id', () => {

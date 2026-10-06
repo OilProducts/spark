@@ -50,13 +50,32 @@ const renderHeader = (run: RunRecord, selectedVisitLabel: string | null = null) 
 )
 
 describe('RunHeaderBar', () => {
-    it('shows the run title under its flow and one line of facts', () => {
+    it('shows the run title under its flow, a status pill, and one line of facts', () => {
         renderHeader(makeRun({ title: 'Tighten the review loop' }))
 
         expect(screen.getByTestId('run-header-flow')).toHaveTextContent('Review Changes')
         expect(screen.getByTestId('run-header-title')).toHaveTextContent('Tighten the review loop')
-        expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^Completed \S.* · 5m · 1\.2k tokens · abcdef0$/)
+        expect(screen.getByTestId('run-header-status')).toHaveTextContent('Completed')
+        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'success')
+        expect(screen.getByTestId('run-header-facts')).toHaveTextContent(/^\S.* · 5m · 1\.2k tokens · abcdef0$/)
         expect(screen.queryByText(/Node:/)).not.toBeInTheDocument()
+    })
+
+    it('leads the breadcrumb with the project when given one', () => {
+        render(
+            <RunHeaderBar
+                run={makeRun({ title: 'Tighten the review loop' })}
+                now={Date.parse('2026-03-22T00:10:00Z')}
+                flowTitle="Review Changes"
+                project="spark"
+                selectedVisitLabel={null}
+                onRequestCancel={vi.fn()}
+                onRequestRetry={vi.fn()}
+                onContinueFromRun={vi.fn()}
+                onRerunRun={vi.fn()}
+            />,
+        )
+        expect(screen.getByTestId('run-header-flow').parentElement).toHaveTextContent('spark · Review Changes')
     })
 
     it('drops the flow line when the title is the flow title', () => {
@@ -87,5 +106,31 @@ describe('RunHeaderBar', () => {
         expect(screen.queryByTestId('run-summary-retry-button')).not.toBeInTheDocument()
         expect(screen.queryByTestId('run-summary-continue-button')).not.toBeInTheDocument()
         expect(screen.getByTestId('run-header-status')).toHaveTextContent('Needs input')
+        expect(screen.getByTestId('run-header-status')).toHaveAttribute('data-tone', 'warning')
+    })
+
+    it('uses the filled button only for Retry; the other commands are outlined or quiet', () => {
+        const failed = makeRun({ status: 'failed', outcome: 'failure', last_error: 'boom' })
+        const { unmount } = renderHeader(failed, 'Transform')
+        expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('data-variant', 'default')
+        expect(screen.getByTestId('run-summary-continue-button')).toHaveAttribute('data-variant', 'ghost')
+        expect(screen.getByTestId('run-summary-rerun-button')).toHaveAttribute('data-variant', 'outline')
+        unmount()
+
+        // While a continuation draft is open, its commit button is the one filled button.
+        render(
+            <RunHeaderBar
+                run={failed}
+                now={Date.parse('2026-03-22T00:10:00Z')}
+                flowTitle="Review Changes"
+                selectedVisitLabel="Transform"
+                continuationOpen
+                onRequestCancel={vi.fn()}
+                onRequestRetry={vi.fn()}
+                onContinueFromRun={vi.fn()}
+                onRerunRun={vi.fn()}
+            />,
+        )
+        expect(screen.getByTestId('run-summary-retry-button')).toHaveAttribute('data-variant', 'outline')
     })
 })

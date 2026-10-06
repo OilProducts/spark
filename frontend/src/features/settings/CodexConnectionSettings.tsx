@@ -70,7 +70,7 @@ export function CodexConnectionControls() {
         <div className="flex flex-wrap gap-2">
             {pending ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void request('cancel')}>Cancel sign-in</Button>
                 : <>
-                    <Button size="sm" disabled={disabled} onClick={() => void request('browser')}>
+                    <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('browser')}>
                         {connection?.status === 'connected' ? 'Reconnect Codex' : 'Connect Codex'}
                     </Button>
                     <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('device')}>Use a device code</Button>
@@ -84,7 +84,7 @@ export function CodexConnectionControls() {
 
 export function CodexConnectionSettings() {
     return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h3 className="text-lg font-light">Codex connection</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-lg font-semibold">Codex connection</h3></CardHeader>
         <CardContent className="px-4"><CodexConnectionControls /></CardContent>
     </Card>
 }

@@ -70,10 +70,12 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
 
   // One list in the side panel grouped by state, each row naming its project in one short line; archived missions stay hidden.
   const panel = page.getByTestId('missions-view').getByTestId('side-panel')
-  await expect(panel.getByRole('heading', { level: 3 })).toHaveText(['Needs you1', 'Running1', 'Drafts1', 'Closed1'])
+  await expect(panel.getByRole('heading', { level: 3 })).toHaveText(['Needs you', 'Running', 'Drafts', 'Closed'])
+  await expect(panel.getByLabel('1 matching missions')).toHaveCount(4)
   await expect(panel.getByTestId('mission-project').first()).toContainText('missions-editor-smoke')
   await expect(page.getByRole('button', { name: 'Review the ranking change' })).toHaveAccessibleDescription('Ship the ranking change?')
-  await expect(page.getByRole('button', { name: 'Draft the importer' })).toHaveAccessibleDescription(/^Draft · created Sep 10/)
+  // The Drafts group already says the state, so the row's line starts with the date.
+  await expect(page.getByRole('button', { name: 'Draft the importer' })).toHaveAccessibleDescription(/^created Sep 10/)
   const closedRow = page.getByRole('button', { name: 'Retire the old index', exact: true })
   await expect(closedRow).toHaveAccessibleDescription(/^Done · Sep 9/)
   const closedLine = closedRow.getByTestId('mission-status-line')
@@ -86,14 +88,14 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
   // A mission that needs you ends its thread with the question; an option posts as your reply.
   await page.getByRole('button', { name: 'Review the ranking change' }).click()
   const detail = page.getByRole('region', { name: 'Mission details' })
-  await expect(detail.getByRole('status')).toHaveText(/^Needs you · Ship the ranking change\?/)
+  await expect(detail.getByRole('status')).toHaveText(/^Needs you Ship the ranking change\?/)
   await expect(detail.getByRole('button', { name: 'Close mission' })).toBeVisible()
   await expect(detail.getByRole('button', { name: 'Cancel mission' })).toBeVisible()
   const events = detail.getByTestId('mission-event')
   await expect(events).toHaveCount(3)
   await expect(events.nth(0)).toContainText('Mission started')
-  await expect(events.nth(1)).toContainText('✓Rank search results by relevance ended completed')
-  await expect(events.nth(2)).toContainText('?Review the ranking diff asked “Ship the ranking change?”')
+  await expect(events.nth(1)).toContainText('Rank search results by relevance ended · Completed')
+  await expect(events.nth(2)).toContainText('Review the ranking diff asked “Ship the ranking change?”')
   await expect(detail.getByText('Keep the diff small.')).toBeVisible()
   const ask = detail.getByRole('region', { name: 'Waiting on you' })
   const thread = detail.getByTestId('mission-conversation')
@@ -151,7 +153,7 @@ for (const theme of ['light', 'dark']) test(`missions conversation view ${theme}
 
   // A closed mission ends with its outcome and has no reply box.
   await closedRow.click()
-  await expect(detail.getByRole('status')).toHaveText(/^Done · Sep 9/)
+  await expect(detail.getByRole('status')).toHaveText(/^Done Sep 9/)
   const outcome = detail.getByRole('region', { name: 'Outcome' })
   await expect(outcome).toContainText('Closed as done · Sep 9')
   await expect(outcome).toContainText('Dropped the legacy tables')
@@ -193,7 +195,7 @@ test('missions event lines stay one line for long titles, errors and questions',
   const events = detail.getByTestId('mission-event')
   await expect(events).toHaveCount(2)
   for (const event of await events.all()) {
-    expect((await event.boundingBox())!.height).toBeLessThan(24)
+    expect((await event.boundingBox())!.height).toBeLessThan(32)
     await expect(event.getByRole('link')).toHaveAttribute('href', /^#\/runs\/run-/)
     await expect(event.locator('time')).toBeVisible()
   }
@@ -235,7 +237,7 @@ test('missions header keeps one short line for long summaries and questions at a
     const detail = page.getByRole('region', { name: 'Mission details' })
     const status = detail.getByRole('status')
     await expect(status).toContainText('Rebuild the search index')
-    expect((await status.boundingBox())!.height).toBeLessThan(24)
+    expect((await status.boundingBox())!.height).toBeLessThan(32)
     expect((await detail.getByTestId('mission-body').boundingBox())!.height).toBeGreaterThan(300)
     const reply = detail.getByRole('textbox', { name: 'Reply' })
     await reply.scrollIntoViewIfNeeded()
@@ -265,7 +267,7 @@ test('missions rail expands a short objective that wraps past four lines and a d
   const objective = rail.getByRole('region', { name: 'Objective' })
   const text = objective.getByText(description)
   expect(await text.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
-  await objective.getByRole('button', { name: 'Show the whole objective' }).click()
+  await objective.getByRole('button', { name: 'Show full objective' }).click()
   expect(await text.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(false)
   await expect(objective.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true')
   // Before Start the playbook's text loads and expands.

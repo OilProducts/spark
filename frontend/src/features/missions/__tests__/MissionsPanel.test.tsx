@@ -122,7 +122,7 @@ it('shows a draft with its objective in the rail, Start and Edit, and the reply 
     fireEvent.click(detail().getByRole('button', { name: 'Start' }))
     await waitFor(() => expect(detail().getByLabelText('Reply')).toBeEnabled())
     expect(calls[0].url).toBe('/workspace/api/missions/task-1/start?project_path=%2Fproject')
-    expect(detail().getByRole('status')).toHaveTextContent('Running · Agent is working')
+    expect(detail().getByRole('status')).toHaveTextContent('Running Agent is working')
     expect(within(screen.getByRole('region', { name: 'Running' })).getByRole('button', { name: 'Deliver search' })).toBeInTheDocument()
 })
 
@@ -143,7 +143,7 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
     // The objective shows once, in the rail; the thread opens with a quiet start line.
     expect(detail().getAllByText('Ship search')).toHaveLength(1)
     const events = detail().getAllByTestId('mission-event')
-    expect(events.map(event => [event.firstChild?.textContent, event.children[1].textContent])).toEqual([['▸', 'Mission started'], ['✓', 'Build ended completed'], ['?', 'Build asked “Ship the build?”']])
+    expect(events.map(event => event.children[1].textContent)).toEqual(['Mission started', 'Build ended · Completed', 'Build asked “Ship the build?”'])
     expect(detail().getByText('Prefer small diffs')).toBeInTheDocument()
     const ask = within(detail().getByRole('region', { name: 'Waiting on you' }))
     expect(ask.getByText('Ship the build?')).toBeInTheDocument()
@@ -155,7 +155,7 @@ it('reads the thread as quiet event lines, ends with the pending question, and r
     await waitFor(() => expect(detail().getByLabelText('Reply')).toHaveValue(''))
     // The rail lists the run with a link to it on the Runs page.
     const runs = within(detail().getByRole('region', { name: 'Runs' }))
-    expect(runs.getByRole('img', { name: 'Waiting' })).toBeInTheDocument()
+    expect(runs.getByText('Needs input')).toBeInTheDocument()
     expect(runs.getByRole('link', { name: 'Build' })).toHaveAttribute('href', '#/runs/run-build')
     fireEvent.click(within(events[1]).getByRole('link', { name: 'Build' }))
     expect(useStore.getState().viewMode).toBe('runs')
@@ -250,10 +250,55 @@ it('renders inline flow launches in the transcript with a link to the run', asyn
         flow_launches: [{ id: 'launch-1', created_at: at, updated_at: at, revision: 1, flow_name: 'work/build.yaml', summary: 'Build the search index', project_path: '/project', conversation_id: 'task-1', source_turn_id: 'a1', source_segment_id: 'seg-launch', status: 'launched', goal: null, launch_context: null, model: null, run_id: 'run-launch', launch_error: null }] }
     render(<MissionsPanel active />)
     fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
-    const launch = (await detail().findAllByTestId('mission-event'))[0]
-    expect(launch).toHaveTextContent(/^→Launched Build the search index/)
+    const launch = await detail().findByTestId('mission-run-card')
+    expect(launch).toHaveTextContent(/^Launched run · Build/)
     fireEvent.click(within(launch).getByRole('link', { name: 'Build the search index' }))
     expect(useStore.getState().viewMode).toBe('runs')
+})
+
+it('opens assistant turns with the worked meta, folds commands, hides thinking until asked and keeps notices', async () => {
+    task = mission({ status: 'running', conversation_id: 'task-1', started_at: 't' })
+    const at = (seconds: number) => `2026-09-20T10:00:${String(seconds).padStart(2, '0')}Z`
+    const segment = (id: string, order: number, kind: string, extra: Record<string, unknown>) => ({ id, turn_id: 'a1', order, kind, role: 'assistant', status: 'complete', timestamp: at(order), updated_at: at(order), completed_at: at(order), content: '', error: null, tool_call: null, source: null, ...extra })
+    const call = (id: string, command: string, extra: Record<string, unknown> = {}) => ({ id, kind: 'command_execution', status: 'completed', title: 'Shell', command, output: `${id} output`, output_size: null, output_truncated: false, file_paths: [], completion_reason: null, ...extra })
+    const notice = 'Could not start a turn: harness offline\n\nBegin work on this mission.'
+    snapshot = { ...conversation([turn('u1', 'user', 'Begin work on this mission.'), turn('a1', 'assistant', 'Done.'), turn('n1', 'system', notice, 'mission_notice')]), segments: [
+        segment('s1', 1, 'tool_call', { role: 'system', tool_call: call('c1', "/bin/zsh -lc 'git status'") }),
+        segment('s2', 2, 'reasoning', { content: '**Planning the fix**\n\nCheck the index first.' }),
+        segment('s3', 3, 'tool_call', { role: 'system', tool_call: call('c2', "/bin/zsh -lc 'cargo test'", { output: 'preview', output_size: 4096, output_truncated: true }) }),
+        // Sixteen seconds after the turn began, so the timeline inserts "Worked for 16s" before the answer.
+        segment('s4', 16, 'assistant_message', { content: 'Done.' }),
+    ] }
+    const base = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) => String(url).includes('/tool-output/') ? { ok: true, json: async () => ({ output: 'full cargo output', output_size: 4096 }) } as Response : base(url, init))
+    render(<MissionsPanel active />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver search' }))
+    expect(await detail().findByText('Done.')).toBeInTheDocument()
+    // The turn opens with a header carrying how long it worked, not a centered rule.
+    expect(detail().getByText(/worked 16s$/)).toBeInTheDocument()
+    expect(detail().queryByText(/Worked for/)).not.toBeInTheDocument()
+    // Both commands fold into one group whose lines drop the shell wrapper but keep the full command as a tooltip.
+    const group = detail().getByRole('button', { name: 'Ran 2 commands' })
+    expect(detail().queryByText('git status')).not.toBeInTheDocument()
+    fireEvent.click(group)
+    expect(group).toHaveAttribute('aria-expanded', 'true')
+    expect(detail().getByText('git status')).toBeInTheDocument()
+    expect(detail().getByTestId('mission-tool-call-toggle-c1')).toHaveAttribute('title', "/bin/zsh -lc 'git status'")
+    // Thinking between the calls stays hidden until asked for.
+    expect(detail().queryByText('Planning the fix')).not.toBeInTheDocument()
+    const thinking = detail().getByRole('button', { name: 'Show thinking' })
+    expect(thinking).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(thinking)
+    expect(thinking).toHaveAttribute('aria-pressed', 'true')
+    expect(detail().getByText('Planning the fix')).toBeInTheDocument()
+    // Opening a call with a truncated preview fetches its full output once.
+    fireEvent.click(detail().getByTestId('mission-tool-call-toggle-c2'))
+    expect(await detail().findByText('full cargo output')).toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter(url => url.includes('/tool-output/'))).toEqual(['/workspace/api/conversations/task-1/tool-output/s3?project_path=%2Fproject'])
+    // A notice the runtime appended on its own stays in the log as an event line, with the whole text as its tooltip.
+    const events = detail().getAllByTestId('mission-event')
+    expect(events.map(event => event.children[1].textContent)).toEqual(['Mission started', 'Could not start a turn: harness offline'])
+    expect(events[1]).toHaveAttribute('title', notice)
 })
 
 it('answers a question the agent asks through its own tool mid-turn', async () => {
@@ -278,7 +323,7 @@ it('ends a closed mission with its outcome once, without cancel, close or the re
     expect(detail().queryByLabelText('Reply')).not.toBeInTheDocument()
     expect(detail().getByRole('region', { name: 'Outcome' })).toHaveTextContent(/^Closed as canceled · Sep 20.*Canceled by human$/)
     expect(detail().getAllByText(/Canceled by human/)).toHaveLength(1)
-    expect(detail().getByRole('status')).toHaveTextContent(/^Canceled · Sep 20/)
+    expect(detail().getByRole('status')).toHaveTextContent(/^Canceled Sep 20/)
     expect(detail().queryByRole('button', { name: 'Close mission' })).not.toBeInTheDocument()
     expect(detail().queryByRole('button', { name: 'Cancel mission' })).not.toBeInTheDocument()
     fireEvent.keyDown(detail().getByRole('button', { name: 'Mission actions' }), { key: 'Enter' })
@@ -334,7 +379,7 @@ it('switches to a mission selected elsewhere while editing or drafting, keeping 
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unfinished edit' } })
     await act(async () => { useStore.getState().setSelectedMission({ id: 'task-2', projectPath: '/project' }) })
     expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Other mission' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Other mission' })).toHaveAttribute('aria-current', 'true')
     fireEvent.click(screen.getByRole('button', { name: /Deliver search/ }))
     expect(screen.getByLabelText('Title')).toHaveValue('Unfinished edit')
 
@@ -342,7 +387,7 @@ it('switches to a mission selected elsewhere while editing or drafting, keeping 
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New draft' } })
     await act(async () => { useStore.getState().setSelectedMission({ id: 'task-2', projectPath: '/project' }) })
     expect(screen.queryByLabelText('Title')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Other mission' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Other mission' })).toHaveAttribute('aria-current', 'true')
     await newMission()
     expect(screen.getByLabelText('Title')).toHaveValue('New draft')
 })
@@ -554,7 +599,7 @@ it('filters titles locally with matching counts and keeps the selected read view
     expect(screen.getByText('No matches')).toBeInTheDocument()
     expect(detail().getByRole('heading', { level: 2 })).toHaveTextContent('Deliver search')
     fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
-    expect(screen.getByRole('button', { name: 'Deliver search' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Deliver search' })).toHaveAttribute('aria-current', 'true')
     expect(fetch).toHaveBeenCalledTimes(count)
 })
 
@@ -605,7 +650,8 @@ it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission 
     }
     render(<Panels />)
     const row = await screen.findByTestId('trigger-row-watcher')
-    expect(within(row).getByText('Enabled')).toBeVisible()
+    // The trigger row names only the exception: an enabled trigger carries no state word.
+    expect(row).not.toHaveTextContent('Disabled')
     act(() => useStore.setState({ viewMode: 'missions' }))
     fireEvent.click(await screen.findByRole('button', { name: task.fields.title }))
     const heading = detail().getByRole('heading', { level: 2 })
@@ -617,5 +663,5 @@ it.each(['Close mission', 'Cancel mission', 'agent close'])('%s updates mission 
     expect(useStore.getState().triggersSession.triggers[0]).toMatchObject({ enabled: false, revision: '2' })
     fireEvent.click(link)
     expect(screen.getByTestId('trigger-row-watcher')).toBe(row)
-    expect(within(row).getByText('Disabled')).toBeVisible()
+    expect(row).toHaveTextContent('Disabled')
 })

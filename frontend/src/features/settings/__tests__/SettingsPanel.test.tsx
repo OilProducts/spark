@@ -41,7 +41,7 @@ afterEach(() => cleanup())
 it('has local default selection, semantic headings, keyboard tabs, and mounted hidden panels', async () => {
     const user = userEvent.setup()
     const view = render(<DialogProvider><SettingsPanel /></DialogProvider>)
-    await waitFor(() => expect(card('Model defaults (Workspace)').getByRole('button', { name: /^Model:/ })).toBeEnabled())
+    await waitFor(() => expect(card('Model defaults (workspace)').getByRole('button', { name: /^Model:/ })).toBeEnabled())
     const first = screen.getByRole('tab', { name: 'Models & accounts' })
     expect(first).toHaveAttribute('aria-selected', 'true')
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1)
@@ -92,7 +92,7 @@ it('retains hidden validation and dirty drafts, protects leaving, and discards p
 it('shares discovery fallback, profiles, custom values and compatibility with project overrides and labels saved values', async () => {
     const user = userEvent.setup()
     render(<DialogProvider><WithProject /></DialogProvider>)
-    const workspace = card('Model defaults (Workspace)')
+    const workspace = card('Model defaults (workspace)')
     const project = card('Project model defaults')
     await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('saved-model')
@@ -130,8 +130,8 @@ it('keeps hidden requests mounted and blocks navigation before another dirty edi
     await waitFor(() => expect(screen.getByLabelText('Editor sidebar width (pixels)')).toBeEnabled())
     await user.type(screen.getByLabelText('Editor sidebar width (pixels)'), '400')
     await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
-    await chooseModel(user, 'anthropic', 'claude-sonnet-4-6', card('Model defaults (Workspace)'))
-    await user.click(card('Model defaults (Workspace)').getByRole('button', { name: /^Save/ }))
+    await chooseModel(user, 'anthropic', 'claude-sonnet-4-6', card('Model defaults (workspace)'))
+    await user.click(card('Model defaults (workspace)').getByRole('button', { name: /^Save/ }))
     await user.click(screen.getByRole('tab', { name: 'Execution' }))
     await user.click(screen.getByRole('button', { name: 'Open flow editor' }))
     act(() => useStore.getState().setViewMode('runs'))
@@ -141,7 +141,7 @@ it('keeps hidden requests mounted and blocks navigation before another dirty edi
     await act(async () => reject(new Error('Save conflict')))
     await user.click(screen.getByRole('tab', { name: 'Models & accounts' }))
     expect(screen.getByText('Save conflict')).toBeVisible()
-    expect(card('Model defaults (Workspace)').getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6')
+    expect(card('Model defaults (workspace)').getByRole('button', { name: /^Model:/ })).toHaveTextContent('claude-sonnet-4-6')
 })
 
 it('uses discovered suggestions in both editors and displays inherited saved profile labels and defaults', async () => {
@@ -154,7 +154,7 @@ it('uses discovered suggestions in both editors and displays inherited saved pro
     await waitFor(() => expect(project.getByRole('switch')).toBeEnabled())
     expect(project.getByText(/Saved effective:/)).toHaveTextContent('Team models team · Model: team-one · Reasoning effort: low')
     await user.click(project.getByRole('switch'))
-    for (const editor of [card('Model defaults (Workspace)'), project]) {
+    for (const editor of [card('Model defaults (workspace)'), project]) {
         await chooseModel(user, 'Codex', 'Discovered', editor)
         expect(editor.getByRole('button', { name: /^Model:/ })).toHaveTextContent('Discovered')
     }
@@ -169,7 +169,7 @@ it.each([false, true])('resolves reset from the parent instead of the saved over
         stored: path || !projectScope ? override : workspace, effective: path || !projectScope ? override : workspace }))
     vi.mocked(useModelOptions).mockReturnValue({ projectPath: '/project', payload: { models: [{ provider: 'codex', id: 'discovered', display: 'Discovered', is_default: true, default_reasoning_effort: 'medium' }], providers: { codex: { status: 'available', error: null } } } })
     render(<DialogProvider><WithProject /></DialogProvider>)
-    const scope = card(projectScope ? 'Project model defaults' : 'Model defaults (Workspace)')
+    const scope = card(projectScope ? 'Project model defaults' : 'Model defaults (workspace)')
     await waitFor(() => expect(scope.getByRole('button', { name: /^Model:/ })).toHaveTextContent('saved-override · High'))
     await openPicker(user, scope)
     const expected = projectScope ? 'workspace-parent · Low' : 'Discovered · Medium'
@@ -206,7 +206,7 @@ it('keeps the utility model off until chosen, offers the chat picker models, and
         await user.keyboard('{Escape}')
         return names
     }
-    expect(await options(utility)).toEqual(await options(card('Model defaults (Workspace)')))
+    expect(await options(utility)).toEqual(await options(card('Model defaults (workspace)')))
     await chooseModel(user, 'anthropic', 'claude-haiku-4-5', utility)
     await user.click(utility.getByRole('button', { name: 'Save utility model' }))
     expect(saveModelSettings).toHaveBeenCalledWith('utility-one', expect.objectContaining(chosen), undefined, 'utility_models')

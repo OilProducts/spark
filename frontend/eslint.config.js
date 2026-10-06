@@ -78,7 +78,7 @@ export default defineConfig([
           {
             // Gitignore-style negations cannot re-include children of an
             // excluded parent, so allow ui/app via regex instead of !globs.
-            regex: '^@/components(?!/(ui|app)/)',
+            regex: '^@/components(?!/(ui|app|model-chooser)/)',
             message: 'Shared imports must come from @/components/ui/* or @/components/app/*, or stay inside the owning feature.',
           },
         ],

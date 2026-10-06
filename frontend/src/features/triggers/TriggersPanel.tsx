@@ -16,13 +16,11 @@ import { useStore } from "@/store"
 import { defaultProjectChoice, isUnregisteredTarget } from "@/features/projects/model/projectChoices"
 import { ViewLayout } from "@/components/app/view-layout"
 import { InlineError } from "@/components/app/inline-error"
+import { SectionHeading } from "@/components/app/section-heading"
+import { ListGroupLabel, SidePanelRow } from "@/components/app/side-panel-row"
+import { Well } from "@/components/app/well"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-} from "@/components/ui/empty"
 export function TriggersPanel() {
   const projectRegistry = useStore((state) => state.projectRegistry)
   const triggersSession = useStore((state) => state.triggersSession)
@@ -107,54 +105,50 @@ export function TriggersPanel() {
   ]
 
   const panel = (
-    <div className="space-y-5 px-2">
+    <div className="space-y-4">
       {triggerGroups.map((group) => (
-        <div key={group.title} className="space-y-1">
-          <div className="px-2">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.title}</h3>
-            {group.note ? <p className="text-xs text-muted-foreground">{group.note}</p> : null}
-          </div>
+        <div key={group.title} className="space-y-0.5">
+          <ListGroupLabel>
+            <h3>{group.title}</h3>
+            {group.note ? <p className="font-normal">{group.note}</p> : null}
+          </ListGroupLabel>
           {status !== 'ready' && status !== 'error' ? (
-            <p data-testid={group.loadingTestId} className="px-2 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
+            <p data-testid={group.loadingTestId} className="px-3 text-sm text-muted-foreground" aria-live="polite">Restoring triggers…</p>
           ) : null}
           {group.triggers.map((trigger) => {
             const unregistered = isUnregisteredTarget(projectRegistry, trigger.action.project_path)
             return (
-              <button
+              <SidePanelRow
                 key={trigger.id}
-                type="button"
                 data-testid={`trigger-row-${trigger.id}`}
                 data-unregistered-target={unregistered ? 'true' : undefined}
-                aria-current={selectedTriggerId === trigger.id && !createFormOpen ? 'true' : undefined}
+                selected={selectedTriggerId === trigger.id && !createFormOpen}
+                // A disabled trigger is the exception: hollow dot plus the word.
+                tone="neutral"
+                hollow={!trigger.enabled}
+                title={trigger.name}
+                meta={(
+                  <>
+                    <span
+                      data-testid="trigger-row-target"
+                      title={trigger.action.project_path ?? undefined}
+                      className={unregistered ? 'text-warning' : undefined}
+                    >
+                      {triggerTargetSummary(trigger, projectRegistry)}
+                    </span>
+                    {' · '}{triggerSourceSummary(trigger)}
+                    {trigger.enabled ? null : ' · Disabled'}
+                  </>
+                )}
                 onClick={() => {
                   setSelectedTriggerId(trigger.id)
                   updateTriggersSession({ createFormOpen: false })
                 }}
-                className={`block w-full px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring ${selectedTriggerId === trigger.id && !createFormOpen ? 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]' : 'hover:text-primary'}`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-sm">{trigger.name}</span>
-                  <span className={`shrink-0 text-xs ${trigger.enabled ? 'text-success' : 'text-muted-foreground'}`}>{trigger.enabled ? 'Enabled' : 'Disabled'}</span>
-                </div>
-                <div className="mt-0.5 truncate text-xs text-muted-foreground">
-                  <span
-                    data-testid="trigger-row-target"
-                    title={trigger.action.project_path ?? undefined}
-                    className={unregistered ? 'text-warning' : undefined}
-                  >
-                    {triggerTargetSummary(trigger, projectRegistry)}
-                  </span>
-                  {' · '}{triggerSourceSummary(trigger)}
-                </div>
-              </button>
+              />
             )
           })}
           {status === 'ready' && group.triggers.length === 0 ? (
-            <Empty className="px-3 py-3 text-xs text-muted-foreground">
-              <EmptyHeader>
-                <EmptyDescription>{group.emptyText}</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <p className="px-3 py-1 text-xs text-muted-foreground">{group.emptyText}</p>
           ) : null}
         </div>
       ))}
@@ -170,7 +164,7 @@ export function TriggersPanel() {
           <Button type="button" variant="ghost" size="xs" onClick={() => void refreshTriggers()}>
             {loading ? 'Refreshing…' : 'Refresh'}
           </Button>
-          <Button type="button" data-testid="trigger-new-button" variant="ghost" size="xs" onClick={openCreateForm}>
+          <Button type="button" data-testid="trigger-new-button" variant="outline" size="xs" onClick={openCreateForm}>
             <Plus />
             New
           </Button>
@@ -191,10 +185,10 @@ export function TriggersPanel() {
         <div className="grid gap-6">
           {createFormOpen ? (
             <Card className="gap-4 py-4">
-              <CardHeader className="gap-1 px-4">
-                <CardTitle className="text-lg font-light">New trigger</CardTitle>
+              <CardHeader className="gap-1 px-0">
+                <CardTitle role="heading" aria-level={3} className="text-xl font-semibold">New trigger</CardTitle>
               </CardHeader>
-              <CardContent className="px-4 pt-0">
+              <CardContent className="px-0 pt-0">
                 <TriggerEditor
                   form={newTriggerForm}
                   onChange={setNewTriggerForm}
@@ -206,7 +200,7 @@ export function TriggersPanel() {
                     type="button"
                     aria-label="Cancel new trigger"
                     data-testid="trigger-create-cancel-button"
-                    variant="outline"
+                    variant="ghost"
                     disabled={pending}
                     onClick={() => updateTriggersSession({ createFormOpen: false })}
                   >
@@ -225,10 +219,10 @@ export function TriggersPanel() {
             </Card>
           ) : selectedTrigger && editTriggerForm ? (
             <Card className="gap-4 py-4">
-              <CardHeader className="flex flex-row items-start justify-between gap-2 px-4">
+              <CardHeader className="flex flex-row items-start justify-between gap-2 px-0">
                 <div className="min-w-0">
-                  <CardTitle className="truncate text-lg font-light">{selectedTrigger.name}</CardTitle>
-                  <div className="text-xs text-muted-foreground">
+                  <CardTitle role="heading" aria-level={3} className="truncate text-xl font-semibold">{selectedTrigger.name}</CardTitle>
+                  <div className="mt-1 text-xs text-muted-foreground">
                     {selectedTrigger.protected ? 'System trigger' : 'Custom trigger'}
                   </div>
                 </div>
@@ -246,7 +240,7 @@ export function TriggersPanel() {
                 ) : null}
               </CardHeader>
 
-              <CardContent className="px-4 pt-0">
+              <CardContent className="px-0 pt-0">
                 <TriggerEditor
                   form={editTriggerForm}
                   onChange={setEditTriggerForm}
@@ -255,8 +249,8 @@ export function TriggersPanel() {
                 />
 
                 {selectedTrigger.source_type === 'webhook' ? (
-                  <div className="mt-4 space-y-2 rounded-md border border-border p-3 text-sm">
-                    <div className="font-medium text-foreground">Shared webhook ingress</div>
+                  <Well className="mt-4 space-y-2 text-sm">
+                    <SectionHeading as="h4">Shared webhook ingress</SectionHeading>
                     <div className="text-muted-foreground">POST JSON to <code>{SHARED_WEBHOOK_ENDPOINT}</code> with:</div>
                     <div className="font-mono text-xs text-foreground">
                       X-Spark-Webhook-Key: {String(selectedTrigger.source.webhook_key ?? '')}
@@ -273,12 +267,12 @@ export function TriggersPanel() {
                     >
                       {isRegenerating ? 'Regenerating…' : 'Regenerate secret'}
                     </Button>
-                  </div>
+                  </Well>
                 ) : null}
 
                 <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                  <div className="rounded-md border border-border p-3 text-sm">
-                    <div className="font-medium text-foreground">Runtime</div>
+                  <Well className="text-sm">
+                    <SectionHeading as="h4">Runtime</SectionHeading>
                     <div className="mt-2 text-muted-foreground">Target: {triggerTargetSummary(selectedTrigger, projectRegistry)}</div>
                     <div className="mt-2 text-muted-foreground">Last fired: {formatTriggerTimestamp(selectedTrigger.state.last_fired_at)}</div>
                     <div className="text-muted-foreground">Next run: {formatTriggerTimestamp(selectedTrigger.state.next_run_at)}</div>
@@ -286,31 +280,27 @@ export function TriggersPanel() {
                     {selectedTrigger.state.last_error ? (
                       <div className="mt-2 text-destructive">{selectedTrigger.state.last_error}</div>
                     ) : null}
-                  </div>
-                  <div className="rounded-md border border-border p-3 text-sm">
-                    <div className="font-medium text-foreground">Recent history</div>
+                  </Well>
+                  <Well className="text-sm">
+                    <SectionHeading as="h4">Recent history</SectionHeading>
                     <div className="mt-2 space-y-2">
                       {selectedTrigger.state.recent_history.slice(0, 5).map((entry) => (
-                        <div key={`${entry.timestamp}-${entry.status}`} className="rounded border border-border/70 px-2 py-1">
+                        <div key={`${entry.timestamp}-${entry.status}`}>
                           <div className="text-xs text-foreground">{entry.status}</div>
                           <div className="text-xs text-muted-foreground">{formatTriggerTimestamp(entry.timestamp)}</div>
                           <div className="text-xs text-muted-foreground">{entry.message}</div>
                         </div>
                       ))}
                       {selectedTrigger.state.recent_history.length === 0 ? (
-                        <Empty className="px-3 py-4 text-xs text-muted-foreground">
-                          <EmptyHeader>
-                            <EmptyDescription>No trigger history yet.</EmptyDescription>
-                          </EmptyHeader>
-                        </Empty>
+                        <p className="text-xs text-muted-foreground">No trigger history yet.</p>
                       ) : null}
                     </div>
-                  </div>
+                  </Well>
                 </div>
 
                 {externalChange ? <p role="status">This trigger changed elsewhere. Your draft is retained; discard to reload.</p> : null}
                 <div className="mt-4 flex justify-end gap-2">
-                  <Button aria-label="Discard selected trigger changes" type="button" variant="outline" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
+                  <Button aria-label="Discard selected trigger changes" type="button" variant="ghost" disabled={!dirty || pending || isRegenerating} onClick={discard}>Discard</Button>
                   <Button aria-label="Save selected trigger"
                     type="button"
                     data-testid="trigger-save-button"

@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ProjectConversationHistory } from '@/features/projects/components/ProjectConversationHistory'
+import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
+import { useStore } from '@/store'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
 import type {
@@ -84,6 +86,7 @@ const makeHistoryElement = (
         latestFlowLaunchId={overrides.latestFlowLaunchId ?? null}
         expandedToolCalls={{}}
         expandedThinkingEntries={{}}
+        showThinking={false}
         pendingFlowRunRequestId={overrides.pendingFlowRunRequestId ?? null}
         pendingProposedPlanId={overrides.pendingProposedPlanId ?? null}
         requestUserInputActionError={overrides.requestUserInputActionError ?? null}
@@ -105,6 +108,7 @@ const renderHistory = (
 afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    useStore.setState((state) => ({ runsListSession: { ...state.runsListSession, runs: [] } }))
 })
 
 const InteractiveHistory = ({
@@ -114,8 +118,12 @@ const InteractiveHistory = ({
 }) => {
     const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({})
     const [expandedThinkingEntries, setExpandedThinkingEntries] = useState<Record<string, boolean>>({})
+    // The real toggle sits in the sheet header (ProjectConversationSurface); stand in for it here.
+    const [showThinking, setShowThinking] = useState(false)
 
     return (
+        <>
+        <ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} />
         <ProjectConversationHistory
             activeConversationId="conversation-1"
             activeProjectPath="/tmp/project"
@@ -129,6 +137,7 @@ const InteractiveHistory = ({
             latestFlowLaunchId={null}
             expandedToolCalls={expandedToolCalls}
             expandedThinkingEntries={expandedThinkingEntries}
+            showThinking={showThinking}
             pendingFlowRunRequestId={null}
             pendingProposedPlanId={null}
             requestUserInputActionError={null}
@@ -151,6 +160,7 @@ const InteractiveHistory = ({
             onReviewProposedPlan={vi.fn()}
             onOpenFlowRun={vi.fn()}
         />
+        </>
     )
 }
 
@@ -665,7 +675,7 @@ describe('ProjectConversationHistory', () => {
         expect(screen.queryByText('**updated markdown**')).not.toBeInTheDocument()
     })
 
-    it('renders mode-change rows as centered inline system markers', () => {
+    it('renders mode-change rows as event lines', () => {
         renderHistory([
             makeModeChangeEntry(),
         ])
@@ -674,7 +684,7 @@ describe('ProjectConversationHistory', () => {
         expect(within(row).getByText('Switched to Plan mode')).toBeVisible()
     })
 
-    it('renders context compaction rows as centered inline system markers', () => {
+    it('renders context compaction rows as event lines', () => {
         renderHistory([
             makeContextCompactionEntry(),
         ])
@@ -691,7 +701,7 @@ describe('ProjectConversationHistory', () => {
         ])
 
         const planCard = screen.getByTestId('project-plan-card-plan-1')
-        expect(within(planCard).getByText('Proposed Plan')).toBeVisible()
+        expect(within(planCard).getByText('Proposed plan')).toBeVisible()
         expect(within(planCard).getByRole('heading', { level: 2, name: 'Proposed steps' })).toBeVisible()
         expect(within(planCard).getByText('Add the transport regression.')).toBeVisible()
     })
@@ -835,7 +845,7 @@ describe('ProjectConversationHistory', () => {
         })
 
         const card = screen.getByTestId('project-request-user-input-card-request-user-input-1')
-        expect(within(card).getByText('Needs Input')).toBeVisible()
+        expect(within(card).getByText('Needs input')).toBeVisible()
         expect(within(card).getByText('Which path should I take?')).toBeVisible()
         expect(within(card).getByText('What constraints matter?')).toBeVisible()
         expect(screen.queryByTestId('project-pending-questions-preview-note')).not.toBeInTheDocument()
@@ -877,7 +887,7 @@ describe('ProjectConversationHistory', () => {
         ])
 
         const summary = screen.getByTestId('project-request-user-input-summary-request-user-input-1')
-        expect(within(summary).getByText('Answered Request')).toBeVisible()
+        expect(within(summary).getByText('Answered request')).toBeVisible()
         expect(within(summary).getByText('Which path should I take?')).toBeVisible()
         expect(within(summary).getByText('Inline card')).toBeVisible()
     })
@@ -909,7 +919,7 @@ describe('ProjectConversationHistory', () => {
         ])
 
         const expiredCard = screen.getByTestId('project-request-user-input-expired-request-user-input-1')
-        expect(within(expiredCard).getByText('Expired Request')).toBeVisible()
+        expect(within(expiredCard).getByText('Expired request')).toBeVisible()
         expect(within(expiredCard).getByText('The request expired before this answer could be used. Send a new message to continue.')).toBeVisible()
         expect(within(expiredCard).getByText('Inline card')).toBeVisible()
         expect(within(expiredCard).queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
@@ -952,7 +962,7 @@ describe('ProjectConversationHistory', () => {
         expect(within(history).queryByRole('link', { name: 'docs' })).not.toBeInTheDocument()
     })
 
-    it('keeps thinking summaries collapsed until expanded', async () => {
+    it('hides thinking behind "Show thinking", keeping a live marker, then collapses each summary to its lead-in', async () => {
         const user = userEvent.setup()
 
         render(
@@ -968,11 +978,130 @@ describe('ProjectConversationHistory', () => {
             />,
         )
 
+        expect(screen.getByText('Thinking')).toBeVisible()
+        expect(screen.queryByText('Considering proposal')).not.toBeInTheDocument()
+
+        await user.click(screen.getByRole('button', { name: 'Show thinking' }))
         expect(screen.getByText('Considering proposal')).toBeVisible()
         expect(screen.queryByText('Smallest safe change first.')).not.toBeInTheDocument()
 
         await user.click(screen.getByTestId('project-thinking-toggle-segment-reasoning-1'))
         expect(screen.getByText('Smallest safe change first.')).toBeVisible()
+    })
+
+    it('drops completed thinking entirely while a thought still in progress keeps its marker', () => {
+        renderHistory([
+            makeMessageEntry({ id: 'done', presentation: 'thinking', status: 'complete', content: 'Reasoned it through.' }),
+            makeMessageEntry({ id: 'live', presentation: 'thinking', status: 'streaming', content: 'Still reasoning.' }),
+        ])
+
+        expect(screen.queryByText('Reasoned it through.')).not.toBeInTheDocument()
+        expect(screen.queryByText('Still reasoning.')).not.toBeInTheDocument()
+        expect(screen.getAllByText('Thinking')).toHaveLength(1)
+    })
+
+    it('folds consecutive tool calls into one group whose lines still expand each call', async () => {
+        const user = userEvent.setup()
+
+        render(
+            <InteractiveHistory
+                activeConversationHistory={[
+                    makeToolCallEntry({
+                        id: 'entry-1',
+                        toolCall: { id: 'tool-1', kind: 'command_execution', status: 'completed', title: 'List', command: "/bin/zsh -lc 'ls -la'", output: 'README.md', filePaths: [] },
+                    }),
+                    makeToolCallEntry({
+                        id: 'entry-2',
+                        toolCall: { id: 'tool-2', kind: 'command_execution', status: 'failed', title: 'Test', command: "/bin/zsh -lc 'npm test'", output: '1 failing', filePaths: [] },
+                    }),
+                ]}
+            />,
+        )
+
+        const group = screen.getByTestId('project-tool-group-tool-1')
+        expect(group).toHaveTextContent('Ran 2 commands')
+        expect(group).toHaveTextContent('1 failed')
+        expect(group).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.queryByTestId('project-tool-call-toggle-tool-1')).not.toBeInTheDocument()
+
+        await user.click(group)
+        expect(screen.getByTestId('project-tool-call-toggle-tool-1')).toHaveTextContent('ls -la')
+        expect(screen.getByTestId('project-tool-call-toggle-tool-2')).toHaveTextContent('npm test')
+        expect(screen.queryByText('1 failing')).not.toBeInTheDocument()
+
+        await user.click(screen.getByTestId('project-tool-call-toggle-tool-2'))
+        expect(screen.getByText('1 failing')).toBeVisible()
+    })
+
+    it('opens each assistant turn with a header carrying its time and the worked time instead of a divider', () => {
+        renderHistory([
+            makeMessageEntry({ id: 'ask', role: 'user', content: 'Run ls.' }),
+            makeToolCallEntry({ id: 'entry-tool-1', timestamp: '2026-04-16T15:27:47Z' }),
+            { id: 'sep', kind: 'final_separator', role: 'system', timestamp: '2026-04-16T15:28:07Z', label: 'Worked for 20s' },
+            makeMessageEntry({ id: 'answer', content: 'Done.' }),
+        ])
+
+        const turn = screen.getByTestId('project-assistant-turn-entry-tool-1')
+        expect(within(turn).getByText('Spark')).toBeVisible()
+        // "<time> · worked 20s": the time is locale-formatted, so anchor on the separator.
+        const meta = within(turn).getByText(/ · worked 20s$/)
+        expect(meta).toBeVisible()
+        expect(meta.closest('[title]')).toHaveAttribute('title', 'formatted:2026-04-16T15:27:47Z')
+        expect(within(turn).getByText('Done.')).toBeVisible()
+        expect(within(turn).queryByText('Run ls.')).not.toBeInTheDocument()
+        expect(screen.getByText('Run ls.')).toBeVisible()
+        expect(screen.queryByText('Worked for 20s')).not.toBeInTheDocument()
+    })
+
+    it('renders notices as event lines outside any turn', () => {
+        renderHistory([
+            { id: 'notice-1', kind: 'final_separator', role: 'system', timestamp: '2026-04-16T15:28:07Z', label: 'Mission started' },
+        ])
+
+        expect(within(screen.getByTestId('project-notice-row-notice-1')).getByText('Mission started')).toBeVisible()
+        expect(screen.queryByText('Spark')).not.toBeInTheDocument()
+    })
+
+    it("renders a flow launch as a run card with the flow's title and the run's live status", async () => {
+        const user = userEvent.setup()
+        const onOpenFlowRun = vi.fn()
+        useStore.setState((state) => ({
+            runsListSession: {
+                ...state.runsListSession,
+                runs: [{
+                    run_id: 'run-launch-456',
+                    flow_name: 'software-development/implement-change-request.dot',
+                    status: 'completed',
+                    working_directory: '/tmp/project',
+                    model: 'gpt-5.4',
+                    started_at: '2026-04-16T15:28:00Z',
+                    ended_at: '2026-04-16T15:30:00Z',
+                }],
+            },
+        }))
+
+        renderHistory([
+            makeFlowLaunchEntry(),
+        ], {
+            activeFlowLaunchesById: new Map([
+                ['flow-launch-1', makeFlowLaunch({ run_id: 'run-launch-456' })],
+            ]),
+            latestFlowLaunchId: 'flow-launch-1',
+            onOpenFlowRun,
+        })
+
+        const card = screen.getByTestId('project-flow-launch-surface')
+        expect(card).toHaveTextContent('Launched run · Implement Change Request')
+        expect(card).toHaveTextContent('Implement approved change request')
+        expect(card).toHaveTextContent('Completed · 2m')
+        expect(card).toHaveTextContent('software-development/implement-change-request.dot')
+
+        // The run title is the link; there is no separate "Open run" command.
+        const openRun = screen.getByTestId('project-flow-launch-open-run-button')
+        expect(openRun).toHaveTextContent('Implement approved change request')
+        expect(card).not.toHaveTextContent('Open run')
+        await user.click(openRun)
+        expect(onOpenFlowRun).toHaveBeenCalledWith(expect.objectContaining({ run_id: 'run-launch-456' }))
     })
 
     it('keeps tool command and output rows literal and unchanged', async () => {

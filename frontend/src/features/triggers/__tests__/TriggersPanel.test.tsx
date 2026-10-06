@@ -130,7 +130,7 @@ describe('TriggersPanel', () => {
     await user.selectOptions(form.getByLabelText('Action'), 'mission')
     await form.findByRole('option', { name: 'Open mission' })
     expect(form.queryByRole('option', { name: 'Closed mission' })).not.toBeInTheDocument()
-    expect(form.queryByLabelText('Target Flow')).not.toBeInTheDocument()
+    expect(form.queryByLabelText('Target flow')).not.toBeInTheDocument()
     await user.selectOptions(form.getByLabelText('Mission'), 'open')
     await user.click(screen.getByTestId('trigger-create-button'))
     await waitFor(() => expect(saved).toMatchObject({ action: { mode: 'mission', mission_id: 'open', project_path: '/project' } }))
@@ -186,10 +186,10 @@ describe('TriggersPanel', () => {
     renderTriggersPanel()
 
     const createScope = await openCreateTriggerForm(user)
-    expect(within(createScope.getByLabelText('Source Type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
+    expect(within(createScope.getByLabelText('Source type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
     await user.type(createScope.getByLabelText('Name'), 'Created schedule')
-    await user.clear(createScope.getByLabelText('Target Flow'))
-    await user.type(createScope.getByLabelText('Target Flow'), TEST_TRIGGER_FLOW)
+    await user.clear(createScope.getByLabelText('Target flow'))
+    await user.type(createScope.getByLabelText('Target flow'), TEST_TRIGGER_FLOW)
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -292,16 +292,16 @@ describe('TriggersPanel', () => {
 
     let createScope = await openCreateTriggerForm(user)
     let nameInput = createScope.getByLabelText('Name')
-    let targetFlowInput = createScope.getByLabelText('Target Flow')
-    let executionTargetSelect = createScope.getByLabelText('Execution Target')
+    let targetFlowInput = createScope.getByLabelText('Target flow')
+    let executionTargetSelect = createScope.getByLabelText('Execution target')
     const reopenCreateTriggerForm = async () => {
       await waitFor(() => {
         expect(screen.queryByTestId('trigger-create-button')).not.toBeInTheDocument()
       })
       createScope = await openCreateTriggerForm(user)
       nameInput = createScope.getByLabelText('Name')
-      targetFlowInput = createScope.getByLabelText('Target Flow')
-      executionTargetSelect = createScope.getByLabelText('Execution Target')
+      targetFlowInput = createScope.getByLabelText('Target flow')
+      executionTargetSelect = createScope.getByLabelText('Execution target')
     }
 
     // A new trigger starts in the last-used project, and any registered project can be chosen.
@@ -324,7 +324,7 @@ describe('TriggersPanel', () => {
     await user.clear(targetFlowInput)
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
     await user.selectOptions(executionTargetSelect, 'none')
-    expect(screen.queryByLabelText('Project Path')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Project path')).not.toBeInTheDocument()
     await user.click(screen.getByTestId('trigger-create-button'))
 
     await waitFor(() => {
@@ -337,7 +337,7 @@ describe('TriggersPanel', () => {
     await user.clear(targetFlowInput)
     await user.type(targetFlowInput, TEST_TRIGGER_FLOW)
     await user.selectOptions(executionTargetSelect, 'custom')
-    await user.type(createScope.getByLabelText('Project Path'), '/tmp/custom-project')
+    await user.type(createScope.getByLabelText('Project path'), '/tmp/custom-project')
     expect(createScope.getByTestId('trigger-target-unregistered')).toHaveTextContent('Not a registered project')
     await user.click(screen.getByTestId('trigger-create-button'))
 
@@ -363,6 +363,7 @@ describe('TriggersPanel', () => {
             id: 'trigger-custom-project',
             name: 'Custom project trigger',
             project_path: '/tmp/custom-project',
+            enabled: false,
           }),
         ])
       }
@@ -378,9 +379,12 @@ describe('TriggersPanel', () => {
 
     const registeredRow = await screen.findByTestId('trigger-row-trigger-registered-project')
     expect(registeredRow).toHaveTextContent('Project · registered-project')
+    expect(registeredRow).not.toHaveTextContent('Disabled')
     expect(registeredRow).not.toHaveAttribute('data-unregistered-target')
     const customRow = screen.getByTestId('trigger-row-trigger-custom-project')
-    expect(customRow).toHaveTextContent('Unregistered project · custom-project')
+    // Only the disabled row carries the word; its dot is hollow.
+    expect(customRow).toHaveTextContent('Unregistered project · custom-project · Schedule · interval · Disabled')
+    expect(customRow.querySelector('[data-slot="status-dot"]')).toHaveClass('border')
     expect(customRow).toHaveAttribute('data-unregistered-target', 'true')
 
     await user.click(customRow)
@@ -395,7 +399,7 @@ describe('TriggersPanel', () => {
     await user.click(registeredRow)
     selectedTriggerScope = within(screen.getByTestId('trigger-save-button').closest('[data-slot="card"]') as HTMLElement)
     await waitFor(() => {
-      expect(selectedTriggerScope.getByLabelText('Execution Target')).toHaveValue('project')
+      expect(selectedTriggerScope.getByLabelText('Execution target')).toHaveValue('project')
     })
     expect(selectedTriggerScope.getByLabelText('Project')).toHaveValue('/tmp/registered-project')
     expect(selectedTriggerScope.getByText('Target: Project · registered-project')).toBeVisible()
@@ -447,18 +451,18 @@ describe('TriggersPanel', () => {
     expect(selectedTriggerCard).not.toBeNull()
     const selectedTriggerScope = within(selectedTriggerCard as HTMLElement)
 
-    expect(selectedTriggerScope.getByLabelText('Source Type')).toBeDisabled()
-    expect(within(selectedTriggerScope.getByLabelText('Source Type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
-    expect(selectedTriggerScope.getByLabelText('Execution Target')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Project Path')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Schedule Kind')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Interval Seconds')).toBeDisabled()
-    expect(selectedTriggerScope.getByLabelText('Static Context JSON')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Source type')).toBeDisabled()
+    expect(within(selectedTriggerScope.getByLabelText('Source type')).queryByRole('option', { name: 'Workspace Event' })).not.toBeInTheDocument()
+    expect(selectedTriggerScope.getByLabelText('Execution target')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Project path')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Schedule kind')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Interval seconds')).toBeDisabled()
+    expect(selectedTriggerScope.getByLabelText('Static context JSON')).toBeDisabled()
 
     await user.clear(selectedTriggerScope.getByLabelText('Name'))
     await user.type(selectedTriggerScope.getByLabelText('Name'), 'Protected planning route updated')
-    await user.clear(selectedTriggerScope.getByLabelText('Target Flow'))
-    await user.type(selectedTriggerScope.getByLabelText('Target Flow'), 'dispatch.dot')
+    await user.clear(selectedTriggerScope.getByLabelText('Target flow'))
+    await user.type(selectedTriggerScope.getByLabelText('Target flow'), 'dispatch.dot')
     await user.click(selectedTriggerScope.getByRole('checkbox'))
     await user.click(selectedTriggerScope.getByTestId('trigger-save-button'))
 

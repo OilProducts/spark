@@ -41,20 +41,19 @@ export function RunQuestionsPanel({
             {pendingGateActionError && (
                 <InlineError data-testid="run-pending-human-gate-answer-error" className="mt-2" dense>{pendingGateActionError}</InlineError>
             )}
-            <div className="mt-2 space-y-2">
+            <div className="mt-2 space-y-4">
                 {groupedPendingInterviewGates.map((group) => (
                     <div
                         key={group.key}
                         data-testid="run-pending-human-gate-group"
-                        className="border-t border-border py-1.5 first:border-t-0"
                     >
                         <div
                             data-testid="run-pending-human-gate-group-heading"
-                            className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                            className="text-xs font-semibold text-muted-foreground"
                         >
                             {group.heading}
                         </div>
-                        <ul className="mt-1 space-y-1">
+                        <ul className="mt-1 space-y-2">
                             {group.gates.map((gate, gateIndex) => {
                                 const freeformAnswer = gate.questionId
                                     ? freeformAnswersByGateId[gate.questionId] ?? ''
@@ -64,11 +63,11 @@ export function RunQuestionsPanel({
                                     : ''
                                 return (
                                     <li key={gate.eventId} data-testid="run-pending-human-gate-item" className="text-sm text-foreground">
-                                        <div>{gate.prompt}</div>
+                                        <div className="max-w-[72ch]">{gate.prompt}</div>
                                         {gate.details && (
                                             <div
                                                 data-testid="run-pending-human-gate-details"
-                                                className="mt-1 max-h-72 overflow-y-auto rounded border border-border px-2 py-1.5 text-sm text-foreground"
+                                                className="mt-1 max-h-72 max-w-[72ch] overflow-y-auto rounded-lg bg-muted px-3 py-2 text-sm text-foreground"
                                             >
                                                 <ProjectConversationMarkdown content={gate.details} />
                                             </div>

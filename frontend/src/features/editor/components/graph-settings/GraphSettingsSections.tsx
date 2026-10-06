@@ -19,6 +19,7 @@ import { Label } from '@/components/ui/label'
 import { NativeSelect } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+import { Well } from '@/components/app/well'
 import { AdvancedKeyValueEditor } from '../AdvancedKeyValueEditor'
 import { LaunchInputsEditor } from '../LaunchInputsEditor'
 import type { FlowExecutionLockResponse, FlowLaunchPolicy } from '../../services/graphLaunchPolicy'
@@ -458,7 +459,7 @@ export function GraphLaunchPolicySection({
                     ))}
                 </NativeSelect>
             </GraphSettingsField>
-            <div className="space-y-3 rounded-md border border-border/70 p-3">
+            <Well className="space-y-3 p-3">
                 <Label htmlFor="graph-execution-lock-enabled" className="flex items-end gap-2 text-sm">
                     <Checkbox
                         id="graph-execution-lock-enabled"
@@ -501,10 +502,10 @@ export function GraphLaunchPolicySection({
                         <option value="queue">Queue</option>
                     </NativeSelect>
                 </GraphSettingsField>
-            </div>
+            </Well>
             <div className="flex gap-2">
-                <Button aria-label="Save launch policy" size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save</Button>
-                <Button aria-label="Discard launch policy changes" size="sm" variant="outline" disabled={controlsDisabled} onClick={onDiscard}>Discard</Button>
+                <Button variant="outline" aria-label="Save launch policy" size="sm" disabled={controlsDisabled || !dirty} onClick={() => void onSave()}>Save</Button>
+                <Button aria-label="Discard launch policy changes" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onDiscard}>Discard</Button>
             </div>
             <GraphSettingsNotice
                 data-testid="graph-launch-policy-status"
@@ -543,7 +544,7 @@ export function GraphAdvancedAttrsSection({
                         data-testid="graph-advanced-toggle"
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                        className="h-8 px-2 text-xs"
                         onClick={() => setShowAdvancedFlowMetadata((current) => !current)}
                     >
                         {showAdvancedFlowMetadata ? 'Hide Advanced Fields' : 'Show Advanced Fields'}
@@ -551,16 +552,14 @@ export function GraphAdvancedAttrsSection({
                 )}
             />
             {showAdvancedFlowMetadata ? (
-                <div className="space-y-3 rounded-md border border-border/80 p-3">
-                    <AdvancedKeyValueEditor
-                        testIdPrefix="graph"
-                        entries={flowMetadataExtensionEntries}
-                        onValueChange={onFlowMetadataExtensionValueChange}
-                        onRemove={onFlowMetadataExtensionRemove}
-                        onAdd={onFlowMetadataExtensionAdd}
-                        reservedKeys={CORE_FLOW_METADATA_KEYS}
-                    />
-                </div>
+                <AdvancedKeyValueEditor
+                    testIdPrefix="graph"
+                    entries={flowMetadataExtensionEntries}
+                    onValueChange={onFlowMetadataExtensionValueChange}
+                    onRemove={onFlowMetadataExtensionRemove}
+                    onAdd={onFlowMetadataExtensionAdd}
+                    reservedKeys={CORE_FLOW_METADATA_KEYS}
+                />
             ) : null}
         </section>
     )
@@ -611,7 +610,7 @@ export function GraphLlmDefaultsSection({
                         disabled={!canApplyDefaults}
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                        className="h-8 px-2 text-xs"
                         title={canApplyDefaults ? 'Apply current flow defaults to every node.' : 'Switch to the editor to apply defaults.'}
                     >
                         Apply To Nodes
@@ -620,7 +619,7 @@ export function GraphLlmDefaultsSection({
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                        className="h-8 px-2 text-xs"
                         onClick={() => {
                             updateFlowMetadata('llm_provider', uiDefaults.llm_provider)
                             updateFlowMetadata('llm_profile', uiDefaults.llm_profile)

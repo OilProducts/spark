@@ -1,5 +1,6 @@
+import type { StatusTone } from '@/components/app/status'
 import { flowTitle, formatRunDate, runStatusKind, type RunStatusKind } from '@/features/runs/model/runOverviewModel'
-import { formatDuration, type RunRecord } from '@/features/runs/model/shared'
+import { formatDuration, STATUS_LABELS, type RunRecord } from '@/features/runs/model/shared'
 import type { Mission, RosterEntry } from '../MissionsPanel'
 
 // What the Missions tab says about a mission: its one short line, the events
@@ -31,7 +32,8 @@ export function readQuestion(payload: unknown): MissionQuestion | null {
 /** One short line saying where the mission is; a closed mission's reason never shows here. */
 export function shortLine(mission: Mission, now = Date.now()): string {
     switch (mission.status ?? 'draft') {
-        case 'draft': return `Draft · created ${formatMissionDate(mission.created_at ?? mission.updated_at, now)}`
+        // The Drafts group already says the state; the header adds its own word.
+        case 'draft': return `created ${formatMissionDate(mission.created_at ?? mission.updated_at, now)}`
         case 'needs_you': return readQuestion(mission.question)?.prompt || 'Waiting for your reply'
         case 'closed': return `${closedWords[mission.closed?.status ?? 'done']} · ${formatMissionDate(mission.closed?.at, now)}`
         case 'running': {
@@ -42,20 +44,33 @@ export function shortLine(mission: Mission, now = Date.now()): string {
     }
 }
 
+/** The colour a mission's state carries: waiting on you and failures stand out; drafts and canceled missions stay neutral. */
+export function missionTone(mission: Mission): StatusTone {
+    switch (mission.status ?? 'draft') {
+        case 'draft': return 'neutral'
+        case 'running': return 'info'
+        case 'needs_you': return 'warning'
+        case 'closed': return mission.closed?.status === 'failed' ? 'destructive' : mission.closed?.status === 'canceled' ? 'neutral' : 'success'
+    }
+}
+
 export type TurnEvent =
     | { kind: 'start' }
     | { kind: 'result'; runId: string; flowName: string; summary: string; status: string; error: string }
     | ({ kind: 'question' } & MissionQuestion)
     | { kind: 'reply'; text: string }
+    /** Something the runtime told the agent happened: a trigger fired, the mission was edited. */
+    | { kind: 'event'; text: string }
     | { kind: 'text'; text: string }
 
 // The runtime joins a turn's events with blank lines; split only where the next event starts.
 const EVENT = /^(?:Run \S+ \(|Run question: |User: |Trigger fired: |The user updated this mission)/
 const EVENT_START = new RegExp(`\n\n(?=${EVENT.source.slice(1)})`)
+const RUNTIME_EVENT = /^(?:Trigger fired: |The user updated this mission)/
 const RESULT = /^Run (\S+) \(([^,]*), ("(?:[^"\\]|\\.)*")\) (?:ended (\w*)|is waiting on a recovery decision)(?:: ([\s\S]*))?\.$/
 
 /**
- * Reads the events a mission's user turn carries: its start, run results, run questions, and your replies.
+ * Reads the events a mission's user turn carries: its start, run results, run questions, runtime events, and your replies.
  * The conversation's first turn opens with the start, whatever its wording; older missions repeated the objective there.
  */
 export function parseTurn(content: string, first = false): TurnEvent[] {
@@ -74,6 +89,7 @@ export function parseTurn(content: string, first = false): TurnEvent[] {
             try { summary = JSON.parse(result[3]) } catch { summary = result[3].slice(1, -1) }
             return { kind: 'result', runId: result[1], flowName: result[2], summary, status: result[4] ?? 'waiting', error: result[5] ?? '' }
         }
+        if (RUNTIME_EVENT.test(chunk)) return { kind: 'event', text: chunk }
         return { kind: 'text', text: chunk }
     })
 }
@@ -109,10 +125,13 @@ export function totalTokens(runs: MissionRun[]): number | null {
     return known.length ? known.reduce((sum, run) => sum + (run.tokens ?? 0), 0) : null
 }
 
-export const runMarks: Record<RunStatusKind, { mark: string; tone: string; label: string }> = {
-    completed: { mark: '✓', tone: 'text-success', label: 'Completed' },
-    failed: { mark: '✕', tone: 'text-destructive', label: 'Failed' },
-    waiting: { mark: '?', tone: 'text-warning', label: 'Waiting' },
-    running: { mark: '•', tone: 'text-primary', label: 'Running' },
-    ended: { mark: '–', tone: 'text-muted-foreground', label: 'Ended' },
+export const runKinds: Record<RunStatusKind, { tone: StatusTone; label: string }> = {
+    completed: { tone: 'success', label: 'Completed' },
+    failed: { tone: 'destructive', label: 'Failed' },
+    waiting: { tone: 'warning', label: 'Waiting' },
+    running: { tone: 'info', label: 'Running' },
+    ended: { tone: 'neutral', label: 'Ended' },
 }
+
+/** The run's status as the Runs page names it ("Completed", "Needs input", "Canceled"), else its kind's word. */
+export const runStatusLabel = (run: Pick<MissionRun, 'status' | 'kind'>) => STATUS_LABELS[run.status] || runKinds[run.kind].label

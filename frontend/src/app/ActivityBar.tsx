@@ -77,13 +77,13 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                 aria-label={items.length > 0 ? `${items.length} items waiting on you` : 'Nothing waiting on you'}
                 title="Waiting on you"
                 onClick={() => setOpen((previous) => !previous)}
-                className="relative flex size-9 items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="relative flex size-11 items-center justify-center rounded-lg text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
-                <Bell className="size-4" />
+                <Bell className="size-4.5" />
                 {items.length > 0 && (
                     <span
                         data-testid="attention-bell-count"
-                        className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
+                        className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
                     >
                         {items.length}
                     </span>
@@ -93,7 +93,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                 <div
                     data-testid="attention-bell-list"
                     className={cn(
-                        'absolute z-50 w-96 max-w-[calc(100vw-1rem)] rounded-md border bg-background p-1 shadow-md',
+                        'absolute z-50 w-96 max-w-[calc(100vw-1rem)] rounded-lg border bg-background p-1 shadow-md',
                         narrow ? 'right-0 top-full mt-1' : 'bottom-0 left-full ml-2',
                     )}
                 >
@@ -110,7 +110,7 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                             onClick={() => openItem(item)}
                             className="flex w-full flex-col items-start gap-0.5 rounded-sm px-2 py-1.5 text-left hover:bg-muted"
                         >
-                            <span className="text-xs font-semibold uppercase tracking-wide text-warning">
+                            <span className="text-xs font-semibold text-warning">
                                 {ATTENTION_KIND_LABELS[item.kind]}
                             </span>
                             <span className="w-full truncate text-sm">
@@ -174,14 +174,14 @@ export function ActivityBar() {
                 title={label}
                 onClick={() => setViewMode(mode)}
                 onKeyDown={(event) => onKeyDown(event, mode)}
-                className="relative flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:bg-accent aria-[current=page]:text-primary"
+                className="relative flex size-11 shrink-0 items-center justify-center rounded-lg border border-transparent text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:border-border aria-[current=page]:bg-background aria-[current=page]:text-primary"
             >
-                <Icon className="size-4" />
+                <Icon className="size-4.5" />
                 {dot ? (
                     <span
                         data-testid={`${testId}-dot`}
                         data-dot={dot}
-                        className={cn('absolute right-1.5 top-1.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : 'bg-primary')}
+                        className={cn('absolute right-2.5 top-2.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : 'bg-primary')}
                     />
                 ) : null}
             </button>
@@ -194,11 +194,11 @@ export function ActivityBar() {
             aria-label="Views"
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
             className={cn(
-                'z-50 flex shrink-0 items-center gap-1 border-border bg-background',
-                isNarrowViewport ? 'sticky top-0 w-full flex-row border-b px-2 py-1' : 'w-12 flex-col border-r py-2.5',
+                'z-50 flex shrink-0 items-center gap-1 bg-ground',
+                isNarrowViewport ? 'sticky top-0 w-full flex-row px-2 py-1' : 'w-16 flex-col py-3',
             )}
         >
-            <img src="/assets/spark-app-icon.png" alt="Spark" width={20} height={20} className={cn('size-5', isNarrowViewport ? 'mr-1' : 'mb-2.5')} />
+            <img src="/assets/spark-app-icon.png" alt="Spark" width={28} height={28} className={cn('size-7 rounded-lg', isNarrowViewport ? 'mr-1' : 'mb-3')} />
             {ACTIVITY_ITEMS.map(renderItem)}
             <span className="flex-1" />
             <AttentionBell items={attention} narrow={isNarrowViewport} />

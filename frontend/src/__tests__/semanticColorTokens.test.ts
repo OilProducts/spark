@@ -56,6 +56,7 @@ it.each([':root', '.dark'])('keeps text tokens at WCAG AA contrast in %s', (sele
     const theme = tokens(readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8'), selector)
     const pairs = [
         ['foreground', 'background'], ['muted-foreground', 'background'], ['muted-foreground', 'muted'],
+        ['foreground', 'ground'], ['muted-foreground', 'ground'],
         ['primary', 'background'], ['accent-foreground', 'accent'], ['destructive', 'background'],
         ['success', 'background'], ['warning', 'background'], ['popover-foreground', 'popover'],
     ]

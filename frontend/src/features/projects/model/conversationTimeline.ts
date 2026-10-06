@@ -227,6 +227,11 @@ function buildModeChangeTimelineEntry(turn: ConversationTurnResponse): Conversat
     }
 }
 
+/** An assistant thinking summary; hidden until the transcript's "Show thinking" toggle. */
+export const isThinkingEntry = (entry: ConversationTimelineEntry): entry is Extract<ConversationTimelineEntry, { kind: 'message' }> => (
+    entry.kind === 'message' && entry.role === 'assistant' && entry.presentation === 'thinking'
+)
+
 export function buildConversationTimelineEntriesForTurn(
     turn: ConversationTurnResponse,
     turnSegments: ConversationSegmentResponse[],

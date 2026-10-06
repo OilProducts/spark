@@ -32,6 +32,22 @@ export function formatRunDate(timestamp: string | null | undefined, now: number)
         : { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+/** The day group a run lists under: "Today", "Yesterday", then "Sep 27"-style dates; "" without a date. */
+export function runDayLabel(timestamp: string | null | undefined, now: number): string {
+    const time = timestamp ? Date.parse(timestamp) : Number.NaN
+    if (!Number.isFinite(time)) {
+        return ''
+    }
+    const day = new Date(time).toDateString()
+    if (day === new Date(now).toDateString()) {
+        return 'Today'
+    }
+    if (day === new Date(now - 24 * 60 * 60 * 1000).toDateString()) {
+        return 'Yesterday'
+    }
+    return formatRunDate(timestamp, now)
+}
+
 /** "5.5M", "193k", "812". */
 export function formatCompactCount(value: number): string {
     return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value).replace('K', 'k')

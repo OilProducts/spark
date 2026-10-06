@@ -1,3 +1,4 @@
+import { Well } from '@/components/app/well'
 import { Badge } from '@/components/ui/badge'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
@@ -21,12 +22,12 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
         ? `${effectiveProfile.label || effectiveProfile.id} (${effectiveProfile.mode})`
         : effectiveProfileId
     return (
-        <div
+        <Well
             data-testid="execution-profile-launch-settings"
-            className="space-y-2 rounded-lg border border-border/80 p-4"
+            className="space-y-2"
         >
             <div className="flex min-w-0 items-baseline justify-between gap-3">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <p className="text-sm font-semibold text-foreground">
                     Execution profile
                 </p>
                 <p
@@ -83,6 +84,6 @@ export function ExecutionProfileSection({ placement }: ExecutionProfileSectionPr
                     {statusMessage}
                 </p>
             ) : null}
-        </div>
+        </Well>
     )
 }

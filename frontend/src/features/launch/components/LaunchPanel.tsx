@@ -13,6 +13,7 @@ import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { InlineError } from '@/components/app/inline-error'
+import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -197,7 +198,7 @@ export function LaunchPanel({
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 space-y-1">
-                    <h3 className="text-lg font-light text-foreground">Launch Flow</h3>
+                    <h3 className="text-lg font-semibold text-foreground">Launch flow</h3>
                     <p
                         data-testid="launch-panel-target-copy"
                         className="text-xs leading-5 text-muted-foreground"
@@ -309,21 +310,21 @@ export function LaunchPanel({
             </div>
 
             {visibleDiagnostics.length > 0 ? (
-                <div
+                <Well
                     data-testid="launch-panel-diagnostics"
-                    className="space-y-2 rounded-md border border-border/70 p-3"
+                    className="space-y-2 p-3"
                 >
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <p className="text-sm font-semibold text-foreground">
                         Launch diagnostics
                     </p>
                     <ul className="space-y-2 text-sm">
                         {visibleDiagnostics.map((diagnostic, index) => (
                             <li
                                 key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`}
-                                className="rounded border border-border/70 px-3 py-2"
+                                className="rounded-lg bg-background px-3 py-2"
                             >
-                                <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
-                                    <span>{diagnostic.severity}</span>
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                    <span className="capitalize">{diagnostic.severity}</span>
                                     <span>{diagnostic.rule_id}</span>
                                     {diagnostic.node_id ? <span>{diagnostic.node_id}</span> : null}
                                 </div>
@@ -331,10 +332,10 @@ export function LaunchPanel({
                             </li>
                         ))}
                     </ul>
-                </div>
+                </Well>
             ) : null}
 
-            <div className="rounded-lg border border-border/80 p-4">
+            <Well>
                 <LaunchInputsForm
                     isNarrowViewport={isNarrowViewport}
                     flowName={target.flowName}
@@ -349,7 +350,7 @@ export function LaunchPanel({
                         }))
                     }}
                 />
-            </div>
+            </Well>
         </div>
     )
 }

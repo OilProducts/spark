@@ -12,6 +12,7 @@
 
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
+  --color-ground: hsl(var(--ground));
 
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
@@ -51,18 +52,21 @@
   --shadow-lg: 0 8px 28px hsl(215 25% 15% / 0.1);
   --shadow-xl: 0 8px 28px hsl(215 25% 15% / 0.1);
 
-  --radius-xl: calc(var(--radius) + 2px);
-  --radius-lg: var(--radius);
+  /* Layered surfaces: xl is the sheet and well radius, lg the selected-row chip. */
+  --radius-xl: calc(var(--radius) + 6px);
+  --radius-lg: calc(var(--radius) + 2px);
   --radius-md: var(--radius);
   --radius-sm: calc(var(--radius) - 2px);
 }
 
 @layer base {
-  /* Air: plain white surfaces, 1px very light hairlines, cool greys, one ink-blue accent.
-     Status hues are for small marks and text only. */
+  /* Layered surfaces: the ground carries nav and lists, the sheet (background) is the one
+     white panel per view, the well (muted) groups things inside it. Cool greys, one
+     ink-blue accent. Status hues are for small marks and text only. */
   :root {
     --background: 0 0% 100%;
     --foreground: 213 13% 14%;
+    --ground: 220 13% 95.5%;
     --card: 0 0% 100%;
     --card-foreground: 213 13% 14%;
     --popover: 0 0% 100%;
@@ -81,7 +85,7 @@
     --warning: 20 88% 42%;
     --warning-foreground: 0 0% 100%;
     --info: 228 69% 55%;
-    --border: 210 12% 93%;
+    --border: 214 14% 90%;
     --input: 214 12% 87%;
     --ring: 228 69% 55%;
     --radius: 6px;
@@ -90,6 +94,7 @@
   .dark {
     --background: 220 12% 9%;
     --foreground: 214 14% 89%;
+    --ground: 220 12% 5%;
     --card: 220 12% 9%;
     --card-foreground: 214 14% 89%;
     --popover: 218 12% 12%;
@@ -108,7 +113,7 @@
     --warning: 29 100% 66%;
     --warning-foreground: 220 12% 9%;
     --info: 228 96% 74%;
-    --border: 216 12% 17%;
+    --border: 216 12% 19%;
     --input: 215 11% 25%;
     --ring: 228 96% 74%;
   }

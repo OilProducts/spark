@@ -432,7 +432,7 @@ test('removing a project while one of its missions is selected drops it from Mis
     await page.getByTestId('activity-missions').click()
     const missions = page.getByTestId('missions-view')
     await missions.getByTestId('side-panel').getByRole('button', { name: `Alpha mission ${stamp}` }).click()
-    await expect(missions.getByRole('button', { name: `Alpha mission ${stamp}` })).toHaveAttribute('aria-pressed', 'true')
+    await expect(missions.getByRole('button', { name: `Alpha mission ${stamp}` })).toHaveAttribute('aria-current', 'true')
 
     await page.getByTestId('activity-chats').click()
     await group(page, alpha).getByTestId('chats-project-name').click()

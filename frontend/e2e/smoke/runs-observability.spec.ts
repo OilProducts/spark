@@ -328,10 +328,10 @@ test('a completed run opens on its status item with its result, source, what did
   })
   await openRunsForSmokeTest(page, projectPath)
 
-  // The header is a title under its flow and one line of facts.
+  // The header is a breadcrumb, the title with its status pill, and one line of facts.
   await expect(page.getByTestId('run-header-flow')).toHaveText('Smoke Flow')
   await expect(page.getByTestId('run-header-title')).toHaveText('Tighten the smoke loop')
-  await expect(page.getByTestId('run-header-facts')).toContainText('Completed')
+  await expect(page.getByTestId('run-header-status')).toHaveText('Completed')
   await expect(page.getByTestId('run-header-facts')).toContainText('42 tokens · fedcba9')
   await expect(page.getByTestId('run-summary-retry-button')).toHaveCount(0)
   await expect(page.getByTestId('run-summary-cancel-button')).toHaveCount(0)
@@ -872,14 +872,17 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await openRunsForSmokeTest(page, projectPath)
   await expect(page.getByTestId('run-graph-panel')).toHaveCount(0)
 
-  // One row per visit, n/x for repeated nodes, marks only where notable.
+  // One row per visit, a small visit number for repeated nodes, marks only where notable.
   const rows = page.getByTestId('run-visit-row')
   // The exit node that simply succeeded is left out; each row has at most one mark.
   await expect(rows).toHaveCount(5)
-  await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1/2', '1/2', '2/2', '2/2'])
+  await expect(rows.getByTestId('run-visit-row-count')).toHaveText(['', '1', '1', '2', '2'])
   await expect(rows.nth(2).locator('[data-mark]')).toHaveCount(1)
   await expect(rows.nth(2).locator('[data-mark="did_not_pass"]')).toBeVisible()
+  // The visit that was sent back says where it went.
+  await expect(rows.nth(2).getByTestId('run-visit-row-sent-back')).toHaveText('Sent back to Implement')
   await expect(rows.nth(4).locator('[data-mark]')).toHaveCount(0)
+  await expect(rows.nth(4).getByTestId('run-visit-row-sent-back')).toHaveCount(0)
   await expect(page.getByTestId('run-visit-item-context')).toContainText(/\d+ keys?/)
 
   // A long visit shows every step.
@@ -891,7 +894,7 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   // The Evaluate visit that didn't pass: instructions, transcript, reason, writes.
   await rows.nth(2).click()
   const view = page.getByTestId('run-visit-view')
-  await expect(view).toContainText('visit 1 of 2')
+  await expect(view).toContainText('Visit 1 of 2')
   await expect(page.getByTestId('run-visit-view-outcome')).toHaveText("Didn't pass")
   const instructions = page.getByTestId('run-visit-instructions')
   await expect(instructions).not.toHaveAttribute('open', '')
@@ -904,7 +907,8 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await expect(page.getByTestId('run-visit-work')).toContainText('the loop has no regression test')
   await expect(page.getByTestId('run-visit-work')).not.toContainText('"outcome"')
   await expect(page.getByTestId('run-visit-reason')).toHaveText('Missing regression tests.')
-  await expect(page.getByTestId('run-visit-next')).toHaveText('Sent back to Implement 2/2')
+  await expect(page.getByTestId('run-visit-returned')).toContainText('Sent back to')
+  await expect(page.getByTestId('run-visit-next')).toHaveText('Implement 2')
   await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.required_changes"]')).toContainText('Add a regression test for the loop.')
   await expect(page.locator('[data-testid="run-visit-write"][data-key="context.review.approved"]')).toContainText('cleared')
   await expect(page.getByTestId('run-visit-system-writes')).toHaveText('1 system key written')
@@ -912,7 +916,7 @@ test('run visits list a review loop and show one visit at a time', async ({ page
 
   // The picker jumps between this node's visits.
   await page.getByTestId('run-visit-picker').getByRole('button', { name: 'Visit 2 of 2' }).click()
-  await expect(view).toContainText('visit 2 of 2')
+  await expect(view).toContainText('Visit 2 of 2')
   await expect(page.getByTestId('run-visit-view-outcome')).toHaveText('Succeeded')
 
   // Keyboard: left/right step within the node, up/down and j/k move through the list.
@@ -943,9 +947,9 @@ test('run visits list a review loop and show one visit at a time', async ({ page
   await page.locator('[data-testid="run-visit-write"][data-key="context.review.approved"]').getByTestId('run-visit-context-key').click()
   await expect(page.getByTestId('run-visit-item-context')).toHaveAttribute('aria-selected', 'true')
   const approved = page.locator('[data-testid="run-context-row"][data-context-key="context.review.approved"]')
-  await expect(approved).toContainText('cleared by Evaluate 1/2')
+  await expect(approved).toContainText('cleared by Evaluate 1')
   // Opened from a visit, the key shows its history straight away.
   await expect(approved.getByTestId('run-context-history-toggle')).toHaveAttribute('aria-expanded', 'true')
-  await expect(approved.getByTestId('run-context-history-entry')).toHaveText(['Implement 1/2:draft looks fine', 'Evaluate 1/2:cleared'])
+  await expect(approved.getByTestId('run-context-history-entry')).toHaveText(['Implement 1:draft looks fine', 'Evaluate 1:cleared'])
   await expect(page.getByTestId('run-context-search-input')).toHaveValue('')
 })

@@ -7,7 +7,8 @@ function Empty({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="empty"
       className={cn(
-        "flex flex-col items-start gap-1 rounded-lg border border-dashed px-4 py-5 text-sm",
+        // Layered surfaces: an empty state is a well, not a dashed box.
+        "flex flex-col items-start gap-1 rounded-xl bg-muted px-4 py-5 text-sm",
         className
       )}
       {...props}

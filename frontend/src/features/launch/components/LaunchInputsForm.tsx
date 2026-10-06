@@ -124,7 +124,7 @@ export function LaunchInputsForm({
                                 }`}
                             >
                                 <div
-                                    className={`border-b border-border/40 pb-1 ${
+                                    className={`pb-1 ${
                                         isNarrowViewport ? 'space-y-1' : 'flex items-start justify-between gap-3'
                                     }`}
                                 >

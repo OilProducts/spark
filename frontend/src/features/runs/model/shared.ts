@@ -293,7 +293,9 @@ const STATUS_TONES: Record<string, StatusTone> = {
     validation_error: 'destructive',
 }
 
-export const statusToneClassName = (status: string) => TONE_STYLES[STATUS_TONES[status] ?? 'muted']
+export const runStatusTone = (status: string): StatusTone => STATUS_TONES[status] ?? 'muted'
+
+export const statusToneClassName = (status: string) => TONE_STYLES[runStatusTone(status)]
 
 export const STATUS_LABELS: Record<string, string> = {
     queued: 'Queued',

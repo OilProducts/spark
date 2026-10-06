@@ -3,13 +3,14 @@ import { useStore } from '@/store'
 import { Button } from '@/components/ui/button'
 import { Empty, EmptyDescription } from '@/components/ui/empty'
 import { InlineError } from '@/components/app/inline-error'
+import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
 import { Input } from '@/components/ui/input'
-import { RefreshCw } from 'lucide-react'
+import { Plus, RefreshCw, Search } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { MissionDetail } from './MissionDetail'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { MissionEditor } from './MissionEditor'
-import { shortLine } from './model/missionModel'
+import { missionTone, shortLine } from './model/missionModel'
 import { ViewLayout } from '@/components/app/view-layout'
 import { ProjectPicker } from '@/features/projects/components/ProjectPicker'
 import { defaultProjectChoice, projectLabel } from '@/features/projects/model/projectChoices'
@@ -209,46 +210,45 @@ export function MissionsPanel({ active }: { active: boolean }) {
     const unsaved = JSON.stringify(draft) !== JSON.stringify(editing?.fields ?? empty)
     const visible = board.missions.filter(mission => (archived || !mission.fields.archived) && mission.fields.title.toLowerCase().includes(search.toLowerCase()))
     const project = editing?.project_path ?? newProject ?? ''
-    const missionsPanel = <div ref={boardScroll} className="space-y-4">
-        <div className="flex items-center gap-1 px-3">
-            <Input ref={searchInput} type="search" placeholder="Search missions" aria-label="Search titles" value={search} onChange={e => filter(e.target.value, archived)} className="h-7 min-w-0 flex-1 text-sm" />
+    const missionsPanel = <div ref={boardScroll} className="flex flex-col gap-3">
+        <div className="flex items-center gap-1">
+            <div className="relative min-w-0 flex-1">
+                <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input ref={searchInput} type="search" placeholder="Search missions" aria-label="Search titles" value={search} onChange={e => filter(e.target.value, archived)} className="h-8 bg-background pl-8 text-sm" />
+            </div>
             {search && <Button type="button" variant="ghost" size="xs" aria-label="Clear search" onClick={() => { filter('', archived); searchInput.current?.focus() }}>Clear</Button>}
         </div>
-        {(error || loadError) && editing === undefined && <div className="px-3"><InlineError>{error || loadError}</InlineError></div>}
+        {(error || loadError) && editing === undefined && <InlineError>{error || loadError}</InlineError>}
         {groups.map(([status, label]) => {
             const grouped = visible.filter(mission => (mission.status ?? 'draft') === status).sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
             if (!grouped.length) return null
-            return <section key={status} aria-label={label} className="space-y-1">
-                <h3 className={`flex items-center justify-between px-3 text-xs font-medium tracking-wider uppercase ${status === 'needs_you' ? 'text-warning' : 'text-muted-foreground'}`}>{label}<span aria-label={`${grouped.length} matching missions`} className="font-normal text-muted-foreground">{grouped.length}</span></h3>
-                <ul>{grouped.map(mission => <li key={mission.id}>
-                    <button type="button" disabled={busy} data-mission-id={mission.id} aria-label={mission.fields.title} aria-describedby={`mission-status-${mission.id}`} aria-pressed={editing?.id === mission.id} onClick={e => open(mission, e.currentTarget)} className={`group block w-full min-w-0 px-3 py-1.5 text-left text-sm break-words transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${editing?.id === mission.id ? 'shadow-[inset_2px_0_0_hsl(var(--primary))]' : ''}`}>
-                        <span className={`line-clamp-2 leading-snug ${editing?.id === mission.id ? 'text-primary' : 'text-foreground group-hover:text-primary'}`}>{mission.fields.title}</span>
-                        <span className="mt-0.5 flex min-w-0 gap-1 text-xs text-muted-foreground">
-                            <span data-testid="mission-project" title={mission.project_path} className="shrink-0 text-foreground/80">{projectLabel(registry, mission.project_path)} ·</span>
-                            <span id={`mission-status-${mission.id}`} data-testid="mission-status-line" className={`min-w-0 truncate ${status === 'needs_you' ? 'text-warning' : ''}`}>{shortLine(mission)}{mission.fields.archived && ' · Archived'}</span>
-                        </span>
-                    </button>
+            return <section key={status} aria-label={label} className="flex flex-col gap-0.5">
+                <ListGroupLabel className="flex items-center justify-between"><h3>{label}</h3><span aria-label={`${grouped.length} matching missions`} className="font-normal">{grouped.length}</span></ListGroupLabel>
+                <ul className="flex flex-col gap-0.5">{grouped.map(mission => <li key={mission.id}>
+                    <SidePanelRow tone={missionTone(mission)} hollow={status === 'draft'} titleLines={2} selected={editing?.id === mission.id} title={mission.fields.title}
+                        meta={<><span data-testid="mission-project" title={mission.project_path}>{projectLabel(registry, mission.project_path)} ·</span> <span id={`mission-status-${mission.id}`} data-testid="mission-status-line">{shortLine(mission)}{mission.fields.archived && ' · Archived'}</span></>}
+                        disabled={busy} data-mission-id={mission.id} aria-label={mission.fields.title} aria-describedby={`mission-status-${mission.id}`} className="disabled:opacity-50" onClick={e => open(mission, e.currentTarget)} />
                 </li>)}</ul>
             </section>
         })}
         {!visible.length && (loaded && !loadError
-            ? <Empty className="px-3 py-4 text-xs text-muted-foreground"><EmptyDescription>{search ? 'No matches' : 'No missions'}</EmptyDescription></Empty>
+            ? <Empty className="text-xs"><EmptyDescription>{search ? 'No matches' : 'No missions'}</EmptyDescription></Empty>
             : <p className="px-3 py-2 text-sm text-muted-foreground">{loadError ? 'Unavailable' : 'Loading…'}</p>)}
-        <Button type="button" variant="link" size="sm" className="px-3" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
+        <Button type="button" variant="ghost" size="sm" className="self-start text-muted-foreground" aria-pressed={archived} onClick={() => filter(search, !archived)}>{archived ? 'Hide archived' : 'Show archived'}</Button>
     </div>
     return <ViewLayout view="missions" title="Missions" panel={missionsPanel} actions={<>
-        <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-xs" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-3.5" /></Button></TooltipTrigger><TooltipContent>Refresh missions</TooltipContent></Tooltip></TooltipProvider>
+        <TooltipProvider><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-sm" aria-label="Refresh" disabled={busy} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className="size-4" /></Button></TooltipTrigger><TooltipContent>Refresh missions</TooltipContent></Tooltip></TooltipProvider>
         <ProjectPicker heading="New mission in" testId="new-mission-project-picker" defaultProjectPath={defaultProjectChoice(registry)} onPick={path => open(null, null, path)}>
-            <Button type="button" variant="ghost" size="xs" aria-label="New mission" disabled={busy}>+ New</Button>
+            <Button type="button" variant="outline" size="sm" aria-label="New mission" disabled={busy}><Plus aria-hidden="true" className="size-3.5" />New</Button>
         </ProjectPicker>
     </>}>
-        <section aria-label="Project missions" className="flex h-full min-h-0 flex-col gap-2 p-3 lg:p-6">
-            {editing === null && newProject && <p data-testid="new-mission-project" className="text-sm text-muted-foreground">New mission in <span className="text-foreground">{projectLabel(registry, newProject)}</span></p>}
-            <div className="flex min-h-0 flex-1 gap-4">
-                {editing !== undefined ? (mode === 'read' && editing ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} /> : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} narrow={narrow} focusRequest={focusRequest}
-                    setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
-                    : <Empty className="flex-1 text-sm text-muted-foreground"><EmptyDescription>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with + New.'}</EmptyDescription></Empty>}
-            </div>
+        <section aria-label="Project missions" className="flex h-full min-h-0 flex-col">
+            {editing !== undefined
+                ? (mode === 'read' && editing
+                    ? <MissionDetail key={(latest ?? editing).id} mission={latest ?? editing} project={project} busy={busy} error={error || loadError} narrow={narrow} focusRequest={focusRequest} edit={edit} close={close} archive={value => archive(latest ?? editing, value)} onChange={upsert} />
+                    : <MissionEditor key={editing?.id ?? newKey} editing={editing} draft={draft} latest={latest} busy={busy} conflict={conflict} error={error || loadError} unsaved={unsaved} focusRequest={focusRequest} projectName={!editing && newProject ? projectLabel(registry, newProject) : undefined}
+                        setDraft={setDraft} save={() => save()} archive={() => save(!editing?.fields.archived)} close={close} discard={discard} reconcile={reconcile} />)
+                : <div className="p-6"><Empty><EmptyDescription>{active && missions.length ? 'Pick a mission, or start a new one.' : 'Start a mission with New.'}</EmptyDescription></Empty></div>}
         </section>
     </ViewLayout>
 }

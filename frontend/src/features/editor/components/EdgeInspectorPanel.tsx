@@ -72,7 +72,7 @@ export function EdgeInspectorPanel({
                                 onChange={(event) => onPropertyChange('condition', event.target.value)}
                                 placeholder='e.g. outcome = "success"'
                             />
-                            <div data-testid="edge-condition-syntax-hints" className="space-y-1 rounded-md border border-border/80 px-3 py-2 text-xs text-muted-foreground">
+                            <div data-testid="edge-condition-syntax-hints" className="space-y-1 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
                                 <p>Use && to join clauses.</p>
                                 <p>{'Supported keys: outcome, preferred_label, context.<path>'}</p>
                                 <p>Operators: = or !=</p>

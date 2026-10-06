@@ -1,4 +1,5 @@
 import { useId } from 'react'
+import { Well } from '@/components/app/well'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Textarea } from '@/components/ui/textarea'
 interface ContextKeyListEditorProps {
@@ -20,7 +21,7 @@ export function ContextKeyListEditor({
 }: ContextKeyListEditorProps) {
     const id = useId()
     return (
-        <div data-testid={testId} className="space-y-1.5 rounded-md border border-border/80 px-3 py-3">
+        <Well data-testid={testId} className="space-y-1.5 px-3 py-3">
             <div>
                 <FieldLabel htmlFor={`${id}-keys`}>{title}</FieldLabel>
                 <p id={`${id}-description`} className="mt-1 text-xs text-muted-foreground">{description}</p>
@@ -45,6 +46,6 @@ export function ContextKeyListEditor({
             ) : (
                 <p id={`${id}-help`} className="text-xs text-muted-foreground">One `context.*` key per line.</p>
             )}
-        </div>
+        </Well>
     )
 }

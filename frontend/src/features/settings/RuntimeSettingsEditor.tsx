@@ -8,7 +8,7 @@ import { SaveStatus } from './SaveStatus'
 export function RuntimeSettingsEditor() {
     const { saved, draft, setDraft, pending, error, message, setMessage, dirty, invalidRoots, save, discard } = useRuntimeSettingsEditor()
     return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h3 className="text-lg font-light">Runtime paths</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-lg font-semibold">Runtime paths</h3></CardHeader>
         <CardContent className="space-y-3 px-4">
             {pending ? <p role="status">Updating…</p> : !saved && !error ? <p role="status">Loading settings…</p> : null}
             <p className="text-xs text-muted-foreground">Changes require restart. Leave a path empty to use its default.</p>
@@ -25,8 +25,8 @@ export function RuntimeSettingsEditor() {
                     <p className="text-xs text-muted-foreground">Effective: {saved.effective ? saved.effective.project_roots.join(', ') || 'Default roots' : 'Unavailable'} · {saved.sources?.project_roots} · Requires restart</p>
                 </Field>
                 <div className="flex flex-wrap gap-2">
-                    <Button aria-label="Save runtime paths" disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>
-                    <Button aria-label="Discard runtime paths changes" variant="outline" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
+                    <Button variant="outline" aria-label="Save runtime paths" disabled={!dirty || pending || invalidRoots} onClick={() => void save()}>Save</Button>
+                    <Button aria-label="Discard runtime paths changes" variant="ghost" disabled={pending || (!dirty && !error)} onClick={() => void discard()}>Discard</Button>
                 </div>
             </>}
             {saved?.validation_errors?.length && saved.active_startup ? <p className="text-xs">Running paths: flows {saved.active_startup.flows_dir}, runs {saved.active_startup.runs_dir}, UI {saved.active_startup.ui_dir ?? 'not configured'}, roots {saved.active_startup.project_roots.join(', ') || 'default roots'}.</p> : null}

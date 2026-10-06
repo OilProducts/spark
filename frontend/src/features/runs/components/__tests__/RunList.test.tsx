@@ -30,6 +30,7 @@ const makeRun = (overrides: Partial<RunRecord> = {}): RunRecord => ({
     root_run_id: overrides.root_run_id ?? null,
     title: overrides.title ?? null,
     launch_context: overrides.launch_context ?? null,
+    execution_lock: overrides.execution_lock ?? null,
 })
 
 describe('RunList', () => {
@@ -93,21 +94,89 @@ describe('RunList', () => {
         )
         const titles = () => screen.getAllByTestId('run-history-row-title').map((row) => row.textContent)
         expect(titles()).toEqual(['Tighten the review loop', 'changes/CR-1/request.md'])
-        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^project-one · Implement Change · /)
-        // Each row names its project; an untitled run leads with its input and the flow moves to the meta line.
-        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^project-one · Merge Change · /)
+        // Finished runs sit under a day group, so the row drops the date; the project leads
+        // the meta line while the list spans every project.
+        expect(screen.getByTestId('run-list-day-group')).toHaveTextContent(/^Mar 2\d/)
+        expect(screen.getAllByTestId('run-history-row-meta')[0]).toHaveTextContent(/^project-one · Implement Change$/)
+        // An untitled run leads with its input and the flow moves to the meta line.
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^project-one · Merge Change · Failed$/)
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Failed'])
+        // The dot carries the status; a word appears only for exceptions.
+        const rows = screen.getAllByTestId('run-history-row')
+        expect(rows[0].querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'success')
+        expect(rows[1].querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'destructive')
 
         const toggle = screen.getByTestId('run-history-children-toggle')
         expect(toggle).toHaveAccessibleName('Show 1 child run')
         fireEvent.click(toggle)
         expect(titles()).toEqual(['Tighten the review loop', 'Implement Task', 'changes/CR-1/request.md'])
         expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Running', ' · Failed'])
+        // A child row drops the date its day group states and the project its parent names,
+        // and reads duration · status (its flow is the title).
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^\d+h \d+m · Running$/)
 
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'merge' } })
         expect(titles()).toEqual(['changes/CR-1/request.md'])
         fireEvent.change(screen.getByTestId('run-list-search-input'), { target: { value: 'nothing like it' } })
         expect(screen.getByTestId('run-list-search-empty')).toBeVisible()
+    })
+
+    it('leaves the project off the rows when the list is filtered to one project, and groups active runs by state', () => {
+        render(
+            <RunList
+                error={null}
+                onSelectRun={vi.fn()}
+                runs={[
+                    makeRun({ run_id: 'waiting', status: 'waiting', title: 'Needs an answer' }),
+                    makeRun({ run_id: 'active', status: 'running', title: 'In flight' }),
+                    makeRun({ run_id: 'queued', status: 'queued', title: 'Up next' }),
+                    makeRun({ run_id: 'old', status: 'completed', title: 'Shipped', started_at: '2026-03-20T12:00:00Z', ended_at: '2026-03-20T12:04:00Z' }),
+                ]}
+                selectedRunId="active"
+                status="ready"
+                summaryLabel="4 runs"
+                showProject={false}
+            />,
+        )
+        expect(screen.getByTestId('run-list-group-needs-input')).toHaveTextContent(/^Needs input · 1/)
+        expect(screen.getByTestId('run-list-group-running')).toHaveTextContent(/^Running · 2/)
+        expect(screen.getByTestId('run-list-group-recent')).toHaveTextContent(/^Mar 20Shipped/)
+        expect(screen.queryAllByTestId('run-history-row-project')).toHaveLength(0)
+        // The group label states the state, so its rows drop the word; a queued run under
+        // Running is the exception and keeps it.
+        expect(screen.getAllByTestId('run-history-row-meta')[1]).toHaveTextContent(/^Selected · .+ · \d+h \d+m$/)
+        expect(screen.getAllByTestId('run-history-row-status').map((status) => status.textContent)).toEqual([' · Queued'])
+        expect(screen.getAllByTestId('run-history-row-meta')[3]).toHaveTextContent('Selected · 4m')
+        expect(screen.getByTestId('run-list-search-input')).toHaveAttribute('placeholder', 'Search 4 runs')
+        const [waiting, active] = screen.getAllByTestId('run-history-row')
+        expect(waiting).not.toHaveAttribute('aria-current')
+        expect(active).toHaveAttribute('aria-current', 'true')
+    })
+
+    it('shows the execution lock in the trailing slot, beside the child-run count, where it cannot truncate', () => {
+        const lock = { scope: 'project', key: 'main', conflict_policy: 'queue', identity: 'project:one:main' }
+        render(
+            <RunList
+                error={null}
+                onSelectRun={vi.fn()}
+                runs={[
+                    makeRun({ run_id: 'holder', status: 'running', title: 'A long title that fills the whole row and then some', execution_lock: { ...lock, state: 'holding' } }),
+                    makeRun({ run_id: 'child', flow_name: 'Child Flow', parent_run_id: 'holder', root_run_id: 'holder' }),
+                    makeRun({ run_id: 'queued', status: 'queued', title: 'Waiting its turn', execution_lock: { ...lock, state: 'queued', queue_position: 2 } }),
+                ]}
+                selectedRunId={null}
+                status="ready"
+                summaryLabel="3 runs"
+            />,
+        )
+        const [holding, queued] = screen.getAllByTestId('run-history-row-lock')
+        expect(holding).toHaveTextContent('Holding lock')
+        expect(holding).toHaveClass('text-warning')
+        expect(screen.getByTestId('run-history-children-toggle')).toBeVisible()
+        expect(screen.getAllByTestId('run-history-row-meta')[0]).not.toHaveTextContent(/lock/i)
+        // Under the lock group the state is already said, so the row keeps only its position.
+        expect(queued).toHaveTextContent('Lock queue #2')
+        expect(screen.queryAllByTestId('run-history-row-status')).toHaveLength(0)
     })
 
     it('titles and finds list records by their first launch input', () => {

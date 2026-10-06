@@ -75,7 +75,7 @@ useStore.getState().setRunsSelectedRunId(null);
 }
 
 const wrapWithFlowProvider = (node: ReactNode) => render(<ReactFlowProvider>{node}</ReactFlowProvider>)
-const modelDefaultsCard = () => within(screen.getByRole('heading', { name: 'Model defaults (Workspace)' }).closest<HTMLElement>('[data-slot=card]')!)
+const modelDefaultsCard = () => within(screen.getByRole('heading', { name: 'Model defaults (workspace)' }).closest<HTMLElement>('[data-slot=card]')!)
 
 describe('Graph and settings behavior', () => {
   beforeEach(() => {

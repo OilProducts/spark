@@ -8,6 +8,7 @@ import {
     submitConversationRequestUserInputValidated,
     interruptConversationTurnValidated,
     updateConversationSettingsValidated,
+    type ConversationChatMode,
 } from '@/lib/workspaceClient'
 import { useHomeSidebarLayout } from './useHomeSidebarLayout'
 import { useConversationComposer } from './useConversationComposer'
@@ -17,6 +18,7 @@ import { useProjectsHomeInteractionState } from './useProjectsHomeInteractionSta
 import { usePersistProjectState } from './usePersistProjectState'
 import { useProjectThreadActions } from './projectThreadActions'
 import { debugProjectChat } from '../model/projectChatDebug'
+import { isThinkingEntry } from '../model/conversationTimeline'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
 import { projectLabel } from '../model/projectChoices'
 import type { ConversationTimelineEntry } from '../model/types'
@@ -87,6 +89,10 @@ export function useProjectsHomeController() {
     const activeConversationRecord = activeConversationId
         ? conversationCache.conversationsById[activeConversationId] || null
         : null
+    // Until the snapshot loads, the thread list already knows the chat's title and age.
+    const activeConversationSummary = activeProjectPath && activeConversationId
+        ? conversationCache.summariesByProjectPath[activeProjectPath]?.find((entry) => entry.conversation_id === activeConversationId) ?? null
+        : null
     const isConversationHistoryLoading = Boolean(activeConversationId) && activeConversationRecord === null
     const {
         chatDraft,
@@ -107,6 +113,8 @@ export function useProjectsHomeController() {
     })
     const [requestUserInputActionError, setRequestUserInputActionError] = useState<string | null>(null)
     const [submittingRequestUserInputIds, setSubmittingRequestUserInputIds] = useState<Record<string, boolean>>({})
+    // The transcript's "Show thinking" toggle lives in the sheet header, so it stays in view.
+    const [showThinking, setShowThinking] = useState(false)
     // Settings edits round-trip through the server before the conversation
     // snapshot updates; showing the requested values while the save is in
     // flight keeps the selects consistent (no stale model from the previous
@@ -249,6 +257,7 @@ export function useProjectsHomeController() {
     const {
         onChatComposerKeyDown,
         onChatComposerSubmit,
+        onSwitchChatMode,
     } = useConversationComposer({
         activeProjectPath,
         chatDraft,
@@ -407,6 +416,7 @@ export function useProjectsHomeController() {
             latestFlowLaunchId,
             expandedToolCalls,
             expandedThinkingEntries,
+            showThinking,
             pendingFlowRunRequestId,
             pendingProposedPlanId,
             requestUserInputActionError,
@@ -434,7 +444,13 @@ export function useProjectsHomeController() {
         surfaceProps: {
             activeProjectLabel: activeProjectPath ? projectLabel(projectRegistry, activeProjectPath) : null,
             activeProjectPath,
+            activeConversationTitle: activeConversationRecord?.title ?? activeConversationSummary?.title ?? null,
+            activeConversationUpdatedAt: activeConversationRecord?.updated_at ?? activeConversationSummary?.updated_at ?? null,
             activeChatMode,
+            onChatModeChange: (mode: ConversationChatMode) => { void onSwitchChatMode(mode) },
+            hasThinking: activeConversationHistory.some((entry) => isThinkingEntry(entry) && entry.content.trim().length > 0),
+            showThinking,
+            onShowThinkingChange: setShowThinking,
             // The picker edits what this conversation stores; effective settings would hide inheritance.
             modelSettings: editableModelSettings,
             // While nothing is stored, the conversation's effective settings are what it inherits.

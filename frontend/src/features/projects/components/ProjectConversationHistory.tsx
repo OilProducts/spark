@@ -15,20 +15,28 @@ import {
     getFlowLaunchStatusPresentation,
     getFlowRunRequestStatusPresentation,
     getProposedPlanStatusPresentation,
-    getSurfaceToneClassName,
 } from '../model/presentation'
-import { MessageRow, ThinkingRow, ToolCallRow } from '@/components/app/transcript/SegmentRows'
+import {
+    AssistantTurnHeader,
+    EventLine,
+    MessageRow,
+    ThinkingRow,
+    ToolCallGroupRow,
+    ToolCallRow,
+} from '@/components/app/transcript/SegmentRows'
+import { groupTranscript } from '@/components/app/transcript/groupTranscript'
+import { statusTextClassName } from '@/components/app/status'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { formatRunDate } from '@/features/runs/model/runOverviewModel'
+import { isThinkingEntry } from '../model/conversationTimeline'
 import { ProjectConversationMarkdown } from './ProjectConversationMarkdown'
 
+type MessageEntry = Extract<ConversationTimelineEntry, { kind: 'message' }>
 type ToolCallEntry = Extract<ConversationTimelineEntry, { kind: 'tool_call' }>
 type RequestUserInputEntry = Extract<ConversationTimelineEntry, { kind: 'request_user_input' }>
 type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
-type FinalSeparatorEntry = Extract<ConversationTimelineEntry, { kind: 'final_separator' }>
-type ModeChangeEntry = Extract<ConversationTimelineEntry, { kind: 'mode_change' }>
-type ContextCompactionEntry = Extract<ConversationTimelineEntry, { kind: 'context_compaction' }>
 
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
@@ -43,6 +51,8 @@ interface ProjectConversationHistoryProps {
     latestFlowLaunchId: string | null
     expandedToolCalls: Record<string, boolean>
     expandedThinkingEntries: Record<string, boolean>
+    /** Owned by the sheet header's "Show thinking" toggle. */
+    showThinking: boolean
     pendingFlowRunRequestId: string | null
     pendingProposedPlanId: string | null
     requestUserInputActionError: string | null
@@ -61,56 +71,58 @@ interface ProjectConversationHistoryProps {
         reviewNote?: string | null,
     ) => void | Promise<void>
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
-    /** Replaces an entry's row unless it returns undefined; null hides the entry. */
-    renderEntry?: (entry: ConversationTimelineEntry, key: string) => ReactNode | undefined
 }
 
 function conversationEntryKey(entry: ConversationTimelineEntry) {
     return `${entry.kind}:${entry.id}:${entry.timestamp}`
 }
 
-const FinalSeparatorRow = memo(function FinalSeparatorRow({ entry }: { entry: FinalSeparatorEntry }) {
-    return (
-        <li className="flex justify-center">
-            <div className="flex w-full max-w-[85%] items-center gap-3 py-1 text-xs text-muted-foreground">
-                <span className="h-px flex-1 bg-border" />
-                <span className="shrink-0 whitespace-nowrap">{entry.label}</span>
-                <span className="h-px flex-1 bg-border" />
-            </div>
-        </li>
-    )
-})
+const isToolCallEntry = (entry: ConversationTimelineEntry): entry is ToolCallEntry => entry.kind === 'tool_call'
 
-const ModeChangeRow = memo(function ModeChangeRow({ entry }: { entry: ModeChangeEntry }) {
-    return (
-        <li className="flex justify-center">
-            <div
-                data-testid={`project-mode-change-row-${entry.id}`}
-                className="flex w-full max-w-[85%] items-center gap-3 py-1 text-xs text-muted-foreground"
-            >
-                <span className="h-px flex-1 bg-border" />
-                <span className="shrink-0 whitespace-nowrap">
-                    {entry.mode === 'plan' ? 'Switched to Plan mode' : 'Switched to Chat mode'}
-                </span>
-                <span className="h-px flex-1 bg-border" />
-            </div>
-        </li>
-    )
-})
+type TranscriptTurn =
+    | { kind: 'entry'; entry: ConversationTimelineEntry }
+    | { kind: 'assistant'; id: string; timestamp: string; worked: string | null; entries: ConversationTimelineEntry[] }
 
-const ContextCompactionRow = memo(function ContextCompactionRow({ entry }: { entry: ContextCompactionEntry }) {
+/**
+ * Splits the flat timeline into user messages, standalone events (mode changes, notices)
+ * and assistant turns. The "Worked for 20s" separator the timeline inserts before a turn's
+ * final answer becomes the turn header's meta instead of a row of its own.
+ */
+function groupConversationTurns(entries: readonly ConversationTimelineEntry[]): TranscriptTurn[] {
+    const turns: TranscriptTurn[] = []
+    let open: Extract<TranscriptTurn, { kind: 'assistant' }> | null = null
+    for (const entry of entries) {
+        const worked = entry.kind === 'final_separator' ? entry.label.match(/^Worked(?: for (.+))?$/) : null
+        const isUserMessage = entry.kind === 'message' && entry.role === 'user'
+        if (isUserMessage || entry.kind === 'mode_change' || (entry.kind === 'final_separator' && !worked)) {
+            open = null
+            turns.push({ kind: 'entry', entry })
+            continue
+        }
+        if (!open) {
+            open = { kind: 'assistant', id: entry.id, timestamp: entry.timestamp, worked: null, entries: [] }
+            turns.push(open)
+        }
+        if (worked) {
+            if (worked[1]) open.worked = `worked ${worked[1]}`
+        } else {
+            open.entries.push(entry)
+        }
+    }
+    return turns
+}
+
+/** The live "Thinking" marker shown while thinking is hidden and the agent is still at it. */
+const ThinkingIndicatorRow = memo(function ThinkingIndicatorRow({
+    entry,
+    formatConversationTimestamp,
+}: {
+    entry: MessageEntry
+    formatConversationTimestamp: (value: string) => string
+}) {
     return (
-        <li className="flex justify-center">
-            <div
-                data-testid={`project-context-compaction-row-${entry.id}`}
-                className="flex w-full max-w-[85%] items-center gap-3 py-1 text-xs text-muted-foreground"
-            >
-                <span className="h-px flex-1 bg-border" />
-                <span className="shrink-0 whitespace-nowrap">
-                    {entry.content}
-                </span>
-                <span className="h-px flex-1 bg-border" />
-            </div>
+        <li className="min-w-0 text-xs text-muted-foreground" title={formatConversationTimestamp(entry.timestamp)}>
+            <p className="italic">Thinking</p>
         </li>
     )
 })
@@ -159,7 +171,7 @@ const FlowRunRequestRow = memo(function FlowRunRequestRow({
     return (
         <li
             data-testid={isLatestFlowRunRequest ? 'project-flow-run-request-history-row' : undefined}
-            className="flex justify-start"
+            className="flex min-w-0 justify-start"
         >
             <ProjectFlowRunRequestEntry
                 flowRunRequest={flowRunRequest}
@@ -169,7 +181,6 @@ const FlowRunRequestRow = memo(function FlowRunRequestRow({
                 onOpenFlowRun={onOpenFlowRun}
                 formatConversationTimestamp={formatConversationTimestamp}
                 getFlowRunRequestStatusPresentation={getFlowRunRequestStatusPresentation}
-                getSurfaceToneClassName={getSurfaceToneClassName}
             />
         </li>
     )
@@ -189,7 +200,7 @@ const FlowLaunchRow = memo(function FlowLaunchRow({
     return (
         <li
             data-testid={isLatestFlowLaunch ? 'project-flow-launch-history-row' : undefined}
-            className="flex justify-start"
+            className="flex min-w-0 justify-start"
         >
             <ProjectFlowLaunchEntry
                 flowLaunch={flowLaunch}
@@ -197,7 +208,6 @@ const FlowLaunchRow = memo(function FlowLaunchRow({
                 onOpenFlowRun={onOpenFlowRun}
                 formatConversationTimestamp={formatConversationTimestamp}
                 getFlowLaunchStatusPresentation={getFlowLaunchStatusPresentation}
-                getSurfaceToneClassName={getSurfaceToneClassName}
             />
         </li>
     )
@@ -241,23 +251,23 @@ const PlanRow = memo(function PlanRow({
         <li className="flex min-w-0 justify-start">
             <div
                 data-testid={`project-plan-card-${entry.id}`}
-                className="min-w-0 max-w-[85%] rounded-md border-0 border-l border-success px-3 py-2 text-foreground"
+                className="min-w-0 max-w-[72ch] rounded-xl border border-border px-4 py-3 text-foreground"
             >
                 <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-xs font-medium uppercase tracking-wide text-success">
-                        Proposed Plan
-                    </p>
+                    <p className="text-sm font-semibold text-foreground">Proposed plan</p>
                     {statusPresentation ? (
-                        <span className={getSurfaceToneClassName(statusPresentation.tone)}>
+                        <span className={`text-xs font-medium ${statusTextClassName(statusPresentation.tone)}`}>
                             {statusPresentation.label}
                         </span>
                     ) : null}
                 </div>
-                {entry.status === 'failed' ? (
-                    <p className="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">{content}</p>
-                ) : (
-                    <ProjectConversationMarkdown content={content} enableCodeCopy />
-                )}
+                <div className="mt-2">
+                    {entry.status === 'failed' ? (
+                        <p className="whitespace-pre-wrap break-words text-sm leading-6 [overflow-wrap:anywhere]">{content}</p>
+                    ) : (
+                        <ProjectConversationMarkdown content={content} enableCodeCopy />
+                    )}
+                </div>
                 {proposedPlan ? (
                     <div className="mt-2 space-y-2 text-xs text-muted-foreground">
                         {proposedPlan.review_note ? (
@@ -284,9 +294,8 @@ const PlanRow = memo(function PlanRow({
                                     type="button"
                                     data-testid={`project-proposed-plan-open-run-button-${proposedPlan.id}`}
                                     onClick={() => onOpenFlowRun({ run_id: launchRunId, flow_name: launchFlowName })}
-                                    variant="outline"
+                                    variant="ghost"
                                     size="xs"
-                                    className="px-2 text-xs"
                                 >
                                     Open run
                                 </Button>
@@ -311,7 +320,6 @@ const PlanRow = memo(function PlanRow({
                                         disabled={pendingProposedPlanId === proposedPlan.id}
                                         variant="outline"
                                         size="xs"
-                                        className="px-2 text-xs"
                                     >
                                         Approve
                                     </Button>
@@ -322,9 +330,8 @@ const PlanRow = memo(function PlanRow({
                                             void onReviewProposedPlan(proposedPlan, 'rejected', reviewNoteValue)
                                         }}
                                         disabled={pendingProposedPlanId === proposedPlan.id}
-                                        variant="outline"
+                                        variant="ghost"
                                         size="xs"
-                                        className="px-2 text-xs"
                                     >
                                         Disapprove
                                     </Button>
@@ -354,6 +361,7 @@ export function ProjectConversationHistory({
     latestFlowLaunchId,
     expandedToolCalls,
     expandedThinkingEntries,
+    showThinking,
     pendingFlowRunRequestId,
     pendingProposedPlanId,
     requestUserInputActionError,
@@ -365,12 +373,14 @@ export function ProjectConversationHistory({
     onReviewFlowRunRequest,
     onReviewProposedPlan,
     onOpenFlowRun,
-    renderEntry,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
     const [fullToolOutputs, setFullToolOutputs] = useState<Record<string, string>>({})
     const [loadingFullToolOutputs, setLoadingFullToolOutputs] = useState<Record<string, boolean>>({})
     const [fullToolOutputErrors, setFullToolOutputErrors] = useState<Record<string, string>>({})
+    const [openToolGroups, setOpenToolGroups] = useState<Record<string, boolean>>({})
+    // eslint-disable-next-line react-hooks/purity -- render-time clock for turn dates; the history re-renders on every stream update
+    const now = Date.now()
     const onPlanReviewNoteChange = useCallback((proposedPlanId: string, value: string) => {
         setPlanReviewNotes((current) => ({
             ...current,
@@ -427,14 +437,169 @@ export function ProjectConversationHistory({
         onToggleToolCallExpanded,
     ])
 
+    const renderToolCall = (entry: ToolCallEntry, variant: 'row' | 'line' = 'row') => (
+        <ToolCallRow
+            key={conversationEntryKey(entry)}
+            entry={entry}
+            variant={variant}
+            fullOutput={fullToolOutputs[entry.id] ?? null}
+            isLoadingFullOutput={loadingFullToolOutputs[entry.id] === true}
+            isExpanded={expandedToolCalls[entry.toolCall.id] === true}
+            loadFullOutputError={fullToolOutputErrors[entry.id] ?? null}
+            onToggleToolCallExpanded={() => onToolCallExpanded(entry)}
+        />
+    )
+
+    // Thinking is hidden until the toggle reveals it; a thought still in progress (or a
+    // turn that has produced nothing yet) keeps a bare "Thinking" marker so the agent
+    // never looks idle.
+    const renderThinking = (entry: MessageEntry) => {
+        const key = conversationEntryKey(entry)
+        if (showThinking) {
+            return (
+                <ThinkingRow
+                    key={key}
+                    entry={entry}
+                    formatConversationTimestamp={formatConversationTimestamp}
+                    isExpanded={expandedThinkingEntries[entry.id] === true}
+                    onToggleThinkingEntryExpanded={onToggleThinkingEntryExpanded}
+                />
+            )
+        }
+        const isLive = entry.status !== 'complete' && entry.status !== 'failed'
+        return isLive || !entry.content.trim()
+            ? <ThinkingIndicatorRow key={key} entry={entry} formatConversationTimestamp={formatConversationTimestamp} />
+            : null
+    }
+
+    const renderEntryRow = (entry: ConversationTimelineEntry): ReactNode => {
+        const key = conversationEntryKey(entry)
+        switch (entry.kind) {
+        case 'tool_call':
+            return renderToolCall(entry)
+        case 'final_separator':
+            return <li key={key}><EventLine data-testid={`project-notice-row-${entry.id}`}>{entry.label}</EventLine></li>
+        case 'mode_change':
+            return (
+                <li key={key}>
+                    <EventLine data-testid={`project-mode-change-row-${entry.id}`}>
+                        {entry.mode === 'plan' ? 'Switched to Plan mode' : 'Switched to Chat mode'}
+                    </EventLine>
+                </li>
+            )
+        case 'context_compaction':
+            return <li key={key}><EventLine data-testid={`project-context-compaction-row-${entry.id}`}>{entry.content}</EventLine></li>
+        case 'request_user_input':
+            return (
+                <RequestUserInputRow
+                    key={key}
+                    actionError={requestUserInputActionError}
+                    entry={entry}
+                    formatConversationTimestamp={formatConversationTimestamp}
+                    isSubmitting={submittingRequestUserInputIds[entry.requestUserInput.requestId] === true}
+                    onSubmitRequestUserInput={onSubmitRequestUserInput}
+                />
+            )
+        case 'flow_run_request': {
+            const flowRunRequest = activeFlowRunRequestsById.get(entry.artifactId) || null
+            return (
+                <FlowRunRequestRow
+                    key={key}
+                    flowRunRequest={flowRunRequest}
+                    formatConversationTimestamp={formatConversationTimestamp}
+                    isLatestFlowRunRequest={flowRunRequest?.id === latestFlowRunRequestId}
+                    onOpenFlowRun={onOpenFlowRun}
+                    onReviewFlowRunRequest={onReviewFlowRunRequest}
+                    pendingFlowRunRequestId={pendingFlowRunRequestId}
+                />
+            )
+        }
+        case 'flow_launch': {
+            const flowLaunch = activeFlowLaunchesById.get(entry.artifactId) || null
+            return (
+                <FlowLaunchRow
+                    key={key}
+                    flowLaunch={flowLaunch}
+                    formatConversationTimestamp={formatConversationTimestamp}
+                    isLatestFlowLaunch={flowLaunch?.id === latestFlowLaunchId}
+                    onOpenFlowRun={onOpenFlowRun}
+                />
+            )
+        }
+        case 'plan': {
+            const proposedPlan = entry.artifactId
+                ? (activeProposedPlansById.get(entry.artifactId) || null)
+                : null
+            const planLaunch = proposedPlan?.flow_launch_id
+                ? (activeFlowLaunchesById.get(proposedPlan.flow_launch_id) || null)
+                : null
+            const reviewNoteValue = proposedPlan
+                ? (planReviewNotes[proposedPlan.id] ?? proposedPlan.review_note ?? '')
+                : ''
+            return (
+                <PlanRow
+                    key={key}
+                    entry={entry}
+                    formatConversationTimestamp={formatConversationTimestamp}
+                    onOpenFlowRun={onOpenFlowRun}
+                    onPlanReviewNoteChange={onPlanReviewNoteChange}
+                    onReviewProposedPlan={onReviewProposedPlan}
+                    pendingProposedPlanId={pendingProposedPlanId}
+                    planLaunch={planLaunch}
+                    proposedPlan={proposedPlan}
+                    reviewNoteValue={reviewNoteValue}
+                />
+            )
+        }
+        case 'message':
+            if (isThinkingEntry(entry)) return renderThinking(entry)
+            return (
+                <MessageRow
+                    key={key}
+                    entry={entry}
+                    enableCopy
+                    formatConversationTimestamp={formatConversationTimestamp}
+                />
+            )
+        }
+    }
+
+    /** A turn's rows: consecutive tool calls fold into one group; a lone call stays a plain row. */
+    const renderTurnBody = (entries: ConversationTimelineEntry[]) => {
+        const blocks = groupTranscript(entries, (entry) => {
+            if (entry.kind === 'tool_call') return { kind: 'tool_call', toolCall: entry.toolCall }
+            return isThinkingEntry(entry) ? { kind: 'thinking' } : { kind: 'other' }
+        })
+        return blocks.map((block) => {
+            if (block.kind === 'item') return renderEntryRow(block.item)
+            const [firstMember] = block.members
+            if (block.members.length === 1 && isToolCallEntry(firstMember.item)) {
+                return renderToolCall(firstMember.item)
+            }
+            return (
+                <ToolCallGroupRow
+                    key={block.id}
+                    summary={block.summary}
+                    isExpanded={openToolGroups[block.id] === true}
+                    onToggle={() => setOpenToolGroups((current) => ({ ...current, [block.id]: !current[block.id] }))}
+                    testId={`project-tool-group-${firstMember.kind === 'tool_call' ? firstMember.toolCall.id : firstMember.item.id}`}
+                >
+                    {block.members.map(({ item }) => isToolCallEntry(item)
+                        ? renderToolCall(item, 'line')
+                        : isThinkingEntry(item) ? renderThinking(item) : null)}
+                </ToolCallGroupRow>
+            )
+        })
+    }
+
     return (
-        <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col">
+        <div data-testid="project-ai-conversation-history" className="flex min-h-0 flex-col gap-3">
             {isConversationHistoryLoading && !hasRenderableConversationHistory ? (
                 <p data-testid="project-conversation-history-loading" className="text-xs text-muted-foreground" aria-live="polite">
                     Restoring thread history...
                 </p>
             ) : !hasRenderableConversationHistory ? (
-                <Empty className="text-sm text-muted-foreground">
+                <Empty>
                     <EmptyHeader>
                         <EmptyDescription>
                             {activeConversationId
@@ -444,128 +609,17 @@ export function ProjectConversationHistory({
                     </EmptyHeader>
                 </Empty>
             ) : (
-                <ol data-testid="project-ai-conversation-history-list" className="space-y-2.5">
-                    {activeConversationHistory.map((entry) => {
-                        const key = conversationEntryKey(entry)
-                        const customRow = renderEntry?.(entry, key)
-                        if (customRow !== undefined) {
-                            return customRow
-                        }
-                        if (entry.kind === 'tool_call') {
-                            return (
-                                <ToolCallRow
-                                    key={key}
-                                    entry={entry}
-                                    fullOutput={fullToolOutputs[entry.id] ?? null}
-                                    isLoadingFullOutput={loadingFullToolOutputs[entry.id] === true}
-                                    isExpanded={expandedToolCalls[entry.toolCall.id] === true}
-                                    loadFullOutputError={fullToolOutputErrors[entry.id] ?? null}
-                                    onToggleToolCallExpanded={() => onToolCallExpanded(entry)}
-                                />
-                            )
-                        }
-
-                        if (entry.kind === 'final_separator') {
-                            return <FinalSeparatorRow key={key} entry={entry} />
-                        }
-
-                        if (entry.kind === 'mode_change') {
-                            return <ModeChangeRow key={key} entry={entry} />
-                        }
-
-                        if (entry.kind === 'context_compaction') {
-                            return <ContextCompactionRow key={key} entry={entry} />
-                        }
-
-                        if (entry.kind === 'request_user_input') {
-                            return (
-                                <RequestUserInputRow
-                                    key={key}
-                                    actionError={requestUserInputActionError}
-                                    entry={entry}
-                                    formatConversationTimestamp={formatConversationTimestamp}
-                                    isSubmitting={submittingRequestUserInputIds[entry.requestUserInput.requestId] === true}
-                                    onSubmitRequestUserInput={onSubmitRequestUserInput}
-                                />
-                            )
-                        }
-
-                        if (entry.kind === 'message' && entry.role === 'assistant' && entry.presentation === 'thinking') {
-                            return (
-                                <ThinkingRow
-                                    key={key}
-                                    entry={entry}
-                                    formatConversationTimestamp={formatConversationTimestamp}
-                                    isExpanded={expandedThinkingEntries[entry.id] === true}
-                                    onToggleThinkingEntryExpanded={onToggleThinkingEntryExpanded}
-                                />
-                            )
-                        }
-
-                        if (entry.kind === 'flow_run_request') {
-                            const flowRunRequest = activeFlowRunRequestsById.get(entry.artifactId) || null
-                            return (
-                                <FlowRunRequestRow
-                                    key={key}
-                                    flowRunRequest={flowRunRequest}
-                                    formatConversationTimestamp={formatConversationTimestamp}
-                                    isLatestFlowRunRequest={flowRunRequest?.id === latestFlowRunRequestId}
-                                    onOpenFlowRun={onOpenFlowRun}
-                                    onReviewFlowRunRequest={onReviewFlowRunRequest}
-                                    pendingFlowRunRequestId={pendingFlowRunRequestId}
-                                />
-                            )
-                        }
-
-                        if (entry.kind === 'flow_launch') {
-                            const flowLaunch = activeFlowLaunchesById.get(entry.artifactId) || null
-                            return (
-                                <FlowLaunchRow
-                                    key={key}
-                                    flowLaunch={flowLaunch}
-                                    formatConversationTimestamp={formatConversationTimestamp}
-                                    isLatestFlowLaunch={flowLaunch?.id === latestFlowLaunchId}
-                                    onOpenFlowRun={onOpenFlowRun}
-                                />
-                            )
-                        }
-
-                        if (entry.kind === 'plan') {
-                            const proposedPlan = entry.artifactId
-                                ? (activeProposedPlansById.get(entry.artifactId) || null)
-                                : null
-                            const planLaunch = proposedPlan?.flow_launch_id
-                                ? (activeFlowLaunchesById.get(proposedPlan.flow_launch_id) || null)
-                                : null
-                            const reviewNoteValue = proposedPlan
-                                ? (planReviewNotes[proposedPlan.id] ?? proposedPlan.review_note ?? '')
-                                : ''
-                            return (
-                                <PlanRow
-                                    key={key}
-                                    entry={entry}
-                                    formatConversationTimestamp={formatConversationTimestamp}
-                                    onOpenFlowRun={onOpenFlowRun}
-                                    onPlanReviewNoteChange={onPlanReviewNoteChange}
-                                    onReviewProposedPlan={onReviewProposedPlan}
-                                    pendingProposedPlanId={pendingProposedPlanId}
-                                    planLaunch={planLaunch}
-                                    proposedPlan={proposedPlan}
-                                    reviewNoteValue={reviewNoteValue}
-                                />
-                            )
-                        }
-
-                        if (entry.kind !== 'message') {
-                            return null
-                        }
+                <ol data-testid="project-ai-conversation-history-list" className="flex min-w-0 flex-col gap-5">
+                    {groupConversationTurns(activeConversationHistory).map((turn) => {
+                        if (turn.kind === 'entry') return renderEntryRow(turn.entry)
                         return (
-                            <MessageRow
-                                key={key}
-                                entry={entry}
-                                enableCopy
-                                formatConversationTimestamp={formatConversationTimestamp}
-                            />
+                            <li key={`turn:${turn.id}`} data-testid={`project-assistant-turn-${turn.id}`} className="flex min-w-0 flex-col gap-3">
+                                <AssistantTurnHeader
+                                    meta={[formatRunDate(turn.timestamp, now), turn.worked].filter(Boolean).join(' · ')}
+                                    title={formatConversationTimestamp(turn.timestamp)}
+                                />
+                                <ol className="flex min-w-0 flex-col gap-3 pl-8">{renderTurnBody(turn.entries)}</ol>
+                            </li>
                         )
                     })}
                 </ol>

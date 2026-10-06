@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 
 import { InlineError } from '@/components/app/inline-error'
+import { SegmentedControl } from '@/components/app/segmented-control'
+import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -142,13 +144,13 @@ export function RunContinuationPanel({
     }
 
     return (
-        <div
+        <Well
             data-testid="run-continuation-panel"
-            className="space-y-4 rounded-lg border border-border p-4"
+            className="space-y-4"
         >
             <div className="flex items-start justify-between gap-3">
                 <div className="space-y-1">
-                    <h3 className="text-lg font-light text-foreground">Continue Run</h3>
+                    <h3 className="text-lg font-semibold text-foreground">Continue run</h3>
                     <p className="text-xs leading-5 text-muted-foreground">
                         From run <span className="font-mono" data-testid="run-continuation-source-run">{draft.sourceRunId}</span>
                     </p>
@@ -194,33 +196,29 @@ export function RunContinuationPanel({
 
             <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <p className="text-sm font-semibold text-foreground">
                         Graph source
                     </p>
-                    <div className="flex flex-wrap gap-2">
-                        <Button
-                            type="button"
-                            size="xs"
-                            variant={draft.flowSourceMode === 'snapshot' ? 'secondary' : 'outline'}
-                            data-testid="run-continuation-use-snapshot-button"
-                            onClick={() => {
-                                onDraftChange({ flowSourceMode: 'snapshot', startNodeId: null })
-                            }}
-                        >
-                            Use source snapshot
-                        </Button>
-                        <Button
-                            type="button"
-                            size="xs"
-                            variant={isInstalledFlowMode ? 'secondary' : 'outline'}
-                            data-testid="run-continuation-use-installed-flow-button"
-                            onClick={() => {
-                                onDraftChange({ flowSourceMode: 'flow_name', startNodeId: null })
-                            }}
-                        >
-                            Use installed flow
-                        </Button>
-                    </div>
+                    <SegmentedControl
+                        aria-label="Graph source"
+                        className="w-fit"
+                        options={[
+                            {
+                                key: 'snapshot',
+                                label: 'Use source snapshot',
+                                pressed: draft.flowSourceMode === 'snapshot',
+                                'data-testid': 'run-continuation-use-snapshot-button',
+                                onPress: () => onDraftChange({ flowSourceMode: 'snapshot', startNodeId: null }),
+                            },
+                            {
+                                key: 'flow_name',
+                                label: 'Use installed flow',
+                                pressed: isInstalledFlowMode,
+                                'data-testid': 'run-continuation-use-installed-flow-button',
+                                onPress: () => onDraftChange({ flowSourceMode: 'flow_name', startNodeId: null }),
+                            },
+                        ]}
+                    />
                     {isInstalledFlowMode ? (
                         <NativeSelect
                             data-testid="run-continuation-flow-override-select"
@@ -272,7 +270,7 @@ export function RunContinuationPanel({
 
             <div
                 data-testid="run-continuation-selected-node-copy"
-                className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground"
+                className="text-sm text-muted-foreground"
             >
                 {draft.startNodeId
                     ? <>Restart node: <span className="font-mono text-foreground">{draft.startNodeId}</span></>
@@ -281,6 +279,6 @@ export function RunContinuationPanel({
                     The derived run inherits the source checkpoint context; nodes may fail when restarted cold.
                 </p>
             </div>
-        </div>
+        </Well>
     )
 }

@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { ChevronDown, Layers, Search } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import { InlineError } from '@/components/app/inline-error'
+import { ListGroupLabel, SidePanelRow } from '@/components/app/side-panel-row'
 import {
     Empty,
     EmptyDescription,
@@ -11,8 +13,8 @@ import {
 import { useStore } from '@/store'
 import { projectLabel } from '@/features/projects/model/projectChoices'
 import type { RunRecord } from '../model/shared'
-import { formatDuration } from '../model/shared'
-import { flowTitle, formatRunDate, runTitle } from '../model/runOverviewModel'
+import { formatDuration, runStatusTone } from '../model/shared'
+import { flowTitle, formatRunDate, runDayLabel, runTitle } from '../model/runOverviewModel'
 
 const ACTIVE_LIST_STATUSES = new Set([
     'running',
@@ -22,12 +24,14 @@ const ACTIVE_LIST_STATUSES = new Set([
     'cancel_requested',
 ])
 
-// A status word only when the run needs attention.
+// A status word only when the run needs attention, and never one the group label
+// already says ("Running" under Running).
 const ATTENTION: Record<string, { label: string; className: string }> = {
     failed: { label: 'Failed', className: 'text-destructive' },
     validation_error: { label: 'Failed', className: 'text-destructive' },
     waiting: { label: 'Needs input', className: 'text-warning' },
     running: { label: 'Running', className: 'text-info' },
+    queued: { label: 'Queued', className: 'text-muted-foreground' },
 }
 
 interface RunListProps {
@@ -36,7 +40,10 @@ interface RunListProps {
     onSelectRun: (run: RunRecord) => void
     runs: RunRecord[]
     selectedRunId: string | null
+    /** Fills the search placeholder: "Search 233 runs". */
     summaryLabel: string
+    /** Name each row's project; off when the list is already filtered to one project. */
+    showProject?: boolean
 }
 
 export function RunList({
@@ -46,6 +53,7 @@ export function RunList({
     runs,
     selectedRunId,
     summaryLabel,
+    showProject = true,
 }: RunListProps) {
     const isNarrowViewport = useNarrowViewport()
     const projectRegistry = useStore((state) => state.projectRegistry)
@@ -79,7 +87,7 @@ export function RunList({
         .filter((group) => group.runs.length > 0)
 
     // Work-queue grouping: children nest under their parent; parentless (or
-    // orphaned) runs bucket by how actionable they are.
+    // orphaned) runs bucket by how actionable they are, and finished runs by day.
     const listedRunIds = new Set(historyRuns.map((run) => run.run_id))
     const childRunsByParent = new Map<string, RunRecord[]>()
     const rootRuns: RunRecord[] = []
@@ -106,18 +114,33 @@ export function RunList({
     const recentRuns = topLevelRuns.filter(
         (run) => run.status !== 'waiting' && !ACTIVE_LIST_STATUSES.has(run.status),
     )
+    const dayGroups = new Map<string, RunRecord[]>()
+    for (const run of recentRuns) {
+        const label = runDayLabel(run.started_at, now) || 'Undated'
+        dayGroups.set(label, [...(dayGroups.get(label) ?? []), run])
+    }
 
-    const renderRunRow = (run: RunRecord, depth = 0) => {
-        const runProject = run.project_path ? projectLabel(projectRegistry, run.project_path) : null
-        const attention = ATTENTION[run.status]
+    // The row drops what its group label already states: the date under a day group
+    // (`underDay`) and the status word under a state group (`stated`). Child rows also
+    // drop the project their parent names.
+    const renderRunRow = (
+        run: RunRecord,
+        { depth = 0, underDay = false, stated }: { depth?: number; underDay?: boolean; stated?: string } = {},
+    ) => {
+        const runProject = depth === 0 && showProject && run.project_path ? projectLabel(projectRegistry, run.project_path) : null
+        const attention = ATTENTION[run.status]?.label === stated ? null : ATTENTION[run.status]
         const title = depth === 0 ? runTitle(run) : flowTitle(run.flow_name)
         const metaParts = [
             title === flowTitle(run.flow_name) ? null : flowTitle(run.flow_name),
-            formatRunDate(run.started_at, now),
+            underDay ? null : formatRunDate(run.started_at, now),
             formatDuration(run.started_at, run.ended_at, run.status, now),
         ].filter((value): value is string => Boolean(value) && value !== '—')
-        const holdsExecutionLock = run.execution_lock?.state === 'holding'
-        const queuedForExecutionLock = run.execution_lock?.state === 'queued'
+        // Short enough for the trailing slot, which never truncates (the meta line does).
+        const lock = run.execution_lock?.state === 'holding'
+            ? 'Holding lock'
+            : run.execution_lock?.state === 'queued'
+                ? `Lock queue${typeof run.execution_lock.queue_position === 'number' ? ` #${run.execution_lock.queue_position}` : ''}`
+                : null
         const allChildRuns = childRunsByParent.get(run.run_id) ?? []
         // Searching opens the path to matching descendants; a matching parent
         // keeps all of its children available.
@@ -126,44 +149,44 @@ export function RunList({
             ? allChildRuns.filter((child) => matchesSearch(child) || descendantMatches(child))
             : allChildRuns
         const childrenExpanded = revealsMatch || expandedParents.has(run.run_id)
+        const selected = selectedRunId === run.run_id
 
         return (
-            <div key={run.run_id} className={cn(depth > 0 && 'ml-4 border-l border-border/60 pl-2')}>
-            <article
-                data-testid="run-history-row"
-                data-run-id={run.run_id}
-                role="button"
-                tabIndex={0}
-                aria-pressed={selectedRunId === run.run_id}
-                onClick={() => onSelectRun(run)}
-                onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onSelectRun(run)
-                    }
-                }}
-                className={cn(
-                    'rounded-none px-3 py-1.5 outline-none transition-colors hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/30 cursor-pointer',
-                    selectedRunId === run.run_id && 'text-primary shadow-[inset_2px_0_0_hsl(var(--primary))]',
-                )}
-            >
-                <div data-testid="run-history-row-title" className="line-clamp-2 text-sm font-normal leading-snug" title={`${title} · ${run.run_id}`}>
-                    {title}
-                </div>
-                <div className="mt-0.5 flex min-w-0 items-baseline gap-2 text-xs leading-4 text-muted-foreground">
-                    <span data-testid="run-history-row-meta" className="min-w-0 flex-1 truncate">
-                        {runProject ? (
-                            <span data-testid="run-history-row-project" title={run.project_path ?? undefined} className="text-foreground/80">
-                                {runProject}{metaParts.length > 0 ? ' · ' : ''}
+            <div key={run.run_id} className={cn(depth > 0 && 'ml-4')}>
+                <div className="relative">
+                    {/* The trailing slot reserves the chip's corner; the children toggle overlays it
+                        below, so a button never nests inside the row button. */}
+                    <SidePanelRow
+                        data-testid="run-history-row"
+                        data-run-id={run.run_id}
+                        selected={selected}
+                        tone={runStatusTone(run.status)}
+                        onClick={() => onSelectRun(run)}
+                        title={<span data-testid="run-history-row-title" title={`${title} · ${run.run_id}`}>{title}</span>}
+                        meta={(
+                            <span data-testid="run-history-row-meta">
+                                {runProject ? (
+                                    <span data-testid="run-history-row-project" title={run.project_path ?? undefined}>
+                                        {runProject}{metaParts.length > 0 ? ' · ' : ''}
+                                    </span>
+                                ) : null}
+                                {metaParts.join(' · ')}
+                                {attention ? (
+                                    <span data-testid="run-history-row-status" className={attention.className}>
+                                        {metaParts.length > 0 ? ' · ' : ''}{attention.label}
+                                    </span>
+                                ) : null}
                             </span>
+                        )}
+                        trailing={lock || childRuns.length > 0 ? (
+                            <>
+                                {lock ? <span data-testid="run-history-row-lock" className="font-medium text-warning">{lock}</span> : null}
+                                {childRuns.length > 0 ? (
+                                    <span aria-hidden="true" className="invisible flex items-center gap-1 tabular-nums"><Layers className="size-3.5" />{childRuns.length}</span>
+                                ) : null}
+                            </>
                         ) : null}
-                        {metaParts.join(' · ')}
-                        {attention ? (
-                            <span data-testid="run-history-row-status" className={attention.className}>
-                                {metaParts.length > 0 ? ' · ' : ''}{attention.label}
-                            </span>
-                        ) : null}
-                    </span>
+                    />
                     {childRuns.length > 0 ? (
                         <button
                             type="button"
@@ -171,8 +194,7 @@ export function RunList({
                             aria-expanded={childrenExpanded}
                             aria-label={`${childrenExpanded ? 'Hide' : 'Show'} ${childRuns.length} child ${childRuns.length === 1 ? 'run' : 'runs'}`}
                             title={`${childRuns.length} child ${childRuns.length === 1 ? 'run' : 'runs'}`}
-                            onClick={(event) => {
-                                event.stopPropagation()
+                            onClick={() => {
                                 setExpandedParents((current) => {
                                     const next = new Set(current)
                                     if (!next.delete(run.run_id)) {
@@ -181,57 +203,32 @@ export function RunList({
                                     return next
                                 })
                             }}
-                            onKeyDown={(event) => event.stopPropagation()}
-                            className="shrink-0 tabular-nums hover:text-primary"
+                            className="absolute right-2.5 top-2.5 flex items-center gap-1 rounded-sm text-xs tabular-nums text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                         >
-                            {childRuns.length} {childrenExpanded ? '▾' : '▸'}
+                            {childrenExpanded ? <ChevronDown className="size-3.5" /> : <Layers className="size-3.5" />}
+                            {childRuns.length}
                         </button>
                     ) : null}
                 </div>
-                {holdsExecutionLock ? (
-                    <div className="text-xs font-medium text-warning">
-                        Holding execution lock
+                {childRuns.length > 0 && childrenExpanded ? (
+                    <div data-testid="run-history-children" className="ml-3 space-y-0.5">
+                        {childRuns.map((child) => renderRunRow(child, { depth: depth + 1, underDay, stated }))}
                     </div>
                 ) : null}
-                {queuedForExecutionLock ? (
-                    <div className="text-xs font-medium text-warning">
-                        Queued for execution lock{typeof run.execution_lock?.queue_position === 'number'
-                            ? ` · position ${run.execution_lock.queue_position}`
-                            : ''}
-                    </div>
-                ) : null}
-            </article>
-            {childRuns.length > 0 && childrenExpanded ? (
-                <div data-testid="run-history-children" className="ml-3 space-y-1">
-                    {childRuns.map((child) => renderRunRow(child, depth + 1))}
-                </div>
-            ) : null}
             </div>
         )
     }
 
-    const renderRunGroup = (
-        key: string,
-        label: string,
-        groupRuns: RunRecord[],
-        accent?: string,
-    ) => {
+    const renderRunGroup = (key: string, label: string, groupRuns: RunRecord[], labelClassName?: string) => {
         if (groupRuns.length === 0) {
             return null
         }
         return (
-            <section key={key} data-testid={`run-list-group-${key}`} className="space-y-2">
-                <div className={cn(
-                    'flex items-center justify-between px-1 text-xs font-medium uppercase tracking-wide text-muted-foreground',
-                    accent,
-                )}
-                >
-                    <span>{label}</span>
-                    <span data-testid={`run-list-group-${key}-count`}>{groupRuns.length}</span>
-                </div>
-                <div className="space-y-2">
-                    {groupRuns.map((run) => renderRunRow(run))}
-                </div>
+            <section key={key} data-testid={`run-list-group-${key}`} className="space-y-0.5">
+                <ListGroupLabel className={labelClassName}>
+                    {label} · <span data-testid={`run-list-group-${key}-count`}>{groupRuns.length}</span>
+                </ListGroupLabel>
+                {groupRuns.map((run) => renderRunRow(run, { stated: label }))}
             </section>
         )
     }
@@ -242,66 +239,59 @@ export function RunList({
             data-responsive-layout={isNarrowViewport ? 'stacked' : 'split'}
             className="flex h-full min-h-0 w-full flex-col overflow-hidden"
         >
-            <div className="space-y-2 px-3 pb-2 pt-3">
-                <div className="flex items-center text-xs">
-                    <span
-                        data-testid="runs-scope-description"
-                        className="min-w-0 truncate text-muted-foreground"
-                        title="Runs across all projects"
-                    >
-                        {summaryLabel}
-                    </span>
-                </div>
-                <input
-                    type="search"
-                    value={searchQuery}
-                    onChange={(event) => setSearchQuery(event.target.value)}
-                    placeholder="Search"
-                    aria-label="Search runs by title or flow"
-                    data-testid="run-list-search-input"
-                    className="w-full border-0 border-b border-border bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground focus:border-primary"
-                />
+            <div className="space-y-2 pb-3">
+                <label className="flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-ring">
+                    <Search aria-hidden="true" className="size-3.5 shrink-0" />
+                    <input
+                        type="search"
+                        value={searchQuery}
+                        onChange={(event) => setSearchQuery(event.target.value)}
+                        placeholder={`Search ${summaryLabel}`}
+                        aria-label="Search runs by title or flow"
+                        data-testid="run-list-search-input"
+                        className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                    />
+                </label>
                 {error ? (
                     <InlineError>{error}</InlineError>
                 ) : null}
             </div>
             {status !== 'ready' && status !== 'error' && runs.length === 0 ? (
-                <div className="px-4 pb-4">
-                    <p data-testid="run-list-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring run history…</p>
-                </div>
+                <p data-testid="run-list-loading" className="px-3 text-sm text-muted-foreground" aria-live="polite">Restoring run history…</p>
             ) : runs.length === 0 ? (
-                <div className="px-4 pb-4">
-                    <Empty className="px-3 py-4 text-xs text-muted-foreground">
-                        <EmptyHeader>
-                            <EmptyDescription>No runs yet.</EmptyDescription>
-                        </EmptyHeader>
-                    </Empty>
-                </div>
+                <Empty className="py-4 text-xs">
+                    <EmptyHeader>
+                        <EmptyDescription>No runs yet.</EmptyDescription>
+                    </EmptyHeader>
+                </Empty>
             ) : (
                 <div
                     data-testid="run-list-scroll-region"
-                    className="min-h-0 flex-1 overflow-y-auto px-3 pb-4"
+                    className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-4"
                 >
-                    <div className="space-y-3">
-                        {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-warning')}
-                        {renderRunGroup('running', 'Running', runningRuns)}
-                        {visibleQueuedLockGroups.map((group) => (
-                            <section key={group.identity} className="space-y-2">
-                                <div className="rounded-md border-0 border-l border-warning px-3 py-2 text-xs font-medium text-warning">
-                                    Queued execution lock · {group.label}
+                    {renderRunGroup('needs-input', 'Needs input', needsInputRuns, 'text-warning')}
+                    {renderRunGroup('running', 'Running', runningRuns)}
+                    {visibleQueuedLockGroups.map((group) => (
+                        <section key={group.identity} className="space-y-0.5">
+                            <ListGroupLabel className="text-warning">Queued execution lock · {group.label}</ListGroupLabel>
+                            {group.runs.map((run) => renderRunRow(run, { stated: 'Queued' }))}
+                        </section>
+                    ))}
+                    {recentRuns.length > 0 ? (
+                        <section data-testid="run-list-group-recent" className="space-y-3">
+                            {[...dayGroups].map(([label, groupRuns]) => (
+                                <div key={label} data-testid="run-list-day-group" className="space-y-0.5">
+                                    <ListGroupLabel>{label}</ListGroupLabel>
+                                    {groupRuns.map((run) => renderRunRow(run, { underDay: true }))}
                                 </div>
-                                <div className="space-y-3">
-                                    {group.runs.map((run) => renderRunRow(run))}
-                                </div>
-                            </section>
-                        ))}
-                        {renderRunGroup('recent', 'Recent', recentRuns)}
-                        {query && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
-                            <p data-testid="run-list-search-empty" className="px-1 text-xs text-muted-foreground">
-                                No runs match the search.
-                            </p>
-                        ) : null}
-                    </div>
+                            ))}
+                        </section>
+                    ) : null}
+                    {query && topLevelRuns.length === 0 && visibleQueuedLockGroups.length === 0 ? (
+                        <p data-testid="run-list-search-empty" className="px-3 text-xs text-muted-foreground">
+                            No runs match the search.
+                        </p>
+                    ) : null}
                 </div>
             )}
         </nav>

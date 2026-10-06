@@ -165,7 +165,7 @@ export function FlowsPanelActions({ catalog }: { catalog: ReturnType<typeof useF
 
 export function FlowsPanelList({ catalog }: { catalog: ReturnType<typeof useFlowCatalogPanel> }) {
     return (
-        <div data-testid="flow-browser-panel" className="px-2">
+        <div data-testid="flow-browser-panel">
             <FlowTree
                 dataTestId="editor-flow-tree"
                 flows={catalog.flows}

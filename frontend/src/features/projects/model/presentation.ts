@@ -7,7 +7,6 @@ import type {
 // Transcript-facing presentation (tones, tool-call/thinking helpers) lives in
 // the shared segment rows module; re-exported here so existing imports hold.
 export {
-    getSurfaceToneClassName,
     getToolCallStatusPresentation,
     parseThinkingSummaryContent,
     summarizeToolCallDetail,
@@ -59,4 +58,3 @@ export const getProposedPlanStatusPresentation = (status: ProjectProposedPlan['s
     }
     return { label: 'Pending review', tone: 'warning' as const }
 }
-

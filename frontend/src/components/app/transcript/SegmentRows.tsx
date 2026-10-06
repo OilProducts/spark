@@ -1,30 +1,32 @@
-import { memo } from 'react'
+import { memo, type ComponentProps, type ReactNode } from 'react'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
 import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeConnection'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Play, Terminal } from 'lucide-react'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
+import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { StatusDot, statusTextClassName, type StatusTone } from '../status'
+import { stripShellWrapper } from './displayCommand'
+import type { ToolGroupSummary } from './groupTranscript'
 import { TranscriptCopyButton } from './TranscriptCopyButton'
 
-// Shared presentational rows for agent transcripts. A chat turn and a run
-// node are the same activity — inference, tool calls, and thinking
-// interspersed — so both surfaces render these rows; interactivity that only
-// makes sense in one surface (lazy tool-output fetches, plan review) arrives
-// through optional props.
+// Shared presentational rows for agent transcripts. A chat turn, a mission log and a
+// run node are the same activity — inference, tool calls, and thinking interspersed —
+// so all three surfaces render these rows; interactivity that only makes sense in one
+// surface (lazy tool-output fetches, plan review) arrives through optional props.
+//
+// Grammar: consecutive tool calls fold into a ToolCallGroupRow (see groupTranscript.ts)
+// whose expanded body lists each call as a compact ToolCallRow variant="line"; thinking
+// is hidden until the ShowThinkingToggle is pressed; assistant turns open with an
+// AssistantTurnHeader; things that happen to a mission or chat are EventLines or RunCards.
 
 export type SurfaceTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger'
 
-const SURFACE_TONE_CLASS_MAP: Record<SurfaceTone, string> = {
-    neutral: 'text-muted-foreground',
-    info: 'text-info',
-    success: 'text-success',
-    warning: 'text-warning',
-    danger: 'text-destructive',
-}
-
+/** A small bordered status word in the tone's colour (sentence case, no tracking). */
 export const getSurfaceToneClassName = (tone: SurfaceTone) => (
-    `rounded border border-border px-2 py-0.5 text-xs font-medium uppercase tracking-wide ${SURFACE_TONE_CLASS_MAP[tone]}`
+    `rounded-md border border-border px-1.5 py-0.5 text-xs font-medium ${statusTextClassName(tone)}`
 )
 
 export interface TranscriptToolCall {
@@ -96,10 +98,62 @@ export const parseThinkingSummaryContent = (content: string): { heading: string 
     return { heading, details }
 }
 
-// Air transcript: one line per step, no boxes. A tool call is its command in
-// muted mono with a status word only when it didn't simply complete; a thought
-// is a muted italic line; a reply is plain text. Timestamps sit in tooltips.
+/** The expanded body of a tool call: the full command, touched files and output. */
+function ToolCallDetails({
+    entry,
+    fullOutput,
+    isLoadingFullOutput,
+    loadFullOutputError,
+    className,
+}: {
+    entry: TranscriptToolCallEntry
+    fullOutput: string | null
+    isLoadingFullOutput: boolean
+    loadFullOutputError: string | null
+    className?: string
+}) {
+    const displayedOutput = fullOutput ?? entry.toolCall.output
+    const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
+    return (
+        <div className={cn('mt-1.5 mb-2 space-y-2', className)}>
+            {entry.toolCall.command ? (
+                <p className="whitespace-pre-wrap break-words rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
+                    {entry.toolCall.command}
+                </p>
+            ) : null}
+            {entry.toolCall.filePaths.length > 0 ? (
+                <ul className="space-y-1">
+                    {entry.toolCall.filePaths.map((path) => (
+                        <li key={path} className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                            {path}
+                        </li>
+                    ))}
+                </ul>
+            ) : null}
+            {displayedOutput ? (
+                <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-muted px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
+                    {displayedOutput}
+                </pre>
+            ) : null}
+            {hasPreviewOnly || isLoadingFullOutput || loadFullOutputError ? (
+                <p className="text-xs text-muted-foreground">
+                    {isLoadingFullOutput
+                        ? 'Loading full output...'
+                        : loadFullOutputError
+                            ? loadFullOutputError
+                            : `Showing preview${entry.toolCall.outputSize ? ` of ${entry.toolCall.outputSize.toLocaleString()} bytes` : ''}.`}
+                </p>
+            ) : null}
+        </div>
+    )
+}
 
+/**
+ * One tool call. `variant="row"` (default) is the standalone chevron row; `variant="line"`
+ * is the compact monospace line inside an expanded ToolCallGroupRow. Both show the
+ * command without its shell wrapper, keep the full command in the tooltip and the
+ * expanded body, and mark anything that did not simply complete.
+ */
 export const ToolCallRow = memo(function ToolCallRow({
     entry,
     fullOutput = null,
@@ -108,6 +162,7 @@ export const ToolCallRow = memo(function ToolCallRow({
     loadFullOutputError = null,
     onToggleToolCallExpanded,
     testIdPrefix = 'project',
+    variant = 'row',
 }: {
     entry: TranscriptToolCallEntry
     fullOutput?: string | null
@@ -116,12 +171,51 @@ export const ToolCallRow = memo(function ToolCallRow({
     loadFullOutputError?: string | null
     onToggleToolCallExpanded: (toolCallId: string) => void
     testIdPrefix?: string
+    variant?: 'row' | 'line'
 }) {
     const statusPresentation = getToolCallStatusPresentation(entry.toolCall.status)
-    const summaryDetail = summarizeToolCallDetail(entry.toolCall)
-    const displayedOutput = fullOutput ?? entry.toolCall.output
-    const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
+    const summaryDetail = entry.toolCall.command
+        ? stripShellWrapper(entry.toolCall.command)
+        : summarizeToolCallDetail(entry.toolCall)
     const isCommand = entry.toolCall.kind === 'command_execution' && Boolean(entry.toolCall.command)
+    const statusMark = entry.toolCall.status === 'completed' ? null : (
+        <span className={`shrink-0 font-sans ${statusTextClassName(statusPresentation.tone)}`}>
+            {statusPresentation.label}
+        </span>
+    )
+    const details = isExpanded ? (
+        <ToolCallDetails
+            entry={entry}
+            fullOutput={fullOutput}
+            isLoadingFullOutput={isLoadingFullOutput}
+            loadFullOutputError={loadFullOutputError}
+            className={variant === 'row' ? 'pl-5' : undefined}
+        />
+    ) : null
+
+    if (variant === 'line') {
+        return (
+            <li className="min-w-0">
+                <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
+                    aria-expanded={isExpanded}
+                    title={entry.toolCall.command ?? undefined}
+                    onClick={() => onToggleToolCallExpanded(entry.toolCall.id)}
+                    className="flex w-full min-w-0 items-center gap-2.5 rounded-sm text-left font-mono text-xs leading-6 text-foreground/80 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                    {isCommand ? null : (
+                        <span className="shrink-0 font-sans text-muted-foreground">{entry.toolCall.title}</span>
+                    )}
+                    <span className="min-w-0 flex-1 truncate">
+                        {summaryDetail ?? (entry.toolCall.status === 'running' ? '' : 'No additional details')}
+                    </span>
+                    {statusMark}
+                </button>
+                {details}
+            </li>
+        )
+    }
 
     return (
         <li className="min-w-0">
@@ -129,6 +223,7 @@ export const ToolCallRow = memo(function ToolCallRow({
                 type="button"
                 data-testid={`${testIdPrefix}-tool-call-toggle-${entry.toolCall.id}`}
                 aria-expanded={isExpanded}
+                title={entry.toolCall.command ?? undefined}
                 onClick={() => onToggleToolCallExpanded(entry.toolCall.id)}
                 className="group flex w-full min-w-0 items-center gap-2 text-left text-xs"
             >
@@ -139,47 +234,154 @@ export const ToolCallRow = memo(function ToolCallRow({
                 <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground group-hover:text-foreground">
                     {summaryDetail ?? (entry.toolCall.status === 'running' ? '' : 'No additional details')}
                 </span>
-                {entry.toolCall.status === 'completed' ? null : (
-                    <span className={`shrink-0 ${SURFACE_TONE_CLASS_MAP[statusPresentation.tone]}`}>
-                        {statusPresentation.label}
-                    </span>
-                )}
+                {statusMark}
             </button>
-            {isExpanded ? (
-                <div className="mt-1.5 mb-2 space-y-2 pl-5">
-                    {entry.toolCall.command ? (
-                        <p className="whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
-                            {entry.toolCall.command}
-                        </p>
-                    ) : null}
-                    {entry.toolCall.filePaths.length > 0 ? (
-                        <ul className="space-y-1">
-                            {entry.toolCall.filePaths.map((path) => (
-                                <li key={path} className="break-words font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                                    {path}
-                                </li>
-                            ))}
-                        </ul>
-                    ) : null}
-                    {displayedOutput ? (
-                        <pre className="max-h-40 max-w-full overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-words rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
-                            {displayedOutput}
-                        </pre>
-                    ) : null}
-                    {hasPreviewOnly || isLoadingFullOutput || loadFullOutputError ? (
-                        <p className="text-xs text-muted-foreground">
-                            {isLoadingFullOutput
-                                ? 'Loading full output...'
-                                : loadFullOutputError
-                                    ? loadFullOutputError
-                                    : `Showing preview${entry.toolCall.outputSize ? ` of ${entry.toolCall.outputSize.toLocaleString()} bytes` : ''}.`}
-                        </p>
-                    ) : null}
-                </div>
-            ) : null}
+            {details}
         </li>
     )
 })
+
+/**
+ * "Ran 6 commands · 2 failed" with a chevron; when expanded, renders its children (the
+ * calls as `<ToolCallRow variant="line">`, and thinking rows when shown) in a muted well.
+ * A group with a running call also says "Running…".
+ */
+export function ToolCallGroupRow({
+    summary,
+    isExpanded,
+    onToggle,
+    testId,
+    className,
+    children,
+}: {
+    summary: ToolGroupSummary
+    isExpanded: boolean
+    onToggle: () => void
+    testId?: string
+    className?: string
+    children?: ReactNode
+}) {
+    return (
+        <li className={cn('min-w-0', className)}>
+            <button
+                type="button"
+                data-testid={testId}
+                aria-expanded={isExpanded}
+                onClick={onToggle}
+                className="inline-flex h-7.5 max-w-full items-center gap-2 rounded-lg border border-border bg-background px-2.5 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+                <Terminal aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="truncate">{summary.label}</span>
+                {summary.failed > 0 ? <span className="shrink-0 text-destructive">· {summary.failed} failed</span> : null}
+                {summary.running ? <span className="shrink-0 text-info">· Running…</span> : null}
+                <ChevronRight aria-hidden="true" className={cn('size-3.5 shrink-0 transition-transform', isExpanded && 'rotate-90')} />
+            </button>
+            {isExpanded ? (
+                <ul className="mt-2 flex min-w-0 flex-col gap-0.5 rounded-lg bg-muted px-3 py-2">{children}</ul>
+            ) : null}
+        </li>
+    )
+}
+
+/** The per-transcript toggle that reveals thinking rows; `aria-pressed` carries the state. */
+export function ShowThinkingToggle({
+    pressed,
+    onPressedChange,
+    className,
+    ...props
+}: Omit<ComponentProps<typeof Button>, 'onClick' | 'children'> & { pressed: boolean; onPressedChange: (next: boolean) => void }) {
+    return (
+        <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            aria-pressed={pressed}
+            onClick={() => onPressedChange(!pressed)}
+            className={cn('text-muted-foreground aria-pressed:text-foreground', className)}
+            {...props}
+        >
+            Show thinking
+        </Button>
+    )
+}
+
+/** The Spark mark: the app icon at 22px. */
+export function SparkMark({ className }: { className?: string }) {
+    return (
+        <img
+            src="/assets/spark-app-icon.png"
+            alt=""
+            aria-hidden="true"
+            width={22}
+            height={22}
+            className={cn('size-5.5 shrink-0 rounded-md', className)}
+        />
+    )
+}
+
+/** Opens an assistant turn: the mark, "Spark", and muted meta such as "Oct 1 · worked 39s". */
+export function AssistantTurnHeader({ meta, className, ...props }: ComponentProps<'div'> & { meta?: ReactNode }) {
+    return (
+        <div className={cn('flex items-center gap-2', className)} {...props}>
+            <SparkMark />
+            <span className="text-sm font-semibold text-foreground">Spark</span>
+            {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
+        </div>
+    )
+}
+
+/**
+ * A quiet line for something that happened to a mission or chat (started, a run ended,
+ * a mode change). Wrap it in the list's `<li>`. Links and `<b>` inside read in the
+ * foreground colour so the subject stands out from the verb.
+ */
+export function EventLine({
+    icon,
+    at,
+    className,
+    children,
+    ...props
+}: ComponentProps<'div'> & { icon?: ReactNode; at?: ReactNode }) {
+    return (
+        <div className={cn('flex min-w-0 items-center gap-2.5 py-1 text-xs text-muted-foreground', className)} {...props}>
+            <span aria-hidden="true" className="flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5">{icon}</span>
+            <span className="min-w-0 flex-1 truncate [&_a]:text-foreground [&_a:hover]:underline [&_b]:font-normal [&_b]:text-foreground">{children}</span>
+            {at ? <span className="shrink-0 tabular-nums">{at}</span> : null}
+        </div>
+    )
+}
+
+/**
+ * A launched run as a bordered card: run icon, kicker ("Launched run · Implement
+ * Change"), the title (pass the surface's own link), and live status with duration.
+ * Wrap it in the list's `<li>`.
+ */
+export function RunCard({
+    kicker,
+    title,
+    tone,
+    status,
+    duration,
+    className,
+    ...props
+}: Omit<ComponentProps<'div'>, 'title'> & { kicker: ReactNode; title: ReactNode; tone: StatusTone; status: ReactNode; duration?: ReactNode }) {
+    return (
+        <div className={cn('flex items-center gap-3 rounded-xl border border-border bg-background px-3 py-2.5', className)} {...props}>
+            <span aria-hidden="true" className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-muted text-primary">
+                <Play className="size-3.5" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-xs text-muted-foreground">{kicker}</span>
+                <span className="truncate text-sm font-medium text-foreground [&_a]:text-foreground [&_a:hover]:underline">{title}</span>
+            </span>
+            <span className={cn('inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs', statusTextClassName(tone))}>
+                <StatusDot tone={tone} className="size-1.5" />
+                {status}
+                {duration ? <span className="text-muted-foreground"> · {duration}</span> : null}
+            </span>
+        </div>
+    )
+}
 
 export const ThinkingRow = memo(function ThinkingRow({
     entry,
@@ -195,17 +397,12 @@ export const ThinkingRow = memo(function ThinkingRow({
     testIdPrefix?: string
 }) {
     const parsedThinking = parseThinkingSummaryContent(entry.content)
-    const heading = (
-        <>
-            {parsedThinking.heading ? <span aria-hidden="true">Thought: </span> : null}
-            <span>{parsedThinking.heading || 'Thinking'}</span>
-        </>
-    )
+    const heading = parsedThinking.heading || 'Thinking'
     const details = parsedThinking.details
     const isExpandable = details.length > 0
 
     return (
-        <li className="min-w-0 text-xs text-muted-foreground" title={formatConversationTimestamp(entry.timestamp)}>
+        <li className="min-w-0 font-sans text-xs text-muted-foreground" title={formatConversationTimestamp(entry.timestamp)}>
             {isExpandable ? (
                 <button
                     type="button"
@@ -268,12 +465,12 @@ export const MessageRow = memo(function MessageRow({
                 title={formatConversationTimestamp(entry.timestamp)}
                 className={`group relative min-w-0 ${
                     entry.role === 'user'
-                        ? 'max-w-[85%] rounded-md bg-muted px-3 py-2 text-foreground'
+                        ? 'max-w-[80%] rounded-xl rounded-br-sm bg-accent px-3.5 py-2.5 text-foreground'
                         : entry.presentation === 'thinking'
-                            ? 'max-w-[80ch] text-muted-foreground'
+                            ? 'max-w-[72ch] text-muted-foreground'
                             : entry.status === 'failed'
-                                ? 'max-w-[80ch] text-destructive'
-                                : 'max-w-[80ch] text-foreground'
+                                ? 'max-w-[72ch] text-destructive'
+                                : 'max-w-[72ch] text-foreground'
                 }`}
             >
                 {canCopy ? (

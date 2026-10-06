@@ -72,12 +72,12 @@ export function ClaudeCodeConnectionControls({ autoStart = false }: { autoStart?
             }}>Open the sign-in page</a>, then paste the code it shows.</p>
             <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void request('code') }}>
                 <Input aria-label="Sign-in code" placeholder="Paste code" autoComplete="off" value={code} onChange={(event) => setCode(event.target.value)} />
-                <Button type="submit" size="sm" disabled={busy || !code.trim()}>Submit code</Button>
+                <Button type="submit" size="sm" variant="outline" disabled={busy || !code.trim()}>Submit code</Button>
             </form>
         </div>}
         <div className="flex flex-wrap gap-2">
             {pending ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void request('cancel')}>Cancel sign-in</Button>
-                : <Button size="sm" disabled={disabled} onClick={() => void request('login')}>
+                : <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('login')}>
                     {connection?.status === 'connected' ? 'Sign in again' : 'Sign in to Claude'}
                 </Button>}
             <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('status')}>Check connection</Button>
@@ -88,7 +88,7 @@ export function ClaudeCodeConnectionControls({ autoStart = false }: { autoStart?
 
 export function ClaudeCodeConnectionSettings() {
     return <Card className="gap-4 py-4">
-        <CardHeader className="px-4"><h3 className="text-lg font-light">Claude Code connection</h3></CardHeader>
+        <CardHeader className="px-4"><h3 className="text-lg font-semibold">Claude Code connection</h3></CardHeader>
         <CardContent className="px-4"><ClaudeCodeConnectionControls /></CardContent>
     </Card>
 }

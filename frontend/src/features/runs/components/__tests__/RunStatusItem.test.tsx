@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { useState, type ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { RunRecord } from '../../model/shared'
 import { buildRunContextOverview, runStatusKind } from '../../model/runOverviewModel'
@@ -90,7 +91,7 @@ describe('RunStatusItem', () => {
     expect(screen.getByTestId('run-result-body')).toHaveTextContent('Committed the change.')
     expect(screen.getByTestId('run-status-result-source')).toHaveTextContent('from Commit Findings, raw output')
     const didNotPass = screen.getByTestId('run-status-did-not-pass')
-    expect(didNotPass).toHaveTextContent('Didn’t pass (1)')
+    expect(within(didNotPass).getByRole('heading')).toHaveTextContent(/^Didn’t pass\s*1$/)
     expect(didNotPass).toHaveTextContent('Review: Missing a test. · wrote review.required_changes')
     fireEvent.click(within(didNotPass).getByTestId('run-visit-link'))
     expect(onSelectVisit).toHaveBeenCalledWith(review)
@@ -331,6 +332,152 @@ describe('RunVisitsCard', () => {
     fireEvent.click(screen.getByTestId('run-visit-context-key'))
     expect(screen.getByTestId('run-visit-item-context')).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByText('context item focused on context.review.findings')).toBeVisible()
+  })
+
+  it('marks a sent-back visit generically from its next node, numbers repeated visits, and switches visits from the control', () => {
+    const evaluate1 = visit('evaluate', 2, 'did_not_pass', {
+      number: 1, count: 2, reason: 'Missing a test.', next: { key: 'implement-3', loopBack: true },
+      status: { outcome: 'fail', context_updates: { 'context.review.approved': null, 'context.review.notes': 'Add one.' } },
+    })
+    const implement2 = visit('implement', 3, 'succeeded', { number: 2, count: 2, next: { key: 'evaluate-4', loopBack: false } })
+    const evaluate2 = visit('evaluate', 4, 'succeeded', { number: 2, count: 2, startedAt: '2026-09-29T10:00:00Z', endedAt: '2026-09-29T10:07:43Z' })
+    const onToggleGraph = vi.fn()
+    render(
+      <SelectingVisitsCard
+        visits={[evaluate1, implement2, evaluate2]}
+        flowNodes={{}}
+        segments={[]}
+        prompts={[]}
+        journal={[]}
+        now={0}
+        isNarrowViewport={false}
+        isLive={false}
+        transcriptError={null}
+        timelineError={null}
+        onOpenRun={vi.fn()}
+        statusRow={{ label: 'Result', detail: '39m' }}
+        contextKeyCount={3}
+        renderStatus={() => null}
+        renderContext={() => null}
+        artifactEntries={[]}
+        onViewArtifact={vi.fn()}
+        graph={{ shown: false, onToggle: onToggleGraph }}
+      />,
+    )
+
+    // The rail: a Steps / Journal track with the additive Graph toggle beside it, then the
+    // Result and Context rows, then one row per visit.
+    expect(screen.getByRole('group', { name: 'View' })).toHaveTextContent('StepsJournal')
+    expect(within(screen.getByRole('group', { name: 'View' })).queryByTestId('run-graph-toggle')).toBeNull()
+    expect(screen.getByTestId('run-graph-toggle')).toHaveTextContent('Graph')
+    expect(screen.getByTestId('run-graph-toggle')).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(screen.getByTestId('run-graph-toggle'))
+    expect(onToggleGraph).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('run-visit-item-status')).toHaveTextContent('Result39m')
+    expect(screen.getByTestId('run-visit-item-context')).toHaveTextContent('Context3 keys')
+
+    const rows = screen.getAllByTestId('run-visit-row')
+    expect(rows.map((row) => within(row).getByTestId('run-visit-row-count').textContent)).toEqual(['1', '2', '2'])
+    // Only the visit that was sent back carries a mark, in the warning tone, with a second line.
+    expect(rows[0].querySelector('[data-mark]')).toHaveAttribute('data-mark', 'did_not_pass')
+    expect(rows[0].querySelector('[data-mark]')).toHaveClass('text-warning')
+    expect(within(rows[0]).getByTestId('run-visit-row-sent-back')).toHaveTextContent('Sent back to Implement')
+    expect(rows[1].querySelector('[data-mark]')).toBeNull()
+    expect(rows[2].querySelector('[data-mark]')).toBeNull()
+    expect(within(rows[2]).getByText('7m 43s')).toBeVisible()
+
+    fireEvent.click(rows[0])
+    expect(rows[0]).toHaveAttribute('aria-selected', 'true')
+    // Returned: the outcome pill, where it went, the reason, and the keys it touched.
+    const returned = screen.getByTestId('run-visit-returned')
+    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveTextContent("Didn't pass")
+    expect(within(returned).getByTestId('run-visit-view-outcome')).toHaveAttribute('data-tone', 'warning')
+    expect(returned).toHaveTextContent('Sent back to')
+    expect(screen.getByTestId('run-visit-next')).toHaveTextContent('Implement 2')
+    expect(screen.getByTestId('run-visit-reason')).toHaveTextContent('Missing a test.')
+    const [cleared, written] = screen.getAllByTestId('run-visit-write')
+    expect(cleared).toHaveTextContent(/^review\.approvedcleared$/)
+    expect(written).toHaveTextContent(/^review\.notesAdd one\./)
+    expect(screen.getByTestId('run-visit-ended')).toHaveTextContent("Visit ended · Didn't pass")
+
+    // The link opens the visit it went to, whose own return is an ordinary "Next".
+    fireEvent.click(screen.getByTestId('run-visit-next'))
+    expect(rows[1]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('run-visit-returned')).toHaveTextContent('Next')
+    expect(screen.getByTestId('run-visit-next')).toHaveTextContent('Evaluate 2')
+
+    fireEvent.click(rows[0])
+    const picker = screen.getByTestId('run-visit-picker')
+    expect(within(picker).getByRole('button', { name: 'Visit 1 of 2, sent back' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(within(picker).getByRole('button', { name: 'Visit 2 of 2' }))
+    expect(rows[2]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('run-visit-view')).toHaveTextContent('Visit 2 of 2 · 7m 43s')
+    expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Succeeded')
+    expect(screen.getByTestId('run-visit-ended')).toHaveTextContent('Visit ended · Succeeded · 7m 43s')
+  })
+
+  it('folds a visit transcript into command groups and hides thinking until asked', () => {
+    const segment = (id: string, order: number, extra: Partial<RunTranscriptSegment>): RunTranscriptSegment => ({
+      id, turn_id: 'response', order, kind: 'assistant_message', role: 'assistant', status: 'complete',
+      timestamp: '2026-09-29T10:00:00Z', updated_at: '2026-09-29T10:00:00Z', content: '',
+      node_id: 'review', stage_index: 1, attempt: 0, latest_sequence: order, source_scope: 'root',
+      source_flow_name: null, source_parent_node_id: null, source_run_id: 'run-1',
+      ...extra,
+    })
+    const call = (id: string, order: number, command: string, status: 'completed' | 'failed' = 'completed') => segment(id, order, {
+      kind: 'tool_call',
+      tool_call: { id, kind: 'command_execution', status, title: 'Ran command', command, output: `${id} output`, file_paths: [] },
+    })
+    render(
+      <SelectingVisitsCard
+        visits={[visit('review', 1, 'running')]}
+        flowNodes={{}}
+        segments={[
+          call('a', 1, "/bin/zsh -lc 'git status --short'"),
+          segment('think', 2, { kind: 'reasoning', content: '**Checking the diff**\n\nLooks tidy.' }),
+          call('b', 3, "/bin/zsh -lc 'npm test'", 'failed'),
+          segment('say', 4, { content: 'The tests fail on the loop.' }),
+          call('c', 5, 'cat AGENTS.md'),
+        ]}
+        prompts={[]}
+        journal={[]}
+        now={0}
+        isNarrowViewport={false}
+        isLive
+        transcriptError={null}
+        timelineError={null}
+        onOpenRun={vi.fn()}
+        statusRow={{ label: 'Running', tone: 'info' }}
+        contextKeyCount={0}
+        renderStatus={() => null}
+        renderContext={() => null}
+        artifactEntries={[]}
+        onViewArtifact={vi.fn()}
+      />,
+    )
+    fireEvent.click(screen.getByTestId('run-visit-row'))
+    // A running visit shows its live state beside the title and has not returned yet.
+    expect(screen.getByTestId('run-visit-view-outcome')).toHaveTextContent('Running')
+    expect(screen.queryByTestId('run-visit-returned')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('run-visit-ended')).not.toBeInTheDocument()
+
+    const transcript = screen.getByTestId('run-visit-transcript')
+    const groups = within(transcript).getAllByRole('button', { expanded: false }).filter((button) => button.dataset.testid?.startsWith('run-tool-group-'))
+    expect(groups.map((group) => group.textContent)).toEqual(['Ran 2 commands· 1 failed', 'Ran 1 command'])
+    expect(transcript).toHaveTextContent('The tests fail on the loop.')
+    // Thinking stays hidden until asked, then appears inside the group it sat in.
+    expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()
+    fireEvent.click(groups[0])
+    expect(within(transcript).getByText('git status --short')).toBeVisible()
+    expect(within(transcript).getByText('npm test').closest('button')).toHaveAttribute('title', "/bin/zsh -lc 'npm test'")
+    expect(within(transcript).getByText('Failed')).toBeVisible()
+    expect(screen.queryByText('Checking the diff')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show thinking' }))
+    expect(screen.getByText('Checking the diff')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Show thinking' })).toHaveAttribute('aria-pressed', 'true')
+    // A line still expands to that call's output.
+    fireEvent.click(within(transcript).getByText('npm test'))
+    expect(within(transcript).getByText('b output')).toBeVisible()
   })
 
   it('clears a search that hides a key opened from a visit', () => {

@@ -73,6 +73,37 @@ export function useConversationComposer({
     setPanelError,
     setPendingConversationTurn,
 }: UseConversationComposerArgs) {
+    // The `/plan` and `/chat` commands and the header's mode control take the same path.
+    const switchChatMode = async (conversationId: string, chatMode: ConversationChatMode) => {
+        if (!activeProjectPath) {
+            return
+        }
+        setPanelError(null)
+        try {
+            const snapshot = await updateConversationSettingsValidated(conversationId, {
+                project_path: activeProjectPath,
+                chat_mode: chatMode,
+                expected_revision: String(getCurrentConversationRevision(conversationId)),
+            })
+            applyConversationSnapshot(activeProjectPath, snapshot, 'settings-response', {
+                forceWorkspaceSync: true,
+            })
+        } catch (error) {
+            const message = formatErrorMessage(error, 'Unable to switch the project chat mode.')
+            setPanelError(message)
+        }
+    }
+
+    const onSwitchChatMode = async (chatMode: ConversationChatMode) => {
+        if (!activeProjectPath || isChatInputDisabled) {
+            return
+        }
+        const conversationId = ensureConversationId()
+        if (conversationId) {
+            await switchChatMode(conversationId, chatMode)
+        }
+    }
+
     const onSendChatMessage = async () => {
         if (!activeProjectPath || isChatInputDisabled) {
             return
@@ -90,19 +121,7 @@ export function useConversationComposer({
         setPanelError(null)
         setChatDraft('')
         if (parsedCommand?.kind === 'switch_mode') {
-            try {
-                const snapshot = await updateConversationSettingsValidated(conversationId, {
-                    project_path: activeProjectPath,
-                    chat_mode: parsedCommand.chatMode,
-                    expected_revision: String(getCurrentConversationRevision(conversationId)),
-                })
-                applyConversationSnapshot(activeProjectPath, snapshot, 'settings-response', {
-                    forceWorkspaceSync: true,
-                })
-            } catch (error) {
-                const message = formatErrorMessage(error, 'Unable to switch the project chat mode.')
-                setPanelError(message)
-            }
+            await switchChatMode(conversationId, parsedCommand.chatMode)
             return
         }
         const messageToSend = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.message : trimmed
@@ -150,5 +169,6 @@ export function useConversationComposer({
     return {
         onChatComposerKeyDown,
         onChatComposerSubmit,
+        onSwitchChatMode,
     }
 }

@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AttentionItem } from '@/lib/api/attentionApi'
@@ -7,10 +7,12 @@ import type { RunRecord } from '@/features/runs/model/shared'
 import { useStore } from '@/store'
 import { OverviewPanel } from '../OverviewPanel'
 import { useOverviewUnread } from '../hooks/useOverviewUnread'
-import { hasUnread, markAttentionSeen, readFinishedWatermark } from '../model/overviewModel'
+import { hasUnread, markAttentionSeen, readFinishedWatermark, type Chat } from '../model/overviewModel'
 
 let pending: AttentionItem[] = []
 vi.mock('@/lib/api/attentionApi', () => ({ fetchPendingAttention: () => Promise.resolve(pending) }))
+let chats: Chat[] = []
+vi.mock('@/lib/workspaceClient', async (original) => ({ ...await original<object>(), fetchProjectConversationListValidated: () => Promise.resolve(chats) }))
 
 // Run gate ids as the aggregate emits them: the run id with its run-local question id.
 const gate = (runId: string, questionId: string): AttentionItem => ({
@@ -71,6 +73,7 @@ const setMissions = (missions: Mission[], loaded = true) => act(() => { useStore
 const finished = () => screen.queryAllByTestId('overview-finished-item').map((row) => row.dataset.itemId)
 const reset = () => {
     pending = []
+    chats = []
     window.localStorage.clear()
     setRuns([], false)
     setMissions([], false)
@@ -105,6 +108,35 @@ describe('Overview finished since', () => {
         setMissions([closedMission('mission-earlier', 2)])
         render(<OverviewPanel />)
         expect(finished()).toEqual(['run-new', 'mission-earlier'])
+    })
+
+    it('shows each row with its duration, a word only for failures, where it came from, and the chat it was launched from', async () => {
+        reset()
+        const chat: Chat = { conversation_id: 'chat-1', project_path: '/work/app', title: 'Ship the fix', created_at: '', updated_at: new Date(Date.now() - 3 * 3_600_000).toISOString(), revision: 1, launched_run_ids: ['run-done', 'run-failed'] }
+        chats = [chat]
+        act(() => { useStore.getState().hydrateProjectRegistry([{ directoryPath: '/work/app', displayName: 'app', isDefault: false, isFavorite: false, lastAccessedAt: null }]) })
+        setRuns([finishedRun('run-done', 1), { ...finishedRun('run-failed', 2), status: 'failed' }])
+        setMissions([])
+        render(<OverviewPanel />)
+        await waitFor(() => expect(screen.getByTestId('overview-last-chat-title').textContent).toBe('Ship the fix'))
+
+        expect(finished()).toEqual(['run-done', 'run-failed'])
+        const [done, failed] = screen.getAllByTestId('overview-finished-item')
+        expect(done.textContent).toContain('1h 0m')
+        expect(done.textContent).toContain('Completed') // the dot's name for assistive tech
+        expect(done.textContent).not.toContain('Failed')
+        expect(failed.textContent?.match(/Failed/g)).toHaveLength(1) // the visible word is the only one
+        expect(failed.querySelector('[data-mark="failed"]')).not.toBeNull()
+        expect(failed.textContent).toContain('Run · Review · app')
+        expect(failed.textContent).toContain('Failed')
+        expect(failed.querySelector('[data-testid="overview-source-link"]')?.textContent).toBe('Ship the fix')
+        expect(screen.getByTestId('overview-finished').textContent).toContain('2 · 1 failed')
+
+        expect(screen.getAllByTestId('overview-tally').map((tally) => tally.textContent)).toEqual([' · 1 completed', ' · 1 failed'])
+        fireEvent.click(screen.getByTestId('overview-show-runs'))
+        const started = screen.getAllByTestId('overview-started-item').map((row) => row.textContent)
+        expect(started).toHaveLength(2)
+        expect(started[1]).toContain('Failed')
     })
 
     it('records nothing for live completions before the initial fetches finish', () => {

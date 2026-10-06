@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { InlineError } from '@/components/app/inline-error'
+import { SectionHeading } from '@/components/app/section-heading'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { ContextErrorState } from '../model/shared'
@@ -90,32 +92,32 @@ export function RunContextItem({
         }
         return next
     })
-    const actionClass = 'text-xs text-muted-foreground hover:text-foreground'
-
     return (
-        <article ref={rootRef} data-testid="run-context-panel" className="space-y-3 pb-6">
+        <article ref={rootRef} data-testid="run-context-panel" className="flex flex-col gap-4 pb-6">
             <header className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                <h3 className="text-lg font-light text-foreground">Context</h3>
+                <h3 className="text-lg font-semibold text-foreground">Context</h3>
                 <span className="text-sm text-muted-foreground">Final values · the visit that last wrote each</span>
             </header>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
                 <Input
                     value={searchQuery}
                     onChange={(event) => onSearchQueryChange(event.target.value)}
                     placeholder="Search keys and values…"
                     data-testid="run-context-search-input"
-                    className="h-7 max-w-xs flex-1 text-sm"
+                    className="h-8 max-w-xs flex-1 rounded-lg text-sm"
                 />
-                <button type="button" data-testid="run-context-refresh-button" onClick={onRefresh} className={actionClass}>
+                <Button type="button" variant="ghost" size="sm" data-testid="run-context-refresh-button" onClick={onRefresh}>
                     {status === 'loading' ? 'Refreshing…' : 'Refresh'}
-                </button>
-                <button type="button" data-testid="run-context-copy-button" onClick={onCopy} className={actionClass}>
+                </Button>
+                <Button type="button" variant="ghost" size="sm" data-testid="run-context-copy-button" onClick={onCopy}>
                     Copy JSON
-                </button>
+                </Button>
                 {contextExportHref ? (
-                    <a data-testid="run-context-export-button" href={contextExportHref} download="run-context.json" className={actionClass}>
-                        Export JSON
-                    </a>
+                    <Button asChild variant="ghost" size="sm">
+                        <a data-testid="run-context-export-button" href={contextExportHref} download="run-context.json">
+                            Export JSON
+                        </a>
+                    </Button>
                 ) : null}
                 {contextCopyStatus ? (
                     <span data-testid="run-context-copy-status" className="text-xs text-muted-foreground">{contextCopyStatus}</span>
@@ -136,8 +138,8 @@ export function RunContextItem({
                 </p>
             ) : null}
             {namespaces.map((namespace) => (
-                <section key={namespace.name} data-testid="run-context-namespace" data-namespace={namespace.name}>
-                    <h4 className="pt-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{namespace.name}</h4>
+                <section key={namespace.name} data-testid="run-context-namespace" data-namespace={namespace.name} className="flex flex-col gap-1">
+                    <SectionHeading as="h4" count={namespace.keys.length}>{namespace.name}</SectionHeading>
                     <ul className="divide-y divide-border">
                         {namespace.keys.map((row) => {
                             const last = row.history.at(-1)
@@ -149,7 +151,7 @@ export function RunContextItem({
                                     key={row.key}
                                     data-testid="run-context-row"
                                     data-context-key={row.key}
-                                    className={cn('grid grid-cols-[minmax(8rem,14rem)_1fr] gap-3 py-1.5 text-sm', row.key === focusKey && 'bg-accent/40')}
+                                    className={cn('grid grid-cols-[minmax(8rem,14rem)_1fr] gap-3 py-1.5 text-sm', row.key === focusKey && 'rounded-lg bg-accent px-2')}
                                 >
                                     <code className="truncate text-foreground/80" title={row.key}>{row.key.replace(/^context\./, '')}</code>
                                     <div className="min-w-0 space-y-0.5">
@@ -205,8 +207,8 @@ export function RunContextItem({
                 </section>
             ))}
             {systemKeys.length > 0 ? (
-                <details data-testid="run-context-runtime-group" open={Boolean(query)} className="pt-2">
-                    <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                <details data-testid="run-context-runtime-group" open={Boolean(query)}>
+                    <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
                         + {systemKeys.length} system {systemKeys.length === 1 ? 'key' : 'keys'}
                     </summary>
                     <ul className="mt-1 divide-y divide-border text-xs">

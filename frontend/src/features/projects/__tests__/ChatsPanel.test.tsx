@@ -42,6 +42,9 @@ beforeEach(() => {
     })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
+        if (url.includes('/projects/chat-models')) {
+            return json({ providers: { codex: { status: 'available', error: null } }, models: [{ provider: 'codex', id: 'gpt-5.4', display: 'GPT-5.4', is_default: true, supported_reasoning_efforts: ['low'], default_reasoning_effort: 'low' }] })
+        }
         if (url.includes('/projects/conversations')) {
             return json((chatsByProject[new URL(url, 'http://localhost').searchParams.get('project_path') ?? ''] ?? []).filter((chat) => !deletedIds.has(chat.conversation_id)))
         }
@@ -53,7 +56,7 @@ beforeEach(() => {
         if (conversationId && init?.method === 'PUT') {
             const body = JSON.parse(String(init.body))
             settingsWrites.push({ url, body })
-            return json(snapshot(String(body.project_path), conversationId))
+            return json({ ...snapshot(String(body.project_path), conversationId), revision: 2, chat_mode: body.chat_mode ?? 'chat' })
         }
         if (conversationId) return json(snapshot(conversationId.startsWith('home') ? HOME : '/work/busy', conversationId))
         return json({})
@@ -116,6 +119,20 @@ it('asks which project "+ New" starts a chat in, Home first then recent projects
     expect(items[1]).toHaveAttribute('data-disabled')
     await user.click(items[0])
     await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME }))
+})
+
+it('names the open thread in the header and switches its mode from the compact control', async () => {
+    const user = userEvent.setup()
+    renderChats()
+    await user.click(await within(group(HOME)).findByRole('button', { name: 'Open thread Chat home-1' }))
+    // The snapshot's title replaces the list's once it loads.
+    await waitFor(() => expect(screen.getByTestId('chat-title')).toHaveTextContent('New thread'))
+    const mode = await screen.findByTestId('project-active-chat-mode-badge')
+    await waitFor(() => expect(mode).toBeEnabled())
+    expect(mode).toHaveValue('chat')
+    await user.selectOptions(mode, 'plan')
+    await waitFor(() => expect(settingsWrites.at(-1)?.body).toMatchObject({ project_path: HOME, chat_mode: 'plan' }))
+    await waitFor(() => expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan'))
 })
 
 it('opens Home\'s project page without a way to remove it', async () => {

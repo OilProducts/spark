@@ -84,7 +84,7 @@ it('shows the native section while loading, reports initial failure, and retries
     window.__TAURI__ = { core: { invoke } }
     render(<DialogProvider><SettingsPanel /></DialogProvider>)
     await user.click(screen.getByRole('tab', { name: 'System' }))
-    expect(screen.getByRole('heading', { name: 'Desktop Server' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Desktop server' })).toBeVisible()
     expect(screen.getByText('Loading Desktop settings…')).toBeVisible()
     await act(async () => reject(new Error('Native load failed')))
     expect(screen.getByText('Native load failed').closest('[role="alert"]')).not.toBeNull()

@@ -23,6 +23,7 @@ import {
     nowMs,
 } from '@/features/workflow-canvas'
 import { InlineError } from '@/components/app/inline-error'
+import { Well } from '@/components/app/well'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import {
@@ -182,8 +183,8 @@ function RunGraphCanvasInner({
             data-testid="run-graph-canvas"
             className={
                 paneHeight === 'fill'
-                    ? 'min-h-0 flex-1 overflow-hidden rounded-md border border-border/80 bg-background'
-                    : 'overflow-hidden rounded-md border border-border/80 bg-background'
+                    ? 'min-h-0 flex-1 overflow-hidden rounded-xl border border-border bg-background'
+                    : 'overflow-hidden rounded-xl border border-border bg-background'
             }
             style={paneHeight === 'fill' ? undefined : { height: `${paneHeight}px` }}
         >
@@ -263,14 +264,14 @@ export function RunGraphCard({
     return (
         <Card
             data-testid="run-graph-panel"
-            className={fillHeight ? 'flex h-full min-h-0 flex-col gap-2 py-3' : 'gap-2 py-3'}
+            className={fillHeight ? 'flex h-full min-h-0 flex-col gap-2 border-0 py-0' : 'gap-2 border-0 py-0'}
         >
-            <CardHeader className="gap-1 px-4">
+            <CardHeader className="gap-1 px-0">
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
                     <h3
-                        className="shrink-0 whitespace-nowrap text-lg font-light text-foreground"
+                        className="shrink-0 whitespace-nowrap text-sm font-semibold text-foreground"
                     >
-                        Run Graph
+                        Run graph
                     </h3>
                     <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                         {onOpenInEditor ? (
@@ -302,7 +303,7 @@ export function RunGraphCard({
                 </div>
             </CardHeader>
             <CardContent
-                className={fillHeight ? 'flex min-h-0 flex-1 flex-col gap-2 px-4' : 'space-y-2 px-4'}
+                className={fillHeight ? 'flex min-h-0 flex-1 flex-col gap-2 px-0' : 'space-y-2 px-0'}
             >
                 {graphStatus !== 'ready' && !graphError ? (
                     <p data-testid="run-graph-loading" className="text-sm text-muted-foreground" aria-live="polite">Restoring run graph…</p>
@@ -311,14 +312,14 @@ export function RunGraphCard({
                     <InlineError data-testid="run-graph-error">{graphError}</InlineError>
                 ) : null}
                 {diagnostics.length > 0 ? (
-                    <div data-testid="run-graph-diagnostics" className="rounded-md border border-border p-3">
-                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    <Well data-testid="run-graph-diagnostics" className="p-3">
+                        <p className="text-sm font-semibold text-foreground">
                             Graph diagnostics
                         </p>
                         <ul className="mt-2 space-y-2 text-sm">
                             {diagnostics.slice(0, 6).map((diagnostic, index) => (
-                                <li key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`} className="rounded border border-border px-3 py-2">
-                                    <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
+                                <li key={`${diagnostic.rule_id}-${diagnostic.node_id || 'graph'}-${index}`}>
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                         <span>{diagnostic.severity}</span>
                                         <span>{diagnostic.rule_id}</span>
                                         {diagnostic.node_id ? <span>{diagnostic.node_id}</span> : null}
@@ -327,18 +328,16 @@ export function RunGraphCard({
                                 </li>
                             ))}
                         </ul>
-                    </div>
+                    </Well>
                 ) : null}
                 {graphStatus === 'ready' && !hasRenderableGraph ? (
-                    <div className="flex h-[28rem] items-center justify-center rounded-md border border-dashed border-border">
-                        <Empty className="text-sm text-muted-foreground">
-                            <EmptyHeader>
-                                <EmptyDescription>
-                                    No run graph preview is available for this run.
-                                </EmptyDescription>
-                            </EmptyHeader>
-                        </Empty>
-                    </div>
+                    <Empty>
+                        <EmptyHeader>
+                            <EmptyDescription>
+                                No run graph preview is available for this run.
+                            </EmptyDescription>
+                        </EmptyHeader>
+                    </Empty>
                 ) : null}
                 <div className={!hasRenderableGraph && (graphError || graphStatus === 'ready') ? 'hidden' : 'contents'}>
                     <CanvasSessionModeProvider mode="runs" runId={run.run_id}>

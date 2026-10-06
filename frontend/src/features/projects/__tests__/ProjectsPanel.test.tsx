@@ -490,7 +490,7 @@ describe('ProjectsPanel', () => {
 
     expect(screen.queryByTestId('project-ai-conversation-history-list')).not.toBeInTheDocument()
     expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Sending...')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Sending...')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
 
     resolveTurnResponse?.(
@@ -535,7 +535,7 @@ describe('ProjectsPanel', () => {
     expect(within(history).getAllByText('Show this message immediately.')).toHaveLength(1)
     expect(history).not.toHaveTextContent('Visible.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Worked for')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Thinking...')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Thinking...')
   })
 
   it('renders the assistant reply even when the backend canonicalizes project_path', async () => {
@@ -746,7 +746,7 @@ describe('ProjectsPanel', () => {
 
     const sendButton = screen.getByTestId('project-ai-conversation-send-button')
     expect(sendButton).toBeDisabled()
-    expect(sendButton).toHaveTextContent('Thinking...')
+    expect(sendButton).toHaveAccessibleName('Thinking...')
 
     await user.click(sendButton)
 
@@ -827,7 +827,7 @@ describe('ProjectsPanel', () => {
                     kind: 'command_execution',
                     status: 'completed',
                     title: 'Run command',
-                    command: '/bin/zsh -lc ls',
+                    command: "/bin/zsh -lc 'ls -la repo'",
                     output: 'AGENTS.md',
                     file_paths: [],
                   },
@@ -852,7 +852,7 @@ describe('ProjectsPanel', () => {
                     kind: 'command_execution',
                     status: 'completed',
                     title: 'Run command',
-                    command: '/bin/zsh -lc ps',
+                    command: "/bin/zsh -lc 'ps -ef'",
                     output: 'PID TTY TIME CMD',
                     file_paths: [],
                   },
@@ -901,15 +901,19 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
+    // Both commands fold into one group row; the turn header carries the worked time.
+    expect(history).toHaveTextContent('Ran 2 commands')
+    expect(history).not.toHaveTextContent('Worked for')
+    fireEvent.click(screen.getByTestId('project-tool-group-tool-ls'))
     const text = history.textContent ?? ''
 
-    expect(text.indexOf('/bin/zsh -lc ls')).toBeGreaterThan(-1)
-    expect(text.indexOf('/bin/zsh -lc ps')).toBeGreaterThan(-1)
-    expect(text.indexOf('Worked for 20s')).toBeGreaterThan(-1)
+    expect(text.indexOf('ls -la repo')).toBeGreaterThan(-1)
+    expect(text.indexOf('ps -ef')).toBeGreaterThan(-1)
+    expect(text.indexOf('worked 20s')).toBeGreaterThan(-1)
     expect(text.indexOf('Summary after tools.')).toBeGreaterThan(-1)
-    expect(text.indexOf('/bin/zsh -lc ls')).toBeLessThan(text.indexOf('Summary after tools.'))
-    expect(text.indexOf('/bin/zsh -lc ps')).toBeLessThan(text.indexOf('Summary after tools.'))
-    expect(text.indexOf('Worked for 20s')).toBeLessThan(text.indexOf('Summary after tools.'))
+    expect(text.indexOf('worked 20s')).toBeLessThan(text.indexOf('ls -la repo'))
+    expect(text.indexOf('ls -la repo')).toBeLessThan(text.indexOf('ps -ef'))
+    expect(text.indexOf('ps -ef')).toBeLessThan(text.indexOf('Summary after tools.'))
   })
 
   it('renders tool calls collapsed by default and expands them on demand', async () => {
@@ -981,7 +985,7 @@ describe('ProjectsPanel', () => {
                     kind: 'command_execution',
                     status: 'completed',
                     title: 'Run command',
-                    command: '/bin/zsh -lc ls',
+                    command: "/bin/zsh -lc 'ls -la repo'",
                     output: 'AGENTS.md\nREADME.md',
                     file_paths: [],
                   },
@@ -1030,7 +1034,8 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('/bin/zsh -lc ls')
+      // Commands display without their shell wrapper; the full command stays in the tooltip.
+      expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('ls -la repo')
     })
     expect(screen.queryByText(/AGENTS\.md/)).not.toBeInTheDocument()
 
@@ -1132,6 +1137,11 @@ describe('ProjectsPanel', () => {
 
     renderProjectsPanel()
 
+    // The toggle sits in the sheet header, outside the scrolling transcript body.
+    const showThinking = await screen.findByRole('button', { name: 'Show thinking' })
+    expect(showThinking.closest('header')).not.toBeNull()
+    expect(screen.getByTestId('project-ai-conversation-body')).not.toContainElement(showThinking)
+    await user.click(showThinking)
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Considering proposal')
     })
@@ -1430,6 +1440,7 @@ describe('ProjectsPanel', () => {
       } as MessageEvent)
     })
 
+    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
     await user.click(await screen.findByRole('button', { name: 'Thinking' }))
 
     await waitFor(() => {
@@ -2176,7 +2187,7 @@ describe('ProjectsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Thinking...')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Thinking...')
     })
 
     act(() => {
@@ -2239,7 +2250,7 @@ describe('ProjectsPanel', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Working on it.')
-      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send')
     })
 
     resolveTurnResponse?.(
@@ -2304,7 +2315,7 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveTextContent('Send')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send')
     })
   })
 
@@ -2496,7 +2507,7 @@ describe('ProjectsPanel', () => {
               kind: 'command_execution',
               status: 'running',
               title: 'Run command',
-              command: '/bin/zsh -lc ls',
+              command: "/bin/zsh -lc 'ls -la repo'",
               output: null,
               file_paths: [],
             },
@@ -2520,7 +2531,7 @@ describe('ProjectsPanel', () => {
                 kind: 'command_execution',
                 status: 'running',
                 title: 'Run command',
-                command: '/bin/zsh -lc ls',
+                command: "/bin/zsh -lc 'ls -la repo'",
                 output: null,
                 file_paths: [],
               },
@@ -2567,6 +2578,7 @@ describe('ProjectsPanel', () => {
       } as MessageEvent)
     })
 
+    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
     await user.click(await screen.findByRole('button', { name: 'Thinking' }))
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Scanning the repository structure first.')
@@ -2641,7 +2653,7 @@ describe('ProjectsPanel', () => {
                 kind: 'command_execution',
                 status: 'completed',
                 title: 'Run command',
-                command: '/bin/zsh -lc ls',
+                command: "/bin/zsh -lc 'ls -la repo'",
                 output: 'README.md',
                 file_paths: [],
               },
@@ -2681,10 +2693,10 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
           const text = history.textContent ?? ''
       expect(text.indexOf('Scanning the repository structure first.')).toBeGreaterThan(-1)
-      expect(text.indexOf('/bin/zsh -lc ls')).toBeGreaterThan(-1)
+      expect(text.indexOf('ls -la repo')).toBeGreaterThan(-1)
       expect(text.indexOf('I found the main entry points and can summarize them.')).toBeGreaterThan(-1)
-      expect(text.indexOf('Scanning the repository structure first.')).toBeLessThan(text.indexOf('/bin/zsh -lc ls'))
-      expect(text.indexOf('/bin/zsh -lc ls')).toBeLessThan(text.indexOf('I found the main entry points and can summarize them.'))
+      expect(text.indexOf('Scanning the repository structure first.')).toBeLessThan(text.indexOf('ls -la repo'))
+      expect(text.indexOf('ls -la repo')).toBeLessThan(text.indexOf('I found the main entry points and can summarize them.'))
     })
   })
 
@@ -2929,6 +2941,7 @@ describe('ProjectsPanel', () => {
       ),
     )
 
+    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
     for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
@@ -3149,6 +3162,7 @@ describe('ProjectsPanel', () => {
       ),
     )
 
+    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
     for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
@@ -3381,6 +3395,7 @@ describe('ProjectsPanel', () => {
       }
     })
 
+    await user.click(await screen.findByRole('button', { name: 'Show thinking' }))
     for (const toggle of await screen.findAllByRole('button', { name: 'Thinking' })) await user.click(toggle)
     const history = await screen.findByTestId('project-ai-conversation-history-list')
     await waitFor(() => {
@@ -3533,6 +3548,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
+    fireEvent.click(await screen.findByRole('button', { name: 'Show thinking' }))
     await waitFor(() => {
       expect(history).toHaveTextContent('Reviewing repo')
       expect(history).toHaveTextContent('Considering proposal')
@@ -3659,6 +3675,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     const history = await screen.findByTestId('project-ai-conversation-history-list')
+    fireEvent.click(await screen.findByRole('button', { name: 'Show thinking' }))
     await waitFor(() => {
       expect(history).toHaveTextContent('Considering proposal')
     })
@@ -4805,7 +4822,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
     })
     expect(settingsRequests).toHaveLength(1)
     expect(settingsRequests[0]?.body).toMatchObject({
@@ -4817,7 +4834,7 @@ describe('ProjectsPanel', () => {
     expect(history).toHaveTextContent('Switched to Plan mode')
     expect(history).not.toHaveTextContent('/plan')
     const requestCard = await screen.findByTestId('project-request-user-input-card-segment-request-user-input-1')
-    expect(requestCard).toHaveTextContent('Needs Input')
+    expect(requestCard).toHaveTextContent('Needs input')
     expect(requestCard).toHaveTextContent('Which planning path should I take for this change?')
     expect(requestCard).toHaveTextContent('What context or constraints should the final plan preserve?')
     expect(screen.queryByTestId('run-pending-human-gates-panel')).not.toBeInTheDocument()
@@ -4946,7 +4963,7 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
     })
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Switched to Plan mode')
@@ -4956,7 +4973,7 @@ describe('ProjectsPanel', () => {
     await user.click(await screen.findByRole('button', { name: /Open thread Chat thread/i }))
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Chat mode')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('chat')
     })
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Answer directly.')
@@ -4967,7 +4984,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(threadAFetchCount).toBe(2)
       expect(resolveThreadARestore).not.toBeNull()
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Switched to Plan mode')
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Draft the implementation plan.')
     })
@@ -4980,7 +4997,7 @@ describe('ProjectsPanel', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
     })
   })
 
@@ -5083,7 +5100,7 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveTextContent('Plan mode')
+      expect(screen.getByTestId('project-active-chat-mode-badge')).toHaveValue('plan')
     })
     expect(settingsRequests).toEqual([])
     expect(turnRequests).toHaveLength(1)

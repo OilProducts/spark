@@ -85,7 +85,7 @@ test('workspace model defaults require Save and survive reload; dirty drafts sur
     try {
         await chooseModel(page, 'anthropic', 'claude-opus-4-6')
         expect((await read()).models.effective).toEqual(original)
-        await card(page, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
+        await card(page, 'Model defaults (workspace)').getByRole('button', { name: /^Save\b/ }).click()
         await expect(page.getByText('Saved. Applies to the next message.', { exact: true })).toBeVisible()
         await page.reload()
         await expect(provider).toContainText('claude-opus-4-6')
@@ -94,14 +94,14 @@ test('workspace model defaults require Save and survive reload; dirty drafts sur
         await other.getByTestId('activity-settings').click()
         await expect(other.getByRole('button', { name: /^Model:/ })).toBeEnabled()
         await chooseModel(other, 'openai', 'gpt-5.5')
-        await card(other, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
+        await card(other, 'Model defaults (workspace)').getByRole('button', { name: /^Save\b/ }).click()
         await expect(other.getByText('Saved. Applies to the next message.', { exact: true })).toBeVisible()
         await expect(page.getByText('Settings changed elsewhere. Your draft is retained; Discard reloads the latest values.', { exact: true })).toBeVisible()
         await expect(provider).toContainText('retained-draft')
-        await card(page, 'Model defaults (Workspace)').getByRole('button', { name: /^Save\b/ }).click()
+        await card(page, 'Model defaults (workspace)').getByRole('button', { name: /^Save\b/ }).click()
         await expect(page.getByText('Settings changed since this document was read. Reload before saving.', { exact: false })).toBeVisible()
         await expect(provider).toContainText('retained-draft')
-        await card(page, 'Model defaults (Workspace)').getByRole('button', { name: /^Discard\b/ }).click()
+        await card(page, 'Model defaults (workspace)').getByRole('button', { name: /^Discard\b/ }).click()
         await expect(provider).toContainText('gpt-5.5')
     } finally {
         const current = await read()
@@ -796,7 +796,7 @@ test('picker default persists workspace and project resets', async ({ page }, te
         await page.getByTestId('activity-settings').click()
         for (const scoped of [false, true]) {
             // Workspace defaults live in Settings; a project's model defaults live on its project page.
-            const scope = card(page, scoped ? 'Project model defaults' : 'Model defaults (Workspace)')
+            const scope = card(page, scoped ? 'Project model defaults' : 'Model defaults (workspace)')
             if (scoped) {
                 const response = await page.request.patch('/workspace/api/settings', { data: { section: 'models', expected_revision: (await read()).models.revision,
                     value: { provider: 'anthropic', llm_profile: null, model: 'workspace-parent', reasoning_effort: 'low' } } })

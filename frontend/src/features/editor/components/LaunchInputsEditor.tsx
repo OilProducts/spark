@@ -1,5 +1,6 @@
 import type { LaunchInputDefinition, LaunchInputType } from '@/lib/flowContracts'
 import { Button } from '@/components/ui/button'
+import { Well } from '@/components/app/well'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -46,20 +47,17 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
     }
 
     return (
-        <div
-            data-testid="graph-launch-inputs-editor"
-            className="space-y-3 rounded-md border border-border/80 p-3"
-        >
+        <Well data-testid="graph-launch-inputs-editor" className="space-y-3 p-3">
             <div className="space-y-1">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                    Launch Inputs
+                <p className="text-sm font-semibold text-foreground">
+                    Launch inputs
                 </p>
                 <p className="text-xs text-muted-foreground">
                     Define the `context.*` values Spark should collect before launching this flow.
                 </p>
             </div>
             {entries.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border/80 px-3 py-2 text-xs text-muted-foreground">
+                <div className="text-xs text-muted-foreground">
                     No launch inputs declared yet.
                 </div>
             ) : null}
@@ -67,7 +65,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                 <div
                     key={`launch-input-${index}`}
                     data-testid={`graph-launch-input-row-${index}`}
-                    className="space-y-3 rounded-md border border-border/80 bg-background px-3 py-3"
+                    className="space-y-3 rounded-lg bg-background px-3 py-3"
                 >
                     <div className="grid grid-cols-2 gap-3">
                         <Field>
@@ -146,7 +144,7 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     onClick={addEntry}
                     variant="outline"
                     size="xs"
-                    className="h-8 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                    className="h-8 text-xs"
                 >
                     Add Launch Input
                 </Button>
@@ -160,6 +158,6 @@ export function LaunchInputsEditor({ entries, error, onChange }: LaunchInputsEdi
                     </p>
                 )}
             </div>
-        </div>
+        </Well>
     )
 }

@@ -2428,7 +2428,7 @@ useStore.getState().setRunsSelectedRunId(runId);
 
     const childLinkage = screen.getByTestId('manager-child-linkage')
     expect(await screen.findByText('Manager Poll Interval')).toBeVisible()
-    expect(childLinkage).toHaveTextContent('Child Flow Linkage')
+    expect(childLinkage).toHaveTextContent('Child flow linkage')
     expect(childLinkage).toHaveTextContent('flow_ref')
     expect(childLinkage).toHaveTextContent('child/flow.yaml')
 

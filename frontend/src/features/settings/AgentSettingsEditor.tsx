@@ -12,7 +12,7 @@ const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum
 export function AgentSettingsEditor() {
     const editor = useAgentSettingsEditor()
     const [newToolNames, setNewToolNames] = useState({ tool_output_limits: '', line_limits: '' })
-    return <Card><CardHeader><h3 className="text-lg font-light">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
+    return <Card><CardHeader><h3 className="text-lg font-semibold">Agent session limits</h3></CardHeader><CardContent className="space-y-3">
         {editor.pending ? <p role="status">Updating…</p> : !editor.saved && !editor.error ? <p role="status">Loading settings…</p> : null}
         {editor.draft && <fieldset disabled={editor.pending} className="space-y-2">
             {(['max_turns', 'max_tool_rounds_per_input', 'default_command_timeout_ms', 'max_command_timeout_ms', 'loop_detection_window', 'max_subagent_depth'] as const).map((key) => {
@@ -72,8 +72,8 @@ export function AgentSettingsEditor() {
             {editor.invalid && <p id="agent-limits-error" role="alert">Use nonnegative whole numbers, a positive default timeout no greater than the maximum, and a positive window when loop detection is enabled.</p>}
         </fieldset>}
         <div className="flex flex-wrap gap-2">
-        <Button aria-label="Save agent session limits" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
-        <Button aria-label="Discard agent session limits changes" variant="outline" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
+        <Button variant="outline" aria-label="Save agent session limits" disabled={!editor.dirty || editor.pending || editor.invalid} onClick={() => void editor.save()}>Save</Button>
+        <Button aria-label="Discard agent session limits changes" variant="ghost" disabled={editor.pending || (!editor.dirty && !editor.error)} onClick={() => void editor.discard()}>Discard</Button>
         </div>
         <SaveStatus message={editor.message} error={editor.error} dirty={editor.dirty} />
     </CardContent></Card>

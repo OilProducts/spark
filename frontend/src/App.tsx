@@ -8,6 +8,7 @@ import { TriggersPanel } from "@/features/triggers"
 import { useStore } from "@/store"
 import { useNarrowViewport } from "@/lib/useNarrowViewport"
 import { DialogProvider } from "@/components/app/dialog-controller"
+import { Sheet } from "@/components/app/view-layout"
 import { MissionsPanel } from "@/features/missions/MissionsPanel"
 import { OverviewPanel } from "@/features/overview/OverviewPanel"
 function App() {
@@ -26,7 +27,7 @@ function App() {
       <div
         data-testid="app-shell"
         data-responsive-layout={isNarrowViewport ? 'stacked' : 'inline'}
-        className={`h-screen flex antialiased bg-background text-foreground ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
+        className={`h-screen flex antialiased bg-ground text-foreground ${isNarrowViewport ? 'flex-col' : 'flex-row'}`}
       >
         <ActivityBar />
         <main data-testid="app-main" className="flex-1 min-w-0 min-h-0 relative flex flex-col overflow-hidden">
@@ -67,7 +68,7 @@ function App() {
             <TriggersPanel />
           </div>
           {viewMode === 'overview' ? (
-            <div className="absolute inset-0"><OverviewPanel /></div>
+            <div className="absolute inset-0 flex"><Sheet><OverviewPanel /></Sheet></div>
           ) : null}
           <div hidden={viewMode !== 'missions'} className="absolute inset-0"><MissionsPanel active={viewMode === 'missions'} /></div>
           {isSettingsMode ? (

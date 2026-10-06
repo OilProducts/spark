@@ -49,9 +49,9 @@ export function AdvancedKeyValueEditor({
     return (
         <section
             data-testid={`${testIdPrefix}-extension-attrs-editor`}
-            className="space-y-2 rounded-md border border-border/80 p-3"
+            className="space-y-2 rounded-xl bg-muted p-3"
         >
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <p className="text-sm font-semibold text-foreground">
                 {title}
             </p>
             {description ? (
@@ -104,7 +104,7 @@ export function AdvancedKeyValueEditor({
                                 onClick={() => onRemove(entry.key)}
                                 variant="outline"
                                 size="xs"
-                                className="h-8 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                                className="h-8 text-xs"
                             >
                                 Remove
                             </Button>
@@ -147,7 +147,7 @@ export function AdvancedKeyValueEditor({
                     disabled={!canAdd}
                     variant="outline"
                     size="xs"
-                    className="h-8 text-xs uppercase tracking-wide text-muted-foreground hover:text-foreground"
+                    className="h-8 text-xs"
                 >
                     Add Attribute
                 </Button>
