@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Projects navigation · options</title>
+<script src="data.js"></script>
+<style>
+:root { --fg: #1f2328; --muted: #8a9099; --faint: #a8adb5; --border: #eef0f2; --line: #e3e6ea; --soft: #f6f7f9;
+  --accent: #3b5bdb; --accent-soft: #f1f4ff; --ok: #2f9e44; --warn: #e8590c; --err: #e03131; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--fg); background: #fff; display: flex; flex-direction: column; }
+code, .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+a { color: var(--accent); cursor: pointer; text-decoration: none; } a:hover { text-decoration: underline; }
+button { font: inherit; border: none; background: none; color: var(--accent); padding: 3px 8px; border-radius: 6px; cursor: pointer; }
+button:hover { background: var(--accent-soft); } button.primary { border: 1px solid var(--accent); }
+.muted { color: var(--muted); } .faint { color: var(--faint); } .small { font-size: 12px; } .tiny { font-size: 11px; }
+.warn { color: var(--warn); } .err { color: var(--err); } .ok { color: var(--ok); } .acc { color: var(--accent); }
+.proto { background: #1f2328; color: #c9cdd3; font-size: 12px; padding: 7px 16px; display: flex; gap: 16px; align-items: center; flex-shrink: 0; }
+.proto b { color: #fff; } .proto a { color: #c9cdd3; } .proto a.on { color: #fff; text-decoration: underline; } .proto .note { margin-left: auto; color: #8a9099; max-width: 60%; text-align: right; }
+.appnav { height: 52px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 22px; flex-shrink: 0; gap: 18px; }
+.brand { display: flex; gap: 8px; align-items: center; font-size: 15px; } .logo { width: 16px; height: 16px; border-radius: 4px; background: url(../../frontend/public/assets/spark-app-icon.png) center/cover, #f59f00; }
+.appnav nav { margin: 0 auto; display: flex; gap: 22px; } .appnav nav a { color: var(--muted); } .appnav nav a.on { color: var(--fg); text-decoration: underline; text-underline-offset: 18px; text-decoration-thickness: 1px; }
+.appnav .right { display: flex; gap: 14px; color: var(--muted); }
+main { flex: 1; min-height: 0; display: flex; }
+.label { font-size: 10.5px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+.badge { display: inline-block; min-width: 16px; padding: 0 5px; border-radius: 8px; font-size: 10.5px; text-align: center; background: var(--soft); color: var(--muted); }
+.badge.warn { background: #fff1e8; color: var(--warn); }
+.pchip { display: inline-flex; gap: 5px; align-items: center; color: var(--muted); font-size: 11.5px; }
+.pdot { width: 7px; height: 7px; border-radius: 2px; flex-shrink: 0; }
+
+/* sidebars */
+.side { width: 272px; border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; padding: 12px 0 30px; background: #fff; }
+.side.narrow { width: 248px; }
+.side .sitem { display: flex; align-items: center; gap: 9px; padding: 5px 16px; cursor: pointer; color: var(--fg); }
+.side .sitem:hover { color: var(--accent); } .side .sitem.on { color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.side .sitem .ic { width: 16px; text-align: center; color: var(--faint); }
+.side .sitem .n { margin-left: auto; }
+.side .sec { padding: 18px 16px 6px; display: flex; align-items: center; justify-content: space-between; }
+.side .proj { display: flex; align-items: center; gap: 8px; padding: 5px 16px; cursor: pointer; }
+.side .proj:hover .nm { color: var(--accent); } .side .proj.on .nm { color: var(--accent); }
+.side .proj .tw { width: 10px; color: var(--faint); font-size: 10px; }
+.side .proj .add { margin-left: auto; color: var(--faint); visibility: hidden; padding: 0 4px; } .side .proj:hover .add { visibility: visible; }
+.side .chat { padding: 4px 16px 4px 40px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #3d434b; }
+.side .chat:hover { color: var(--accent); } .side .chat.on { color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.side .chat.flat { padding-left: 16px; }
+.side .more { padding: 3px 16px 3px 40px; font-size: 12px; color: var(--faint); cursor: pointer; } .side .more:hover { color: var(--accent); }
+.side .empty { padding: 4px 16px; font-size: 12px; color: var(--faint); }
+.side .search { margin: 4px 16px 8px; border: none; border-bottom: 1px solid var(--border); width: calc(100% - 32px); font: inherit; padding: 4px 0; outline: none; }
+.side .newchat { margin: 0 12px 10px; display: flex; }
+.side .newchat button { flex: 1; text-align: left; border: 1px solid var(--line); color: var(--fg); padding: 6px 10px; }
+.missing { color: var(--faint); text-decoration: line-through; }
+
+/* content */
+.content { flex: 1; min-width: 0; overflow-y: auto; }
+.content .inner { max-width: 1000px; padding: 26px 36px 60px; }
+h1 { font-size: 24px; font-weight: 300; letter-spacing: -.01em; margin: 0; line-height: 1.25; }
+.sub { color: var(--muted); margin-top: 4px; }
+.toolbar { display: flex; align-items: center; gap: 14px; margin: 16px 0 6px; }
+.toolbar input { border: none; border-bottom: 1px solid var(--border); font: inherit; padding: 4px 0; outline: none; width: 220px; }
+.filter { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 14px; padding: 2px 10px; font-size: 12px; color: var(--fg); cursor: pointer; }
+.rows .r { display: grid; grid-template-columns: 18px minmax(0, 1fr) 150px 90px; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); align-items: baseline; }
+.rows .r .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .rows .r .m { color: var(--muted); font-size: 12px; } .rows .r .d { color: var(--muted); font-size: 12px; text-align: right; }
+.rows .gh { padding: 16px 0 6px; }
+.chatview { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.chatview .ch { padding: 18px 32px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 12px; }
+.chatview .ch h2 { font-size: 18px; font-weight: 300; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chatview .body { flex: 1; overflow-y: auto; padding: 22px 32px; }
+.chatview .body .ph { max-width: 680px; }
+.chatview .body .ph .line { height: 9px; border-radius: 5px; background: var(--soft); margin: 10px 0; }
+.chatview .composer { border-top: 1px solid var(--border); padding: 12px 32px 16px; }
+.chatview .composer .box { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--faint); max-width: 760px; }
+.chatview .composer .ctx { display: flex; gap: 10px; align-items: center; margin-top: 6px; font-size: 12px; color: var(--muted); max-width: 760px; }
+.menu { position: absolute; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.08); padding: 6px 0; min-width: 240px; z-index: 5; }
+.menu .mi { padding: 6px 14px; cursor: pointer; display: flex; gap: 8px; align-items: center; } .menu .mi:hover { background: var(--accent-soft); color: var(--accent); }
+.menu .mh { padding: 6px 14px 2px; }
+.ptabs { display: flex; gap: 22px; border-bottom: 1px solid var(--border); margin-top: 18px; }
+.ptabs a { color: var(--muted); padding: 8px 0; } .ptabs a.on { color: var(--fg); box-shadow: inset 0 -1px 0 var(--fg); text-decoration: none; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0 28px; margin-top: 10px; }
+.pcard { padding: 14px 0; border-bottom: 1px solid var(--border); cursor: pointer; } .pcard:hover .nm { color: var(--accent); }
+.pcard .nm { font-size: 15px; } .pcard .m { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.callout { border-left: 2px solid var(--line); padding: 6px 0 6px 14px; color: var(--muted); font-size: 12.5px; margin: 14px 0; max-width: 720px; }
+.inbox .r { grid-template-columns: 18px minmax(0, 1fr) 150px 120px; }
+
+/* E · Activity bar */
+.rail { width: 52px; border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px; flex-shrink: 0; }
+.rail .ri { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer; position: relative; font-size: 16px; }
+.rail .ri:hover { color: var(--fg); } .rail .ri.on { color: var(--accent); background: var(--accent-soft); }
+.rail .ri .dot { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.rail .ri .dot.warn { background: var(--warn); }
+.rail .sp { flex: 1; }
+.panel { width: 290px; border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; padding: 14px 0 30px; }
+.panel .ph { padding: 0 16px 8px; display: flex; align-items: baseline; justify-content: space-between; }
+.panel .ph h2 { font-size: 15px; font-weight: 400; margin: 0; }
+.panel .row { padding: 7px 16px; cursor: pointer; } .panel .row:hover .t { color: var(--accent); }
+.panel .row.on { box-shadow: inset 2px 0 0 var(--accent); } .panel .row.on .t { color: var(--accent); }
+.panel .row .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .panel .row .m { font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; margin-top: 1px; }
+.panel .grp { padding: 12px 16px 4px; }
+.detail { flex: 1; min-width: 0; overflow-y: auto; } .detail .inner { max-width: 900px; padding: 26px 36px; }
+.ph2 .line { height: 9px; border-radius: 5px; background: var(--soft); margin: 10px 0; }
+/* F · Project tree */
+.tree .node { display: flex; align-items: center; gap: 8px; padding: 4px 16px 4px 30px; cursor: pointer; color: #3d434b; }
+.tree .node:hover { color: var(--accent); } .tree .node.on { color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.tree .node .ic { width: 14px; text-align: center; color: var(--faint); font-size: 12px; } .tree .node .n { margin-left: auto; color: var(--faint); font-size: 11.5px; }
+.tree .leaf { padding: 3px 16px 3px 52px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #555b63; font-size: 12.5px; }
+.tree .leaf:hover { color: var(--accent); } .tree .leaf.on { color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.homehint { color: var(--faint); font-size: 11px; margin-left: 4px; }
+
+/* G · Recent work */
+.recent .day { padding: 14px 16px 4px; }
+.witem { padding: 7px 16px; cursor: pointer; position: relative; }
+.witem:hover .t { color: var(--accent); } .witem.on { box-shadow: inset 2px 0 0 var(--accent); } .witem.on .t { color: var(--accent); }
+.witem .t { display: flex; gap: 6px; align-items: baseline; } .witem .t span.tt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.witem .m { font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: center; margin-top: 1px; white-space: nowrap; overflow: hidden; }
+.witem .kind { width: 12px; flex-shrink: 0; color: var(--faint); font-size: 11px; text-align: center; }
+.witem .tw { color: var(--faint); font-size: 10px; width: 10px; flex-shrink: 0; }
+.kids .kid { display: flex; gap: 6px; padding: 2px 16px 2px 44px; font-size: 12px; color: #555b63; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.kids .kid span.tt { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; } .kids .kid:hover { color: var(--accent); }
+.kids .kid .d { color: var(--faint); }
+.tally { display: inline-flex; gap: 6px; } .tally b { font-weight: 400; }
+.foot { padding: 16px; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; border-top: 1px solid var(--border); margin-top: 14px; }
+.land .card { border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin-top: 14px; max-width: 760px; }
+.land .card h2 { font-size: 17px; font-weight: 300; margin: 2px 0 4px; }
+.land .sect { margin-top: 26px; max-width: 760px; }
+.prov { border-bottom: 1px solid var(--border); padding: 8px 32px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); align-items: baseline; }
+.prov a { color: var(--fg); } .prov a:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="proto"><b>Projects navigation</b><span id="switch"></span><span class="note" id="pnote"></span></div>
+<div id="app" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+<script>
+const OPTIONS = [
+  ['a', 'A · Tabs', 'Top tabs stay. No global project selector: every tab shows all projects, labels each row, and filters on demand. Home’s thread list groups chats by project.'],
+  ['b', 'B · Sidebar', 'ChatGPT-style. One left sidebar: New chat, the views (Missions, Runs, Triggers, Editor), then each project with its chats, then chats outside any project. No top tabs.'],
+  ['c', 'C · Project hubs', 'A sidebar of projects. Each opens to its own page with tabs for its chats, missions, runs and triggers. A cross-project Inbox collects what needs you.'],
+  ['e', 'E · Activity bar', 'VS Code style. Pick up where you left off first, then a thin column of view icons; the panel beside it follows the view: chats by project, the mission list, the run list, triggers, flows.'],
+  ['f', 'F · Project tree', 'Linear style. Pick up where you left off at the top, then each project expands into its Chats, Missions, Runs and Triggers. Home is the default project for work outside a repository.'],
+  ['g', 'G · Recent work', 'Organised by recency and follow-through: one list of your recent work across projects, each chat carrying the runs and missions it set in motion. Opening Spark shows what you were doing, what finished, and what needs you.'],
+  ['d', 'D · Tabs + chat sidebar', 'Top tabs for the views, plus a chat sidebar grouped by project that stays on every tab, so the chat you came from is always one click away.'],
+]
+const P = new URLSearchParams(location.search).get('p') || 'a'
+const S = { view: 'chat', chat: null, project: null, ptab: 'chats', menu: false, expanded: {}, filter: null }
+const projects = DATA.projects.slice().sort((a, b) => (b.lastOpened || '').localeCompare(a.lastOpened || ''))
+const COLORS = ['#3b5bdb', '#2f9e44', '#e8590c', '#9c36b5', '#1098ad', '#c2255c']
+projects.forEach((p, i) => { p.color = COLORS[i % COLORS.length]; S.expanded[p.id] = i < 2 })
+// E and F open only the project you're working in.
+if (P === 'e' || P === 'f') S.expanded = { [projects[0].id]: true }
+S.chat = projects[0].chats[0]?.id
+const byPath = path => projects.find(p => p.path === path)
+document.getElementById('switch').innerHTML = OPTIONS.map(([k, l]) => `<a class="${k === P ? 'on' : ''}" href="?p=${k}">${l}</a>`).join('   ')
+document.getElementById('pnote').textContent = OPTIONS.find(([k]) => k === P)[2]
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const d = s => s ? new Date(s) : null
+const day = s => { const x = d(s); if (!x) return ''; const now = new Date(); return x.toDateString() === now.toDateString() ? x.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }
+const flowTitle = f => (f || '').split('/').pop().replace(/\.ya?ml$/, '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+const chip = p => p ? `<span class="pchip"><span class="pdot" style="background:${p.color}"></span>${esc(p.name)}</span>` : `<span class="pchip"><span class="pdot" style="background:#d5d9df"></span>No project</span>`
+const pathChip = path => { const p = byPath(path); return p ? chip(p) : `<span class="pchip"><span class="pdot" style="background:#d5d9df"></span><span class="missing" title="Not a registered project">${esc(path?.split('/').pop())}</span></span>` }
+const allChats = () => projects.flatMap(p => p.chats.map(c => ({ ...c, project: p })))
+// A brand-new chat: in a project when started from one, otherwise outside any project.
+const chatById = id => id === '__new' ? { id: '__new', title: 'New chat', handle: '', project: S.newIn, model: null } : allChats().find(c => c.id === id)
+const allMissions = () => projects.flatMap(p => p.missions.filter(m => !m.archived).map(m => ({ ...m, project: p })))
+const allRuns = () => projects.flatMap(p => p.runs.map(r => ({ ...r, project: p }))).sort((a, b) => (b.started || '').localeCompare(a.started || ''))
+const runMark = s => s === 'failed' ? '<span class="err">✕</span>' : s === 'running' ? '<span class="acc">•</span>' : s === 'waiting' ? '<span class="warn">?</span>' : s === 'canceled' ? '<span class="faint">–</span>' : '<span class="ok">✓</span>'
+const missionMark = m => m.status === 'closed' ? (m.closed === 'failed' ? '<span class="err">✕</span>' : '<span class="ok">✓</span>') : m.status === 'draft' ? '<span class="faint">–</span>' : '<span class="acc">•</span>'
+const missionWord = m => m.status === 'closed' ? ({ done: 'Done', failed: 'Failed', canceled: 'Canceled' }[m.closed] || 'Done') : m.status === 'draft' ? 'Draft' : 'Running'
+const inScope = x => !S.filter || x.project?.id === S.filter
+const filterChip = () => `<span class="filter" data-filter>${S.filter ? chip(projects.find(p => p.id === S.filter)) : 'All projects'} ▾</span>${S.filter ? ' <a class="small" data-clear-filter>Clear</a>' : ''}`
+
+// ---- shared views ----
+function chatView(c) {
+  if (!c) return `<section class="chatview"><div class="body"><div class="callout">Pick a chat, or start a new one.</div></div></section>`
+  const p = c.project
+  return `<section class="chatview"><div class="ch"><h2>${esc(c.title)}</h2>${p ? `<a data-project="${p.id}">${chip(p)}</a>` : chip(null)}<span class="faint small mono">${esc(c.handle || '')}</span></div>
+    <div class="body"><div class="ph"><div class="faint small" style="margin-bottom:12px">The conversation renders here, unchanged.</div>${[92, 70, 84, 40, 0, 88, 76, 60].map(w => w ? `<div class="line" style="width:${w}%"></div>` : '<div style="height:14px"></div>').join('')}</div></div>
+    <div class="composer"><div class="box">Message ${p ? esc(p.name) : 'Spark'}…</div>
+      <div class="ctx">${p ? `Runs and missions started here go to ${chip(p)}` : 'Not tied to a project · runs and missions started here ask which project'}<span style="margin-left:auto">${esc(c.model || 'default model')}</span></div></div></section>`
+}
+function missionsView(scoped) {
+  const ms = allMissions().filter(m => scoped ? m.project.id === scoped : inScope(m))
+  const groups = [['running', 'Running'], ['draft', 'Drafts'], ['closed', 'Closed']]
+  return `<h1>Missions</h1><div class="toolbar"><input placeholder="Search missions">${scoped ? '' : filterChip()}<span style="margin-left:auto"></span><button class="primary" data-new-mission>+ New mission</button></div>
+    <div class="rows">${groups.map(([k, l]) => { const g = ms.filter(m => m.status === k); return g.length ? `<div class="gh label">${l} · ${g.length}</div>` + g.map(m => `<div class="r"><span>${missionMark(m)}</span><span class="t">${esc(m.title)}</span><span>${scoped ? '' : chip(m.project)}</span><span class="d">${missionWord(m)} · ${day(m.updated)}</span></div>`).join('') : '' }).join('') || '<div class="callout">No missions.</div>'}</div>
+    ${S.menu === 'mission' ? newMenu('Create the mission in') : ''}`
+}
+function runsView(scoped) {
+  const rs = allRuns().filter(r => scoped ? r.project.id === scoped : inScope(r)).slice(0, 22)
+  return `<h1>Runs</h1><div class="toolbar"><input placeholder="Search runs">${scoped ? '' : filterChip()}</div>
+    <div class="rows">${rs.map(r => `<div class="r"><span>${runMark(r.status)}</span><span class="t">${esc(r.title || r.input || flowTitle(r.flow))}<div class="m">${esc(flowTitle(r.flow))}</div></span><span>${scoped ? '' : chip(r.project)}</span><span class="d">${day(r.started)}</span></div>`).join('') || '<div class="callout">No runs.</div>'}</div>`
+}
+function triggersView(scoped) {
+  const ts = DATA.triggers.filter(t => !scoped || byPath(t.project)?.id === scoped).filter(t => scoped || !S.filter || byPath(t.project)?.id === S.filter)
+  return `<h1>Triggers</h1><div class="toolbar"><input placeholder="Search triggers">${scoped ? '' : filterChip()}<span style="margin-left:auto"></span><button class="primary">+ New trigger</button></div>
+    <div class="rows">${ts.map(t => `<div class="r"><span>${t.enabled ? '<span class="ok">●</span>' : '<span class="faint">○</span>'}</span><span class="t">${esc(t.name)}<div class="m">${esc(t.source === 'schedule' ? 'On a schedule' : 'When a flow event fires')} · ${t.enabled ? 'enabled' : 'disabled'}</div></span><span>${pathChip(t.project)}</span><span class="d">${esc(t.mode === 'workspace_draft' ? 'Drafts a chat' : t.mode || '')}</span></div>`).join('') || '<div class="callout">No triggers for this project.</div>'}</div>
+    ${scoped ? '' : '<div class="callout">All three real triggers target math-bsd and math-tuza, which aren’t registered projects, so they show struck through.</div>'}`
+}
+function editorView() {
+  return `<h1>Editor</h1><div class="sub">Flows are installed for every project, so the editor has no project of its own.</div>
+    <div class="callout">Launching a flow from here asks which project to run it in, defaulting to the project of the chat you came from, or the last one you used. Launching from a chat skips the question.</div>`
+}
+function projectPage(p, tabsInline) {
+  const counts = { chats: p.chats.length, missions: p.missions.filter(m => !m.archived).length, runs: p.runCount, triggers: DATA.triggers.filter(t => byPath(t.project)?.id === p.id).length }
+  const body = S.ptab === 'chats' ? `<div class="rows">${p.chats.slice(0, 18).map(c => `<div class="r" data-chat="${c.id}" style="cursor:pointer"><span class="faint">▢</span><span class="t">${esc(c.title)}</span><span class="m">${esc(c.handle || '')}</span><span class="d">${day(c.updated)}</span></div>`).join('') || '<div class="callout">No chats yet.</div>'}</div>`
+    : S.ptab === 'missions' ? missionsView(p.id) : S.ptab === 'runs' ? runsView(p.id) : S.ptab === 'triggers' ? triggersView(p.id)
+    : `<div class="rows"><div class="r"><span></span><span class="t">Default model</span><span class="m">Project default</span><span class="d"><a>Change</a></span></div><div class="r"><span></span><span class="t">Execution profile</span><span class="m">Local</span><span class="d"><a>Change</a></span></div><div class="r"><span></span><span class="t">Instructions for agents in this project</span><span class="m">None</span><span class="d"><a>Add</a></span></div></div>`
+  return `<div style="display:flex;align-items:baseline;gap:12px"><span class="pdot" style="background:${p.color};width:10px;height:10px"></span><h1>${esc(p.name)}</h1>${p.exists ? '' : '<span class="err small">folder missing</span>'}<span style="margin-left:auto"></span><button class="primary" data-new-chat-in="${p.id}">+ New chat</button></div>
+    <div class="sub mono">${esc(p.path)}</div>
+    <div class="ptabs">${['chats', 'missions', 'runs', 'triggers', 'settings'].map(t => `<a class="${S.ptab === t ? 'on' : ''}" data-ptab="${t}">${t[0].toUpperCase() + t.slice(1)}${counts[t] !== undefined ? ` <span class="faint">${counts[t]}</span>` : ''}</a>`).join('')}</div>
+    <div style="margin-top:6px">${S.ptab === 'chats' || S.ptab === 'settings' ? body : body.replace(/<h1>[^<]*<\/h1>/, '')}</div>`
+}
+function newMenu(title) {
+  return `<div class="menu" style="top:150px;right:60px"><div class="mh label">${esc(title)}</div>${projects.filter(p => p.exists).map(p => `<div class="mi">${chip(p)}<span class="faint small" style="margin-left:auto">${day(p.lastOpened)}</span></div>`).join('')}<div class="mi">${chip(null)}</div></div>`
+}
+function sideChats(flatProjectless) {
+  return projects.map(p => {
+    const open = S.expanded[p.id], shown = p.chats.slice(0, 5)
+    return `<div class="proj ${S.view === 'project' && S.project === p.id ? 'on' : ''}" data-project="${p.id}"><span class="tw" data-toggle="${p.id}">${open ? '▾' : '▸'}</span><span class="pdot" style="background:${p.color}"></span><span class="nm ${p.exists ? '' : 'missing'}">${esc(p.name)}</span><span class="add" data-new-chat-in="${p.id}" title="New chat in ${esc(p.name)}">+</span></div>`
+      + (open ? shown.map(c => `<div class="chat ${S.view === 'chat' && S.chat === c.id ? 'on' : ''}" data-chat="${c.id}">${esc(c.title)}</div>`).join('') + (p.chats.length > 5 ? `<div class="more" data-project="${p.id}">${p.chats.length - 5} more</div>` : '') + (p.chats.length ? '' : '<div class="more">No chats</div>') : '')
+  }).join('') + `<div class="sec"><span class="label">Chats</span></div><div class="empty">Chats outside any project appear here. None yet.</div>`
+}
+
+// ---- A · Tabs ----
+function renderA() {
+  const tabs = [['chat', 'Home'], ['missions', 'Missions'], ['editor', 'Editor'], ['runs', 'Runs'], ['triggers', 'Triggers']]
+  const nav = `<div class="appnav"><span class="brand"><span class="logo"></span>Spark</span><nav>${tabs.map(([k, l]) => `<a class="${(S.view === k || (k === 'chat' && S.view === 'project')) ? 'on' : ''}" data-view="${k}">${l}</a>`).join('')}</nav><span class="right"><span>🔔</span><span>⚙︎</span></span></div>`
+  let body
+  if (S.view === 'chat' || S.view === 'project') {
+    body = `<aside class="side"><div class="newchat" style="position:relative"><button data-menu="chat">+ New chat ▾</button></div><input class="search" placeholder="Search chats">${sideChats()}</aside>
+      ${S.view === 'project' ? `<section class="content"><div class="inner">${projectPage(projects.find(p => p.id === S.project))}</div></section>` : chatView(chatById(S.chat))}
+      ${S.menu === 'chat' ? `<div class="menu" style="top:132px;left:12px"><div class="mh label">New chat in</div>${projects.filter(p => p.exists).map(p => `<div class="mi" data-new-chat-in="${p.id}">${chip(p)}</div>`).join('')}<div class="mi">${chip(null)}</div></div>` : ''}`
+  } else {
+    body = `<section class="content"><div class="inner" style="position:relative">${{ missions: missionsView, runs: runsView, triggers: triggersView, editor: editorView }[S.view]()}</div></section>`
+  }
+  return nav + `<main>${body}</main>`
+}
+
+// ---- B · Sidebar ----
+function renderB() {
+  const needs = 0
+  const items = [['missions', '◎', 'Missions', allMissions().filter(m => m.status === 'running').length], ['runs', '▷', 'Runs', allRuns().filter(r => r.status === 'running').length], ['triggers', '↻', 'Triggers', 0], ['editor', '✎', 'Editor', 0]]
+  const side = `<aside class="side"><div style="display:flex;align-items:center;gap:8px;padding:2px 16px 12px"><span class="logo"></span><span style="font-size:15px">Spark</span><span style="margin-left:auto" class="faint">⚙︎</span></div>
+    <div class="newchat"><button data-new-chat-in="">✎ New chat</button></div><input class="search" placeholder="Search">
+    ${items.map(([k, ic, l, n]) => `<div class="sitem ${S.view === k ? 'on' : ''}" data-view="${k}"><span class="ic">${ic}</span>${l}${n ? `<span class="n badge">${n}</span>` : ''}</div>`).join('')}
+    <div class="sec"><span class="label">Projects</span><a class="small" title="Add project">+</a></div>${sideChats()}</aside>`
+  const main = S.view === 'chat' ? chatView(chatById(S.chat)) : `<section class="content"><div class="inner" style="position:relative">${S.view === 'project' ? projectPage(projects.find(p => p.id === S.project)) : { missions: missionsView, runs: runsView, triggers: triggersView, editor: editorView }[S.view]()}</div></section>`
+  return `<main>${side}${main}</main>`
+}
+
+// ---- C · Project hubs ----
+function renderC() {
+  const side = `<aside class="side narrow"><div style="display:flex;align-items:center;gap:8px;padding:2px 16px 14px"><span class="logo"></span><span style="font-size:15px">Spark</span><span style="margin-left:auto" class="faint">⚙︎</span></div>
+    <div class="sitem ${S.view === 'inbox' ? 'on' : ''}" data-view="inbox"><span class="ic">✉︎</span>Inbox<span class="n badge">${allMissions().filter(m => m.status === 'running').length + allRuns().filter(r => r.status === 'running' || r.status === 'waiting').length}</span></div>
+    <div class="sitem ${S.view === 'allchats' ? 'on' : ''}" data-view="allchats"><span class="ic">▢</span>All chats</div>
+    <div class="sitem ${S.view === 'editor' ? 'on' : ''}" data-view="editor"><span class="ic">✎</span>Flows</div>
+    <div class="sec"><span class="label">Projects</span><a class="small">+</a></div>
+    ${projects.map(p => `<div class="proj ${S.view === 'project' && S.project === p.id ? 'on' : ''}" data-project="${p.id}"><span class="pdot" style="background:${p.color}"></span><span class="nm ${p.exists ? '' : 'missing'}">${esc(p.name)}</span><span class="faint small" style="margin-left:auto">${p.chats.length}</span></div>`).join('')}
+    <div class="sec"><span class="label">Chats</span></div><div class="empty">Chats outside any project. None yet.</div></aside>`
+  let main
+  if (S.view === 'chat') main = chatView(chatById(S.chat))
+  else if (S.view === 'project') main = `<section class="content"><div class="inner" style="position:relative">${projectPage(projects.find(p => p.id === S.project))}</div></section>`
+  else if (S.view === 'editor') main = `<section class="content"><div class="inner">${editorView()}</div></section>`
+  else if (S.view === 'allchats') main = `<section class="content"><div class="inner"><h1>All chats</h1><div class="toolbar"><input placeholder="Search chats"></div><div class="rows">${allChats().sort((a, b) => (b.updated || '').localeCompare(a.updated || '')).slice(0, 24).map(c => `<div class="r" data-chat="${c.id}" style="cursor:pointer"><span class="faint">▢</span><span class="t">${esc(c.title)}</span><span>${chip(c.project)}</span><span class="d">${day(c.updated)}</span></div>`).join('')}</div></div></section>`
+  else {
+    const active = allMissions().filter(m => m.status === 'running'), live = allRuns().filter(r => r.status === 'running' || r.status === 'waiting'), failed = allRuns().filter(r => r.status === 'failed').slice(0, 4)
+    main = `<section class="content"><div class="inner"><h1>Inbox</h1><div class="sub">What needs you or is moving, across every project.</div>
+      <div class="rows inbox"><div class="gh label">Needs you · 0</div><div class="callout" style="margin:6px 0">Nothing waiting on you. Questions from missions and runs land here.</div>
+      <div class="gh label">Running · ${active.length + live.length}</div>${[...active.map(m => `<div class="r"><span>${missionMark(m)}</span><span class="t">${esc(m.title)}<div class="m">Mission</div></span><span>${chip(m.project)}</span><span class="d">${day(m.updated)}</span></div>`), ...live.map(r => `<div class="r"><span>${runMark(r.status)}</span><span class="t">${esc(r.title || r.input || flowTitle(r.flow))}<div class="m">${esc(flowTitle(r.flow))} run</div></span><span>${chip(r.project)}</span><span class="d">${day(r.started)}</span></div>`)].join('') || '<div class="callout" style="margin:6px 0">Nothing running.</div>'}
+      <div class="gh label">Recently failed</div>${failed.map(r => `<div class="r"><span>${runMark(r.status)}</span><span class="t">${esc(r.title || r.input || flowTitle(r.flow))}<div class="m">${esc(flowTitle(r.flow))} run</div></span><span>${chip(r.project)}</span><span class="d">${day(r.started)}</span></div>`).join('')}</div></div></section>`
+  }
+  return `<main>${side}${main}</main>`
+}
+
+// ---- D · Tabs + chat sidebar ----
+function renderD() {
+  const tabs = [['chat', 'Chat'], ['missions', 'Missions'], ['editor', 'Editor'], ['runs', 'Runs'], ['triggers', 'Triggers']]
+  const nav = `<div class="appnav"><span class="brand"><span class="logo"></span>Spark</span><nav>${tabs.map(([k, l]) => `<a class="${S.view === k ? 'on' : ''}" data-view="${k}">${l}</a>`).join('')}</nav><span class="right"><span>🔔</span><span>⚙︎</span></span></div>`
+  const side = `<aside class="side narrow"><div class="newchat"><button data-new-chat-in="">+ New chat</button></div><input class="search" placeholder="Search chats">${sideChats()}</aside>`
+  const main = S.view === 'chat' ? chatView(chatById(S.chat)) : `<section class="content"><div class="inner" style="position:relative">${S.view === 'project' ? projectPage(projects.find(p => p.id === S.project)) : { missions: missionsView, runs: runsView, triggers: triggersView, editor: editorView }[S.view]()}</div></section>`
+  return nav + `<main>${side}${main}</main>`
+}
+
+
+// ---- Home: the default project for work outside a repository ----
+const HOMEP = { id: 'home', name: 'Home', path: '/Users/chris', home: true, exists: true, color: '#868e96', chats: [], missions: [], runs: [], runCount: 0, lastOpened: null }
+const withHome = () => [HOMEP, ...projects]
+const homeChip = () => chip(HOMEP)
+const placeholder = (title, sub, p) => `<div style="display:flex;align-items:baseline;gap:12px"><h1 style="flex:1">${esc(title)}</h1>${p ? chip(p) : ''}</div><div class="sub">${sub}</div>
+  <div class="ph2" style="margin-top:22px;max-width:640px"><div class="faint small">The existing view renders here, unchanged.</div>${[90, 64, 80, 0, 72, 86, 50].map(w => w ? `<div class="line" style="width:${w}%"></div>` : '<div style="height:12px"></div>').join('')}</div>`
+function newChatMenu(top, left) {
+  return `<div class="menu" style="top:${top}px;left:${left}px"><div class="mh label">New chat in</div><div class="mi" data-new-chat-in="home">${homeChip()}<span class="faint small" style="margin-left:auto">your home folder</span></div>${projects.filter(p => p.exists).map(p => `<div class="mi" data-new-chat-in="${p.id}">${chip(p)}</div>`).join('')}</div>`
+}
+
+// ---- E · Activity bar ----
+function renderE() {
+  const v = ['overview', 'chats', 'missions', 'runs', 'triggers', 'flows'].includes(S.ev) ? S.ev : (S.ev = 'overview')
+  const running = allRuns().filter(r => r.status === 'running').length
+  const icons = [['overview', '⌂', 'Pick up where you left off'], ['chats', '▢', 'Chats'], ['missions', '◎', 'Missions'], ['runs', '▷', 'Runs'], ['triggers', '↻', 'Triggers'], ['flows', '⎇', 'Flows']]
+  const rail = `<nav class="rail"><span class="logo" style="margin-bottom:10px"></span>${icons.map(([k, ic, l]) => `<div class="ri ${v === k ? 'on' : ''}" data-ev="${k}" title="${l}">${ic}${k === 'runs' && running ? '<span class="dot"></span>' : ''}</div>`).join('')}<span class="sp"></span><div class="ri" title="Settings">⚙︎</div></nav>`
+  let panel = '', main = ''
+  if (v === 'overview') {
+    return `<main>${rail}${S.grun || S.gsel ? (S.gsel ? chatView({ ...chatById(S.gsel) }) : `<section class="content"><div class="inner">${placeholder(runLabel(RUNS.get(S.grun)), 'the Runs view', RUNS.get(S.grun).project)}</div></section>`) : landing(workItems())}</main>`
+  } else if (v === 'chats') {
+    panel = `<div class="ph"><h2>Chats</h2><a data-menu="echat">+ New</a></div><input class="search" placeholder="Search chats">` + withHome().map(p => {
+      const open = S.expanded[p.id] ?? p.home
+      return `<div class="proj" data-project="${p.id}"><span class="tw" data-toggle="${p.id}">${open ? '▾' : '▸'}</span><span class="pdot" style="background:${p.color}"></span><span class="nm ${p.exists ? '' : 'missing'}">${esc(p.name)}</span>${p.home ? '<span class="homehint">default</span>' : ''}<span class="add" data-new-chat-in="${p.id}" title="New chat in ${esc(p.name)}">+</span></div>`
+        + (open ? (p.chats.slice(0, 5).map(c => `<div class="chat ${S.view === 'chat' && S.chat === c.id ? 'on' : ''}" data-chat="${c.id}">${esc(c.title)}</div>`).join('') + (p.chats.length > 5 ? `<div class="more" data-project="${p.id}">${p.chats.length - 5} more</div>` : '') + (p.chats.length ? '' : `<div class="more">${p.home ? 'Chats outside a repository land here' : 'No chats'}</div>`)) : '')
+    }).join('')
+    main = S.view === 'project' ? `<section class="detail"><div class="inner" style="position:relative">${projectPage(withHome().find(p => p.id === S.project))}</div></section>` : chatView(chatById(S.chat))
+  } else if (v === 'missions') {
+    const ms = allMissions()
+    panel = `<div class="ph"><h2>Missions</h2><a>+ New</a></div><input class="search" placeholder="Search missions">` + [['running', 'Running'], ['draft', 'Drafts'], ['closed', 'Closed']].map(([k, l]) => { const g = ms.filter(m => m.status === k); return g.length ? `<div class="grp label">${l}</div>` + g.map(m => `<div class="row ${S.sel === m.id ? 'on' : ''}" data-sel="${m.id}"><div class="t">${esc(m.title)}</div><div class="m">${chip(m.project)}<span>${missionWord(m)} · ${day(m.updated)}</span></div></div>`).join('') : '' }).join('')
+    const m = ms.find(x => x.id === S.sel) || ms[0]; S.sel = m?.id
+    main = `<section class="detail"><div class="inner">${m ? placeholder(m.title, `Mission · ${missionWord(m)} · the conversation view from CR-2026-0139`, m.project) : ''}</div></section>`
+  } else if (v === 'runs') {
+    const rs = allRuns().slice(0, 30)
+    panel = `<div class="ph"><h2>Runs</h2><span class="filter" data-filter style="font-size:11px">${S.filter ? chip(projects.find(p => p.id === S.filter)) : 'All'} ▾</span></div><input class="search" placeholder="Search runs">` + rs.filter(inScope).map(r => `<div class="row ${S.sel === r.id ? 'on' : ''}" data-sel="${r.id}"><div class="t">${runMark(r.status)} ${esc(r.title || r.input || flowTitle(r.flow))}</div><div class="m">${chip(r.project)}<span>${esc(flowTitle(r.flow))} · ${day(r.started)}</span></div></div>`).join('')
+    const r = rs.find(x => x.id === S.sel) || rs[0]; S.sel = r?.id
+    main = `<section class="detail"><div class="inner">${r ? placeholder(r.title || r.input || flowTitle(r.flow), `${flowTitle(r.flow)} run · status item, visit list and visit view`, r.project) : ''}</div></section>`
+  } else if (v === 'triggers') {
+    panel = `<div class="ph"><h2>Triggers</h2><a>+ New</a></div>` + DATA.triggers.map(t => `<div class="row ${S.sel === t.id ? 'on' : ''}" data-sel="${t.id}"><div class="t">${t.enabled ? '<span class="ok">●</span>' : '<span class="faint">○</span>'} ${esc(t.name)}</div><div class="m">${pathChip(t.project)}<span>${t.source === 'schedule' ? 'Schedule' : 'Flow event'}</span></div></div>`).join('')
+    const t = DATA.triggers.find(x => x.id === S.sel) || DATA.triggers[0]; S.sel = t?.id
+    main = `<section class="detail"><div class="inner">${t ? placeholder(t.name, `${t.source === 'schedule' ? 'Runs on a schedule' : 'Fires on a flow event'} · targets ${esc(t.project?.split('/').pop())}`) : ''}</div></section>`
+  } else {
+    const groups = {}; DATA.flows.forEach(f => { const g = f.split('/')[0]; (groups[g] ||= []).push(f) })
+    panel = `<div class="ph"><h2>Flows</h2><a>+ New</a></div><input class="search" placeholder="Search flows">` + Object.entries(groups).map(([g, fs]) => `<div class="grp label">${esc(flowTitle(g))}</div>` + fs.map(f => `<div class="row ${S.sel === f ? 'on' : ''}" data-sel="${f}"><div class="t">${esc(flowTitle(f))}</div><div class="m"><span class="mono" style="font-size:11px">${esc(f.split('/').slice(1).join('/'))}</span></div></div>`).join('')).join('')
+    const f = DATA.flows.includes(S.sel) ? S.sel : DATA.flows.find(x => x.includes('implement-change')); S.sel = f
+    main = `<section class="detail"><div class="inner">${placeholder(flowTitle(f), `<span class="mono">${esc(f)}</span> · the editor. <a>Run in…</a> asks which project.`)}</div></section>`
+  }
+  return `<main>${rail}<aside class="panel side" style="width:290px;padding-top:14px;position:relative">${panel}${S.menu === 'echat' ? newChatMenu(40, 120) : ''}</aside>${main}</main>`
+}
+
+// ---- F · Project tree ----
+function renderF() {
+  const needs = 0, live = allRuns().filter(r => r.status === 'running' || r.status === 'waiting').length + allMissions().filter(m => m.status === 'running').length
+  const tops = [['overview', '⌂', 'Pick up where you left off', null], ['flows', '⎇', 'Flows', null]]
+  if (S.fv === undefined) S.fv = 'overview'
+  const node = (p, k, ic, l, n) => `<div class="node ${S.fv === `${p.id}:${k}` ? 'on' : ''}" data-fv="${p.id}:${k}"><span class="ic">${ic}</span>${l}${n != null ? `<span class="n">${n}</span>` : ''}</div>`
+  const tree = withHome().map(p => {
+    const open = S.expanded[p.id] ?? false
+    const trig = DATA.triggers.filter(t => byPath(t.project)?.id === p.id).length
+    return `<div class="proj"><span class="tw" data-toggle="${p.id}">${open ? '▾' : '▸'}</span><span class="pdot" style="background:${p.color}"></span><span class="nm ${p.exists ? '' : 'missing'}" data-toggle="${p.id}">${esc(p.name)}</span>${p.home ? '<span class="homehint">default</span>' : ''}<span class="add" data-new-chat-in="${p.id}" title="New chat in ${esc(p.name)}">+</span></div>`
+      + (open ? node(p, 'chats', '▢', 'Chats', p.chats.length)
+        + (S.fv === `${p.id}:chats` || p.id === projects[0].id ? p.chats.slice(0, 4).map(c => `<div class="leaf ${S.view === 'chat' && S.chat === c.id ? 'on' : ''}" data-chat="${c.id}" data-fv-keep>${esc(c.title)}</div>`).join('') : '')
+        + node(p, 'missions', '◎', 'Missions', p.missions.filter(m => !m.archived).length || null)
+        + node(p, 'runs', '▷', 'Runs', p.runCount || null)
+        + node(p, 'triggers', '↻', 'Triggers', trig || null)
+        + node(p, 'settings', '⚙︎', 'Settings', null) : '')
+  }).join('')
+  const side = `<aside class="side tree" style="position:relative"><div style="display:flex;align-items:center;gap:8px;padding:2px 16px 12px"><span class="logo"></span><span style="font-size:15px">Spark</span><span style="margin-left:auto" class="faint">⚙︎</span></div>
+    <div class="newchat"><button data-menu="fchat">✎ New chat</button></div><input class="search" placeholder="Search everything">
+    ${tops.map(([k, ic, l, n]) => `<div class="sitem ${S.fv === k ? 'on' : ''}" data-fv="${k}"><span class="ic">${ic}</span>${l}${n ? `<span class="n badge ${k === 'inbox' ? 'warn' : ''}">${n}</span>` : ''}</div>`).join('')}
+    <div class="sec"><span class="label">Projects</span><a class="small">+</a></div>${tree}
+    ${S.menu === 'fchat' ? newChatMenu(84, 12) : ''}</aside>`
+  let main
+  if (S.view === 'chat' && !S.fv) main = chatView(chatById(S.chat))
+  else {
+    const [pid, k] = (S.fv || '').split(':')
+    const p = withHome().find(x => x.id === pid)
+    if (S.fv === 'overview') return `<main>${side}${S.grun ? `<section class="content"><div class="inner">${placeholder(runLabel(RUNS.get(S.grun)), 'the Runs view', RUNS.get(S.grun).project)}</div></section>` : landing(workItems())}</main>`
+    const inner = S.fv === 'inbox' ? `<h1>Needs you</h1><div class="sub">Questions from missions and runs in every project.</div><div class="callout">Nothing is waiting on you right now.</div>`
+      : S.fv === 'running' ? `<h1>Running</h1><div class="sub">Everything in flight, across projects.</div><div class="rows">${[...allMissions().filter(m => m.status === 'running'), ...allRuns().filter(r => r.status === 'running' || r.status === 'waiting')].map(x => `<div class="r"><span>${runMark(x.status)}</span><span class="t">${esc(x.title || x.input)}</span><span>${chip(x.project)}</span><span class="d">${day(x.started || x.updated)}</span></div>`).join('') || '<div class="callout">Nothing running right now.</div>'}</div>`
+      : S.fv === 'flows' ? editorView()
+      : !p ? '' : k === 'chats' ? `<div style="display:flex;align-items:baseline;gap:12px"><span class="pdot" style="background:${p.color};width:10px;height:10px"></span><h1 style="flex:1">${esc(p.name)} · Chats</h1><button class="primary" data-new-chat-in="${p.id}">+ New chat</button></div><div class="sub mono">${esc(p.path)}</div><div class="rows" style="margin-top:14px">${p.chats.map(c => `<div class="r" data-chat="${c.id}" style="cursor:pointer"><span class="faint">▢</span><span class="t">${esc(c.title)}</span><span class="m">${esc(c.handle || '')}</span><span class="d">${day(c.updated)}</span></div>`).join('') || `<div class="callout">${p.home ? 'Chats you start outside a repository live here, with your home folder as their working directory.' : 'No chats yet.'}</div>`}</div>`
+      : k === 'missions' ? missionsView(p.id).replace('<h1>Missions</h1>', `<h1>${esc(p.name)} · Missions</h1>`)
+      : k === 'runs' ? runsView(p.id).replace('<h1>Runs</h1>', `<h1>${esc(p.name)} · Runs</h1>`)
+      : k === 'triggers' ? triggersView(p.id).replace('<h1>Triggers</h1>', `<h1>${esc(p.name)} · Triggers</h1>`)
+      : (S.ptab = 'settings', projectPage(p).replace(/<div class="ptabs">[\s\S]*?<\/div>/, ''))
+    main = `<section class="content"><div class="inner" style="position:relative">${inner}</div></section>`
+  }
+  return `<main>${side}${main}</main>`
+}
+
+// ---- G · Recent work ----
+const RUNS = new Map(projects.flatMap(p => p.runs.map(r => [r.id, { ...r, project: p }])))
+const NOW = new Date('2026-10-01T12:30:00Z')
+const runLabel = r => r ? (r.title || r.input || flowTitle(r.flow)) : 'Run'
+function tally(runIds) {
+  const rs = runIds.map(id => RUNS.get(id)).filter(Boolean)
+  const n = k => rs.filter(r => r.status === k).length
+  const parts = [[n('waiting'), '<span class="warn">?</span>'], [n('running'), '<span class="acc">•</span>'], [n('completed'), '<span class="ok">✓</span>'], [n('failed'), '<span class="err">✕</span>'], [n('canceled'), '<span class="faint">–</span>']]
+  return parts.filter(([c]) => c).map(([c, mk]) => `<b>${mk} ${c}</b>`).join('')
+}
+function workItems() {
+  const items = []
+  const claimed = new Set()
+  for (const p of withHome()) {
+    for (const c of p.chats) {
+      const ids = (c.launches || []).map(l => l.run).filter(id => RUNS.has(id))
+      ids.forEach(id => claimed.add(id))
+      const last = [c.updated, ...ids.map(id => RUNS.get(id).ended || RUNS.get(id).started)].filter(Boolean).sort().at(-1)
+      items.push({ kind: 'chat', id: c.id, title: c.title, project: p, at: last, runs: ids, chat: c })
+    }
+    for (const m of p.missions.filter(m => !m.archived)) {
+      m.runs.forEach(id => claimed.add(id))
+      items.push({ kind: 'mission', id: m.id, title: m.title, project: p, at: m.updated, runs: m.runs.filter(id => RUNS.has(id)), mission: m })
+    }
+  }
+  for (const r of RUNS.values()) if (!claimed.has(r.id)) items.push({ kind: 'run', id: r.id, title: runLabel(r), project: r.project, at: r.ended || r.started, runs: [], run: r })
+  return items.sort((a, b) => (b.at || '').localeCompare(a.at || ''))
+}
+const dayLabel = s => { const x = d(s); if (!x) return 'Earlier'; const diff = Math.floor((new Date(NOW.toDateString()) - new Date(x.toDateString())) / 86400000); return diff <= 0 ? 'Today' : diff === 1 ? 'Yesterday' : diff < 7 ? x.toLocaleDateString(undefined, { weekday: 'long' }) : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }
+function workRow(it) {
+  const open = S.gopen?.[it.id], has = it.runs.length > 0
+  const mark = it.kind === 'chat' ? '▢' : it.kind === 'mission' ? '◎' : ''
+  const head = it.kind === 'run' ? runMark(it.run.status) : `<span class="kind">${mark}</span>`
+  const status = it.kind === 'mission' ? `<span>${missionWord(it.mission)}</span>` : it.kind === 'run' ? `<span>${esc(flowTitle(it.run.flow))}</span>` : ''
+  return `<div class="witem ${S.gsel === it.id ? 'on' : ''}" data-gsel="${it.id}" data-gkind="${it.kind}"><div class="t">${has ? `<span class="tw" data-gopen="${it.id}">${open ? '▾' : '▸'}</span>` : '<span class="tw"></span>'}${head}<span class="tt">${esc(it.title)}</span></div>
+    <div class="m" style="padding-left:16px">${chip(it.project)}${status}${has ? `<span class="tally">${tally(it.runs)}</span>` : ''}<span style="margin-left:auto">${day(it.at)}</span></div></div>`
+    + (open ? `<div class="kids">${it.runs.slice().reverse().map(id => { const r = RUNS.get(id); return `<div class="kid" data-grun="${id}">${runMark(r.status)}<span class="tt">${esc(runLabel(r))}</span><span class="d">${day(r.started)}</span></div>` }).join('')}</div>` : '')
+}
+function landing(items) {
+  const last = items.find(i => i.kind === 'chat')
+  const since = new Date(NOW.getTime() - 40 * 3600000).toISOString()
+  const finished = [...RUNS.values()].filter(r => r.ended && r.ended >= since).sort((a, b) => b.ended.localeCompare(a.ended))
+  const failed = finished.filter(r => r.status === 'failed')
+  const where = id => items.find(i => i.runs.includes(id))
+  const runRow = r => { const w = where(r.id); return `<div class="r"><span>${runMark(r.status)}</span><span class="t">${esc(runLabel(r))}<div class="m">${esc(flowTitle(r.flow))}${w && w.kind !== 'run' ? ` · from <a data-gsel="${w.id}" data-gkind="${w.kind}">${esc(w.title.slice(0, 50))}${w.title.length > 50 ? '…' : ''}</a>` : ''}</div></span><span>${chip(r.project)}</span><span class="d">${day(r.ended)}</span></div>` }
+  return `<section class="content land"><div class="inner"><h1>Pick up where you left off</h1><div class="sub">Since yesterday morning · across all projects</div>
+    <div class="card"><div class="label">You were last in</div><h2>${esc(last.title)}</h2><div class="m small muted" style="display:flex;gap:10px;align-items:center">${chip(last.project)}<span>${day(last.at)}</span><span class="tally">${tally(last.runs)}</span></div>
+      <div style="margin-top:10px;display:flex;gap:6px"><button class="primary" data-gsel="${last.id}" data-gkind="chat">Continue</button><button data-gopen-land="${last.id}">Show its runs</button></div></div>
+    <div class="sect"><div class="label">Needs you</div><div class="callout" style="margin:8px 0">Nothing is waiting on you.</div></div>
+    <div class="sect"><div class="label">Finished since · ${finished.length}${failed.length ? ` · <span class="err">${failed.length} failed</span>` : ''}</div><div class="rows">${finished.map(runRow).join('')}</div></div>
+    <div class="sect"><div class="label">Start something</div><div style="display:flex;gap:8px;margin-top:8px"><button class="primary" data-menu="gchat">+ New chat</button><button>+ New mission</button><button>Run a flow…</button></div></div>
+  </div></section>`
+}
+function renderG() {
+  const items = workItems()
+  const side = `<aside class="side recent" style="position:relative;width:310px"><div style="display:flex;align-items:center;gap:8px;padding:2px 16px 12px"><span class="logo"></span><span style="font-size:15px;cursor:pointer" data-gsel="" data-gkind="home">Spark</span><span style="margin-left:auto" class="faint">⚙︎</span></div>
+    <div class="newchat"><button data-menu="gchat">✎ New chat</button></div><input class="search" placeholder="Search your work">
+    <div class="sitem ${!S.gsel ? 'on' : ''}" data-gsel="" data-gkind="home"><span class="ic">⌂</span>Pick up where you left off</div>
+    ${(() => {
+      // Missions, runs and chats as equal sections: what needs you or is going first, then the most recent.
+      const urgency = r => r.status === 'waiting' ? 0 : r.status === 'running' ? 1 : 2
+      const missions = items.filter(i => i.kind === 'mission').sort((a, b) => (a.mission.status === 'running' ? 0 : 1) - (b.mission.status === 'running' ? 0 : 1) || (b.at || '').localeCompare(a.at || ''))
+      const runs = [...RUNS.values()].sort((a, b) => urgency(a) - urgency(b) || (b.started || '').localeCompare(a.started || ''))
+      const chats = items.filter(i => i.kind === 'chat')
+      const from = id => items.find(i => i.kind !== 'run' && i.runs.includes(id))
+      const head = (label, n, live) => `<div class="day label" style="display:flex;justify-content:space-between;padding-top:18px"><span>${label}</span><span>${live ? `<span class="acc">${live} live</span> · ` : ''}${n}</span></div>`
+      const runRow = r => { const f = from(r.id); return `<div class="witem ${S.grun === r.id ? 'on' : ''}" data-grun="${r.id}"><div class="t"><span class="tw"></span>${runMark(r.status)}<span class="tt">${esc(runLabel(r))}</span></div><div class="m" style="padding-left:16px">${chip(r.project)}<span>${esc(flowTitle(r.flow))}</span>${f ? `<span style="overflow:hidden;text-overflow:ellipsis">from ${esc(f.title.slice(0, 22))}…</span>` : ''}<span style="margin-left:auto">${day(r.started)}</span></div></div>` }
+      const liveRuns = runs.filter(r => urgency(r) < 2).length, liveMissions = missions.filter(m => m.mission.status === 'running').length
+      return head('Missions', missions.length, liveMissions) + missions.slice(0, 4).map(workRow).join('') + `<div class="more" style="padding-left:16px">All missions →</div>`
+        + head('Runs', RUNS.size, liveRuns) + runs.slice(0, 6).map(runRow).join('') + `<div class="more" style="padding-left:16px">All runs →</div>`
+        + head('Chats', chats.length, 0) + chats.slice(0, 6).map(workRow).join('') + `<div class="more" style="padding-left:16px">All chats →</div>`
+    })()}
+    <div class="foot"><a>Triggers</a><a>Flows</a><a>Projects</a></div>
+    ${S.menu === 'gchat' ? newChatMenu(84, 12) : ''}</aside>`
+  let main
+  const it = items.find(i => i.id === S.gsel)
+  if (!it) main = landing(items)
+  else if (it.kind === 'chat') {
+    const prov = it.runs.length ? `<div class="prov"><span class="label">Started here</span>${it.runs.map(id => { const r = RUNS.get(id); return `<span>${runMark(r.status)} <a data-grun="${id}">${esc(runLabel(r).slice(0, 48))}${runLabel(r).length > 48 ? '…' : ''}</a></span>` }).join('')}</div>` : ''
+    main = chatView({ ...it.chat, project: it.project }).replace('<div class="body">', prov + '<div class="body">')
+  } else if (it.kind === 'mission') main = `<section class="content"><div class="inner">${placeholder(it.title, `Mission · ${missionWord(it.mission)} · the conversation view from CR-2026-0139`, it.project)}</div></section>`
+  else main = `<section class="content"><div class="inner">${placeholder(runLabel(it.run), `${flowTitle(it.run.flow)} run · not started from a chat or mission`, it.project)}</div></section>`
+  if (S.grun) { const r = RUNS.get(S.grun); main = `<section class="content"><div class="inner">${placeholder(runLabel(r), `${flowTitle(r.flow)} run · the Runs view`, r.project)}</div></section>` }
+  return `<main>${side}${main}</main>`
+}
+
+function render() { document.getElementById('app').innerHTML = { a: renderA, b: renderB, c: renderC, d: renderD, e: renderE, f: renderF, g: renderG }[P]() }
+document.addEventListener('click', e => {
+  const t = e.target
+  const go = t.closest('[data-gopen]'); if (go) { S.gopen = { ...S.gopen, [go.dataset.gopen]: !S.gopen?.[go.dataset.gopen] }; render(); return }
+  const gl = t.closest('[data-gopen-land]'); if (gl) { S.gopen = { ...S.gopen, [gl.dataset.gopenLand]: true }; render(); return }
+  const gr = t.closest('[data-grun]'); if (gr) { S.grun = gr.dataset.grun; S.menu = false; render(); return }
+  const gs = t.closest('[data-gsel]'); if (gs) {
+    // In E and F the overview's links open the chat in that option's own navigation.
+    if ((P === 'e' || P === 'f') && gs.dataset.gkind === 'chat' && gs.dataset.gsel) { S.chat = gs.dataset.gsel; S.view = 'chat'; S.grun = null; S.menu = false; if (P === 'e') S.ev = 'chats'; else S.fv = null; render(); return }
+    S.gsel = gs.dataset.gsel || null; S.grun = null; S.menu = false; render(); return }
+  const ev = t.closest('[data-ev]'); if (ev) { S.ev = ev.dataset.ev; S.sel = null; S.grun = null; S.gsel = null; S.view = 'chat'; S.menu = false; render(); return }
+  const sl = t.closest('[data-sel]'); if (sl) { S.sel = sl.dataset.sel; render(); return }
+  const fv = t.closest('[data-fv]'); if (fv) { S.fv = fv.dataset.fv; S.grun = null; S.menu = false; render(); return }
+  const tog = t.closest('[data-toggle]'); if (tog) { const id = tog.dataset.toggle; const cur = S.expanded[id] ?? (P === 'e' && id === 'home'); S.expanded[id] = !cur; render(); return }
+  const nc = t.closest('[data-new-chat-in]'); if (nc) { S.menu = false; S.fv = null; const p = [HOMEP, ...projects].find(x => x.id === nc.dataset.newChatIn); S.view = 'chat'; S.chat = '__new'; S.newIn = p || null; render(); return }
+  const m = t.closest('[data-menu]'); if (m) { S.menu = S.menu === m.dataset.menu ? false : m.dataset.menu; render(); return }
+  if (t.closest('[data-new-mission]')) { S.menu = S.menu === 'mission' ? false : 'mission'; render(); return }
+  const ch = t.closest('[data-chat]'); if (ch) { S.view = 'chat'; S.chat = ch.dataset.chat; S.fv = null; S.menu = false; render(); return }
+  const pr = t.closest('[data-project]'); if (pr) { S.view = 'project'; S.project = pr.dataset.project; S.ptab = 'chats'; S.menu = false; render(); return }
+  const pt = t.closest('[data-ptab]'); if (pt) { S.ptab = pt.dataset.ptab; render(); return }
+  const v = t.closest('[data-view]'); if (v) { S.view = v.dataset.view; S.menu = false; render(); return }
+  if (t.closest('[data-clear-filter]')) { S.filter = null; render(); return }
+  if (t.closest('[data-filter]')) { const ids = [null, ...projects.map(p => p.id)]; S.filter = ids[(ids.indexOf(S.filter) + 1) % ids.length]; render(); return }
+  if (S.menu) { S.menu = false; render() }
+})
+render()
+</script>
+</body>
+</html>

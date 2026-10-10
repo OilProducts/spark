@@ -1,0 +1,205 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Runs tab audit and redesign proposals</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+body { overflow: auto; height: auto; display: block; }
+.doc { max-width: 980px; margin: 0 auto; padding: 32px 28px 80px; line-height: 1.55; font-size: 14px; }
+h1 { font-size: 26px; margin: 0 0 4px; } h2 { font-size: 19px; margin: 36px 0 10px; } h3 { font-size: 15px; margin: 22px 0 6px; }
+.lede { color: var(--muted); }
+table { border-collapse: collapse; width: 100%; font-size: 13px; background: var(--card); }
+th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+th { background: #fafafa; font-weight: 600; }
+.cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.pcard { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; text-decoration: none; color: inherit; display: block; }
+.pcard:hover { border-color: #71717a; box-shadow: 0 2px 10px #0001; }
+.pcard h3 { margin: 0 0 4px; } .pcard p { margin: 6px 0; font-size: 13px; }
+.pcard .pro { color: var(--ok); } .pcard .con { color: var(--err); }
+.shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.shots a { display: block; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: #fff; text-decoration: none; color: var(--muted); font-size: 12px; }
+.shots img { width: 100%; display: block; border-bottom: 1px solid var(--border); }
+.shots span { display: block; padding: 5px 8px; }
+ol li, ul li { margin-bottom: 6px; }
+.rec { background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 10px; padding: 14px 18px; }
+code { background: var(--soft); padding: 0 4px; border-radius: 4px; }
+</style></head>
+<body><div class="doc">
+<h1>Runs tab: audit and redesign</h1>
+<p class="lede">September 28, 2026. I read <code>frontend/src/features/runs</code> and the transcript projection in <code>attractor-runtime</code>, then drove the live app (read-only) on <b>run-18d93c056079b9c0</b> (CR-2026-0127). That run executed <i>Implement</i> 4×, <i>Evaluate</i> 4× and <i>Validate</i> 2×, and spawned 4 child runs. The mockups below use that run's real data.</p>
+
+<h2>1. Why repeated nodes break the Activity tab</h2>
+<p>This is not one bug. Five defects stack, and together they make a looping run unreadable. <b>An execution (node + visit) is not a first-class identity anywhere in the runs UI.</b></p>
+<ol>
+<li><b>Every execution writes the same turn id.</b> The per-execution transcript projection hard-codes <code>"turn_id": "response"</code> (<code>crates/attractor-runtime/src/handlers.rs:123</code>, <code>:1176</code>). Segment ids are <code>event-&lt;local sequence&gt;</code> and <code>final-response</code>, which are unique only within one execution. In this run, 160 segments from 12 executions share one turn id, and 15 segment ids collide.</li>
+<li><b>The frontend groups by turn id.</b> <code>buildRunTranscriptGroups</code> keys groups on <code>segment.turn_id</code> (<code>model/transcriptModel.ts:99</code>), so the whole run collapses into <b>one group</b>. That group is labelled with whichever node came first, and rows from different executions are interleaved by their per-execution <code>order</code>. In the live app this run shows a single header, <code>RESULT_SUMMARY</code>, over 887 elements.</li>
+<li><b>The visit is dropped on the way in.</b> <code>fetchExecutionSegments</code> (<code>lib/api/attractorApi.ts:1155</code>) knows <code>stage_index</code> but stamps only <code>attempt</code>. That is the retry count, which is 0 for every loop revisit. Even a corrected label could not say "Evaluate, visit 3".</li>
+<li><b>Two sequence spaces are sorted together.</b> <code>latest_sequence</code> on a segment is the execution-local event number (up to ~541). Activity sorts it against root-journal sequences (1–70) (<code>RunActivityCard.tsx:215</code>), so the transcript blob lands after <i>PipelineCompleted</i>, and the transcript/event interleaving is meaningless.</li>
+<li><b>Colliding ids overwrite each other.</b> Live <code>applySegmentUpsert</code> dedupes on <code>segment.id</code> (<code>state/runTranscriptStore.ts:63</code>), so <code>final-response</code> or <code>event-25</code> from visit 2 replaces the one from visit 1. React keys collide in the same way.</li>
+</ol>
+<p>Surrounding symptoms:</p>
+<ul>
+<li>Focusing <i>Implement</i> shows none of its 4 child runs' transcripts, because child segments carry child node ids (<code>work</code>).</li>
+<li>The graph keeps one status per node, and the last write wins. <i>Evaluate</i> shows green although it sent the work back twice, and nothing shows a node ran 4×.</li>
+<li>Events label visits with the internal <code>(index 11)</code>.</li>
+<li>A review that requests changes (<code>failure_kind: business</code>, routed on the <i>Fix</i> edge) renders as <b>"Stage failed · ERROR · stage_failed"</b>. A normal, designed loop looks like a crash.</li>
+</ul>
+<p><b>Prerequisite for every proposal:</b> carry <code>(run_id, node_id, stage_index, attempt)</code> on every segment and event. Make that tuple the group key and a globally unique id prefix, and give each execution an outcome that distinguishes <i>routed</i> from <i>failed</i>. Most of this can come from the executions list the status endpoint already returns. The rest is the two backend id literals above.</p>
+
+<h2>2. Everything else wrong today</h2>
+<div class="shots">
+  <a href="current/runs-list.png" target="_blank"><img src="current/runs-list.png"><span>Runs list: every row reads "software-dev…", and every id reads "run-18d9"</span></a>
+  <a href="current/activity-transcript.png" target="_blank"><img src="current/activity-transcript.png"><span>Activity: the whole run as one transcript group; the minimap covers the top of the graph</span></a>
+  <a href="current/evaluate-focused.png" target="_blank"><img src="current/evaluate-focused.png"><span>Focusing Evaluate: routine review loops shown as ERROR; 4 visits merged</span></a>
+  <a href="current/activity-events.png" target="_blank"><img src="current/activity-events.png"><span>Events: bookkeeping (checkpoint, metadata) at the same weight as outcomes</span></a>
+  <a href="current/details.png" target="_blank"><img src="current/details.png"><span>Details: a key-value dump; "Resumes from: done"</span></a>
+  <a href="current/empty-state.png" target="_blank"><img src="current/empty-state.png"><span>Empty state: the same message twice; the count is truncated</span></a>
+</div>
+<table style="margin-top:14px">
+<tr><th style="width:18%">Area</th><th>Finding (observed unless marked)</th></tr>
+<tr><td>Runs list</td><td>
+<ul>
+<li>The title is the flow file path, truncated. The objective (e.g. CR-2026-0127) appears nowhere in the list or the header.</li>
+<li>The short id is <code>run_id.slice(0, 8)</code> (<code>RunList.tsx:99</code>). Run ids share a time-based prefix, so every root row reads <code>run-18d9</code>.</li>
+<li>Rows show no start time, only duration. There is no search and no status filter.</li>
+<li>Child runs are full-weight cards: 4 identical "Implement T…" rows under each parent, and 379 rows in total.</li>
+<li>"RECENT 213" and "379 run…" are unlabelled or truncated.</li>
+<li>One failed run shows <b>661h 49m</b>. My guess is a missing <code>ended_at</code>; I did not verify it.</li>
+</ul></td></tr>
+<tr><td>Header</td><td>
+<ul>
+<li>"Node: done" is meaningless after a run completes.</li>
+<li>Cancel is offered, disabled, on a finished run.</li>
+<li>The header shows 5.5M tokens, while the four children's run records sum to 17M. My guess is that the header excludes child runs; I did not verify it.</li>
+</ul></td></tr>
+<tr><td>Graph</td><td>
+<ul>
+<li>The <code>MiniMap</code> at top-right (<code>RunGraphCard.tsx:216</code>) is the blank white box covering Start through Prepare in a 24rem-wide pane.</li>
+<li>Node labels render at about 8px after fit.</li>
+<li>There are no visit counts, no edge traversal counts, and no way to tell which child run belongs to which visit.</li>
+</ul></td></tr>
+<tr><td>Activity</td><td>
+<ul>
+<li>It defaults to Transcript whenever a transcript exists, which hides the events that explain loops and failures.</li>
+<li>There are 3 modes, plus category and severity selects; the selects clip their own text.</li>
+<li>A 150-row cap tells you to "narrow the filters".</li>
+<li>Transcript rows and journal cards use two unrelated visual languages, with no per-execution boundaries.</li>
+<li>There are two nested scroll regions.</li>
+</ul></td></tr>
+<tr><td>Missing entirely</td><td>Each execution's <code>prompt.md</code>, <code>response.md</code> and <code>status.json</code> (outcome, notes, context updates, review findings) exist on disk under <code>logs/&lt;node&gt;/executions/&lt;index&gt;-&lt;attempt&gt;/</code>, but no surface in the tab shows them. That is the most useful data in the run. The "why it looped" text (review summaries, diagnosis) is available only by reading files.</td></tr>
+<tr><td>Information architecture</td><td>
+<ul>
+<li>Five run-scoped tabs (Activity, Result, Details, Context, Artifacts) sit beside a node-scoped graph filter, so the scope of what you're looking at is never clear.</li>
+<li>The questions panel is inserted above everything, capped at 38vh.</li>
+<li>Nothing answers the three questions a user actually brings: <i>did it work, what happened, and where did the time go</i>.</li>
+</ul></td></tr>
+</table>
+
+<h3>Context, Artifacts, Prompt and Response</h3>
+<table>
+<tr><th style="width:18%">Tab</th><th>What it shows today</th><th style="width:34%">What replaces it (proposal F)</th></tr>
+<tr><td>Context</td><td>
+<ul>
+<li>The <b>final checkpoint only</b>: 83 keys, alphabetical, with the full key names wrapping.</li>
+<li>About 70 keys are bookkeeping: <code>_attractor.runtime.*</code>, <code>internal.*</code>, <code>graph.*</code>, and 21 <code>context.stack.child.*</code> keys.</li>
+<li><b>It loses the run's most important context.</b> <code>review.summary</code> and <code>review.required_changes</code> were set by Evaluate visits 1 and 3 and by Diagnose, then cleared by Evaluate visit 4. The final snapshot shows neither, so the findings that explain the run are gone.</li>
+<li>Nothing shows which visit wrote a key.</li>
+</ul></td>
+<td>
+<ul>
+<li>A <b>Context</b> item in the list: 16 meaningful keys grouped as Task, Workspace, Review, Validation and Request.</li>
+<li>Each key shows its value and the visit that set or cleared it, and “written 5×” opens its history across visits.</li>
+<li>System keys are collapsed behind a count.</li>
+<li>Inside a visit, the keys it read and wrote link to this view.</li>
+</ul></td></tr>
+<tr><td>Artifacts</td><td>
+<ul>
+<li>120 files from <code>logs/</code>, grouped by node in alphabetical order: <code>.activity.lock</code>, <code>events.jsonl</code> (434 KB, “View” disabled), directories named <code>16-0</code>, and 40 <code>exec-*.txt</code> tool outputs that the transcript already shows.</li>
+<li><code>tool_output.txt</code> is <b>per node and overwritten on each visit</b>. Validate's copy is the passing second visit, while the failing first visit's output survives only in <code>status.json</code>.</li>
+<li>The run's real outputs (commit, diff) aren't listed, and <code>result.md</code> already has its own tab.</li>
+</ul></td>
+<td>
+<ul>
+<li>The tab goes away.</li>
+<li>Run outputs (commit with diff, <code>result.md</code>, flow snapshot) move into <b>Result</b>.</li>
+<li>Each visit's raw files become one muted line at the bottom of that visit.</li>
+</ul></td></tr>
+<tr><td>Prompt / Response</td><td>
+<ul>
+<li><b>Prompt:</b> the backend already writes the prompt into each visit's <code>transcript.jsonl</code> as a user turn, but <code>fetchExecutionSegments</code> keeps only <code>segment_upsert</code> records and drops it.</li>
+<li><b>Response:</b> it's the final message plus <code>status.json</code>.</li>
+<li>Tool nodes have no transcript at all.</li>
+</ul></td>
+<td>
+<ul>
+<li>One transcript per visit:</li>
+<li><b>Instructions</b> (collapsed) and the keys it <b>read</b>.</li>
+<li>The work: messages and tool calls, or the command and output for tool nodes, or the child run's summary for subflows.</li>
+<li><b>Returned</b>: the outcome, where the run went next, and the keys it wrote or cleared.</li>
+</ul></td></tr>
+</table>
+
+<h2>3. Proposals</h2>
+<p>All four are clickable. Try selecting executions, the visit pickers, and the keyboard shortcuts noted on each page.</p>
+<div class="cards">
+<a class="pcard" href="a-ledger.html"><h3>A · Execution ledger</h3>
+<p>The run as an ordered list of executions grouped into <b>passes</b> (Setup, Pass 1–4, Wrap-up). Each visit is its own row with its outcome, summary, child run and duration. A detail pane shows that visit's transcript, prompt and response, with a visit switcher (1 2 3 4) and ←/→ between visits. A flow strip marks <b>×4</b> and <b>↺2</b> on the nodes that looped.</p>
+<p class="pro">+ Fixes the repeated-node problem structurally. Scales to long runs. Cheap: a list plus a pane, and it reuses the transcript rows.</p>
+<p class="con">− Parallel branches need an indent treatment. It shows less of the flow's shape than the graph does.</p></a>
+<a class="pcard" href="b-trace.html"><h3>B · Trace</h3>
+<p>A profiler-style timeline with one lane per node and one bar per execution. Colour shows outcome, and child runs appear as nested spans. Pass boundaries are marked. A side panel shows <b>where the time went</b> and a loop summary. Clicking a bar opens that execution.</p>
+<p class="pro">+ Duration, parallelism and loops can be read at a glance. It is the only view that answers "why was this slow".</p>
+<p class="con">− Short steps become slivers. A timeline is a weaker reading surface than a list. Zoom and pan need building.</p></a>
+<a class="pcard" href="c-replay.html"><h3>C · Graph replay</h3>
+<p>The graph becomes the page. Nodes carry visit badges and "ran 3× · last: succeeded". Edges carry traversal counts (<b>×3</b> on Implement→Evaluate). A bottom scrubber steps or plays through the 18 executions and lights up the node and the edge just taken.</p>
+<p class="pro">+ The most intuitive picture of <i>how</i> a loop happened. It reuses the existing graph investment and suits "Continue from this step".</p>
+<p class="con">− It inherits the graph-layout problems (G02). A scrubber with hundreds of steps gets dense. It is the most expensive option.</p></a>
+<a class="pcard" href="d-report.html"><h3>D · Inbox + run report</h3>
+<p>Runs home is an inbox with <b>Needs you / Running / Failed</b> cards over a searchable table titled by objective. A run page reads like a PR description: outcome facts, a short "What happened" account per pass, review findings with the pass that fixed each one, and evidence chips that open each execution. <a href="d-report.html#inbox" style="color:#4f46e5">(inbox view)</a></p>
+<p class="pro">+ Best for "did it work and why" and for people who didn't watch the run. It pairs naturally with Missions.</p>
+<p class="con">− The narrative needs a summarizer, or at least per-execution <code>notes</code> and review summaries. It is weak for watching a live run.</p></a>
+</div>
+
+<h2>4. Combined proposal</h2>
+<div class="cards"><a class="pcard" href="e-combined.html" style="grid-column: span 2"><h3>E · Visit list + graph (A + C + D's header)</h3>
+<p>A flat list of every node execution, each labelled <b>“visit n of x”</b>, with no grouping. The graph sits beside it and shows visit counts on nodes and traversal counts on edges; the edge into the selected visit is highlighted. The detail pane has a visit picker plus from/next links, so you can follow the route either way. Clicking a node filters the list to its visits. “As of selected visit” and Replay turn the graph into C's replay. D's report header sits on top with outcome facts, the result, and review findings that link to the visit that fixed each one. The runs list is a drawer (<kbd>r</kbd>) and the graph can be hidden (<kbd>g</kbd>).</p></a></div>
+<div class="cards" style="margin-top:14px"><a class="pcard" href="f-quiet.html" style="grid-column: span 2"><h3>F · E, quieter</h3>
+<p>Same model as E, with the noise removed. Each fact is shown once. Colour appears only on visits that were sent back or failed. List rows are one line (name, <b>n/x</b>, duration). The graph has no captions and labels only its loop edges (“back ×2”). The result and review findings are the first item in the list instead of a header bar. Each visit is a single transcript (instructions and reads, the work, then what it returned and wrote). Context is a list item with per-key history. There is no Artifacts tab.</p></a></div>
+<p><a href="looks/index.html" style="color:#4f46e5"><b>Design language options for F →</b></a> Four candidate looks applied to the frozen F.</p>
+<h2>4b. F against other flows</h2>
+<p><a href="generic/run.html" style="color:#4f46e5"><b>Open F, generalized →</b></a> This is the frozen F layout, driven by <code>generic/extract.py</code> from six real run records (current log format only; older history is being wiped). The runs:</p>
+<ul>
+<li>the implement-change baseline;</li>
+<li>a math <b>resolution-program</b> run that failed when its container wouldn't start;</li>
+<li>an <b>implement-spec</b> run that failed after 66 stages and 17h when the backend dropped;</li>
+<li>a tool-heavy <b>merge-change</b>;</li>
+<li>an Implement Task child replayed while <b>waiting on a question</b>;</li>
+<li>a <b>child run</b> opened on its own.</li>
+</ul>
+<p>Nothing in the renderer is specific to one flow. <a href="looks/index.html" style="color:#4f46e5">The four design languages can be applied to it.</a></p>
+<p><b>What held up:</b></p>
+<ul>
+<li>The visit model: n/x, instructions and reads, the work, and what it returned.</li>
+<li>The status item first: Result, Failure or Question.</li>
+<li>Context as a list item.</li>
+<li>The generated “Didn’t pass” list, which explains failure-driven loops for any flow.</li>
+</ul>
+<p><b>What the real data exposed:</b></p>
+<ul>
+<li><b>No generic reason for a business failure.</b> A rejected review records <code>stage_failed</code>, and the reason lives in a flow-specific key. The page can only say “no reason recorded · wrote review.summary”. The runtime should carry the agent's notes on failure, as it does on success.</li>
+<li><b>Not every loop is a failure.</b> In resolution-program, every Review succeeds and still routes back to Resolve five times. The list shows nothing unusual. Only the graph (“back ×5”) and each visit's “next … via …” line explain it. A loop-back should be marked in the list whatever its outcome.</li>
+<li><b>Interrupted visits.</b> Long runs contain visits that started and never finished. They now read “Interrupted” once the run is over, instead of looking live.</li>
+<li><b>Titles.</b> The first filled-in launch input gives “README.md” (implement-spec), a branch name (merge-change), a request path (implement-change) and a paragraph (math). Child runs borrow the parent's title. A flow-declared title input is needed, and it's a prerequisite for the title-first looks.</li>
+<li><b>Results can be the wrong output</b> when a flow's result is set to a node's raw output. The page now labels the result's source.</li>
+<li><b>Runs can be started by triggers.</b> The header says so.</li>
+<li><b>Parallel branches</b> are supported by the renderer, from the <code>ParallelBranch*</code> events, but none of the current-format runs on disk uses them, so that path hasn't been checked against real data.</li>
+<li><b>The auto-laid-out graph</b> is legible at 18 nodes but crowded with back edges. It argues for hiding the graph by default and making it wider on demand.</li>
+</ul>
+<h2>5. Recommendation</h2>
+<div class="rec">
+<ol style="margin:0">
+<li><b>Fix execution identity first</b> (section 1). This is a bug fix and a prerequisite, and the current tab gets usable with it alone.</li>
+<li>Ship <b>A (ledger)</b> as the run page's main surface. It is the smallest change that makes loops legible, and it replaces the Activity/Events/Transcript mode switch with one list.</li>
+<li>Use <b>D's report header</b> for finished runs: outcome, passes and findings above the ledger. Adopt D's list changes: objective as the title, readable ids, start time, search, and child runs collapsed under their parent.</li>
+<li>Add <b>B's trace</b> later as a toggle in the ledger header, for performance questions. Hold <b>C</b> until the graph layout issues are fixed.</li>
+</ol></div>
+<p class="muted small" style="margin-top:24px">Mockups are static HTML (no build step): <code>reports/runs-tab-redesign/</code>. Current-state screenshots are in <code>current/</code>. The other runs in the sidebar are illustrative, and the transcripts are real but trimmed.</p>
+</div></body></html>

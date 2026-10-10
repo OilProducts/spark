@@ -1,0 +1,408 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>F, generalized · real runs</title>
+<link rel="stylesheet" href="../shared.css">
+<style>
+
+.body { flex: 1; display: flex; min-height: 0; position: relative; }
+.rail { width: 44px; border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; align-items: center; padding-top: 10px; gap: 8px; flex-shrink: 0; }
+.rail button { width: 30px; height: 30px; padding: 0; font-size: 14px; border-color: transparent; background: none; color: var(--muted); }
+.rail button:hover { background: var(--soft); }
+.runs-overlay { position: absolute; left: 44px; top: 0; bottom: 0; z-index: 6; box-shadow: 8px 0 24px #0002; display: none; }
+.runs-overlay.open { display: block; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--card); }
+.head { padding: 16px 24px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 12px; }
+.head h1 { margin: 0; font-size: 17px; font-weight: 600; }
+.head .line { color: var(--muted); margin-top: 3px; }
+.head .actions { margin-left: auto; display: flex; gap: 6px; }
+.head .actions .btn { border-color: transparent; color: var(--muted); } .head .actions .btn:hover { color: var(--fg); }
+.head .actions .btn.primary { border-color: var(--border); color: var(--fg); background: var(--card); }
+.cols { flex: 1; display: flex; min-height: 0; }
+.list { width: 300px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); padding: 8px 0 40px; }
+.row { display: flex; align-items: baseline; gap: 8px; padding: 6px 16px; cursor: pointer; color: var(--fg); }
+.row:hover { background: var(--soft); }
+.row.sel { background: var(--soft); box-shadow: inset 2px 0 0 var(--fg); }
+.row .v { color: var(--muted); font-size: 12px; }
+.row .d { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.row .mark { width: 12px; flex-shrink: 0; font-size: 12px; text-align: center; }
+.row .mark.warn { color: var(--warn); } .row .mark.err { color: var(--err); }
+.row.hidden { display: none; }
+.row.result { font-weight: 500; }
+.sep { height: 1px; background: var(--border); margin: 6px 16px; }
+.graph { width: 290px; flex-shrink: 0; border-right: 1px solid var(--border); position: relative; }
+.graph.hidden { display: none; }
+.graph svg { width: 100%; height: 100%; }
+.gctl { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
+.gctl button { font-size: 12px; padding: 2px 8px; color: var(--muted); }
+.gnote { position: absolute; left: 12px; top: 12px; font-size: 11.5px; color: var(--muted); }
+.node rect { fill: #fff; stroke: #d4d4d8; }
+.node text { font-size: 12px; fill: #3f3f46; }
+.node .n { fill: #a1a1aa; font-size: 11px; }
+.node.warn rect { stroke: #f59e0b; } .node.err rect { stroke: #ef4444; }
+.node.cur rect { fill: #18181b; stroke: #18181b; } .node.cur text { fill: #fff; } .node.cur .n { fill: #d4d4d8; }
+.node.focus rect { stroke: #18181b; stroke-width: 1.5; }
+.node.future rect { stroke-dasharray: 3 3; } .node.future text { fill: #c4c4c8; }
+.node { cursor: pointer; }
+.edge { fill: none; stroke: #e4e4e7; stroke-width: 1.3; }
+.edge.last { stroke: #18181b; stroke-width: 2; }
+.elabel { font-size: 10.5px; fill: #a1a1aa; }
+.detail { flex: 1; overflow: auto; padding: 20px 28px 48px; min-width: 0; }
+.dh { display: flex; align-items: baseline; gap: 10px; }
+.dh h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.dh .meta { color: var(--muted); }
+.dots { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+.dots span { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
+.dots span.warn { border-color: #fcd34d; } .dots span.err { border-color: #fca5a5; }
+.dots span.on { background: var(--fg); color: #fff; border-color: var(--fg); }
+.summary { margin: 16px 0 0; padding-left: 12px; border-left: 2px solid var(--border); line-height: 1.55; max-width: 72ch; }
+.summary.warn { border-left-color: #f59e0b; } .summary.err { border-left-color: #ef4444; }
+.nav { margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+.nav a { color: var(--fg); cursor: pointer; text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; }
+.unused-tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--border); margin: 22px 0 14px; }
+.tabs a { padding: 6px 0; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+.tabs a.on { color: var(--fg); border-bottom-color: var(--fg); }
+.transcript { max-width: 80ch; }
+.tr-tool { background: none; border-color: #f0f0f2; }
+.findings p { margin: 0 0 10px; line-height: 1.5; max-width: 72ch; }
+.findings a { color: var(--muted); cursor: pointer; text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; }
+
+.blk { margin-top: 14px; max-width: 80ch; }
+.blk-h { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+details.instr summary { cursor: pointer; list-style: none; color: var(--muted); line-height: 1.5; }
+details.instr summary::-webkit-details-marker { display: none; }
+details.instr summary b { color: var(--fg); font-weight: 500; margin-right: 6px; }
+details.instr[open] summary .clip { display: none; }
+details.instr .full { margin: 6px 0 0; line-height: 1.55; }
+.reads { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); }
+.key { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; color: #3f3f46; cursor: pointer; background: #fff; }
+.key:hover { border-color: #a1a1aa; }
+.cmd { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+pre.out { margin: 6px 0 0; background: #fafafa; border: 1px solid #f0f0f2; border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; max-height: 180px; overflow: auto; }
+.returned { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); max-width: 80ch; }
+.wrote { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin-top: 8px; font-size: 12.5px; align-items: baseline; }
+.wrote .val { line-height: 1.45; color: #3f3f46; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.wrote .val.open { -webkit-line-clamp: unset; }
+.wrote .cleared { color: var(--muted); font-style: italic; }
+.raw { margin-top: 22px; font-size: 11.5px; color: var(--muted); }
+.raw a { color: var(--muted); text-decoration: underline; text-decoration-color: #e4e4e7; text-underline-offset: 3px; cursor: pointer; margin-right: 8px; }
+.ctx-group { margin-top: 20px; max-width: 90ch; }
+.ctx-row { display: grid; grid-template-columns: 190px 1fr; gap: 12px; padding: 7px 0; border-bottom: 1px solid #f4f4f5; font-size: 12.5px; }
+.ctx-row.hl { background: #fefce8; }
+.ctx-row .k { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #3f3f46; padding-top: 1px; }
+.ctx-row .by { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.ctx-row .by a, .hist a { color: var(--muted); text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; cursor: pointer; }
+.hist { margin: 6px 0 0; padding-left: 10px; border-left: 2px solid var(--border); font-size: 12px; color: #3f3f46; }
+.hist div { margin-bottom: 4px; line-height: 1.4; }
+
+/* additions for the generalized renderer */
+.row.branch { padding-left: 34px; } .row.branch .bl { color: var(--muted); font-size: 11px; }
+.row.status-item.err { color: var(--err); } .row.status-item.wait { color: var(--warn); }
+.crumb { font-size: 12px; color: var(--muted); margin-bottom: 3px; } .crumb a { color: var(--muted); text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; cursor: pointer; }
+.eyebrow { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.opts { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; max-width: 72ch; }
+.opt { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; background: #fff; }
+.opt:hover { border-color: var(--fg); } .opt b { display: block; margin-bottom: 2px; } .opt span { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.other { margin-top: 8px; width: 100%; max-width: 72ch; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; min-height: 60px; }
+.note { margin-top: 12px; font-size: 12px; color: var(--muted); max-width: 72ch; line-height: 1.5; }
+.lanes { display: grid; gap: 6px; margin-top: 8px; max-width: 72ch; }
+.lane { display: grid; grid-template-columns: 90px 1fr 60px; gap: 10px; align-items: center; font-size: 12.5px; cursor: pointer; }
+.lane .bar { height: 8px; background: var(--soft); border-radius: 4px; position: relative; }
+.lane .bar i { position: absolute; top: 0; bottom: 0; background: #a1a1aa; border-radius: 4px; }
+.lane .t { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.md p { margin: 0 0 8px; line-height: 1.55; max-width: 76ch; } .md ul { margin: 0 0 8px 18px; padding: 0; } .md li { margin-bottom: 4px; line-height: 1.5; }
+.runs-list .gr-row { padding: 8px 14px; cursor: pointer; border-left: 2px solid transparent; }
+.runs-list .gr-row:hover { background: var(--soft); } .runs-list .gr-row.sel { background: var(--soft); border-left-color: var(--fg); }
+.gr-t { font-weight: 500; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.gr-m { color: var(--muted); font-size: 11.5px; margin-top: 2px; } .gr-m b { font-weight: 600; }
+.gr-m b.failed { color: var(--err); } .gr-m b.waiting { color: var(--warn); } .gr-m b.completed { color: var(--ok); }
+.gr-note { font-size: 11px; color: #a1a1aa; margin-top: 2px; }
+.runs-docked .runs-overlay { display: block; position: static; box-shadow: none; }
+.head .actions { flex-shrink: 0; white-space: nowrap; }
+</style>
+<script>
+const LOOKS = [['current', 'F as is'], ['native', 'A · Spark'], ['blueprint', 'B · Blueprint'], ['air', 'C · Air'], ['mist', 'D · Mist']]
+const LOOK = new URLSearchParams(location.search).get('look') || 'current'
+document.documentElement.dataset.look = LOOK
+if (LOOK !== 'current') document.write(`<link rel="stylesheet" href="../looks/${LOOK}.css">`)
+</script>
+</head>
+<body class="runs-docked">
+<div class="proto-banner look-switch"><b>F, generalized</b><script>document.write(LOOKS.map(([k, l]) => `<a href="?look=${k}${location.hash}" onclick="this.href='?look=${k}'+location.hash" style="${k === LOOK ? 'color:#fff;font-weight:600;text-decoration:underline' : ''}">${l}</a>`).join(''))</script><a href="../looks/index.html" style="margin-left:auto">← Design language options</a></div>
+<script src="../data.js"></script>
+<script src="runs.js"></script>
+<script>if (LOOK !== 'current') document.write(`<script src="../looks/${LOOK}.js"><\/script>`)</script>
+<script>document.write(renderNav())</script>
+<div class="body">
+  <div class="rail"><button id="runsbtn" title="Runs (r)">☰</button><button id="graphbtn" title="Graph (g)">◇</button></div>
+  <aside class="runs-list runs-overlay" id="runs"></aside>
+  <div class="main">
+    <div class="head">
+      <div style="min-width:0"><div class="crumb" id="crumb"></div><div class="eyebrow" id="eyebrow"></div><h1 id="title"></h1><div class="line" id="line"></div></div>
+      <div class="actions" id="actions"></div>
+    </div>
+    <div class="cols">
+      <div class="list" id="list"></div>
+      <div class="graph" id="graph"><div class="gnote" id="gnote"></div><svg id="g" preserveAspectRatio="xMidYMin meet"></svg></div>
+      <div class="detail" id="detail"></div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id)
+const SHORT = { success: 'Succeeded', partial: 'Partly succeeded', fail: 'Didn’t pass', error: 'Failed', running: 'Running', waiting: 'Waiting on you', interrupted: 'Interrupted' }
+const MARK = { success: '', partial: '◐', fail: '↺', error: '✕', running: '…', waiting: '?', interrupted: '–' }
+const TONE = { success: '', partial: 'warn', fail: 'warn', error: 'err', running: '', waiting: 'warn', interrupted: '' }
+const secs = (t) => { if (!t) return null; const [h, m, s] = t.split(':').map(Number); return h * 3600 + m * 60 + s }
+const span = (a, b) => { if (!a || !b) return '—'; let d = secs(b) - secs(a); if (d < 0) d += 86400; if (d < 1) return '<1s'; if (d < 60) return d + 's'; const m = Math.floor(d / 60); return m < 60 ? `${m}m ${d % 60 ? (d % 60) + 's' : ''}`.trim() : `${Math.floor(m / 60)}h ${m % 60}m` }
+const tok = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n || 0)
+
+let R = null, selected = null, ctxFocus = null, focusNode = null
+const label = (id) => R.nodes.find(n => n.id === id)?.label ?? id
+const kindOf = (id) => R.nodes.find(n => n.id === id)?.kind ?? 'agent'
+const rootVisits = () => R.visits.filter(v => v.branchOf == null)
+const branchesOf = (v) => R.visits.filter(b => b.branchOf === v.i).sort((a, b) => secs(a.s) - secs(b.s))
+const sameNode = (v) => R.visits.filter(x => x.node === v.node && (x.branchOf == null) === (v.branchOf == null))
+const vno = (v) => { const s = sameNode(v); return s.length > 1 ? `${s.indexOf(v) + 1}/${s.length}` : '' }
+const vname = (v) => `${label(v.node)}${vno(v) ? ' ' + vno(v) : ''}`
+const vlink = (v) => `<a data-i="${v.i}">${vname(v)}</a>`
+const runTitle = (r) => r.title || (r.parent ? `${label2(r.parent.node, r.parent.flow)} for “${r.parent.title}”` : r.flowTitle)
+const label2 = (node, flow) => node.charAt(0).toUpperCase() + node.slice(1).replace(/_/g, ' ')
+
+// ---- routing words: “sent back” only when the next node already ran ----
+function nextOf(v) { const rv = rootVisits(); const k = rv.indexOf(v); return k >= 0 ? rv[k + 1] : null }
+function routeText(v) {
+  const n = nextOf(v); if (!n) return ''
+  const ranBefore = rootVisits().some(x => x.node === n.node && x.i < n.i)
+  const edge = R.edges.find(e => e.from === v.node && e.to === n.node)
+  if (v.outcome === 'fail') return ranBefore ? `Sent back to ${vlink(n)}` : `Didn’t pass · went to ${vlink(n)}${edge?.label ? ` via “${edge.label}”` : ''}`
+  return `${SHORT[v.outcome]} · next ${vlink(n)}${edge?.label && ranBefore ? ` via “${edge.label}”` : ''}`
+}
+
+// ---- runs list ----
+function stripOf(r) {  // one shape per main visit: kind and outcome, for looks that draw the run's shape
+  return r.visits.filter(v => v.branchOf == null).map(v => { const k = r.nodes.find(n => n.id === v.node)?.kind
+    if (v.outcome === 'fail' || v.outcome === 'partial') return 'f'; if (v.outcome === 'error') return 'e'; if (v.outcome === 'waiting') return '?'; if (v.outcome === 'running') return '.'
+    return { tool: 't', subflow: 's', exit: 'x', start: 'o' }[k] ?? 'a' }).join('')
+}
+function drawRuns() {
+  if (LOOK !== 'current') {
+    RUNS.splice(0, RUNS.length, ...RUN_DATA.map(r => ({ id: r.id, title: runTitle(r), flow: r.flowTitle, status: r.status, when: r.date, dur: r.ended ? span(r.started, r.ended) : '—', current: r === R, strip: stripOf(r) })))
+    $('runs').innerHTML = runsListHtml()
+    $('runs').querySelectorAll('[data-id]').forEach(el => el.onclick = () => openRun(RUN_DATA.findIndex(r => r.id === el.dataset.id)))
+    return
+  }
+  $('runs').innerHTML = `<div class="rl-search"><input placeholder="Search runs…"/></div>` + RUN_DATA.map((r, k) => `
+    <div class="gr-row ${r === R ? 'sel' : ''}" data-k="${k}">
+      <div class="gr-t">${esc(runTitle(r))}</div>
+      <div class="gr-m">${r.flowTitle} · ${r.date} · <b class="${r.status}">${{ completed: 'Completed', failed: 'Failed', waiting: 'Needs input', running: 'Running', canceled: 'Canceled' }[r.status]}</b></div>
+      <div class="gr-note">${r.note}</div></div>`).join('')
+  $('runs').querySelectorAll('.gr-row').forEach(el => el.onclick = () => openRun(+el.dataset.k))
+}
+
+// ---- header ----
+function drawHead() {
+  const p = R.parent, pk = p ? RUN_DATA.findIndex(x => x.id === p.runId) : -1
+  $('crumb').innerHTML = p ? `Child run of ${pk >= 0 ? `<a data-run="${pk}">${esc(p.title)}</a>` : esc(p.title)} · ${label2(p.node)} visit ${p.visitNo} of ${p.visits}` : ''
+  $('eyebrow').textContent = R.title ? `${R.flowTitle}${R.titleFrom ? ' · ' + R.titleFrom.toLowerCase() : ''}` : R.flowTitle
+  $('title').textContent = R.title || (p ? `${R.flowTitle} for “${p.title}”` : R.flowTitle)
+  const dur = R.ended ? span(R.started, R.ended) : null
+  const lead = { completed: `Completed ${R.date}`, failed: `Failed ${R.date}`, waiting: `Waiting for your answer since ${R.question?.askedAt ?? '—'}`, canceled: `Canceled ${R.date}` }[R.status]
+  const by = R.startedBy?.kind === 'trigger' ? `started by trigger <b>${esc(R.startedBy.name)}</b>` : null
+  $('line').innerHTML = [lead, by, dur, R.tokens ? tok(R.tokens) + ' tokens' : null, R.commit ? `commit <span class="mono">${R.commit.slice(0, 7)}</span>` : null].filter(Boolean).join(' · ')
+  const acts = { completed: ['Re-run'], failed: ['Retry', 'Re-run'], waiting: ['Cancel'], canceled: ['Re-run'] }[R.status] || []
+  $('actions').innerHTML = (R.commit ? '<button class="btn">Open diff</button>' : '') + acts.map((a, k) => `<button class="btn ${k === 0 && R.status === 'failed' ? 'primary' : ''}">${a}</button>`).join('') + '<button class="btn">⋯</button>'
+  $('crumb').querySelectorAll('[data-run]').forEach(el => el.onclick = () => openRun(+el.dataset.run, p.node))
+}
+
+// ---- list ----
+function statusItem() {
+  if (R.status === 'failed') return { key: 'status', mark: '✕', cls: 'err', text: 'Failure' }
+  if (R.status === 'waiting') return { key: 'status', mark: '?', cls: 'wait', text: 'Question' }
+  return { key: 'status', mark: '✓', cls: '', text: 'Result' }
+}
+function drawList() {
+  const si = statusItem(), ctxCount = Object.keys(contextKeys()).length
+  let html = `<div class="row result status-item ${si.cls} ${selected === 'status' ? 'sel' : ''}" data-s="status"><span class="mark" ${si.cls ? '' : 'style="color:var(--ok)"'}>${si.mark}</span>${si.text}<span class="d">${R.ended ? span(R.started, R.ended) : ''}</span></div>
+    ${ctxCount ? `<div class="row result ${selected === 'context' ? 'sel' : ''}" data-s="context"><span class="mark muted">{}</span>Context<span class="d">${ctxCount} keys</span></div>` : ''}<div class="sep"></div>`
+  const item = (v, branch) => `<div class="row ${branch ? 'branch' : ''} ${selected === v.i ? 'sel' : ''} ${focusNode && focusNode !== v.node ? 'hidden' : ''}" data-i="${v.i}" data-kind="${kindOf(v.node)}" data-outcome="${v.outcome}">
+      <span class="mark ${TONE[v.outcome]}">${MARK[v.outcome]}</span>${branch ? '<span class="bl">branch</span> ' : ''}${label(v.node)}${vno(v) ? `<span class="v">${vno(v)}</span>` : ''}<span class="d">${span(v.s, v.e)}</span></div>`
+  for (const v of rootVisits()) { html += item(v, false); for (const b of branchesOf(v)) html += item(b, true) }
+  $('list').innerHTML = html
+  $('list').querySelectorAll('[data-i]').forEach(el => el.onclick = () => select(+el.dataset.i))
+  $('list').querySelectorAll('[data-s]').forEach(el => el.onclick = () => select(el.dataset.s))
+}
+
+// ---- graph: layered layout computed from the flow's edges ----
+function layout() {
+  const ids = R.nodes.map(n => n.id), out = {}
+  ids.forEach(id => out[id] = [])
+  R.edges.forEach(e => out[e.from]?.push(e.to))
+  const start = ids.find(id => kindOf(id) === 'start') ?? ids[0]
+  const back = new Set(), state = {}, order = []
+  const dfs = (u) => { state[u] = 1; order.push(u); for (const w of out[u]) { if (state[w] === 1) back.add(u + '>' + w); else if (!state[w]) dfs(w) } state[u] = 2 }
+  dfs(start); ids.forEach(id => { if (!state[id]) dfs(id) })
+  const layer = {}; ids.forEach(id => layer[id] = 0)
+  for (let pass = 0; pass < ids.length; pass++) for (const e of R.edges) if (!back.has(e.from + '>' + e.to) && layer[e.to] < layer[e.from] + 1) layer[e.to] = layer[e.from] + 1
+  const rows = {}; order.forEach(id => (rows[layer[id]] ??= []).push(id))
+  const W = 118, H = 28, GX = 14, GY = 30, pos = {}
+  const maxW = Math.max(...Object.values(rows).map(r => r.length)) * (W + GX)
+  Object.entries(rows).forEach(([l, rs]) => { const tw = rs.length * (W + GX) - GX; rs.forEach((id, k) => pos[id] = [40 + (maxW - tw) / 2 + k * (W + GX) + W / 2, 20 + l * (H + GY) + H / 2]) })
+  return { pos, back, W, H, width: maxW + 110, height: 40 + Object.keys(rows).length * (H + GY) }
+}
+let LAYOUT = null
+function drawGraph() {
+  const { pos, back, W, H, width, height } = LAYOUT
+  const cur = typeof selected === 'number' ? R.visits[selected] : null
+  const prev = cur && cur.branchOf == null ? rootVisits()[rootVisits().indexOf(cur) - 1] : cur ? R.visits[cur.branchOf] : null
+  const lastKey = cur && prev ? prev.node + '>' + cur.node : ''
+  let svg = '<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a1a1aa"/></marker></defs>'
+  let lane = 0
+  for (const e of R.edges) {
+    const a = pos[e.from], b = pos[e.to]; if (!a || !b) continue
+    const key = e.from + '>' + e.to
+    let d
+    if (back.has(key)) { lane++; const x = width - 30 + lane * 0 - (lane % 4) * 14; d = `M ${a[0] + W / 2} ${a[1]} C ${x} ${a[1]}, ${x} ${b[1]}, ${b[0] + W / 2} ${b[1]}` }
+    else d = `M ${a[0]} ${a[1] + H / 2} C ${a[0]} ${a[1] + H / 2 + 14}, ${b[0]} ${b[1] - H / 2 - 14}, ${b[0]} ${b[1] - H / 2}`
+    svg += `<path class="edge ${key === lastKey ? 'last' : ''}" d="${d}" marker-end="url(#ar)"/>`
+    if (back.has(key)) { const n = rootVisits().filter((v, k, rv) => rv[k + 1] && v.node === e.from && rv[k + 1].node === e.to).length; if (n) svg += `<text class="elabel" x="${a[0] + W / 2 + 4}" y="${(a[1] + b[1]) / 2}">back ×${n}</text>` }
+  }
+  for (const n of R.nodes) {
+    const [x, y] = pos[n.id], vs = R.visits.filter(v => v.node === n.id)
+    const worst = vs.some(v => v.outcome === 'error') ? 'err' : vs.some(v => v.outcome === 'fail' || v.outcome === 'partial' || v.outcome === 'waiting') ? 'warn' : ''
+    const cls = ['node', vs.length ? worst : 'future', cur?.node === n.id ? 'cur' : '', focusNode === n.id ? 'focus' : ''].join(' ')
+    const lbl = n.label.length > 17 ? n.label.slice(0, 16) + '…' : n.label
+    svg += `<g class="${cls}" data-n="${n.id}" data-kind="${n.kind}"><rect x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="6"/><text x="${x - W / 2 + 9}" y="${y + 4}">${lbl}</text>${vs.length > 1 ? `<text class="n" x="${x + W / 2 - 7}" y="${y + 4}" text-anchor="end">${vs.length}</text>` : ''}</g>`
+  }
+  const g = $('g'); g.setAttribute('viewBox', `0 0 ${width} ${height}`); g.innerHTML = svg
+  g.querySelectorAll('.node').forEach(el => el.onclick = () => { const vs = R.visits.filter(v => v.node === el.dataset.n); if (!vs.length) return; focusNode = focusNode === el.dataset.n ? null : el.dataset.n; if (focusNode) selected = vs[0].i; draw() })
+}
+
+// ---- context: namespaces from what the visits wrote, plus launch inputs ----
+function contextKeys() {
+  const h = {}
+  for (const i of R.inputs) (h[i.key] ??= []).push({ v: i.value, at: null })
+  for (const v of R.visits) for (const [k, val] of Object.entries(v.io.writes)) (h[k] ??= []).push({ v: val, at: v })
+  return h
+}
+function drawContext() {
+  const h = contextKeys(), groups = {}
+  Object.keys(h).sort().forEach(k => (groups[k.split('.')[0]] ??= []).push(k))
+  let html = `<div class="dh"><h2>Context</h2><span class="meta">Final values · the visit that wrote each</span></div>
+`
+  for (const [g, keys] of Object.entries(groups)) {
+    html += `<div class="ctx-group"><div class="blk-h">${g}</div>`
+    for (const k of keys) {
+      const hist = h[k], last = hist[hist.length - 1], open = ctxFocus === k
+      html += `<div class="ctx-row ${open ? 'hl' : ''}" data-k="${k}"><div class="k">${k}</div><div><div>${last.v === null ? '<span class="cleared">cleared</span>' : esc(last.v)}</div>
+        <div class="by">${last.at ? `${last.v === null ? 'cleared' : 'set'} by ${vlink(last.at)}` : 'launch input'}${hist.length > 1 ? ` · <a data-hist="${k}">${open ? 'hide' : 'written ' + hist.length + '×'}</a>` : ''}</div>
+        ${open ? `<div class="hist">${hist.map(e => `<div>${e.at ? vlink(e.at) : 'launch'}: ${e.v === null ? '<span class="cleared">cleared</span>' : esc(e.v)}</div>`).join('')}</div>` : ''}</div></div>`
+    }
+    html += '</div>'
+  }
+  return html + `<p class="raw">+ ${R.systemKeyCount} system keys. <a>Show</a></p>`
+}
+
+// ---- status item: result, failure, or question ----
+function md(t) {
+  return '<div class="md">' + esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>').split(/\n{2,}/).map(p =>
+    /^\s*[-*] /m.test(p) ? '<ul>' + p.split(/\n/).filter(l => l.trim()).map(l => `<li>${l.replace(/^\s*[-*] /, '')}</li>`).join('') + '</ul>' : `<p>${p.replace(/^#+\s*/, '')}</p>`).join('') + '</div>'
+}
+function notPassed() {
+  const fs = rootVisits().filter(v => v.outcome === 'fail')
+  if (!fs.length) return ''
+  return `<div class="section-label" style="margin-top:24px">Didn’t pass (${fs.length})</div><div class="findings">${fs.map(v => `<p><a data-i="${v.i}">${vname(v)}</a>: ${v.summary ? esc(v.summary) : `<span class="muted">no reason recorded${Object.keys(v.io.writes).length ? ' · wrote ' + Object.keys(v.io.writes).map(k => `<span class="key" data-k="${k}">${k}</span>`).join(' ') : ''}</span>`}</p>`).join('')}</div>`
+}
+function drawStatus() {
+  if (R.status === 'waiting') {
+    const q = R.question, v = R.visits[q.visit]
+    return `<div class="dh"><h2>${esc(q.header || 'Question')}</h2><span class="meta">Asked by ${vlink(v)} at ${q.askedAt ?? '—'} · the run is paused until you answer</span></div>
+      <p class="summary warn">${esc(q.text)}</p>
+      <div class="opts">${q.options.map(o => `<div class="opt"><b>${esc(o.label)}</b><span>${esc(o.description || '')}</span></div>`).join('')}</div>
+      ${q.allowOther ? '<textarea class="other" placeholder="Or answer in your own words…"></textarea>' : ''}
+      <p class="note">Replayed from a real run at the moment it asked. The answer given was “Commit reviewed repair”.</p>`
+  }
+  if (R.status === 'failed') {
+    const f = R.failure, at = rootVisits().filter(v => v.node === f.at).pop()
+    return `<div class="dh"><h2>Failed</h2><span class="meta">${f.kind === 'infrastructure' ? 'Infrastructure: the work didn’t fail, the backend did' : 'The flow ended in failure'}</span></div>
+      <p class="summary err">${esc(f.message)}</p>
+      <div class="nav">Stopped during ${at ? vlink(at) : f.at} after ${span(R.started, R.ended)}. ${f.kind === 'infrastructure' ? 'Retry resumes this run.' : ''}</div>
+      ${notPassed()}
+      <div class="section-label" style="margin-top:24px">Outputs</div><p class="muted" style="margin:0">None: the run ended before it produced a result.</p>`
+  }
+  const rf = R.resultFrom
+  return `<div class="dh"><h2>Result</h2><span class="meta">Completed · ${span(R.started, R.ended)}${rf?.node ? ` · from ${label(rf.node)}${rf.mode === 'raw' ? ', raw output' : ''}` : ''}</span></div>
+    ${R.result ? md(R.result.slice(0, 900) + (R.result.length > 900 ? '…' : '')) : '<p class="muted">This flow didn’t write a result summary.</p>'}
+    ${notPassed()}
+    <div class="section-label" style="margin-top:24px">Outputs</div>
+    <div class="wrote" style="margin-top:0">${R.commit ? `<span class="muted">Commit</span><span><span class="mono">${R.commit.slice(0, 7)}</span>${R.branch ? ` on <span class="mono">${esc(R.branch)}</span>` : ''} · <a class="u">Open diff</a></span>` : ''}
+      ${R.result ? '<span class="muted">Summary</span><span><a class="u">result.md</a></span>' : ''}<span class="muted">Flow</span><span><a class="u">flow snapshot</a></span></div>`
+}
+
+// ---- a visit ----
+function rowsHtml(rows) {
+  return '<div class="transcript">' + rows.map(([k, t]) => k === 'tool' ? `<div class="tr-tool"><span class="chev">›</span><span class="tag">Run</span><code>${esc(t)}</code></div>`
+    : k === 'think' ? `<div class="tr-think">Thought: ${esc(t.replace(/\*\*/g, ''))}</div>`
+    : k === 'msg' && /^\{\s*"outcome"/.test(t) ? `<div class="muted small">Final structured response: see <a data-ret>Returned</a> below.</div>` : k === 'more' ? `<div class="muted small" style="text-align:center">⋯ ${esc(t)} ⋯</div>`
+    : k === 'ask' ? `<div class="summary warn" style="margin:4px 0">Asked: ${esc(t)}</div>` : `<div class="tr-msg">${esc(t)}</div>`).join('') + '</div>'
+}
+function drawVisit(v) {
+  const io = v.io, s = sameNode(v), kind = kindOf(v.node), bs = branchesOf(v)
+  let html = `<div class="dh"><h2>${label(v.node)}</h2><span class="meta">${v.branchOf != null ? `Branch of ${vlink(R.visits[v.branchOf])} · ` : ''}${s.length > 1 ? `Visit ${s.indexOf(v) + 1} of ${s.length} · ` : ''}${SHORT[v.outcome]} · ${span(v.s, v.e)}</span></div>
+    ${s.length > 1 ? `<div class="dots">${s.map((x, k) => `<span class="${TONE[x.outcome]} ${x === v ? 'on' : ''}" data-i="${x.i}" title="Visit ${k + 1}: ${SHORT[x.outcome]}">${k + 1}</span>`).join('')}</div>` : ''}`
+  if (io.instr) html += `<details class="instr blk"><summary><b>Instructions</b><span class="clip">${esc(io.instr.slice(0, 95))}…</span></summary><p class="full">${esc(io.instr)}</p></details>
+    ${io.reads.length ? `<div class="reads">Read ${io.reads.map(k => `<span class="key" data-k="${k}">${k}</span>`).join('')}</div>` : ''}`
+  if (bs.length) html += `<div class="blk"><div class="blk-h">Branches, run in parallel</div><div class="lanes">${bs.map(b => { const t0 = secs(v.s), T = Math.max(1, secs(v.e) - t0); return `<div class="lane" data-i="${b.i}"><span>${label(b.node)}</span><span class="bar"><i style="left:${(secs(b.s) - t0) / T * 100}%;width:${Math.max(0.8, (secs(b.e) - secs(b.s)) / T * 100)}%"></i></span><span class="t">${span(b.s, b.e)}</span></div>` }).join('')}</div>
+    ${bs.some(b => kindOf(b.node) === 'join') ? '<p class="note">The runtime reports the join node as a third branch with no work. It’s shown because it’s in the record.</p>' : ''}</div>`
+  else if (kind === 'tool') html += `<div class="blk"><div class="cmd">$ ${esc(io.tool)}${io.exit != null ? ` <span class="muted">· exit ${io.exit}</span>` : ''}</div>${io.output ? `<pre class="out">${esc(io.output)}</pre>` : '<div class="muted small" style="margin-top:4px">No output recorded.</div>'}</div>`
+  else if (v.child) { const ck = RUN_DATA.findIndex(r => r.id.startsWith(v.child.id)); html += `<div class="blk"><div>Ran child flow <b>${esc(v.child.flow)}</b> · <span class="mono">${v.child.id}</span> · ${span(v.child.s, v.child.e)} · ${tok(v.child.tokens)} tokens${ck >= 0 ? ` · <a class="u" data-run="${ck}">open it ›</a>` : ''}</div></div>` }
+  else if (v.rows.length) html += `<div class="blk">${rowsHtml(v.rows)}</div>`
+  else if (kind !== 'start' && kind !== 'exit') html += `<div class="blk muted small">No agent activity recorded for this visit.</div>`
+  if (kind !== 'start' && kind !== 'exit' && v.outcome !== 'waiting') {
+    const w = io.writes, keys = Object.keys(w)
+    html += `<div class="returned" id="ret"><div class="blk-h">Returned</div><div>${v.branchOf != null ? SHORT[v.outcome] : routeText(v) || SHORT[v.outcome]}</div>
+      ${v.summary ? `<p style="margin:6px 0 0;line-height:1.5;color:#3f3f46">${esc(v.summary)}</p>` : ''}
+      ${keys.length ? `<div class="wrote">${keys.map(k => `<span class="key" data-k="${k}">${k}</span>${w[k] === null ? '<span class="cleared">cleared</span>' : `<span class="val">${esc(w[k])}</span>`}`).join('')}</div>` : ''}
+      ${io.systemWrites ? `<div class="muted small" style="margin-top:6px">+ ${io.systemWrites} system keys</div>` : ''}</div>`
+    if (io.files?.length) html += `<div class="raw">Raw files: ${io.files.map(f => `<a>${f}</a>`).join('')}</div>`
+  }
+  return html
+}
+
+function drawDetail() {
+  const D = $('detail')
+  D.innerHTML = selected === 'status' ? drawStatus() : selected === 'context' ? drawContext() : drawVisit(R.visits[selected])
+  D.querySelectorAll('[data-i]').forEach(el => el.onclick = () => select(+el.dataset.i))
+  D.querySelectorAll('[data-ret]').forEach(el => { el.style.cssText = 'color:var(--fg);text-decoration:underline;cursor:pointer'; el.onclick = () => D.querySelector('#ret')?.scrollIntoView({ behavior: 'smooth' }) })
+  D.querySelectorAll('[data-run]').forEach(el => el.onclick = () => openRun(+el.dataset.run))
+  D.querySelectorAll('.key').forEach(el => el.onclick = () => { ctxFocus = el.dataset.k; select('context') })
+  D.querySelectorAll('[data-hist]').forEach(el => el.onclick = () => { ctxFocus = ctxFocus === el.dataset.hist ? null : el.dataset.hist; drawDetail() })
+  D.querySelectorAll('.wrote .val').forEach(el => el.onclick = () => el.classList.toggle('open'))
+  D.querySelectorAll('a.u').forEach(el => el.style.cssText = 'color:var(--fg);text-decoration:underline;text-decoration-color:#d4d4d8;text-underline-offset:3px;cursor:pointer')
+  if (selected === 'context' && ctxFocus) D.querySelector(`.ctx-row[data-k="${CSS.escape(ctxFocus)}"]`)?.scrollIntoView({ block: 'center' })
+}
+function select(s) { if (s !== 'context') ctxFocus = null; selected = s; if (focusNode && (typeof s !== 'number' || R.visits[s].node !== focusNode)) focusNode = null; draw() }
+function draw() { drawList(); drawGraph(); drawDetail() }
+function openRun(k, node) {
+  R = RUN_DATA[k]; LAYOUT = layout(); focusNode = null; ctxFocus = null
+  const want = node ? rootVisits().filter(v => v.node === node) : []
+  selected = R.status === 'completed' && !node ? 'status' : R.status === 'waiting' ? 'status' : R.status === 'failed' ? 'status' : want.length ? want[0].i : 'status'
+  if (node && want.length && R.id === RUN_DATA[0].id) selected = want[want.length - 1].i
+  history.replaceState(null, '', '#' + k)
+  drawRuns(); drawHead(); draw()
+}
+$('runsbtn').onclick = () => document.body.classList.toggle('runs-docked')
+$('graphbtn').onclick = () => $('graph').classList.toggle('hidden')
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return
+  const order = ['status', 'context']; for (const v of rootVisits()) { order.push(v.i); for (const b of branchesOf(v)) order.push(b.i) }
+  const p = order.indexOf(selected)
+  if ((e.key === 'j' || e.key === 'ArrowDown') && p < order.length - 1) { e.preventDefault(); select(order[p + 1]) }
+  if ((e.key === 'k' || e.key === 'ArrowUp') && p > 0) { e.preventDefault(); select(order[p - 1]) }
+  if (typeof selected === 'number') { const v = R.visits[selected], s = sameNode(v), k = s.indexOf(v)
+    if (e.key === 'ArrowRight' && k < s.length - 1) select(s[k + 1].i)
+    if (e.key === 'ArrowLeft' && k > 0) select(s[k - 1].i) }
+  if (e.key === 'g') $('graph').classList.toggle('hidden')
+  if (e.key === 'r') document.body.classList.toggle('runs-docked')
+})
+openRun(+(location.hash.slice(1) || 0))
+</script>
+</body></html>

@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Missions redesign · proposals</title>
+<script src="missions.js"></script>
+<style>
+/* Air: thin display type, hairlines instead of boxes, one ink-blue accent, status colour only in small marks. */
+:root { --bg: #fff; --fg: #1f2328; --muted: #8a9099; --faint: #a8adb5; --border: #eef0f2; --line: #e3e6ea; --soft: #f6f7f9;
+  --accent: #3b5bdb; --accent-soft: #f1f4ff; --ok: #2f9e44; --warn: #e8590c; --err: #e03131; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--fg); background: #fff; display: flex; flex-direction: column; }
+code, .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+a { color: var(--accent); text-decoration: none; cursor: pointer; } a:hover { text-decoration: underline; }
+button { font: inherit; border: none; background: none; color: var(--accent); padding: 3px 6px; border-radius: 6px; cursor: pointer; }
+button:hover { background: var(--accent-soft); }
+button.primary { border: 1px solid var(--accent); }
+.muted { color: var(--muted); } .faint { color: var(--faint); } .small { font-size: 12px; } .tiny { font-size: 11px; }
+.warn { color: var(--warn); } .err { color: var(--err); } .ok { color: var(--ok); } .acc { color: var(--accent); }
+.proto { background: #1f2328; color: #c9cdd3; font-size: 12px; padding: 7px 16px; display: flex; gap: 16px; align-items: center; flex-shrink: 0; }
+.proto b { color: #fff; } .proto a { color: #c9cdd3; } .proto a.on { color: #fff; text-decoration: underline; } .proto .note { margin-left: auto; color: #8a9099; }
+.appnav { height: 52px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 22px; flex-shrink: 0; }
+.brand { display: flex; gap: 8px; align-items: center; font-size: 15px; } .logo { width: 16px; height: 16px; border-radius: 4px; background: url(../../frontend/public/assets/spark-app-icon.png) center/cover, #f59f00; }
+.appnav nav { margin: 0 auto; display: flex; gap: 22px; } .appnav nav a { color: var(--muted); } .appnav nav a.on { color: var(--fg); text-decoration: underline; text-underline-offset: 18px; text-decoration-thickness: 1px; }
+.projchip { color: var(--muted); }
+main { flex: 1; min-height: 0; display: flex; }
+.label { font-size: 10.5px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 22px 0 8px; }
+.md p { margin: 0 0 8px; } .md ul { margin: 0 0 8px; padding-left: 18px; } .md li { margin: 2px 0; } .md code { background: var(--soft); padding: 0 4px; border-radius: 4px; }
+.md p:last-child, .md ul:last-child { margin-bottom: 0; }
+.replay { font-size: 11px; color: var(--faint); font-style: italic; }
+
+/* Shared mission list (A, C, D) */
+.mlist { width: 300px; border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; }
+.mlist .top { padding: 16px 18px 6px; display: flex; gap: 10px; align-items: center; }
+.mlist .top input { flex: 1; border: none; border-bottom: 1px solid var(--border); padding: 5px 0; font: inherit; outline: none; }
+.mlist .grp { padding: 14px 18px 4px 20px; font-size: 10.5px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); display: flex; justify-content: space-between; }
+.mrow { padding: 8px 18px 8px 20px; cursor: pointer; position: relative; }
+.mrow:hover .t { color: var(--accent); }
+.mrow.sel { box-shadow: inset 2px 0 0 var(--accent); } .mrow.sel .t { color: var(--accent); }
+.mrow .t { font-size: 13.5px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mrow .m { color: var(--muted); font-size: 11.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mlist .foot { padding: 14px 20px; font-size: 12px; }
+
+/* A · Brief */
+.doc { flex: 1; overflow-y: auto; }
+.doc .inner { max-width: 780px; padding: 28px 40px 80px; }
+.doc h1 { font-size: 24px; font-weight: 300; letter-spacing: -.01em; line-height: 1.25; margin: 0; }
+.facts { color: var(--muted); margin-top: 6px; }
+.actions { display: flex; gap: 4px; margin-left: auto; align-items: flex-start; }
+.hrow { display: flex; gap: 16px; align-items: flex-start; }
+.objective { margin-top: 14px; color: #3d434b; }
+.objective .body { max-height: 4.5em; overflow: hidden; position: relative; }
+.objective.open .body { max-height: none; }
+.objective .body::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1.6em; background: linear-gradient(transparent, #fff); }
+.objective.open .body::after { display: none; }
+.now { margin-top: 22px; padding: 14px 0 14px 16px; border-left: 2px solid var(--line); }
+.now.warn { border-left-color: var(--warn); } .now.run { border-left-color: var(--accent); } .now.done { border-left-color: var(--ok); } .now.err { border-left-color: var(--err); }
+.now h3 { margin: 0 0 6px; font-size: 15px; font-weight: 400; }
+.now.warn, .now.err, .now.run, .now.done { color: var(--fg); }
+.opts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.opts button { border: 1px solid var(--line); color: var(--fg); padding: 5px 14px; } .opts button:hover { border-color: var(--accent); color: var(--accent); background: none; }
+.reply { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+.reply textarea { flex: 1; border: none; border-bottom: 1px solid var(--line); font: inherit; resize: none; padding: 5px 0; outline: none; min-height: 28px; }
+.reply textarea:focus { border-bottom-color: var(--accent); }
+.runs { width: 100%; border-collapse: collapse; }
+.runs td { padding: 7px 10px 7px 0; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+.runs td.mk { width: 18px; } .runs td.r { text-align: right; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.runs .flow { color: var(--muted); font-size: 12px; }
+.story { position: relative; }
+.beat { display: grid; grid-template-columns: 70px 1fr; gap: 14px; padding: 9px 0; }
+.beat .when { color: var(--faint); font-size: 11.5px; text-align: right; padding-top: 1px; font-variant-numeric: tabular-nums; }
+.beat.event .what { color: var(--muted); font-size: 12.5px; }
+.beat.you .what { color: var(--accent); }
+.steps { color: var(--faint); font-size: 11.5px; margin-top: 4px; cursor: pointer; } .steps:hover { color: var(--accent); }
+.chip { display: inline-block; background: var(--soft); border-radius: 4px; padding: 0 6px; font-size: 12px; color: #4a5058; }
+.say { color: var(--muted); font-size: 12.5px; margin-bottom: 4px; }
+
+/* B · Board */
+.board { flex: 1; overflow: auto; padding: 22px 28px; }
+.board .bh { display: flex; align-items: baseline; gap: 16px; margin-bottom: 18px; }
+.board .bh h1 { font-size: 24px; font-weight: 300; margin: 0; }
+.cols { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; }
+.col h2 { font-size: 10.5px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); margin: 0 0 8px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.col h2.warn { color: var(--warn); }
+.card { padding: 12px 0 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.card:hover .t { color: var(--accent); } .card.sel .t { color: var(--accent); }
+.card .t { font-size: 14px; line-height: 1.35; }
+.card .m { color: var(--muted); font-size: 12px; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card .ticks { display: flex; gap: 3px; margin-top: 8px; } .card .ticks i { width: 14px; height: 3px; border-radius: 2px; background: #d5d9df; }
+.card .ticks i.r { background: var(--accent); } .card .ticks i.w { background: var(--warn); } .card .ticks i.e { background: var(--err); } .card .ticks i.ok { background: #9fd3a9; }
+.card .opts { margin-top: 8px; } .card .opts button { padding: 3px 10px; font-size: 12px; }
+.drawer { width: 540px; border-left: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; }
+.drawer .inner { padding: 22px 28px 60px; }
+.drawer h1 { font-size: 20px; font-weight: 300; margin: 0; line-height: 1.3; }
+
+/* C · Conversation */
+.chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.chat .ch { padding: 20px 32px 14px; border-bottom: 1px solid var(--border); }
+.chat .ch h1 { font-size: 20px; font-weight: 300; margin: 0; }
+.chat .flow { flex: 1; overflow-y: auto; padding: 18px 32px 30px; }
+.chat .flow .inner { max-width: 720px; }
+.msg { margin: 14px 0; } .msg.you { display: flex; justify-content: flex-end; } .msg.you div { background: var(--soft); border-radius: 8px; padding: 7px 12px; max-width: 80%; }
+.sys { display: flex; gap: 8px; align-items: baseline; color: var(--muted); font-size: 12.5px; margin: 12px 0; padding: 6px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.sys .mk { width: 14px; text-align: center; }
+.askcard { border-left: 2px solid var(--warn); padding: 8px 0 8px 14px; margin: 14px 0; }
+.composer { border-top: 1px solid var(--border); padding: 12px 32px 16px; }
+.composer .reply { max-width: 720px; margin: 0; }
+.rail2 { width: 320px; border-left: 1px solid var(--border); overflow-y: auto; padding: 8px 22px 40px; flex-shrink: 0; }
+.rail2 .label:first-child { margin-top: 14px; }
+.meter { height: 3px; background: var(--soft); border-radius: 2px; margin-top: 6px; } .meter i { display: block; height: 3px; border-radius: 2px; background: var(--accent); }
+.rrun { padding: 6px 0; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; }
+.rrun .s { font-size: 12.5px; line-height: 1.35; } .rrun .f { color: var(--muted); font-size: 11.5px; }
+
+/* D · Timeline */
+.tl { flex: 1; overflow-y: auto; }
+.tl .inner { padding: 24px 36px 80px; }
+.tl h1 { font-size: 22px; font-weight: 300; margin: 0; }
+.lanes { display: grid; grid-template-columns: 64px minmax(0, 1fr) 260px; margin-top: 18px; }
+.lanes .hdr { font-size: 10.5px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); padding: 6px 0; border-bottom: 1px solid var(--border); }
+.lanes .cell { padding: 10px 14px 10px 0; border-bottom: 1px solid #f5f6f8; min-height: 44px; }
+.lanes .time { color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; padding-top: 11px; }
+.lanes .runlane { position: relative; padding: 0; border-bottom: 1px solid #f5f6f8; }
+.bar { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--line); }
+.bar.live { background: var(--accent); } .bar.cap { top: 50%; } .bar.end { bottom: 50%; }
+.node { position: absolute; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -3.5px; border-radius: 50%; background: #fff; border: 1.5px solid #b8bec6; }
+.node.live { border-color: var(--accent); background: var(--accent); } .node.ok { border-color: var(--ok); } .node.err { border-color: var(--err); } .node.warn { border-color: var(--warn); background: var(--warn); }
+.rlabel { position: absolute; top: 50%; transform: translateY(-50%); font-size: 12px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agentline { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cell.open .agentline { display: block; }
+.cell .more { color: var(--faint); font-size: 11.5px; } .cell:hover .more { color: var(--accent); }
+
+/* E · A + C */
+.now2 { display: flex; gap: 10px; align-items: baseline; padding: 9px 32px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.now2 .mk { width: 14px; text-align: center; } .now2 .txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.now2.warn, .now2.run, .now2.done, .now2.err { color: var(--fg); }
+.now2.warn { box-shadow: inset 2px 0 0 var(--warn); } .now2.run { box-shadow: inset 2px 0 0 var(--accent); } .now2.done { box-shadow: inset 2px 0 0 var(--ok); } .now2.err { box-shadow: inset 2px 0 0 var(--err); }
+.turn { margin: 16px 0; } .turn .steps { margin: 0 0 6px; }
+.launch { font-size: 12.5px; margin-top: 6px; color: var(--muted); } .launch a { color: var(--accent); }
+.evt { display: flex; gap: 8px; align-items: baseline; color: var(--muted); font-size: 12.5px; margin: 10px 0; }
+.evt .mk { width: 14px; text-align: center; } .evt .t { margin-left: auto; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.daysep { text-align: center; color: var(--faint); font-size: 11px; margin: 18px 0 6px; }
+.outcome { border-left: 2px solid var(--ok); padding: 2px 0 2px 14px; }
+.outcome.err { border-left-color: var(--err); }
+.draftmsg { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin-top: 18px; }
+.rail3 { width: 320px; border-left: 1px solid var(--border); overflow-y: auto; padding: 4px 22px 40px; flex-shrink: 0; }
+.rail3 .rrun { grid-template-columns: 16px 1fr; }
+</style>
+</head>
+<body>
+<div class="proto"><b>Missions</b><span id="switch"></span><span class="note" id="pnote"></span></div>
+<div class="appnav"><span class="brand"><span class="logo"></span>Spark</span>
+  <nav><a>Home</a><a class="on">Missions</a><a>Editor</a><a>Runs</a><a>Triggers</a></nav><span class="projchip">spark ▾</span></div>
+<main id="main"></main>
+<script>
+const PROPOSALS = [
+  ['a', 'A · Brief', 'Each mission reads as a short brief: what it needs now, its runs, then the story. The conversation is folded into beats.'],
+  ['b', 'B · Board', 'Missions laid out by state, with questions answerable on the card. A side panel holds the brief.'],
+  ['c', 'C · Conversation', 'The mission is a chat with its agent. Run events and questions sit in the thread; objective, runs and budget live in a rail.'],
+  ['e', 'E · A + C', 'The conversation from C, headed by A\u2019s brief: a state line saying what the mission needs, and a rail holding the objective, runs and budget.'],
+  ['d', 'D · Timeline', 'The agent’s turns beside a lane of runs, showing what it launched, how long each ran, and when it reported back.'],
+]
+const params = new URLSearchParams(location.search)
+const P = params.get('p') || 'a'
+let sel = params.get('m') || MISSIONS[0].id
+let showArchived = false
+document.getElementById('switch').innerHTML = PROPOSALS.map(([k, l]) => `<a class="${k === P ? 'on' : ''}" href="?p=${k}&m=${encodeURIComponent(sel)}">${l}</a>`).join('   ')
+document.getElementById('pnote').textContent = PROPOSALS.find(([k]) => k === P)[2]
+
+// ---- formatting ----
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const inline = s => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+function md(text) {
+  // Paragraphs, with runs of "- " or "1. " lines as lists wherever they appear.
+  const out = []
+  for (const block of String(text || '').trim().split(/\n{2,}/)) {
+    let para = [], list = []
+    const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join('<br>')}</p>`); para = [] }
+    const flushList = () => { if (list.length) out.push(`<ul>${list.map(l => `<li>${inline(l)}</li>`).join('')}</ul>`); list = [] }
+    for (const line of block.split('\n')) {
+      const item = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/)
+      if (item) { flushPara(); list.push(item[1]) } else { flushList(); para.push(line) }
+    }
+    flushPara(); flushList()
+  }
+  return `<div class="md">${out.join('')}</div>`
+}
+const d = s => s ? new Date(s) : null
+const clock = s => d(s)?.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) ?? ''
+const day = s => d(s)?.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) ?? ''
+const when = s => `${day(s)}, ${clock(s)}`
+function span(a, b) {
+  if (!a || !b) return ''
+  const s = Math.max(0, (d(b) - d(a)) / 1000)
+  if (s < 60) return `${Math.round(s)}s`
+  const m = Math.round(s / 60)
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
+const compact = n => n == null ? '' : new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n).replace('K', 'k')
+const flowTitle = f => (f || '').split('/').pop().replace(/\.ya?ml$/, '').replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+const firstSentence = s => { const t = String(s || '').replace(/\s+/g, ' '); const m = t.match(/^.{20,140}?[.;:](\s|$)/); return m ? m[0].trim() : t.slice(0, 120) + (t.length > 120 ? '…' : '') }
+
+// ---- mission model ----
+const M = id => MISSIONS.find(m => m.id === id) || MISSIONS[0]
+const nowOf = m => m.replay ? new Date(d(m.updated).getTime() + 12 * 60000).toISOString() : new Date().toISOString()
+const tokensOf = m => m.runs.reduce((n, r) => n + (r.tokens || 0), 0)
+const liveRun = m => m.runs.find(r => r.status === 'running' || r.status === 'waiting')
+function state(m) {
+  if (m.status === 'needs_you') return { word: 'Needs you', cls: 'warn', mark: '?' }
+  if (m.status === 'running') return { word: 'Running', cls: 'acc', mark: '•' }
+  if (m.status === 'draft') return { word: 'Draft', cls: 'muted', mark: '–' }
+  const c = m.closed?.status
+  return c === 'failed' ? { word: 'Failed', cls: 'err', mark: '✕' } : c === 'canceled' ? { word: 'Canceled', cls: 'muted', mark: '–' } : { word: 'Done', cls: 'ok', mark: '✓' }
+}
+/** One short line saying where the mission is. */
+function line(m) {
+  if (m.status === 'needs_you') return m.ask ? `Asks: ${m.ask.prompt}` : 'Waiting for your reply'
+  if (m.status === 'running') { const r = liveRun(m); return r ? `${flowTitle(r.flow_name)} running · ${span(r.launched_at, nowOf(m))}` : 'Agent is working' }
+  if (m.status === 'draft') return 'Not started'
+  return firstSentence(m.closed?.reason)
+}
+const runMark = r => r.status === 'running' ? '<span class="acc">•</span>' : r.status === 'waiting' ? '<span class="warn">?</span>' : r.status === 'failed' ? '<span class="err">✕</span>' : '<span class="ok">✓</span>'
+const runDur = (r, m) => span(r.started || r.launched_at, r.ended || (r.status === 'running' || r.status === 'waiting' ? nowOf(m) : null))
+const visible = () => MISSIONS.filter(m => showArchived || !m.archived)
+const GROUPS = [['needs_you', 'Needs you'], ['running', 'Running'], ['draft', 'Drafts'], ['closed', 'Closed']]
+const byGroup = k => visible().filter(m => m.status === k)
+
+function mlist(onlyMeta) {
+  return `<aside class="mlist"><div class="top"><input placeholder="Search missions"><button title="New mission">+ New</button></div>
+    ${GROUPS.map(([k, label]) => { const ms = byGroup(k); return ms.length ? `<div class="grp"><span class="${k === 'needs_you' ? 'warn' : ''}">${label}</span><span>${ms.length}</span></div>` + ms.map(m => {
+      const st = state(m)
+      const meta = k === 'closed' ? `${st.word} · ${day(m.closed?.at || m.updated)}` : k === 'draft' ? `Draft · created ${day(m.created)}` : line(m)
+      return `<div class="mrow ${m.id === sel ? 'sel' : ''}" data-id="${m.id}"><div class="t">${esc(m.title)}</div><div class="m ${k === 'needs_you' ? 'warn' : ''}">${esc(meta)}</div></div>`
+    }).join('') : '' }).join('')}
+    <div class="foot"><a data-archived>${showArchived ? 'Hide' : 'Show'} archived</a></div></aside>`
+}
+
+function factsLine(m) {
+  const st = state(m)
+  const parts = [`<span class="${st.cls}">${st.word}</span>`]
+  if (m.status === 'draft') parts.push(`created ${when(m.created)}`)
+  else parts.push(`started ${when(m.started)}`, m.status === 'closed' ? span(m.started, m.closed?.at) : `${span(m.started, nowOf(m))} so far`)
+  if (m.runs.length) parts.push(`${m.runs.length} run${m.runs.length === 1 ? '' : 's'} of ${m.budget?.total_runs ?? 25}`)
+  if (tokensOf(m)) parts.push(`${compact(tokensOf(m))} tokens`)
+  if (m.playbook) parts.push(`playbook: ${esc(m.playbook)}`)
+  return parts.join(' · ')
+}
+function actionsFor(m) {
+  if (m.status === 'draft') return '<button class="primary">Start</button><button>Edit</button><button>⋯</button>'
+  if (m.status === 'closed') return `<button>${m.archived ? 'Restore' : 'Archive'}</button><button>⋯</button>`
+  return '<button>Close</button><button>Cancel</button><button>⋯</button>'
+}
+function objective(m, open) {
+  return `<div class="objective ${open ? 'open' : ''}"><div class="body">${md(m.objective)}</div>${open ? '' : '<a class="small" data-toggle-obj>Show the whole objective</a>'}</div>`
+}
+function nowBlock(m) {
+  if (m.status === 'needs_you') {
+    const a = m.ask
+    return `<div class="now warn"><div class="say">The agent asks you · from ${esc(flowTitle(a.from))}</div><h3>${esc(a.prompt)}</h3>
+      <div class="muted small">${inline(a.agentSays)}</div>
+      <div class="opts">${a.options.map(o => `<button>${esc(o)}</button>`).join('')}</div>
+      <div class="reply"><textarea rows="1" placeholder="Or reply in your own words…"></textarea><button>Send</button></div></div>`
+  }
+  if (m.status === 'running') {
+    const r = liveRun(m), lastAgent = [...m.beats].reverse().find(b => b.kind === 'agent')
+    return `<div class="now run"><div class="say">Now</div><h3>${r ? `${esc(flowTitle(r.flow_name))} is running · ${runDur(r, m)}` : 'The agent is working'}</h3>
+      ${lastAgent ? `<div class="muted">${md(lastAgent.final)}</div>` : ''}
+      <div class="reply"><textarea rows="1" placeholder="Message the agent…"></textarea><button>Send</button></div></div>`
+  }
+  if (m.status === 'draft') return `<div class="now"><div class="say">Not started</div><h3>Start the mission to hand this objective to an agent.</h3>
+    <div class="muted small">Budget: up to ${m.budget?.concurrent_runs ?? 4} runs at a time, ${m.budget?.total_runs ?? 25} in all · model: project default</div></div>`
+  const st = state(m)
+  const final = [...m.beats].reverse().find(b => b.kind === 'agent' && b.final)
+  return `<div class="now ${st.cls === 'ok' ? 'done' : st.cls}"><div class="say">Outcome · ${st.word.toLowerCase()} ${when(m.closed?.at)}</div>
+    ${final ? md(final.final) : md(m.closed?.reason)}</div>`
+}
+function runsTable(m) {
+  if (!m.runs.length) return ''
+  return `<div class="label">Runs</div><table class="runs">${m.runs.map(r => `<tr><td class="mk">${runMark(r)}</td>
+    <td><a>${esc(r.title || r.summary)}</a><div class="flow">${esc(flowTitle(r.flow_name))} · ${clock(r.launched_at)}</div></td>
+    <td class="r">${runDur(r, m)}</td><td class="r">${r.tokens ? compact(r.tokens) : ''}</td></tr>`).join('')}</table>`
+}
+const runName = (m, id) => { const r = m.runs.find(x => x.run_id === id); return r ? esc(r.title || r.summary) : `<code>${esc(id)}</code>` }
+function beatHtml(m, b, i) {
+  if (b.kind === 'objective') return `<div class="beat event"><div class="when">${clock(b.at)}</div><div class="what">Started with the objective above</div></div>`
+  if (b.kind === 'agent') {
+    if (!b.final && !b.commentary.length) return ''
+    const launched = b.launched.map(id => `<div class="small" style="margin-top:4px">→ Launched <a>${runName(m, id)}</a></div>`).join('')
+    return `<div class="beat"><div class="when">${clock(b.at)}</div><div class="what">${b.final ? md(b.final) : `<span class="muted">${esc(b.commentary.at(-1))}</span>`}${launched}
+      ${b.toolCount ? `<div class="steps" data-steps="${i}">▸ ${b.toolCount} step${b.toolCount === 1 ? '' : 's'}${b.commentary.length ? ` · ${b.commentary.length} note${b.commentary.length === 1 ? '' : 's'}` : ''}</div><div hidden data-steps-body="${i}" class="small muted" style="margin-top:4px">${b.commentary.map(c => `<div>${inline(c)}</div>`).join('')}${b.tools.map(t => `<div class="mono faint" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">› ${esc(t)}</div>`).join('')}</div>` : ''}</div></div>`
+  }
+  if (b.kind === 'run_event') return `<div class="beat event"><div class="when">${clock(b.at)}</div><div class="what">${b.status === 'completed' ? '<span class="ok">✓</span>' : '<span class="err">✕</span>'} <a>${runName(m, b.run)}</a> ended ${esc(b.status)}</div></div>`
+  if (b.kind === 'question') return `<div class="beat event"><div class="when">${clock(b.at)}</div><div class="what"><span class="warn">?</span> ${esc(flowTitle(b.flow))} asked “${esc(b.prompt)}” <span class="faint">(${b.options.map(esc).join(' / ')})</span></div></div>`
+  if (b.kind === 'you') return `<div class="beat you"><div class="when">${clock(b.at)}</div><div class="what">You: ${esc(b.text)}</div></div>`
+  return ''
+}
+const story = m => m.beats.length ? `<div class="label">Story</div><div class="story">${m.beats.map((b, i) => beatHtml(m, b, i)).join('')}</div>` : ''
+
+// ---- A · Brief ----
+function renderA() {
+  const m = M(sel)
+  return mlist() + `<section class="doc"><div class="inner">
+    <div class="hrow"><div style="min-width:0;flex:1"><h1>${esc(m.title)}</h1><div class="facts">${factsLine(m)}</div></div><div class="actions">${actionsFor(m)}</div></div>
+    ${m.replay ? `<div class="replay">${esc(m.replay)}</div>` : ''}
+    ${objective(m, m.status === 'draft')}
+    ${nowBlock(m)}
+    ${runsTable(m)}
+    ${story(m)}
+  </div></section>`
+}
+
+// ---- B · Board ----
+function renderB() {
+  const m = sel ? M(sel) : null
+  const ticks = x => x.runs.map(r => `<i class="${r.status === 'running' ? 'r' : r.status === 'waiting' ? 'w' : r.status === 'failed' ? 'e' : 'ok'}" title="${esc(r.summary)}"></i>`).join('')
+  const card = x => `<div class="card ${x.id === sel ? 'sel' : ''}" data-id="${x.id}"><div class="t">${esc(x.title)}</div>
+    <div class="m ${x.status === 'needs_you' ? 'warn' : ''}">${esc(x.status === 'closed' ? `${state(x).word} ${day(x.closed?.at)} · ${firstSentence(x.closed?.reason)}` : line(x))}</div>
+    ${x.status === 'needs_you' && x.ask ? `<div class="opts">${x.ask.options.map(o => `<button>${esc(o)}</button>`).join('')}</div>` : ''}
+    ${x.runs.length ? `<div class="ticks">${ticks(x)}</div>` : ''}</div>`
+  return `<section class="board"><div class="bh"><h1>Missions</h1><span class="muted">${visible().length} missions · ${byGroup('needs_you').length} need you</span>
+      <span style="margin-left:auto"></span><a data-archived class="small">${showArchived ? 'Hide' : 'Show'} archived</a><button class="primary">New mission</button></div>
+    <div class="cols">${GROUPS.map(([k, label]) => `<div class="col"><h2 class="${k === 'needs_you' ? 'warn' : ''}"><span>${label}</span><span>${byGroup(k).length}</span></h2>
+      ${byGroup(k).map(card).join('') || '<div class="faint small" style="padding:12px 0">None</div>'}</div>`).join('')}</div></section>
+    ${m ? `<aside class="drawer"><div class="inner"><div class="hrow"><h1 style="flex:1">${esc(m.title)}</h1><div class="actions">${actionsFor(m)}<button data-close>✕</button></div></div>
+      <div class="facts">${factsLine(m)}</div>${m.replay ? `<div class="replay">${esc(m.replay)}</div>` : ''}
+      ${objective(m, m.status === 'draft')}${nowBlock(m)}${runsTable(m)}${story(m)}</div></aside>` : ''}`
+}
+
+// ---- C · Conversation ----
+function chatBeat(m, b, i) {
+  if (b.kind === 'objective') return `<div class="sys"><span class="mk">▸</span><span>Mission started ${when(b.at)} with the objective in the rail</span></div>`
+  if (b.kind === 'agent') {
+    if (!b.final && !b.commentary.length) return ''
+    return `<div class="msg">${b.commentary.map(c => `<div class="small muted" style="font-style:italic;margin-bottom:4px">${inline(c)}</div>`).join('')}
+      ${b.toolCount ? `<div class="steps" data-steps="${i}">› ${b.toolCount} step${b.toolCount === 1 ? '' : 's'}</div><div hidden data-steps-body="${i}">${b.tools.map(t => `<div class="mono faint small" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">› ${esc(t)}</div>`).join('')}</div>` : ''}
+      ${b.final ? `<div style="margin-top:6px">${md(b.final)}</div>` : ''}
+      ${b.launched.map(id => `<div class="sys"><span class="mk acc">→</span><span>Launched <a>${runName(m, id)}</a></span></div>`).join('')}</div>`
+  }
+  if (b.kind === 'run_event') return `<div class="sys"><span class="mk">${b.status === 'completed' ? '<span class="ok">✓</span>' : '<span class="err">✕</span>'}</span><span><a>${runName(m, b.run)}</a> ended ${esc(b.status)} · ${clock(b.at)}</span></div>`
+  if (b.kind === 'question') return `<div class="sys"><span class="mk warn">?</span><span>${esc(flowTitle(b.flow))} asked “${esc(b.prompt)}” · ${clock(b.at)}</span></div>`
+  if (b.kind === 'you') return `<div class="msg you"><div>${esc(b.text)}</div></div>`
+  return ''
+}
+function renderC() {
+  const m = M(sel), st = state(m)
+  const used = m.runs.length, total = m.budget?.total_runs ?? 25
+  const outcome = m.status === 'closed' ? `<div class="askcard" style="border-left-color:var(--ok)"><div class="say">Closed as ${st.word.toLowerCase()} · ${when(m.closed?.at)}</div>${md(m.closed?.reason)}</div>` : ''
+  const ask = m.status === 'needs_you' && m.ask ? `<div class="askcard"><div class="say">Waiting on you</div><b>${esc(m.ask.prompt)}</b><div class="opts">${m.ask.options.map(o => `<button>${esc(o)}</button>`).join('')}</div></div>` : ''
+  return mlist() + `<section class="chat"><div class="ch"><div class="hrow"><div style="flex:1;min-width:0"><h1>${esc(m.title)}</h1>
+      <div class="facts"><span class="${st.cls}">${st.word}</span> · ${esc(line(m))}</div>${m.replay ? `<div class="replay">${esc(m.replay)}</div>` : ''}</div><div class="actions">${actionsFor(m)}</div></div></div>
+    <div class="flow"><div class="inner">${m.status === 'draft' ? `<div class="muted" style="margin-top:30px">No conversation yet. Start the mission and its agent picks up the objective on the right.</div>` : m.beats.map((b, i) => chatBeat(m, b, i)).join('')}${ask}${outcome}</div></div>
+    ${m.status === 'closed' ? '' : `<div class="composer"><div class="reply"><textarea rows="1" placeholder="${m.status === 'draft' ? 'Start the mission to talk to its agent' : 'Message the mission’s agent…'}" ${m.status === 'draft' ? 'disabled' : ''}></textarea>${m.status === 'draft' ? '<button class="primary">Start</button>' : '<button>Send</button>'}</div></div>`}
+  </section>
+  <aside class="rail2"><div class="label">Objective</div>${objective(m, false)}
+    ${m.playbook ? `<div class="label">Playbook</div><div>${esc(m.playbook)}</div>` : ''}
+    <div class="label">Runs</div>${m.runs.length ? m.runs.map(r => `<div class="rrun"><span>${runMark(r)}</span><div><div class="s"><a>${esc(r.title || r.summary)}</a></div><div class="f">${esc(flowTitle(r.flow_name))}</div></div><span class="f">${runDur(r, m)}</span></div>`).join('') : '<div class="faint small">None yet</div>'}
+    <div class="label">Budget</div><div class="small">${used} of ${total} runs · up to ${m.budget?.concurrent_runs ?? 4} at once</div><div class="meter"><i style="width:${Math.min(100, used / total * 100)}%"></i></div>
+    <div class="label">Model</div><div class="small">Project default</div>
+    ${tokensOf(m) ? `<div class="label">Spent</div><div class="small">${compact(tokensOf(m))} tokens across runs</div>` : ''}
+  </aside>`
+}
+
+
+// ---- E · A + C ----
+function nowStrip(m) {
+  if (m.status === 'needs_you' && m.ask) return `<div class="now2 warn"><span class="mk warn">?</span><span class="txt">Waiting on you: <b>${esc(m.ask.prompt)}</b> <span class="muted">· asked by ${esc(flowTitle(m.ask.from))}</span></span><a data-jump="ask">Answer ↓</a></div>`
+  if (m.status === 'running') { const r = liveRun(m); return `<div class="now2 run"><span class="mk acc">•</span><span class="txt">${r ? `<a>${esc(r.title || r.summary)}</a> <span class="muted">is running · ${runDur(r, m)} · the agent picks up when it reports back</span>` : 'The agent is working'}</span></div>` }
+  if (m.status === 'draft') return `<div class="now2"><span class="mk faint">–</span><span class="txt muted">Not started. The agent begins with the objective below.</span></div>`
+  const st = state(m)
+  return `<div class="now2 ${st.cls === 'ok' ? 'done' : st.cls}"><span class="mk ${st.cls}">${st.mark}</span><span class="txt">${st.word} ${when(m.closed?.at)} <span class="muted">· ${esc(firstSentence(m.closed?.reason))}</span></span><a data-jump="outcome">Outcome ↓</a></div>`
+}
+function threadE(m) {
+  const lastAgent = m.status === 'closed' ? m.beats.reduce((k, b, i) => b.kind === 'agent' && b.final ? i : k, -1) : -1
+  let prevDay = null
+  return m.beats.map((b, i) => {
+    const dayHdr = b.at && day(b.at) !== prevDay ? `<div class="daysep">${(prevDay = day(b.at))}</div>` : ''
+    if (b.kind === 'objective') return dayHdr + `<div class="evt"><span class="mk">▸</span><span>You started the mission with the objective in the rail</span><span class="t">${clock(b.at)}</span></div>`
+    if (b.kind === 'agent') {
+      if (!b.final && !b.commentary.length) return ''
+      const notes = b.commentary.length, steps = b.toolCount
+      const fold = steps || notes ? `<div class="steps" data-steps="${i}">› ${[steps && `${steps} step${steps === 1 ? '' : 's'}`, notes && `${notes} note${notes === 1 ? '' : 's'}`].filter(Boolean).join(' · ')}</div>
+        <div hidden data-steps-body="${i}" class="small" style="margin:0 0 8px 12px">${b.commentary.map(c => `<div class="muted" style="font-style:italic;margin-bottom:3px">${inline(c)}</div>`).join('')}${b.tools.map(t => `<div class="mono faint" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">› ${esc(t)}</div>`).join('')}</div>` : ''
+      const body = b.final ? md(b.final) : `<span class="muted">${inline(b.commentary.at(-1))}</span>`
+      return dayHdr + `<div class="turn" ${i === lastAgent ? 'id="outcome"' : ''}>${fold}<div class="${i === lastAgent ? `outcome ${state(m).cls === 'err' ? 'err' : ''}` : ''}">${i === lastAgent ? `<div class="say">Outcome · closed as ${state(m).word.toLowerCase()}</div>` : ''}${body}</div>
+        ${b.launched.map(id => `<div class="launch">→ Launched <a>${runName(m, id)}</a></div>`).join('')}</div>`
+    }
+    if (b.kind === 'run_event') { const r = m.runs.find(x => x.run_id === b.run); return dayHdr + `<div class="evt"><span class="mk">${b.status === 'completed' ? '<span class="ok">✓</span>' : '<span class="err">✕</span>'}</span><span><a>${runName(m, b.run)}</a> ${b.status === 'completed' ? 'finished' : esc(b.status)}${r ? ` · ${runDur(r, m)}` : ''}</span><span class="t">${clock(b.at)}</span></div>` }
+    if (b.kind === 'question') return dayHdr + `<div class="evt"><span class="mk warn">?</span><span>${esc(flowTitle(b.flow))} asked “${esc(b.prompt)}”</span><span class="t">${clock(b.at)}</span></div>`
+    if (b.kind === 'you') return dayHdr + `<div class="msg you"><div>${esc(b.text)}</div></div>`
+    return ''
+  }).join('')
+}
+function renderE() {
+  const m = M(sel), used = m.runs.length, total = m.budget?.total_runs ?? 25
+  const draft = m.status === 'draft'
+  const ask = m.status === 'needs_you' && m.ask ? `<div class="askcard" id="ask"><div class="say">Waiting on you · asked by ${esc(flowTitle(m.ask.from))}</div><b>${esc(m.ask.prompt)}</b><div class="opts">${m.ask.options.map(o => `<button>${esc(o)}</button>`).join('')}</div></div>` : ''
+  const thread = draft
+    ? `<div class="draftmsg"><div class="say">The agent will start from this objective</div>${md(m.objective)}</div>`
+    : threadE(m) + ask
+  return mlist() + `<section class="chat"><div class="ch"><div class="hrow"><div style="flex:1;min-width:0"><h1>${esc(m.title)}</h1>
+      <div class="facts">${factsLine(m)}</div>${m.replay ? `<div class="replay">${esc(m.replay)}</div>` : ''}</div><div class="actions">${actionsFor(m)}</div></div></div>
+    ${nowStrip(m)}
+    <div class="flow"><div class="inner">${thread}</div></div>
+    ${m.status === 'closed' || draft ? '' : `<div class="composer"><div class="reply"><textarea rows="1" placeholder="${m.status === 'needs_you' ? 'Answer, or tell the agent something else…' : 'Message the mission’s agent…'}"></textarea><button>Send</button></div></div>`}
+  </section>
+  <aside class="rail3">
+    ${draft ? '' : `<div class="label">Objective</div>${objective(m, false)}`}
+    <div class="label">Runs${used ? ` · ${used} of ${total}` : ''}</div>${used ? m.runs.map(r => `<div class="rrun"><span>${runMark(r)}</span><div><div class="s"><a>${esc(r.title || r.summary)}</a></div><div class="f">${esc(flowTitle(r.flow_name))} · ${runDur(r, m)}${r.tokens ? ` · ${compact(r.tokens)} tokens` : ''}</div></div></div>`).join('') : `<div class="faint small">None yet</div>`}
+    <div class="meter" style="margin-top:10px"><i style="width:${Math.min(100, used / total * 100)}%"></i></div><div class="faint tiny" style="margin-top:4px">Budget: ${total} runs, up to ${m.budget?.concurrent_runs ?? 4} at once · <a>change</a></div>
+    ${m.playbook ? `<div class="label">Playbook</div><div class="small">${esc(m.playbook)} · <a>view</a></div>` : ''}
+    <div class="label">Model</div><div class="small">Project default · <a>change</a></div>
+  </aside>`
+}
+
+// ---- D · Timeline ----
+function renderD() {
+  const m = M(sel)
+  const rows = m.beats.filter(b => b.kind !== 'closed' && !(b.kind === 'agent' && !b.final && !b.commentary.length))
+  const cols = m.runs.map(r => r.run_id)
+  const startRow = id => rows.findIndex(b => (b.launched || []).includes(id))
+  const endRow = id => rows.findIndex(b => b.kind === 'run_event' && b.run === id)
+  const x = i => 10 + i * 22
+  function lane(ri) {
+    let html = ''
+    cols.forEach((id, ci) => {
+      const r = m.runs[ci], s = startRow(id), e = endRow(id), live = e < 0
+      const last = live ? rows.length : e
+      if (s < 0 || ri < s || ri > last) return
+      const cls = live ? 'live' : ''
+      if (ri === s) html += `<div class="bar ${cls} cap" style="left:${x(ci)}px"></div><div class="node ${live ? 'live' : ''}" style="left:${x(ci)}px"></div>`
+      else if (ri === e) html += `<div class="bar end" style="left:${x(ci)}px"></div><div class="node ${r.status === 'failed' ? 'err' : 'ok'}" style="left:${x(ci)}px"></div>`
+      else html += `<div class="bar ${cls}" style="left:${x(ci)}px"></div>`
+      if (ri === s) html += `<div class="rlabel" style="left:${x(cols.length) + 4}px;right:6px">${esc(r.title || r.summary)}<div class="faint tiny">${esc(flowTitle(r.flow_name))} · ${runDur(r, m)}</div></div>`
+      if (ri === e) html += `<div class="rlabel ${r.status === 'failed' ? 'err' : 'muted'}" style="left:${x(cols.length) + 4}px;right:6px;font-size:11.5px">${r.status === 'failed' ? 'failed' : 'finished'}</div>`
+    })
+    return html
+  }
+  const agentCell = (b, i) => {
+    if (b.kind === 'objective') return `<span class="muted">Started with the objective</span>`
+    if (b.kind === 'agent') return `<div class="agentline">${inline((b.final || b.commentary.at(-1) || '').replace(/\n+/g, ' '))}</div>${b.toolCount ? `<span class="more">${b.toolCount} steps · read more</span>` : ''}`
+    if (b.kind === 'run_event') return `<span class="muted small">${b.status === 'completed' ? '<span class="ok">\u2713</span>' : '<span class="err">\u2715</span>'} ${runName(m, b.run)} ended ${esc(b.status)}</span>`
+    if (b.kind === 'question') return `<span class="warn">?</span> <span class="small">${esc(flowTitle(b.flow))} asked “${esc(b.prompt)}”</span>`
+    if (b.kind === 'you') return `<span class="acc">You: ${esc(b.text)}</span>`
+    return ''
+  }
+  const tail = m.status === 'needs_you' && m.ask ? `<div class="time"></div><div class="cell" style="border-left:2px solid var(--warn);padding-left:12px"><div class="say">Waiting on you now</div><b>${esc(m.ask.prompt)}</b><div class="opts">${m.ask.options.map(o => `<button>${esc(o)}</button>`).join('')}</div></div><div class="runlane">${lane(rows.length)}</div>`
+    : m.status === 'running' ? `<div class="time">now</div><div class="cell muted">Waiting for the running run to report back</div><div class="runlane">${lane(rows.length)}</div>`
+    : m.status === 'closed' ? `<div class="time">${clock(m.closed?.at)}</div><div class="cell"><span class="ok">✓</span> Closed as ${state(m).word.toLowerCase()}: ${esc(firstSentence(m.closed?.reason))}</div><div class="runlane"></div>` : ''
+  return mlist() + `<section class="tl"><div class="inner">
+    <div class="hrow"><div style="flex:1;min-width:0"><h1>${esc(m.title)}</h1><div class="facts">${factsLine(m)}</div>${m.replay ? `<div class="replay">${esc(m.replay)}</div>` : ''}</div><div class="actions">${actionsFor(m)}</div></div>
+    ${objective(m, m.status === 'draft')}
+    ${m.status === 'draft' ? nowBlock(m) : `<div class="lanes"><div class="hdr"></div><div class="hdr">Agent</div><div class="hdr">Runs</div>
+      ${rows.map((b, i) => `<div class="time">${i === 0 || day(rows[i - 1].at) !== day(b.at) ? `<div>${day(b.at)}</div>` : ''}${clock(b.at)}</div><div class="cell" data-expand>${agentCell(b, i)}</div><div class="runlane">${lane(i)}</div>`).join('')}
+      ${tail}</div>`}
+  </div></section>`
+}
+
+function render() {
+  document.getElementById('main').innerHTML = { a: renderA, b: renderB, c: renderC, d: renderD, e: renderE }[P]()
+}
+document.addEventListener('click', e => {
+  const row = e.target.closest('[data-id]')
+  if (row && !e.target.closest('button')) { sel = row.dataset.id; history.replaceState(null, '', `?p=${P}&m=${encodeURIComponent(sel)}`); render(); document.getElementById('switch').innerHTML = PROPOSALS.map(([k, l]) => `<a class="${k === P ? 'on' : ''}" href="?p=${k}&m=${encodeURIComponent(sel)}">${l}</a>`).join('   '); return }
+  if (e.target.closest('[data-archived]')) { showArchived = !showArchived; render(); return }
+  if (e.target.closest('[data-close]')) { sel = null; render(); return }
+  const obj = e.target.closest('[data-toggle-obj]'); if (obj) { obj.parentElement.classList.add('open'); obj.remove(); return }
+  const st = e.target.closest('[data-steps]'); if (st) { const b = document.querySelector(`[data-steps-body="${st.dataset.steps}"]`); if (b) b.hidden = !b.hidden; return }
+  const jump = e.target.closest('[data-jump]'); if (jump) { document.getElementById(jump.dataset.jump)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return }
+  const ex = e.target.closest('[data-expand]'); if (ex) ex.classList.toggle('open')
+})
+render()
+</script>
+</body>
+</html>

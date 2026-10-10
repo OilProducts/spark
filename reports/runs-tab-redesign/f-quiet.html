@@ -1,0 +1,300 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>F · Quiet visit list + graph</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+.body { flex: 1; display: flex; min-height: 0; position: relative; }
+.rail { width: 44px; border-right: 1px solid var(--border); background: var(--card); display: flex; flex-direction: column; align-items: center; padding-top: 10px; gap: 8px; flex-shrink: 0; }
+.rail button { width: 30px; height: 30px; padding: 0; font-size: 14px; border-color: transparent; background: none; color: var(--muted); }
+.rail button:hover { background: var(--soft); }
+.runs-overlay { position: absolute; left: 44px; top: 0; bottom: 0; z-index: 6; box-shadow: 8px 0 24px #0002; display: none; }
+.runs-overlay.open { display: block; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--card); }
+.head { padding: 16px 24px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 12px; }
+.head h1 { margin: 0; font-size: 17px; font-weight: 600; }
+.head .line { color: var(--muted); margin-top: 3px; }
+.head .actions { margin-left: auto; display: flex; gap: 6px; }
+.head .actions .btn { border-color: transparent; color: var(--muted); } .head .actions .btn:hover { color: var(--fg); }
+.head .actions .btn.primary { border-color: var(--border); color: var(--fg); background: var(--card); }
+.cols { flex: 1; display: flex; min-height: 0; }
+.list { width: 300px; flex-shrink: 0; overflow: auto; border-right: 1px solid var(--border); padding: 8px 0 40px; }
+.row { display: flex; align-items: baseline; gap: 8px; padding: 6px 16px; cursor: pointer; color: var(--fg); }
+.row:hover { background: var(--soft); }
+.row.sel { background: var(--soft); box-shadow: inset 2px 0 0 var(--fg); }
+.row .v { color: var(--muted); font-size: 12px; }
+.row .d { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.row .mark { width: 12px; flex-shrink: 0; font-size: 12px; text-align: center; }
+.row .mark.warn { color: var(--warn); } .row .mark.err { color: var(--err); }
+.row.hidden { display: none; }
+.row.result { font-weight: 500; }
+.sep { height: 1px; background: var(--border); margin: 6px 16px; }
+.graph { width: 290px; flex-shrink: 0; border-right: 1px solid var(--border); position: relative; }
+.graph.hidden { display: none; }
+.graph svg { width: 100%; height: 100%; }
+.gctl { position: absolute; right: 10px; top: 10px; display: flex; gap: 4px; }
+.gctl button { font-size: 12px; padding: 2px 8px; color: var(--muted); }
+.gnote { position: absolute; left: 12px; top: 12px; font-size: 11.5px; color: var(--muted); }
+.node rect { fill: #fff; stroke: #d4d4d8; }
+.node text { font-size: 12px; fill: #3f3f46; }
+.node .n { fill: #a1a1aa; font-size: 11px; }
+.node.warn rect { stroke: #f59e0b; } .node.err rect { stroke: #ef4444; }
+.node.cur rect { fill: #18181b; stroke: #18181b; } .node.cur text { fill: #fff; } .node.cur .n { fill: #d4d4d8; }
+.node.focus rect { stroke: #18181b; stroke-width: 1.5; }
+.node.future rect { stroke-dasharray: 3 3; } .node.future text { fill: #c4c4c8; }
+.node { cursor: pointer; }
+.edge { fill: none; stroke: #e4e4e7; stroke-width: 1.3; }
+.edge.last { stroke: #18181b; stroke-width: 2; }
+.elabel { font-size: 10.5px; fill: #a1a1aa; }
+.detail { flex: 1; overflow: auto; padding: 20px 28px 48px; min-width: 0; }
+.dh { display: flex; align-items: baseline; gap: 10px; }
+.dh h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.dh .meta { color: var(--muted); }
+.dots { display: flex; gap: 6px; margin-top: 10px; align-items: center; }
+.dots span { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); }
+.dots span.warn { border-color: #fcd34d; } .dots span.err { border-color: #fca5a5; }
+.dots span.on { background: var(--fg); color: #fff; border-color: var(--fg); }
+.summary { margin: 16px 0 0; padding-left: 12px; border-left: 2px solid var(--border); line-height: 1.55; max-width: 72ch; }
+.summary.warn { border-left-color: #f59e0b; } .summary.err { border-left-color: #ef4444; }
+.nav { margin-top: 10px; color: var(--muted); font-size: 12.5px; }
+.nav a { color: var(--fg); cursor: pointer; text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; }
+.unused-tabs { display: flex; gap: 16px; border-bottom: 1px solid var(--border); margin: 22px 0 14px; }
+.tabs a { padding: 6px 0; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+.tabs a.on { color: var(--fg); border-bottom-color: var(--fg); }
+.transcript { max-width: 80ch; }
+.tr-tool { background: none; border-color: #f0f0f2; }
+.findings p { margin: 0 0 10px; line-height: 1.5; max-width: 72ch; }
+.findings a { color: var(--muted); cursor: pointer; text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; }
+
+.blk { margin-top: 14px; max-width: 80ch; }
+.blk-h { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+details.instr summary { cursor: pointer; list-style: none; color: var(--muted); line-height: 1.5; }
+details.instr summary::-webkit-details-marker { display: none; }
+details.instr summary b { color: var(--fg); font-weight: 500; margin-right: 6px; }
+details.instr[open] summary .clip { display: none; }
+details.instr .full { margin: 6px 0 0; line-height: 1.55; }
+.reads { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); }
+.key { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; color: #3f3f46; cursor: pointer; background: #fff; }
+.key:hover { border-color: #a1a1aa; }
+.cmd { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+pre.out { margin: 6px 0 0; background: #fafafa; border: 1px solid #f0f0f2; border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; max-height: 180px; overflow: auto; }
+.returned { margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); max-width: 80ch; }
+.wrote { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; margin-top: 8px; font-size: 12.5px; align-items: baseline; }
+.wrote .val { line-height: 1.45; color: #3f3f46; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.wrote .val.open { -webkit-line-clamp: unset; }
+.wrote .cleared { color: var(--muted); font-style: italic; }
+.raw { margin-top: 22px; font-size: 11.5px; color: var(--muted); }
+.raw a { color: var(--muted); text-decoration: underline; text-decoration-color: #e4e4e7; text-underline-offset: 3px; cursor: pointer; margin-right: 8px; }
+.ctx-group { margin-top: 20px; max-width: 90ch; }
+.ctx-row { display: grid; grid-template-columns: 190px 1fr; gap: 12px; padding: 7px 0; border-bottom: 1px solid #f4f4f5; font-size: 12.5px; }
+.ctx-row.hl { background: #fefce8; }
+.ctx-row .k { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; color: #3f3f46; padding-top: 1px; }
+.ctx-row .by { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.ctx-row .by a, .hist a { color: var(--muted); text-decoration: underline; text-decoration-color: #d4d4d8; text-underline-offset: 3px; cursor: pointer; }
+.hist { margin: 6px 0 0; padding-left: 10px; border-left: 2px solid var(--border); font-size: 12px; color: #3f3f46; }
+.hist div { margin-bottom: 4px; line-height: 1.4; }
+</style></head>
+<body>
+<div class="proto-banner"><b>Proposal F · E, quieter</b><span>Each visit is one transcript: what it was asked and read, the work, then what it returned and wrote. Context is a list item. There is no Artifacts tab.</span><a href="e-combined.html" style="margin-left:14px">Compare with E</a><a href="index.html" style="margin-left:auto">← Audit and all proposals</a></div>
+<script src="data.js"></script>
+<script>document.write(renderNav())</script>
+<div class="body">
+  <div class="rail"><button id="runsbtn" title="Runs (r)">☰</button><button id="graphbtn" title="Graph (g)">◇</button></div>
+  <aside class="runs-list runs-overlay" id="runs"><script>document.write(runsListHtml())</script></aside>
+  <div class="main">
+    <div class="head">
+      <div><h1 id="title"></h1><div class="line" id="line"></div></div>
+      <div class="actions"><button class="btn">Open diff</button><button class="btn">Re-run</button><button class="btn primary" id="cont">Continue from here</button><button class="btn">⋯</button></div>
+    </div>
+    <div class="cols">
+      <div class="list" id="list"></div>
+      <div class="graph" id="graph"><div class="gnote" id="gnote"></div><div class="gctl"><button class="btn" id="play" title="Replay the run step by step">▶</button></div><svg id="g" viewBox="0 0 290 620" preserveAspectRatio="xMidYMin meet"></svg></div>
+      <div class="detail" id="detail"></div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id)
+$('title').textContent = RUN.objective
+$('line').innerHTML = `Completed yesterday at 2:05 PM · 1h 7m · ${fmtTok(RUN.tokens + RUN.childTokens)} tokens · commit <span class="mono">${RUN.commit.slice(0, 7)}</span>`
+
+const MARK = { success: '', fail: '↺', error: '✕' }
+const TONE = { success: '', fail: 'warn', error: 'err' }
+const SHORT = { success: 'Succeeded', fail: 'Sent back', error: 'Failed' }
+let selected = -1, focusNode = null, replayAt = null, timer = null   // -1 = the Result item
+
+function drawList() {
+  let html = `<div class="row result ${selected === -1 ? 'sel' : ''}" data-i="-1"><span class="mark" style="color:var(--ok)">✓</span>Result<span class="d">${dur(RUN.started, RUN.ended)}</span></div>
+    <div class="row result ${selected === -2 ? 'sel' : ''}" data-i="-2"><span class="mark muted">{}</span>Context<span class="d">16 keys</span></div><div class="sep"></div>`
+  for (const x of EXECUTIONS) {
+    const hide = focusNode && focusNode !== x.node
+    const n = visitsOf(x.node).length
+    html += `<div class="row ${x.i === selected ? 'sel' : ''} ${hide ? 'hidden' : ''}" data-i="${x.i}">
+      <span class="mark ${TONE[x.outcome]}">${MARK[x.outcome]}</span>${nodeById[x.node].label}${n > 1 ? `<span class="v">${visitNo(x)}/${n}</span>` : ''}
+      <span class="d">${dur(x.s, x.e)}</span></div>`
+  }
+  $('list').innerHTML = html
+  $('list').querySelectorAll('.row').forEach(el => el.onclick = () => select(+el.dataset.i))
+}
+
+const POS = {
+  start: [110, 40], normalize_task: [110, 92], prepare_workspace: [110, 144], implement: [110, 210], evaluate: [110, 280],
+  validate: [110, 350], finalize_commit: [110, 420], cleanup_workspace: [110, 472], done: [110, 524],
+  diagnose_validation: [228, 280], count_validate_attempt: [228, 350],
+}
+const W = 128, H = 30, W2 = 96
+const wOf = (id) => POS[id][0] > 150 ? W2 : W
+function edgePath(a, b) {
+  const [ax, ay] = POS[a], [bx, by] = POS[b], wa = wOf(a), wb = wOf(b)
+  if (a === 'evaluate' && b === 'implement') return `M ${ax - wa / 2} ${ay} C ${ax - wa / 2 - 34} ${ay}, ${bx - wb / 2 - 34} ${by}, ${bx - wb / 2} ${by}`
+  if (a === 'diagnose_validation' && b === 'implement') return `M ${ax} ${ay - H / 2} C ${ax} ${by}, ${bx + wb / 2 + 20} ${by}, ${bx + wb / 2} ${by}`
+  if (ay === by) return `M ${ax + wa / 2} ${ay} L ${bx - wb / 2} ${by}`
+  if (ax !== bx) return `M ${ax} ${ay - H / 2} L ${bx} ${by + H / 2}`
+  return `M ${ax} ${ay + H / 2} L ${bx} ${by - H / 2}`
+}
+function drawGraph() {
+  const upto = replayAt ?? EXECUTIONS.length - 1
+  const seen = EXECUTIONS.slice(0, upto + 1)
+  const cur = selected >= 0 ? EXECUTIONS[selected] : null
+  const lastKey = cur && cur.i > 0 ? EXECUTIONS[cur.i - 1].node + '>' + cur.node : ''
+  const loopCount = (a, b) => { let c = 0; for (let k = 1; k < seen.length; k++) if (seen[k - 1].node === a && seen[k].node === b) c++; return c }
+  let svg = '<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a1a1aa"/></marker></defs>'
+  for (const [a, b, lbl] of EDGES) {
+    svg += `<path class="edge ${a + '>' + b === lastKey ? 'last' : ''}" d="${edgePath(a, b)}" marker-end="url(#ar)"/>`
+    if (lbl === 'Fix') {   // only loop edges get a label: how many times the run went back
+      const c = loopCount(a, b)
+      if (c) { const [ax, ay] = POS[a]; const [lx, ly] = a === 'evaluate' ? [ax - W / 2 - 40, ay - 32] : [ax - 30, POS.implement[1] - 8]; svg += `<text class="elabel" x="${lx}" y="${ly}">back ×${c}</text>` }
+    }
+  }
+  for (const n of NODES) {
+    const [x, y] = POS[n.id], w = wOf(n.id), vs = seen.filter(e => e.node === n.id)
+    const worst = vs.some(e => e.outcome === 'error') ? 'err' : vs.some(e => e.outcome === 'fail') ? 'warn' : ''
+    const cls = ['node', vs.length ? worst : 'future', cur?.node === n.id ? 'cur' : '', focusNode === n.id ? 'focus' : ''].join(' ')
+    const label = n.label.replace('Count Validate Attempt', 'Count Attempt').replace('Diagnose Validation', 'Diagnose')
+    svg += `<g class="${cls}" data-n="${n.id}"><rect x="${x - w / 2}" y="${y - H / 2}" width="${w}" height="${H}" rx="6"/>
+      <text x="${x - w / 2 + 10}" y="${y + 4}">${label}</text>${vs.length > 1 ? `<text class="n" x="${x + w / 2 - 8}" y="${y + 4}" text-anchor="end">${vs.length}</text>` : ''}</g>`
+  }
+  $('g').innerHTML = svg
+  $('gnote').textContent = replayAt !== null ? `Replay · step ${replayAt + 1} of ${EXECUTIONS.length}` : ''
+  $('g').querySelectorAll('.node').forEach(el => el.onclick = () => {
+    const id = el.dataset.n, vs = visitsOf(id)
+    if (!vs.length) return
+    focusNode = focusNode === id ? null : id
+    if (focusNode && (!cur || cur.node !== id)) selected = vs[0].i
+    stopReplay(); draw()
+  })
+}
+
+// ---- context history, derived from each visit's writes ----
+function historyOf(key) {
+  const h = []
+  if (CONTEXT_REQUEST[key] !== undefined) h.push({ i: null, v: CONTEXT_REQUEST[key] })
+  for (const x of EXECUTIONS) { const w = IO[x.i]?.writes; if (w && key in w) h.push({ i: x.i, v: w[key] }) }
+  return h
+}
+const visitName = (i) => { const x = EXECUTIONS[i], n = visitsOf(x.node).length; return `${nodeById[x.node].label}${n > 1 ? ' ' + visitNo(x) + '/' + n : ''}` }
+const vlink = (i) => `<a data-i="${i}">${visitName(i)}</a>`
+let ctxFocus = null
+
+function drawResult() {
+  return `<div class="dh"><h2>Result</h2><span class="meta">Completed · 1h 7m</span></div>
+    <p class="summary" style="border-left-color:var(--ok)">Implemented CR-2026-0127, provider-native reasoning effort phase 1. The final <code>just test</code> passed: Rust suites, formatting, 617 frontend tests, TypeScript checks and the production build.</p>
+    <div class="section-label" style="margin-top:24px">Review findings</div>
+    <div class="findings">
+      <p>Effort strings were lowercased before dispatch. <a data-i="5">Fixed in Implement 2/4</a></p>
+      <p>Discovery ignored the provider config in spark.toml. <a data-i="12">Fixed in Implement 4/4</a></p>
+      <p>Two socket test helpers failed intermittently with WouldBlock. <a data-i="10">Fixed in Implement 3/4</a></p></div>
+    <div class="section-label" style="margin-top:24px">Outputs</div>
+    <div class="wrote" style="margin-top:0">
+      <span class="muted">Commit</span><span><span class="mono">${RUN.commit.slice(0, 7)}</span> on <span class="mono">${RUN.branch}</span> · <a class="u">Open diff</a> <span class="muted">· nothing merged or pushed</span></span>
+      <span class="muted">Summary</span><span><a class="u">result.md</a></span>
+      <span class="muted">Flow</span><span><a class="u">flow snapshot (implement-change.yaml)</a> <span class="muted">· the exact graph this run executed</span></span></div>`
+}
+
+function drawContext() {
+  let html = `<div class="dh"><h2>Context</h2><span class="meta">Final values · each key shows the visit that wrote it</span>
+    <span style="margin-left:auto"><input placeholder="Filter keys…" style="border:1px solid var(--border);border-radius:6px;padding:3px 8px;font:inherit;font-size:12px"> <button class="btn" style="font-size:12px;padding:2px 8px">Copy JSON</button></span></div>`
+  for (const [group, keys] of CONTEXT_GROUPS) {
+    html += `<div class="ctx-group"><div class="blk-h">${group}</div>`
+    for (const k of keys) {
+      const h = historyOf(k); if (!h.length) continue
+      const last = h[h.length - 1]
+      const val = last.v === null ? '<span class="cleared">cleared</span>' : esc(last.v)
+      const by = last.i === null ? 'set at launch' : `${last.v === null ? 'cleared' : 'set'} by ${vlink(last.i)}`
+      const open = ctxFocus === k
+      html += `<div class="ctx-row ${open ? 'hl' : ''}" data-k="${k}"><div class="k">${k}</div><div><div>${val}</div>
+        <div class="by">${by}${h.length > 1 ? ` · <a data-hist="${k}">${open ? 'hide' : 'written ' + h.length + '×'}</a>` : ''}</div>
+        ${open ? `<div class="hist">${h.map(e => `<div>${e.i === null ? 'launch' : vlink(e.i)}: ${e.v === null ? '<span class="cleared">cleared</span>' : esc(e.v)}</div>`).join('')}</div>` : ''}</div></div>`
+    }
+    html += '</div>'
+  }
+  html += `<p class="raw">+ ${SYSTEM_KEY_COUNT} system keys (runtime, graph, internal, child-run status). <a>Show</a></p>`
+  return html
+}
+
+function drawVisit(x) {
+  const io = IO[x.i] ?? {}, sib = visitsOf(x.node), next = EXECUTIONS[x.i + 1]
+  let html = `<div class="dh"><h2>${nodeById[x.node].label}</h2><span class="meta">${sib.length > 1 ? `Visit ${visitNo(x)} of ${sib.length} · ` : ''}${SHORT[x.outcome]} · ${dur(x.s, x.e)}</span>${x.node !== 'start' && x.node !== 'done' ? `<a class="u" id="jump" style="margin-left:auto;font-size:12px">What it returned ↓</a>` : ''}</div>
+    ${sib.length > 1 ? `<div class="dots">${sib.map((v, k) => `<span class="${TONE[v.outcome]} ${v === x ? 'on' : ''}" data-i="${v.i}" title="Visit ${k + 1}: ${SHORT[v.outcome]}">${k + 1}</span>`).join('')}</div>` : ''}
+`
+  // 1. what it was asked, and what it read
+  if (io.instr) html += `<details class="instr blk"><summary><b>Instructions</b><span class="clip">${esc(io.instr.slice(0, 95))}…</span></summary><p class="full">${esc(io.instr)}</p></details>
+    <div class="reads">Read ${io.reads.map(k => `<span class="key" data-k="${k}">${k}</span>`).join('')}</div>`
+  // 2. the work
+  if (io.tool) html += `<div class="blk"><div class="cmd">$ ${esc(io.tool)} <span class="muted">· exit ${io.exit}</span></div>${io.output ? `<pre class="out">${esc(io.output)}</pre>` : ''}</div>`
+  else if (io.child) html += `<div class="blk"><div>Ran child flow <b>${x.child.flow}</b> · <span class="mono">${x.child.id}</span> · ${dur(x.child.s, x.child.e)} · ${fmtTok(x.child.tokens)} tokens · <a class="u">open its visits ›</a></div><p class="summary" style="margin-top:8px">${esc(x.summary)}</p><div class="muted small" style="margin-top:4px">The child run's own summary.</div></div>`
+  else if (TRANSCRIPTS[x.i]) html += `<div class="blk">${renderTranscript(x.i)}</div>`
+  else if (x.node !== 'start' && x.node !== 'done') html += `<div class="blk muted small">Agent messages and tool calls for this visit load here.</div>`
+  // 3. what it returned and wrote
+  const w = io.writes ?? {}, keys = Object.keys(w)
+  if (x.node !== 'start' && x.node !== 'done') {
+    html += `<div class="returned" id="ret"><div class="blk-h">Returned</div><div>${x.outcome === 'fail' && next ? `Sent back to ${vlink(next.i)}` : `${SHORT[x.outcome]}${next ? ` · next ${vlink(next.i)}` : ''}`}</div>
+      ${x.outcome === 'success' && x.summary && !io.child ? `<p style="margin:6px 0 0;line-height:1.5;color:#3f3f46">${esc(x.summary)}</p>` : ''}
+      ${keys.length ? `<div class="wrote">${keys.map(k => `<span class="key" data-k="${k}">${k}</span>${w[k] === null ? '<span class="cleared">cleared</span>' : `<span class="val">${esc(w[k])}</span>`}`).join('')}</div>` : ''}
+      ${io.systemWrites ? `<div class="muted small" style="margin-top:6px">+ ${io.systemWrites} child-run status keys (system)</div>` : ''}
+      ${io.writesNote ? `<div class="muted small" style="margin-top:6px">${io.writesNote}</div>` : ''}</div>`
+    html += `<div class="raw">Raw files: ${(io.tool || io.child ? ['response.md', 'status.json'] : ['prompt.md', 'response.md', 'status.json', 'transcript.jsonl', 'events.jsonl']).map(f => `<a>${f}</a>`).join('')}</div>`
+  }
+  return html
+}
+
+function drawDetail() {
+  $('cont').style.display = selected >= 0 ? '' : 'none'
+  const D = $('detail')
+  D.innerHTML = selected === -1 ? drawResult() : selected === -2 ? drawContext() : drawVisit(EXECUTIONS[selected])
+  D.querySelectorAll('[data-i]').forEach(el => el.onclick = () => select(+el.dataset.i))
+  D.querySelectorAll('.key').forEach(el => el.onclick = () => { ctxFocus = el.dataset.k; select(-2) })
+  D.querySelectorAll('[data-hist]').forEach(el => el.onclick = () => { ctxFocus = ctxFocus === el.dataset.hist ? null : el.dataset.hist; drawDetail() })
+  D.querySelectorAll('.wrote .val').forEach(el => el.onclick = () => el.classList.toggle('open'))
+  D.querySelectorAll('a.u').forEach(el => { el.style.cssText = 'color:var(--fg);text-decoration:underline;text-decoration-color:#d4d4d8;text-underline-offset:3px;cursor:pointer' })
+  D.querySelector('#jump')?.addEventListener('click', () => D.querySelector('#ret').scrollIntoView({ behavior: 'smooth' }))
+  if (selected === -2 && ctxFocus) D.querySelector(`.ctx-row[data-k="${ctxFocus}"]`)?.scrollIntoView({ block: 'center' })
+}
+
+function select(i) { if (i !== -2) ctxFocus = null; selected = i; if (focusNode && (i < 0 || EXECUTIONS[i].node !== focusNode)) focusNode = null; stopReplay(); draw() }
+function draw() { drawList(); drawGraph(); drawDetail() }
+function stopReplay() { if (timer) clearInterval(timer); timer = null; replayAt = null; $('play').textContent = '▶' }
+$('play').onclick = () => {
+  if (timer) return stopReplay(), draw()
+  focusNode = null; replayAt = 0; selected = 0; $('play').textContent = '❚❚'; draw()
+  timer = setInterval(() => {
+    if (replayAt >= EXECUTIONS.length - 1) { clearInterval(timer); timer = null; $('play').textContent = '▶'; return }
+    replayAt++; selected = replayAt; draw()
+  }, 600)
+}
+$('runsbtn').onclick = () => $('runs').classList.toggle('open')
+$('graphbtn').onclick = () => $('graph').classList.toggle('hidden')
+document.addEventListener('keydown', e => {
+  const order = [-1, -2, ...(focusNode ? visitsOf(focusNode) : EXECUTIONS).map(x => x.i)], p = order.indexOf(selected)
+  if ((e.key === 'j' || e.key === 'ArrowDown') && p < order.length - 1) { e.preventDefault(); select(order[p + 1]) }
+  if ((e.key === 'k' || e.key === 'ArrowUp') && p > 0) { e.preventDefault(); select(order[p - 1]) }
+  if (selected >= 0) {
+    const x = EXECUTIONS[selected], sib = visitsOf(x.node), k = sib.indexOf(x)
+    if (e.key === 'ArrowRight' && k < sib.length - 1) select(sib[k + 1].i)
+    if (e.key === 'ArrowLeft' && k > 0) select(sib[k - 1].i)
+  }
+  if (e.key === 'g') $('graph').classList.toggle('hidden')
+  if (e.key === 'r') $('runs').classList.toggle('open')
+  if (e.key === 'Escape') { focusNode = null; $('runs').classList.remove('open'); stopReplay(); draw() }
+})
+select(11)
+</script>
+</body></html>

@@ -1,0 +1,147 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>C · Graph replay</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+.body { flex: 1; display: flex; min-height: 0; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.stage { flex: 1; display: flex; min-height: 0; }
+.canvas { flex: 1; position: relative; background: radial-gradient(#e4e4e7 1px, transparent 1px) 0 0 / 16px 16px; min-width: 0; }
+.canvas svg { width: 100%; height: 100%; }
+.drawer { width: 440px; border-left: 1px solid var(--border); background: var(--card); overflow: auto; padding: 14px 18px 30px; }
+.scrub { flex-shrink: 0; background: var(--card); border-top: 1px solid var(--border); padding: 10px 20px 12px; }
+.scrub-row { display: flex; align-items: center; gap: 12px; }
+.steps { flex: 1; display: flex; gap: 2px; align-items: flex-end; height: 34px; }
+.step { flex: 1; border-radius: 3px; cursor: pointer; position: relative; min-width: 8px; }
+.step.ok { background: #bbf7d0; } .step.warn { background: #fde68a; } .step.err { background: #fecaca; }
+.step.past.ok { background: #4ade80; } .step.past.warn { background: #fbbf24; } .step.past.err { background: #f87171; }
+.step.cur { outline: 2px solid var(--fg); outline-offset: 1px; }
+.step:hover::after { content: attr(data-l); position: absolute; bottom: 38px; left: 50%; transform: translateX(-50%); background: #18181b; color: #fff; font-size: 11px; padding: 3px 6px; border-radius: 4px; white-space: nowrap; }
+.passlabels { display: flex; gap: 2px; margin: 4px 0 0 92px; font-size: 10.5px; color: var(--muted); }
+.passlabels div { border-top: 1px solid #d4d4d8; padding-top: 2px; text-align: center; white-space: nowrap; overflow: hidden; }
+.play { width: 32px; height: 32px; border-radius: 50%; font-size: 12px; padding: 0; }
+.node rect { fill: #fff; stroke: #d4d4d8; stroke-width: 1.2; }
+.node text { font-size: 13px; fill: #18181b; } .node .meta { font-size: 11px; fill: #71717a; }
+.node.visited rect { stroke: #86efac; } .node.hasfail rect { stroke: #fcd34d; }
+.node.cur rect { stroke: #18181b; stroke-width: 2.2; }
+.node.future rect { fill: #fafafa; stroke-dasharray: 4 3; } .node.future text { fill: #a1a1aa; }
+.node { cursor: pointer; }
+.edge { fill: none; stroke: #d4d4d8; stroke-width: 1.5; }
+.edge.used { stroke: #71717a; } .edge.last { stroke: #18181b; stroke-width: 2.5; }
+.elabel { font-size: 11px; fill: #71717a; } .ecount { font-size: 11px; font-weight: 700; fill: #18181b; }
+.node .cnt { fill: #18181b; } .node .cnt-t { fill: #fff; font-size: 10.5px; font-weight: 700; }
+.zoombar { position: absolute; left: 14px; top: 14px; display: flex; gap: 4px; }
+.vtabs { display: flex; gap: 4px; margin: 10px 0 0; flex-wrap: wrap; }
+.vtabs .v { border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+.vtabs .v.on { background: var(--fg); color: #fff; border-color: var(--fg); }
+</style></head>
+<body>
+<div class="proto-banner"><b>Proposal C · Graph replay</b><span>The graph is the page. Nodes show how often they ran, edges show how often they were taken, and a scrubber replays the run one step at a time.</span><a href="index.html" style="margin-left:auto">← Audit and all proposals</a></div>
+<script src="data.js"></script>
+<script>document.write(renderNav())</script>
+<div class="body">
+  <aside class="runs-list"><script>document.write(runsListHtml())</script></aside>
+  <div class="main">
+    <div class="runhead">
+      <h1><span id="title"></span><span class="pill ok">Completed</span>
+        <span class="actions"><button class="btn">Re-run</button><button class="btn">Continue from this step</button><button class="btn">Open in Editor</button></span></h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div class="stage">
+      <div class="canvas"><div class="zoombar"><button class="btn">＋</button><button class="btn">－</button><button class="btn">Fit</button></div><svg id="g" viewBox="0 0 760 700" preserveAspectRatio="xMidYMid meet"></svg></div>
+      <div class="drawer" id="drawer"></div>
+    </div>
+    <div class="scrub">
+      <div class="scrub-row"><button class="btn play" id="play">▶</button><span class="small muted" id="stepl" style="width:44px"></span><div class="steps" id="steps"></div></div>
+      <div class="passlabels" id="passlabels"></div>
+    </div>
+  </div>
+</div>
+<script>
+document.getElementById('title').textContent = RUN.objective
+document.getElementById('sub').innerHTML = `<span>${RUN.flowLabel}</span><span>Yesterday ${RUN.started} → ${RUN.ended} · ${dur(RUN.started, RUN.ended)}</span><span>${fmtTok(RUN.tokens + RUN.childTokens)} tokens</span><span class="muted">← → step · space play · 1–4 jump to pass</span>`
+const POS = {
+  start: [300, 30], normalize_task: [300, 95], prepare_workspace: [300, 160], implement: [300, 240], evaluate: [300, 330],
+  validate: [300, 420], finalize_commit: [300, 510], cleanup_workspace: [300, 575], done: [300, 640],
+  count_validate_attempt: [560, 420], diagnose_validation: [560, 330],
+}
+const W = 190, H = 44
+let step = 11, timer = null
+function transitions(upto) {
+  const c = {}
+  for (let k = 1; k <= upto; k++) { const key = EXECUTIONS[k - 1].node + '>' + EXECUTIONS[k].node; c[key] = (c[key] || 0) + 1 }
+  return c
+}
+function edgePath(a, b) {
+  const [ax, ay] = POS[a], [bx, by] = POS[b]
+  if (a === 'evaluate' && b === 'implement') return `M ${ax - W / 2} ${ay} C ${ax - W / 2 - 70} ${ay}, ${bx - W / 2 - 70} ${by}, ${bx - W / 2} ${by}`
+  if (a === 'diagnose_validation' && b === 'implement') return `M ${ax} ${ay - H / 2} C ${ax} ${by - 10}, ${bx + W / 2 + 60} ${by}, ${bx + W / 2} ${by}`
+  if (ay === by) return `M ${ax + W / 2} ${ay} L ${bx - W / 2} ${by}`
+  if (ax !== bx) return `M ${ax} ${ay - H / 2} L ${bx} ${by + H / 2}`
+  return `M ${ax} ${ay + H / 2} L ${bx} ${by - H / 2}`
+}
+function labelPos(a, b) {
+  const [ax, ay] = POS[a], [bx, by] = POS[b]
+  if (a === 'evaluate' && b === 'implement') return [ax - W / 2 - 78, (ay + by) / 2 + 4]
+  if (a === 'diagnose_validation' && b === 'implement') return [ax - 40, by - 4]
+  if (ay === by) return [(ax + bx) / 2, ay - 6]
+  if (ax !== bx) return [bx + 8, (ay + by) / 2]
+  return [ax + 8, (ay + by) / 2 + 4]
+}
+function draw() {
+  const t = transitions(step), cur = EXECUTIONS[step]
+  const lastKey = step > 0 ? EXECUTIONS[step - 1].node + '>' + cur.node : ''
+  const seen = EXECUTIONS.slice(0, step + 1)
+  let svg = '<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#71717a"/></marker></defs>'
+  for (const [a, b, lbl] of EDGES) {
+    const key = a + '>' + b, n = t[key] || 0
+    svg += `<path class="edge ${n ? 'used' : ''} ${key === lastKey ? 'last' : ''}" d="${edgePath(a, b)}" marker-end="url(#ar)"/>`
+    const [lx, ly] = labelPos(a, b)
+    if (lbl || n > 1) svg += `<text class="elabel" x="${lx}" y="${ly}">${lbl ?? ''}${n > 1 ? '' : ''}</text>${n > 1 ? `<text class="ecount" x="${lx + (lbl ? lbl.length * 6.5 + 4 : 0)}" y="${ly}">×${n}</text>` : ''}`
+  }
+  for (const n of NODES) {
+    const [x, y] = POS[n.id], vs = seen.filter(e => e.node === n.id)
+    const fails = vs.filter(e => e.outcome !== 'success').length
+    const last = vs[vs.length - 1]
+    const cls = ['node', vs.length ? 'visited' : 'future', fails ? 'hasfail' : '', cur.node === n.id ? 'cur' : ''].join(' ')
+    const meta = !vs.length ? 'not reached yet' : last === cur ? `${outcomeLabel(cur)} · ${dur(cur.s, cur.e)}` : `${vs.length > 1 ? `ran ${vs.length}× · ` : ''}last: ${outcomeLabel(last).toLowerCase()}`
+    svg += `<g class="${cls}" data-n="${n.id}"><rect x="${x - W / 2}" y="${y - H / 2}" width="${W}" height="${H}" rx="8"/>
+      <text x="${x - W / 2 + 12}" y="${y - 3}">${n.label}</text><text class="meta" x="${x - W / 2 + 12}" y="${y + 13}">${meta}</text>
+      ${vs.length > 1 ? `<circle class="cnt" cx="${x + W / 2 - 4}" cy="${y - H / 2 + 2}" r="10"/><text class="cnt-t" x="${x + W / 2 - 4}" y="${y - H / 2 + 6}" text-anchor="middle">${vs.length}</text>` : ''}
+      ${n.kind === 'subflow' ? `<text class="meta" x="${x + W / 2 - 22}" y="${y + 13}">⧉</text>` : ''}</g>`
+  }
+  const g = document.getElementById('g'); g.innerHTML = svg
+  g.querySelectorAll('.node').forEach(el => el.onclick = () => {
+    const vs = EXECUTIONS.filter(e => e.node === el.dataset.n)
+    if (vs.length) { const after = vs.find(v => v.i > step); step = (vs.includes(cur) && after ? after : vs[0]).i; draw() }
+  })
+  document.getElementById('steps').innerHTML = EXECUTIONS.map(e => `<div class="step ${OUTCOME[e.outcome].cls} ${e.i <= step ? 'past' : ''} ${e.i === step ? 'cur' : ''}" data-i="${e.i}" data-l="#${e.i} ${nodeById[e.node].label}${visitLabel(e) ? ' (' + visitLabel(e) + ')' : ''}" style="height:${14 + Math.min(20, Math.sqrt(toSec(e.e) - toSec(e.s)) / 2)}px"></div>`).join('')
+  document.querySelectorAll('.step').forEach(el => el.onclick = () => { step = +el.dataset.i; draw() })
+  document.getElementById('stepl').textContent = `${step + 1} / ${EXECUTIONS.length}`
+  document.getElementById('passlabels').innerHTML = PASSES.map(p => `<div style="flex:${p.to - p.from + 1}">${p.title}</div>`).join('')
+  const vs = visitsOf(cur.node), o = OUTCOME[cur.outcome]
+  document.getElementById('drawer').innerHTML = `
+    <div class="muted small">Step ${step + 1} of ${EXECUTIONS.length} · ${PASSES.find(p => step >= p.from && step <= p.to).title}</div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:4px"><h2 style="margin:0;font-size:16px">${nodeById[cur.node].label}</h2><span class="pill ${o.cls}">${outcomeLabel(cur)}</span><span class="muted small">${dur(cur.s, cur.e)}</span></div>
+    ${vs.length > 1 ? `<div class="vtabs">${vs.map((v, k) => `<span class="v ${v === cur ? 'on' : ''}" data-i="${v.i}">Visit ${k + 1} <span style="opacity:.7">${v.outcome === 'success' ? '✓' : '↺'}</span></span>`).join('')}</div>` : ''}
+    ${cur.summary ? `<div class="callout ${o.cls}" style="margin-top:12px">${esc(cur.summary)}</div>` : ''}
+    ${cur.child ? `<div class="section-label">Child run</div><div class="small">${cur.child.flow} · <span class="mono">${cur.child.id}</span> · ${dur(cur.child.s, cur.child.e)} · ${fmtTok(cur.child.tokens)} tokens <a style="color:#4f46e5">Open ›</a></div>` : ''}
+    ${cur.route ? `<div class="section-label">Next</div><div class="small">Took the <b>${cur.route}</b> edge → ${nodeById[EXECUTIONS[step + 1]?.node]?.label ?? '—'}</div>` : ''}
+    <div class="section-label">Transcript</div>${renderTranscript(cur.i)}`
+  document.querySelectorAll('.vtabs .v').forEach(el => el.onclick = () => { step = +el.dataset.i; draw() })
+}
+function toggle() {
+  if (timer) { clearInterval(timer); timer = null; document.getElementById('play').textContent = '▶'; return }
+  if (step >= EXECUTIONS.length - 1) step = 0
+  document.getElementById('play').textContent = '❚❚'
+  timer = setInterval(() => { if (step >= EXECUTIONS.length - 1) return toggle(); step++; draw() }, 700)
+}
+document.getElementById('play').onclick = toggle
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' && step < EXECUTIONS.length - 1) { step++; draw() }
+  if (e.key === 'ArrowLeft' && step > 0) { step--; draw() }
+  if (e.key === ' ') { e.preventDefault(); toggle() }
+  if (['1', '2', '3', '4'].includes(e.key)) { step = PASSES[+e.key].from; draw() }
+})
+draw()
+</script>
+</body></html>

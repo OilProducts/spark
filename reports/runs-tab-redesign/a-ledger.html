@@ -1,0 +1,121 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>A · Execution ledger</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+.body { flex: 1; display: flex; min-height: 0; }
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.split { flex: 1; display: flex; min-height: 0; }
+.ledger { width: 46%; min-width: 420px; overflow: auto; padding: 12px 16px 40px; border-right: 1px solid var(--border); }
+.detail { flex: 1; overflow: auto; padding: 16px 22px 40px; background: var(--card); }
+.strip { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--card); align-items: center; }
+.strip .n { border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; font-size: 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.strip .n:hover, .strip .n.hl { border-color: var(--sel-b); background: var(--sel); }
+.strip .arrow { color: #d4d4d8; }
+.result-card { border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; line-height: 1.5; }
+.pass { margin-bottom: 10px; }
+.pass-h { display: flex; align-items: center; gap: 8px; padding: 6px 2px; font-weight: 600; cursor: pointer; }
+.pass-h .verdict { font-weight: 400; color: var(--muted); }
+.pass-h .t { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 12px; }
+.ex { display: grid; grid-template-columns: 26px 1fr auto; gap: 8px; padding: 7px 8px; border-radius: 6px; cursor: pointer; align-items: start; position: relative; }
+.ex:hover { background: var(--soft); } .ex.sel { background: var(--sel); box-shadow: inset 2px 0 0 var(--sel-b); }
+.ex .idx { color: var(--muted); font-size: 11px; text-align: right; padding-top: 2px; font-variant-numeric: tabular-nums; }
+.ex .name { font-weight: 500; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ex .sum { color: var(--muted); font-size: 12px; margin-top: 2px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ex .right { text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.ex.dim { opacity: .35; }
+.ex .child { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.ex .child a { color: #4f46e5; }
+.route { font-size: 11px; color: var(--muted); padding: 0 8px 4px 42px; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 14px 0 12px; }
+.tabs a { padding: 6px 10px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+.tabs a.on { color: var(--fg); border-bottom-color: var(--fg); }
+.vnav { display: flex; gap: 4px; align-items: center; }
+.vnav .v { border: 1px solid var(--border); border-radius: 5px; padding: 1px 7px; font-size: 11.5px; cursor: pointer; }
+.vnav .v.on { background: var(--fg); color: #fff; border-color: var(--fg); }
+.vnav .v.fail { border-color: #fcd34d; } .vnav .v.on.fail { background: var(--warn); border-color: var(--warn); }
+</style></head>
+<body>
+<div class="proto-banner"><b>Proposal A · Execution ledger</b><span>The run reads as an ordered list of executions grouped into passes. Every visit to a node is its own row with its own transcript.</span><a href="index.html" style="margin-left:auto">← Audit and all proposals</a></div>
+<script src="data.js"></script>
+<script>document.write(renderNav())</script>
+<div class="body">
+  <aside class="runs-list"><script>document.write(runsListHtml())</script></aside>
+  <div class="main">
+    <div class="runhead">
+      <h1><span id="title"></span><span class="pill ok">Completed</span>
+        <span class="actions"><button class="btn">Re-run</button><button class="btn">Continue from…</button><button class="btn">⋯</button></span></h1>
+      <div class="sub" id="sub"></div>
+    </div>
+    <div class="strip" id="strip"></div>
+    <div class="split">
+      <div class="ledger" id="ledger"></div>
+      <div class="detail" id="detail"></div>
+    </div>
+  </div>
+</div>
+<script>
+document.getElementById('title').textContent = RUN.objective
+document.getElementById('sub').innerHTML = `<span>${RUN.flowLabel}</span><span>Yesterday ${RUN.started} → ${RUN.ended} · ${dur(RUN.started, RUN.ended)}</span><span>4 passes · 18 executions · 4 child runs</span><span>${fmtTok(RUN.tokens + RUN.childTokens)} tokens (incl. children)</span><span class="mono">${RUN.id}</span>`
+
+// Node strip: happy path with visit counts. Click to filter the ledger.
+let focusNode = null, selected = 11
+const strip = document.getElementById('strip')
+function drawStrip() {
+  strip.innerHTML = '<span class="muted small" style="margin-right:6px">Flow</span>' + NODES.filter(n => n.kind !== 'start' && n.kind !== 'exit').map(n => {
+    const c = visitsOf(n.id).length
+    const fails = visitsOf(n.id).filter(x => x.outcome !== 'success').length
+    return `<span class="n ${focusNode === n.id ? 'hl' : ''}" data-n="${n.id}">${n.label}${c > 1 ? `<span class="badge-n" title="${c} executions">×${c}</span>` : ''}${fails ? `<span class="pill warn" style="padding:0 5px" title="${fails} did not pass">↺${fails}</span>` : ''}</span>`
+  }).join('<span class="arrow">›</span>') + (focusNode ? ' <button class="btn" style="margin-left:8px;padding:1px 8px" id="clr">Show all</button>' : '')
+  strip.querySelectorAll('.n').forEach(el => el.onclick = () => { focusNode = focusNode === el.dataset.n ? null : el.dataset.n; draw() })
+  const c = document.getElementById('clr'); if (c) c.onclick = () => { focusNode = null; draw() }
+}
+
+function drawLedger() {
+  const L = document.getElementById('ledger')
+  let html = `<div class="result-card"><b>Result.</b> ${RUN.result[0][1]} Committed <code>${RUN.commit.slice(0, 8)}</code>. <a href="#" style="color:#15803d">Full result →</a></div>`
+  for (const p of PASSES) {
+    const xs = EXECUTIONS.slice(p.from, p.to + 1)
+    const icon = p.verdict?.startsWith('Approved and') ? '<span class="pill ok">✓</span>' : p.verdict ? '<span class="pill warn">↺</span>' : ''
+    html += `<div class="pass"><div class="pass-h">${p.title} ${icon}<span class="verdict">${p.verdict ?? ''}</span><span class="t">${dur(xs[0].s, xs[xs.length - 1].e)}</span></div>`
+    for (const x of xs) {
+      const n = nodeById[x.node], o = OUTCOME[x.outcome]
+      const dim = focusNode && focusNode !== x.node
+      html += `<div class="ex ${x.i === selected ? 'sel' : ''} ${dim ? 'dim' : ''}" data-i="${x.i}">
+        <div class="idx">#${x.i}</div>
+        <div><div class="name">${n.label}${visitLabel(x) ? `<span class="visit">visit ${visitLabel(x)}</span>` : ''}${x.outcome !== 'success' ? `<span class="pill ${o.cls}">${outcomeLabel(x)}</span>` : ''}</div>
+        ${x.summary ? `<div class="sum">${esc(x.summary)}</div>` : ''}
+        ${x.child ? `<div class="child">↳ child run <a>${x.child.flow} · ${x.child.id}</a> · ${fmtTok(x.child.tokens)} tok</div>` : ''}</div>
+        <div class="right">${dur(x.s, x.e)}<br><span class="tiny">${x.s}</span></div></div>`
+      if (x.route === 'Fix') html += `<div class="route">↳ routed back to Implement (“Fix”)</div>`
+    }
+    html += '</div>'
+  }
+  L.innerHTML = html
+  L.querySelectorAll('.ex').forEach(el => el.onclick = () => { selected = +el.dataset.i; draw() })
+}
+
+function drawDetail() {
+  const x = EXECUTIONS[selected], n = nodeById[x.node], o = OUTCOME[x.outcome]
+  const siblings = visitsOf(x.node)
+  const D = document.getElementById('detail')
+  D.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px"><h2 style="margin:0;font-size:16px">${n.label}</h2><span class="pill ${o.cls}">${outcomeLabel(x)}</span>
+      <span class="muted small">#${x.i} · ${x.s}–${x.e} · ${dur(x.s, x.e)}</span></div>
+    ${siblings.length > 1 ? `<div class="vnav" style="margin-top:10px"><span class="muted small" style="margin-right:4px">Visits</span>${siblings.map((v, k) => `<span class="v ${v.i === x.i ? 'on' : ''} ${v.outcome !== 'success' ? 'fail' : ''}" data-i="${v.i}" title="#${v.i} · ${outcomeLabel(v)}">${k + 1}</span>`).join('')}<span class="muted tiny" style="margin-left:6px">← → to step between visits</span></div>` : ''}
+    ${x.summary ? `<div class="callout ${o.cls}" style="margin-top:12px">${esc(x.summary)}</div>` : ''}
+    ${x.child ? `<div class="section-label">Child run</div><div class="kv"><dt>Flow</dt><dd>${x.child.flow}</dd><dt>Run</dt><dd class="mono">${x.child.id}</dd><dt>Duration</dt><dd>${dur(x.child.s, x.child.e)}</dd><dt>Tokens</dt><dd>${fmtTok(x.child.tokens)}</dd></div>` : ''}
+    <div class="tabs"><a class="on">Transcript</a><a>Prompt</a><a>Response</a><a>Context changes</a><a>Raw events</a></div>
+    ${renderTranscript(x.i)}`
+  D.querySelectorAll('.v').forEach(el => el.onclick = () => { selected = +el.dataset.i; draw() })
+}
+function draw() { drawStrip(); drawLedger(); drawDetail() }
+document.addEventListener('keydown', e => {
+  const sib = visitsOf(EXECUTIONS[selected].node), k = sib.indexOf(EXECUTIONS[selected])
+  if (e.key === 'ArrowRight' && k < sib.length - 1) { selected = sib[k + 1].i; draw() }
+  if (e.key === 'ArrowLeft' && k > 0) { selected = sib[k - 1].i; draw() }
+  if (e.key === 'j' && selected < EXECUTIONS.length - 1) { selected++; draw() }
+  if (e.key === 'k' && selected > 0) { selected--; draw() }
+})
+draw()
+</script>
+</body></html>

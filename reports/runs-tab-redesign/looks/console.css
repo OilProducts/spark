@@ -1,0 +1,69 @@
+/* 2 · Console — dark-first, dense, monospace for anything countable. Orange (from the app icon) marks focus only. */
+:root { --bg: #0d0e10; --card: #131417; --fg: #e4e5e7; --muted: #7d828b; --border: #23262b; --soft: #1a1c20;
+  --ok: #3fb950; --ok-bg: #3fb95022; --warn: #d29922; --warn-bg: #d2992222; --err: #f85149; --err-bg: #f8514922;
+  --accent: #ff8a00; --sel: #ff8a0014; font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; font-size: 12.5px; color-scheme: dark; }
+body { background: var(--bg); color: var(--fg); }
+code, .mono, .key, .cmd, pre.out, .row .d, .row .v, .dh .meta, .cs-n, .cs-id, .ctx-row .k { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+.btn, button { background: var(--soft); border-color: var(--border); color: var(--fg); border-radius: 4px; }
+.btn:hover { background: #22252a; }
+.appnav { height: 40px; background: var(--bg); border-color: var(--border); }
+.brand { font-size: 13px; } .logo { background: url(../../../frontend/public/assets/spark-app-icon.png) center/cover; border-radius: 3px; width: 16px; height: 16px; }
+.appnav nav { background: none; padding: 0; gap: 0; height: 40px; }
+.appnav nav a { border-radius: 0; padding: 11px 12px; font-size: 12.5px; }
+.appnav nav a.on { background: none; box-shadow: inset 0 -2px 0 var(--accent); color: var(--fg); }
+.projchip { border-color: var(--border); font-size: 12px; padding: 2px 8px; border-radius: 4px; }
+.rail { background: var(--bg); border-color: var(--border); width: 40px; }
+.rail button { background: none; color: var(--muted); }
+.runs-list, .runs-overlay { background: var(--bg); border-color: var(--border); width: 330px; }
+.cs-bar { padding: 8px; } .cs-bar input { width: 100%; background: var(--card); border: 1px solid var(--border); border-radius: 4px; color: var(--fg); padding: 5px 8px; font: 12px "SF Mono", Menlo, monospace; }
+.cs-cols, .cs-row { display: grid; grid-template-columns: 16px 1fr 52px 48px; gap: 8px; padding: 0 10px; align-items: baseline; }
+.cs-cols { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: #585d66; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.cs-row { padding-top: 6px; padding-bottom: 6px; border-bottom: 1px solid #16181b; cursor: pointer; border-left: 2px solid transparent; }
+.cs-row:hover { background: var(--soft); } .cs-row.sel { background: var(--sel); border-left-color: var(--accent); }
+.cs-g { font-size: 10px; color: var(--muted); } .completed .cs-g { color: var(--ok); } .failed .cs-g { color: var(--err); } .running .cs-g { color: #58a6ff; } .waiting .cs-g { color: var(--warn); }
+.cs-name { min-width: 0; display: flex; flex-direction: column; }
+.cs-t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .cs-cr { color: var(--muted); font: 11px "SF Mono", Menlo, monospace; }
+.cs-id { font-size: 10.5px; color: #585d66; margin-top: 1px; }
+.cs-n { font-size: 11px; color: var(--muted); text-align: right; }
+.cs-foot { padding: 10px; font-size: 11px; color: #585d66; }
+kbd { background: var(--card); border-color: var(--border); color: var(--muted); }
+.main { background: var(--card); }
+.head { border-color: var(--border); padding: 12px 18px; } .head h1 { font-size: 15px; } .head .line { font-size: 12px; }
+.head .actions .btn { background: none; border-color: transparent; color: var(--muted); } .head .actions .btn.primary { border-color: var(--accent); color: var(--accent); background: none; }
+.list { border-color: var(--border); width: 270px; } .sep { background: var(--border); }
+.row { padding: 4px 14px; font-size: 12.5px; } .row:hover { background: var(--soft); }
+.row.sel { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+.row .d, .row .v { font-size: 11px; }
+.graph { border-color: var(--border); background: var(--bg); }
+.node rect { fill: var(--card); stroke: #2c3036; } .node text { fill: #c9ccd1; } .node .n { fill: var(--muted); }
+.node.warn rect { stroke: var(--warn); } .node.err rect { stroke: var(--err); }
+.node.cur rect { fill: #ff8a0026; stroke: var(--accent); } .node.cur text { fill: #fff; } .node.cur .n { fill: var(--accent); }
+.node.future text { fill: #444950; } .node.future rect { stroke: #2c3036; }
+.edge { stroke: #2c3036; } .edge.last { stroke: var(--accent); } .elabel { fill: var(--muted); }
+.gctl button { background: none; }
+.detail { background: var(--card); }
+.dh h2 { font-size: 15px; } .dh .meta { font-size: 11.5px; }
+.dots span { border-radius: 4px; border-color: var(--border); } .dots span.on { background: var(--accent); border-color: var(--accent); color: #111; }
+.summary { border-color: var(--border); color: var(--fg); }
+.tr-msg { color: #d6d8db; } .tr-think { color: var(--muted); }
+.tr-tool { background: var(--bg); border-color: var(--border); } .tr-tool code { color: #b4b8bf; }
+pre.out { background: var(--bg); border-color: var(--border); color: #b4b8bf; }
+.key { background: var(--bg); border-color: var(--border); color: #b4b8bf; border-radius: 3px; }
+.returned, .ctx-row, .tabs { border-color: var(--border); } .ctx-row.hl { background: #ff8a000f; }
+.wrote .val, .findings p, .ctx-row { color: #c9ccd1; }
+.raw a, .findings a, .ctx-row .by a, .hist a, .nav a { color: var(--muted); text-decoration-color: #3a3e45; }
+.hist { border-color: var(--border); color: #c9ccd1; }
+.section-label, .blk-h { color: #585d66; }
+.returned p, .wrote .val, .findings p { color: #c9ccd1 !important; }
+.detail [style*='#3f3f46'] { color: #c9ccd1 !important; }
+.detail a.u { color: var(--fg) !important; text-decoration-color: #3a3e45 !important; }
+
+/* generalized renderer */
+.opt { background: var(--bg); border-color: var(--border); border-radius: 4px; } .opt:hover { border-color: var(--accent); }
+.opt b { color: var(--fg); } .opt span { color: var(--muted); }
+.other { background: var(--bg); border-color: var(--border); color: var(--fg); border-radius: 4px; }
+.lane .bar { background: var(--soft); } .lane .bar i { background: #5b606a; }
+.crumb, .eyebrow, .note { color: var(--muted); } .crumb a { color: #b4b8bf; text-decoration-color: #3a3e45; }
+.md, .md p, .md li { color: #c9ccd1; } .md code { background: var(--bg); color: #b4b8bf; }
+.row.branch .bl { color: #585d66; }
+.status-item.err .mark, .status-item.err { color: var(--err); } .status-item.wait { color: var(--warn); }
