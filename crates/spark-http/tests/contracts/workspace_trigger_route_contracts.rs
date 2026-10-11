@@ -711,7 +711,6 @@ fn protected_definition(id: &str) -> TriggerDefinition {
             flow_name: "ops/run.yaml".to_string(),
             project_path: Some("/tmp/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
-            flow_allowlist: Vec::new(),
             execution_profile_id: None,
         },
         source: Map::from_iter([

@@ -103,7 +103,6 @@ export function TriggerEditor({
                 <TriggerField label="Action" htmlFor={fieldId('action')}>
                     <NativeSelect id={fieldId('action')} value={form.actionMode} disabled={protectedTrigger} onChange={e => onChange({ ...form, actionMode: e.target.value })}>
                         <option value="static">Launch flow</option><option value="mission">Deliver to mission</option>
-                        {form.actionMode === 'workspace_draft' && <option value="workspace_draft">Workspace draft</option>}
                     </NativeSelect>
                 </TriggerField>
                 {form.actionMode === 'mission' ? <TriggerField label="Mission" htmlFor={fieldId('mission')}>

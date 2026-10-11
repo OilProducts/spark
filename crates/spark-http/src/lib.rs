@@ -744,9 +744,8 @@ mod incremental_usage_tests {
     use super::*;
     use attractor_core::{RawRuntimeEvent, RunRecord};
     use attractor_runtime::{CreateRunRequest, RunStore};
-    use serde_json::{json, Map};
+    use serde_json::json;
     use std::fs;
-    use std::sync::Mutex;
 
     fn test_settings(root: &std::path::Path) -> SparkSettings {
         let data = root.join("data");
@@ -1019,119 +1018,6 @@ mod incremental_usage_tests {
                 .totals
                 .total_tokens,
             7
-        );
-    }
-
-    #[test]
-    fn http_terminal_publisher_launches_observed_successor_once_for_duplicate_events() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let settings = test_settings(temp.path());
-        let project = temp.path().join("project");
-        let mathlab = project.join(".mathlab");
-        fs::create_dir_all(&mathlab).expect("mathlab");
-        let flow_name = "math-research/prove-refute.yaml";
-        let flow_path = settings.flows_dir.join(flow_name);
-        fs::create_dir_all(flow_path.parent().expect("flow parent")).expect("flow parent");
-        fs::write(
-            flow_path,
-            "schema_version: '1'\nid: math-chain\ninputs:\n  - key: context.request.problem\n    type: string\n    required: true\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
-        )
-        .expect("flow");
-        fs::write(
-            mathlab.join("next-session.json"),
-            serde_json::to_vec(&json!({
-                "flow_name": flow_name,
-                "inputs": {"context.request.problem": "P"}
-            }))
-            .expect("draft json"),
-        )
-        .expect("draft");
-        spark_storage::TriggerRepositories::from_settings(&settings)
-            .definitions
-            .put(&spark_storage::TriggerDefinition {
-                revision: String::new(),
-                id: "math-http-chain".into(),
-                name: "Math HTTP chain".into(),
-                enabled: true,
-                protected: false,
-                source_type: "flow_event".into(),
-                action: spark_storage::TriggerAction {
-                    mission_id: None,
-                    mode: "workspace_draft".into(),
-                    flow_name: flow_name.into(),
-                    project_path: Some(project.to_string_lossy().into_owned()),
-                    static_context: Map::new(),
-                    flow_allowlist: vec!["math-research/*".into()],
-                    execution_profile_id: None,
-                },
-                source: Map::from_iter([
-                    ("flow_name".into(), json!(flow_name)),
-                    ("statuses".into(), json!(["completed"])),
-                ]),
-                created_at: "2026-07-23T00:00:00Z".into(),
-                updated_at: "2026-07-23T00:00:00Z".into(),
-            })
-            .expect("trigger");
-        let store = RunStore::for_settings(&settings);
-        let mut terminal = RunRecord::new("terminal-source", project.to_string_lossy());
-        terminal.flow_name = flow_name.into();
-        terminal.status = "completed".into();
-        store
-            .create_run(CreateRunRequest {
-                record: terminal,
-                ..Default::default()
-            })
-            .expect("terminal run");
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let captured = observed.clone();
-        let observer: attractor_api::RunEventObserver = Arc::new(move |run_id| {
-            captured.lock().expect("observed").push(run_id.to_string());
-        });
-        let hub = WorkspaceLiveHub::new();
-        let mut usage = None;
-
-        publish_live_run_after_incremental_with_observer(
-            &settings,
-            &hub,
-            "terminal-source",
-            None,
-            &mut usage,
-            Some(observer.clone()),
-        );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline && observed.lock().expect("observed").is_empty()
-        {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        let successor_ids = observed
-            .lock()
-            .expect("observed")
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        assert_eq!(successor_ids.len(), 1, "observed {successor_ids:?}");
-        assert!(store
-            .find_run_root(successor_ids.first().expect("successor"))
-            .expect("find successor")
-            .is_some());
-
-        publish_live_run_after_incremental_with_observer(
-            &settings,
-            &hub,
-            "terminal-source",
-            None,
-            &mut usage,
-            Some(observer),
-        );
-        assert_eq!(
-            observed
-                .lock()
-                .expect("observed")
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>(),
-            successor_ids,
-            "duplicate terminal publication must not launch another successor"
         );
     }
 }

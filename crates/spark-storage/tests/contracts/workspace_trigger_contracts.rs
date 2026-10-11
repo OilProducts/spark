@@ -1,7 +1,3 @@
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-
 use serde_json::{json, Map, Value};
 use spark_storage::{
     delete_trigger_definition, delete_trigger_state, load_trigger_state, read_trigger_definition,
@@ -9,52 +5,6 @@ use spark_storage::{
     StorageError, TriggerAction, TriggerDefinition, TriggerDefinitionRepository,
     TriggerRuntimeStateRepository, TriggerState, TriggerStateHistoryEntry,
 };
-
-#[test]
-fn math_chain_deployment_applies_ordering_to_the_trigger_repository() {
-    let deployment = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../test-fixtures/math-flow-chaining/deployment");
-    let temp = tempfile::tempdir().expect("tempdir");
-    let config_dir = temp.path().join("config");
-    let trigger_dir = config_dir.join("triggers");
-    fs::create_dir_all(&trigger_dir).expect("trigger repository");
-    for id in ["tuza-ignite", "bsd-ignite", "tuza-chain", "bsd-chain"] {
-        fs::write(trigger_dir.join(format!("{id}.toml")), "old definition").expect("seed trigger");
-    }
-    let gate = format!(
-        "test ! -e '{0}/tuza-ignite.toml' &&
-         test ! -e '{0}/bsd-ignite.toml' &&
-         grep -q '^enabled = false$' '{0}/tuza-chain.toml' &&
-         grep -q '^enabled = false$' '{0}/bsd-chain.toml'",
-        trigger_dir.display()
-    );
-
-    let applied = Command::new("sh")
-        .arg(deployment.join("apply.sh"))
-        .arg(&config_dir)
-        .arg("--")
-        .args(["sh", "-c", &gate])
-        .status()
-        .expect("run deployment");
-    assert!(applied.success(), "deployment integration gate");
-
-    let installed = TriggerDefinitionRepository::new(config_dir)
-        .list()
-        .expect("resulting trigger repository");
-    assert_eq!(installed.len(), 2);
-    for trigger in installed {
-        assert!(matches!(trigger.id.as_str(), "tuza-chain" | "bsd-chain"));
-        assert!(trigger.enabled);
-        assert_eq!(trigger.source_type, "flow_event");
-        assert_eq!(trigger.source["statuses"], json!(["completed"]));
-        let project = trigger.id.trim_end_matches("-chain");
-        let expected_project = format!("/workspace/projects/{project}");
-        assert_eq!(
-            trigger.action.project_path.as_deref(),
-            Some(expected_project.as_str())
-        );
-    }
-}
 
 #[test]
 fn trigger_definition_toml_round_trips_webhook_without_losing_secret_hash() {
@@ -246,6 +196,18 @@ secret_hash = "hash""#,
             "Trigger action requires a flow_name.",
         ),
         (
+            "trigger-workspace-draft",
+            persisted_trigger_toml(
+                "trigger-workspace-draft",
+                "flow_event",
+                "ops/run.dot",
+                r#"flow_name = "ops/run.dot"
+statuses = ["completed"]"#,
+            )
+            .replace("[action]\n", "[action]\nmode = \"workspace_draft\"\n"),
+            "Trigger action mode must be static or mission.",
+        ),
+        (
             "trigger-unknown-source",
             persisted_trigger_toml(
                 "trigger-unknown-source",
@@ -390,7 +352,6 @@ fn definition_with_source(
             // would be rewritten by canonicalization, breaking the round-trip.
             project_path: Some("/spark-contract-fixture/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
-            flow_allowlist: Vec::new(),
             execution_profile_id: None,
         },
         source,

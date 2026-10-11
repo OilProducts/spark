@@ -92,7 +92,7 @@ export function parseTriggerResponse(payload: unknown, endpoint = '/workspace/ap
         action: {
             mode: asOptionalNullableString(actionRecord.mode) ?? 'static',
             mission_id: asOptionalNullableString(actionRecord.mission_id),
-            flow_name: actionRecord.mode === 'mission' || actionRecord.mode === 'workspace_draft' ? asOptionalNullableString(actionRecord.flow_name) ?? '' : expectString(actionRecord.flow_name, endpoint, 'action.flow_name'),
+            flow_name: actionRecord.mode === 'mission' ? asOptionalNullableString(actionRecord.flow_name) ?? '' : expectString(actionRecord.flow_name, endpoint, 'action.flow_name'),
             project_path: asOptionalNullableString(actionRecord.project_path),
             static_context: asUnknownRecord(actionRecord.static_context) ?? {},
         },
