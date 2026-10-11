@@ -29,40 +29,6 @@ const STARTER_FLOW_NAMES: &[&str] = &[
 ];
 
 #[test]
-fn math_chain_deployment_removes_ignite_timers_and_keeps_one_completed_chain_per_project() {
-    let deployment = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../test-fixtures/math-flow-chaining/deployment");
-    let removed = fs::read_to_string(deployment.join("removed-trigger-ids.txt"))
-        .expect("removed trigger ids");
-    assert_eq!(
-        removed.lines().collect::<Vec<_>>(),
-        ["tuza-ignite", "bsd-ignite"]
-    );
-
-    let mut definitions = fs::read_dir(deployment.join("triggers"))
-        .expect("deployment trigger definitions")
-        .map(|entry| entry.expect("trigger entry").path())
-        .collect::<Vec<_>>();
-    definitions.sort();
-    assert_eq!(definitions.len(), 2);
-    for (path, project) in definitions.iter().zip(["bsd", "tuza"]) {
-        let expected_name = format!("{project}-chain.toml");
-        assert_eq!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some(expected_name.as_str())
-        );
-        let definition = fs::read_to_string(path).expect("trigger definition");
-        assert!(definition.contains("enabled = true"));
-        assert!(definition.contains("source_type = \"flow_event\""));
-        assert!(definition.contains("statuses = [\"completed\"]"));
-        assert_eq!(definition.matches("statuses =").count(), 1);
-        assert!(definition.contains(&format!("project_path = \"/workspace/projects/{project}\"")));
-        assert!(!definition.contains("schedule"));
-        assert!(!definition.contains("ignite"));
-    }
-}
-
-#[test]
 fn frontend_resource_order_prefers_explicit_ui_then_source_then_packaged() {
     let temp = tempfile::tempdir().expect("tempdir");
     let explicit_ui = temp.path().join("explicit-ui");

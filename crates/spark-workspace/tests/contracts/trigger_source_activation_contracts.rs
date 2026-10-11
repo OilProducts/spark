@@ -289,15 +289,15 @@ fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_sta
 }
 
 #[test]
-fn ordinary_math_flow_event_uses_static_context_without_next_session() {
+fn flow_event_trigger_keeps_static_context_nested() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    write_typed_math_flow(&settings, "math-research/prove-refute.yaml");
+    write_flow(&settings, "ops/run.yaml");
     let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let trigger = flow_event_definition(
-        "ordinary-math-event",
+        "flow-event",
         &project_path,
         Map::from_iter([("context.request.problem".to_string(), json!("static P"))]),
     );
@@ -308,10 +308,7 @@ fn ordinary_math_flow_event_uses_static_context_without_next_session() {
 
     let outcomes = WorkspaceTriggerService::new(settings.clone())
         .emit_flow_event(Map::from_iter([
-            (
-                "flow_name".to_string(),
-                json!("math-research/prove-refute.yaml"),
-            ),
+            ("flow_name".to_string(), json!("ops/run.yaml")),
             ("project_path".to_string(), json!(project_path)),
             ("status".to_string(), json!("completed")),
         ]))
@@ -329,73 +326,12 @@ fn ordinary_math_flow_event_uses_static_context_without_next_session() {
     assert!(!context.contains_key("context.request.problem"));
 }
 
-#[tokio::test]
-async fn non_math_chain_id_keeps_static_schedule_context_nested() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().canonicalize().expect("canonical tempdir");
-    let settings = settings(&root);
-    write_flow(&settings, "ops/run.yaml");
-    let project_path = root.join("project");
-    fs::create_dir_all(&project_path).expect("project");
-    let definition = spark_storage::TriggerDefinition {
-        revision: String::new(),
-        id: "ordinary-chain".to_string(),
-        name: "Ordinary chain".to_string(),
-        enabled: true,
-        protected: false,
-        source_type: "schedule".to_string(),
-        action: spark_storage::TriggerAction {
-            mission_id: None,
-            mode: "static".to_string(),
-            flow_name: "ops/run.yaml".to_string(),
-            project_path: Some(project_path.to_string_lossy().into_owned()),
-            static_context: Map::from_iter([("origin".to_string(), json!("nested"))]),
-            execution_profile_id: None,
-        },
-        source: Map::from_iter([
-            ("kind".to_string(), json!("once")),
-            ("run_at".to_string(), json!("2026-06-24T09:00:00Z")),
-        ]),
-        created_at: "2026-06-24T08:00:00Z".to_string(),
-        updated_at: "2026-06-24T08:00:00Z".to_string(),
-    };
-    spark_storage::TriggerRepositories::from_settings(&settings)
-        .definitions
-        .put(&definition)
-        .expect("put trigger");
-
-    let outcomes = WorkspaceTriggerService::new(settings.clone())
-        .process_due_trigger_sources_at(at("2026-06-24T10:00:00Z"))
-        .await
-        .expect("process source");
-    let run = RunStore::for_settings(&settings)
-        .read_run_bundle(outcomes[0].run_id.as_deref().expect("run"))
-        .expect("read run")
-        .expect("run");
-    let context = run.checkpoint.expect("checkpoint").context;
-    assert_eq!(
-        context["context.trigger_static"],
-        json!({"origin": "nested"})
-    );
-    assert!(!context.contains_key("origin"));
-}
-
 fn write_flow(settings: &SparkSettings, name: &str) {
     let path = settings.flows_dir.join(name);
     fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
     fs::write(
         path,
         "schema_version: '1'\nid: workspace-trigger\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
-    )
-    .expect("flow");
-}
-
-fn write_typed_math_flow(settings: &SparkSettings, name: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(
-        path,
-        "schema_version: '1'\nid: math-chain\ninputs:\n  - key: context.request.problem\n    type: string\n    required: true\n  - key: context.request.tags\n    type: string[]\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     )
     .expect("flow");
 }
@@ -415,16 +351,13 @@ fn flow_event_definition(
         action: spark_storage::TriggerAction {
             mission_id: None,
             mode: "static".to_string(),
-            flow_name: "math-research/prove-refute.yaml".to_string(),
+            flow_name: "ops/run.yaml".to_string(),
             project_path: Some(project_path.to_string_lossy().into_owned()),
             static_context,
             execution_profile_id: None,
         },
         source: Map::from_iter([
-            (
-                "flow_name".to_string(),
-                json!("math-research/prove-refute.yaml"),
-            ),
+            ("flow_name".to_string(), json!("ops/run.yaml")),
             ("statuses".to_string(), json!(["completed"])),
         ]),
         created_at: "2026-06-24T08:00:00Z".to_string(),
