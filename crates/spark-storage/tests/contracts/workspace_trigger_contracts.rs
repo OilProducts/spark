@@ -183,6 +183,19 @@ fn persisted_trigger_definitions_are_validated_and_malformed_files_are_skipped_b
         .put(&webhook_definition("trigger-valid"))
         .expect("write valid");
 
+    let mut draft = webhook_definition("trigger-new-workspace-draft");
+    draft.action.mode = "workspace_draft".to_string();
+    match repository.put(&draft) {
+        Err(StorageError::InvalidRepositoryPath { reason, .. }) => {
+            assert_eq!(reason, "Trigger action mode must be static or mission.")
+        }
+        other => panic!("expected workspace_draft creation to be rejected, got {other:?}"),
+    }
+    assert!(repository
+        .get("trigger-new-workspace-draft")
+        .expect("get")
+        .is_none());
+
     for (trigger_id, toml, expected) in [
         (
             "trigger-missing-flow",
