@@ -8,8 +8,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
-    AgentRequestUserInputAnswerRequest, AgentTurnRequest, CodexAppServerBackend,
-    CodexAppServerClient, CodexAppServerTurnState, AGENT_INSTRUCTIONS_METADATA_KEY,
+    AgentAttachment, AgentRequestUserInputAnswerRequest, AgentTurnRequest, CodexAppServerBackend,
+    CodexAppServerClient, CodexAppServerTurnState, HistoryTurn, UserTurn,
+    AGENT_ATTACHMENTS_METADATA_KEY, AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
@@ -1409,4 +1410,131 @@ fn workflow_native_tracing_uses_saved_settings_and_retains_captured_choice() {
     let _on = EnvVarGuard::set(ENV_SPARK_DEBUG_CODEX_JSONRPC, "1");
     execute("environment-enabled", &capture(), true);
     execute("active-disabled", &disabled, false);
+}
+
+/// `UserInput` text and localImage variants from the installed Codex
+/// app-server schema (`codex app-server generate-json-schema`, 0.160).
+const USER_INPUT_SCHEMA: &str = r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["text", "type"],
+      "properties": {
+        "type": {"enum": ["text"]},
+        "text": {"type": "string"},
+        "text_elements": {"type": "array"}
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["path", "type"],
+      "properties": {
+        "type": {"enum": ["localImage"]},
+        "path": {"type": "string"},
+        "detail": true
+      },
+      "additionalProperties": false
+    }
+  ]
+}"#;
+
+fn test_attachment(
+    dir: &std::path::Path,
+    name: &str,
+    media_type: &str,
+    bytes: &[u8],
+) -> AgentAttachment {
+    let path = dir.join(name);
+    fs::write(&path, bytes).expect("attachment bytes");
+    AgentAttachment {
+        id: format!("att-{name}"),
+        filename: name.to_string(),
+        media_type: media_type.to_string(),
+        size_bytes: bytes.len() as u64,
+        path: path.to_string_lossy().to_string(),
+    }
+}
+
+#[test]
+fn turn_input_sends_images_as_local_images_and_other_files_as_references() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let screenshot = test_attachment(temp.path(), "shot.png", "image/png", b"\x89PNG\r\n\x1a\n");
+    let photo = test_attachment(temp.path(), "photo.jpg", "image/jpeg", &[0xFF, 0xD8, 0xFF]);
+    let notes = test_attachment(temp.path(), "notes.txt", "text/plain", b"notes");
+    let earlier = test_attachment(temp.path(), "old.pdf", "application/pdf", b"%PDF-1.4");
+    let mut earlier_turn = UserTurn::new("Earlier message");
+    earlier_turn.attachments = vec![earlier.clone()];
+    let mut request = AgentTurnRequest {
+        conversation_id: "conversation-attachments".to_string(),
+        project_path: temp.path().to_string_lossy().to_string(),
+        prompt: "Compare these".to_string(),
+        history: vec![HistoryTurn::User(earlier_turn)],
+        provider: Some("codex".to_string()),
+        model: Some("gpt-codex-test".to_string()),
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: None,
+        metadata: BTreeMap::from([(
+            AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+            json!([screenshot, photo, notes]),
+        )]),
+    };
+    CodexAppServerBackend::new()
+        .run_agent_turn(request.clone())
+        .expect("fresh thread");
+    request.metadata.insert(
+        "spark.runtime.codex_app_server.thread_id".to_string(),
+        json!("thread-test"),
+    );
+    CodexAppServerBackend::new()
+        .run_agent_turn(request.clone())
+        .expect("resumed thread");
+    request.metadata.clear();
+    request.history.clear();
+    request.prompt = "Plain text".to_string();
+    CodexAppServerBackend::new()
+        .run_agent_turn(request)
+        .expect("text-only turn");
+
+    let inputs = read_jsonrpc_log(&log_path)
+        .into_iter()
+        .filter(|message| message["method"] == json!("turn/start"))
+        .map(|message| message["params"]["input"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(inputs.len(), 3);
+    for item in inputs
+        .iter()
+        .flat_map(|input| input.as_array().expect("input"))
+    {
+        assert_schema_valid(USER_INPUT_SCHEMA, item);
+    }
+    let fresh = inputs[0].as_array().expect("fresh input");
+    assert_eq!(fresh.len(), 3);
+    let text = fresh[0]["text"].as_str().expect("text item");
+    assert!(text.starts_with("Compare these\n\nAttached files"));
+    assert!(text.contains(&format!("notes.txt (text/plain, 5 bytes): {}", notes.path)));
+    assert!(text.contains("Files attached earlier in this conversation"));
+    assert!(text.contains(&earlier.path));
+    assert!(!text.contains("shot.png"));
+    assert_eq!(
+        fresh[1],
+        json!({"type": "localImage", "path": screenshot.path})
+    );
+    assert_eq!(fresh[2], json!({"type": "localImage", "path": photo.path}));
+    // A resumed thread already holds earlier turns.
+    let resumed_text = inputs[1][0]["text"].as_str().expect("resumed text");
+    assert!(resumed_text.contains(&notes.path));
+    assert!(!resumed_text.contains("earlier"));
+    assert_eq!(inputs[2], json!([{"type": "text", "text": "Plain text"}]));
 }

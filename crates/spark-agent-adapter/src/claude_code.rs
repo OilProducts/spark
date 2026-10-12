@@ -191,6 +191,8 @@ impl ClaudeCodeBackend {
             .env("BASH_DEFAULT_TIMEOUT_MS", "3600000")
             .env("BASH_MAX_TIMEOUT_MS", "3600000");
 
+        // Attachments are read before spawning so a missing file fails cleanly.
+        let (prompt_text, content) = user_message_content(request, resume_session_id.is_none())?;
         let mut child = command
             .spawn()
             .map_err(|error| launch_error(&executable, error))?;
@@ -201,15 +203,14 @@ impl ClaudeCodeBackend {
             .stdin
             .take()
             .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdin"))?;
-        let prompt =
-            json!({"type": "user", "message": {"role": "user", "content": request.prompt}});
+        let prompt = json!({"type": "user", "message": {"role": "user", "content": content}});
         writeln!(stdin, "{prompt}")
             .and_then(|()| stdin.flush())
             .map_err(|error| {
                 ClaudeCodeError::runtime(format!("claude code prompt write failed: {error}"))
             })?;
 
-        crate::initial_context::capture_if_configured(&request.metadata, &request.prompt).map_err(
+        crate::initial_context::capture_if_configured(&request.metadata, &prompt_text).map_err(
             |error| {
                 ClaudeCodeError::configuration(format!("initial context capture failed: {error}"))
             },
@@ -542,6 +543,57 @@ fn log_model_discovery_error(error: ClaudeCodeError) -> ClaudeCodeError {
         "Claude Code model discovery failed"
     );
     error
+}
+
+/// The turn's text and its stream-json `content`: the plain prompt string
+/// for text-only turns, else text plus base64 image blocks. Files that are
+/// not native images travel as local references in the text, as do earlier
+/// attachments when the session starts fresh.
+fn user_message_content(
+    request: &AgentTurnRequest,
+    fresh_session: bool,
+) -> Result<(String, Value), ClaudeCodeError> {
+    use base64::Engine as _;
+
+    let attachments = crate::attachments::request_attachments(&request.metadata);
+    let earlier = if fresh_session {
+        crate::attachments::history_attachments(&request.history)
+    } else {
+        Vec::new()
+    };
+    let text = crate::attachments::prompt_with_attachment_references(
+        &request.prompt,
+        &attachments,
+        &earlier,
+    );
+    let images = attachments
+        .iter()
+        .filter(|attachment| attachment.is_native_image())
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        return Ok((text.clone(), Value::String(text)));
+    }
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    for image in images {
+        let bytes = std::fs::read(&image.path).map_err(|error| {
+            ClaudeCodeError::configuration(format!(
+                "claude code could not read attachment {}: {error}",
+                image.filename
+            ))
+        })?;
+        blocks.push(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+            },
+        }));
+    }
+    Ok((text, Value::Array(blocks)))
 }
 
 /// Accumulates one `claude -p` stream-json turn and maps each protocol

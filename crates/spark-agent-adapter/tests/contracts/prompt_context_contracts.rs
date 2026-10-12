@@ -658,3 +658,27 @@ fn flow_parser_validates_declarations_and_resolved_reasoning_combinations() {
         assert!(error.to_string().contains(field), "{error}");
     }
 }
+
+#[test]
+fn history_attachments_reach_api_providers_as_local_file_references() {
+    let mut turn = spark_agent_adapter::UserTurn::new("See the screenshot");
+    turn.attachments = vec![spark_agent_adapter::AgentAttachment {
+        id: "att-1".to_string(),
+        filename: "shot.png".to_string(),
+        media_type: "image/png".to_string(),
+        size_bytes: 4,
+        path: "/spark/attachments/att-1/content.png".to_string(),
+    }];
+    let message = turn.to_message();
+    assert_eq!(message.content.len(), 2);
+    assert_eq!(
+        message.content[1].text_content().as_deref(),
+        Some("Attached files (local copies; open them with your file-reading tools):\n- shot.png (image/png, 4 bytes): /spark/attachments/att-1/content.png")
+    );
+    assert_eq!(
+        spark_agent_adapter::UserTurn::new("Plain")
+            .to_message()
+            .content,
+        vec![unified_llm_adapter::ContentPart::text("Plain")]
+    );
+}

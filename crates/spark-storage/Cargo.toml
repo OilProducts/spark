@@ -18,5 +18,5 @@ sha1 = "0.10"
 spark-common = { path = "../spark-common" }
 tempfile = "3.10"
 thiserror = "1.0"
-time = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 toml = "0.8"

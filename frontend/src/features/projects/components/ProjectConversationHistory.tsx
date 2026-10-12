@@ -41,6 +41,8 @@ type PlanEntry = Extract<ConversationTimelineEntry, { kind: 'plan' }>
 interface ProjectConversationHistoryProps {
     activeConversationId: string | null
     activeProjectPath: string | null
+    /** Where sent attachments download from. */
+    attachmentUrl?: (attachmentId: string) => string
     isConversationHistoryLoading: boolean
     hasRenderableConversationHistory: boolean
     activeConversationHistory: ConversationTimelineEntry[]
@@ -351,6 +353,7 @@ const PlanRow = memo(function PlanRow({
 export function ProjectConversationHistory({
     activeConversationId,
     activeProjectPath,
+    attachmentUrl,
     isConversationHistoryLoading,
     hasRenderableConversationHistory,
     activeConversationHistory,
@@ -559,6 +562,7 @@ export function ProjectConversationHistory({
                     entry={entry}
                     enableCopy
                     formatConversationTimestamp={formatConversationTimestamp}
+                    attachmentUrl={attachmentUrl}
                 />
             )
         }

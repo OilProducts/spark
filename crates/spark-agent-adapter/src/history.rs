@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::attachments::AgentAttachment;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -62,6 +63,8 @@ impl From<Vec<ContentPart>> for TurnContent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserTurn {
     pub content: TurnContent,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AgentAttachment>,
     #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
 }
@@ -70,6 +73,7 @@ impl UserTurn {
     pub fn new(content: impl Into<TurnContent>) -> Self {
         Self {
             content: content.into(),
+            attachments: Vec::new(),
             timestamp: OffsetDateTime::now_utc(),
         }
     }
@@ -82,8 +86,19 @@ impl UserTurn {
         self.content.content_parts()
     }
 
+    /// Attachments become local file references, so every provider sees
+    /// them (as paths for its read tools) rather than losing them.
     pub fn to_message(&self) -> Message {
-        message_from_content(MessageRole::User, &self.content)
+        let mut message = message_from_content(MessageRole::User, &self.content);
+        if !self.attachments.is_empty() {
+            message
+                .content
+                .push(ContentPart::text(crate::attachments::reference_block(
+                    crate::attachments::ATTACHED_FILES_HEADING,
+                    &self.attachments,
+                )));
+        }
+        message
     }
 }
 

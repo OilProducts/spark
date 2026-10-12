@@ -4018,6 +4018,7 @@ version = "0.1.0"
 dependencies = [
  "attractor-core",
  "attractor-dsl",
+ "base64 0.22.1",
  "filetime",
  "glob",
  "jsonschema",
@@ -4118,6 +4119,7 @@ dependencies = [
  "spark-storage",
  "spark-workspace",
  "tempfile",
+ "time",
  "tokio",
  "tokio-util",
  "tower",

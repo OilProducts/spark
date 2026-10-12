@@ -88,7 +88,12 @@ pub struct ConversationTurnRequest {
     /// Empty means the conversation's own project, or Home for a new chat.
     #[serde(default)]
     pub project_path: String,
+    /// May be empty when the turn carries attachments.
+    #[serde(default)]
     pub message: String,
+    /// Ids of this conversation's uploads to send with the message.
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
     #[serde(default)]
     pub provider: Option<String>,
     #[serde(default)]
@@ -793,6 +798,10 @@ impl WorkspaceConversationService {
                 ));
             }
         }
+        // Best-effort: a failed cleanup must not block reading the conversation.
+        if let Some(project_path) = snapshot_project_path(&snapshot) {
+            let _ = self.prune_abandoned_attachments(conversation_id, &project_path, &snapshot);
+        }
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         self.attach_model_settings(&mut snapshot)?;
         Ok(snapshot)
@@ -815,6 +824,28 @@ impl WorkspaceConversationService {
         Ok(crate::WorkspaceProjectService::new(self.settings.clone())
             .ensure_home_project()?
             .project_path)
+    }
+
+    /// `chat_project_path`, rejecting a project the conversation is not bound to.
+    pub(crate) fn bound_chat_project_path(
+        &self,
+        conversation_id: &str,
+        requested: &str,
+    ) -> WorkspaceResult<String> {
+        let project_path = self.chat_project_path(conversation_id, requested)?;
+        if let Some(actual) = self
+            .repository()
+            .read_snapshot(conversation_id, None)?
+            .as_ref()
+            .and_then(snapshot_project_path)
+        {
+            if actual != project_path {
+                return Err(WorkspaceError::Validation(
+                    "Conversation is already bound to a different project path.".to_string(),
+                ));
+            }
+        }
+        Ok(project_path)
     }
 
     pub fn update_conversation_settings(
@@ -965,8 +996,12 @@ impl WorkspaceConversationService {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
-        let message = non_empty_string(&request.message)
-            .ok_or_else(|| WorkspaceError::Validation("Message is required.".to_string()))?;
+        let message = request.message.trim().to_string();
+        if message.is_empty() && request.attachment_ids.is_empty() {
+            return Err(WorkspaceError::Validation(
+                "Message is required.".to_string(),
+            ));
+        }
         let chat_mode = request
             .chat_mode
             .as_deref()
@@ -1066,6 +1101,9 @@ impl WorkspaceConversationService {
                 ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
             ));
         }
+        let attachments =
+            self.resolve_turn_attachments(conversation_id, &project_path, &request.attachment_ids)?;
+        validate_provider_attachments(&effective_provider, &attachments)?;
         snapshot["provider"] = json!(effective_provider);
         let previous_app_thread_id = resume_runtime_session_thread_id(
             &repository,
@@ -1074,7 +1112,7 @@ impl WorkspaceConversationService {
             &snapshot,
         );
 
-        let user_turn = json!({
+        let mut user_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
             "role": "user",
             "content": message,
@@ -1082,6 +1120,12 @@ impl WorkspaceConversationService {
             "status": "complete",
             "kind": "message",
         });
+        if !attachments.is_empty() {
+            user_turn["attachments"] = attachments
+                .iter()
+                .map(crate::attachments::turn_attachment_reference)
+                .collect();
+        }
         let assistant_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
             "role": "assistant",
@@ -1129,6 +1173,12 @@ impl WorkspaceConversationService {
             ),
         ]);
         metadata.insert("spark.execution.settings".into(), execution_settings);
+        if !attachments.is_empty() {
+            metadata.insert(
+                spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+                json!(attachments),
+            );
+        }
         if let Some(thread_id) = previous_app_thread_id.as_deref() {
             let key = if effective_provider == "claude-code" {
                 "spark.runtime.claude_code.session_id"
@@ -1170,7 +1220,11 @@ impl WorkspaceConversationService {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
             prompt: message.clone(),
-            history: agent_history_from_snapshot(&snapshot, &[&user_turn_id, &assistant_turn_id]),
+            history: agent_history_from_snapshot(
+                &repository,
+                &snapshot,
+                &[&user_turn_id, &assistant_turn_id],
+            ),
             provider: Some(effective_provider.clone()),
             model: effective_model.clone(),
             llm_profile: effective_profile.clone(),
@@ -1987,7 +2041,7 @@ impl WorkspaceConversationService {
             .get("reasoning_effort")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        let history = agent_history_from_snapshot(&snapshot, &[&assistant_turn_id]);
+        let history = agent_history_from_snapshot(&repository, &snapshot, &[&assistant_turn_id]);
         let normalized_answer_strings = request_user_input_answer_strings(&normalized_answers);
         let submitted_at = iso_now();
         request_record.insert(
@@ -3557,7 +3611,7 @@ impl WorkspaceConversationService {
             .map_err(|failure| failure.detail)
     }
 
-    fn repository(&self) -> ConversationRepository {
+    pub(crate) fn repository(&self) -> ConversationRepository {
         ConversationRepository::new(self.settings.data_dir.clone())
     }
 
@@ -5363,14 +5417,70 @@ fn append_workflow_event(snapshot: &mut Value, event: Value) {
     }
 }
 
-fn agent_history_from_snapshot(snapshot: &Value, excluded_turn_ids: &[&str]) -> Vec<HistoryTurn> {
+/// Text history plus each user turn's attachments, resolved from storage so
+/// they survive provider restarts and provider switches.
+fn agent_history_from_snapshot(
+    repository: &ConversationRepository,
+    snapshot: &Value,
+    excluded_turn_ids: &[&str],
+) -> Vec<HistoryTurn> {
+    let conversation_id = snapshot["conversation_id"].as_str().unwrap_or_default();
+    let project_path = snapshot_project_path(snapshot).unwrap_or_default();
     snapshot
         .get("turns")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|turn| agent_history_turn_from_persisted_turn(turn, excluded_turn_ids))
+        .filter_map(|turn| {
+            let mut history_turn = agent_history_turn_from_persisted_turn(turn, excluded_turn_ids)?;
+            if let HistoryTurn::User(user_turn) = &mut history_turn {
+                user_turn.attachments = crate::attachments::turn_attachment_ids(turn)
+                    .iter()
+                    .filter_map(|id| {
+                        crate::attachments::resolve_attachment(
+                            repository,
+                            conversation_id,
+                            &project_path,
+                            id,
+                        )
+                        .ok()
+                        .flatten()
+                    })
+                    .collect();
+            }
+            Some(history_turn)
+        })
         .collect()
+}
+
+/// Codex and Claude Code take attachments; image input is limited to the
+/// formats both accept natively. Anything else is rejected, never dropped.
+fn validate_provider_attachments(
+    provider: &str,
+    attachments: &[spark_agent_adapter::AgentAttachment],
+) -> WorkspaceResult<()> {
+    let Some(first) = attachments.first() else {
+        return Ok(());
+    };
+    let provider_label = match provider.trim().to_ascii_lowercase().as_str() {
+        "codex" => "Codex",
+        "claude-code" | "claude_code" => "Claude Code",
+        _ => {
+            return Err(WorkspaceError::Validation(format!(
+                "Attachments need Codex or Claude Code; the {provider} provider cannot receive {}.",
+                first.filename
+            )))
+        }
+    };
+    if let Some(image) = attachments.iter().find(|attachment| {
+        attachment.media_type.starts_with("image/") && !attachment.is_native_image()
+    }) {
+        return Err(WorkspaceError::Validation(format!(
+            "{provider_label} cannot take {} images ({}). Use PNG, JPEG, GIF or WebP.",
+            image.media_type, image.filename
+        )));
+    }
+    Ok(())
 }
 
 fn agent_history_turn_from_persisted_turn(
@@ -5401,10 +5511,15 @@ fn agent_history_turn_from_persisted_turn(
     if !status.eq_ignore_ascii_case("complete") {
         return None;
     }
+    // An attachment-only user turn has no text but still belongs in history.
     let content = turn
         .get("content")
         .and_then(Value::as_str)
-        .and_then(non_empty_string)?;
+        .and_then(non_empty_string)
+        .or_else(|| {
+            (turn["role"] == "user" && !crate::attachments::turn_attachment_ids(turn).is_empty())
+                .then(String::new)
+        })?;
     let timestamp = history_turn_timestamp(turn);
     match turn.get("role").and_then(Value::as_str) {
         Some(role) if role.eq_ignore_ascii_case("user") => {

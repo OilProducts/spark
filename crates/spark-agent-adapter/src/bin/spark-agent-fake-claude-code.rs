@@ -72,7 +72,8 @@ fn main() {
             if let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) {
                 if message["type"] == "user" {
                     assert_eq!(message["message"]["role"], "user");
-                    assert!(message["message"]["content"].as_str().is_some());
+                    assert_user_content(&message["message"]["content"]);
+                    append_log(&format!("USER_CONTENT={}", message["message"]["content"]));
                     break;
                 }
                 if message["type"] == "control_request"
@@ -575,4 +576,53 @@ fn fake_auth(args: &[String]) -> ! {
         line.clear();
     }
     std::process::exit(1)
+}
+
+/// The stream-json user content shapes the installed CLI accepts: a plain
+/// string, or non-empty text blocks plus base64 image blocks in the formats
+/// Claude reads natively.
+fn assert_user_content(content: &Value) {
+    if content.is_string() {
+        return;
+    }
+    let blocks = content
+        .as_array()
+        .expect("content is a string or block array");
+    assert!(!blocks.is_empty(), "content blocks must not be empty");
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => assert!(
+                block["text"].as_str().is_some_and(|text| !text.is_empty()),
+                "text blocks need text: {block}"
+            ),
+            Some("image") => {
+                assert_eq!(block["source"]["type"], "base64", "{block}");
+                assert!(
+                    ["image/png", "image/jpeg", "image/gif", "image/webp"]
+                        .contains(&block["source"]["media_type"].as_str().unwrap_or_default()),
+                    "unsupported image media type: {block}"
+                );
+                assert!(
+                    block["source"]["data"]
+                        .as_str()
+                        .is_some_and(|data| !data.is_empty()),
+                    "image blocks need data: {block}"
+                );
+            }
+            _ => panic!("unexpected content block: {block}"),
+        }
+    }
+}
+
+fn append_log(line: &str) {
+    let Ok(log_path) = env::var("SPARK_FAKE_CLAUDE_CODE_LOG") else {
+        return;
+    };
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+    {
+        let _ = writeln!(log, "{line}");
+    }
 }

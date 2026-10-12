@@ -6,6 +6,7 @@ import type {
 import type { PipelineResultResponse } from '@/lib/attractorClient'
 import type { PendingConversationTurnState } from '@/features/projects/model/conversationState'
 import type { NormalizedConversationRecord } from '@/features/projects/model/projectsHomeState'
+import type { ComposerAttachment } from '@/features/projects/model/types'
 import type { ProjectGitMetadata } from '@/features/projects/model/presentation'
 import type {
     ArtifactErrorState,
@@ -39,6 +40,8 @@ export interface HomeConversationSessionState {
     expandedThinkingEntries: Record<string, boolean>
     isPinnedToBottom: boolean
     scrollTop: number | null
+    /** Unsent attachments, kept per chat so switching chats cannot send them elsewhere. */
+    attachments: ComposerAttachment[]
 }
 
 export interface RunsListSessionState {

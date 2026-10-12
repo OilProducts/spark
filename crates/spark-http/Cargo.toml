@@ -29,3 +29,4 @@ attractor-core = { path = "../attractor-core" }
 attractor-runtime = { path = "../attractor-runtime" }
 futures-util = "0.3"
 tempfile = "3.10"
+time = "0.3"

@@ -2,6 +2,7 @@
 
 //! Product-owned Workspace services for Rust HTTP compatibility milestones.
 
+pub mod attachments;
 pub mod conversations;
 pub mod errors;
 pub mod flows;
