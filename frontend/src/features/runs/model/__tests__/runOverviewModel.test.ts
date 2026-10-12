@@ -108,7 +108,7 @@ describe('didNotPassVisits', () => {
 describe('classifyRunFailure', () => {
   it.each([
     ['codergen backend failed: codex app-server error: codex app-server turn timed out waiting for activity', 'infrastructure'],
-    ['Unable to start execution container from image spark-mathlab:latest: failed to connect to the docker API', 'infrastructure'],
+    ['Unable to start execution container from image spark-runtime:latest: failed to connect to the docker API', 'infrastructure'],
     ['codergen backend failed: usage limit reached', 'infrastructure'],
     ['The binding task source changes/CR-2026-0001/request.md is missing from both the working directory and HEAD.', 'flow'],
     ['max retries exceeded', 'flow'],

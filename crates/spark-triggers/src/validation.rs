@@ -70,11 +70,6 @@ pub fn normalize_trigger_update(
                     "Protected triggers do not allow static context changes.",
                 ));
             }
-            if next_action.flow_allowlist != existing.action.flow_allowlist {
-                return Err(validation(
-                    "Protected triggers do not allow flow allowlist changes.",
-                ));
-            }
             if next_action.execution_profile_id != existing.action.execution_profile_id {
                 return Err(validation(
                     "Protected triggers do not allow execution profile changes.",
@@ -227,17 +222,6 @@ fn action_to_map(action: &TriggerAction) -> Map<String, Value> {
     payload.insert(
         "static_context".to_string(),
         Value::Object(action.static_context.clone()),
-    );
-    payload.insert(
-        "flow_allowlist".to_string(),
-        Value::Array(
-            action
-                .flow_allowlist
-                .iter()
-                .cloned()
-                .map(Value::String)
-                .collect(),
-        ),
     );
     payload.insert(
         "execution_profile_id".to_string(),

@@ -1,2 +1,0 @@
-tuza-ignite
-bsd-ignite

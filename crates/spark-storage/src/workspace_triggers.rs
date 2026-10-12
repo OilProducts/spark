@@ -16,7 +16,6 @@ const SOURCE_POLL: &str = "poll";
 const SOURCE_WEBHOOK: &str = "webhook";
 const SOURCE_FLOW_EVENT: &str = "flow_event";
 const ACTION_MODE_STATIC: &str = "static";
-const ACTION_MODE_WORKSPACE_DRAFT: &str = "workspace_draft";
 const WEEKDAY_ORDER: &[&str] = &["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const TERMINAL_PIPELINE_STATUSES: &[&str] = &[
     "completed",
@@ -39,8 +38,6 @@ pub struct TriggerAction {
     pub mission_id: Option<String>,
     pub project_path: Option<String>,
     pub static_context: Map<String, Value>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub flow_allowlist: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_profile_id: Option<String>,
 }
@@ -447,13 +444,10 @@ fn normalize_trigger_action_payload_at(
         .unwrap_or(ACTION_MODE_STATIC)
         .trim()
         .to_ascii_lowercase();
-    if !matches!(
-        mode.as_str(),
-        ACTION_MODE_STATIC | ACTION_MODE_WORKSPACE_DRAFT | "mission"
-    ) {
+    if !matches!(mode.as_str(), ACTION_MODE_STATIC | "mission") {
         return Err(invalid_trigger(
             path,
-            "Trigger action mode must be static, workspace_draft, or mission.",
+            "Trigger action mode must be static or mission.",
         ));
     }
     let flow_name = payload
@@ -520,27 +514,6 @@ fn normalize_trigger_action_payload_at(
             ))
         }
     };
-    if mode == ACTION_MODE_WORKSPACE_DRAFT && project_path.is_none() {
-        return Err(invalid_trigger(
-            path,
-            "Workspace-draft trigger actions require a project_path.",
-        ));
-    }
-    let flow_allowlist = payload
-        .get("flow_allowlist")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|value| json_value_to_python_string(&value).trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    if mode == ACTION_MODE_WORKSPACE_DRAFT && flow_allowlist.is_empty() {
-        return Err(invalid_trigger(
-            path,
-            "Workspace-draft trigger actions require a flow_allowlist.",
-        ));
-    }
     let execution_profile_id = payload
         .get("execution_profile_id")
         .and_then(|value| value.as_str())
@@ -553,7 +526,6 @@ fn normalize_trigger_action_payload_at(
         flow_name,
         project_path,
         static_context,
-        flow_allowlist,
         execution_profile_id,
     })
 }
@@ -886,18 +858,6 @@ fn trigger_definition_toml(definition: &TriggerDefinition) -> String {
             toml_string(&json_string_python_style(&Value::Object(
                 definition.action.static_context.clone()
             )))
-        ));
-    }
-    if !definition.action.flow_allowlist.is_empty() {
-        lines.push(format!(
-            "flow_allowlist = [{}]",
-            definition
-                .action
-                .flow_allowlist
-                .iter()
-                .map(|value| toml_string(value))
-                .collect::<Vec<_>>()
-                .join(", ")
         ));
     }
     if let Some(execution_profile_id) = definition.action.execution_profile_id.as_deref() {

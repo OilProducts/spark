@@ -36,7 +36,6 @@ nodes:
       command: |-
         set -eu
         mkdir -p .mathlab experiments
-        rm -f .mathlab/next-session.draft.json .mathlab/next-session.json .mathlab/next-session.launching.json
         if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
           cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
         fi
@@ -50,7 +49,6 @@ nodes:
       tool.command: |-
         set -eu
         mkdir -p .mathlab experiments
-        rm -f .mathlab/next-session.draft.json .mathlab/next-session.json .mathlab/next-session.launching.json
         if [ ! -f AGENTS.md ] && [ -f /opt/mathlab/workspace-template/AGENTS.md ]; then
           cp /opt/mathlab/workspace-template/AGENTS.md AGENTS.md
         fi
@@ -126,7 +124,7 @@ nodes:
     label: Synthesize
     config:
       kind: agent_task
-      prompt: 'Synthesize the verified experimental results into findings.md: what was computed, what it suggests, and what it rules out. Label every claim per AGENTS.md — new proof, formalization of a known result, located in literature, or computational evidence — and state the exact scope of each computation (parameters covered, cases exhausted, certificates checked). Conjectures must be stated as conjectures with the evidence that motivates them and the smallest open case. If context.review.required_changes is present, close those findings or labeling gaps. Then append a session entry to DOSSIER.md per its structure and update its status board: outcome, established results, failed attacks with what they taught, verified data locations, and open subproblems; dossier entries are append-only. Propose the natural next session in a closing section. Write that proposal to .mathlab/next-session.draft.json as JSON with exactly two fields: flow_name (the catalog YAML path) and inputs (an object keyed by that flow''s declared context input keys, with correctly typed values and every required input present). The declared keys per flow are exactly: math-research/explore-conjecture.yaml takes context.request.problem (required, string) and context.request.focus (string); math-research/prove-refute.yaml takes context.request.conjecture (required, string), context.request.notes (string), and context.request.max_rounds (string); math-research/formalize-result.yaml takes context.request.statement (required, string) and context.request.reference (string). Never reuse the current session''s own input keys for a different flow — a draft with undeclared keys is rejected at launch and strands the program. Respond with ONLY a JSON status envelope whose context_updates set context.findings.summary.'
+      prompt: 'Synthesize the verified experimental results into findings.md: what was computed, what it suggests, and what it rules out. Label every claim per AGENTS.md — new proof, formalization of a known result, located in literature, or computational evidence — and state the exact scope of each computation (parameters covered, cases exhausted, certificates checked). Conjectures must be stated as conjectures with the evidence that motivates them and the smallest open case. If context.review.required_changes is present, close those findings or labeling gaps. Then append a session entry to DOSSIER.md per its structure and update its status board: outcome, established results, failed attacks with what they taught, verified data locations, and open subproblems; dossier entries are append-only. Propose the natural next session in a closing section of findings.md. Respond with ONLY a JSON status envelope whose context_updates set context.findings.summary.'
     contracts:
       response: status_envelope
       reads_context:
@@ -140,7 +138,7 @@ nodes:
     label: Review Findings
     config:
       kind: agent_task
-      prompt: 'You are the adversarial reviewer of experimental mathematics. Treat findings.md, DOSSIER.md, experiments/, and .mathlab/next-session.draft.json as untrusted claims. Check that every claim is labeled per AGENTS.md and the label is truthful; that computational scopes are stated exactly and match what the programs actually cover (read the programs, not the prose); that certificates exist and experiments/verify.sh genuinely re-checks them rather than rubber-stamping; and that nothing presented as evidence is unreproducible. Check the DOSSIER.md session entry: it must be present, honest, and append-only — failed attacks recorded, nothing inflated, no prior entries rewritten. Inspect the next-session draft and require its selected flow and typed inputs to match the honest natural next step. Spot-check by re-running at least one experiment. Return outcome success only when the findings are honest, scoped, and verified. On failure, set context_updates for context.review.required_changes listing each violation precisely, and route your outcome preferred_label to the node that owns the fix: Experiment for evidence problems, Synthesize for labeling or scope problems. On success, clear context.review.required_changes to null. Respond with ONLY a JSON status envelope.'
+      prompt: 'You are the adversarial reviewer of experimental mathematics. Treat findings.md, DOSSIER.md, and experiments/ as untrusted claims. Check that every claim is labeled per AGENTS.md and the label is truthful; that computational scopes are stated exactly and match what the programs actually cover (read the programs, not the prose); that certificates exist and experiments/verify.sh genuinely re-checks them rather than rubber-stamping; and that nothing presented as evidence is unreproducible. Check the DOSSIER.md session entry: it must be present, honest, and append-only — failed attacks recorded, nothing inflated, no prior entries rewritten. Spot-check by re-running at least one experiment. Return outcome success only when the findings are honest, scoped, and verified. On failure, set context_updates for context.review.required_changes listing each violation precisely, and route your outcome preferred_label to the node that owns the fix: Experiment for evidence problems, Synthesize for labeling or scope problems. On success, clear context.review.required_changes to null. Respond with ONLY a JSON status envelope.'
     runtime:
       error_policy: continue
     contracts:
@@ -161,11 +159,8 @@ nodes:
           echo "Skipping commit: no repository changes detected."
           exit 0
         fi
-        git add -A -- . ':(exclude).mathlab/next-session.draft.json'
+        git add -A
         git commit -m "Explore: $(head -c 72 survey.md 2>/dev/null | head -1 || echo session)"
-        if [ -f .mathlab/next-session.draft.json ]; then
-          mv -f .mathlab/next-session.draft.json .mathlab/next-session.json
-        fi
     extensions:
       tool.artifacts.stderr: commit-findings.stderr.txt
       tool.artifacts.stdout: commit-findings.stdout.txt
@@ -175,11 +170,8 @@ nodes:
           echo "Skipping commit: no repository changes detected."
           exit 0
         fi
-        git add -A -- . ':(exclude).mathlab/next-session.draft.json'
+        git add -A
         git commit -m "Explore: $(head -c 72 survey.md 2>/dev/null | head -1 || echo session)"
-        if [ -f .mathlab/next-session.draft.json ]; then
-          mv -f .mathlab/next-session.draft.json .mathlab/next-session.json
-        fi
   done:
     kind: exit
     label: Done

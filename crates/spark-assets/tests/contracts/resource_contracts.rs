@@ -29,40 +29,6 @@ const STARTER_FLOW_NAMES: &[&str] = &[
 ];
 
 #[test]
-fn math_chain_deployment_removes_ignite_timers_and_keeps_one_completed_chain_per_project() {
-    let deployment = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../test-fixtures/math-flow-chaining/deployment");
-    let removed = fs::read_to_string(deployment.join("removed-trigger-ids.txt"))
-        .expect("removed trigger ids");
-    assert_eq!(
-        removed.lines().collect::<Vec<_>>(),
-        ["tuza-ignite", "bsd-ignite"]
-    );
-
-    let mut definitions = fs::read_dir(deployment.join("triggers"))
-        .expect("deployment trigger definitions")
-        .map(|entry| entry.expect("trigger entry").path())
-        .collect::<Vec<_>>();
-    definitions.sort();
-    assert_eq!(definitions.len(), 2);
-    for (path, project) in definitions.iter().zip(["bsd", "tuza"]) {
-        let expected_name = format!("{project}-chain.toml");
-        assert_eq!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some(expected_name.as_str())
-        );
-        let definition = fs::read_to_string(path).expect("trigger definition");
-        assert!(definition.contains("enabled = true"));
-        assert!(definition.contains("source_type = \"flow_event\""));
-        assert!(definition.contains("statuses = [\"completed\"]"));
-        assert_eq!(definition.matches("statuses =").count(), 1);
-        assert!(definition.contains(&format!("project_path = \"/workspace/projects/{project}\"")));
-        assert!(!definition.contains("schedule"));
-        assert!(!definition.contains("ignite"));
-    }
-}
-
-#[test]
 fn frontend_resource_order_prefers_explicit_ui_then_source_then_packaged() {
     let temp = tempfile::tempdir().expect("tempdir");
     let explicit_ui = temp.path().join("explicit-ui");
@@ -451,7 +417,7 @@ fn research_program_separates_correctness_from_substantive_progress() {
 }
 
 #[test]
-fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
+fn math_commit_tools_propagate_git_commit_failures() {
     for flow_name in [
         "math-research/explore-conjecture.yaml",
         "math-research/formalize-result.yaml",
@@ -466,7 +432,6 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
             .filter(|node| node.label.starts_with("Commit"))
             .filter_map(|node| serde_json::to_value(&node.config).ok())
             .filter_map(|config| config["command"].as_str().map(str::to_string))
-            .filter(|command| command.contains("next-session.draft.json"))
             .collect::<Vec<_>>();
         assert_eq!(commands.len(), 1, "{flow_name}");
 
@@ -478,13 +443,7 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
                 fs::write(repo.join("seed.txt"), "seed").expect("seed");
                 run_git(repo, &["add", "--all"]);
                 run_git(repo, &["commit", "-m", "initial"]);
-                fs::create_dir(repo.join(".mathlab")).expect("mathlab");
                 fs::write(repo.join("changed.txt"), format!("{flow_name}-{case}")).expect("change");
-                fs::write(
-                    repo.join(".mathlab/next-session.draft.json"),
-                    r#"{"flow_name":"next.yaml","inputs":{}}"#,
-                )
-                .expect("draft");
                 if !commit_succeeds {
                     fs::create_dir_all(repo.join(".git/hooks")).expect("hooks");
                     let hook = repo.join(".git/hooks/pre-commit");
@@ -507,16 +466,6 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
                     .status()
                     .expect("commit tool");
                 assert_eq!(status.success(), commit_succeeds, "{flow_name} case {case}");
-                assert_eq!(
-                    repo.join(".mathlab/next-session.json").is_file(),
-                    commit_succeeds,
-                    "{flow_name} case {case}"
-                );
-                assert_eq!(
-                    repo.join(".mathlab/next-session.draft.json").is_file(),
-                    !commit_succeeds,
-                    "{flow_name} case {case}"
-                );
             }
         }
     }

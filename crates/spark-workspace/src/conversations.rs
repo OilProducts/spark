@@ -2678,7 +2678,6 @@ impl WorkspaceConversationService {
         &self,
         request: TriggerActivationRequest,
     ) -> WorkspaceResult<String> {
-        let inject_top_level_inputs = crate::triggers::is_math_chain_trigger(&request);
         let trigger_id = request.trigger_id.clone();
         let flow_name = request.action.flow_name.clone();
         ensure_flow_exists(&self.settings, &flow_name)?;
@@ -2687,7 +2686,7 @@ impl WorkspaceConversationService {
             .project_path
             .clone()
             .unwrap_or_else(|| self.settings.data_dir.to_string_lossy().into_owned());
-        let mut launch_context = Map::from_iter([
+        let launch_context = Value::Object(Map::from_iter([
             (
                 "context.trigger_static".to_string(),
                 Value::Object(request.action.static_context.clone()),
@@ -2704,15 +2703,7 @@ impl WorkspaceConversationService {
                     "source_type": request.source_type,
                 }),
             ),
-        ]);
-        if inject_top_level_inputs {
-            launch_context.extend(request.action.static_context);
-            launch_context.insert(
-                "context.internal.math_chain_claim".to_string(),
-                Value::Bool(true),
-            );
-        }
-        let launch_context = Value::Object(launch_context);
+        ]));
         let artifact = json!({
             "flow_name": flow_name.clone(),
             "summary": format!("Trigger {trigger_id} fired {flow_name}."),

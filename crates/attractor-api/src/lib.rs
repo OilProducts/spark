@@ -1598,11 +1598,7 @@ impl AttractorApiService {
             Err(error) => return flow_definition_validation_response(error),
         };
 
-        let mut requested_context = request.launch_context.unwrap_or_default();
-        let math_chain_claim = requested_context
-            .remove("context.internal.math_chain_claim")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
+        let requested_context = request.launch_context.unwrap_or_default();
         let launch_context = match LaunchContext::new(requested_context.clone()) {
             Ok(launch_context) => launch_context,
             Err(error) => return validation_error_response(error.to_string()),
@@ -1895,22 +1891,6 @@ impl AttractorApiService {
                 }
             }
         } else {
-            if math_chain_claim {
-                let mathlab = Path::new(&working_directory).join(".mathlab");
-                let launching = mathlab.join("next-session.launching.json");
-                let launched = mathlab.join("next-session.launched.json");
-                if let Err(error) = fs::rename(&launching, &launched) {
-                    let _ = store.update_run_record(&run_id, |record| {
-                        record.status = "failed".to_string();
-                        record.last_error =
-                            format!("Next session could not promote its launch claim: {error}");
-                    });
-                    return RuntimeRouteResponse::json(
-                        500,
-                        json!({"detail": format!("Next session could not promote its launch claim: {error}")}),
-                    );
-                }
-            }
             if let Err(error) = self.spawn_detached_execution(
                 paths.clone(),
                 execute_request,
@@ -1918,13 +1898,6 @@ impl AttractorApiService {
                 execution_selection.clone(),
                 None,
             ) {
-                if math_chain_claim {
-                    let mathlab = Path::new(&working_directory).join(".mathlab");
-                    let _ = fs::rename(
-                        mathlab.join("next-session.launched.json"),
-                        mathlab.join("next-session.launching.json"),
-                    );
-                }
                 let _ = store.update_run_record(&run_id, |record| {
                     record.status = "failed".to_string();
                     record.outcome = Some("failure".to_string());
