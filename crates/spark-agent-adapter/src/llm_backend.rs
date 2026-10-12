@@ -1048,6 +1048,16 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
                 .run_agent_turn_with_event_sink(request, event_sink)
                 .map_err(claude_code_agent_error);
         }
+        if !crate::attachments::request_attachments(&request.metadata).is_empty() {
+            return Err(AgentError {
+                message: format!(
+                    "Attachments need Codex or Claude Code; the {} provider cannot receive them.",
+                    request.provider.as_deref().unwrap_or("selected")
+                ),
+                retryable: false,
+                raw: None,
+            });
+        }
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;

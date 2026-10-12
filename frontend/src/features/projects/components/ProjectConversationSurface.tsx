@@ -1,5 +1,5 @@
-import type { FormEvent, KeyboardEvent, ReactNode, RefObject } from 'react'
-import { ArrowUp, Folder } from 'lucide-react'
+import { useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { ArrowUp, Folder, Paperclip } from 'lucide-react'
 import { InlineError } from '@/components/app/inline-error'
 import { Button } from '@/components/ui/button'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
@@ -20,6 +20,8 @@ import type { ConversationChatMode } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import { cn } from '@/lib/utils'
 import { formatConversationAgeShort, formatConversationTimestamp } from '../model/projectsHomeState'
+import type { ComposerAttachment } from '../model/types'
+import { ComposerAttachments } from './ComposerAttachments'
 
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
@@ -43,6 +45,13 @@ interface ProjectConversationSurfaceProps {
     isConversationPinnedToBottom: boolean
     isNarrowViewport: boolean
     chatDraft: string
+    attachments?: ComposerAttachment[]
+    onAddAttachments?: (files: File[]) => void
+    onRetryAttachment?: (localId: string) => void
+    onRemoveAttachment?: (localId: string) => void
+    isAttachmentSendPending?: boolean
+    /** An upload is pending or failed, so the message cannot go yet. */
+    isUploadBlocking?: boolean
     chatSendButtonLabel: string
     isChatInputDisabled: boolean
     isChatSendDisabled: boolean
@@ -87,6 +96,12 @@ export function ProjectConversationSurface({
     isConversationPinnedToBottom,
     isNarrowViewport,
     chatDraft,
+    attachments = [],
+    onAddAttachments,
+    onRetryAttachment = () => undefined,
+    onRemoveAttachment = () => undefined,
+    isAttachmentSendPending = false,
+    isUploadBlocking = false,
     chatSendButtonLabel,
     isChatInputDisabled,
     isChatSendDisabled,
@@ -104,6 +119,31 @@ export function ProjectConversationSurface({
 }: ProjectConversationSurfaceProps) {
     const controlsDisabled = !activeProjectPath || isChatInputDisabled
     const hasProject = Boolean(activeProjectPath && activeProjectLabel)
+    const fileInputRef = useRef<HTMLInputElement>(null)
+    const [isDraggingFiles, setIsDraggingFiles] = useState(false)
+    const canAttach = Boolean(onAddAttachments) && !controlsDisabled
+    const hasMessage = chatDraft.trim().length > 0 || attachments.length > 0
+    // Clipboard files are attached; any plain text alongside them still
+    // pastes into the message box through the default paste.
+    const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+        const files = Array.from(event.clipboardData.files)
+        if (!canAttach || files.length === 0) return
+        if (!Array.from(event.clipboardData.types).includes('text/plain')) event.preventDefault()
+        onAddAttachments?.(files)
+    }
+    const dragHasFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes('Files')
+    const onComposerDragOver = (event: DragEvent<HTMLFormElement>) => {
+        if (!canAttach || !dragHasFiles(event)) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+        setIsDraggingFiles(true)
+    }
+    const onComposerDrop = (event: DragEvent<HTMLFormElement>) => {
+        setIsDraggingFiles(false)
+        if (!canAttach || !dragHasFiles(event)) return
+        event.preventDefault()
+        onAddAttachments?.(Array.from(event.dataTransfer.files))
+    }
     return (
         <div
             data-testid="project-ai-conversation-surface"
@@ -210,14 +250,22 @@ export function ProjectConversationSurface({
                                 <form
                                     data-testid="project-ai-conversation-composer"
                                     onSubmit={onChatComposerSubmit}
-                                    className="flex flex-col rounded-xl border border-input bg-background transition-[color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30"
+                                    onDragOver={onComposerDragOver}
+                                    onDragLeave={() => setIsDraggingFiles(false)}
+                                    onDrop={onComposerDrop}
+                                    className={cn(
+                                        'flex flex-col rounded-xl border border-input bg-background transition-[color,box-shadow] focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30',
+                                        isDraggingFiles && 'border-ring ring-2 ring-ring/30',
+                                    )}
                                 >
+                                    <ComposerAttachments attachments={attachments} onRetry={onRetryAttachment} onRemove={onRemoveAttachment} isSending={isAttachmentSendPending} />
                                     <Textarea
                                         id="project-ai-conversation-input"
                                         data-testid="project-ai-conversation-input"
                                         value={chatDraft}
                                         onChange={(event) => onChatDraftChange(event.target.value)}
                                         onKeyDown={onChatComposerKeyDown}
+                                        onPaste={onComposerPaste}
                                         aria-label="Message"
                                         placeholder="Reply, or describe a change to work on"
                                         className="max-h-[40vh] min-h-0 resize-none overflow-y-auto rounded-xl border-0 bg-transparent px-3.5 pb-1 pt-3 focus-visible:border-0 focus-visible:ring-0"
@@ -231,6 +279,33 @@ export function ProjectConversationSurface({
                                         {modelSettingsSource ? <span className="text-xs text-muted-foreground">{MODEL_SOURCE_LABELS[modelSettingsSource]}</span> : null}
                                         {defaultModel ? <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span> : null}
                                         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                                            {onAddAttachments ? (
+                                                <>
+                                                    <input
+                                                        ref={fileInputRef}
+                                                        data-testid="project-ai-conversation-file-input"
+                                                        type="file"
+                                                        multiple
+                                                        hidden
+                                                        onChange={(event) => {
+                                                            onAddAttachments(Array.from(event.target.files ?? []))
+                                                            event.target.value = ''
+                                                        }}
+                                                    />
+                                                    <Button
+                                                        type="button"
+                                                        data-testid="project-ai-conversation-attach-button"
+                                                        variant="ghost"
+                                                        size="icon-sm"
+                                                        aria-label="Attach files"
+                                                        title="Attach files (up to 10, 20 MB each, 50 MB per message)"
+                                                        disabled={!canAttach}
+                                                        onClick={() => fileInputRef.current?.click()}
+                                                    >
+                                                        <Paperclip />
+                                                    </Button>
+                                                </>
+                                            ) : null}
                                             {onStopTurn ? <Button type="button" variant="outline" size="sm" onClick={onStopTurn} data-testid="project-chat-stop">Stop</Button> : null}
                                             {modelSettingsSource === 'conversation' && onUseModelDefaults ? (
                                                 <Button type="button" size="sm" variant="ghost" disabled={controlsDisabled} onClick={onUseModelDefaults}>Use defaults</Button>
@@ -244,7 +319,7 @@ export function ProjectConversationSurface({
                                                 size="icon-sm"
                                                 aria-label={chatSendButtonLabel}
                                                 title={chatSendButtonLabel}
-                                                disabled={chatDraft.trim().length === 0 || isChatSendDisabled}
+                                                disabled={!hasMessage || isUploadBlocking || isChatSendDisabled}
                                             >
                                                 <ArrowUp />
                                             </Button>

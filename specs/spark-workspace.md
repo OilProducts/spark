@@ -212,6 +212,7 @@ The persistent authorities per conversation are:
 - `transcript.jsonl`: append-only full `turn_upsert` and `segment_upsert` records. Values are complete logical state, never raw deltas. Hydration is last-write-wins by stable id. Tool-call segments store a bounded output preview; full outputs live in per-segment `tool-output/<segment_id>.txt` records written at the commit boundary and fetched on demand.
 - `events.jsonl`: append-only detailed activity, including provider stream deltas. Transcript records reference their source event sequence so recovery only inspects the uncommitted event suffix.
 - `artifacts/<kind>.json` and `event-log.json`: artifact records (flow run requests, flow launches, run recoveries, proposed plans) and the workflow event log. Transcript segments anchor artifacts by id; artifact state never subordinates to render state.
+- `attachments/<attachment_id>/`: uploaded files (`attachment.json` with the display filename, detected media type and size; the bytes under a server-chosen name). User turns reference them by id in `attachments`. Unsent uploads older than 24 hours are removed when the conversation loads; sent ones live until the conversation is deleted. Limits: 10 files and 50 MiB per message, 20 MiB per file.
 - `runtime-session.json`: best-effort model continuity (backend thread id, resume-failure tombstone). A separate failure domain: losing it only costs thread resume, never render state.
 - `codex-jsonrpc-trace.jsonl`: optional exact Codex app-server protocol transcript for debugging upstream behavior.
 

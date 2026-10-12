@@ -1,4 +1,5 @@
 import type {
+    ConversationAttachmentResponse,
     ConversationSegmentResponse,
     ConversationSummaryResponse,
     ConversationTurnResponse,
@@ -6,6 +7,17 @@ import type {
     FlowRunRequestResponse,
     ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
+
+/** A file in a chat's unsent draft; `attachment` is set once the upload lands. */
+export interface ComposerAttachment {
+    localId: string
+    projectPath: string
+    file: File
+    previewUrl: string | null
+    status: 'uploading' | 'uploaded' | 'failed'
+    error: string | null
+    attachment: ConversationAttachmentResponse | null
+}
 
 export type ProjectConversationSummary = ConversationSummaryResponse
 export type ProjectFlowLaunch = FlowLaunchResponse
@@ -59,6 +71,7 @@ export type ConversationTimelineEntry =
         status: ConversationTurnStatus
         error?: string | null
         presentation?: 'default' | 'thinking'
+        attachments?: ConversationAttachmentResponse[]
     }
     | {
         id: string

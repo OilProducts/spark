@@ -6,9 +6,10 @@ use spark_agent_adapter::claude_code::auth::{
     ClaudeCodeConnection, ClaudeCodeConnectionStatus, AUTH_REQUIRED_MESSAGE,
 };
 use spark_agent_adapter::{
-    list_available_claude_code_models, AgentTurnBackend, AgentTurnRequest, ClaudeCodeBackend,
-    ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest, CodergenBackendResponse,
-    CodergenError, CodergenRuntimeMode, RustLlmAgentTurnBackend, RustLlmCodergenBackend,
+    list_available_claude_code_models, AgentAttachment, AgentTurnBackend, AgentTurnRequest,
+    ClaudeCodeBackend, ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest,
+    CodergenBackendResponse, CodergenError, CodergenRuntimeMode, HistoryTurn,
+    RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::events::TurnStreamEventKind;
@@ -940,4 +941,72 @@ fn claude_code_auth_failure_asks_for_sign_in_and_keeps_the_cli_reason() {
         error.details.unwrap()["result"],
         "Failed to authenticate: OAuth session expired and could not be refreshed"
     );
+}
+
+#[test]
+fn claude_code_sends_images_as_base64_blocks_and_files_as_references() {
+    use base64::Engine as _;
+
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let attachment = |name: &str, media_type: &str, bytes: &[u8]| {
+        let path = temp.path().join(name);
+        std::fs::write(&path, bytes).expect("attachment bytes");
+        AgentAttachment {
+            id: format!("att-{name}"),
+            filename: name.to_string(),
+            media_type: media_type.to_string(),
+            size_bytes: bytes.len() as u64,
+            path: path.to_string_lossy().to_string(),
+        }
+    };
+    let screenshot = attachment("shot.png", "image/png", b"\x89PNG\r\n\x1a\nfake");
+    let animation = attachment("loop.gif", "image/gif", b"GIF89afake");
+    let log = attachment("build.log", "text/plain", b"error");
+    let earlier = attachment("spec.pdf", "application/pdf", b"%PDF-1.4");
+    let mut earlier_turn = UserTurn::new("");
+    earlier_turn.attachments = vec![earlier.clone()];
+
+    // Image-only message on a fresh session.
+    let mut request = agent_request(temp.path());
+    request.prompt = String::new();
+    request.history = vec![HistoryTurn::User(earlier_turn)];
+    request.metadata.insert(
+        AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+        json!([screenshot, animation, log]),
+    );
+    RustLlmAgentTurnBackend::new(Client::new())
+        .run_turn(request)
+        .expect("attachment turn");
+    // Text-only input stays a plain string.
+    RustLlmAgentTurnBackend::new(Client::new())
+        .run_turn(agent_request(temp.path()))
+        .expect("text turn");
+
+    let contents = std::fs::read_to_string(&log_path)
+        .expect("log")
+        .lines()
+        .filter_map(|line| line.strip_prefix("USER_CONTENT="))
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("content json"))
+        .collect::<Vec<_>>();
+    assert_eq!(contents.len(), 2);
+    let blocks = contents[0].as_array().expect("content blocks");
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0]["type"], "text");
+    let text = blocks[0]["text"].as_str().expect("text");
+    assert!(text.starts_with("Attached files"));
+    assert!(text.contains(&log.path));
+    assert!(text.contains(&format!("Files attached earlier in this conversation (local copies):\n- spec.pdf (application/pdf, 8 bytes): {}", earlier.path)));
+    assert!(!text.contains("shot.png"));
+    assert_eq!(
+        blocks[1],
+        json!({"type": "image", "source": {"type": "base64", "media_type": "image/png",
+            "data": base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nfake")}})
+    );
+    assert_eq!(blocks[2]["source"]["media_type"], "image/gif");
+    assert_eq!(contents[1], json!("Prepare the change."));
 }

@@ -974,7 +974,7 @@ async fn request_user_input_answer_route_returns_backend_errors_without_expiring
     assert!(assistant_turn.get("error").is_none());
 }
 
-async fn request_json(
+pub(super) async fn request_json(
     app: axum::Router,
     method: &str,
     uri: &str,
@@ -1004,7 +1004,7 @@ async fn request_json(
     (status, value, content_type)
 }
 
-async fn wait_for_conversation_snapshot<F>(
+pub(super) async fn wait_for_conversation_snapshot<F>(
     settings: &SparkSettings,
     conversation_id: &str,
     project_path: &str,
@@ -1064,7 +1064,7 @@ async fn request_text(
 }
 
 #[derive(Clone)]
-struct ScriptedAgentTurnBackend {
+pub(super) struct ScriptedAgentTurnBackend {
     requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
     outputs: Arc<Mutex<VecDeque<AgentTurnOutput>>>,
     answer_requests: Arc<Mutex<Vec<AgentRequestUserInputAnswerRequest>>>,
@@ -1072,7 +1072,7 @@ struct ScriptedAgentTurnBackend {
 }
 
 impl ScriptedAgentTurnBackend {
-    fn new(outputs: Vec<AgentTurnOutput>) -> Self {
+    pub(super) fn new(outputs: Vec<AgentTurnOutput>) -> Self {
         Self::with_answer_outputs(outputs, Vec::new())
     }
 
@@ -1094,7 +1094,7 @@ impl ScriptedAgentTurnBackend {
         }
     }
 
-    fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
+    pub(super) fn requests(&self) -> Arc<Mutex<Vec<AgentTurnRequest>>> {
         Arc::clone(&self.requests)
     }
 
@@ -1379,7 +1379,7 @@ fn source(app_turn_id: &str, item_id: &str) -> TurnStreamSource {
     }
 }
 
-fn settings(root: &Path) -> SparkSettings {
+pub(super) fn settings(root: &Path) -> SparkSettings {
     SparkSettings {
         startup_sources: Default::default(),
         connections: Default::default(),

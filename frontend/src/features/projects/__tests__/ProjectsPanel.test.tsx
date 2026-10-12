@@ -489,7 +489,8 @@ describe('ProjectsPanel', () => {
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     expect(screen.queryByTestId('project-ai-conversation-history-list')).not.toBeInTheDocument()
-    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
+    // The draft stays until the server accepts the turn.
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('Show this message immediately.')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Sending...')
     expect(screen.getByTestId('project-ai-conversation-send-button')).toBeDisabled()
 
@@ -531,6 +532,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Show this message immediately.')
     })
+    expect(screen.getByTestId('project-ai-conversation-input')).toHaveValue('')
     const history = screen.getByTestId('project-ai-conversation-history-list')
     expect(within(history).getAllByText('Show this message immediately.')).toHaveLength(1)
     expect(history).not.toHaveTextContent('Visible.')
@@ -3732,7 +3734,7 @@ describe('ProjectsPanel', () => {
     expect(screen.getAllByTestId(/project-thinking-toggle-/)).toHaveLength(1)
   })
 
-  it('keeps the composer cleared when sending a turn fails', async () => {
+  it('keeps the composer text when sending a turn fails', async () => {
     const user = userEvent.setup()
     vi.stubGlobal(
       'fetch',
@@ -3776,13 +3778,13 @@ describe('ProjectsPanel', () => {
     renderProjectsPanel()
 
     const composer = screen.getByTestId('project-ai-conversation-input') as HTMLTextAreaElement
-    await user.type(composer, 'This should not jump back into the composer.')
+    await user.type(composer, 'Keep this for a retry.')
     await user.click(screen.getByTestId('project-ai-conversation-send-button'))
 
     await waitFor(() => {
       expect(screen.getByText('backend unavailable')).toBeVisible()
     })
-    expect(composer).toHaveValue('')
+    expect(composer).toHaveValue('Keep this for a retry.')
   })
 
   it('auto-follows at the live edge and shows a jump control when scrolled away', async () => {

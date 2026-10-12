@@ -3,8 +3,9 @@ import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSet
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
 import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeConnection'
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
-import { ChevronRight, Play, Terminal } from 'lucide-react'
+import { ChevronRight, FileText, Play, Terminal } from 'lucide-react'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
+import { formatAttachmentSize } from '@/features/projects/hooks/useComposerAttachments'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { StatusDot, statusTextClassName, type StatusTone } from '../status'
@@ -42,6 +43,13 @@ export interface TranscriptToolCall {
     filePaths: string[]
 }
 
+export interface TranscriptAttachment {
+    id: string
+    filename: string
+    media_type: string
+    size_bytes: number
+}
+
 export interface TranscriptMessageEntry {
     id: string
     role: 'user' | 'assistant'
@@ -50,6 +58,45 @@ export interface TranscriptMessageEntry {
     status: string
     error?: string | null
     presentation?: 'default' | 'thinking'
+    attachments?: TranscriptAttachment[]
+}
+
+const INLINE_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+/** A sent message's files: image previews and download links. */
+function MessageAttachments({
+    attachments,
+    attachmentUrl,
+}: {
+    attachments: TranscriptAttachment[]
+    attachmentUrl: (attachmentId: string) => string
+}) {
+    return (
+        <ul aria-label="Attachments" data-testid="message-attachments" className="mt-1.5 flex flex-wrap gap-2">
+            {attachments.map((attachment) => {
+                const url = attachmentUrl(attachment.id)
+                return (
+                    <li key={attachment.id} className="min-w-0">
+                        {INLINE_IMAGE_TYPES.includes(attachment.media_type) ? (
+                            <a href={url} target="_blank" rel="noreferrer" title={attachment.filename}>
+                                <img src={url} alt={attachment.filename} loading="lazy" className="max-h-48 max-w-full rounded-md border border-border object-contain" />
+                            </a>
+                        ) : (
+                            <a
+                                href={url}
+                                download={attachment.filename}
+                                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1 text-xs underline-offset-2 hover:underline"
+                            >
+                                <FileText aria-hidden="true" className="size-3.5 shrink-0" />
+                                <span className="truncate">{attachment.filename}</span>
+                                <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachment.size_bytes)}</span>
+                            </a>
+                        )}
+                    </li>
+                )
+            })}
+        </ul>
+    )
 }
 
 export interface TranscriptToolCallEntry {
@@ -429,10 +476,13 @@ export const MessageRow = memo(function MessageRow({
     entry,
     enableCopy = false,
     formatConversationTimestamp,
+    attachmentUrl,
 }: {
     entry: TranscriptMessageEntry
     enableCopy?: boolean
     formatConversationTimestamp: (value: string) => string
+    /** Where a message's attachments download from; without it they are not shown. */
+    attachmentUrl?: (attachmentId: string) => string
 }) {
     const shouldRenderAssistantMarkdown =
         entry.role === 'assistant'
@@ -450,7 +500,7 @@ export const MessageRow = memo(function MessageRow({
     const needsClaudeLogin = entry.role === 'assistant' && entry.status === 'failed'
         && isClaudeCodeAuthError(entry.error || entry.content)
     const canCopy = enableCopy && (
-        entry.role === 'user'
+        (entry.role === 'user' && entry.content.length > 0)
         || (
             entry.role === 'assistant'
             && entry.status === 'complete'
@@ -481,7 +531,7 @@ export const MessageRow = memo(function MessageRow({
                 <span className="sr-only">{entry.role === 'user' ? 'You' : entry.presentation === 'thinking' ? 'Thinking' : 'Spark'}: </span>
                 {shouldRenderAssistantMarkdown ? (
                     <ProjectConversationMarkdown content={entry.content} enableCodeCopy={enableCopy && entry.status === 'complete'} />
-                ) : (
+                ) : literalContent ? (
                     <p
                         className={`whitespace-pre-wrap text-sm leading-6 [overflow-wrap:anywhere] ${
                             entry.presentation === 'thinking' ? 'italic' : ''
@@ -492,7 +542,10 @@ export const MessageRow = memo(function MessageRow({
                             : needsClaudeLogin && isClaudeCodeAuthError(literalContent)
                                 ? 'Claude Code needs sign-in. Your conversation is saved.' : literalContent}
                     </p>
-                )}
+                ) : null}
+                {entry.attachments?.length && attachmentUrl ? (
+                    <MessageAttachments attachments={entry.attachments} attachmentUrl={attachmentUrl} />
+                ) : null}
                 {needsCodexLogin && <CodexReconnect />}
                 {needsClaudeLogin && <ClaudeCodeReconnect />}
             </div>

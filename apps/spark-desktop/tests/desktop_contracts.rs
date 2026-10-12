@@ -267,6 +267,18 @@ impl Drop for EnvVarGuard {
 }
 
 #[test]
+fn main_window_leaves_file_drops_to_the_web_ui() {
+    // Synthetic frontend drop events bypass Tauri's native drag-drop handler, so
+    // only the window builder shows whether real file drops reach HTML5 handlers.
+    let source = include_str!("../src/lib.rs");
+    let builder = &source[source
+        .find("WebviewWindowBuilder::new(app, \"main\"")
+        .expect("main window builder")..];
+    let builder = &builder[..builder.find(".build()").expect("window build call")];
+    assert!(builder.contains(".disable_drag_drop_handler()"));
+}
+
+#[test]
 fn desktop_permissions_are_restricted_to_expected_commands_and_origins() {
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();

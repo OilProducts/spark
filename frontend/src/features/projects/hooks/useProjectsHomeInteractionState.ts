@@ -2,6 +2,7 @@ import { useCallback, useMemo, type SetStateAction } from 'react'
 import { useStore } from '@/store'
 
 import type { PendingConversationTurnState } from '../model/conversationState'
+import type { ComposerAttachment } from '../model/types'
 
 type UseProjectsHomeInteractionStateArgs = {
     activeConversationId: string | null
@@ -20,6 +21,7 @@ const EMPTY_CONVERSATION_SESSION = {
     expandedThinkingEntries: {} as Record<string, boolean>,
     isPinnedToBottom: true,
     scrollTop: null as number | null,
+    attachments: [] as ComposerAttachment[],
 }
 
 export function useProjectsHomeInteractionState({

@@ -7,6 +7,8 @@ import {
 } from '@/lib/workspaceClient'
 import { useStore } from '@/store'
 import type { PendingConversationTurnState } from '../model/conversationState'
+import type { ComposerAttachment } from '../model/types'
+import { clearSentAttachments } from './useComposerAttachments'
 import { reconcileRunningChat } from './useChatRunning'
 
 export type ConversationComposerCommand =
@@ -44,6 +46,8 @@ export function parseConversationComposerCommand(value: string): ConversationCom
 type UseConversationComposerArgs = {
     activeProjectPath: string | null
     chatDraft: string
+    attachments: ComposerAttachment[]
+    isUploadBlocking: boolean
     isChatInputDisabled: boolean
     ensureConversationId: () => string | null
     getCurrentConversationId: (projectPath: string) => string | null
@@ -63,6 +67,8 @@ type UseConversationComposerArgs = {
 export function useConversationComposer({
     activeProjectPath,
     chatDraft,
+    attachments,
+    isUploadBlocking,
     isChatInputDisabled,
     ensureConversationId,
     getCurrentConversationId,
@@ -105,11 +111,12 @@ export function useConversationComposer({
     }
 
     const onSendChatMessage = async () => {
-        if (!activeProjectPath || isChatInputDisabled) {
+        if (!activeProjectPath || isChatInputDisabled || isUploadBlocking) {
             return
         }
         const trimmed = chatDraft.trim()
-        if (!trimmed) {
+        const sending = attachments.filter((entry) => entry.attachment !== null)
+        if (!trimmed && sending.length === 0) {
             return
         }
         const parsedCommand = parseConversationComposerCommand(trimmed)
@@ -119,13 +126,16 @@ export function useConversationComposer({
         }
 
         setPanelError(null)
-        setChatDraft('')
-        if (parsedCommand?.kind === 'switch_mode') {
+        if (parsedCommand?.kind === 'switch_mode' && sending.length === 0) {
+            setChatDraft('')
             await switchChatMode(conversationId, parsedCommand.chatMode)
             return
         }
-        const messageToSend = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.message : trimmed
-        const chatMode = parsedCommand?.kind === 'switch_and_send' ? parsedCommand.chatMode : null
+        const messageToSend = parsedCommand?.kind === 'switch_and_send'
+            ? parsedCommand.message
+            : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
+        const chatMode = parsedCommand?.chatMode ?? null
+        const attachmentIds = sending.map((entry) => entry.attachment!.id)
         const afterRevision = getCurrentConversationRevision(conversationId)
         setPendingConversationTurn({ conversationId, afterRevision })
         // The activity bar follows the turn even after the chat is left.
@@ -135,8 +145,15 @@ export function useConversationComposer({
             const snapshot = await sendConversationTurnValidated(conversationId, {
                 project_path: activeProjectPath,
                 message: messageToSend,
+                ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
                 chat_mode: chatMode,
             })
+            // Accepted: clear what was sent, keeping anything typed or attached meanwhile.
+            clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
+            const store = useStore.getState()
+            if (store.homeProjectSessionsByPath[activeProjectPath]?.chatDraft === chatDraft) {
+                store.updateHomeProjectSession(activeProjectPath, { chatDraft: '' })
+            }
             setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
             applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {

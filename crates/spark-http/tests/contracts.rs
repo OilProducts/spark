@@ -2,6 +2,8 @@
 mod deprecated_route_error_contracts;
 #[path = "contracts/product_shell_contracts.rs"]
 mod product_shell_contracts;
+#[path = "contracts/workspace_conversation_attachment_route_contracts.rs"]
+mod workspace_conversation_attachment_route_contracts;
 #[path = "contracts/workspace_conversation_route_contracts.rs"]
 mod workspace_conversation_route_contracts;
 #[path = "contracts/workspace_conversation_turn_route_contracts.rs"]

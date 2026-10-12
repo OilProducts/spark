@@ -5,6 +5,7 @@ import { useStore } from '@/store'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
 import type { ModelSettings } from '@/lib/api/settingsApi'
 import {
+    conversationAttachmentUrl,
     submitConversationRequestUserInputValidated,
     interruptConversationTurnValidated,
     updateConversationSettingsValidated,
@@ -12,6 +13,7 @@ import {
 } from '@/lib/workspaceClient'
 import { useHomeSidebarLayout } from './useHomeSidebarLayout'
 import { useConversationComposer } from './useConversationComposer'
+import { useComposerAttachments } from './useComposerAttachments'
 import { useConversationReviews } from './useConversationReviews'
 import { useProjectConversationCache } from './useProjectConversationCache'
 import { useProjectsHomeInteractionState } from './useProjectsHomeInteractionState'
@@ -254,6 +256,18 @@ export function useProjectsHomeController() {
         node.scrollTop = node.scrollHeight
     }, [activeProjectPath, conversationBodyRef, conversationHistoryRevisionKey])
 
+    const attachmentUrl = useMemo(() => (
+        activeConversationId && activeProjectPath
+            ? (attachmentId: string) => conversationAttachmentUrl(activeConversationId, attachmentId, activeProjectPath)
+            : undefined
+    ), [activeConversationId, activeProjectPath])
+    const composerAttachments = useComposerAttachments({
+        activeConversationId,
+        activeProjectPath,
+        ensureConversationId,
+        setPanelError,
+    })
+
     const {
         onChatComposerKeyDown,
         onChatComposerSubmit,
@@ -261,6 +275,8 @@ export function useProjectsHomeController() {
     } = useConversationComposer({
         activeProjectPath,
         chatDraft,
+        attachments: composerAttachments.attachments,
+        isUploadBlocking: composerAttachments.isUploadBlocking,
         isChatInputDisabled: isChatSubmissionDisabled,
         ensureConversationId,
         getCurrentConversationId: (projectPath) => (
@@ -406,6 +422,7 @@ export function useProjectsHomeController() {
         historyProps: {
             activeConversationId,
             activeProjectPath,
+            attachmentUrl,
             isConversationHistoryLoading,
             hasRenderableConversationHistory,
             activeConversationHistory,
@@ -464,6 +481,12 @@ export function useProjectsHomeController() {
             isConversationPinnedToBottom,
             isNarrowViewport,
             chatDraft,
+            attachments: composerAttachments.attachments,
+            onAddAttachments: composerAttachments.addFiles,
+            onRetryAttachment: composerAttachments.retry,
+            onRemoveAttachment: composerAttachments.remove,
+            isAttachmentSendPending: composerAttachments.isSending,
+            isUploadBlocking: composerAttachments.isUploadBlocking,
             chatSendButtonLabel,
             isChatInputDisabled,
             isChatSendDisabled: isChatSubmissionDisabled,

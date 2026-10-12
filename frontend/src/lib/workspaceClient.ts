@@ -1,4 +1,5 @@
 export {
+    type ConversationAttachmentResponse,
     type ConversationChatMode,
     type ConversationDeleteResponse,
     type ConversationSnapshotResponse,
@@ -28,6 +29,10 @@ export {
     type WorkspaceFlowLaunchPolicyResponse,
     type WorkspaceFlowResponse,
     type WorkspaceSettingsResponse,
+    CONVERSATION_ATTACHMENT_LIMITS,
+    conversationAttachmentUrl,
+    deleteConversationAttachmentValidated,
+    uploadConversationAttachmentValidated,
     createTriggerValidated,
     deleteConversationValidated,
     deleteTriggerValidated,

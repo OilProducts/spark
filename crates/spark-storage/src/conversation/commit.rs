@@ -53,19 +53,9 @@ impl ConversationRepository {
             .project_paths(project_path)?
             .conversations_dir
             .join(conversation_id);
-        fs::create_dir_all(&root).map_err(|e| StorageError::io("create conversation", &root, e))?;
-        let lock_path = root.join(".commit.lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .map_err(|e| StorageError::io("open conversation lock", &lock_path, e))?;
         // Hold the lock through revision allocation and publication, across
         // instances/processes.
-        lock.lock_exclusive()
-            .map_err(|e| StorageError::io("lock conversation", &lock_path, e))?;
+        let _lock = self.lock_conversation(conversation_id, project_path)?;
         let latest_snapshot = self.read_snapshot(conversation_id, Some(project_path))?;
         if latest_snapshot.is_none() && base_revision != 0 {
             return Err(commit_rejected(
@@ -91,6 +81,7 @@ impl ConversationRepository {
         }
 
         validate_segment_targets(conversation_id, &record, &mutations)?;
+        self.validate_new_turn_attachments(conversation_id, &record, &mutations)?;
 
         let record_paths = ConversationRecordPaths::new(
             self.project_paths(&record.meta.project_path)?
@@ -246,6 +237,62 @@ impl ConversationRepository {
             revision: final_revision,
             rebased,
         })
+    }
+
+    /// The conversation's exclusive commit lock, held until the file drops.
+    /// Attachment deletion takes it too, so a delete and a commit that
+    /// references the attachment cannot interleave.
+    pub(crate) fn lock_conversation(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> Result<fs::File> {
+        let root = self
+            .project_paths(project_path)?
+            .conversations_dir
+            .join(conversation_id);
+        fs::create_dir_all(&root).map_err(|e| StorageError::io("create conversation", &root, e))?;
+        let lock_path = root.join(".commit.lock");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| StorageError::io("open conversation lock", &lock_path, e))?;
+        lock.lock_exclusive()
+            .map_err(|e| StorageError::io("lock conversation", &lock_path, e))?;
+        Ok(lock)
+    }
+
+    /// A turn may only start referencing attachments that are stored and
+    /// readable at commit time.
+    fn validate_new_turn_attachments(
+        &self,
+        conversation_id: &str,
+        record: &ConversationRecord,
+        mutations: &[ConversationMutation],
+    ) -> Result<()> {
+        for mutation in mutations {
+            let ConversationMutation::TurnUpserted { turn } = mutation else {
+                continue;
+            };
+            if record.transcript.find_turn(&turn.id).is_some() {
+                continue;
+            }
+            for id in super::attachments::turn_attachment_ids(turn.extra.get("attachments")) {
+                if self
+                    .read_attachment(conversation_id, &record.meta.project_path, &id)?
+                    .is_none()
+                {
+                    return Err(commit_rejected(
+                        conversation_id,
+                        &format!("Attachment {id} is not available in this conversation. Remove it and attach the file again."),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn ensure_record_handle(&self, record: &mut ConversationRecord, now: &str) -> Result<()> {

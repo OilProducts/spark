@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::rejection::{BytesRejection, JsonRejection, QueryRejection};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
@@ -112,6 +112,16 @@ pub fn router() -> Router<HttpAppState> {
             get(get_conversation_segment_tool_output),
         )
         .route(
+            "/conversations/{conversation_id}/attachments",
+            post(upload_conversation_attachment).layer(DefaultBodyLimit::max(
+                spark_workspace::attachments::MAX_ATTACHMENT_BYTES + 1,
+            )),
+        )
+        .route(
+            "/conversations/{conversation_id}/attachments/{attachment_id}",
+            get(download_conversation_attachment).delete(delete_conversation_attachment),
+        )
+        .route(
             "/conversations/{conversation_id}/interrupt",
             post(interrupt_conversation_turn),
         )
@@ -163,6 +173,14 @@ struct ProjectConversationsQuery {
 #[derive(Debug, Default, Deserialize)]
 struct ConversationQuery {
     project_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentUploadQuery {
+    #[serde(default)]
+    project_path: String,
+    #[serde(default)]
+    filename: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -681,6 +699,100 @@ async fn delete_conversation(
     let query = query_payload(payload)?;
     WorkspaceConversationService::new((*settings).clone())
         .delete_conversation(&conversation_id, &query.project_path)
+        .map(Json)
+        .map_err(Into::into)
+}
+
+/// Raw request body upload; the filename travels as display metadata only.
+async fn upload_conversation_attachment(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath(conversation_id): AxumPath<String>,
+    query: Result<Query<AttachmentUploadQuery>, QueryRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Value> {
+    let query = query_payload(query)?;
+    let body = body.map_err(|_| {
+        WorkspaceError::Validation("Attachments are limited to 20 MiB per file.".to_string())
+    })?;
+    tokio::task::spawn_blocking(move || {
+        WorkspaceConversationService::new((*settings).clone()).upload_attachment(
+            &conversation_id,
+            &query.project_path,
+            &query.filename,
+            &body,
+        )
+    })
+    .await
+    .map_err(|error| WorkspaceError::Internal(format!("attachment upload task failed: {error}")))?
+    .map(|attachment| Json(json!(attachment)))
+    .map_err(Into::into)
+}
+
+/// Native images display inline; every other type downloads, so uploaded
+/// HTML or SVG never renders in the app's origin.
+async fn download_conversation_attachment(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath((conversation_id, attachment_id)): AxumPath<(String, String)>,
+    payload: Result<Query<ConversationQuery>, QueryRejection>,
+) -> Result<Response, WorkspaceApiError> {
+    let query = optional_query_payload(payload)?;
+    let (attachment, bytes) = WorkspaceConversationService::new((*settings).clone())
+        .read_attachment(
+            &conversation_id,
+            query.project_path.as_deref().unwrap_or_default(),
+            &attachment_id,
+        )?;
+    let inline = spark_agent_adapter::attachments::NATIVE_IMAGE_MEDIA_TYPES
+        .contains(&attachment.media_type.as_str());
+    let content_type = if inline {
+        attachment.media_type.as_str()
+    } else {
+        "application/octet-stream"
+    };
+    let encoded_name = attachment
+        .filename
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+                (byte as char).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect::<String>();
+    let disposition = format!(
+        "{}; filename*=UTF-8''{encoded_name}",
+        if inline { "inline" } else { "attachment" }
+    );
+    let mut response = (StatusCode::OK, bytes).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type)
+            .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream")),
+    );
+    if let Ok(value) = HeaderValue::from_str(&disposition) {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    Ok(response)
+}
+
+async fn delete_conversation_attachment(
+    State(settings): State<Arc<SparkSettings>>,
+    AxumPath((conversation_id, attachment_id)): AxumPath<(String, String)>,
+    payload: Result<Query<ConversationQuery>, QueryRejection>,
+) -> ApiResult<Value> {
+    let query = optional_query_payload(payload)?;
+    WorkspaceConversationService::new((*settings).clone())
+        .delete_draft_attachment(
+            &conversation_id,
+            query.project_path.as_deref().unwrap_or_default(),
+            &attachment_id,
+        )
         .map(Json)
         .map_err(Into::into)
 }

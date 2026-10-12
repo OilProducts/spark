@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod apply_patch;
+pub mod attachments;
 pub mod boundary_cli;
 pub mod claude_code;
 pub mod codergen;
@@ -29,6 +30,7 @@ pub use agent::{
     AgentTurnBackend, AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
+pub use attachments::{AgentAttachment, AGENT_ATTACHMENTS_METADATA_KEY};
 pub use claude_code::{
     claude_code_models_from_list_result, list_available_claude_code_models,
     usage_from_claude_code_usage_payload, ClaudeCodeBackend, ClaudeCodeError,

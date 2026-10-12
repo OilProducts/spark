@@ -260,6 +260,7 @@ export function buildConversationTimelineEntriesForTurn(
             timestamp: turn.timestamp,
             status: turn.status,
             error: turn.error ?? null,
+            ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         }]
     }
     return []

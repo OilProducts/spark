@@ -237,14 +237,31 @@ impl CodexAppServerBackend {
             .as_deref()
             .and_then(non_empty)
             .map(str::to_string);
-        let thread_id = if let Some(thread_id) = metadata_string(
+        let resume_thread_id = metadata_string(
             &request.metadata,
             &[
                 "spark.runtime.codex_app_server.thread_id",
                 "codex_app_server.thread_id",
                 "codex_thread_id",
             ],
-        ) {
+        );
+        let attachments = crate::attachments::request_attachments(&request.metadata);
+        let earlier_attachments = if resume_thread_id.is_some() {
+            Vec::new()
+        } else {
+            crate::attachments::history_attachments(&request.history)
+        };
+        let prompt = crate::attachments::prompt_with_attachment_references(
+            &request.prompt,
+            &attachments,
+            &earlier_attachments,
+        );
+        let local_images = attachments
+            .iter()
+            .filter(|attachment| attachment.is_native_image())
+            .map(|attachment| attachment.path.clone())
+            .collect::<Vec<_>>();
+        let thread_id = if let Some(thread_id) = resume_thread_id {
             match client.resume_thread(&thread_id, model.as_deref(), Some(&request.project_path)) {
                 Ok(resumed) => resumed,
                 // Authentication failure says nothing about the saved thread's validity.
@@ -270,7 +287,8 @@ impl CodexAppServerBackend {
         let capture_path = crate::initial_context::path_from_metadata(&request.metadata);
         let result = client.run_turn_with_capture(
             &thread_id,
-            &request.prompt,
+            &prompt,
+            &local_images,
             model.as_deref(),
             request.reasoning_effort.as_deref(),
             request
@@ -666,6 +684,7 @@ impl CodexAppServerClient {
         self.run_turn_with_capture(
             thread_id,
             prompt,
+            &[],
             model,
             reasoning_effort,
             None,
@@ -683,6 +702,7 @@ impl CodexAppServerClient {
         &mut self,
         thread_id: &str,
         prompt: &str,
+        local_images: &[String],
         model: Option<&str>,
         reasoning_effort: Option<&str>,
         reasoning_summary: Option<&str>,
@@ -693,9 +713,19 @@ impl CodexAppServerClient {
         capture_path: Option<&Path>,
         capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
+        // An image-only turn sends no empty text item.
+        let mut input = Vec::new();
+        if !prompt.is_empty() || local_images.is_empty() {
+            input.push(json!({"type": "text", "text": prompt}));
+        }
+        input.extend(
+            local_images
+                .iter()
+                .map(|path| json!({"type": "localImage", "path": path})),
+        );
         let mut params = json!({
             "threadId": thread_id,
-            "input": [{"type": "text", "text": prompt}],
+            "input": input,
             "approvalPolicy": "never",
             "sandboxPolicy": {"type": "dangerFullAccess"},
             "cwd": cwd,
@@ -724,11 +754,7 @@ impl CodexAppServerClient {
         // stays detailed summaries; an explicitly chosen level wins.
         params["summary"] = json!(reasoning_summary.unwrap_or(DEFAULT_REASONING_SUMMARY));
         if let Some(path) = capture_path {
-            let turn_input = params
-                .pointer("/input/0/text")
-                .and_then(Value::as_str)
-                .expect("turn/start text input must be finalized");
-            crate::initial_context::write_if_absent(path, turn_input).map_err(|error| {
+            crate::initial_context::write_if_absent(path, prompt).map_err(|error| {
                 CodexAppServerError::artifact(format!(
                     "persist initial LLM context at {}: {error}",
                     path.display()

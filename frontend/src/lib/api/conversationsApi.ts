@@ -7,7 +7,22 @@ import {
     expectObjectRecord,
     expectString,
 } from './shared'
-import { fetchWorkspaceJsonValidated } from './apiClient'
+import { fetchWorkspaceJsonValidated, workspaceUrl } from './apiClient'
+
+/** An uploaded conversation file; sent user turns carry these references. */
+export interface ConversationAttachmentResponse {
+    id: string
+    filename: string
+    media_type: string
+    size_bytes: number
+}
+
+/** Server-enforced limits, mirrored so the composer can refuse early. */
+export const CONVERSATION_ATTACHMENT_LIMITS = {
+    maxFiles: 10,
+    maxFileBytes: 20 * 1024 * 1024,
+    maxMessageBytes: 50 * 1024 * 1024,
+} as const
 
 export interface ConversationTurnResponse {
     id: string
@@ -20,6 +35,7 @@ export interface ConversationTurnResponse {
     parent_turn_id?: string | null
     error?: string | null
     token_usage?: Record<string, unknown> | null
+    attachments?: ConversationAttachmentResponse[]
 }
 
 export type ConversationChatMode = 'chat' | 'plan'
@@ -263,6 +279,11 @@ function parseConversationTurnResponse(value: unknown): ConversationTurnResponse
         || record.status === 'failed'
         ? record.status
         : 'complete'
+    const attachments = Array.isArray(record.attachments)
+        ? record.attachments
+            .map((entry) => parseConversationAttachment(entry))
+            .filter((entry): entry is ConversationAttachmentResponse => entry !== null)
+        : []
     return {
         id: record.id,
         role,
@@ -274,6 +295,26 @@ function parseConversationTurnResponse(value: unknown): ConversationTurnResponse
         parent_turn_id: asOptionalNullableString(record.parent_turn_id),
         error: asOptionalNullableString(record.error),
         token_usage: asUnknownRecord(record.token_usage),
+        ...(attachments.length > 0 ? { attachments } : {}),
+    }
+}
+
+function parseConversationAttachment(value: unknown): ConversationAttachmentResponse | null {
+    const record = asUnknownRecord(value)
+    if (
+        !record
+        || typeof record.id !== 'string'
+        || typeof record.filename !== 'string'
+        || typeof record.media_type !== 'string'
+        || typeof record.size_bytes !== 'number'
+    ) {
+        return null
+    }
+    return {
+        id: record.id,
+        filename: record.filename,
+        media_type: record.media_type,
+        size_bytes: record.size_bytes,
     }
 }
 
@@ -858,11 +899,56 @@ export async function deleteConversationValidated(
     )
 }
 
+export function conversationAttachmentUrl(conversationId: string, attachmentId: string, projectPath: string): string {
+    return workspaceUrl(
+        `/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}?project_path=${encodeURIComponent(projectPath)}`,
+    )
+}
+
+/** Uploads the raw file; the server detects the media type and assigns the id. */
+export async function uploadConversationAttachmentValidated(
+    conversationId: string,
+    projectPath: string,
+    file: File,
+): Promise<ConversationAttachmentResponse> {
+    const endpoint = '/workspace/api/conversations/{id}/attachments'
+    return fetchWorkspaceJsonValidated(
+        `/conversations/${encodeURIComponent(conversationId)}/attachments?project_path=${encodeURIComponent(projectPath)}&filename=${encodeURIComponent(file.name)}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: file,
+        },
+        endpoint,
+        (payload) => {
+            const attachment = parseConversationAttachment(payload)
+            if (!attachment) {
+                throw new ApiSchemaError(endpoint, 'Invalid attachment response.')
+            }
+            return attachment
+        },
+    )
+}
+
+export async function deleteConversationAttachmentValidated(
+    conversationId: string,
+    attachmentId: string,
+    projectPath: string,
+): Promise<void> {
+    await fetchWorkspaceJsonValidated(
+        `/conversations/${encodeURIComponent(conversationId)}/attachments/${encodeURIComponent(attachmentId)}?project_path=${encodeURIComponent(projectPath)}`,
+        { method: 'DELETE' },
+        '/workspace/api/conversations/{id}/attachments/{attachmentId}',
+        () => undefined,
+    )
+}
+
 export async function sendConversationTurnValidated(
     conversationId: string,
     payload: {
         project_path: string
         message: string
+        attachment_ids?: string[]
         provider?: string | null
         llm_profile?: string | null
         model?: string | null
