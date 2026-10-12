@@ -93,9 +93,7 @@ export function useComposerAttachments({
                 problems.push(`A message can carry at most ${maxFiles} attachments.`)
                 break
             }
-            if (file.size === 0) {
-                problems.push(`${file.name} is empty.`)
-            } else if (file.size > maxFileBytes) {
+            if (file.size > maxFileBytes) {
                 problems.push(`${file.name} is larger than the 20 MB per-file limit.`)
             } else if (total + file.size > maxMessageBytes) {
                 problems.push(`${file.name} would take this message past its 50 MB limit.`)
@@ -125,8 +123,13 @@ export function useComposerAttachments({
         void upload(activeConversationId, entry)
     }, [activeConversationId])
 
+    // A send in flight still references the draft's uploads; keep them until the server answers.
+    const isSending = useStore((state) => (
+        activeConversationId ? Boolean(state.runningChats[activeConversationId]?.sending) : false
+    ))
+
     const remove = useCallback((localId: string) => {
-        if (!activeConversationId) return
+        if (!activeConversationId || useStore.getState().runningChats[activeConversationId]?.sending) return
         const removed = readDraft(activeConversationId).filter((item) => item.localId === localId)
         updateDraft(activeConversationId, (draft) => draft.filter((item) => item.localId !== localId))
         release(removed)
@@ -143,6 +146,7 @@ export function useComposerAttachments({
         addFiles,
         retry,
         remove,
+        isSending,
         isUploadBlocking: attachments.some((entry) => entry.status !== 'uploaded'),
     }
 }

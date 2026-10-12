@@ -49,6 +49,7 @@ interface ProjectConversationSurfaceProps {
     onAddAttachments?: (files: File[]) => void
     onRetryAttachment?: (localId: string) => void
     onRemoveAttachment?: (localId: string) => void
+    isAttachmentSendPending?: boolean
     /** An upload is pending or failed, so the message cannot go yet. */
     isUploadBlocking?: boolean
     chatSendButtonLabel: string
@@ -99,6 +100,7 @@ export function ProjectConversationSurface({
     onAddAttachments,
     onRetryAttachment = () => undefined,
     onRemoveAttachment = () => undefined,
+    isAttachmentSendPending = false,
     isUploadBlocking = false,
     chatSendButtonLabel,
     isChatInputDisabled,
@@ -256,7 +258,7 @@ export function ProjectConversationSurface({
                                         isDraggingFiles && 'border-ring ring-2 ring-ring/30',
                                     )}
                                 >
-                                    <ComposerAttachments attachments={attachments} onRetry={onRetryAttachment} onRemove={onRemoveAttachment} />
+                                    <ComposerAttachments attachments={attachments} onRetry={onRetryAttachment} onRemove={onRemoveAttachment} isSending={isAttachmentSendPending} />
                                     <Textarea
                                         id="project-ai-conversation-input"
                                         data-testid="project-ai-conversation-input"

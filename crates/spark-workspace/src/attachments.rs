@@ -27,9 +27,6 @@ impl WorkspaceConversationService {
         filename: &str,
         bytes: &[u8],
     ) -> WorkspaceResult<ConversationAttachment> {
-        if bytes.is_empty() {
-            return Err(WorkspaceError::Validation("The file is empty.".to_string()));
-        }
         if bytes.len() > MAX_ATTACHMENT_BYTES {
             return Err(WorkspaceError::Validation(
                 "Attachments are limited to 20 MiB per file.".to_string(),

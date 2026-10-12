@@ -221,6 +221,41 @@ async fn attachments_upload_send_download_and_restore_into_history() {
 }
 
 #[tokio::test]
+async fn empty_files_upload_send_persist_and_download() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+
+    let (status, empty) = upload(&app, "chat-a", "empty.txt", Vec::new()).await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    assert_eq!(empty["size_bytes"], 0);
+    let (status, _) = send(
+        &app,
+        "chat-a",
+        json!({"project_path": PROJECT, "message": "", "provider": "codex",
+            "attachment_ids": [empty["id"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    wait_for_answers(&settings, "chat-a", 1).await;
+
+    // Persisted: the stored user turn still references the empty file.
+    wait_for_conversation_snapshot(&settings, "chat-a", PROJECT, |snapshot| {
+        snapshot["turns"][0]["attachments"][0]["id"] == empty["id"]
+    })
+    .await;
+    let (status, _, bytes) = request_raw(
+        app.clone(),
+        "GET",
+        &attachment_url("chat-a", empty["id"].as_str().unwrap()),
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(bytes.is_empty());
+}
+
+#[tokio::test]
 async fn attachment_limits_scope_and_provider_support_are_enforced_on_the_server() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

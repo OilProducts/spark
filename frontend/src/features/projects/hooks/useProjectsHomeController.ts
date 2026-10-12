@@ -485,6 +485,7 @@ export function useProjectsHomeController() {
             onAddAttachments: composerAttachments.addFiles,
             onRetryAttachment: composerAttachments.retry,
             onRemoveAttachment: composerAttachments.remove,
+            isAttachmentSendPending: composerAttachments.isSending,
             isUploadBlocking: composerAttachments.isUploadBlocking,
             chatSendButtonLabel,
             isChatInputDisabled,

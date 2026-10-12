@@ -8,10 +8,13 @@ export function ComposerAttachments({
     attachments,
     onRetry,
     onRemove,
+    isSending = false,
 }: {
     attachments: ComposerAttachment[]
     onRetry: (localId: string) => void
     onRemove: (localId: string) => void
+    /** A send referencing these uploads awaits the server's answer. */
+    isSending?: boolean
 }) {
     if (attachments.length === 0) {
         return null
@@ -49,7 +52,7 @@ export function ComposerAttachments({
                                     <RotateCw />
                                 </Button>
                             ) : null}
-                            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${name}`} onClick={() => onRemove(entry.localId)}>
+                            <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${name}`} disabled={isSending} onClick={() => onRemove(entry.localId)}>
                                 <X />
                             </Button>
                         </li>

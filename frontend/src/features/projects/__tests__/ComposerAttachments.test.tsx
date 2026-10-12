@@ -30,7 +30,7 @@ const snapshot = (conversationId: string, turns: unknown[] = []) => ({
 type Upload = { conversationId: string; filename: string; size: number }
 
 /** A fetch double for the chat endpoints; uploads answer with sequential ids. */
-function stubServer({ failUploads = 0, failTurns = 0 } = {}) {
+function stubServer({ failUploads = 0, failTurns = 0, turnGate = Promise.resolve() } = {}) {
   const uploads: Upload[] = []
   const deletes: string[] = []
   const turns: Array<{ conversationId: string; body: Record<string, unknown> }> = []
@@ -73,6 +73,7 @@ function stubServer({ failUploads = 0, failTurns = 0 } = {}) {
     if (parsed.pathname.endsWith('/turns')) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>
       turns.push({ conversationId, body })
+      await turnGate
       if (turnFailures > 0) {
         turnFailures -= 1
         return json({ detail: 'backend unavailable' }, 503)
@@ -262,6 +263,49 @@ describe('composer attachments', () => {
     await user.click(sendButton())
     await waitFor(() => expect(pendingAttachments()).toHaveLength(0))
     expect(server.turns.map((turn) => turn.body.attachment_ids)).toEqual([['att-1'], ['att-1']])
+  })
+
+  it('keeps attachments of an outstanding send until the server answers, then allows retry', async () => {
+    const user = userEvent.setup()
+    let answerTurn = () => undefined as void
+    const server = stubServer({ failTurns: 1, turnGate: new Promise<void>((resolve) => { answerTurn = resolve }) })
+    renderChat()
+
+    fireEvent.paste(input(), { clipboardData: { files: [png()], types: ['Files'] } })
+    await waitForUploads(1)
+    await user.click(sendButton())
+    await waitFor(() => expect(server.turns).toHaveLength(1))
+
+    const remove = screen.getByRole('button', { name: 'Remove screenshot.png' })
+    expect(remove).toBeDisabled()
+    fireEvent.click(remove)
+    expect(pendingAttachments()).toHaveLength(1)
+    expect(server.deletes).toEqual([])
+
+    answerTurn()
+    expect(await screen.findByText('backend unavailable')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Remove screenshot.png' })).toBeEnabled()
+    expect(server.deletes).toEqual([])
+
+    await user.click(sendButton())
+    await waitFor(() => expect(pendingAttachments()).toHaveLength(0))
+    expect(server.turns.map((turn) => turn.body.attachment_ids)).toEqual([['att-1'], ['att-1']])
+    expect(server.deletes).toEqual([])
+  })
+
+  it('attaches and sends an empty file', async () => {
+    const user = userEvent.setup()
+    const server = stubServer()
+    renderChat()
+
+    await user.upload(screen.getByTestId('project-ai-conversation-file-input'), new File([], 'empty.txt', { type: 'text/plain' }))
+    await waitForUploads(1)
+    expect(screen.queryByTestId('project-panel-error')).toBeNull()
+    await user.click(sendButton())
+
+    await waitFor(() => expect(server.turns).toHaveLength(1))
+    expect(server.uploads).toEqual([{ conversationId: 'chat-a', filename: 'empty.txt', size: 0 }])
+    expect(server.turns[0]!.body.attachment_ids).toEqual(['att-1'])
   })
 
   it('refuses files over the limits before uploading', async () => {
