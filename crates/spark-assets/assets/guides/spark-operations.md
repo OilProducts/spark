@@ -187,6 +187,7 @@ Notes:
 
 - `spark run launch` requires either `--conversation` or `--project`.
 - `spark convo run-request` launches only flows the flow catalog marks `agent_requestable`.
+- Before launching, inspect the flow's `inputs` with `spark flow get --flow <name>`. Supply required inputs using `--launch-context-json '<JSON object>'` or `--launch-context-file <path>`, keyed by the declared input keys (for example, `context.request.source_ref`). `--summary` describes the request; it does not populate workflow inputs.
 - `--goal-file` and `--launch-context-file` are available when inline text is inconvenient.
 - Use `--model`, `--llm-provider`, `--reasoning-effort`, and `--execution-profile` only when you need launch-time overrides; otherwise let the flow defaults and project settings apply.
 - `spark run launch` and `spark convo run-request` do not take `--llm-profile`; use flow defaults such as `ui_default_llm_profile`, or use `--llm-profile` on supported recovery commands.
