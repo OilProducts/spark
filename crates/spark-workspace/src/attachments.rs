@@ -68,18 +68,11 @@ impl WorkspaceConversationService {
         attachment_id: &str,
     ) -> WorkspaceResult<Value> {
         let project_path = self.bound_chat_project_path(conversation_id, project_path)?;
-        let repository = self.repository();
-        let snapshot = repository.read_snapshot(conversation_id, Some(&project_path))?;
-        if snapshot
-            .as_ref()
-            .is_some_and(|snapshot| referenced_attachment_ids(snapshot).contains(attachment_id))
-        {
-            return Err(WorkspaceError::Conflict(
-                "This attachment belongs to a sent message and stays until the conversation is deleted."
-                    .to_string(),
-            ));
-        }
-        if !repository.delete_attachment(conversation_id, &project_path, attachment_id)? {
+        if !self.repository().delete_unreferenced_attachment(
+            conversation_id,
+            &project_path,
+            attachment_id,
+        )? {
             return Err(unknown_attachment(attachment_id));
         }
         Ok(json!({"status": "deleted", "attachment_id": attachment_id}))
@@ -133,13 +126,10 @@ impl WorkspaceConversationService {
         &self,
         conversation_id: &str,
         project_path: &str,
-        snapshot: &Value,
     ) -> WorkspaceResult<Vec<String>> {
-        let referenced = referenced_attachment_ids(snapshot);
         Ok(self.repository().prune_attachments(
             conversation_id,
             project_path,
-            &referenced,
             OffsetDateTime::now_utc() - ABANDONED_UPLOAD_RETENTION,
         )?)
     }
@@ -179,23 +169,7 @@ pub(crate) fn turn_attachment_reference(attachment: &AgentAttachment) -> Value {
 }
 
 pub(crate) fn turn_attachment_ids(turn: &Value) -> Vec<String> {
-    turn.get("attachments")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|attachment| attachment.get("id").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect()
-}
-
-fn referenced_attachment_ids(snapshot: &Value) -> HashSet<String> {
-    snapshot
-        .get("turns")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .flat_map(turn_attachment_ids)
-        .collect()
+    spark_storage::conversation::turn_attachment_ids(turn.get("attachments"))
 }
 
 fn unknown_attachment(attachment_id: &str) -> WorkspaceError {

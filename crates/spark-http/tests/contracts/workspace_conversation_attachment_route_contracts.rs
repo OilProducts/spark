@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{to_bytes, Body};
 use axum::http::{HeaderMap, Request, StatusCode};
@@ -7,7 +8,8 @@ use serde_json::{json, Value};
 use spark_agent_adapter::{AgentTurnOutput, HistoryTurn, AGENT_ATTACHMENTS_METADATA_KEY};
 use spark_common::settings::SparkSettings;
 use spark_http::build_app_with_agent_turn_backend;
-use spark_storage::ConversationRepository;
+use spark_storage::conversation::{ConversationMutation, TranscriptTurn};
+use spark_storage::{ConversationRepository, StorageError};
 use tower::ServiceExt;
 
 use super::workspace_conversation_turn_route_contracts::{
@@ -389,12 +391,10 @@ async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_upload
         .conversations_dir
         .join("chat-c/attachments/att-interrupted");
     std::fs::create_dir_all(&leftover).expect("leftover");
-    let referenced = HashSet::from([sent["id"].as_str().unwrap().to_string()]);
     let mut removed = repository
         .prune_attachments(
             "chat-c",
             PROJECT,
-            &referenced,
             time::OffsetDateTime::now_utc() + time::Duration::hours(1),
         )
         .expect("prune");
@@ -431,4 +431,231 @@ async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_upload
         StatusCode::NOT_FOUND
     );
     assert!(!leftover.parent().unwrap().exists());
+}
+
+fn attachment_dir(settings: &SparkSettings, conversation_id: &str, attachment: &Value) -> PathBuf {
+    ConversationRepository::new(&settings.data_dir)
+        .project_paths(PROJECT)
+        .expect("project")
+        .conversations_dir
+        .join(conversation_id)
+        .join("attachments")
+        .join(attachment["id"].as_str().expect("id"))
+}
+
+fn content_path(settings: &SparkSettings, conversation_id: &str, attachment: &Value) -> PathBuf {
+    std::fs::read_dir(attachment_dir(settings, conversation_id, attachment))
+        .expect("attachment dir")
+        .map(|entry| entry.expect("entry").path())
+        .find(|path| path.file_name().unwrap() != "attachment.json")
+        .expect("content file")
+}
+
+fn user_turn_mutation(attachment: &Value) -> ConversationMutation {
+    let turn: TranscriptTurn = serde_json::from_value(json!({
+        "id": "turn-race", "role": "user", "content": "", "status": "complete",
+        "kind": "message", "attachments": [{"id": attachment["id"]}],
+    }))
+    .expect("turn");
+    ConversationMutation::TurnUpserted { turn }
+}
+
+fn turn_count(settings: &SparkSettings, conversation_id: &str) -> usize {
+    ConversationRepository::new(&settings.data_dir)
+        .read_snapshot(conversation_id, Some(PROJECT))
+        .expect("read")
+        .map_or(0, |snapshot| {
+            snapshot["turns"].as_array().expect("turns").len()
+        })
+}
+
+#[tokio::test]
+async fn uploads_with_missing_or_damaged_content_are_rejected_before_the_turn_persists() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = answers(1);
+    let requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+
+    let (_, removed) = upload(&app, "chat-d", "shot.png", PNG.to_vec()).await;
+    std::fs::remove_file(content_path(&settings, "chat-d", &removed)).expect("remove bytes");
+    let (_, damaged) = upload(&app, "chat-d", "notes.txt", b"notes".to_vec()).await;
+    std::fs::write(content_path(&settings, "chat-d", &damaged), b"no").expect("truncate");
+
+    for attachment in [&removed, &damaged] {
+        let (status, body) = send(
+            &app,
+            "chat-d",
+            json!({"project_path": PROJECT, "message": "Look", "provider": "codex",
+                "attachment_ids": [attachment["id"]]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["detail"]
+            .as_str()
+            .unwrap()
+            .contains("is not available in this conversation"));
+        let url = attachment_url("chat-d", attachment["id"].as_str().unwrap());
+        assert_eq!(
+            request_raw(app.clone(), "GET", &url, Vec::new()).await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(turn_count(&settings, "chat-d"), 0);
+    assert!(requests.lock().expect("requests").is_empty());
+}
+
+#[tokio::test]
+async fn restored_history_with_a_missing_attachment_fails_after_restart_and_provider_switch() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    // Scripted answers are numbered per backend, so the restart shares one.
+    let backend = Arc::new(answers(2));
+    let requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), backend.clone());
+    let (_, image) = upload(&app, "chat-e", "shot.png", PNG.to_vec()).await;
+    let (_, notes) = upload(&app, "chat-e", "notes.txt", b"notes".to_vec()).await;
+    let (status, _) = send(
+        &app,
+        "chat-e",
+        json!({"project_path": PROJECT, "message": "Here", "provider": "codex",
+            "attachment_ids": [image["id"], notes["id"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    wait_for_answers(&settings, "chat-e", 1).await;
+
+    // A restarted server rebuilds history from storage for either provider.
+    let app = build_app_with_agent_turn_backend(settings.clone(), backend);
+    let image_bytes = content_path(&settings, "chat-e", &image);
+    let notes_record = attachment_dir(&settings, "chat-e", &notes).join("attachment.json");
+    let record = std::fs::read(&notes_record).expect("record");
+
+    std::fs::remove_file(&image_bytes).expect("remove bytes");
+    let (status, body) = send(
+        &app,
+        "chat-e",
+        json!({"project_path": PROJECT, "message": "Again", "provider": "claude-code"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["detail"],
+        format!(
+            "Attachment {} from an earlier message is missing or unreadable, so the conversation history cannot be sent.",
+            image["id"].as_str().unwrap()
+        )
+    );
+    std::fs::write(&image_bytes, PNG).expect("restore bytes");
+
+    std::fs::remove_file(&notes_record).expect("remove record");
+    let (status, body) = send(
+        &app,
+        "chat-e",
+        json!({"project_path": PROJECT, "message": "Again", "provider": "codex"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["detail"]
+        .as_str()
+        .unwrap()
+        .contains(notes["id"].as_str().unwrap()));
+    assert_eq!(turn_count(&settings, "chat-e"), 2);
+    assert_eq!(requests.lock().expect("requests").len(), 1);
+
+    std::fs::write(&notes_record, record).expect("restore record");
+    let (status, _) = send(
+        &app,
+        "chat-e",
+        json!({"project_path": PROJECT, "message": "Again", "provider": "claude-code"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    wait_for_answers(&settings, "chat-e", 2).await;
+    let HistoryTurn::User(restored) = &requests.lock().expect("requests")[1].history[0] else {
+        panic!("first history turn is the user's");
+    };
+    assert_eq!(restored.attachments.len(), 2);
+}
+
+/// Deletion, cleanup and turn commits serialize on the conversation lock and
+/// re-check references under it, so in either order a referenced upload
+/// survives and a deleted one is never referenced.
+#[tokio::test]
+async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+    let repository = ConversationRepository::new(&settings.data_dir);
+    let past_window = || time::OffsetDateTime::now_utc() + time::Duration::hours(25);
+
+    // Delete or cleanup first: the send's commit is rejected.
+    let (_, deleted) = upload(&app, "chat-f", "a.txt", b"a".to_vec()).await;
+    let (_, pruned) = upload(&app, "chat-f", "b.txt", b"b".to_vec()).await;
+    let url = attachment_url("chat-f", deleted["id"].as_str().unwrap());
+    assert_eq!(
+        request_raw(app.clone(), "DELETE", &url, Vec::new()).await.0,
+        StatusCode::OK
+    );
+    repository
+        .prune_attachments("chat-f", PROJECT, past_window())
+        .expect("prune");
+    for attachment in [&deleted, &pruned] {
+        let error = repository
+            .commit_conversation("chat-f", PROJECT, 0, vec![user_turn_mutation(attachment)])
+            .expect_err("stale reference");
+        assert!(
+            matches!(error, StorageError::ConversationCommitRejected { .. }),
+            "{error}"
+        );
+    }
+    assert_eq!(turn_count(&settings, "chat-f"), 0);
+
+    // Send first: deletion conflicts and cleanup keeps the upload.
+    let (_, sent) = upload(&app, "chat-f", "c.txt", b"c".to_vec()).await;
+    repository
+        .commit_conversation("chat-f", PROJECT, 0, vec![user_turn_mutation(&sent)])
+        .expect("commit");
+    let url = attachment_url("chat-f", sent["id"].as_str().unwrap());
+    assert_eq!(
+        request_raw(app.clone(), "DELETE", &url, Vec::new()).await.0,
+        StatusCode::CONFLICT
+    );
+    assert!(repository
+        .prune_attachments("chat-f", PROJECT, past_window())
+        .expect("prune")
+        .is_empty());
+    assert_eq!(
+        request_raw(app.clone(), "GET", &url, Vec::new()).await.0,
+        StatusCode::OK
+    );
+
+    // Neither deletion nor cleanup proceeds while a commit holds the lock.
+    let (_, draft) = upload(&app, "chat-f", "d.txt", b"d".to_vec()).await;
+    let lock = std::fs::File::open(
+        repository
+            .project_paths(PROJECT)
+            .expect("project")
+            .conversations_dir
+            .join("chat-f/.commit.lock"),
+    )
+    .expect("lock file");
+    lock.lock().expect("hold conversation lock");
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let blocked = {
+        let repository = repository.clone();
+        let draft_id = draft["id"].as_str().unwrap().to_string();
+        std::thread::spawn(move || {
+            let pruned = repository.prune_attachments("chat-f", PROJECT, past_window());
+            let deleted = repository.delete_unreferenced_attachment("chat-f", PROJECT, &draft_id);
+            done_tx.send(()).expect("signal");
+            (pruned.expect("prune"), deleted.expect("delete"))
+        })
+    };
+    assert!(done_rx.recv_timeout(Duration::from_millis(300)).is_err());
+    assert!(attachment_dir(&settings, "chat-f", &draft).exists());
+    lock.unlock().expect("release");
+    let (pruned_ids, deleted_draft) = blocked.join().expect("thread");
+    assert_eq!(pruned_ids, vec![draft["id"].as_str().unwrap().to_string()]);
+    assert!(!deleted_draft);
 }

@@ -24,7 +24,7 @@ pub(crate) use tool_output::{
     externalize_segment_tool_output, externalize_tool_output, is_safe_segment_file_id,
 };
 
-pub use attachments::{ConversationAttachment, ATTACHMENTS_DIR_NAME};
+pub use attachments::{turn_attachment_ids, ConversationAttachment, ATTACHMENTS_DIR_NAME};
 pub use commit::ConversationCommit;
 pub use identity::{
     agent_event_segment_id, assistant_segment_id, context_compaction_segment_id,

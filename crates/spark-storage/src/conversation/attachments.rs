@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
@@ -82,7 +83,8 @@ impl ConversationRepository {
     }
 
     /// The attachment record and its content path, or `None` when this
-    /// conversation has no such attachment.
+    /// conversation has no such attachment or its stored content is missing,
+    /// unreadable or not the recorded size.
     pub fn read_attachment(
         &self,
         conversation_id: &str,
@@ -95,12 +97,16 @@ impl ConversationRepository {
         let dir = self
             .attachments_dir(conversation_id, project_path)?
             .join(attachment_id);
-        Ok(read_attachment_record(&dir)?
-            .filter(|record| record.id == attachment_id)
-            .map(|record| {
-                let path = dir.join(&record.stored_name);
-                (record, path)
-            }))
+        let Some(record) = read_attachment_record(&dir)?.filter(|record| {
+            record.id == attachment_id && is_safe_segment_file_id(&record.stored_name)
+        }) else {
+            return Ok(None);
+        };
+        let path = dir.join(&record.stored_name);
+        let readable = fs::File::open(&path)
+            .and_then(|file| file.metadata())
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() == record.size_bytes);
+        Ok(readable.then_some((record, path)))
     }
 
     pub fn list_attachments(
@@ -119,8 +125,11 @@ impl ConversationRepository {
         Ok(records)
     }
 
-    /// Delete one attachment. Returns whether it existed.
-    pub fn delete_attachment(
+    /// Delete one attachment no turn references. Returns whether it existed;
+    /// a referenced attachment is a `ConversationCommitRejected` error. Runs
+    /// under the conversation lock, so it cannot interleave with a commit
+    /// that starts referencing the attachment.
+    pub fn delete_unreferenced_attachment(
         &self,
         conversation_id: &str,
         project_path: &str,
@@ -132,6 +141,19 @@ impl ConversationRepository {
         let dir = self
             .attachments_dir(conversation_id, project_path)?
             .join(attachment_id);
+        if !dir.exists() {
+            return Ok(false);
+        }
+        let _lock = self.lock_conversation(conversation_id, project_path)?;
+        if self
+            .referenced_attachment_ids(conversation_id, project_path)?
+            .contains(attachment_id)
+        {
+            return Err(StorageError::ConversationCommitRejected {
+                conversation_id: conversation_id.to_string(),
+                reason: "This attachment belongs to a sent message and stays until the conversation is deleted.".to_string(),
+            });
+        }
         match fs::remove_dir_all(&dir) {
             Ok(()) => Ok(true),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -139,17 +161,22 @@ impl ConversationRepository {
         }
     }
 
-    /// Delete attachments not in `referenced` that are older than
-    /// `cutoff`, plus unpublished leftovers of interrupted uploads. Returns
-    /// the deleted ids.
+    /// Delete attachments no turn references that are older than `cutoff`,
+    /// plus unpublished leftovers of interrupted uploads. Returns the deleted
+    /// ids. Runs under the conversation lock, like
+    /// `delete_unreferenced_attachment`.
     pub fn prune_attachments(
         &self,
         conversation_id: &str,
         project_path: &str,
-        referenced: &HashSet<String>,
         cutoff: OffsetDateTime,
     ) -> Result<Vec<String>> {
         let dir = self.attachments_dir(conversation_id, project_path)?;
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let _lock = self.lock_conversation(conversation_id, project_path)?;
+        let referenced = self.referenced_attachment_ids(conversation_id, project_path)?;
         let mut removed = Vec::new();
         for entry in read_dir_or_empty(&dir)? {
             let created_at = match read_attachment_record(&entry)? {
@@ -174,6 +201,36 @@ impl ConversationRepository {
         }
         Ok(removed)
     }
+}
+
+impl ConversationRepository {
+    /// Ids referenced by the committed turns. Callers hold the conversation lock.
+    fn referenced_attachment_ids(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> Result<HashSet<String>> {
+        Ok(self
+            .read_snapshot(conversation_id, Some(project_path))?
+            .as_ref()
+            .and_then(|snapshot| snapshot.get("turns"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|turn| turn_attachment_ids(turn.get("attachments")))
+            .collect())
+    }
+}
+
+/// The ids in a turn's `attachments` references.
+pub fn turn_attachment_ids(attachments: Option<&Value>) -> Vec<String> {
+    attachments
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|attachment| attachment.get("id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
 }
 
 fn read_attachment_record(dir: &Path) -> Result<Option<ConversationAttachment>> {

@@ -2,6 +2,8 @@
 mod claude_code_contracts;
 #[path = "process_contracts/codex_app_server_contracts.rs"]
 mod codex_app_server_contracts;
+#[path = "process_contracts/installed_provider_contracts.rs"]
+mod installed_provider_contracts;
 #[path = "process_contracts/llm_backend_contracts.rs"]
 mod llm_backend_contracts;
 #[path = "process_contracts/local_environment_contracts.rs"]

@@ -800,7 +800,7 @@ impl WorkspaceConversationService {
         }
         // Best-effort: a failed cleanup must not block reading the conversation.
         if let Some(project_path) = snapshot_project_path(&snapshot) {
-            let _ = self.prune_abandoned_attachments(conversation_id, &project_path, &snapshot);
+            let _ = self.prune_abandoned_attachments(conversation_id, &project_path);
         }
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         self.attach_model_settings(&mut snapshot)?;
@@ -1153,6 +1153,8 @@ impl WorkspaceConversationService {
         }
         mutations.push(turn_mutation_from_value(&user_turn)?);
         mutations.push(turn_mutation_from_value(&assistant_turn)?);
+        // Resolved before the turn persists, so a broken history rejects it.
+        let history = agent_history_from_snapshot(&repository, &snapshot, &[])?;
         let commit = commit_conversation_mutations(
             &repository,
             conversation_id,
@@ -1220,11 +1222,7 @@ impl WorkspaceConversationService {
             conversation_id: conversation_id.to_string(),
             project_path: project_path.clone(),
             prompt: message.clone(),
-            history: agent_history_from_snapshot(
-                &repository,
-                &snapshot,
-                &[&user_turn_id, &assistant_turn_id],
-            ),
+            history,
             provider: Some(effective_provider.clone()),
             model: effective_model.clone(),
             llm_profile: effective_profile.clone(),
@@ -2041,7 +2039,7 @@ impl WorkspaceConversationService {
             .get("reasoning_effort")
             .and_then(Value::as_str)
             .and_then(non_empty_string);
-        let history = agent_history_from_snapshot(&repository, &snapshot, &[&assistant_turn_id]);
+        let history = agent_history_from_snapshot(&repository, &snapshot, &[&assistant_turn_id])?;
         let normalized_answer_strings = request_user_input_answer_strings(&normalized_answers);
         let submitted_at = iso_now();
         request_record.insert(
@@ -5418,39 +5416,46 @@ fn append_workflow_event(snapshot: &mut Value, event: Value) {
 }
 
 /// Text history plus each user turn's attachments, resolved from storage so
-/// they survive provider restarts and provider switches.
+/// they survive provider restarts and provider switches. A referenced
+/// attachment that is missing or unreadable is an error, never dropped.
 fn agent_history_from_snapshot(
     repository: &ConversationRepository,
     snapshot: &Value,
     excluded_turn_ids: &[&str],
-) -> Vec<HistoryTurn> {
+) -> WorkspaceResult<Vec<HistoryTurn>> {
     let conversation_id = snapshot["conversation_id"].as_str().unwrap_or_default();
     let project_path = snapshot_project_path(snapshot).unwrap_or_default();
-    snapshot
+    let mut history = Vec::new();
+    for turn in snapshot
         .get("turns")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|turn| {
-            let mut history_turn = agent_history_turn_from_persisted_turn(turn, excluded_turn_ids)?;
-            if let HistoryTurn::User(user_turn) = &mut history_turn {
-                user_turn.attachments = crate::attachments::turn_attachment_ids(turn)
-                    .iter()
-                    .filter_map(|id| {
-                        crate::attachments::resolve_attachment(
-                            repository,
-                            conversation_id,
-                            &project_path,
-                            id,
-                        )
-                        .ok()
-                        .flatten()
-                    })
-                    .collect();
+    {
+        let Some(mut history_turn) =
+            agent_history_turn_from_persisted_turn(turn, excluded_turn_ids)
+        else {
+            continue;
+        };
+        if let HistoryTurn::User(user_turn) = &mut history_turn {
+            for id in crate::attachments::turn_attachment_ids(turn) {
+                let attachment = crate::attachments::resolve_attachment(
+                    repository,
+                    conversation_id,
+                    &project_path,
+                    &id,
+                )?
+                .ok_or_else(|| {
+                    WorkspaceError::Conflict(format!(
+                        "Attachment {id} from an earlier message is missing or unreadable, so the conversation history cannot be sent."
+                    ))
+                })?;
+                user_turn.attachments.push(attachment);
             }
-            Some(history_turn)
-        })
-        .collect()
+        }
+        history.push(history_turn);
+    }
+    Ok(history)
 }
 
 /// Codex and Claude Code take attachments; image input is limited to the
