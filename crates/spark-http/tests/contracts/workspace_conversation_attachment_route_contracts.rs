@@ -341,6 +341,68 @@ async fn attachment_limits_scope_and_provider_support_are_enforced_on_the_server
 }
 
 #[tokio::test]
+async fn unsupported_image_formats_are_detected_and_reported_for_each_provider() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(answers(1)));
+
+    let svg = b"\xEF\xBB\xBF<?xml version=\"1.0\"?>\n<!-- logo -->\n<!DOCTYPE svg>\n\
+<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\"/></svg>\n";
+    // The leading ftyp and meta boxes libavif and libheif write.
+    let avif = b"\0\0\0\x20ftypavif\0\0\0\0avifmif1miafMA1B\0\0\x01\x0dmeta\0\0\0\0";
+    let heic = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic\0\0\x01\x0dmeta\0\0\0\0";
+    for (filename, bytes, media_type) in [
+        ("logo.svg", svg.to_vec(), "image/svg+xml"),
+        ("photo.avif", avif.to_vec(), "image/avif"),
+        ("photo.heic", heic.to_vec(), "image/heic"),
+    ] {
+        let (status, image) = upload(&app, "chat-u", filename, bytes).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(image["media_type"], media_type);
+        for (provider, label) in [("codex", "Codex"), ("claude-code", "Claude Code")] {
+            let (status, body) = send(
+                &app,
+                "chat-u",
+                json!({"project_path": PROJECT, "message": "x", "provider": provider, "attachment_ids": [image["id"]]}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body["detail"],
+                format!("{label} cannot take {media_type} images ({filename}). Use PNG, JPEG, GIF or WebP.")
+            );
+        }
+    }
+
+    // Uploaded SVG downloads; it never renders in the app's origin.
+    let (_, image) = upload(&app, "chat-u", "logo.svg", svg.to_vec()).await;
+    let (_, headers, _) = request_raw(
+        app.clone(),
+        "GET",
+        &attachment_url("chat-u", image["id"].as_str().unwrap()),
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(headers["content-type"], "application/octet-stream");
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename*=UTF-8''logo.svg"
+    );
+
+    // Text that only mentions SVG stays a text file and sends.
+    let (_, notes) = upload(&app, "chat-u", "notes.md", b"Use <svg> for icons.".to_vec()).await;
+    assert_eq!(notes["media_type"], "text/plain");
+    let (status, _) = send(
+        &app,
+        "chat-u",
+        json!({"project_path": PROJECT, "message": "x", "provider": "codex", "attachment_ids": [notes["id"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    wait_for_answers(&settings, "chat-u", 1).await;
+}
+
+#[tokio::test]
 async fn draft_removal_abandoned_cleanup_and_conversation_deletion_remove_uploads() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

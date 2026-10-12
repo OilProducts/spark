@@ -295,11 +295,71 @@ fn detect_media_type(bytes: &[u8]) -> (&'static str, &'static str) {
         ("image/bmp", "bmp")
     } else if bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*") {
         ("image/tiff", "tif")
+    } else if let Some(brand) = iso_media_image_brand(bytes) {
+        brand
     } else if bytes.starts_with(b"%PDF-") {
         ("application/pdf", "pdf")
+    } else if std::str::from_utf8(bytes).is_ok_and(is_svg) {
+        ("image/svg+xml", "svg")
     } else if std::str::from_utf8(bytes).is_ok() {
         ("text/plain", "txt")
     } else {
         ("application/octet-stream", "bin")
     }
+}
+
+/// AVIF or HEIF images, from the brands in a leading ISO media `ftyp` box.
+fn iso_media_image_brand(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.get(4..8) != Some(b"ftyp".as_slice()) {
+        return None;
+    }
+    let box_size = u32::from_be_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
+    let brands = bytes.get(8..box_size.min(bytes.len()))?;
+    // Major brand, minor version, then compatible brands.
+    let brands = brands
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(index, _)| *index != 1)
+        .map(|(_, brand)| brand)
+        .collect::<Vec<_>>();
+    if brands
+        .iter()
+        .any(|brand| matches!(*brand, b"avif" | b"avis"))
+    {
+        Some(("image/avif", "avif"))
+    } else if brands.iter().any(|brand| {
+        matches!(
+            *brand,
+            b"heic" | b"heix" | b"heim" | b"heis" | b"mif1" | b"msf1"
+        )
+    }) {
+        Some(("image/heic", "heic"))
+    } else {
+        None
+    }
+}
+
+/// Whether text is an SVG document: its first element, after any XML
+/// declaration, comments or doctype, is `<svg`.
+fn is_svg(text: &str) -> bool {
+    let mut rest = text.trim_start_matches('\u{feff}');
+    loop {
+        rest = rest.trim_start();
+        let close = if rest.starts_with("<?") {
+            "?>"
+        } else if rest.starts_with("<!--") {
+            "-->"
+        } else if rest.starts_with("<!") {
+            ">"
+        } else {
+            break;
+        };
+        match rest.find(close) {
+            Some(end) => rest = &rest[end + close.len()..],
+            None => return false,
+        }
+    }
+    rest.get(..4)
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("<svg"))
+        && rest[4..].starts_with(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
 }

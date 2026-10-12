@@ -121,15 +121,12 @@ export function ProjectConversationSurface({
     const [isDraggingFiles, setIsDraggingFiles] = useState(false)
     const canAttach = Boolean(onAddAttachments) && !controlsDisabled
     const hasMessage = chatDraft.trim().length > 0 || attachments.length > 0
-    // Clipboard files are attached, except for rich-text copies (text plus
-    // HTML), which also carry a picture of the selection: those paste as text.
+    // Clipboard files are attached; any plain text alongside them still
+    // pastes into the message box through the default paste.
     const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
         const files = Array.from(event.clipboardData.files)
-        const types = Array.from(event.clipboardData.types)
-        if (!canAttach || files.length === 0 || (types.includes('text/plain') && types.includes('text/html'))) {
-            return
-        }
-        event.preventDefault()
+        if (!canAttach || files.length === 0) return
+        if (!Array.from(event.clipboardData.types).includes('text/plain')) event.preventDefault()
         onAddAttachments?.(files)
     }
     const dragHasFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes('Files')

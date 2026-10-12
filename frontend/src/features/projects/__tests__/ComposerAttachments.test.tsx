@@ -174,6 +174,21 @@ describe('composer attachments', () => {
     expect(pendingAttachments()).toHaveLength(0)
   })
 
+  it('attaches clipboard files that arrive with text and HTML, and lets the text paste', async () => {
+    const server = stubServer()
+    renderChat()
+
+    const textPasses = fireEvent.paste(input(), {
+      clipboardData: { files: [png('copied.png')], types: ['text/plain', 'text/html', 'Files'] },
+    })
+    const filesOnlyPasses = fireEvent.paste(input(), { clipboardData: { files: [text()], types: ['Files'] } })
+
+    await waitForUploads(2)
+    expect(server.uploads.map((upload) => upload.filename)).toEqual(['copied.png', 'notes.txt'])
+    expect(textPasses).toBe(true)
+    expect(filesOnlyPasses).toBe(false)
+  })
+
   it('attaches pasted, dropped and selected files and sends them without text', async () => {
     const user = userEvent.setup()
     const server = stubServer()
