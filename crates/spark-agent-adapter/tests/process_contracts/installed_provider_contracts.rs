@@ -20,7 +20,7 @@ use super::test_support::ENV_LOCK;
 
 /// A 16x16 solid red PNG.
 const RED_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=";
-const PROMPT: &str = "What single colour fills the attached image, and what one word is in the attached text file? Reply only as colour,word in lowercase.";
+const PROMPT: &str = "Reply only as colour,word in lowercase. colour is the single colour filling the attached image, or none if no image reached you. word is the one word in the attached text file, or none if you cannot read it.";
 
 fn attachments(dir: &std::path::Path) -> Value {
     let image = base64::engine::general_purpose::STANDARD
@@ -58,12 +58,20 @@ fn request(dir: &std::path::Path, provider: &str) -> AgentTurnRequest {
     }
 }
 
+/// Delivery, not perception: the file word is exact, and the image only has
+/// to have reached the model (shade names vary between runs).
 fn assert_answer(answer: Option<String>) {
-    let answer = answer.unwrap_or_default().to_lowercase();
+    let answer = answer.unwrap_or_default().trim().to_lowercase();
+    let (colour, word) = answer
+        .trim_end_matches('.')
+        .split_once(',')
+        .unwrap_or_else(|| panic!("unexpected answer: {answer}"));
+    let colour = colour.trim();
     assert!(
-        answer.contains("red") && answer.contains("pineapple"),
-        "unexpected answer: {answer}"
+        !colour.is_empty() && colour != "none",
+        "image not delivered: {answer}"
     );
+    assert_eq!(word.trim(), "pineapple", "file not delivered: {answer}");
 }
 
 #[test]
@@ -83,7 +91,6 @@ fn installed_codex_accepts_local_images_and_file_references() {
         .run_agent_turn(request)
         .expect("installed codex turn");
     std::env::remove_var(ENV_SPARK_DEBUG_CODEX_JSONRPC);
-    assert_answer(output.final_assistant_text);
 
     // The request Spark sent matches the installed binary's own schema.
     let schema_dir = temp.path().join("schema");
@@ -110,6 +117,7 @@ fn installed_codex_accepts_local_images_and_file_references() {
     assert_eq!(turn_starts.len(), 1);
     assert!(validator.is_valid(&turn_starts[0]), "{}", turn_starts[0]);
     assert_eq!(turn_starts[0]["input"][1]["type"], "localImage");
+    assert_answer(output.final_assistant_text);
 }
 
 #[test]
@@ -120,5 +128,16 @@ fn installed_claude_code_accepts_image_blocks_and_file_references() {
     let output = RustLlmAgentTurnBackend::new(Client::new())
         .run_turn(request(temp.path(), "claude-code"))
         .expect("installed claude turn");
+    // The image is not referenced in the text, so a colour proves the native
+    // image block arrived, unless the agent went looking for the file.
+    let events = serde_json::to_string(&output.events).expect("events");
+    assert!(
+        !events.contains("swatch.png"),
+        "agent opened the image: {events}"
+    );
+    assert!(
+        events.contains("word.txt"),
+        "agent never read the file: {events}"
+    );
     assert_answer(output.final_assistant_text);
 }
