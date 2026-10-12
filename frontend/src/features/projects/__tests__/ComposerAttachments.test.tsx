@@ -306,6 +306,8 @@ describe('composer attachments', () => {
     await waitFor(() => expect(server.turns).toHaveLength(1))
     expect(server.uploads).toEqual([{ conversationId: 'chat-a', filename: 'empty.txt', size: 0 }])
     expect(server.turns[0]!.body.attachment_ids).toEqual(['att-1'])
+    const history = await screen.findByTestId('message-attachments')
+    expect(within(history).getByRole('link', { name: /empty\.txt/ })).toHaveTextContent('0 B')
   })
 
   it('refuses files over the limits before uploading', async () => {

@@ -5,6 +5,7 @@ import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeCo
 import { isCodexAuthError } from '@/features/settings/services/codexConnection'
 import { ChevronRight, FileText, Play, Terminal } from 'lucide-react'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
+import { formatAttachmentSize } from '@/features/projects/hooks/useComposerAttachments'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { StatusDot, statusTextClassName, type StatusTone } from '../status'
@@ -88,7 +89,7 @@ function MessageAttachments({
                             >
                                 <FileText aria-hidden="true" className="size-3.5 shrink-0" />
                                 <span className="truncate">{attachment.filename}</span>
-                                <span className="shrink-0 text-muted-foreground">{Math.max(1, Math.round(attachment.size_bytes / 1024))} KB</span>
+                                <span className="shrink-0 text-muted-foreground">{formatAttachmentSize(attachment.size_bytes)}</span>
                             </a>
                         )}
                     </li>
