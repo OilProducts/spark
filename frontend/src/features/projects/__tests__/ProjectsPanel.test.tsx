@@ -741,6 +741,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Thinking')
     })
+    expect(screen.getByTestId('chat-handle')).toHaveTextContent('amber-otter')
 
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can I interrupt?')
 

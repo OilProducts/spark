@@ -148,6 +148,7 @@ export function ProjectsSidebar({
                                                 selected={isActiveConversation}
                                                 aria-label={`Open thread ${conversation.title}`}
                                                 title={conversation.title}
+                                                meta={conversation.conversation_handle ? <span className="font-mono">{conversation.conversation_handle}</span> : null}
                                                 trailing={(
                                                     <span className="transition-opacity group-hover/thread:opacity-0 group-focus-within/thread:opacity-0">
                                                         {formatConversationAgeShort(conversation.updated_at)}

@@ -445,6 +445,7 @@ export function useProjectsHomeController() {
             activeProjectLabel: activeProjectPath ? projectLabel(projectRegistry, activeProjectPath) : null,
             activeProjectPath,
             activeConversationTitle: activeConversationRecord?.title ?? activeConversationSummary?.title ?? null,
+            activeConversationHandle: activeConversationRecord?.conversation_handle || activeConversationSummary?.conversation_handle || null,
             activeConversationUpdatedAt: activeConversationRecord?.updated_at ?? activeConversationSummary?.updated_at ?? null,
             activeChatMode,
             onChatModeChange: (mode: ConversationChatMode) => { void onSwitchChatMode(mode) },

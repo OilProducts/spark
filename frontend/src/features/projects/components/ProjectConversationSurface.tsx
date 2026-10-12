@@ -25,6 +25,7 @@ interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
     activeProjectPath: string | null
     activeConversationTitle?: string | null
+    activeConversationHandle?: string | null
     activeConversationUpdatedAt?: string | null
     activeChatMode: ConversationChatMode | null
     onChatModeChange?: (mode: ConversationChatMode) => void
@@ -69,6 +70,7 @@ export function ProjectConversationSurface({
     activeProjectLabel,
     activeProjectPath,
     activeConversationTitle = null,
+    activeConversationHandle = null,
     activeConversationUpdatedAt = null,
     activeChatMode,
     onChatModeChange,
@@ -114,6 +116,12 @@ export function ProjectConversationSurface({
                     </h1>
                     {hasProject ? (
                         <p className="flex min-w-0 items-center gap-1 text-sm text-muted-foreground">
+                            {activeConversationHandle ? (
+                                <>
+                                    <span data-testid="chat-handle" className="font-mono">{activeConversationHandle}</span>
+                                    <span aria-hidden="true">·</span>
+                                </>
+                            ) : null}
                             <button
                                 type="button"
                                 data-testid="chat-project-link"
