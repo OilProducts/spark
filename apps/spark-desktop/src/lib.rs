@@ -85,6 +85,8 @@ pub fn run() {
                 .title("Spark")
                 .inner_size(1280.0, 840.0)
                 .min_inner_size(960.0, 640.0)
+                // The native handler consumes file drops; the web UI handles HTML5 drops itself.
+                .disable_drag_drop_handler()
                 .build()
                 .map_err(|error| boxed_error(format!("Unable to create Spark window: {error}")))?;
             Ok(())
