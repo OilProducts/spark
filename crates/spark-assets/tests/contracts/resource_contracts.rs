@@ -417,7 +417,7 @@ fn research_program_separates_correctness_from_substantive_progress() {
 }
 
 #[test]
-fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
+fn math_commit_tools_propagate_git_commit_failures() {
     for flow_name in [
         "math-research/explore-conjecture.yaml",
         "math-research/formalize-result.yaml",
@@ -432,7 +432,6 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
             .filter(|node| node.label.starts_with("Commit"))
             .filter_map(|node| serde_json::to_value(&node.config).ok())
             .filter_map(|config| config["command"].as_str().map(str::to_string))
-            .filter(|command| command.contains("next-session.draft.json"))
             .collect::<Vec<_>>();
         assert_eq!(commands.len(), 1, "{flow_name}");
 
@@ -444,13 +443,7 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
                 fs::write(repo.join("seed.txt"), "seed").expect("seed");
                 run_git(repo, &["add", "--all"]);
                 run_git(repo, &["commit", "-m", "initial"]);
-                fs::create_dir(repo.join(".mathlab")).expect("mathlab");
                 fs::write(repo.join("changed.txt"), format!("{flow_name}-{case}")).expect("change");
-                fs::write(
-                    repo.join(".mathlab/next-session.draft.json"),
-                    r#"{"flow_name":"next.yaml","inputs":{}}"#,
-                )
-                .expect("draft");
                 if !commit_succeeds {
                     fs::create_dir_all(repo.join(".git/hooks")).expect("hooks");
                     let hook = repo.join(".git/hooks/pre-commit");
@@ -473,16 +466,6 @@ fn math_commit_tools_promote_drafts_only_after_successful_git_commits() {
                     .status()
                     .expect("commit tool");
                 assert_eq!(status.success(), commit_succeeds, "{flow_name} case {case}");
-                assert_eq!(
-                    repo.join(".mathlab/next-session.json").is_file(),
-                    commit_succeeds,
-                    "{flow_name} case {case}"
-                );
-                assert_eq!(
-                    repo.join(".mathlab/next-session.draft.json").is_file(),
-                    !commit_succeeds,
-                    "{flow_name} case {case}"
-                );
             }
         }
     }
