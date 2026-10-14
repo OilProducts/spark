@@ -519,6 +519,27 @@ fn main() {
                 "cache_read_input_tokens": 5,
                 "cache_creation_input_tokens": 2,
             },
+            // Cumulative per session, as 2.1.28x reports it: a resumed turn
+            // carries the first turn's usage plus its own.
+            "modelUsage": if args.iter().any(|arg| arg == "--resume") {
+                json!({
+                    "claude-opus-4-8": {"inputTokens": 4, "outputTokens": 40,
+                        "cacheReadInputTokens": 105, "cacheCreationInputTokens": 2,
+                        "thinkingTokens": 0, "costUSD": 0.75},
+                    "claude-haiku-4-5": {"inputTokens": 2, "outputTokens": 4,
+                        "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
+                        "thinkingTokens": 0, "costUSD": 0.01},
+                })
+            } else {
+                json!({
+                    "claude-opus-4-8": {"inputTokens": 3, "outputTokens": 30,
+                        "cacheReadInputTokens": 5, "cacheCreationInputTokens": 2,
+                        "thinkingTokens": 0, "costUSD": 0.5},
+                    "claude-haiku-4-5": {"inputTokens": 2, "outputTokens": 4,
+                        "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0,
+                        "thinkingTokens": 0, "costUSD": 0.01},
+                })
+            },
         }),
     );
 }

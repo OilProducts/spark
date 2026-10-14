@@ -12,12 +12,14 @@ use std::collections::BTreeMap;
 use attractor_core::JournalEntry;
 use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TokenUsageBucket {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// The cost the backend reported (`cost_usd`), if any.
+    pub cost_usd: Option<f64>,
 }
 
 impl TokenUsageBucket {
@@ -26,6 +28,9 @@ impl TokenUsageBucket {
         self.cached_input_tokens += other.cached_input_tokens;
         self.output_tokens += other.output_tokens;
         self.total_tokens += other.total_tokens;
+        if let Some(cost) = other.cost_usd {
+            self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + cost);
+        }
     }
 
     fn has_any_usage(&self) -> bool {
@@ -67,6 +72,7 @@ impl TokenUsageBucket {
             cached_input_tokens,
             output_tokens,
             total_tokens,
+            cost_usd: payload.get("cost_usd").and_then(Value::as_f64),
         };
         bucket.has_any_usage().then_some(bucket)
     }
@@ -93,7 +99,7 @@ fn value_as_u64(value: &Value) -> Option<u64> {
     value.as_str().and_then(|text| text.trim().parse().ok())
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TokenUsageBreakdown {
     pub totals: TokenUsageBucket,
     pub by_model: BTreeMap<String, TokenUsageBucket>,
@@ -106,7 +112,7 @@ pub struct RunUsageAccumulator {
     fallback_model: String,
     completed: TokenUsageBreakdown,
     legacy: TokenUsageBreakdown,
-    in_flight: BTreeMap<String, (String, TokenUsageBucket)>,
+    in_flight: BTreeMap<String, Vec<(String, TokenUsageBucket)>>,
     completed_has_usage: bool,
 }
 
@@ -143,15 +149,13 @@ impl RunUsageAccumulator {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if SESSION_EVENT_TYPES.contains(&event_type) {
-                if let Some((model, bucket)) = usage_from_payload(payload, &self.fallback_model) {
-                    self.in_flight.insert(node_id.to_string(), (model, bucket));
+                let usage = usage_from_payload(payload, &self.fallback_model);
+                if !usage.is_empty() {
+                    self.in_flight.insert(node_id.to_string(), usage);
                 }
             } else if REQUEST_COMPLETED_EVENT_TYPES.contains(&event_type) {
                 self.in_flight.remove(node_id);
-                if let Some((model, bucket)) = usage_from_payload(payload, &self.fallback_model) {
-                    self.completed.add_for_model(&model, &bucket);
-                    self.completed_has_usage = true;
-                }
+                self.add_completed(payload);
             }
         }
     }
@@ -162,7 +166,7 @@ impl RunUsageAccumulator {
         } else {
             self.legacy.clone()
         };
-        for (model, bucket) in self.in_flight.values() {
+        for (model, bucket) in self.in_flight.values().flatten() {
             breakdown.add_for_model(model, bucket);
         }
         breakdown.has_any_usage().then_some(breakdown)
@@ -192,10 +196,10 @@ impl RunUsageAccumulator {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 if SESSION_EVENT_TYPES.contains(&event_type) {
-                    if let Some((model, bucket)) =
-                        usage_from_payload(entry.payload.get("payload"), &self.fallback_model)
-                    {
-                        self.in_flight.insert(node_id.to_string(), (model, bucket));
+                    let usage =
+                        usage_from_payload(entry.payload.get("payload"), &self.fallback_model);
+                    if !usage.is_empty() {
+                        self.in_flight.insert(node_id.to_string(), usage);
                     }
                     return;
                 }
@@ -218,27 +222,51 @@ impl RunUsageAccumulator {
         if completed {
             self.in_flight.remove(node_id);
         }
-        if let Some((model, bucket)) = usage_from_payload(payload, &self.fallback_model) {
+        self.add_completed(payload);
+    }
+
+    fn add_completed(&mut self, payload: Option<&Value>) {
+        for (model, bucket) in usage_from_payload(payload, &self.fallback_model) {
             self.completed.add_for_model(&model, &bucket);
             self.completed_has_usage = true;
         }
     }
 }
 
+/// A payload's usage per model: the backend's own `token_usage.by_model`
+/// when it reports one (the models that actually ran), else the whole usage
+/// under the requested model.
 fn usage_from_payload(
     payload: Option<&Value>,
     fallback_model: &str,
-) -> Option<(String, TokenUsageBucket)> {
-    let payload = payload?;
-    let bucket = payload
-        .get("token_usage")
-        .and_then(TokenUsageBucket::from_value)?;
+) -> Vec<(String, TokenUsageBucket)> {
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
+    let Some(token_usage) = payload.get("token_usage") else {
+        return Vec::new();
+    };
+    if let Some(by_model) = token_usage
+        .get("by_model")
+        .and_then(Value::as_object)
+        .filter(|by_model| !by_model.is_empty())
+    {
+        return by_model
+            .iter()
+            .filter_map(|(model, usage)| {
+                Some((model.clone(), TokenUsageBucket::from_value(usage)?))
+            })
+            .collect();
+    }
+    let Some(bucket) = TokenUsageBucket::from_value(token_usage) else {
+        return Vec::new();
+    };
     let model = payload
         .get("model")
         .and_then(Value::as_str)
         .filter(|model| !model.trim().is_empty())
         .unwrap_or(fallback_model);
-    Some((model.to_string(), bucket))
+    vec![(model.to_string(), bucket)]
 }
 
 impl TokenUsageBreakdown {
@@ -269,7 +297,8 @@ impl TokenUsageBreakdown {
     }
 }
 
-/// USD per million tokens: (input, cached input, output).
+/// USD per million tokens: (input, cached input, output), for backends that
+/// report no cost of their own.
 /// Rates checked against the official OpenAI pricing page on 2026-07-09.
 const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("codex-mini-latest", (1.50, 0.375, 6.00)),
@@ -317,6 +346,14 @@ pub fn estimate_model_cost(breakdown: &TokenUsageBreakdown) -> Option<Value> {
     let mut by_model = serde_json::Map::new();
     let mut unpriced_models: Vec<String> = Vec::new();
     for (model, usage) in &breakdown.by_model {
+        if let Some(amount) = usage.cost_usd {
+            subtotal += amount;
+            by_model.insert(
+                model.clone(),
+                json!({"currency": "USD", "amount": round_usd(amount), "status": "estimated"}),
+            );
+            continue;
+        }
         let Some((input_rate, cached_rate, output_rate)) = pricing_for_model(model) else {
             unpriced_models.push(model.clone());
             by_model.insert(
