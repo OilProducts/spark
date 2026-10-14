@@ -223,19 +223,22 @@ impl CodexAppServerBackend {
                     .map(PathBuf::from)
             })
             .flatten();
-        let mut client = CodexAppServerClient::connect_with_settings(
-            PathBuf::from(&request.project_path),
-            trace_path,
-            native,
-        )?;
-        client.clarification_handler = clarification_handler;
+        // Registered before the handshake so a stop also ends a stuck `initialize`.
+        let stop = Arc::<TurnStop>::default();
         interrupt_registry().lock().unwrap().insert(
             (
                 request.project_path.clone(),
                 request.conversation_id.clone(),
             ),
-            Arc::downgrade(&client.interrupt),
+            Arc::downgrade(&stop),
         );
+        let mut client = CodexAppServerClient::connect_with_settings(
+            PathBuf::from(&request.project_path),
+            trace_path,
+            native,
+            stop,
+        )?;
+        client.clarification_handler = clarification_handler;
         client.developer_instructions = metadata_string(
             &request.metadata,
             &[crate::agent::AGENT_INSTRUCTIONS_METADATA_KEY],
@@ -321,13 +324,27 @@ impl CodexAppServerBackend {
 
     /// Asks the conversation's running turn, if any, to stop.
     pub fn interrupt(&self, project_path: &str, conversation_id: &str) -> bool {
+        Self::signal(project_path, conversation_id, |stop| &stop.interrupt)
+    }
+
+    /// Ends the conversation's running turn and kills its app-server, for a
+    /// turn that did not stop after its interrupt.
+    pub fn terminate(&self, project_path: &str, conversation_id: &str) -> bool {
+        Self::signal(project_path, conversation_id, |stop| &stop.terminate)
+    }
+
+    fn signal(
+        project_path: &str,
+        conversation_id: &str,
+        flag: impl Fn(&TurnStop) -> &AtomicBool,
+    ) -> bool {
         let mut registry = interrupt_registry().lock().unwrap();
-        registry.retain(|_, flag| flag.strong_count() > 0);
+        registry.retain(|_, stop| stop.strong_count() > 0);
         registry
             .get(&(project_path.to_string(), conversation_id.to_string()))
             .and_then(Weak::upgrade)
-            .is_some_and(|flag| {
-                flag.store(true, Ordering::SeqCst);
+            .is_some_and(|stop| {
+                flag(&stop).store(true, Ordering::SeqCst);
                 true
             })
     }
@@ -449,8 +466,8 @@ pub struct CodexAppServerClient {
     /// `thread/start` and `thread/resume`.
     developer_instructions: Option<String>,
     workflow_questions: Vec<(Value, crate::codergen::ClarificationPoll)>,
-    /// Set by `CodexAppServerBackend::interrupt` to stop the running turn.
-    interrupt: Arc<AtomicBool>,
+    /// Set by `CodexAppServerBackend::interrupt` and `terminate`.
+    stop: Arc<TurnStop>,
     pending_request_user_input: Option<PendingRequestUserInputResponse>,
     trace_sink: Option<CodexJsonrpcTraceSink>,
     executable: PathBuf,
@@ -466,13 +483,14 @@ impl CodexAppServerClient {
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
     ) -> Result<Self, CodexAppServerError> {
-        Self::connect_with_settings(working_dir, trace_path, None)
+        Self::connect_with_settings(working_dir, trace_path, None, Arc::default())
     }
 
     fn connect_with_settings(
         working_dir: PathBuf,
         trace_path: Option<PathBuf>,
         native: Option<&spark_common::agent_settings::NativeAgentSettings>,
+        stop: Arc<TurnStop>,
     ) -> Result<Self, CodexAppServerError> {
         if !working_dir.exists() {
             return Err(CodexAppServerError::configuration(format!(
@@ -547,7 +565,7 @@ impl CodexAppServerClient {
             clarification_handler: None,
             developer_instructions: None,
             workflow_questions: Vec::new(),
-            interrupt: Arc::default(),
+            stop,
             pending_request_user_input: None,
             trace_sink: trace_path.map(CodexJsonrpcTraceSink::new),
             executable,
@@ -853,7 +871,8 @@ impl CodexAppServerClient {
             if let Some(handle) = steering.as_ref() {
                 self.drain_steering(handle, thread_id, expected_turn_id, &mut events)?;
             }
-            if !stopping && self.interrupt.load(Ordering::SeqCst) {
+            self.check_terminated()?;
+            if !stopping && self.stop.interrupt.load(Ordering::SeqCst) {
                 stopping = true;
                 let response = self.send_request(
                     "turn/interrupt",
@@ -1028,6 +1047,7 @@ impl CodexAppServerClient {
             if let Some(response) = self.pop_pending_response(&target_key) {
                 return Ok(response);
             }
+            self.check_terminated()?;
             if started.elapsed() >= timeout {
                 return Err(CodexAppServerError::runtime(
                     "codex app-server request timed out waiting for response",
@@ -1046,6 +1066,16 @@ impl CodexAppServerClient {
             }
             self.route_incoming_message(message)?;
         }
+    }
+
+    fn check_terminated(&mut self) -> Result<(), CodexAppServerError> {
+        if !self.stop.terminate.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let _ = self.child.kill();
+        Err(CodexAppServerError::runtime(
+            "codex app-server was terminated after its turn did not stop",
+        ))
     }
 
     fn next_message(&mut self, wait: Duration) -> Result<Option<Value>, CodexAppServerError> {
@@ -1208,7 +1238,13 @@ impl PendingRequestUserInput {
     }
 }
 
-type InterruptRegistry = Mutex<BTreeMap<(String, String), Weak<AtomicBool>>>;
+#[derive(Debug, Default)]
+struct TurnStop {
+    interrupt: AtomicBool,
+    terminate: AtomicBool,
+}
+
+type InterruptRegistry = Mutex<BTreeMap<(String, String), Weak<TurnStop>>>;
 fn interrupt_registry() -> &'static InterruptRegistry {
     static REGISTRY: OnceLock<InterruptRegistry> = OnceLock::new();
     REGISTRY.get_or_init(Mutex::default)
@@ -2093,8 +2129,9 @@ pub fn list_available_codex_models_with_settings(
     native: Option<&spark_common::agent_settings::NativeAgentSettings>,
 ) -> Result<Vec<CodexModelMetadata>, CodexAppServerError> {
     let working_dir = env::current_dir().unwrap_or_else(|_| env::temp_dir());
-    let mut client = CodexAppServerClient::connect_with_settings(working_dir, None, native)
-        .map_err(log_model_discovery_error)?;
+    let mut client =
+        CodexAppServerClient::connect_with_settings(working_dir, None, native, Arc::default())
+            .map_err(log_model_discovery_error)?;
     let result = client
         .list_models()
         .map_err(|error| log_model_discovery_error(error))?;

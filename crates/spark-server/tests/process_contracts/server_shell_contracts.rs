@@ -696,6 +696,92 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
     assert!(!reason.contains("no HTTP transport is configured"));
 }
 
+/// A node `timeout` ends a Codex turn that neither answers `turn/interrupt`
+/// nor completes, so the worker returns the timeout failure promptly.
+#[cfg(unix)]
+#[test]
+fn worker_run_node_terminates_codex_turn_that_ignores_interrupt_at_timeout() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let codex = temp.path().join("codex");
+    fs::write(
+        &codex,
+        r#"#!/usr/bin/env python3
+import json, sys
+def send(x):
+    print(json.dumps(x), flush=True)
+for line in sys.stdin:
+    m = json.loads(line)
+    method = m.get('method')
+    if method == 'initialize': send({'id':m['id'],'result':{}})
+    elif method == 'thread/start': send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
+    elif method == 'turn/start': send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
+"#,
+    )
+    .expect("fake codex");
+    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).expect("executable");
+    let request = json!({
+        "run_id": "run-worker-codex-timeout",
+        "stage_index": 0,
+        "attempt": 0,
+        "flow": {
+            "schema_version": "1",
+            "id": "G",
+            "nodes": {
+                "task": {
+                    "kind": "agent_task",
+                    "runtime": {"timeout": "1s"},
+                    "config": {"kind": "agent_task", "prompt": "Work forever"},
+                    "execution": {"llm_provider": "codex", "llm_model": "test-model"}
+                }
+            },
+            "edges": []
+        },
+        "node_id": "task",
+        "prompt": "Work forever",
+        "context": {},
+        "context_logs": [],
+        "logs_root": null,
+        "working_dir": temp.path(),
+        "backend_name": null,
+        "model": null,
+        "config_dir": null
+    });
+    let started = std::time::Instant::now();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
+        .args(["worker", "run-node"])
+        .env("SPARK_CODEX_APP_SERVER_BIN", &codex)
+        .env(
+            "ATTRACTOR_CODEX_RUNTIME_ROOT",
+            temp.path().join("codex-runtime"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn worker");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all((request.to_string() + "\n").as_bytes())
+        .expect("write request");
+
+    let output = child.wait_with_output().expect("worker output");
+
+    // 1s timeout plus the 10s interrupt grace, with slack.
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let stdout = String::from_utf8(output.stdout).expect("utf8 worker frames");
+    let frame: Value =
+        serde_json::from_str(stdout.lines().last().expect("result frame")).expect("worker frame");
+    assert_eq!(frame["type"], json!("result"), "{stdout}");
+    assert_eq!(frame["outcome"]["status"], json!("fail"), "{stdout}");
+    let reason = frame["outcome"]["failure_reason"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(reason.contains("timed out after 1 seconds"), "{reason}");
+}
+
 fn list_flow_files(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
     collect_flow_files(root, root, &mut files);

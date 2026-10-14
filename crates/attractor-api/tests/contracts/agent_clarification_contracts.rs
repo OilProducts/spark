@@ -511,6 +511,27 @@ for line in sys.stdin:
         send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'interrupted'}}})
 "#;
 
+/// A Codex app-server whose turn never stops: in a `*-cancel` project it
+/// never answers `turn/interrupt`, otherwise it acknowledges the interrupt but
+/// never completes the turn. It records its pid in `started`.
+const FAKE_CODEX_UNRESPONSIVE: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+def send(x):
+    print(json.dumps(x), flush=True)
+for line in sys.stdin:
+    m = json.loads(line)
+    method = m.get('method')
+    if method == 'initialize': send({'id':m['id'],'result':{}})
+    elif method == 'thread/start':
+        cwd = m['params']['cwd']
+        send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
+    elif method == 'turn/start':
+        send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
+        with open(cwd+'/started','w') as f: f.write(str(os.getpid()))
+    elif method == 'turn/interrupt' and not cwd.endswith('cancel'):
+        send({'id':m['id'],'result':{}})
+"#;
+
 fn install(temp: &Path, name: &str, script: &str) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let bin = temp.join(name);
@@ -690,6 +711,47 @@ fn claude_code_node_without_interrupt_is_terminated_on_cancel_and_timeout() {
     match old_bin {
         Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
         None => std::env::remove_var("SPARK_CLAUDE_CODE_BIN"),
+    }
+}
+
+#[test]
+fn codex_node_that_does_not_stop_is_terminated_on_cancel_and_timeout() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "codex", FAKE_CODEX_UNRESPONSIVE);
+    let old_bin = std::env::var_os("SPARK_CODEX_APP_SERVER_BIN");
+    let old_runtime = std::env::var_os("ATTRACTOR_CODEX_RUNTIME_ROOT");
+    std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", &bin);
+    std::env::set_var(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    // `wait` bounds each stop at 15s, past the 10s interrupt grace.
+    assert_cancel_and_timeout(&service, &settings, temp.path(), "codex");
+    for id in ["codex-cancel", "codex-timeout"] {
+        let pid = fs::read_to_string(temp.path().join(id).join("started")).unwrap();
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "{id} app-server {pid} still running");
+    }
+    for (key, value) in [
+        ("SPARK_CODEX_APP_SERVER_BIN", old_bin),
+        ("ATTRACTOR_CODEX_RUNTIME_ROOT", old_runtime),
+    ] {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
     }
 }
 

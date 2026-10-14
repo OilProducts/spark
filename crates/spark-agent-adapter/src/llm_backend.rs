@@ -581,15 +581,15 @@ impl NodeStop {
                         }
                     }
                     // Repeated until the turn ends: the process may not
-                    // have registered its interrupt yet. A Claude process that
-                    // cannot take an interrupt, or is still running a grace
-                    // period after one, is terminated.
+                    // have registered its interrupt yet. A turn that cannot
+                    // take an interrupt, or is still running a grace period
+                    // after one, is terminated.
                     if slot.is_some() {
                         let stopped = *stopped_at.get_or_insert_with(std::time::Instant::now);
                         let interrupted = stopped.elapsed() < STOP_GRACE
                             && RustLlmAgentTurnBackend::interrupt(&project_path, &conversation_id);
                         if !interrupted {
-                            ClaudeCodeBackend::new().terminate(&project_path, &conversation_id);
+                            RustLlmAgentTurnBackend::terminate(&project_path, &conversation_id);
                         }
                     }
                     drop(slot);
@@ -1157,6 +1157,11 @@ impl RustLlmAgentTurnBackend {
     fn interrupt(project_path: &str, conversation_id: &str) -> bool {
         ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
             || CodexAppServerBackend::new().interrupt(project_path, conversation_id)
+    }
+
+    fn terminate(project_path: &str, conversation_id: &str) -> bool {
+        ClaudeCodeBackend::new().terminate(project_path, conversation_id)
+            || CodexAppServerBackend::new().terminate(project_path, conversation_id)
     }
 }
 
