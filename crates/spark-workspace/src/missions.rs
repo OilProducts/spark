@@ -850,8 +850,9 @@ impl WorkspaceMissionService {
         Ok(response)
     }
 
-    /// Sends pending inbox events, after `begin` when given, as the next turn
-    /// unless a turn is in flight. Must run under the project lock.
+    /// Sends pending inbox events, after `begin` when given, as the next
+    /// turn. While a turn runs they go into it if it takes them, else they
+    /// wait in the inbox for the next turn. Must run under the project lock.
     fn deliver_pending(
         &self,
         repo: &MissionRepository,
@@ -872,27 +873,32 @@ impl WorkspaceMissionService {
             .get_or_insert_with(|| mission.id.clone())
             .clone();
         let conversations = self.conversations(&runtime);
-        if conversations.turn_in_flight(&conversation, &mission.project_path) {
-            return Ok(());
-        }
         let lines: Vec<String> = Self::read_events(repo, &mission.id)?
             .iter()
             .filter(|event| event.seq > mission.cursor)
             .map(|event| render_event(mission, event))
             .collect();
-        mission.cursor = mission.event_seq;
         let message = begin
             .into_iter()
             .chain(lines)
             .collect::<Vec<_>>()
             .join("\n\n");
+        if conversations.turn_in_flight(&conversation, &mission.project_path) {
+            if conversations.deliver_message(&conversation, &mission.project_path, &message)? {
+                mission.cursor = mission.event_seq;
+            }
+            return Ok(());
+        }
+        mission.cursor = mission.event_seq;
         let request = ConversationTurnRequest {
             project_path: mission.project_path.clone(),
             message: message.clone(),
             ..Default::default()
         };
-        let (prepared, snapshot) = match conversations.start_turn(&conversation, request) {
-            Ok(started) => started,
+        let (prepared, snapshot) = match conversations.send_turn(&conversation, request) {
+            Ok((Some(prepared), snapshot)) => (prepared, snapshot),
+            // Queued behind a turn that started meanwhile; it starts after it.
+            Ok((None, _)) => return Ok(()),
             // Only the user can move a mission whose turn cannot start.
             Err(error) => {
                 return conversations.append_notice(

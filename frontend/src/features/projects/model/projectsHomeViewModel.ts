@@ -42,7 +42,10 @@ export type ProjectsHomeViewModel = {
     chatSendButtonLabel: string
     hasActiveAssistantTurn: boolean
     hasRenderableConversationHistory: boolean
+    /** Settings controls are locked while a turn starts or runs. */
     isChatInputDisabled: boolean
+    /** Sending waits only for the server to accept the previous send. */
+    isConversationTurnStarting: boolean
     latestFlowLaunchId: string | null
     latestFlowRunRequestId: string | null
 }
@@ -115,10 +118,12 @@ export function buildProjectsHomeViewModel({
         activeProjectGitMetadata: activeProjectPath
             ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
             : EMPTY_PROJECT_GIT_METADATA,
-        chatSendButtonLabel: isConversationTurnStarting ? 'Sending...' : hasActiveAssistantTurn ? 'Thinking...' : 'Send',
+        // A message sent mid-turn joins the running turn or queues behind it.
+        chatSendButtonLabel: isConversationTurnStarting ? 'Sending...' : hasActiveAssistantTurn ? 'Send to the running turn' : 'Send',
         hasActiveAssistantTurn,
         hasRenderableConversationHistory,
         isChatInputDisabled: isConversationTurnStarting || hasActiveAssistantTurn,
+        isConversationTurnStarting,
         latestFlowLaunchId: getLatestArtifactId(activeFlowLaunches),
         latestFlowRunRequestId: getLatestArtifactId(activeFlowRunRequests),
     }

@@ -70,7 +70,8 @@ export type ConversationTimelineEntry =
         role: 'user' | 'assistant'
         content: string
         timestamp: string
-        status: ConversationTurnStatus
+        /** `delivered`: a user message sent into the running turn. */
+        status: ConversationTurnStatus | 'delivered'
         error?: string | null
         presentation?: 'default' | 'thinking'
         attachments?: ConversationAttachmentResponse[]

@@ -191,7 +191,7 @@ export function ProjectConversationSurface({
                             size="sm"
                             value={activeChatMode}
                             // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
-                            disabled={!activeProjectPath || isChatSendDisabled || !onChatModeChange}
+                            disabled={controlsDisabled || isChatSendDisabled || !onChatModeChange}
                             onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
                             className="rounded-lg"
                         >

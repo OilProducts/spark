@@ -87,6 +87,19 @@ impl ClaudeCodeBackend {
         control::terminate(project_path, conversation_id)
     }
 
+    /// Writes a user message into the running turn with no priority, so it
+    /// folds in between tool rounds. The turn stays open until a result
+    /// lists it as delivered.
+    pub fn send_message(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        control::send_message(project_path, conversation_id, message_id, message)
+    }
+
     pub fn run_agent_turn(
         &self,
         request: AgentTurnRequest,
@@ -361,7 +374,7 @@ impl ClaudeCodeBackend {
         // The prompt travels over stdin so arbitrarily large composed prompts
         // never hit argv limits.
         // A failed write closes stdin; the process exit then reports it.
-        control.lock().unwrap().send_user(content);
+        control.lock().unwrap().send_user(content, None);
 
         let (sender, receiver) = mpsc::channel();
         // Detached: a leftover grandchild may hold stdout after the turn ends.
@@ -449,14 +462,31 @@ impl ClaudeCodeBackend {
             turn.push(normalized, event_sink);
         }
 
-        let ended = {
+        let (ended, undelivered) = {
             let mut control = control.lock().unwrap();
             turn.stopping |= control.stopping;
             turn.raw_log_lines.append(&mut control.logs);
             let ended = control.ended;
             control.end();
-            ended
+            (ended, std::mem::take(&mut control.undelivered))
         };
+        // Messages the turn ended without using, such as on Stop.
+        let not_delivered = undelivered
+            .into_values()
+            .map(|message_id| {
+                stream_event(
+                    TurnStreamEventKind::Other("user_message_not_delivered".into()),
+                    turn.state.session_id.as_deref(),
+                    "user_message_not_delivered",
+                    |event| {
+                        event.source.item_id = Some(message_id);
+                        event.message =
+                            Some("Not sent: the turn ended before the agent read it.".into());
+                    },
+                )
+            })
+            .collect();
+        turn.push(not_delivered, event_sink);
         let status = reap(&control)?;
         if let Some(reason) = abandoned {
             // The run stopped waiting for an answer; do not resume the session.

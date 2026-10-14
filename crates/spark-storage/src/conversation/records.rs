@@ -224,11 +224,20 @@ impl Transcript {
             .find(|segment| segment.id == segment_id)
     }
 
+    /// A queued message moves to the end whenever it is written, so it
+    /// starts, and stays queued, behind the turns that ran before it.
     pub fn upsert_turn(&mut self, turn: TranscriptTurn) {
-        if let Some(existing) = self.find_turn_mut(&turn.id) {
-            *existing = turn;
-        } else {
-            self.turns.push(turn);
+        match self
+            .turns
+            .iter()
+            .position(|existing| existing.id == turn.id)
+        {
+            Some(index) if self.turns[index].status == "queued" => {
+                self.turns.remove(index);
+                self.turns.push(turn);
+            }
+            Some(index) => self.turns[index] = turn,
+            None => self.turns.push(turn),
         }
     }
 

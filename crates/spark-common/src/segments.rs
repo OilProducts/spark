@@ -469,6 +469,43 @@ pub fn materialize_segment_for_event(
             upsert_segment(snapshot, segment.clone());
             Some(segment)
         }
+        // A user message delivered into the running turn, shown where it was
+        // sent; the turn's later output follows it.
+        TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => {
+            let message_id = event.source.item_id.as_deref()?;
+            let segment_id = format!("segment-user-message-{message_id}");
+            let mut segment = segment_shell(
+                &segment_id,
+                assistant_turn_id,
+                next_turn_segment_order(snapshot, assistant_turn_id),
+                "user_message",
+                "user",
+                "complete",
+                now,
+                build_segment_source(event, None),
+            );
+            set_string_value(
+                &mut segment,
+                "content",
+                event.message.as_deref().unwrap_or(""),
+            );
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
+        TurnStreamEventKind::Other(kind) if kind == "user_message_not_delivered" => {
+            let message_id = event.source.item_id.as_deref()?;
+            let mut segment =
+                find_segment(snapshot, &format!("segment-user-message-{message_id}"))?.clone();
+            set_string_value(&mut segment, "status", "failed");
+            set_string_value(
+                &mut segment,
+                "error",
+                event.message.as_deref().unwrap_or(""),
+            );
+            set_string_value(&mut segment, "updated_at", now);
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
         TurnStreamEventKind::Other(kind) if is_agent_event_kind(kind) => {
             let segment_id = agent_event_segment_id(assistant_turn_id, event, provider_sequence);
             let (category, status) = match kind.as_str() {

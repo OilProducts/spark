@@ -29,7 +29,8 @@ export interface ConversationTurnResponse {
     role: 'user' | 'assistant' | 'system'
     content: string
     timestamp: string
-    status: 'pending' | 'streaming' | 'complete' | 'failed'
+    /** `queued`: a message sent during a turn, waiting to start after it. */
+    status: 'pending' | 'streaming' | 'complete' | 'failed' | 'queued'
     kind: 'message' | 'mode_change' | 'mission_notice' | 'flow_run_request' | 'flow_launch'
     artifact_id?: string | null
     parent_turn_id?: string | null
@@ -44,8 +45,9 @@ export interface ConversationSegmentResponse {
     id: string
     turn_id: string
     order: number
-    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input' | 'flow_run_request' | 'flow_launch'
-    role: 'assistant' | 'system'
+    /** `user_message`: a message delivered into the running turn. */
+    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input' | 'flow_run_request' | 'flow_launch' | 'user_message'
+    role: 'assistant' | 'system' | 'user'
     status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running'
     timestamp: string
     updated_at: string
@@ -277,6 +279,7 @@ function parseConversationTurnResponse(value: unknown): ConversationTurnResponse
     const status = record.status === 'pending'
         || record.status === 'streaming'
         || record.status === 'failed'
+        || record.status === 'queued'
         ? record.status
         : 'complete'
     const attachments = Array.isArray(record.attachments)
@@ -342,12 +345,13 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         || record.kind === 'request_user_input'
         || record.kind === 'flow_run_request'
         || record.kind === 'flow_launch'
+        || record.kind === 'user_message'
         ? record.kind
         : null
     if (!kind) {
         return null
     }
-    const role = record.role === 'system' ? 'system' : 'assistant'
+    const role = record.role === 'system' || record.role === 'user' ? record.role : 'assistant'
     const status = record.status === 'pending'
         || record.status === 'streaming'
         || record.status === 'failed'

@@ -686,7 +686,7 @@ impl RuntimeHandlerRunner {
 
     pub fn with_rust_llm_client(mut self, client: unified_llm_adapter::Client) -> Self {
         self.rust_llm_client = Some(client.clone());
-        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
+        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::shared();
         let factory_broker = broker.clone();
         self.codergen_backend_factory = Some(Arc::new(move || {
             Box::new(
@@ -711,7 +711,7 @@ impl RuntimeHandlerRunner {
 
     pub fn set_rust_llm_client(&mut self, client: unified_llm_adapter::Client) {
         self.rust_llm_client = Some(client.clone());
-        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
+        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::shared();
         let factory_broker = broker.clone();
         self.codergen_backend_factory = Some(Arc::new(move || {
             Box::new(

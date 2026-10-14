@@ -290,7 +290,7 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
 
     WorkspaceConversationService::new(settings.clone())
         .start_turn(
-            "conversation-http-conflict",
+            "conversation-http-queued",
             ConversationTurnRequest {
                 project_path: "/projects/http-turn".to_string(),
                 message: "Leave pending".to_string(),
@@ -298,18 +298,20 @@ async fn conversation_turn_route_executes_injected_backend_and_preserves_validat
             },
         )
         .expect("pending turn");
-    let conflict = request_json(
+    // A turn that has not started cannot take the message, so it queues.
+    let queued = request_json(
         app.clone(),
         "POST",
-        "/workspace/api/conversations/conversation-http-conflict/turns",
+        "/workspace/api/conversations/conversation-http-queued/turns",
         Some(json!({"project_path": "/projects/http-turn", "message": "Again"})),
     )
     .await;
-    assert_eq!(conflict.0, StatusCode::CONFLICT);
-    assert!(conflict.1["detail"]
-        .as_str()
-        .expect("detail")
-        .contains("assistant turn is still in progress"));
+    assert_eq!(queued.0, StatusCode::OK, "{}", queued.1);
+    let turns = queued.1["turns"].as_array().expect("turns");
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[1]["status"], "pending");
+    assert_eq!(turns[2]["content"], "Again");
+    assert_eq!(turns[2]["status"], "queued");
 
     let empty = request_json(
         app.clone(),

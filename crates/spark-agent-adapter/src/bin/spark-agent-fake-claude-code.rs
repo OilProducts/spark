@@ -308,6 +308,57 @@ fn main() {
         append_log("STDIN_CLOSED");
         return;
     }
+    if mode == "mid-turn-message" || mode == "mid-turn-stop" {
+        // Probe 4: a message with no priority folds into the running turn and
+        // a later result lists its uuid.
+        emit(
+            &mut out,
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Working."}}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+        );
+        let message = read_control();
+        assert_eq!(message["type"], "user");
+        assert!(message.get("priority").is_none(), "no priority: {message}");
+        let uuid = message["uuid"].as_str().expect("uuid").to_string();
+        append_log(&format!("MID_TURN={}", message["message"]["content"]));
+        if mode == "mid-turn-stop" {
+            let interrupt = read_control();
+            assert_eq!(interrupt["request"], json!({"subtype": "interrupt"}));
+            emit(
+                &mut out,
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": interrupt["request_id"], "response": {"still_queued": []}}}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                    "terminal_reason": "aborted_streaming", "session_id": session_id, "queued_turn_count": 0}),
+            );
+        } else {
+            // A result that does not list the message must not end the turn.
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "Working.",
+                    "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": []}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Read your note."}]}}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "Read your note.",
+                    "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [uuid]}),
+            );
+        }
+        let mut remaining = String::new();
+        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        append_log("STDIN_CLOSED");
+        return;
+    }
     if mode == "queued-interrupt" {
         // A queued message holds the turn past the first result, so Stop must
         // interrupt the queued model turn instead of closing stdin.

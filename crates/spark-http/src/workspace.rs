@@ -372,7 +372,7 @@ async fn send_conversation_turn(
         service,
         conversation_id,
         project_path,
-        move |service, conversation_id| service.start_turn(conversation_id, request),
+        move |service, conversation_id| service.send_turn(conversation_id, request),
     )
     .await
 }
@@ -401,14 +401,17 @@ async fn retry_conversation_turn(
         conversation_id,
         project_path,
         move |service, conversation_id| {
-            service.retry_turn(conversation_id, &project_path_for_start, &turn_id)
+            service
+                .retry_turn(conversation_id, &project_path_for_start, &turn_id)
+                .map(|(prepared, snapshot)| (Some(prepared), snapshot))
         },
     )
     .await
 }
 
 /// Starts a turn, answers with the started snapshot, and completes the turn in
-/// the background while publishing its progress.
+/// the background while publishing its progress. A message delivered into or
+/// queued behind a running turn starts nothing here.
 async fn run_conversation_turn(
     settings: Arc<SparkSettings>,
     live_hub: Arc<WorkspaceLiveHub>,
@@ -418,7 +421,7 @@ async fn run_conversation_turn(
     start: impl FnOnce(
             &WorkspaceConversationService,
             &str,
-        ) -> Result<(PreparedConversationTurn, Value), WorkspaceError>
+        ) -> Result<(Option<PreparedConversationTurn>, Value), WorkspaceError>
         + Send
         + 'static,
 ) -> ApiResult<Value> {
@@ -434,6 +437,18 @@ async fn run_conversation_turn(
                     "conversation turn start task failed: {error}"
                 )))
             })??;
+    let Some(prepared) = prepared else {
+        publish_conversation_after(
+            &settings,
+            &live_hub,
+            &conversation_id,
+            started_snapshot["project_path"]
+                .as_str()
+                .unwrap_or(&project_path),
+            before_revision,
+        );
+        return Ok(Json(started_snapshot));
+    };
     publish_conversation_after(
         &settings,
         &live_hub,

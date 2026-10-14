@@ -549,3 +549,100 @@ nodes:
         .join("task/executions/0-0/response.md")
         .exists());
 }
+
+/// The manager loop's intervention path reaches a running Claude Code node
+/// as a live message in its turn.
+#[cfg(unix)]
+#[test]
+fn manager_loop_intervention_reaches_a_running_claude_code_node() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempdir().unwrap();
+    let bin = temp.path().join("claude");
+    std::fs::write(
+        &bin,
+        r#"#!/usr/bin/env python3
+import json, sys
+def send(x):
+    print(json.dumps(x), flush=True)
+sys.stdin.readline()
+send({'type':'system','subtype':'init','session_id':'s1','model':'m','tools':[],'capabilities':['interrupt_receipt_v1']})
+open('started','w').close()
+m = json.loads(sys.stdin.readline())
+assert m['type'] == 'user' and 'priority' not in m, m
+open('steered','w').write(m['message']['content'])
+send({'type':'result','subtype':'success','is_error':False,'result':'Steered','session_id':'s1','user_message_uuids':[m['uuid']]})
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
+    let graph = FlowDefinition::from_yaml_str(
+        r#"
+schema_version: '1'
+id: g
+title: G
+nodes:
+  task:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: Implement it
+    execution:
+      llm_provider: claude-code
+      llm_model: test-model
+"#,
+    )
+    .expect("flow parses")
+    .to_runtime_dot_graph();
+    let logs_root = tempdir().unwrap();
+    let project = tempdir().unwrap();
+    let backend = RustLlmCodergenBackend::with_intervention_broker(
+        Client::new(),
+        spark_agent_adapter::CodergenSessionInterventionBroker::shared(),
+    );
+    let mut codergen =
+        RuntimeCodergen::with_backend(graph, Some(logs_root.path().to_path_buf()), backend)
+            .with_runtime_context(
+                Some(project.path().to_path_buf()),
+                BTreeMap::from([
+                    ("spark.runtime.run_id".to_string(), json!("child-claude")),
+                    (
+                        "spark.runtime.root_run_id".to_string(),
+                        json!("root-claude"),
+                    ),
+                ]),
+            );
+    // The manager loop runs beside the node, as it does for a child run.
+    let started_file = project.path().join("started");
+    let manager = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        while !started_file.exists() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        RuntimeHandlerRunner::new()
+            .with_rust_llm_client(Client::new())
+            .request_child_intervention(attractor_runtime::ChildInterventionRequest {
+                child_run_id: "child-claude".to_string(),
+                message: "Fix the failing test.".to_string(),
+                parent_run_id: "parent".to_string(),
+                parent_node_id: "manager".to_string(),
+                root_run_id: "root-claude".to_string(),
+                reason: "child failed".to_string(),
+                source: "manager_loop".to_string(),
+                cycle: Some(1),
+                target_node_id: Some("task".to_string()),
+            })
+    });
+    let execution = codergen
+        .execute("task", ContextMap::new())
+        .expect("node executes");
+    let result = manager.join().unwrap();
+
+    assert_eq!(result.status, "delivered", "{result:?}");
+    assert_eq!(execution.response_text, "Steered");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join("steered")).unwrap(),
+        "Fix the failing test."
+    );
+}

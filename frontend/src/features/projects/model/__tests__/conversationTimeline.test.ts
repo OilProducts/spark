@@ -95,6 +95,42 @@ describe('conversation timeline normalization', () => {
     })
   })
 
+  it('shows messages sent during a turn as queued, delivered or not sent', () => {
+    const userSegment = (id: string, order: number, status: 'complete' | 'failed', error: string | null) => ({
+      ...baseSnapshot.segments[1],
+      id,
+      order,
+      kind: 'user_message' as const,
+      role: 'user' as const,
+      status,
+      content: id,
+      error,
+    })
+    const timeline = buildTimeline({
+      ...baseSnapshot,
+      turns: [
+        ...baseSnapshot.turns,
+        { ...baseSnapshot.turns[0], id: 'queued', content: 'queued', status: 'queued' },
+      ],
+      segments: [
+        userSegment('delivered', 1.5, 'complete', null),
+        userSegment('not-sent', 3, 'failed', 'Not sent: the turn ended before the agent read it.'),
+        ...baseSnapshot.segments,
+      ],
+    })
+
+    expect(timeline.filter((entry) => entry.role === 'user').map((entry) => entry.kind === 'message' && [entry.id, entry.status, entry.error ?? null]))
+      .toEqual([
+        ['turn-user', 'complete', null],
+        ['delivered', 'delivered', null],
+        ['not-sent', 'failed', 'Not sent: the turn ended before the agent read it.'],
+        ['queued', 'queued', null],
+      ])
+    // The delivered message sits where it was sent: after the tool call, before the reply.
+    expect(timeline.map((entry) => entry.id).indexOf('delivered'))
+      .toBeLessThan(timeline.map((entry) => entry.id).indexOf('assistant-segment'))
+  })
+
   it('places the worked separator immediately before the last assistant segment', () => {
     const narration = {
       ...baseSnapshot.segments[1],

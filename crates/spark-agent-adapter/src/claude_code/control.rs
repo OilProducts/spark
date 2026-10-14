@@ -43,9 +43,9 @@ pub(super) struct Control {
     pub stopping: bool,
     /// Live non-ambient background tasks, from the last `background_tasks_changed`.
     tasks: usize,
-    prompted: bool,
-    /// Messages sent after the prompt whose uuid no result has confirmed yet.
-    undelivered: BTreeSet<String>,
+    /// Messages sent after the prompt whose uuid no result has confirmed
+    /// yet, by uuid, with their caller's message id.
+    pub undelivered: BTreeMap<String, String>,
     /// A result left only background tasks running and no main model turn
     /// has started since.
     idle: bool,
@@ -73,8 +73,7 @@ impl Control {
             interrupted: false,
             stopping: false,
             tasks: 0,
-            prompted: false,
-            undelivered: BTreeSet::new(),
+            undelivered: BTreeMap::new(),
             idle: false,
             ended: false,
             logs: Vec::new(),
@@ -146,16 +145,21 @@ impl Control {
         true
     }
 
-    /// Writes a user message stamped with a uuid. Messages after the prompt
-    /// hold the turn open until a result lists them as delivered.
-    pub fn send_user(&mut self, content: Value) -> bool {
+    /// Writes a user message stamped with a uuid. A message after the
+    /// prompt, named by `message_id`, holds the turn open until a result
+    /// lists it as delivered.
+    pub fn send_user(&mut self, content: Value, message_id: Option<&str>) -> bool {
         let uuid = Uuid::new_v4().to_string();
-        if std::mem::replace(&mut self.prompted, true) {
-            self.undelivered.insert(uuid.clone());
+        if let Some(id) = message_id {
+            self.undelivered.insert(uuid.clone(), id.to_string());
         }
-        self.send(
+        let sent = self.send(
             json!({"type": "user", "uuid": uuid, "message": {"role": "user", "content": content}}),
-        )
+        );
+        if !sent {
+            self.undelivered.remove(&uuid);
+        }
+        sent
     }
 
     fn allow(&mut self, id: &str, input: Value) -> bool {
@@ -462,6 +466,26 @@ pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
     control.send(
         json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
     )
+}
+
+pub(super) fn send_message(
+    project_path: &str,
+    conversation_id: &str,
+    message_id: &str,
+    message: &str,
+) -> bool {
+    let Some(control) = find(project_path, conversation_id) else {
+        return false;
+    };
+    let mut control = control.lock().unwrap();
+    // Before init the CLI's control support is unknown, and a stopping turn
+    // would drop the message.
+    if !control.enabled || control.stopping || !matches!(control.child.try_wait(), Ok(None)) {
+        return false;
+    }
+    // The message starts model work that Stop must interrupt.
+    control.idle = false;
+    control.send_user(json!(message), Some(message_id))
 }
 
 pub(super) fn terminate(project_path: &str, conversation_id: &str) -> bool {

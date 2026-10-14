@@ -206,6 +206,9 @@ pub struct ActiveCodergenSession {
     pub project_path: Option<PathBuf>,
     pub metadata: BTreeMap<String, Value>,
     pub steering: SessionSteeringHandle,
+    /// `(project_path, conversation_id)` of a Claude or Codex turn, which
+    /// takes steering as a live message instead of through `steering`.
+    pub live_turn: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -279,6 +282,14 @@ impl Drop for ActiveCodergenSessionGuard {
 }
 
 impl CodergenSessionInterventionBroker {
+    /// The process's broker. Runs register their node sessions here, so
+    /// human steering reaches them by run and node.
+    pub fn shared() -> Self {
+        static SHARED: std::sync::OnceLock<CodergenSessionInterventionBroker> =
+            std::sync::OnceLock::new();
+        SHARED.get_or_init(Self::default).clone()
+    }
+
     pub fn register(&self, session: ActiveCodergenSession) -> ActiveCodergenSessionGuard {
         let key = ActiveCodergenSessionKey::from_session(&session);
         let mut state = self
@@ -421,6 +432,34 @@ impl CodergenSessionInterventionBroker {
             active
         };
 
+        if let Some((project_path, conversation_id)) = active.live_turn.as_ref() {
+            let provider = if active.provider == "claude-code" {
+                "Claude Code"
+            } else {
+                "Codex app-server"
+            };
+            if !crate::llm_backend::RustLlmAgentTurnBackend::send_live_message(
+                project_path,
+                conversation_id,
+                &uuid::Uuid::new_v4().to_string(),
+                &request.message,
+            ) {
+                return rejected_intervention(
+                    &request,
+                    "no_live_session",
+                    "live_turn",
+                    format!("The {provider} turn for this node is not running or is stopping."),
+                );
+            }
+            return CodergenChildInterventionResult {
+                run_id: request.child_run_id,
+                status: "delivered".to_string(),
+                delivery_mode: "live_turn".to_string(),
+                reason: request.reason,
+                message: format!("Intervention delivered to the running {provider} turn."),
+                target_node_id: request.target_node_id,
+            };
+        }
         let payload = intervention_steering_payload(&request, &active);
         if !active
             .steering
@@ -433,24 +472,12 @@ impl CodergenSessionInterventionBroker {
                 "Active Rust codergen session is no longer accepting steering.",
             );
         }
-        let is_codex_app_server = active.provider.trim().eq_ignore_ascii_case("codex")
-            && normalized_optional(active.llm_profile.as_deref()).is_none();
         CodergenChildInterventionResult {
             run_id: request.child_run_id,
             status: "delivered".to_string(),
-            delivery_mode: if is_codex_app_server {
-                "codex_app_server_turn"
-            } else {
-                "rust_boundary_codergen_turn"
-            }
-            .to_string(),
+            delivery_mode: "rust_boundary_codergen_turn".to_string(),
             reason: request.reason,
-            message: if is_codex_app_server {
-                "Intervention delivered to active Codex app-server turn."
-            } else {
-                "Intervention delivered to active Rust codergen session."
-            }
-            .to_string(),
+            message: "Intervention delivered to active Rust codergen session.".to_string(),
             target_node_id: request.target_node_id,
         }
     }

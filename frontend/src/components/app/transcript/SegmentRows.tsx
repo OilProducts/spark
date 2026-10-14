@@ -507,6 +507,12 @@ export const MessageRow = memo(function MessageRow({
     const turnId = entry.turnId
     const retry = entry.role === 'assistant' && entry.status === 'failed' && turnId && onRetryTurn
         ? () => onRetryTurn(turnId) : undefined
+    // A message sent while a turn ran: queued behind it, delivered into it, or not sent.
+    const delivery = entry.role !== 'user' ? null
+        : entry.status === 'queued' ? 'Queued · starts when the current turn ends'
+            : entry.status === 'delivered' ? 'Sent into the running turn'
+                : entry.status === 'failed' ? (entry.error || 'Not sent')
+                    : null
     const canCopy = enableCopy && (
         (entry.role === 'user' && entry.content.length > 0)
         || (
@@ -553,6 +559,11 @@ export const MessageRow = memo(function MessageRow({
                 ) : null}
                 {entry.attachments?.length && attachmentUrl ? (
                     <MessageAttachments attachments={entry.attachments} attachmentUrl={attachmentUrl} />
+                ) : null}
+                {delivery ? (
+                    <p data-testid="message-delivery" className={`mt-1 text-xs ${entry.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>
+                        {delivery}
+                    </p>
                 ) : null}
                 {(needsCodexLogin || needsClaudeLogin || retry) && <div className="flex flex-wrap gap-2">
                     {needsCodexLogin && <CodexReconnect />}

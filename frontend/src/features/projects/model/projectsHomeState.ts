@@ -570,20 +570,26 @@ export function applyConversationStreamEventToCache(
     if (event.type === 'turn_upsert') {
         const currentTurn = existingRecord.turnsById[event.turn.id] || null
         const turn = sanitizeStreamingTurnUpsert(currentTurn, event.turn)
+        // Like the server, a queued message moves to the end whenever it is rewritten.
+        const moves = currentTurn?.status === 'queued'
         mergedRecord = {
             ...mergedRecord,
             chat_mode: event.turn.kind === 'mode_change'
                 ? (event.turn.content === 'plan' ? 'plan' : 'chat')
                 : existingRecord.chat_mode,
-            orderedTurnIds: existingRecord.turnsById[turn.id]
-                ? existingRecord.orderedTurnIds
-                : [...existingRecord.orderedTurnIds, turn.id],
+            orderedTurnIds: !currentTurn
+                ? [...existingRecord.orderedTurnIds, turn.id]
+                : moves
+                    ? [...existingRecord.orderedTurnIds.filter((id) => id !== turn.id), turn.id]
+                    : existingRecord.orderedTurnIds,
             turnsById: {
                 ...existingRecord.turnsById,
                 [turn.id]: turn,
             },
         }
-        mergedRecord = rebuildTurnTimelineEntries(mergedRecord, turn.id)
+        mergedRecord = moves
+            ? { ...mergedRecord, ...buildTimelineEntriesForOrderedTurns(mergedRecord) }
+            : rebuildTurnTimelineEntries(mergedRecord, turn.id)
     } else if (event.type === 'segment_upsert') {
         const segment = event.segment
         const flowRunRequests = mergeArtifactList(
