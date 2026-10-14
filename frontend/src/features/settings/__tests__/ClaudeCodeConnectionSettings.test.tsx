@@ -80,6 +80,14 @@ it('shows sign-in text instead of the raw CLI error and retries the failed turn 
 
     await user.click(screen.getByRole('button', { name: 'Retry' }))
     expect(onRetryTurn).toHaveBeenLastCalledWith('turn-failed')
+    cleanup()
+
+    // The CLI's bare text alone, with no friendly error from the adapter.
+    const raw = 'Failed to authenticate: OAuth session expired and could not be refreshed'
+    render(<ul><MessageRow entry={{ id: 'segment', turnId: 'turn-failed', role: 'assistant', timestamp: '', status: 'failed',
+        content: raw, error: raw }} formatConversationTimestamp={() => ''} onRetryTurn={onRetryTurn} /></ul>)
+    expect(screen.getByText('Claude Code needs sign-in. Your conversation is saved.')).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to authenticate/)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Sign in to Claude' }))
     const dialog = await screen.findByRole('dialog')
