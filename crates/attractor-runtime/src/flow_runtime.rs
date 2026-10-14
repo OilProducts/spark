@@ -247,7 +247,7 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
         if let Some(value) = runtime.max_entries {
             insert_i64_attr(&mut attrs, "max_entries", value as i64);
         }
-        if let Some(seconds) = runtime.timeout.as_deref().and_then(duration_seconds) {
+        if let Ok(Some(seconds)) = runtime.timeout_seconds() {
             insert_f64_attr(&mut attrs, "timeout", seconds);
         }
     }
@@ -665,23 +665,6 @@ fn insert_i64_attr(attrs: &mut BTreeMap<String, DotAttribute>, key: &str, value:
             line: 0,
         },
     );
-}
-
-/// Seconds in `30`, `250ms`, `90s`, `15m`, `2h` or `1d`; None unless positive.
-fn duration_seconds(raw: &str) -> Option<f64> {
-    let raw = raw.trim();
-    let (number, scale) = [
-        ("ms", 0.001),
-        ("s", 1.0),
-        ("m", 60.0),
-        ("h", 3600.0),
-        ("d", 86400.0),
-    ]
-    .into_iter()
-    .find_map(|(unit, scale)| raw.strip_suffix(unit).map(|number| (number, scale)))
-    .unwrap_or((raw, 1.0));
-    let seconds = number.trim().parse::<f64>().ok()? * scale;
-    (seconds.is_finite() && seconds > 0.0).then_some(seconds)
 }
 
 fn insert_f64_attr(attrs: &mut BTreeMap<String, DotAttribute>, key: &str, value: f64) {

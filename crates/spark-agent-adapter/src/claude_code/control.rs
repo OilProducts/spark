@@ -463,6 +463,19 @@ pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
     )
 }
 
+pub(super) fn terminate(project_path: &str, conversation_id: &str) -> bool {
+    let Some(control) = find(project_path, conversation_id) else {
+        return false;
+    };
+    let mut control = control.lock().unwrap();
+    if control.ended || !matches!(control.child.try_wait(), Ok(None)) {
+        return false;
+    }
+    control.stopping = true;
+    control.end();
+    control.child.kill().is_ok()
+}
+
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {
     let delivered = find(&request.project_path, &request.conversation_id).is_some_and(|control| {
         let mut control = control.lock().unwrap();

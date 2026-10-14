@@ -81,6 +81,12 @@ impl ClaudeCodeBackend {
         control::interrupt(project_path, conversation_id)
     }
 
+    /// Ends the turn and kills its process, for a stop the CLI cannot take
+    /// as an interrupt.
+    pub fn terminate(&self, project_path: &str, conversation_id: &str) -> bool {
+        control::terminate(project_path, conversation_id)
+    }
+
     pub fn run_agent_turn(
         &self,
         request: AgentTurnRequest,

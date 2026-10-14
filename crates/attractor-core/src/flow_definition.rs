@@ -221,6 +221,34 @@ pub struct NodeRuntimeConfig {
     pub timeout: Option<String>,
 }
 
+/// The longest node `timeout`, so every node deadline is representable.
+pub const MAX_NODE_TIMEOUT_SECONDS: f64 = 365.0 * 86400.0;
+
+impl NodeRuntimeConfig {
+    /// `timeout` in seconds, from `30`, `250ms`, `90s`, `15m`, `2h` or `1d`.
+    pub fn timeout_seconds(&self) -> Result<Option<f64>, String> {
+        let Some(raw) = self.timeout.as_deref() else {
+            return Ok(None);
+        };
+        let (number, scale) = [
+            ("ms", 0.001),
+            ("s", 1.0),
+            ("m", 60.0),
+            ("h", 3600.0),
+            ("d", 86400.0),
+        ]
+        .into_iter()
+        .find_map(|(unit, scale)| raw.trim().strip_suffix(unit).map(|number| (number, scale)))
+        .unwrap_or((raw.trim(), 1.0));
+        match number.trim().parse::<f64>().map(|number| number * scale) {
+            Ok(seconds) if seconds > 0.0 && seconds <= MAX_NODE_TIMEOUT_SECONDS => Ok(Some(seconds)),
+            _ => Err(format!(
+                "runtime.timeout '{raw}' must be a positive duration up to 365d, such as 30, 90s, 15m or 2h"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryPolicy {
@@ -548,6 +576,13 @@ impl FlowDefinition {
         }
 
         for (node_id, node) in &self.nodes {
+            if let Some(Err(message)) = node
+                .runtime
+                .as_ref()
+                .map(NodeRuntimeConfig::timeout_seconds)
+            {
+                diagnostics.push(node_diagnostic("node_timeout", message, node_id));
+            }
             for key in node.context.keys() {
                 if let Err(error) = validate_context_key(key) {
                     diagnostics.push(node_diagnostic("context_key", format!("{error}"), node_id));

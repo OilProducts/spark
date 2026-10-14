@@ -163,7 +163,7 @@ impl RustLlmCodergenBackend {
                 steering: steering.clone(),
             })
         });
-        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone());
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let result = CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
             agent_request,
             Some(steering),
@@ -290,7 +290,7 @@ impl RustLlmCodergenBackend {
                 ));
             }) as AgentTurnEventSink
         });
-        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone());
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let result = ClaudeCodeBackend::new().run_codergen_turn(
             agent_request,
             turn_event_sink,
@@ -507,6 +507,9 @@ impl RustLlmCodergenBackend {
     }
 }
 
+/// How long a stopped agent turn may run on after its interrupt.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Interrupts a node's agent turn when its run is canceled or its `timeout`
 /// elapses. Claude and Codex both stop through their turn interrupt, so one
 /// watcher serves either backend.
@@ -521,21 +524,30 @@ impl NodeStop {
         request: &CodergenBackendRequest,
         agent_request: &AgentTurnRequest,
         cancel_check: Option<crate::codergen::CancelCheck>,
-    ) -> Self {
+    ) -> Result<Self, CodergenError> {
         let reason = std::sync::Arc::new(std::sync::Mutex::new(None));
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let timeout = request
-            .timeout_seconds
-            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
-        if cancel_check.is_none() && timeout.is_none() {
-            return Self {
+        let timeout = request.timeout_seconds;
+        let deadline = timeout
+            .map(|seconds| {
+                std::time::Duration::try_from_secs_f64(seconds)
+                    .ok()
+                    .filter(|limit| !limit.is_zero())
+                    .and_then(|limit| std::time::Instant::now().checked_add(limit))
+                    .ok_or_else(|| {
+                        CodergenError::Backend(format!(
+                            "invalid node timeout {seconds} seconds: it must be a positive, representable duration"
+                        ))
+                    })
+            })
+            .transpose()?;
+        if cancel_check.is_none() && deadline.is_none() {
+            return Ok(Self {
                 reason,
                 done,
                 watcher: None,
-            };
+            });
         }
-        let deadline = timeout
-            .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs_f64(seconds));
         let (project_path, conversation_id) = (
             agent_request.project_path.clone(),
             agent_request.conversation_id.clone(),
@@ -543,6 +555,7 @@ impl NodeStop {
         let watcher = std::thread::spawn({
             let (reason, done) = (reason.clone(), done.clone());
             move || {
+                let mut stopped_at = None;
                 while !done.load(std::sync::atomic::Ordering::SeqCst) {
                     let mut slot = reason.lock().unwrap();
                     if slot.is_none() {
@@ -568,22 +581,27 @@ impl NodeStop {
                         }
                     }
                     // Repeated until the turn ends: the process may not
-                    // have registered its interrupt yet.
-                    // ponytail: a Claude CLI without interrupt_receipt_v1 runs
-                    // on to its own end; kill the process if those matter.
+                    // have registered its interrupt yet. A Claude process that
+                    // cannot take an interrupt, or is still running a grace
+                    // period after one, is terminated.
                     if slot.is_some() {
-                        let _ = RustLlmAgentTurnBackend::interrupt(&project_path, &conversation_id);
+                        let stopped = *stopped_at.get_or_insert_with(std::time::Instant::now);
+                        let interrupted = stopped.elapsed() < STOP_GRACE
+                            && RustLlmAgentTurnBackend::interrupt(&project_path, &conversation_id);
+                        if !interrupted {
+                            ClaudeCodeBackend::new().terminate(&project_path, &conversation_id);
+                        }
                     }
                     drop(slot);
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 }
             }
         });
-        Self {
+        Ok(Self {
             reason,
             done,
             watcher: Some(watcher),
-        }
+        })
     }
 
     /// Stops watching; a stopped node's output is its cancel or timeout failure.

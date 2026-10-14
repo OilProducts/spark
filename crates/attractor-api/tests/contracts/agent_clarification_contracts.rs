@@ -481,6 +481,16 @@ elif 'LONG' in prompt:
             sys.exit(0)
 "#;
 
+/// A Claude CLI without `interrupt_receipt_v1`: control closes its stdin and
+/// only killing the process stops it.
+const FAKE_CLAUDE_WITHOUT_INTERRUPT: &str = r#"#!/usr/bin/env python3
+import json, sys, time
+print(json.dumps({'type':'system','subtype':'init','session_id':'s1','model':'m','tools':[]}), flush=True)
+assert 'LONG' in sys.stdin.readline()
+open('started','w').close()
+time.sleep(600)
+"#;
+
 const FAKE_CODEX_LONG_TURN: &str = r#"#!/usr/bin/env python3
 import json, sys
 def send(x):
@@ -656,6 +666,26 @@ fn claude_code_node_questions_cancel_and_timeout() {
         status == "completed"
     });
 
+    assert_cancel_and_timeout(&service, &settings, temp.path(), "claude-code");
+    match old_bin {
+        Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
+        None => std::env::remove_var("SPARK_CLAUDE_CODE_BIN"),
+    }
+}
+
+#[test]
+fn claude_code_node_without_interrupt_is_terminated_on_cancel_and_timeout() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "claude", FAKE_CLAUDE_WITHOUT_INTERRUPT);
+    let old_bin = std::env::var_os("SPARK_CLAUDE_CODE_BIN");
+    std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
     assert_cancel_and_timeout(&service, &settings, temp.path(), "claude-code");
     match old_bin {
         Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
