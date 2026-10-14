@@ -104,6 +104,34 @@ impl CodergenBackend for RustLlmCodergenBackend {
 }
 
 impl RustLlmCodergenBackend {
+    /// Lets run steering reach this node's Claude or Codex turn as a live
+    /// message, keyed like the turn itself.
+    fn register_live_turn(
+        &self,
+        request: &CodergenBackendRequest,
+        agent_request: &AgentTurnRequest,
+        provider: &str,
+    ) -> Option<crate::codergen::ActiveCodergenSessionGuard> {
+        self.intervention_broker.as_ref().map(|broker| {
+            broker.register(ActiveCodergenSession {
+                node_id: request.node_id.clone(),
+                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
+                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
+                provider: provider.to_string(),
+                model: request.model.clone(),
+                llm_profile: request.llm_profile.clone(),
+                reasoning_effort: request.reasoning_effort.clone(),
+                project_path: request.project_path.clone(),
+                metadata: request.metadata.clone(),
+                steering: SessionSteeringHandle::new(),
+                live_turn: Some((
+                    agent_request.project_path.clone(),
+                    agent_request.conversation_id.clone(),
+                )),
+            })
+        })
+    }
+
     fn run_codex_app_server_codergen(
         &mut self,
         request: CodergenBackendRequest,
@@ -148,25 +176,10 @@ impl RustLlmCodergenBackend {
                     ));
                 }
             }) as AgentTurnEventSink);
-        let steering = SessionSteeringHandle::new();
-        let _active_session = self.intervention_broker.as_ref().map(|broker| {
-            broker.register(ActiveCodergenSession {
-                node_id: request.node_id.clone(),
-                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
-                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
-                provider: "codex".to_string(),
-                model: request.model.clone(),
-                llm_profile: request.llm_profile.clone(),
-                reasoning_effort: request.reasoning_effort.clone(),
-                project_path: request.project_path.clone(),
-                metadata: request.metadata.clone(),
-                steering: steering.clone(),
-            })
-        });
+        let _active_session = self.register_live_turn(&request, &agent_request, "codex");
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let result = CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
             agent_request,
-            Some(steering),
             turn_event_sink,
             capture_sink,
             self.clarification_handler.clone(),
@@ -290,6 +303,7 @@ impl RustLlmCodergenBackend {
                 ));
             }) as AgentTurnEventSink
         });
+        let _active_session = self.register_live_turn(&request, &agent_request, "claude-code");
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let result = ClaudeCodeBackend::new().run_codergen_turn(
             agent_request,
@@ -488,6 +502,7 @@ impl RustLlmCodergenBackend {
                 project_path: request.project_path.clone(),
                 metadata: request.metadata.clone(),
                 steering: session.steering_handle(),
+                live_turn: None,
             })
         });
         let process_error = session.process_input(&self.client, prompt).err();
@@ -1163,11 +1178,38 @@ impl RustLlmAgentTurnBackend {
         ClaudeCodeBackend::new().terminate(project_path, conversation_id)
             || CodexAppServerBackend::new().terminate(project_path, conversation_id)
     }
+
+    /// The one path that sends a message into a live Claude or Codex turn,
+    /// for chat and run steering alike.
+    pub(crate) fn send_live_message(
+        project_path: &str,
+        conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        ClaudeCodeBackend::new().send_message(project_path, conversation_id, message_id, message)
+            || CodexAppServerBackend::new().send_message(
+                project_path,
+                conversation_id,
+                message_id,
+                message,
+            )
+    }
 }
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
     fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
         Self::interrupt(project_path, conversation_id)
+    }
+
+    fn send_message(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        Self::send_live_message(project_path, conversation_id, message_id, message)
     }
 
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {

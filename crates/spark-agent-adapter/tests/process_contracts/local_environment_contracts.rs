@@ -230,6 +230,8 @@ fn local_environment_exec_command_uses_bash_on_unix() {
 #[cfg(unix)]
 #[test]
 fn local_environment_exec_command_kills_child_that_survives_sigterm() {
+    // The command inherits PATH, which other tests swap out under this lock.
+    let _env_guard = ENV_LOCK.lock().expect("env lock");
     let tempdir = tempdir().expect("tempdir");
     let marker = tempdir.path().join("survived.txt");
     let environment = LocalExecutionEnvironment::with_options(
@@ -254,7 +256,7 @@ fn local_environment_exec_command_kills_child_that_survives_sigterm() {
         )
         .expect("timeout command");
 
-    assert!(result.timed_out);
+    assert!(result.timed_out, "{result:?}");
     assert_eq!(result.stderr, timeout_message(50));
     assert_ne!(result.exit_code, 0);
 

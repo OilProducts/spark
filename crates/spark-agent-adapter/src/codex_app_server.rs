@@ -24,7 +24,6 @@ use crate::agent::{
     AgentRawLogLine, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure,
     AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest,
 };
-use crate::session::SessionSteeringHandle;
 
 pub mod auth;
 
@@ -176,7 +175,7 @@ impl CodexAppServerBackend {
         &self,
         request: AgentTurnRequest,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        self.run_agent_turn_with_steering_and_sink(request, None, None)
+        self.run_agent_turn_with_event_sink(request, None)
     }
 
     pub fn run_agent_turn_with_event_sink(
@@ -184,30 +183,12 @@ impl CodexAppServerBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        self.run_agent_turn_with_steering_and_sink(request, None, event_sink)
-    }
-
-    pub fn run_agent_turn_with_steering(
-        &self,
-        request: AgentTurnRequest,
-        steering: Option<SessionSteeringHandle>,
-    ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        self.run_agent_turn_with_steering_and_sink(request, steering, None)
-    }
-
-    pub fn run_agent_turn_with_steering_and_sink(
-        &self,
-        request: AgentTurnRequest,
-        steering: Option<SessionSteeringHandle>,
-        event_sink: Option<AgentTurnEventSink>,
-    ) -> Result<AgentTurnOutput, CodexAppServerError> {
-        self.run_agent_turn_with_capture_observer(request, steering, event_sink, None, None)
+        self.run_agent_turn_with_capture_observer(request, event_sink, None, None)
     }
 
     pub(crate) fn run_agent_turn_with_capture_observer(
         &self,
         request: AgentTurnRequest,
-        steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
         capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
         clarification_handler: Option<crate::codergen::ClarificationHandler>,
@@ -314,12 +295,54 @@ impl CodexAppServerBackend {
                 .and_then(|v| v["reasoning_summary"].as_str()),
             request.chat_mode.as_deref(),
             Some(&request.project_path),
-            steering,
             event_sink,
             capture_path.as_deref(),
             capture_observer,
         )?;
         Ok(agent_output_from_app_server_result(result))
+    }
+
+    /// Steers the conversation's running turn with a user message through
+    /// `turn/steer`. True once the app-server accepted it.
+    pub fn send_message(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        let stop = {
+            let registry = interrupt_registry().lock().unwrap();
+            registry
+                .get(&(project_path.to_string(), conversation_id.to_string()))
+                .and_then(Weak::upgrade)
+        };
+        let Some(stop) = stop else {
+            return false;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        stop.messages
+            .lock()
+            .unwrap()
+            .push((message_id.to_string(), message.to_string(), sender));
+        // The turn loop answers once turn/steer returns; a turn that ends
+        // first drops the sender.
+        match receiver.recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(1)) {
+            Ok(accepted) => accepted,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Withdraw a message the turn has not taken, so it is only
+                // ever queued or delivered, never both. A taken message is
+                // mid turn/steer, which its own request timeout bounds.
+                let mut messages = stop.messages.lock().unwrap();
+                if let Some(index) = messages.iter().position(|(id, ..)| id == message_id) {
+                    messages.remove(index);
+                    return false;
+                }
+                drop(messages);
+                receiver.recv().unwrap_or(false)
+            }
+        }
     }
 
     /// Asks the conversation's running turn, if any, to stop.
@@ -722,7 +745,6 @@ impl CodexAppServerClient {
         reasoning_effort: Option<&str>,
         chat_mode: Option<&str>,
         cwd: Option<&str>,
-        steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
         self.run_turn_with_capture(
@@ -734,7 +756,6 @@ impl CodexAppServerClient {
             None,
             chat_mode,
             cwd,
-            steering,
             event_sink,
             None,
             None,
@@ -752,7 +773,6 @@ impl CodexAppServerClient {
         reasoning_summary: Option<&str>,
         chat_mode: Option<&str>,
         cwd: Option<&str>,
-        steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
         capture_path: Option<&Path>,
         capture_observer: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -820,7 +840,7 @@ impl CodexAppServerClient {
             .ok_or_else(|| {
                 CodexAppServerError::runtime("codex app-server did not return a turn id")
             })?;
-        self.consume_turn_stream(thread_id, &turn_id, steering, event_sink)
+        self.consume_turn_stream(thread_id, &turn_id, event_sink)
     }
 
     pub fn steer_turn(
@@ -862,7 +882,6 @@ impl CodexAppServerClient {
         &mut self,
         thread_id: &str,
         expected_turn_id: &str,
-        steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<CodexAppServerTurnResult, CodexAppServerError> {
         let mut state = CodexAppServerTurnState::default();
@@ -870,9 +889,13 @@ impl CodexAppServerClient {
         let mut last_activity = Instant::now();
         let mut stopping = false;
         loop {
-            if let Some(handle) = steering.as_ref() {
-                self.drain_steering(handle, thread_id, expected_turn_id, &mut events)?;
-            }
+            self.steer_messages(
+                thread_id,
+                expected_turn_id,
+                stopping,
+                event_sink.as_ref(),
+                &mut events,
+            );
             self.check_terminated()?;
             if !stopping && self.stop.interrupt.load(Ordering::SeqCst) {
                 stopping = true;
@@ -999,43 +1022,56 @@ impl CodexAppServerClient {
         })
     }
 
-    fn drain_steering(
+    /// Sends each message from `send_message` through turn/steer and tells
+    /// its sender whether the app-server accepted it. An accepted message is
+    /// reported before any output read after it. A stopping turn takes none.
+    fn steer_messages(
         &mut self,
-        handle: &SessionSteeringHandle,
         thread_id: &str,
         turn_id: &str,
+        stopping: bool,
+        event_sink: Option<&AgentTurnEventSink>,
         events: &mut Vec<TurnStreamEvent>,
-    ) -> Result<(), CodexAppServerError> {
-        for steering_turn in handle.drain_queued() {
-            let text = steering_turn.text();
-            if text.trim().is_empty() {
+    ) {
+        let messages = std::mem::take(&mut *self.stop.messages.lock().unwrap());
+        for (message_id, text, accepted) in messages {
+            if stopping {
+                let _ = accepted.send(false);
                 continue;
             }
-            self.steer_turn(thread_id, turn_id, &text)?;
-            events.push(TurnStreamEvent {
-                kind: TurnStreamEventKind::Other("steering_injected".to_string()),
+            if let Err(error) = self.steer_turn(thread_id, turn_id, &text) {
+                tracing::warn!(error = %error.message, "codex app-server turn/steer failed");
+                let _ = accepted.send(false);
+                continue;
+            }
+            let delivered = TurnStreamEvent {
+                kind: TurnStreamEventKind::Other("user_message_delivered".to_string()),
                 channel: None,
                 source: TurnStreamSource {
                     backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
                     app_thread_id: Some(thread_id.to_string()),
                     app_turn_id: Some(turn_id.to_string()),
+                    item_id: Some(message_id),
                     raw_kind: Some("turn_steer".to_string()),
                     ..TurnStreamSource::default()
                 },
-                content_delta: Some(text.clone()),
+                content_delta: None,
                 message: Some(text),
                 tool_call: None,
                 request_user_input: None,
                 token_usage: None,
                 error: None,
                 error_code: None,
-                details: (!steering_turn.metadata.is_empty())
-                    .then(|| json!(steering_turn.metadata)),
-                phase: Some("intervention".to_string()),
+                details: None,
+                phase: None,
                 status: Some("delivered".to_string()),
-            });
+            };
+            if let Some(sink) = event_sink {
+                sink(delivered.clone());
+            }
+            events.push(delivered);
+            let _ = accepted.send(true);
         }
-        Ok(())
     }
 
     fn wait_for_response(
@@ -1239,6 +1275,9 @@ impl PendingRequestUserInput {
 struct TurnStop {
     interrupt: AtomicBool,
     terminate: AtomicBool,
+    /// Messages for turn/steer, each with where to report acceptance.
+    /// `(message_id, message, accepted)`.
+    messages: Mutex<Vec<(String, String, std::sync::mpsc::Sender<bool>)>>,
 }
 
 type InterruptRegistry = Mutex<BTreeMap<(String, String), Weak<TurnStop>>>;

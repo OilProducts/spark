@@ -537,7 +537,7 @@ describe('ProjectsPanel', () => {
     expect(within(history).getAllByText('Show this message immediately.')).toHaveLength(1)
     expect(history).not.toHaveTextContent('Visible.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Worked for')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Thinking...')
+    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send to the running turn')
   })
 
   it('renders the assistant reply even when the backend canonicalizes project_path', async () => {
@@ -626,14 +626,69 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it.each(['codex', 'claude-code'])('disables sending during an active %s turn and wires Stop', async (provider) => {
+  it.each(['codex', 'claude-code'])('keeps Send enabled during an active %s turn, shows the queued message, and wires Stop', async (provider) => {
     const user = userEvent.setup()
     const sendRequests: string[] = []
+    const activeSnapshot = (queued: object[]) => ({
+            conversation_id: 'conversation-active-turn',
+            conversation_handle: 'amber-otter',
+            project_path: '/tmp/chat-project',
+            title: 'Active thread',
+            provider,
+            created_at: '2026-03-15T14:05:00Z',
+            updated_at: queued.length ? '2026-03-15T14:05:03Z' : '2026-03-15T14:05:02Z',
+            turns: [
+              {
+                id: 'turn-user-1',
+                role: 'user',
+                content: 'Keep going.',
+                timestamp: '2026-03-15T14:05:00Z',
+                status: 'complete',
+                kind: 'message',
+                artifact_id: null,
+              },
+              {
+                id: 'turn-assistant-1',
+                role: 'assistant',
+                content: '',
+                timestamp: '2026-03-15T14:05:01Z',
+                status: 'streaming',
+                kind: 'message',
+                artifact_id: null,
+                parent_turn_id: 'turn-user-1',
+              },
+              ...queued,
+            ],
+            segments: [
+              {
+                id: 'segment-reasoning-1',
+                turn_id: 'turn-assistant-1',
+                order: 1,
+                kind: 'reasoning',
+                role: 'assistant',
+                status: 'streaming',
+                timestamp: '2026-03-15T14:05:02Z',
+                updated_at: '2026-03-15T14:05:02Z',
+                revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
+                completed_at: null,
+                content: 'Still working on it.',
+                artifact_id: null,
+                error: null,
+                tool_call: null,
+                source: null,
+              },
+            ],
+            event_log: [],
+
+
+
+          })
 
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.endsWith('/interrupt') && init?.method === 'POST') {
           sendRequests.push(url)
           expect(JSON.parse(String(init.body))).toEqual({ project_path: '/tmp/chat-project' })
@@ -663,68 +718,24 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-active-turn') && !url.includes('/turns')) {
-          return new Response(JSON.stringify(withSnapshotSchema({
-            conversation_id: 'conversation-active-turn',
-            conversation_handle: 'amber-otter',
-            project_path: '/tmp/chat-project',
-            title: 'Active thread',
-            provider,
-            created_at: '2026-03-15T14:05:00Z',
-            updated_at: '2026-03-15T14:05:02Z',
-            revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
-            turns: [
-              {
-                id: 'turn-user-1',
-                role: 'user',
-                content: 'Keep going.',
-                timestamp: '2026-03-15T14:05:00Z',
-                status: 'complete',
-                kind: 'message',
-                artifact_id: null,
-              },
-              {
-                id: 'turn-assistant-1',
-                role: 'assistant',
-                content: '',
-                timestamp: '2026-03-15T14:05:01Z',
-                status: 'streaming',
-                kind: 'message',
-                artifact_id: null,
-                parent_turn_id: 'turn-user-1',
-              },
-            ],
-            segments: [
-              {
-                id: 'segment-reasoning-1',
-                turn_id: 'turn-assistant-1',
-                order: 1,
-                kind: 'reasoning',
-                role: 'assistant',
-                status: 'streaming',
-                timestamp: '2026-03-15T14:05:02Z',
-                updated_at: '2026-03-15T14:05:02Z',
-                revision: testRevisionFromTimestamp('2026-03-15T14:05:02Z'),
-                completed_at: null,
-                content: 'Still working on it.',
-                artifact_id: null,
-                error: null,
-                tool_call: null,
-                source: null,
-              },
-            ],
-            event_log: [],
-
-
-
-          })), {
+          return new Response(JSON.stringify(withSnapshotSchema(activeSnapshot([]))), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
-        if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
+        if (url.endsWith('/turns') && init?.method === 'POST') {
           sendRequests.push(url)
-          return new Response(JSON.stringify({ detail: 'should not send while assistant turn is active' }), {
-            status: 500,
+          // The running turn could not take it, so the server queued it.
+          return new Response(JSON.stringify(withSnapshotSchema(activeSnapshot([{
+            id: 'turn-user-queued',
+            role: 'user',
+            content: 'Can I interrupt?',
+            timestamp: '2026-03-15T14:05:03Z',
+            status: 'queued',
+            kind: 'message',
+            artifact_id: null,
+          }]))), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
@@ -748,15 +759,17 @@ describe('ProjectsPanel', () => {
     await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can I interrupt?')
 
     const sendButton = screen.getByTestId('project-ai-conversation-send-button')
-    expect(sendButton).toBeDisabled()
-    expect(sendButton).toHaveAccessibleName('Thinking...')
+    expect(sendButton).toBeEnabled()
+    expect(sendButton).toHaveAccessibleName('Send to the running turn')
 
     await user.click(sendButton)
 
-    expect(sendRequests).toHaveLength(0)
+    await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/turns']))
+    await waitFor(() => {
+      expect(screen.getByTestId('message-delivery')).toHaveTextContent('Queued · starts when the current turn ends')
+    })
     await user.click(screen.getByTestId('project-chat-stop'))
-    await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/interrupt']))
-    expect(sendButton).toBeDisabled()
+    await waitFor(() => expect(sendRequests).toContain('/workspace/api/conversations/conversation-active-turn/interrupt'))
   })
 
   it('renders assistant tool calls before the completed assistant summary for the same turn', async () => {
@@ -2186,7 +2199,7 @@ describe('ProjectsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Thinking...')
+      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send to the running turn')
     })
 
     act(() => {

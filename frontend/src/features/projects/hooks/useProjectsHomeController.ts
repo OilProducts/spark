@@ -159,6 +159,7 @@ export function useProjectsHomeController() {
         chatSendButtonLabel,
         hasRenderableConversationHistory,
         isChatInputDisabled,
+        isConversationTurnStarting,
         latestFlowLaunchId,
         latestFlowRunRequestId,
     } = projectsHomeViewModel
@@ -193,7 +194,7 @@ export function useProjectsHomeController() {
                     ? 'The saved Codex model is no longer available. Select another model.'
                     : null
         : null
-    const isChatSubmissionDisabled = isChatInputDisabled || !isChatModelReady
+    const isChatSubmissionDisabled = isConversationTurnStarting || !isChatModelReady
     const conversationHistoryRevisionKey = useMemo(
         () => buildConversationHistoryRevisionKey(activeConversationHistory),
         [activeConversationHistory],

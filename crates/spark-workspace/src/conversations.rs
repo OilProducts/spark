@@ -351,6 +351,21 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
             .interrupt_turn(project_path, conversation_id)
     }
 
+    fn send_message(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new()).send_message(
+            project_path,
+            conversation_id,
+            message_id,
+            message,
+        )
+    }
+
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
         self.run_turn_with_event_sink(request, None)
     }
@@ -989,16 +1004,138 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    /// Starts a turn now. A running or queued turn is a conflict.
     pub fn start_turn(
         &self,
         conversation_id: &str,
         request: ConversationTurnRequest,
     ) -> WorkspaceResult<(PreparedConversationTurn, Value)> {
+        let lock = conversation_turn_lock(conversation_id);
+        let _lock = lock.lock().unwrap();
+        match self.begin_turn(conversation_id, request, TurnStart::Now)? {
+            (Some(prepared), snapshot) => Ok((prepared, snapshot)),
+            (None, _) => Err(WorkspaceError::Internal(
+                "a turn start produced no turn".to_string(),
+            )),
+        }
+    }
+
+    /// Sends a message: it starts a turn, or while a turn runs it is
+    /// delivered into that turn or queued to start after it. Returns the
+    /// started turn, if any, to complete.
+    pub fn send_turn(
+        &self,
+        conversation_id: &str,
+        request: ConversationTurnRequest,
+    ) -> WorkspaceResult<(Option<PreparedConversationTurn>, Value)> {
+        let lock = conversation_turn_lock(conversation_id);
+        let _lock = lock.lock().unwrap();
+        self.begin_turn(conversation_id, request, TurnStart::Send)
+    }
+
+    /// Delivers a message into the conversation's running turn, if one is
+    /// running and accepts it. Nothing is recorded otherwise.
+    pub fn deliver_message(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        message: &str,
+    ) -> WorkspaceResult<bool> {
+        let lock = conversation_turn_lock(conversation_id);
+        let _lock = lock.lock().unwrap();
+        let project_path = normalize_project_path_or_400(project_path)?;
+        let snapshot = self
+            .repository()
+            .read_snapshot(conversation_id, Some(&project_path))?
+            .unwrap_or(Value::Null);
+        Ok(first_queued_turn(&snapshot).is_none()
+            && self.deliver_live(
+                conversation_id,
+                &project_path,
+                &format!("turn-{}", uuid::Uuid::new_v4().simple()),
+                message,
+            ))
+    }
+
+    /// Starts the oldest queued message once no turn runs. A queued message
+    /// that cannot start is marked failed, never left behind.
+    fn start_queued_turn(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+    ) -> WorkspaceResult<Option<(PreparedConversationTurn, Value)>> {
+        let lock = conversation_turn_lock(conversation_id);
+        let _lock = lock.lock().unwrap();
+        let repository = self.repository();
+        loop {
+            let Some(snapshot) = repository.read_snapshot(conversation_id, Some(project_path))?
+            else {
+                return Ok(None);
+            };
+            if active_assistant_turn_id(&snapshot).is_some() {
+                return Ok(None);
+            }
+            let Some(queued) = first_queued_turn(&snapshot).cloned() else {
+                return Ok(None);
+            };
+            let request = ConversationTurnRequest {
+                project_path: project_path.to_string(),
+                ..Default::default()
+            };
+            match self.begin_turn(conversation_id, request, TurnStart::Queued(&queued)) {
+                Ok((Some(prepared), snapshot)) => return Ok(Some((prepared, snapshot))),
+                Ok((None, _)) => return Ok(None),
+                Err(error) => {
+                    let mut failed = queued;
+                    set_string_value(&mut failed, "status", "failed");
+                    set_string_value(&mut failed, "error", &format!("Not sent: {error}"));
+                    commit_conversation_mutations(
+                        &repository,
+                        conversation_id,
+                        project_path,
+                        snapshot_revision(&snapshot),
+                        vec![turn_mutation_from_value(&failed)?],
+                    )?;
+                }
+            }
+        }
+    }
+
+    /// Writes the message into the running turn. The turn reports an
+    /// accepted message through its own event stream, so the transcript
+    /// shows it before any output that follows it.
+    fn deliver_live(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        self.agent_turn_backend
+            .send_message(project_path, conversation_id, message_id, message)
+    }
+
+    /// Caller holds the conversation's turn lock from here through the commit.
+    fn begin_turn(
+        &self,
+        conversation_id: &str,
+        request: ConversationTurnRequest,
+        mode: TurnStart,
+    ) -> WorkspaceResult<(Option<PreparedConversationTurn>, Value)> {
         let _references =
             spark_storage::settings::lock_profile_references(&self.settings.config_dir)?;
         let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
-        let message = request.message.trim().to_string();
-        if message.is_empty() && request.attachment_ids.is_empty() {
+        let (message, attachment_ids) = match mode {
+            TurnStart::Queued(turn) => (
+                turn["content"].as_str().unwrap_or_default().to_string(),
+                crate::attachments::turn_attachment_ids(turn),
+            ),
+            _ => (
+                request.message.trim().to_string(),
+                request.attachment_ids.clone(),
+            ),
+        };
+        if message.is_empty() && attachment_ids.is_empty() {
             return Err(WorkspaceError::Validation(
                 "Message is required.".to_string(),
             ));
@@ -1097,13 +1234,16 @@ impl WorkspaceConversationService {
         if snapshot["reasoning_effort"] != json!(effective_reasoning_effort) {
             settings_patch.reasoning_effort = Some(effective_reasoning_effort.clone());
         }
-        if active_assistant_turn_id(&snapshot).is_some() {
+        let queued_ahead = first_queued_turn(&snapshot).is_some();
+        let busy = active_assistant_turn_id(&snapshot).is_some()
+            || (queued_ahead && !matches!(mode, TurnStart::Queued(_)));
+        if busy && !matches!(mode, TurnStart::Send) {
             return Err(WorkspaceError::Conflict(
                 ACTIVE_ASSISTANT_TURN_MESSAGE.to_string(),
             ));
         }
         let attachments =
-            self.resolve_turn_attachments(conversation_id, &project_path, &request.attachment_ids)?;
+            self.resolve_turn_attachments(conversation_id, &project_path, &attachment_ids)?;
         validate_provider_attachments(&effective_provider, &attachments)?;
         snapshot["provider"] = json!(effective_provider);
         let previous_app_thread_id = resume_runtime_session_thread_id(
@@ -1113,19 +1253,54 @@ impl WorkspaceConversationService {
             &snapshot,
         );
 
-        let mut user_turn = json!({
-            "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
-            "role": "user",
-            "content": message,
-            "timestamp": iso_now(),
-            "status": "complete",
-            "kind": "message",
-        });
+        let mut user_turn = match mode {
+            TurnStart::Queued(turn) => turn.clone(),
+            _ => json!({
+                "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
+                "role": "user",
+                "content": message,
+                "timestamp": iso_now(),
+                "kind": "message",
+            }),
+        };
+        user_turn["status"] = json!("complete");
         if !attachments.is_empty() {
             user_turn["attachments"] = attachments
                 .iter()
                 .map(crate::attachments::turn_attachment_reference)
                 .collect();
+        }
+        if busy {
+            if !settings_patch.is_empty() {
+                mutations.push(ConversationMutation::MetadataUpdated {
+                    patch: settings_patch,
+                });
+            }
+            let user_turn_id = user_turn["id"].as_str().unwrap_or_default().to_string();
+            // Only a message with nothing queued ahead joins the running
+            // turn, so queued messages keep their order.
+            let delivered = !queued_ahead
+                && attachments.is_empty()
+                && self.deliver_live(conversation_id, &project_path, &user_turn_id, &message);
+            if !delivered {
+                user_turn["status"] = json!("queued");
+                mutations.push(turn_mutation_from_value(&user_turn)?);
+            }
+            if !mutations.is_empty() {
+                commit_conversation_mutations(
+                    &repository,
+                    conversation_id,
+                    &project_path,
+                    base_revision,
+                    mutations,
+                )?;
+            }
+            let mut snapshot = repository
+                .read_snapshot(conversation_id, Some(&project_path))?
+                .unwrap_or(snapshot);
+            prepare_snapshot_for_ui(&mut snapshot, conversation_id);
+            self.attach_model_settings(&mut snapshot)?;
+            return Ok((None, snapshot));
         }
         let assistant_turn = json!({
             "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
@@ -1154,6 +1329,12 @@ impl WorkspaceConversationService {
         }
         mutations.push(turn_mutation_from_value(&user_turn)?);
         mutations.push(turn_mutation_from_value(&assistant_turn)?);
+        // Messages still queued are rewritten so they stay behind this turn.
+        for queued in queued_turns(&snapshot) {
+            if queued["id"] != user_turn["id"] {
+                mutations.push(turn_mutation_from_value(queued)?);
+            }
+        }
         // Resolved before the turn persists, so a broken history rejects it.
         let history = agent_history_from_snapshot(&repository, &snapshot, &[])?;
         let commit = commit_conversation_mutations(
@@ -1261,7 +1442,7 @@ impl WorkspaceConversationService {
         };
         prepare_snapshot_for_ui(&mut snapshot, conversation_id);
         self.attach_model_settings(&mut snapshot)?;
-        Ok((prepared, snapshot))
+        Ok((Some(prepared), snapshot))
     }
 
     /// Starts a new turn that resends the user input of a failed assistant
@@ -1614,6 +1795,8 @@ impl WorkspaceConversationService {
         self.complete_started_turn_with_progress_payloads(prepared, started_snapshot, progress)
     }
 
+    /// Runs a started turn, then each message queued behind it, in order.
+    /// Returns the last turn's result.
     pub fn complete_started_turn_with_progress_payloads<F>(
         &self,
         prepared: PreparedConversationTurn,
@@ -1623,7 +1806,42 @@ impl WorkspaceConversationService {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let progress = Arc::new(progress);
+        let progress: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(progress);
+        let (conversation_id, project_path) = (
+            prepared.conversation_id.clone(),
+            prepared.project_path.clone(),
+        );
+        let mut result = self.run_started_turn(prepared, started_snapshot, progress.clone());
+        loop {
+            let before = self
+                .repository()
+                .read_snapshot(&conversation_id, Some(&project_path))
+                .ok()
+                .flatten()
+                .map(|snapshot| snapshot_revision(&snapshot))
+                .unwrap_or(0);
+            let next = match self.start_queued_turn(&conversation_id, &project_path) {
+                Ok(Some(next)) => next,
+                // A storage failure leaves the rest queued, visible as queued.
+                Ok(None) | Err(_) => break,
+            };
+            for payload in self
+                .read_events_after(&conversation_id, &project_path, before)
+                .unwrap_or_default()
+            {
+                progress(payload);
+            }
+            result = self.run_started_turn(next.0, next.1, progress.clone());
+        }
+        result
+    }
+
+    fn run_started_turn(
+        &self,
+        prepared: PreparedConversationTurn,
+        started_snapshot: Value,
+        progress: Arc<dyn Fn(Value) + Send + Sync>,
+    ) -> WorkspaceResult<Value> {
         let (event_sink, provider_event_error) = live_conversation_turn_event_sink(
             started_snapshot,
             prepared.assistant_turn_id.clone(),
@@ -1789,7 +2007,39 @@ impl WorkspaceConversationService {
             };
             for conversation_id in conversation_ids {
                 let _ = self.abandon_active_turn(&conversation_id, &project.project_path);
+                let _ = self.fail_queued_turns(&conversation_id, &project.project_path);
             }
+        }
+        Ok(())
+    }
+
+    /// Messages a previous process left queued will never start; they are
+    /// shown as not sent.
+    fn fail_queued_turns(&self, conversation_id: &str, project_path: &str) -> WorkspaceResult<()> {
+        let repository = self.repository();
+        let Some(snapshot) = repository.read_snapshot(conversation_id, Some(project_path))? else {
+            return Ok(());
+        };
+        let mutations = queued_turns(&snapshot)
+            .map(|turn| {
+                let mut turn = turn.clone();
+                set_string_value(&mut turn, "status", "failed");
+                set_string_value(
+                    &mut turn,
+                    "error",
+                    "Not sent: Spark restarted before this message started.",
+                );
+                turn_mutation_from_value(&turn)
+            })
+            .collect::<WorkspaceResult<Vec<_>>>()?;
+        if !mutations.is_empty() {
+            commit_conversation_mutations(
+                &repository,
+                conversation_id,
+                project_path,
+                snapshot_revision(&snapshot),
+                mutations,
+            )?;
         }
         Ok(())
     }
@@ -3924,6 +4174,43 @@ fn push_array_value(snapshot: &mut Value, key: &str, value: Value) {
     }
 }
 
+/// How a message reaches the conversation's agent.
+enum TurnStart<'a> {
+    /// A new turn now; a running or queued turn is a conflict.
+    Now,
+    /// A new turn, or into the running turn, or queued behind it.
+    Send,
+    /// This queued message, as the next turn.
+    Queued(&'a Value),
+}
+
+/// Held from deciding whether a message starts, joins or queues behind a
+/// turn through the commit that records it.
+fn conversation_turn_lock(conversation_id: &str) -> Arc<Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, Arc<Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    // ponytail: one small entry per conversation for the process's lifetime.
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(conversation_id.to_string())
+        .or_default()
+        .clone()
+}
+
+fn queued_turns(snapshot: &Value) -> impl Iterator<Item = &Value> {
+    snapshot["turns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|turn| turn["status"] == "queued")
+}
+
+fn first_queued_turn(snapshot: &Value) -> Option<&Value> {
+    queued_turns(snapshot).next()
+}
+
 fn active_assistant_turn_id(snapshot: &Value) -> Option<String> {
     snapshot
         .get("turns")
@@ -4445,14 +4732,15 @@ impl LiveConversationTurnState {
         // each finished segment itself: a client opening the conversation
         // mid-turn sees everything done so far, and a crash loses at most the
         // segment in progress. Pending user input must survive a restart too.
-        if matches!(
+        if (matches!(
             event.kind,
             TurnStreamEventKind::ContentCompleted
                 | TurnStreamEventKind::ToolCallCompleted
                 | TurnStreamEventKind::ToolCallFailed
                 | TurnStreamEventKind::ContextCompactionCompleted
                 | TurnStreamEventKind::RequestUserInputRequested
-        ) && self.commit_pending()
+        ) || matches!(&event.kind, TurnStreamEventKind::Other(kind) if kind.starts_with("user_message_")))
+            && self.commit_pending()
         {
             return Ok(());
         }
@@ -5486,6 +5774,10 @@ fn agent_history_from_snapshot(
         .into_iter()
         .flatten()
     {
+        if let Some(split) = delivered_message_history(snapshot, turn, excluded_turn_ids) {
+            history.extend(split);
+            continue;
+        }
         let Some(mut history_turn) =
             agent_history_turn_from_persisted_turn(turn, excluded_turn_ids)
         else {
@@ -5510,6 +5802,64 @@ fn agent_history_from_snapshot(
         history.push(history_turn);
     }
     Ok(history)
+}
+
+/// An assistant turn that took messages mid-turn, as its finished output
+/// and those messages in the order they happened, so a backend that reads
+/// history sees them too. A message the turn never used is left out. None
+/// when the turn took no message.
+fn delivered_message_history(
+    snapshot: &Value,
+    turn: &Value,
+    excluded_turn_ids: &[&str],
+) -> Option<Vec<HistoryTurn>> {
+    let turn_id = turn["id"].as_str()?;
+    if turn["role"] != "assistant" || excluded_turn_ids.contains(&turn_id) {
+        return None;
+    }
+    let mut segments = snapshot["segments"]
+        .as_array()?
+        .iter()
+        .filter(|segment| {
+            segment["turn_id"] == turn_id
+                && segment["status"] == "complete"
+                && matches!(
+                    segment["kind"].as_str(),
+                    Some("assistant_message" | "plan" | "user_message")
+                )
+        })
+        .collect::<Vec<_>>();
+    if !segments
+        .iter()
+        .any(|segment| segment["kind"] == "user_message")
+    {
+        return None;
+    }
+    segments.sort_by_key(|segment| segment["order"].as_i64());
+    let timestamp = history_turn_timestamp(turn);
+    let mut history = Vec::new();
+    let mut said = Vec::new();
+    let flush = |history: &mut Vec<HistoryTurn>, said: &mut Vec<&str>| {
+        if !said.is_empty() {
+            let mut assistant_turn = AssistantTurn::new(said.join("\n\n"));
+            assistant_turn.timestamp = timestamp;
+            history.push(HistoryTurn::Assistant(assistant_turn));
+            said.clear();
+        }
+    };
+    for segment in segments {
+        let content = segment["content"].as_str().unwrap_or_default();
+        if segment["kind"] == "user_message" {
+            flush(&mut history, &mut said);
+            let mut user_turn = UserTurn::new(content);
+            user_turn.timestamp = timestamp;
+            history.push(HistoryTurn::User(user_turn));
+        } else if !content.trim().is_empty() {
+            said.push(content);
+        }
+    }
+    flush(&mut history, &mut said);
+    Some(history)
 }
 
 /// Codex and Claude Code take attachments; image input is limited to the

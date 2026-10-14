@@ -8,9 +8,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use spark_agent_adapter::{
     build_codex_runtime_environment, parse_jsonrpc_line, process_codex_app_server_message,
-    AgentAttachment, AgentRequestUserInputAnswerRequest, AgentTurnRequest, CodexAppServerBackend,
-    CodexAppServerClient, CodexAppServerTurnState, HistoryTurn, UserTurn,
-    AGENT_ATTACHMENTS_METADATA_KEY, AGENT_INSTRUCTIONS_METADATA_KEY,
+    AgentAttachment, AgentRequestUserInputAnswerRequest, AgentTurnBackend, AgentTurnRequest,
+    CodexAppServerBackend, CodexAppServerClient, CodexAppServerTurnState, HistoryTurn,
+    RustLlmAgentTurnBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
+    AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::debug::{CODEX_JSONRPC_TRACE_PATH_METADATA_KEY, ENV_SPARK_DEBUG_CODEX_JSONRPC};
 use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
@@ -256,6 +257,68 @@ fn interrupt_stops_the_running_turn_as_a_normal_completion() {
 }
 
 #[test]
+fn send_message_reaches_turn_steer_on_the_running_turn() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "steerable");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let request = AgentTurnRequest {
+        conversation_id: "codex-steer".to_string(),
+        project_path: temp.path().to_string_lossy().to_string(),
+        prompt: "Work".to_string(),
+        history: Vec::new(),
+        provider: Some("codex".to_string()),
+        model: None,
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: None,
+        metadata: BTreeMap::new(),
+    };
+    let path = request.project_path.clone();
+    let backend = RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new());
+    assert!(!backend.send_message(&path, "codex-steer", "note-1", "Use the docs."));
+
+    let turn = thread::spawn(move || CodexAppServerBackend::new().run_agent_turn(request));
+    let started = std::time::Instant::now();
+    while !fs::read_to_string(&log_path)
+        .unwrap_or_default()
+        .contains("turn/start")
+    {
+        assert!(started.elapsed() < Duration::from_secs(5), "turn/start");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(backend.send_message(&path, "codex-steer", "note-1", "Use the docs."));
+    let output = turn.join().expect("turn thread").expect("turn");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Steered"));
+    let delivered = output
+        .events
+        .iter()
+        .position(|event| {
+            event.kind == TurnStreamEventKind::Other("user_message_delivered".into())
+                && event.source.item_id.as_deref() == Some("note-1")
+                && event.message.as_deref() == Some("Use the docs.")
+        })
+        .expect("delivered event");
+    // Reported before the output that follows the steer.
+    assert!(output.events[delivered..]
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::ContentCompleted));
+    let steer = read_jsonrpc_log(&log_path)
+        .into_iter()
+        .find(|message| message["method"] == "turn/steer")
+        .expect("turn/steer");
+    assert_eq!(steer["params"]["expectedTurnId"], json!("turn-steer"));
+    assert_eq!(steer["params"]["input"][0]["text"], json!("Use the docs."));
+}
+
+#[test]
 fn model_list_is_supported_and_matches_generated_schema_shape() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
@@ -299,7 +362,6 @@ fn plan_mode_turn_uses_collaboration_mode_and_resolves_default_model() {
             None,
             Some("plan"),
             Some(temp.path().to_string_lossy().as_ref()),
-            None,
             None,
         )
         .expect("turn/start");

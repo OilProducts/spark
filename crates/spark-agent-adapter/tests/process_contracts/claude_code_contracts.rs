@@ -1092,6 +1092,97 @@ fn claude_code_interrupt_after_a_queued_result_interrupts_the_next_model_turn() 
 }
 
 #[test]
+fn claude_code_message_sent_mid_turn_folds_in_and_holds_the_turn_until_delivered() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "mid-turn-message");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log_path);
+    let request = agent_request(temp.path());
+    let (path, id) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let backend = || RustLlmAgentTurnBackend::new(Client::new());
+    assert!(!backend().send_message(&path, &id, "note-1", "Also check the docs."));
+    let sent = std::sync::atomic::AtomicBool::new(false);
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::ContentDelta
+                    && !sent.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    assert!(backend().send_message(&path, &id, "note-1", "Also check the docs."));
+                }
+            })),
+        )
+        .unwrap();
+
+    // The first result did not list the message, so the turn ran on to the one that did.
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("Read your note.")
+    );
+    let message = output
+        .raw_log_lines
+        .iter()
+        .filter(|line| line.direction == "stdin")
+        .map(|line| serde_json::from_str::<serde_json::Value>(&line.line).unwrap())
+        .find(|line| line["message"]["content"] == json!("Also check the docs."))
+        .expect("mid-turn message on stdin");
+    assert!(message["uuid"].as_str().is_some());
+    assert!(message.get("priority").is_none());
+    let log = std::fs::read_to_string(&log_path).unwrap();
+    assert!(log.contains("MID_TURN=\"Also check the docs.\""), "{log}");
+    assert!(log.contains("STDIN_CLOSED"), "{log}");
+    assert!(!output.events.iter().any(|event| {
+        event.kind == TurnStreamEventKind::Other("user_message_not_delivered".into())
+    }));
+}
+
+#[test]
+fn claude_code_reports_a_mid_turn_message_the_stopped_turn_never_used() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "mid-turn-stop");
+    let request = agent_request(temp.path());
+    let (path, id) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let sent = std::sync::atomic::AtomicBool::new(false);
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::ContentDelta
+                    && !sent.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let backend = ClaudeCodeBackend::new();
+                    assert!(backend.send_message(&path, &id, "note-1", "Too late."));
+                    assert!(backend.interrupt(&path, &id));
+                    // A stopping turn takes no more messages.
+                    assert!(!backend.send_message(&path, &id, "note-2", "Later."));
+                }
+            })),
+        )
+        .unwrap();
+
+    let not_delivered = output
+        .events
+        .iter()
+        .filter(|event| {
+            event.kind == TurnStreamEventKind::Other("user_message_not_delivered".into())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(not_delivered.len(), 1);
+    assert_eq!(not_delivered[0].source.item_id.as_deref(), Some("note-1"));
+}
+
+#[test]
 fn claude_code_crash_after_init_resumes_the_session_once() {
     let _lock = ENV_LOCK.lock().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());

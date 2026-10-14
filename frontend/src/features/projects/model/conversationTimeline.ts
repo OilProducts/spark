@@ -103,6 +103,18 @@ function buildAssistantTimelineEntries(
             })
             return
         }
+        if (segment.kind === 'user_message') {
+            entries.push({
+                id: segment.id,
+                kind: 'message',
+                role: 'user',
+                content: segment.content,
+                timestamp: segment.timestamp,
+                status: segment.status === 'failed' ? 'failed' : 'delivered',
+                error: segment.error ?? null,
+            })
+            return
+        }
         if (segment.kind === 'reasoning') {
             entries.push({
                 id: segment.id,

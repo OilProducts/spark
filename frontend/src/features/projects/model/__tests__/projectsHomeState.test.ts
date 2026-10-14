@@ -460,6 +460,40 @@ describe('applyConversationSnapshotToCache', () => {
     }))
   })
 
+  it('moves a queued message behind the turn that ran before it when it starts', () => {
+    const initialSnapshot = buildSnapshot()
+    let cache = applyConversationSnapshotToCache(
+      EMPTY_PROJECT_CONVERSATION_CACHE_STATE,
+      initialSnapshot.project_path,
+      initialSnapshot,
+    ).cache
+    const upsert = (revision: number, turn: ConversationTurnResponse) => {
+      const result = applyConversationStreamEventToCache(cache, initialSnapshot.project_path, {
+        type: 'turn_upsert',
+        revision,
+        conversation_id: initialSnapshot.conversation_id,
+        project_path: initialSnapshot.project_path,
+        title: 'Queued',
+        updated_at: '2026-03-06T15:02:00Z',
+        turn,
+      })
+      cache = result.cache
+      return result.record
+    }
+    const queued = (id: string, status: ConversationTurnResponse['status']) =>
+      buildTurn({ id, role: 'user', content: id, status })
+    upsert(1, queued('second', 'queued'))
+    upsert(2, queued('third', 'queued'))
+    // The server starts `second`: it and its reply move to the end, `third` stays queued after them.
+    upsert(3, queued('second', 'complete'))
+    upsert(4, buildTurn({ id: 'reply', status: 'streaming', content: '', parent_turn_id: 'second' }))
+    const record = upsert(5, queued('third', 'queued'))
+
+    expect(record.orderedTurnIds).toEqual(['turn-user', 'turn-assistant', 'second', 'reply', 'third'])
+    expect(getConversationTimelineEntries(record).filter((entry) => entry.role === 'user').map((entry) => [entry.id, entry.kind === 'message' && entry.status]))
+      .toEqual([['turn-user', 'complete'], ['second', 'complete'], ['third', 'queued']])
+  })
+
   it('patches streaming segment content on the normalized turn timeline', () => {
     const initialSnapshot = buildSnapshot({
       segments: [

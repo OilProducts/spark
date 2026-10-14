@@ -470,6 +470,13 @@ if 'ASK' in prompt:
     assert answer['behavior'] == 'allow', answer
     assert answer['updatedInput']['answers'] == {'Which audience?': 'Developers'}, answer
     send({'type':'result','subtype':'success','is_error':False,'result':'Done','session_id':'s1'})
+elif 'STEER' in prompt:
+    open('started','w').close()
+    m = read()
+    assert m['type'] == 'user' and 'priority' not in m, m
+    open('steered','w').write(m['message']['content'])
+    send({'type':'assistant','session_id':'s1','message':{'role':'assistant','content':[{'type':'text','text':'Steered'}]}})
+    send({'type':'result','subtype':'success','is_error':False,'result':'Steered','session_id':'s1','user_message_uuids':[m['uuid']]})
 elif 'LONG' in prompt:
     open('started','w').close()
     while True:
@@ -505,9 +512,14 @@ for line in sys.stdin:
         cwd = m['params']['cwd']
         send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
     elif method == 'turn/start':
-        assert 'LONG' in json.dumps(m['params'])
+        assert 'LONG' in json.dumps(m['params']) or 'STEER' in json.dumps(m['params'])
         send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
         open(cwd+'/started','w').close()
+    elif method == 'turn/steer':
+        open(cwd+'/steered','w').write(m['params']['input'][0]['text'])
+        send({'id':m['id'],'result':{}})
+        send({'method':'item/completed','params':{'threadId':'thread','turnId':'turn','item':{'id':'msg','type':'agentMessage','text':'Steered'}}})
+        send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'completed'}}})
     elif method == 'turn/interrupt':
         send({'id':m['id'],'result':{}})
         send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'interrupted'}}})
@@ -793,6 +805,97 @@ fn codex_node_cancel_and_timeout_interrupt_the_turn() {
         attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
     );
     assert_cancel_and_timeout(&service, &settings, temp.path(), "codex");
+    for (key, value) in [
+        ("SPARK_CODEX_APP_SERVER_BIN", old_bin),
+        ("ATTRACTOR_CODEX_RUNTIME_ROOT", old_runtime),
+    ] {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+}
+
+/// A human steer lands in the running node's turn and journals `delivered`;
+/// once the run has ended it is rejected.
+fn assert_steer_delivered(
+    service: &AttractorApiService,
+    settings: &SparkSettings,
+    temp: &Path,
+    provider: &str,
+) {
+    let id = format!("{provider}-steer");
+    let project = start_node(service, temp, &id, provider, "STEER work", "");
+    wait(|| project.join("started").exists());
+    let path = format!("/attractor/pipelines/{id}/steer");
+    let steer = service.dispatch("POST", &path, r#"{"message":"Use the docs."}"#);
+    assert_eq!(steer.status_code, 200, "{}", steer.body);
+    assert_eq!(steer.body["status"], "delivered", "{}", steer.body);
+    assert_eq!(steer.body["delivery_mode"], "live_turn");
+    wait(|| run_status(settings, &id) == "completed");
+    assert_eq!(
+        fs::read_to_string(project.join("steered")).unwrap(),
+        "Use the docs."
+    );
+    let journaled = |status: &str| {
+        attractor_runtime::RunStore::for_settings(settings)
+            .read_run_bundle(&id)
+            .unwrap()
+            .unwrap()
+            .raw_events
+            .iter()
+            .any(|event| {
+                event.event_type == "HumanInterventionRequested"
+                    && event.payload["intervention_status"] == status
+            })
+    };
+    assert!(journaled("delivered"));
+
+    let late = service.dispatch("POST", &path, r#"{"message":"Too late."}"#);
+    assert_eq!(late.body["status"], "rejected", "{}", late.body);
+    assert_eq!(late.body["reason"], "no_active_child_run");
+    assert!(journaled("rejected"));
+}
+
+#[test]
+fn human_steer_reaches_a_running_claude_code_node() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "claude", FAKE_CLAUDE);
+    let old_bin = std::env::var_os("SPARK_CLAUDE_CODE_BIN");
+    std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    assert_steer_delivered(&service, &settings, temp.path(), "claude-code");
+    match old_bin {
+        Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
+        None => std::env::remove_var("SPARK_CLAUDE_CODE_BIN"),
+    }
+}
+
+#[test]
+fn human_steer_reaches_a_running_codex_node() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "codex", FAKE_CODEX_LONG_TURN);
+    let old_bin = std::env::var_os("SPARK_CODEX_APP_SERVER_BIN");
+    let old_runtime = std::env::var_os("ATTRACTOR_CODEX_RUNTIME_ROOT");
+    std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", &bin);
+    std::env::set_var(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    assert_steer_delivered(&service, &settings, temp.path(), "codex");
     for (key, value) in [
         ("SPARK_CODEX_APP_SERVER_BIN", old_bin),
         ("ATTRACTOR_CODEX_RUNTIME_ROOT", old_runtime),

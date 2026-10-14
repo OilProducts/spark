@@ -1005,6 +1005,7 @@ fn codergen_broker_rejects_late_intervention_after_session_completion_while_regi
         project_path: None,
         metadata: BTreeMap::new(),
         steering: session.steering_handle(),
+        live_turn: None,
     });
 
     session
@@ -2444,7 +2445,7 @@ fn codergen_backend_delivers_child_intervention_to_codex_app_server_turn() {
     });
 
     assert_eq!(intervention.status, "delivered");
-    assert_eq!(intervention.delivery_mode, "codex_app_server_turn");
+    assert_eq!(intervention.delivery_mode, "live_turn");
     let output = run_handle
         .join()
         .expect("codex codergen thread")
@@ -2711,6 +2712,7 @@ fn active_codergen_session(
         project_path: None,
         metadata: BTreeMap::new(),
         steering: session.steering_handle(),
+        live_turn: None,
     }
 }
 

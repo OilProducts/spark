@@ -106,8 +106,10 @@ describe('buildProjectsHomeViewModel', () => {
     expect(viewModel.latestFlowLaunchId).toBe('launch-1')
     expect(viewModel.activeFlowRunRequestsById.get('request-1')?.run_id).toBe('run-7')
     expect(viewModel.activeFlowLaunchesById.get('launch-1')?.status).toBe('launched')
+    // Settings stay locked mid-turn; sending does not.
     expect(viewModel.isChatInputDisabled).toBe(true)
-    expect(viewModel.chatSendButtonLabel).toBe('Thinking...')
+    expect(viewModel.isConversationTurnStarting).toBe(false)
+    expect(viewModel.chatSendButtonLabel).toBe('Send to the running turn')
     expect(viewModel.hasRenderableConversationHistory).toBe(true)
     expect(viewModel.activeConversationHistory.at(-1)).toMatchObject({
       role: 'assistant',

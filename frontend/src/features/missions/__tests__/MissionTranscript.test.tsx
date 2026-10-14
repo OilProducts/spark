@@ -36,3 +36,31 @@ it.each(['reasoning', 'plan'] as const)('offers sign-in and Retry on a failed mi
     expect(retry).toHaveBeenCalledWith('mission-1', 'turn-failed', '/project')
     await waitFor(() => expect(reload).toHaveBeenCalled())
 })
+
+it('shows a message delivered into the running turn where it was sent, and one queued behind it', () => {
+    const segment = (id: string, order: number, kind: 'assistant_message' | 'user_message', content: string) => ({
+        id, turn_id: 'turn-running', order, kind, role: kind === 'user_message' ? 'user' as const : 'assistant' as const, status: 'complete' as const,
+        timestamp: at, updated_at: at, completed_at: at, content, artifact_id: null, error: null, source: null, tool_call: null,
+    })
+    const live: ConversationSnapshotResponse = {
+        ...snapshot('reasoning'),
+        turns: [
+            { id: 'turn-user', role: 'user', content: 'Deliver the prompt.', timestamp: at, kind: 'message', status: 'complete', artifact_id: null },
+            { id: 'turn-running', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'streaming', artifact_id: null },
+            { id: 'turn-queued', role: 'user', content: 'Then write the summary.', timestamp: at, kind: 'message', status: 'queued', artifact_id: null },
+        ],
+        segments: [
+            segment('working', 1, 'assistant_message', 'Working.'),
+            segment('delivered', 2, 'user_message', 'Use the docs.'),
+            segment('reply', 3, 'assistant_message', 'Read your note.'),
+        ],
+    }
+    render(<MissionTranscript conversation={{ conversationId: 'mission-1', snapshot: live, loading: false, error: '', reload: vi.fn() }} project="/project" runs={new Map()} />)
+
+    expect(screen.getByText('Sent into the running turn')).toBeInTheDocument()
+    expect(screen.getByText('Queued · starts when the current turn ends')).toBeInTheDocument()
+    const text = document.body.textContent ?? ''
+    expect(text.indexOf('Working.')).toBeLessThan(text.indexOf('Use the docs.'))
+    expect(text.indexOf('Use the docs.')).toBeLessThan(text.indexOf('Read your note.'))
+    expect(text.indexOf('Read your note.')).toBeLessThan(text.indexOf('Then write the summary.'))
+})

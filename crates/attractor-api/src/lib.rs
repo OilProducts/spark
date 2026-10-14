@@ -2440,14 +2440,70 @@ impl AttractorApiService {
             }
         };
         let (target_run_id, target_node_id) = intervention_target(&bundle, &request);
-        let result = json!({
-            "run_id": target_run_id,
-            "status": "rejected",
-            "delivery_mode": "none",
-            "reason": "no_active_child_run",
-            "message": "No active child run is available for intervention.",
-            "target_node_id": target_node_id,
-        });
+        let target = if target_run_id == pipeline_id {
+            bundle.record.clone()
+        } else {
+            store
+                .read_run_bundle(&target_run_id)
+                .ok()
+                .flatten()
+                .and_then(|bundle| bundle.record)
+        };
+        let rejected = |reason: &str, message: &str| {
+            json!({
+                "run_id": target_run_id,
+                "status": "rejected",
+                "delivery_mode": "none",
+                "reason": reason,
+                "message": message,
+                "target_node_id": target_node_id,
+            })
+        };
+        let result = match target {
+            None => rejected(
+                "no_active_child_run",
+                "No active child run is available for intervention.",
+            ),
+            // ponytail: a container node's session lives in its worker, which
+            // has no channel for live messages yet.
+            Some(record) if record.execution_mode != "native" => rejected(
+                "container_execution_unsupported",
+                "Steering cannot reach an agent running in a container execution profile.",
+            ),
+            Some(record) => {
+                let delivery = spark_agent_adapter::CodergenSessionInterventionBroker::shared()
+                    .request_child_intervention(
+                        spark_agent_adapter::CodergenChildInterventionRequest {
+                            child_run_id: target_run_id.clone(),
+                            message: message.to_string(),
+                            parent_run_id: pipeline_id.to_string(),
+                            parent_node_id: String::new(),
+                            root_run_id: record
+                                .root_run_id
+                                .clone()
+                                .unwrap_or_else(|| target_run_id.clone()),
+                            reason: "human".to_string(),
+                            source: "human".to_string(),
+                            cycle: None,
+                            target_node_id: target_node_id.clone(),
+                            provider: None,
+                            model: None,
+                            llm_profile: None,
+                            reasoning_effort: None,
+                        },
+                    );
+                // A matching Claude or Codex node reports why its turn refused.
+                if delivery.status == "delivered" || delivery.delivery_mode == "live_turn" {
+                    json!(delivery)
+                } else {
+                    rejected(
+                        "no_active_child_run",
+                        "No running agent session is available for intervention.",
+                    )
+                }
+            }
+        };
+        let field = |key: &str| result[key].as_str().unwrap_or_default().to_string();
         if let Err(error) = store.append_event(
             &bundle.paths,
             human_intervention_requested_event(
@@ -2455,9 +2511,9 @@ impl AttractorApiService {
                 &target_run_id,
                 target_node_id.clone(),
                 message,
-                "rejected",
-                "none",
-                "no_active_child_run",
+                &field("status"),
+                &field("delivery_mode"),
+                &field("reason"),
                 result.clone(),
             ),
         ) {
