@@ -496,7 +496,7 @@ export function useProjectsHomeController() {
             conversationBodyRef,
             onSyncConversationPinnedState: syncConversationPinnedState,
             onScrollConversationToBottom: scrollConversationToBottom,
-            onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn && ['claude-code', 'claude_code'].includes(activeProjectChatProvider.trim().toLowerCase()) ? onStopTurn : undefined,
+            onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn && ['claude-code', 'claude_code', 'codex'].includes(activeProjectChatProvider.trim().toLowerCase()) ? onStopTurn : undefined,
             onChatComposerSubmit,
             onChatComposerKeyDown,
             onChatDraftChange: setChatDraft,

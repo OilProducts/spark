@@ -626,7 +626,7 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it.each(['codex', 'claude-code'])('disables sending during an active %s turn and wires Claude Stop', async (provider) => {
+  it.each(['codex', 'claude-code'])('disables sending during an active %s turn and wires Stop', async (provider) => {
     const user = userEvent.setup()
     const sendRequests: string[] = []
 
@@ -754,13 +754,9 @@ describe('ProjectsPanel', () => {
     await user.click(sendButton)
 
     expect(sendRequests).toHaveLength(0)
-    if (provider === 'claude-code') {
-      await user.click(screen.getByTestId('project-chat-stop'))
-      await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/interrupt']))
-      expect(sendButton).toBeDisabled()
-    } else {
-      expect(screen.queryByTestId('project-chat-stop')).not.toBeInTheDocument()
-    }
+    await user.click(screen.getByTestId('project-chat-stop'))
+    await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/interrupt']))
+    expect(sendButton).toBeDisabled()
   })
 
   it('renders assistant tool calls before the completed assistant summary for the same turn', async () => {

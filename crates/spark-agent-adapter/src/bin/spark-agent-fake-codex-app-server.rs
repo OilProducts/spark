@@ -16,7 +16,7 @@ fn main() {
             log_path,
             &mode,
             mode == "model-list",
-            mode == "request-user-input",
+            mode == "request-user-input" || mode == "interruptible-question",
             mode == "tool-calls",
         );
     }
@@ -38,7 +38,7 @@ fn run_default(
     for raw in stdin.lock().lines().map_while(Result::ok) {
         let message = serde_json::from_str::<Value>(&raw).expect("json-rpc request");
         log_message(log_path.as_ref(), &message);
-        if awaiting_request_user_input_response {
+        if awaiting_request_user_input_response && message.get("method").is_none() {
             awaiting_request_user_input_response = false;
             emit_turn_completion(
                 &mut stdout,
@@ -160,6 +160,12 @@ fn run_default(
                     awaiting_request_user_input_response = true;
                 } else if mode == "gated" {
                     emit_gated_turn(&mut stdout);
+                } else if mode == "interruptible" {
+                    // Runs until Spark sends turn/interrupt.
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": "msg-answer", "delta": "Half done."}}),
+                    );
                 } else if tool_calls {
                     emit_tool_notifications(&mut stdout);
                     emit_turn_completion(
@@ -180,6 +186,17 @@ fn run_default(
                         true,
                     );
                 }
+            }
+            "turn/interrupt" if mode == "interruptible" || mode == "interruptible-question" => {
+                assert_eq!(
+                    message["params"],
+                    json!({"threadId": "thread-test", "turnId": "turn-test"})
+                );
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                write_json(
+                    &mut stdout,
+                    json!({"method": "turn/completed", "params": {"threadId": "thread-test", "turn": {"id": "turn-test", "status": "interrupted", "error": null}}}),
+                );
             }
             "model/list" => write_json(
                 &mut stdout,

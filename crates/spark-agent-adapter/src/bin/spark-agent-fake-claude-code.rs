@@ -49,8 +49,9 @@ fn main() {
                 let config_dir = env::var("CLAUDE_CONFIG_DIR").unwrap_or_default();
                 let _ = writeln!(
                     log,
-                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nCLAUDE_CONFIG_DIR={config_dir}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
-                    args.join("\n")
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nBASH_MAX_TIMEOUT_MS={}\nCLAUDE_CONFIG_DIR={config_dir}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
+                    args.join("\n"),
+                    env::var("BASH_MAX_TIMEOUT_MS").unwrap_or_default()
                 );
             }
         }
@@ -73,6 +74,10 @@ fn main() {
             if let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) {
                 if message["type"] == "user" {
                     assert_eq!(message["message"]["role"], "user");
+                    assert!(
+                        message["uuid"].as_str().is_some(),
+                        "user messages carry a uuid"
+                    );
                     assert_user_content(&message["message"]["content"]);
                     append_log(&format!("USER_CONTENT={}", message["message"]["content"]));
                     break;
@@ -132,6 +137,32 @@ fn main() {
         out.flush().unwrap();
     };
 
+    if mode == "question-before-init" {
+        // Never sends system/init: the init fallback must answer the
+        // outstanding question before it closes stdin.
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "early-q", "request": {"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}}}),
+        );
+        let response = read_control();
+        assert_eq!(response["response"]["request_id"], "early-q");
+        assert_eq!(response["response"]["response"]["behavior"], "deny");
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "All set.", "session_id": session_id}),
+        );
+        return;
+    }
+    if mode == "request-before-init" {
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "early-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+        );
+        assert_eq!(
+            read_control(),
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": "early-1", "response": {"behavior": "allow", "updatedInput": {"command": "true"}}}})
+        );
+    }
     emit(
         &mut out,
         serde_json::json!({
@@ -166,11 +197,172 @@ fn main() {
         }
         emit(
             &mut out,
-            json!({"type": "control_request", "request_id": "ignored", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+            json!({"type": "control_request", "request_id": "after-malformed", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+        );
+        assert_eq!(
+            read_control(),
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": "after-malformed", "response": {"behavior": "allow", "updatedInput": {"command": "true"}}}})
+        );
+    }
+    if mode == "unknown-subtype" {
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "unknown-1", "request": {"subtype": "mystery"}}),
+        );
+        assert_eq!(
+            read_control(),
+            json!({"type": "control_response", "response": {"subtype": "error", "request_id": "unknown-1", "error": "unsupported control request subtype: mystery"}})
+        );
+    }
+    if mode == "duplicate-id" {
+        // Each repeat of an answered id still gets exactly one answer.
+        for (id, request, error) in [
+            (
+                "dup-1",
+                json!({"subtype": "can_use_tool"}),
+                "can_use_tool needs a tool_name and an object input",
+            ),
+            (
+                "dup-2",
+                json!({"subtype": "mystery"}),
+                "unsupported control request subtype: mystery",
+            ),
+        ] {
+            emit(
+                &mut out,
+                json!({"type": "control_request", "request_id": id, "request": request}),
+            );
+            assert_eq!(
+                read_control()["response"],
+                json!({"subtype": "error", "request_id": id, "error": error})
+            );
+            emit(
+                &mut out,
+                json!({"type": "control_request", "request_id": id, "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+            );
+            assert_eq!(
+                read_control()["response"],
+                json!({"subtype": "error", "request_id": id, "error": "duplicate control request id"})
+            );
+        }
+    }
+    if mode == "question-denied" {
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "question-1", "request": {"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [{"question": "Which color?", "options": [{"label": "Red"}]}]}}}),
+        );
+        let denial = read_control();
+        assert_eq!(denial["response"]["request_id"], "question-1");
+        assert_eq!(denial["response"]["response"]["behavior"], "deny");
+        assert!(denial["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("best judgment"));
+    }
+    if mode == "background" || mode == "background-interrupt" {
+        // Probe 3: a background task keeps the session working past the
+        // first result, and its completion starts a follow-up turn.
+        let usage = |input: u64, output: u64| {
+            json!({"claude-opus-4-8": {"inputTokens": input, "outputTokens": output,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "thinkingTokens": 0, "costUSD": 0.0}})
+        };
+        let tasks = |live: bool| {
+            let mut tasks = vec![
+                json!({"task_id": "watch", "task_type": "monitor", "description": "watcher", "ambient": true}),
+            ];
+            if live {
+                tasks.push(
+                    json!({"task_id": "build", "task_type": "local_bash", "description": "build"}),
+                );
+            }
+            json!({"type": "system", "subtype": "background_tasks_changed", "session_id": session_id, "tasks": tasks})
+        };
+        emit(&mut out, tasks(true));
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Started a background build."}]}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Started a background build.",
+                "session_id": session_id, "result_index": 0, "queued_turn_count": 0, "modelUsage": usage(3, 30)}),
+        );
+        if mode == "background" {
+            emit(
+                &mut out,
+                json!({"type": "system", "subtype": "task_notification", "session_id": session_id, "task_id": "build", "status": "completed"}),
+            );
+            emit(&mut out, tasks(false));
+            emit(
+                &mut out,
+                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Build finished."}]}}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "Build finished.",
+                    "session_id": session_id, "result_index": 1, "queued_turn_count": 0, "modelUsage": usage(5, 50)}),
+            );
+        }
+        let mut remaining = String::new();
+        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        append_log("STDIN_CLOSED");
+        return;
+    }
+    if mode == "queued-interrupt" {
+        // A queued message holds the turn past the first result, so Stop must
+        // interrupt the queued model turn instead of closing stdin.
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "First answer.",
+                "session_id": session_id, "queued_turn_count": 1, "modelUsage": {"claude-opus-4-8": {"inputTokens": 1, "outputTokens": 1}}}),
+        );
+        let interrupt = read_control();
+        assert_eq!(interrupt["request"], json!({"subtype": "interrupt"}));
+        emit(
+            &mut out,
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": interrupt["request_id"], "response": {"still_queued": []}}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                "terminal_reason": "aborted_streaming", "session_id": session_id, "queued_turn_count": 0}),
         );
         let mut remaining = String::new();
         std::io::stdin().read_to_string(&mut remaining).unwrap();
-        assert!(remaining.is_empty(), "must cease control responses");
+        return;
+    }
+    if mode == "crash-after-init" || mode == "crash-orphan" || mode == "crash-chatty-orphan" {
+        if !args.iter().any(|arg| arg == "--resume") {
+            emit(
+                &mut out,
+                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+            );
+            if mode == "crash-orphan" {
+                // A surviving descendant inherits stdout and stderr, so
+                // neither reaches EOF when this process exits.
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .unwrap();
+            }
+            if mode == "crash-chatty-orphan" {
+                // The descendant keeps writing blank and non-JSON lines, so
+                // stdout is never quiet after this process exits.
+                std::process::Command::new("sh")
+                    .args([
+                        "-c",
+                        "for i in $(seq 1500); do echo; echo noise; sleep 0.02; done",
+                    ])
+                    .spawn()
+                    .unwrap();
+            }
+            std::process::exit(1);
+        }
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Recovered.", "session_id": session_id}),
+        );
+        return;
     }
     if mode == "question"
         || mode == "dead-question"

@@ -278,7 +278,7 @@ impl RustLlmCodergenBackend {
             }) as AgentTurnEventSink
         });
         let output = ClaudeCodeBackend::new()
-            .run_agent_turn_with_event_sink(agent_request, turn_event_sink)
+            .run_agent_turn_without_questions(agent_request, turn_event_sink)
             .map_err(|error| CodergenError::Backend(error.message))?;
         let usage = output
             .token_usage
@@ -1021,8 +1021,10 @@ impl RustLlmAgentTurnBackend {
 }
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
+    /// A conversation runs one turn at a time, so at most one backend has it live.
     fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
         ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
+            || CodexAppServerBackend::new().interrupt(project_path, conversation_id)
     }
 
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
