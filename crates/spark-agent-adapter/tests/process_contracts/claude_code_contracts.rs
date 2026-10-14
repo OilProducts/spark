@@ -1001,28 +1001,36 @@ fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
 #[test]
 fn claude_code_crash_after_init_resumes_the_session_once() {
     let _lock = ENV_LOCK.lock().unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let log_path = temp.path().join("claude.log");
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
-    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "crash-after-init");
-    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    // crash-orphan leaves a descendant holding stdout and stderr open.
+    for mode in ["crash-after-init", "crash-orphan"] {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("claude.log");
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
 
-    let output = ClaudeCodeBackend::new()
-        .run_agent_turn(agent_request(temp.path()))
-        .unwrap();
+        let started = std::time::Instant::now();
+        let output = ClaudeCodeBackend::new()
+            .run_agent_turn(agent_request(temp.path()))
+            .unwrap();
 
-    assert_eq!(output.final_assistant_text.as_deref(), Some("Recovered."));
-    assert_eq!(output.app_thread_id.as_deref(), Some("sess-fake-claude-1"));
-    assert!(output.thread_resume_failure.is_none());
-    // The first process's output stays in the turn.
-    assert!(output
-        .events
-        .iter()
-        .any(|event| event.content_delta.as_deref() == Some("Working.")));
-    let log = std::fs::read_to_string(log_path).unwrap();
-    assert_eq!(log.matches("-- invocation --").count(), 2);
-    assert!(log.contains("--resume\nsess-fake-claude-1"));
-    assert!(log.contains("USER_CONTENT=\"Your previous process exited"));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{mode}"
+        );
+        assert_eq!(output.final_assistant_text.as_deref(), Some("Recovered."));
+        assert_eq!(output.app_thread_id.as_deref(), Some("sess-fake-claude-1"));
+        assert!(output.thread_resume_failure.is_none());
+        // The first process's output stays in the turn.
+        assert!(output
+            .events
+            .iter()
+            .any(|event| event.content_delta.as_deref() == Some("Working.")));
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert_eq!(log.matches("-- invocation --").count(), 2);
+        assert!(log.contains("--resume\nsess-fake-claude-1"));
+        assert!(log.contains("USER_CONTENT=\"Your previous process exited"));
+    }
 }
 
 #[test]

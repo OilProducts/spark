@@ -249,12 +249,20 @@ fn main() {
         append_log("STDIN_CLOSED");
         return;
     }
-    if mode == "crash-after-init" {
+    if mode == "crash-after-init" || mode == "crash-orphan" {
         if !args.iter().any(|arg| arg == "--resume") {
             emit(
                 &mut out,
                 json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
             );
+            if mode == "crash-orphan" {
+                // A surviving descendant inherits stdout and stderr, so
+                // neither reaches EOF when this process exits.
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .unwrap();
+            }
             std::process::exit(1);
         }
         emit(

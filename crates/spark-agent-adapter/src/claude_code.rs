@@ -319,11 +319,15 @@ impl ClaudeCodeBackend {
                 "claude code did not expose its stdio",
             ));
         };
-        let stderr_handle = std::thread::spawn(move || {
-            BufReader::new(stderr)
-                .lines()
-                .map_while(Result::ok)
-                .collect::<Vec<_>>()
+        // Shared rather than joined: a leftover grandchild may hold stderr.
+        let stderr_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stderr_handle = std::thread::spawn({
+            let stderr_lines = stderr_lines.clone();
+            move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    stderr_lines.lock().unwrap().push(line);
+                }
+            }
         });
         let control = control::Control::register(child, stdin, request, questions);
         // The prompt travels over stdin so arbitrarily large composed prompts
@@ -342,11 +346,20 @@ impl ClaudeCodeBackend {
         });
         let started = std::time::Instant::now();
         let mut initialized = false;
+        let mut exited = false;
         while !control.lock().unwrap().ended {
             let line = match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => line,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // A leftover grandchild may hold stdout open past the
+                    // process exit; stop after one more quiet interval.
+                    if matches!(control.lock().unwrap().child.try_wait(), Ok(Some(_))) {
+                        if exited {
+                            break;
+                        }
+                        exited = true;
+                    }
                     if !initialized && started.elapsed() >= Duration::from_secs(5) {
                         let mut control = control.lock().unwrap();
                         control.log("system/init timeout; using one-shot input");
@@ -413,7 +426,11 @@ impl ClaudeCodeBackend {
             }
             return Ok(());
         }
-        let stderr_lines = stderr_handle.join().unwrap_or_default();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !stderr_handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let stderr_lines = std::mem::take(&mut *stderr_lines.lock().unwrap());
         let stderr_tail = stderr_lines[stderr_lines.len().saturating_sub(10)..].join("\n");
         Err(ClaudeCodeError {
             message: format!(
@@ -751,6 +768,8 @@ struct ClaudeCodeTurnState {
     pending_text_block_ids: VecDeque<String>,
     pending_reasoning_block_ids: VecDeque<String>,
     last_text_item_id: Option<String>,
+    /// The item the latest result's text was reported under.
+    result_item_id: Option<String>,
     tool_calls: BTreeMap<String, Value>,
 }
 
@@ -1001,6 +1020,14 @@ impl ClaudeCodeTurnState {
     }
 
     fn ingest_result(&mut self, message: &Value, last: bool) -> Vec<TurnStreamEvent> {
+        // Each result claims the latest assistant text once; a later result
+        // with no new text gets its own item, while promoting the same result
+        // on a stop reuses its item.
+        let item_id = self.last_text_item_id.take().or_else(|| {
+            self.result_item_id
+                .clone()
+                .filter(|_| self.result_payload.as_ref() == Some(message))
+        });
         self.completed = last;
         self.result_payload = Some(message.clone());
         self.result_subtype = message
@@ -1017,10 +1044,11 @@ impl ClaudeCodeTurnState {
             .map(str::to_string);
         let mut events = Vec::new();
         if let Some(text) = self.result_text.as_deref().and_then(non_empty) {
-            let item_id = self.last_text_item_id.clone().unwrap_or_else(|| {
+            let item_id = item_id.unwrap_or_else(|| {
                 self.block_counter += 1;
                 format!("block-{}", self.block_counter)
             });
+            self.result_item_id = Some(item_id.clone());
             events.push(stream_event(
                 TurnStreamEventKind::ContentCompleted,
                 self.session_id.as_deref(),
