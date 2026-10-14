@@ -651,3 +651,54 @@ fn checkpoint_event_and_journal_dtos_round_trip_with_payloads() {
     assert!(journal_json["question_id"].is_null());
     assert_eq!(journal_json["payload"], event_json);
 }
+
+#[test]
+fn node_runtime_timeout_accepts_durations_and_rejects_invalid_values() {
+    let timeout = |raw: Option<&str>| {
+        attractor_core::NodeRuntimeConfig {
+            timeout: raw.map(str::to_string),
+            ..Default::default()
+        }
+        .timeout_seconds()
+    };
+    assert_eq!(timeout(None), Ok(None));
+    for (raw, seconds) in [
+        ("30", 30.0),
+        ("1.5", 1.5),
+        ("250ms", 0.25),
+        ("90s", 90.0),
+        (" 15m ", 900.0),
+        ("2h", 7200.0),
+        ("1d", 86400.0),
+        ("365d", 365.0 * 86400.0),
+    ] {
+        assert_eq!(timeout(Some(raw)), Ok(Some(seconds)), "{raw}");
+    }
+    for raw in [
+        "", "abc", "10x", "s", "0", "0s", "-5", "-1m", "nan", "inf", "infinity", "1e100s", "366d",
+    ] {
+        let error = timeout(Some(raw)).expect_err(raw);
+        assert!(error.contains("runtime.timeout"), "{error}");
+    }
+
+    let flow = attractor_core::FlowDefinition::from_yaml_str(
+        r#"schema_version: "1"
+id: timeouts
+nodes:
+  start: { kind: start }
+  work: { kind: agent_task, runtime: { timeout: 1e100s } }
+  done: { kind: exit }
+edges:
+- { from: start, to: work }
+- { from: work, to: done }
+"#,
+    )
+    .unwrap();
+    let diagnostics = flow.diagnostics();
+    assert!(
+        diagnostics.iter().any(|d| d.rule_id == "node_timeout"
+            && d.node_id.as_deref() == Some("work")
+            && d.message.contains("1e100s")),
+        "{diagnostics:?}"
+    );
+}

@@ -167,6 +167,11 @@ describe('buildRunVisits', () => {
     ])
     expect(summarize(build({ journal, runStatus: 'running' }))[1]).toBe('Evaluate 1/1 running')
 
+    // A node stopped by cancel ends when the run does.
+    const runEnd = event('PipelineFailed', { error: 'aborted_by_user' })
+    const canceled = build({ journal: [...journal, runEnd], runStatus: 'canceled' })
+    expect(canceled[1].endedAt).toBe(runEnd.receivedAt)
+
     const failedRun = build({
       journal: [...stage('start', 0), started('validate', 1), failed('validate', 1, 'tool command failed with code 1')],
       runStatus: 'failed',

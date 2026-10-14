@@ -307,6 +307,7 @@ dependencies = [
  "attractor-runtime",
  "serde",
  "serde_json",
+ "spark-agent-adapter",
  "spark-common",
  "spark-storage",
  "tempfile",

@@ -551,6 +551,33 @@ fn claude_code_codergen_streams_prefix_and_reports_completed_event_with_usage() 
 }
 
 #[test]
+fn codergen_rejects_an_unrepresentable_timeout_before_starting_the_agent() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    for seconds in [1e100, f64::INFINITY, f64::NAN, -1.0, 0.0] {
+        let error = RustLlmCodergenBackend::new(Client::new())
+            .run(CodergenBackendRequest {
+                node_id: "implement".to_string(),
+                prompt: "Prepare the change.".to_string(),
+                provider: "claude-code".to_string(),
+                runtime_mode: CodergenRuntimeMode::agent(),
+                project_path: Some(temp.path().to_path_buf()),
+                timeout_seconds: Some(seconds),
+                ..CodergenBackendRequest::default()
+            })
+            .expect_err("invalid timeout");
+        assert!(
+            error.to_string().contains("invalid node timeout"),
+            "{error}"
+        );
+    }
+    assert!(!log_path.exists(), "the agent must not start");
+}
+
+#[test]
 fn claude_code_model_discovery_queries_catalog_over_stdio_and_maps_default_to_blank() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");

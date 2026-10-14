@@ -247,6 +247,9 @@ pub fn node_attrs_for_handler(node_id: &str, node: &FlowNode) -> BTreeMap<String
         if let Some(value) = runtime.max_entries {
             insert_i64_attr(&mut attrs, "max_entries", value as i64);
         }
+        if let Ok(Some(seconds)) = runtime.timeout_seconds() {
+            insert_f64_attr(&mut attrs, "timeout", seconds);
+        }
     }
     if let Some(contracts) = node.contracts.as_ref() {
         if !contracts.reads_context.is_empty() {

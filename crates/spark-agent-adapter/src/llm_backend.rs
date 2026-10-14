@@ -41,6 +41,7 @@ const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
 pub struct RustLlmCodergenBackend {
     client: Client,
     clarification_handler: Option<crate::codergen::ClarificationHandler>,
+    cancel_check: Option<crate::codergen::CancelCheck>,
     intervention_broker: Option<CodergenSessionInterventionBroker>,
 }
 
@@ -49,6 +50,7 @@ impl RustLlmCodergenBackend {
         Self {
             client,
             clarification_handler: None,
+            cancel_check: None,
             intervention_broker: None,
         }
     }
@@ -60,6 +62,7 @@ impl RustLlmCodergenBackend {
         Self {
             client,
             clarification_handler: None,
+            cancel_check: None,
             intervention_broker: Some(intervention_broker),
         }
     }
@@ -68,6 +71,10 @@ impl RustLlmCodergenBackend {
 impl CodergenBackend for RustLlmCodergenBackend {
     fn set_clarification_handler(&mut self, handler: crate::codergen::ClarificationHandler) {
         self.clarification_handler = Some(handler);
+    }
+
+    fn set_cancel_check(&mut self, check: crate::codergen::CancelCheck) {
+        self.cancel_check = Some(check);
     }
 
     fn run(
@@ -156,21 +163,24 @@ impl RustLlmCodergenBackend {
                 steering: steering.clone(),
             })
         });
-        let output = CodexAppServerBackend::new()
-            .run_agent_turn_with_capture_observer(
-                agent_request,
-                Some(steering),
-                turn_event_sink,
-                capture_sink,
-                self.clarification_handler.clone(),
-            )
-            .map_err(|error| {
-                if error.artifact {
-                    CodergenError::Artifact(error.message)
-                } else {
-                    codex_app_server_codergen_error(error)
-                }
-            })?;
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
+        let result = CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
+            agent_request,
+            Some(steering),
+            turn_event_sink,
+            capture_sink,
+            self.clarification_handler.clone(),
+        );
+        if let Some(output) = stop.finish() {
+            return Ok(output);
+        }
+        let output = result.map_err(|error| {
+            if error.artifact {
+                CodergenError::Artifact(error.message)
+            } else {
+                codex_app_server_codergen_error(error)
+            }
+        })?;
         let usage = output
             .token_usage
             .as_ref()
@@ -247,7 +257,10 @@ impl RustLlmCodergenBackend {
         request: CodergenBackendRequest,
         event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
-        let agent_request = codergen_agent_turn_request(&request);
+        let mut agent_request = codergen_agent_turn_request(&request);
+        if self.clarification_handler.is_some() {
+            agent_request.prompt.push_str("\n\nInspect available evidence before asking for clarification. Use AskUserQuestion for unresolved questions about the user’s intent that affect the outcome, then continue the same task after the answer.");
+        }
         let capture_event =
             crate::initial_context::path_from_metadata(&request.metadata).map(|_| {
                 CodergenEvent::new(
@@ -277,9 +290,16 @@ impl RustLlmCodergenBackend {
                 ));
             }) as AgentTurnEventSink
         });
-        let output = ClaudeCodeBackend::new()
-            .run_agent_turn_without_questions(agent_request, turn_event_sink)
-            .map_err(|error| CodergenError::Backend(error.message))?;
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
+        let result = ClaudeCodeBackend::new().run_codergen_turn(
+            agent_request,
+            turn_event_sink,
+            self.clarification_handler.clone(),
+        );
+        if let Some(output) = stop.finish() {
+            return Ok(output);
+        }
+        let output = result.map_err(|error| CodergenError::Backend(error.message))?;
         let usage = output
             .token_usage
             .as_ref()
@@ -484,6 +504,118 @@ impl RustLlmCodergenBackend {
             initial_history_len,
             process_error,
         ))
+    }
+}
+
+/// How long a stopped agent turn may run on after its interrupt.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Interrupts a node's agent turn when its run is canceled or its `timeout`
+/// elapses. Claude and Codex both stop through their turn interrupt, so one
+/// watcher serves either backend.
+struct NodeStop {
+    reason: std::sync::Arc<std::sync::Mutex<Option<Outcome>>>,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    watcher: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NodeStop {
+    fn watch(
+        request: &CodergenBackendRequest,
+        agent_request: &AgentTurnRequest,
+        cancel_check: Option<crate::codergen::CancelCheck>,
+    ) -> Result<Self, CodergenError> {
+        let reason = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let timeout = request.timeout_seconds;
+        let deadline = timeout
+            .map(|seconds| {
+                std::time::Duration::try_from_secs_f64(seconds)
+                    .ok()
+                    .filter(|limit| !limit.is_zero())
+                    .and_then(|limit| std::time::Instant::now().checked_add(limit))
+                    .ok_or_else(|| {
+                        CodergenError::Backend(format!(
+                            "invalid node timeout {seconds} seconds: it must be a positive, representable duration"
+                        ))
+                    })
+            })
+            .transpose()?;
+        if cancel_check.is_none() && deadline.is_none() {
+            return Ok(Self {
+                reason,
+                done,
+                watcher: None,
+            });
+        }
+        let (project_path, conversation_id) = (
+            agent_request.project_path.clone(),
+            agent_request.conversation_id.clone(),
+        );
+        let watcher = std::thread::spawn({
+            let (reason, done) = (reason.clone(), done.clone());
+            move || {
+                let mut stopped_at = None;
+                while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                    let mut slot = reason.lock().unwrap();
+                    if slot.is_none() {
+                        if cancel_check.as_ref().is_some_and(|canceled| canceled()) {
+                            *slot = Some(Outcome {
+                                status: OutcomeStatus::Fail,
+                                failure_reason: "Run canceled while the node was running"
+                                    .to_string(),
+                                retryable: Some(false),
+                                failure_kind: Some(FailureKind::Runtime),
+                                ..Outcome::new(OutcomeStatus::Fail)
+                            });
+                        } else if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                            *slot = Some(Outcome {
+                                status: OutcomeStatus::Fail,
+                                failure_reason: format!(
+                                    "Agent node timed out after {} seconds",
+                                    timeout.unwrap_or_default()
+                                ),
+                                failure_kind: Some(FailureKind::Runtime),
+                                ..Outcome::new(OutcomeStatus::Fail)
+                            });
+                        }
+                    }
+                    // Repeated until the turn ends: the process may not
+                    // have registered its interrupt yet. A turn that cannot
+                    // take an interrupt, or is still running a grace period
+                    // after one, is terminated.
+                    if slot.is_some() {
+                        let stopped = *stopped_at.get_or_insert_with(std::time::Instant::now);
+                        let interrupted = stopped.elapsed() < STOP_GRACE
+                            && RustLlmAgentTurnBackend::interrupt(&project_path, &conversation_id);
+                        if !interrupted {
+                            RustLlmAgentTurnBackend::terminate(&project_path, &conversation_id);
+                        }
+                    }
+                    drop(slot);
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
+        });
+        Ok(Self {
+            reason,
+            done,
+            watcher: Some(watcher),
+        })
+    }
+
+    /// Stops watching; a stopped node's output is its cancel or timeout failure.
+    fn finish(mut self) -> Option<CodergenBackendOutput> {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(watcher) = self.watcher.take() {
+            let _ = watcher.join();
+        }
+        let outcome = self.reason.lock().unwrap().take()?;
+        Some(CodergenBackendOutput {
+            response: CodergenBackendResponse::Outcome(outcome),
+            events: Vec::new(),
+            usage: None,
+        })
     }
 }
 
@@ -1020,11 +1152,22 @@ impl RustLlmAgentTurnBackend {
     }
 }
 
-impl AgentTurnBackend for RustLlmAgentTurnBackend {
+impl RustLlmAgentTurnBackend {
     /// A conversation runs one turn at a time, so at most one backend has it live.
-    fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
+    fn interrupt(project_path: &str, conversation_id: &str) -> bool {
         ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
             || CodexAppServerBackend::new().interrupt(project_path, conversation_id)
+    }
+
+    fn terminate(project_path: &str, conversation_id: &str) -> bool {
+        ClaudeCodeBackend::new().terminate(project_path, conversation_id)
+            || CodexAppServerBackend::new().terminate(project_path, conversation_id)
+    }
+}
+
+impl AgentTurnBackend for RustLlmAgentTurnBackend {
+    fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
+        Self::interrupt(project_path, conversation_id)
     }
 
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {

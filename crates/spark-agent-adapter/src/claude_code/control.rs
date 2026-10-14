@@ -2,6 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::process::{Child, ChildStdin};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::agent::AgentRequestUserInputAnswerRequest;
@@ -16,11 +17,22 @@ fn registry() -> &'static Registry {
     REGISTRY.get_or_init(Mutex::default)
 }
 
+/// Who answers the turn's `AskUserQuestion` calls.
+#[derive(Clone)]
+pub(super) enum Questions {
+    Deny,
+    /// The chat request-user-input route.
+    Chat,
+    /// The flow's clarification handler, the path Codex nodes use.
+    Flow(crate::codergen::ClarificationHandler),
+}
+
 pub(super) struct Control {
     pub child: Child,
-    stdin: Option<ChildStdin>,
-    /// Chat turns answer `AskUserQuestion` through the request-user-input route.
-    questions: bool,
+    stdin: Option<Sender<String>>,
+    questions: Questions,
+    /// Flow clarifications awaiting answers, by request id.
+    clarifications: Vec<(String, crate::codergen::ClarificationPoll)>,
     enabled: bool,
     initialized: bool,
     pending: BTreeMap<String, Value>,
@@ -46,12 +58,13 @@ impl Control {
         child: Child,
         stdin: ChildStdin,
         request: &AgentTurnRequest,
-        questions: bool,
+        questions: Questions,
     ) -> Arc<Mutex<Self>> {
         let control = Arc::new(Mutex::new(Self {
             child,
-            stdin: Some(stdin),
+            stdin: Some(crate::agent::stdin_writer(stdin)),
             questions,
+            clarifications: Vec::new(),
             enabled: false,
             initialized: false,
             pending: BTreeMap::new(),
@@ -97,6 +110,7 @@ impl Control {
     /// Pending questions are denied first: the CLI waits on every request.
     pub fn one_shot(&mut self) {
         self.enabled = false;
+        self.clarifications.clear();
         for id in std::mem::take(&mut self.pending).into_keys() {
             self.deny(
                 &id,
@@ -116,11 +130,11 @@ impl Control {
 
     fn send(&mut self, message: Value) -> bool {
         let line = message.to_string();
-        let result = self
+        let sent = self
             .stdin
-            .as_mut()
-            .map(|stdin| writeln!(stdin, "{line}").and_then(|()| stdin.flush()));
-        if !matches!(result, Some(Ok(()))) {
+            .as_ref()
+            .is_some_and(|stdin| stdin.send(line.clone()).is_ok());
+        if !sent {
             self.log("stdin write failed");
             self.one_shot();
             return false;
@@ -293,7 +307,7 @@ impl Control {
             self.allow(id, input.clone());
             return None;
         }
-        if !self.questions {
+        if matches!(self.questions, Questions::Deny) {
             self.deny(id, NO_QUESTION_HANDLER);
             return None;
         }
@@ -305,6 +319,16 @@ impl Control {
                 return None;
             }
         };
+        if let Questions::Flow(handler) = &self.questions {
+            match handler(json!({"questions": questions, "agent_request_id": id})) {
+                Ok(poll) => self.clarifications.push((id.to_string(), poll)),
+                Err(reason) => {
+                    self.log(&reason);
+                    self.deny(id, &format!("{reason}. {NO_QUESTION_HANDLER}"));
+                    return None;
+                }
+            }
+        }
         self.pending.insert(id.to_string(), input.clone());
         Some(stream_event(
             TurnStreamEventKind::RequestUserInputRequested,
@@ -315,6 +339,52 @@ impl Control {
                 event.request_user_input = Some(json!({"request_id": id, "questions": questions}));
             },
         ))
+    }
+}
+
+impl Control {
+    /// Delivers answered flow clarifications. Err once the run stops waiting
+    /// for them, such as on cancel.
+    pub fn poll_clarifications(&mut self) -> Result<(), String> {
+        let mut index = 0;
+        while index < self.clarifications.len() {
+            match (self.clarifications[index].1)()? {
+                Some(answers) => {
+                    let (id, _poll) = self.clarifications.remove(index);
+                    self.deliver(&id, &answers);
+                }
+                None => index += 1,
+            }
+        }
+        Ok(())
+    }
+
+    /// Allows a pending question with `updatedInput.answers`, keyed by the
+    /// `question-N` ids its normalized questions carry.
+    fn deliver(&mut self, id: &str, answers: &BTreeMap<String, String>) -> bool {
+        let Some(mut input) = self.pending.get(id).cloned() else {
+            return false;
+        };
+        let questions = input["questions"].as_array().unwrap();
+        let mut by_prompt = serde_json::Map::new();
+        for (index, question) in questions.iter().enumerate() {
+            let Some(answer) = answers
+                .get(&format!("question-{}", index + 1))
+                .and_then(|answer| non_empty(answer))
+            else {
+                return false;
+            };
+            by_prompt.insert(
+                question["question"].as_str().unwrap().to_string(),
+                json!(answer),
+            );
+        }
+        if by_prompt.len() != answers.len() {
+            return false;
+        }
+        input["answers"] = Value::Object(by_prompt);
+        self.pending.remove(id);
+        self.allow(id, input)
     }
 }
 
@@ -394,15 +464,31 @@ pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
     )
 }
 
+pub(super) fn terminate(project_path: &str, conversation_id: &str) -> bool {
+    let Some(control) = find(project_path, conversation_id) else {
+        return false;
+    };
+    let mut control = control.lock().unwrap();
+    if control.ended || !matches!(control.child.try_wait(), Ok(None)) {
+        return false;
+    }
+    control.stopping = true;
+    control.end();
+    let pid = control.child.id();
+    crate::local_environment::terminate_process_group(pid, Some(&mut control.child));
+    true
+}
+
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {
     let delivered = find(&request.project_path, &request.conversation_id).is_some_and(|control| {
         let mut control = control.lock().unwrap();
         if control.stdin.is_none() || !matches!(control.child.try_wait(), Ok(None)) {
             return false;
         }
-        let Some(mut input) = control.pending.get(&request.request_id).cloned() else {
+        // Flow clarifications are answered through the run, not the chat route.
+        if matches!(control.questions, Questions::Flow(_)) {
             return false;
-        };
+        }
         if request.request_user_input.as_ref().is_some_and(|payload| {
             payload["status"] == "expired"
                 || payload["request_id"]
@@ -411,27 +497,7 @@ pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOu
         }) {
             return false;
         }
-        let questions = input["questions"].as_array().unwrap();
-        let mut answers = serde_json::Map::new();
-        for (index, question) in questions.iter().enumerate() {
-            let Some(answer) = request
-                .answers
-                .get(&format!("question-{}", index + 1))
-                .and_then(|answer| non_empty(answer))
-            else {
-                return false;
-            };
-            answers.insert(
-                question["question"].as_str().unwrap().to_string(),
-                json!(answer),
-            );
-        }
-        if answers.len() != request.answers.len() {
-            return false;
-        }
-        input["answers"] = Value::Object(answers);
-        control.pending.remove(&request.request_id);
-        control.allow(&request.request_id, input)
+        control.deliver(&request.request_id, &request.answers)
     });
     if delivered {
         AgentTurnOutput {

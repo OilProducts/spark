@@ -8,6 +8,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Agent binaries come from process-wide variables, so scenarios that set
+/// them run one at a time.
+static AGENT_BIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[track_caller]
 fn wait(mut check: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -50,6 +54,7 @@ fn codex_human_wait_exceeds_inactivity_threshold() {
 }
 
 fn clarification_scenario(human_wait: Duration) {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut first_wait = Some(human_wait);
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
@@ -88,6 +93,9 @@ while True:
         assert m['params']['collaborationMode']['mode']=='default'
         send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
         ask()
+    elif method=='turn/interrupt':
+        send({'id':m['id'],'result':{}})
+        send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'interrupted'}}})
     elif method is None and m.get('id','').startswith('request-'):
         assert m['result']['answers']['choice']['answers']==['Developers']
         assert m['result']['answers']['notes']['answers']==['Keep it short']
@@ -443,4 +451,355 @@ fn dead_executor_questions_remain_historical_and_cannot_be_answered() {
     assert!(history
         .iter()
         .any(|e| e.payload.get("answer") == Some(&json!("Accepted before disconnect"))));
+}
+
+const FAKE_CLAUDE: &str = r#"#!/usr/bin/env python3
+import json, sys
+def send(x):
+    print(json.dumps(x), flush=True)
+def read():
+    line = sys.stdin.readline()
+    return json.loads(line) if line else None
+prompt = json.dumps(read())
+send({'type':'system','subtype':'init','session_id':'s1','model':'m','tools':[],'capabilities':['interrupt_receipt_v1']})
+if 'ASK' in prompt:
+    assert 'AskUserQuestion' in prompt
+    send({'type':'control_request','request_id':'q1','request':{'subtype':'can_use_tool','tool_name':'AskUserQuestion','input':{'questions':[
+        {'question':'Which audience?','header':'Audience','options':[{'label':'Developers','description':'Technical readers'}],'multiSelect':False}]}}})
+    answer = read()['response']['response']
+    assert answer['behavior'] == 'allow', answer
+    assert answer['updatedInput']['answers'] == {'Which audience?': 'Developers'}, answer
+    send({'type':'result','subtype':'success','is_error':False,'result':'Done','session_id':'s1'})
+elif 'LONG' in prompt:
+    open('started','w').close()
+    while True:
+        m = read()
+        if m is None: sys.exit(1)
+        if m.get('type') == 'control_request' and m['request']['subtype'] == 'interrupt':
+            send({'type':'control_response','response':{'subtype':'success','request_id':m['request_id'],'response':{'still_queued':[]}}})
+            send({'type':'result','subtype':'error_during_execution','is_error':True,'terminal_reason':'aborted_streaming','session_id':'s1'})
+            sys.exit(0)
+"#;
+
+/// A Claude CLI without `interrupt_receipt_v1`: control closes its stdin and
+/// only killing the process stops it.
+const FAKE_CLAUDE_WITHOUT_INTERRUPT: &str = r#"#!/usr/bin/env python3
+import json, subprocess, sys, time
+print(json.dumps({'type':'system','subtype':'init','session_id':'s1','model':'m','tools':[]}), flush=True)
+assert 'LONG' in sys.stdin.readline()
+# A tool subprocess the agent started; stopping the node must end it too.
+open('tool','w').write(str(subprocess.Popen(['sleep','600']).pid))
+open('started','w').close()
+time.sleep(600)
+"#;
+
+const FAKE_CODEX_LONG_TURN: &str = r#"#!/usr/bin/env python3
+import json, sys
+def send(x):
+    print(json.dumps(x), flush=True)
+for line in sys.stdin:
+    m = json.loads(line)
+    method = m.get('method')
+    if method == 'initialize': send({'id':m['id'],'result':{}})
+    elif method == 'thread/start':
+        cwd = m['params']['cwd']
+        send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
+    elif method == 'turn/start':
+        assert 'LONG' in json.dumps(m['params'])
+        send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
+        open(cwd+'/started','w').close()
+    elif method == 'turn/interrupt':
+        send({'id':m['id'],'result':{}})
+        send({'method':'turn/completed','params':{'threadId':'thread','turn':{'id':'turn','status':'interrupted'}}})
+"#;
+
+/// A Codex app-server whose turn never stops: in a `*-cancel` project it
+/// never answers `turn/interrupt`, otherwise it acknowledges the interrupt but
+/// never completes the turn. It records its pid in `started`.
+const FAKE_CODEX_UNRESPONSIVE: &str = r#"#!/usr/bin/env python3
+import json, os, subprocess, sys
+def send(x):
+    print(json.dumps(x), flush=True)
+for line in sys.stdin:
+    m = json.loads(line)
+    method = m.get('method')
+    if method == 'initialize': send({'id':m['id'],'result':{}})
+    elif method == 'thread/start':
+        cwd = m['params']['cwd']
+        send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
+    elif method == 'turn/start':
+        send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
+        # A tool subprocess the agent started; stopping the node must end it too.
+        with open(cwd+'/tool','w') as f: f.write(str(subprocess.Popen(['sleep','600']).pid))
+        with open(cwd+'/started','w') as f: f.write(str(os.getpid()))
+    elif method == 'turn/interrupt' and not cwd.endswith('cancel'):
+        send({'id':m['id'],'result':{}})
+"#;
+
+fn install(temp: &Path, name: &str, script: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = temp.join(name);
+    fs::write(&bin, script).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// Asserts the pid recorded in a project file is gone (allowing for reaping).
+fn assert_pid_gone(project: &Path, file: &str) {
+    let pid = fs::read_to_string(project.join(file)).unwrap();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(!alive(), "{} {file} {pid} still running", project.display());
+}
+
+/// Starts a one-agent-node run in its own project directory.
+fn start_node(
+    service: &AttractorApiService,
+    temp: &Path,
+    id: &str,
+    provider: &str,
+    prompt: &str,
+    runtime: &str,
+) -> std::path::PathBuf {
+    let project = temp.join(id);
+    fs::create_dir_all(&project).unwrap();
+    let start = service.start_pipeline(PipelineStartRequest {
+        run_id: Some(id.into()),
+        working_directory: project.to_string_lossy().into(),
+        llm_provider: Some(provider.into()),
+        model: Some("test-model".into()),
+        flow_content: Some(format!(
+            r#"schema_version: "1"
+id: {id}
+nodes:
+  start:
+    kind: start
+  work:
+    kind: agent_task
+    runtime: {{ {runtime} }}
+    config:
+      kind: agent_task
+      prompt: {prompt}
+  done:
+    kind: exit
+edges:
+- from: start
+  to: work
+- from: work
+  to: done
+"#
+        )),
+        ..Default::default()
+    });
+    assert_eq!(start.status_code, 200, "{}", start.body);
+    project
+}
+
+fn run_status(settings: &SparkSettings, id: &str) -> String {
+    attractor_runtime::RunStore::for_settings(settings)
+        .read_run_bundle(id)
+        .unwrap()
+        .and_then(|bundle| bundle.record)
+        .map(|record| record.status)
+        .unwrap_or_default()
+}
+
+fn stage_failures(settings: &SparkSettings, id: &str) -> Vec<String> {
+    let store = attractor_runtime::RunStore::for_settings(settings);
+    store
+        .read_run_bundle(id)
+        .unwrap()
+        .unwrap()
+        .raw_events
+        .iter()
+        .filter(|e| e.event_type == "StageFailed")
+        .map(|e| e.payload["error"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// Cancel interrupts a node that would otherwise never finish, and a node
+/// `timeout` interrupts and fails it.
+fn assert_cancel_and_timeout(
+    service: &AttractorApiService,
+    settings: &SparkSettings,
+    temp: &Path,
+    provider: &str,
+) {
+    let id = format!("{provider}-cancel");
+    let project = start_node(service, temp, &id, provider, "LONG work", "");
+    wait(|| project.join("started").exists());
+    let path = format!("/attractor/pipelines/{id}/cancel");
+    assert_eq!(service.dispatch("POST", &path, "{}").status_code, 200);
+    wait(|| run_status(settings, &id) == "canceled");
+    assert_eq!(stage_failures(settings, &id), Vec::<String>::new());
+
+    let id = format!("{provider}-timeout");
+    start_node(
+        service,
+        temp,
+        &id,
+        provider,
+        "LONG work",
+        "timeout: 1s, max_retries: 0",
+    );
+    wait(|| run_status(settings, &id) == "failed");
+    let failures = stage_failures(settings, &id);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].contains("timed out after 1 seconds"),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn claude_code_node_questions_cancel_and_timeout() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "claude", FAKE_CLAUDE);
+    let old_bin = std::env::var_os("SPARK_CLAUDE_CODE_BIN");
+    std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+
+    start_node(
+        &service,
+        temp.path(),
+        "claude-ask",
+        "claude-code",
+        "ASK about the audience",
+        "",
+    );
+    wait(|| {
+        assert_ne!(run_status(&settings, "claude-ask"), "failed");
+        service.list_pipeline_questions("claude-ask").body["questions"]
+            .as_array()
+            .is_some_and(|q| q.len() == 1)
+    });
+    assert_eq!(run_status(&settings, "claude-ask"), "waiting");
+    let question = service.list_pipeline_questions("claude-ask").body["questions"][0].clone();
+    assert_eq!(question["origin"], "agent_clarification");
+    assert_eq!(question["options"][0]["label"], "Developers");
+    let path = format!(
+        "/attractor/pipelines/claude-ask/questions/{}/answer",
+        question["question_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        service
+            .dispatch("POST", &path, r#"{"selected_value":"Developers"}"#)
+            .status_code,
+        200
+    );
+    wait(|| {
+        let status = run_status(&settings, "claude-ask");
+        assert_ne!(status, "failed");
+        status == "completed"
+    });
+
+    assert_cancel_and_timeout(&service, &settings, temp.path(), "claude-code");
+    match old_bin {
+        Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
+        None => std::env::remove_var("SPARK_CLAUDE_CODE_BIN"),
+    }
+}
+
+#[test]
+fn claude_code_node_without_interrupt_is_terminated_on_cancel_and_timeout() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "claude", FAKE_CLAUDE_WITHOUT_INTERRUPT);
+    let old_bin = std::env::var_os("SPARK_CLAUDE_CODE_BIN");
+    std::env::set_var("SPARK_CLAUDE_CODE_BIN", &bin);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    assert_cancel_and_timeout(&service, &settings, temp.path(), "claude-code");
+    for id in ["claude-code-cancel", "claude-code-timeout"] {
+        assert_pid_gone(&temp.path().join(id), "tool");
+    }
+    match old_bin {
+        Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
+        None => std::env::remove_var("SPARK_CLAUDE_CODE_BIN"),
+    }
+}
+
+#[test]
+fn codex_node_that_does_not_stop_is_terminated_on_cancel_and_timeout() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "codex", FAKE_CODEX_UNRESPONSIVE);
+    let old_bin = std::env::var_os("SPARK_CODEX_APP_SERVER_BIN");
+    let old_runtime = std::env::var_os("ATTRACTOR_CODEX_RUNTIME_ROOT");
+    std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", &bin);
+    std::env::set_var(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    // `wait` bounds each stop at 15s, past the 10s interrupt grace.
+    assert_cancel_and_timeout(&service, &settings, temp.path(), "codex");
+    for id in ["codex-cancel", "codex-timeout"] {
+        assert_pid_gone(&temp.path().join(id), "started");
+        assert_pid_gone(&temp.path().join(id), "tool");
+    }
+    for (key, value) in [
+        ("SPARK_CODEX_APP_SERVER_BIN", old_bin),
+        ("ATTRACTOR_CODEX_RUNTIME_ROOT", old_runtime),
+    ] {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+}
+
+#[test]
+fn codex_node_cancel_and_timeout_interrupt_the_turn() {
+    let _env = AGENT_BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let bin = install(temp.path(), "codex", FAKE_CODEX_LONG_TURN);
+    let old_bin = std::env::var_os("SPARK_CODEX_APP_SERVER_BIN");
+    let old_runtime = std::env::var_os("ATTRACTOR_CODEX_RUNTIME_ROOT");
+    std::env::set_var("SPARK_CODEX_APP_SERVER_BIN", &bin);
+    std::env::set_var(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    assert_cancel_and_timeout(&service, &settings, temp.path(), "codex");
+    for (key, value) in [
+        ("SPARK_CODEX_APP_SERVER_BIN", old_bin),
+        ("ATTRACTOR_CODEX_RUNTIME_ROOT", old_runtime),
+    ] {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
 }
