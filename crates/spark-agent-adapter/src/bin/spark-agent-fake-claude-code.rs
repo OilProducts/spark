@@ -308,6 +308,38 @@ fn main() {
         append_log("STDIN_CLOSED");
         return;
     }
+    if mode == "mid-turn-continue" {
+        // The text block streaming when the message arrives keeps streaming
+        // the moment the CLI reads it.
+        emit(
+            &mut out,
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Working"}}}),
+        );
+        let message = read_control();
+        let uuid = message["uuid"].as_str().expect("uuid").to_string();
+        emit(
+            &mut out,
+            json!({"type": "stream_event", "session_id": session_id,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " still."}}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working still."}]}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Read your note."}]}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Read your note.",
+                "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [uuid]}),
+        );
+        let mut remaining = String::new();
+        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        return;
+    }
     if mode == "mid-turn-message" || mode == "mid-turn-stop" {
         // Probe 4: a message with no priority folds into the running turn and
         // a later result lists its uuid.

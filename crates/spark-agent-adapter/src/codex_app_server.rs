@@ -304,7 +304,13 @@ impl CodexAppServerBackend {
 
     /// Steers the conversation's running turn with a user message through
     /// `turn/steer`. True once the app-server accepted it.
-    pub fn send_message(&self, project_path: &str, conversation_id: &str, message: &str) -> bool {
+    pub fn send_message(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
         let stop = {
             let registry = interrupt_registry().lock().unwrap();
             registry
@@ -318,7 +324,7 @@ impl CodexAppServerBackend {
         stop.messages
             .lock()
             .unwrap()
-            .push((message.to_string(), sender));
+            .push((message_id.to_string(), message.to_string(), sender));
         drop(stop);
         // The turn loop answers once turn/steer returns; a turn that ends
         // first drops the sender.
@@ -871,7 +877,13 @@ impl CodexAppServerClient {
         let mut last_activity = Instant::now();
         let mut stopping = false;
         loop {
-            self.steer_messages(thread_id, expected_turn_id, stopping, &mut events);
+            self.steer_messages(
+                thread_id,
+                expected_turn_id,
+                stopping,
+                event_sink.as_ref(),
+                &mut events,
+            );
             self.check_terminated()?;
             if !stopping && self.stop.interrupt.load(Ordering::SeqCst) {
                 stopping = true;
@@ -999,17 +1011,18 @@ impl CodexAppServerClient {
     }
 
     /// Sends each message from `send_message` through turn/steer and tells
-    /// its sender whether the app-server accepted it. A stopping turn takes
-    /// none.
+    /// its sender whether the app-server accepted it. An accepted message is
+    /// reported before any output read after it. A stopping turn takes none.
     fn steer_messages(
         &mut self,
         thread_id: &str,
         turn_id: &str,
         stopping: bool,
+        event_sink: Option<&AgentTurnEventSink>,
         events: &mut Vec<TurnStreamEvent>,
     ) {
         let messages = std::mem::take(&mut *self.stop.messages.lock().unwrap());
-        for (text, accepted) in messages {
+        for (message_id, text, accepted) in messages {
             if stopping {
                 let _ = accepted.send(false);
                 continue;
@@ -1019,18 +1032,18 @@ impl CodexAppServerClient {
                 let _ = accepted.send(false);
                 continue;
             }
-            let _ = accepted.send(true);
-            events.push(TurnStreamEvent {
-                kind: TurnStreamEventKind::Other("steering_injected".to_string()),
+            let delivered = TurnStreamEvent {
+                kind: TurnStreamEventKind::Other("user_message_delivered".to_string()),
                 channel: None,
                 source: TurnStreamSource {
                     backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
                     app_thread_id: Some(thread_id.to_string()),
                     app_turn_id: Some(turn_id.to_string()),
+                    item_id: Some(message_id),
                     raw_kind: Some("turn_steer".to_string()),
                     ..TurnStreamSource::default()
                 },
-                content_delta: Some(text.clone()),
+                content_delta: None,
                 message: Some(text),
                 tool_call: None,
                 request_user_input: None,
@@ -1038,9 +1051,14 @@ impl CodexAppServerClient {
                 error: None,
                 error_code: None,
                 details: None,
-                phase: Some("intervention".to_string()),
+                phase: None,
                 status: Some("delivered".to_string()),
-            });
+            };
+            if let Some(sink) = event_sink {
+                sink(delivered.clone());
+            }
+            events.push(delivered);
+            let _ = accepted.send(true);
         }
     }
 
@@ -1246,7 +1264,8 @@ struct TurnStop {
     interrupt: AtomicBool,
     terminate: AtomicBool,
     /// Messages for turn/steer, each with where to report acceptance.
-    messages: Mutex<Vec<(String, std::sync::mpsc::Sender<bool>)>>,
+    /// `(message_id, message, accepted)`.
+    messages: Mutex<Vec<(String, String, std::sync::mpsc::Sender<bool>)>>,
 }
 
 type InterruptRegistry = Mutex<BTreeMap<(String, String), Weak<TurnStop>>>;

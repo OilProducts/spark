@@ -4167,8 +4167,13 @@ fn stop_starts_the_queued_message_next_instead_of_dropping_it() {
 }
 
 /// Runs a Claude turn with the fake CLI in `mode`, sends "Also check the
-/// docs." once it streams, and optionally stops it right after.
-fn claude_turn_with_mid_turn_send(temp: &Path, mode: &str, stop: bool) -> (Value, Value) {
+/// docs." once it streams, and optionally stops it right after. Returns the
+/// send's snapshot, the completed snapshot, and every live payload.
+fn claude_turn_with_mid_turn_send(
+    temp: &Path,
+    mode: &str,
+    stop: bool,
+) -> (Value, Value, Vec<Value>) {
     let project = temp.canonicalize().unwrap().to_string_lossy().to_string();
     let _bin = EnvVarGuard::set(
         "SPARK_CLAUDE_CODE_BIN",
@@ -4192,6 +4197,8 @@ fn claude_turn_with_mid_turn_send(temp: &Path, mode: &str, stop: bool) -> (Value
         )
         .unwrap();
     let (streaming, streamed) = std::sync::mpsc::channel();
+    let payloads = Arc::new(Mutex::new(Vec::new()));
+    let live = payloads.clone();
     let running = service.clone();
     let handle = std::thread::spawn(move || {
         running.complete_started_turn_with_progress_payloads(
@@ -4201,6 +4208,7 @@ fn claude_turn_with_mid_turn_send(temp: &Path, mode: &str, stop: bool) -> (Value
                 if payload["type"] == "stream_delta" {
                     let _ = streaming.send(());
                 }
+                live.lock().unwrap().push(payload);
             },
         )
     });
@@ -4212,7 +4220,30 @@ fn claude_turn_with_mid_turn_send(temp: &Path, mode: &str, stop: bool) -> (Value
     if stop {
         assert!(service.interrupt_turn("mid-turn", &project).unwrap());
     }
-    (sent, handle.join().unwrap().unwrap())
+    let completed = handle.join().unwrap().unwrap();
+    let payloads = payloads.lock().unwrap().clone();
+    (sent, completed, payloads)
+}
+
+/// Every transcript segment a live payload carries, in the order sent.
+fn live_segments(payloads: &[Value]) -> Vec<Value> {
+    fn collect(value: &Value, found: &mut Vec<Value>) {
+        match value {
+            Value::Object(object) => {
+                if object.contains_key("turn_id") && object.contains_key("order") {
+                    found.push(value.clone());
+                }
+                object.values().for_each(|value| collect(value, found));
+            }
+            Value::Array(items) => items.iter().for_each(|value| collect(value, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    payloads
+        .iter()
+        .for_each(|payload| collect(payload, &mut found));
+    found
 }
 
 fn user_message_segment(snapshot: &Value) -> Value {
@@ -4229,9 +4260,14 @@ fn user_message_segment(snapshot: &Value) -> Value {
 fn a_send_while_a_claude_turn_streams_is_delivered_into_that_turn() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let (sent, completed) = claude_turn_with_mid_turn_send(temp.path(), "mid-turn-message", false);
+    let (sent, completed, _) =
+        claude_turn_with_mid_turn_send(temp.path(), "mid-turn-message", false);
 
-    let delivered = user_message_segment(&sent);
+    // The message joined the turn instead of queuing behind it.
+    assert!(message_turns(&sent)
+        .iter()
+        .all(|(_, status, _)| status != "queued"));
+    let delivered = user_message_segment(&completed);
     assert_eq!(delivered["role"], "user");
     assert_eq!(delivered["status"], "complete");
     assert_eq!(delivered["content"], "Also check the docs.");
@@ -4265,9 +4301,221 @@ fn a_send_while_a_claude_turn_streams_is_delivered_into_that_turn() {
 fn a_message_the_stopped_claude_turn_never_read_is_shown_not_sent() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let (_, completed) = claude_turn_with_mid_turn_send(temp.path(), "mid-turn-stop", true);
+    let (_, completed, _) = claude_turn_with_mid_turn_send(temp.path(), "mid-turn-stop", true);
 
     let segment = user_message_segment(&completed);
     assert_eq!(segment["status"], "failed");
     assert!(segment["error"].as_str().unwrap().starts_with("Not sent"));
+}
+
+#[test]
+fn output_streamed_the_moment_a_message_is_accepted_follows_it_live_and_persisted() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let (_, completed, payloads) =
+        claude_turn_with_mid_turn_send(temp.path(), "mid-turn-continue", false);
+
+    // The block streaming when the message went in continues after it.
+    let mut segments = completed["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment["kind"].as_str(),
+                Some("assistant_message" | "user_message")
+            )
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by_key(|segment| segment["order"].as_i64());
+    let shown = segments
+        .iter()
+        .map(|segment| {
+            (
+                segment["kind"].as_str().unwrap(),
+                segment["status"].as_str().unwrap(),
+                segment["content"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shown,
+        vec![
+            ("assistant_message", "complete", "Working"),
+            ("user_message", "complete", "Also check the docs."),
+            ("assistant_message", "complete", "still."),
+            ("assistant_message", "complete", "Read your note."),
+        ],
+        "{completed}"
+    );
+
+    // Live, the message arrives before anything streamed after it, and the
+    // earlier part never takes the later text.
+    let ids = segments
+        .iter()
+        .map(|segment| segment["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let live = live_segments(&payloads);
+    let first_seen = |id: &str| {
+        live.iter()
+            .position(|segment| segment["id"] == id)
+            .unwrap_or_else(|| panic!("{id} live"))
+    };
+    assert!(first_seen(ids[0]) < first_seen(ids[1]));
+    assert!(first_seen(ids[1]) < first_seen(ids[2]));
+    assert!(first_seen(ids[2]) < first_seen(ids[3]));
+    assert!(live
+        .iter()
+        .filter(|segment| segment["id"] == ids[0])
+        .all(|segment| !segment["content"].as_str().unwrap().contains("still")));
+}
+
+/// A turn that takes messages while it runs: it says "Looking.", waits to
+/// be released, then reports `not_sent` messages as never used and answers.
+/// Every turn's history is recorded.
+#[derive(Default)]
+struct LiveMessageBackend {
+    sink: Mutex<Option<AgentTurnEventSink>>,
+    delivered: Mutex<Vec<(String, String)>>,
+    histories: Mutex<Vec<Vec<(String, String)>>>,
+    released: (Mutex<bool>, Condvar),
+}
+
+impl AgentTurnBackend for LiveMessageBackend {
+    fn send_message(
+        &self,
+        _project_path: &str,
+        _conversation_id: &str,
+        message_id: &str,
+        message: &str,
+    ) -> bool {
+        let Some(sink) = self.sink.lock().unwrap().clone() else {
+            return false;
+        };
+        sink(TurnStreamEvent {
+            kind: TurnStreamEventKind::Other("user_message_delivered".into()),
+            source: TurnStreamSource {
+                item_id: Some(message_id.to_string()),
+                ..TurnStreamSource::default()
+            },
+            message: Some(message.to_string()),
+            ..content_delta("assistant", "", "t1", "unused")
+        });
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((message_id.to_string(), message.to_string()));
+        true
+    }
+
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_turn_with_event_sink(request, None)
+    }
+
+    fn run_turn_with_event_sink(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        self.histories.lock().unwrap().push(
+            request
+                .history
+                .iter()
+                .map(|turn| match turn {
+                    spark_agent_adapter::HistoryTurn::User(turn) => {
+                        ("user".to_string(), turn.content.text())
+                    }
+                    spark_agent_adapter::HistoryTurn::Assistant(turn) => {
+                        ("assistant".to_string(), turn.content.text())
+                    }
+                    other => panic!("unexpected history turn {other:?}"),
+                })
+                .collect(),
+        );
+        if request.prompt != "Start" {
+            return Ok(AgentTurnOutput {
+                final_assistant_text: Some("Again.".to_string()),
+                ..AgentTurnOutput::default()
+            });
+        }
+        let sink = event_sink.unwrap();
+        sink(content_completed("assistant", "Looking.", "t1", "a1"));
+        *self.sink.lock().unwrap() = Some(sink.clone());
+        let mut released = self.released.0.lock().unwrap();
+        while !*released {
+            released = self.released.1.wait(released).unwrap();
+        }
+        drop(released);
+        self.sink.lock().unwrap().take();
+        for (message_id, message) in self.delivered.lock().unwrap().iter() {
+            if message == "Never mind." {
+                sink(TurnStreamEvent {
+                    kind: TurnStreamEventKind::Other("user_message_not_delivered".into()),
+                    source: TurnStreamSource {
+                        item_id: Some(message_id.clone()),
+                        ..TurnStreamSource::default()
+                    },
+                    message: Some("Not sent.".to_string()),
+                    ..content_delta("assistant", "", "t1", "unused")
+                });
+            }
+        }
+        sink(content_completed(
+            "assistant",
+            "Done with the docs.",
+            "t1",
+            "a2",
+        ));
+        Ok(AgentTurnOutput {
+            final_assistant_text: Some("Done with the docs.".to_string()),
+            ..AgentTurnOutput::default()
+        })
+    }
+}
+
+#[test]
+fn a_backend_reading_history_sees_each_message_delivered_into_a_turn_once_in_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(LiveMessageBackend::default());
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings(temp.path()),
+        backend.clone(),
+    );
+    let project = "/projects/history";
+    let request = |message: &str| ConversationTurnRequest {
+        project_path: project.to_string(),
+        message: message.to_string(),
+        ..ConversationTurnRequest::default()
+    };
+    let (prepared, started) = service.send_turn("history", request("Start")).unwrap();
+    let running = service.clone();
+    let turn = std::thread::spawn(move || {
+        running.complete_started_turn_with_progress_payloads(prepared.unwrap(), started, |_| {})
+    });
+    let waited = std::time::Instant::now();
+    while backend.sink.lock().unwrap().is_none() {
+        assert!(waited.elapsed() < Duration::from_secs(10), "turn running");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    send(&service, "history", project, "Use the docs.");
+    send(&service, "history", project, "Never mind.");
+    *backend.released.0.lock().unwrap() = true;
+    backend.released.1.notify_all();
+    turn.join().unwrap().unwrap();
+
+    let (next, started) = service.send_turn("history", request("Next")).unwrap();
+    service
+        .complete_started_turn_with_progress_payloads(next.unwrap(), started, |_| {})
+        .unwrap();
+
+    let pair = |role: &str, text: &str| (role.to_string(), text.to_string());
+    assert_eq!(
+        backend.histories.lock().unwrap().last().unwrap(),
+        &vec![
+            pair("user", "Start"),
+            pair("assistant", "Looking."),
+            pair("user", "Use the docs."),
+            pair("assistant", "Done with the docs."),
+        ]
+    );
 }

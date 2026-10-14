@@ -1188,7 +1188,12 @@ impl RustLlmAgentTurnBackend {
         message: &str,
     ) -> bool {
         ClaudeCodeBackend::new().send_message(project_path, conversation_id, message_id, message)
-            || CodexAppServerBackend::new().send_message(project_path, conversation_id, message)
+            || CodexAppServerBackend::new().send_message(
+                project_path,
+                conversation_id,
+                message_id,
+                message,
+            )
     }
 }
 

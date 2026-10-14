@@ -1101,8 +1101,9 @@ impl WorkspaceConversationService {
         }
     }
 
-    /// Writes the message into the running turn: the backend must accept
-    /// it, and the turn's transcript then shows it where it was sent.
+    /// Writes the message into the running turn. The turn reports an
+    /// accepted message through its own event stream, so the transcript
+    /// shows it before any output that follows it.
     fn deliver_live(
         &self,
         conversation_id: &str,
@@ -1110,24 +1111,8 @@ impl WorkspaceConversationService {
         message_id: &str,
         message: &str,
     ) -> bool {
-        let Some(sink) = live_turn_sinks()
-            .lock()
-            .unwrap()
-            .get(&(project_path.to_string(), conversation_id.to_string()))
-            .cloned()
-        else {
-            return false;
-        };
-        if !self
-            .agent_turn_backend
+        self.agent_turn_backend
             .send_message(project_path, conversation_id, message_id, message)
-        {
-            return false;
-        }
-        // ponytail: the agent's reply could in principle stream before this
-        // segment; it takes a tool round, far longer than this call.
-        sink(user_message_delivered_event(message_id, message));
-        true
     }
 
     /// Caller holds the conversation's turn lock from here through the commit.
@@ -1866,18 +1851,9 @@ impl WorkspaceConversationService {
             prepared.project_path.clone(),
             progress,
         );
-        let live_key = (
-            prepared.project_path.clone(),
-            prepared.conversation_id.clone(),
-        );
-        live_turn_sinks()
-            .lock()
-            .unwrap()
-            .insert(live_key.clone(), event_sink.clone());
         let output = self
             .agent_turn_backend
             .run_turn_with_event_sink(prepared.agent_turn_request.clone(), Some(event_sink));
-        live_turn_sinks().lock().unwrap().remove(&live_key);
         if let Some(error) = provider_event_error
             .lock()
             .map_err(|_| {
@@ -4223,36 +4199,6 @@ fn conversation_turn_lock(conversation_id: &str) -> Arc<Mutex<()>> {
         .clone()
 }
 
-/// Running turns' event sinks by `(project_path, conversation_id)`, so a
-/// message delivered mid-turn lands in that turn's transcript.
-fn live_turn_sinks() -> &'static Mutex<BTreeMap<(String, String), AgentTurnEventSink>> {
-    static SINKS: std::sync::OnceLock<Mutex<BTreeMap<(String, String), AgentTurnEventSink>>> =
-        std::sync::OnceLock::new();
-    SINKS.get_or_init(Default::default)
-}
-
-fn user_message_delivered_event(message_id: &str, message: &str) -> TurnStreamEvent {
-    TurnStreamEvent {
-        kind: TurnStreamEventKind::Other("user_message_delivered".to_string()),
-        channel: None,
-        source: spark_common::events::TurnStreamSource {
-            item_id: Some(message_id.to_string()),
-            raw_kind: Some("user_message_delivered".to_string()),
-            ..Default::default()
-        },
-        content_delta: None,
-        message: Some(message.to_string()),
-        tool_call: None,
-        request_user_input: None,
-        token_usage: None,
-        error: None,
-        error_code: None,
-        details: None,
-        phase: None,
-        status: Some("delivered".to_string()),
-    }
-}
-
 fn queued_turns(snapshot: &Value) -> impl Iterator<Item = &Value> {
     snapshot["turns"]
         .as_array()
@@ -5828,6 +5774,10 @@ fn agent_history_from_snapshot(
         .into_iter()
         .flatten()
     {
+        if let Some(split) = delivered_message_history(snapshot, turn, excluded_turn_ids) {
+            history.extend(split);
+            continue;
+        }
         let Some(mut history_turn) =
             agent_history_turn_from_persisted_turn(turn, excluded_turn_ids)
         else {
@@ -5852,6 +5802,64 @@ fn agent_history_from_snapshot(
         history.push(history_turn);
     }
     Ok(history)
+}
+
+/// An assistant turn that took messages mid-turn, as its finished output
+/// and those messages in the order they happened, so a backend that reads
+/// history sees them too. A message the turn never used is left out. None
+/// when the turn took no message.
+fn delivered_message_history(
+    snapshot: &Value,
+    turn: &Value,
+    excluded_turn_ids: &[&str],
+) -> Option<Vec<HistoryTurn>> {
+    let turn_id = turn["id"].as_str()?;
+    if turn["role"] != "assistant" || excluded_turn_ids.contains(&turn_id) {
+        return None;
+    }
+    let mut segments = snapshot["segments"]
+        .as_array()?
+        .iter()
+        .filter(|segment| {
+            segment["turn_id"] == turn_id
+                && segment["status"] == "complete"
+                && matches!(
+                    segment["kind"].as_str(),
+                    Some("assistant_message" | "user_message")
+                )
+        })
+        .collect::<Vec<_>>();
+    if !segments
+        .iter()
+        .any(|segment| segment["kind"] == "user_message")
+    {
+        return None;
+    }
+    segments.sort_by_key(|segment| segment["order"].as_i64());
+    let timestamp = history_turn_timestamp(turn);
+    let mut history = Vec::new();
+    let mut said = Vec::new();
+    let flush = |history: &mut Vec<HistoryTurn>, said: &mut Vec<&str>| {
+        if !said.is_empty() {
+            let mut assistant_turn = AssistantTurn::new(said.join("\n\n"));
+            assistant_turn.timestamp = timestamp;
+            history.push(HistoryTurn::Assistant(assistant_turn));
+            said.clear();
+        }
+    };
+    for segment in segments {
+        let content = segment["content"].as_str().unwrap_or_default();
+        if segment["kind"] == "user_message" {
+            flush(&mut history, &mut said);
+            let mut user_turn = UserTurn::new(content);
+            user_turn.timestamp = timestamp;
+            history.push(HistoryTurn::User(user_turn));
+        } else if !content.trim().is_empty() {
+            said.push(content);
+        }
+    }
+    flush(&mut history, &mut said);
+    Some(history)
 }
 
 /// Codex and Claude Code take attachments; image input is limited to the

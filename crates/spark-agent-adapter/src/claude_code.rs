@@ -392,7 +392,7 @@ impl ClaudeCodeBackend {
         while !control.lock().unwrap().ended {
             // Checked every iteration: continuous output must not hide an
             // exit or a missing system/init.
-            {
+            let sent = {
                 let mut control = control.lock().unwrap();
                 if exited_at.is_none() && matches!(control.child.try_wait(), Ok(Some(_))) {
                     exited_at = Some(std::time::Instant::now());
@@ -407,7 +407,9 @@ impl ClaudeCodeBackend {
                     abandoned = Some(reason);
                     break;
                 }
-            }
+                std::mem::take(&mut control.sent)
+            };
+            turn.push(turn.state.delivered_events(sent), event_sink);
             // A leftover grandchild may hold stdout open past the process
             // exit: stop once stdout goes quiet after the exit, or after a
             // cap if the grandchild keeps writing.
@@ -438,7 +440,7 @@ impl ClaudeCodeBackend {
             if message["type"] == "system" && message["subtype"] == "init" {
                 initialized = true;
             }
-            let (question, ended) = {
+            let (sent, question, ended) = {
                 let mut control = control.lock().unwrap();
                 // 2.1.220 reports an interrupted stream as an error result.
                 // Only an acknowledged interrupt with an explicit abort reason
@@ -452,9 +454,13 @@ impl ClaudeCodeBackend {
                     }
                     message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
                 }
-                (control.ingest(&message), control.ended)
+                // Taken with the line: a message written before the CLI
+                // produced this line is reported before it.
+                let sent = std::mem::take(&mut control.sent);
+                (sent, control.ingest(&message), control.ended)
             };
-            let mut normalized = turn.state.ingest(&message, ended);
+            let mut normalized = turn.state.delivered_events(sent);
+            normalized.extend(turn.state.ingest(&message, ended));
             if let Some(mut question) = question {
                 question.source.app_thread_id = turn.state.session_id.clone();
                 normalized.push(question);
@@ -462,14 +468,19 @@ impl ClaudeCodeBackend {
             turn.push(normalized, event_sink);
         }
 
-        let (ended, undelivered) = {
+        let (ended, undelivered, sent) = {
             let mut control = control.lock().unwrap();
             turn.stopping |= control.stopping;
             turn.raw_log_lines.append(&mut control.logs);
             let ended = control.ended;
             control.end();
-            (ended, std::mem::take(&mut control.undelivered))
+            (
+                ended,
+                std::mem::take(&mut control.undelivered),
+                std::mem::take(&mut control.sent),
+            )
         };
+        turn.push(turn.state.delivered_events(sent), event_sink);
         // Messages the turn ended without using, such as on Stop.
         let not_delivered = undelivered
             .into_values()
@@ -886,6 +897,23 @@ impl ClaudeCodeTurnState {
                 },
             )],
         }
+    }
+
+    fn delivered_events(&self, sent: Vec<(String, String)>) -> Vec<TurnStreamEvent> {
+        sent.into_iter()
+            .map(|(message_id, message)| {
+                stream_event(
+                    TurnStreamEventKind::Other("user_message_delivered".into()),
+                    self.session_id.as_deref(),
+                    "user_message_delivered",
+                    |event| {
+                        event.source.item_id = Some(message_id);
+                        event.message = Some(message);
+                        event.status = Some("delivered".into());
+                    },
+                )
+            })
+            .collect()
     }
 
     fn ingest_system(&mut self, message: &Value) -> Vec<TurnStreamEvent> {

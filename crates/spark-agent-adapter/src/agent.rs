@@ -124,9 +124,11 @@ pub trait AgentTurnBackend: Send + Sync {
 
     /// Delivers a user message into the conversation's running turn. Returns
     /// whether the live turn accepted it; false when no turn is live or the
-    /// backend cannot take messages mid-turn. An accepted message the turn
-    /// ends without using comes back as a `user_message_not_delivered` event
-    /// whose `source.item_id` is `message_id`.
+    /// backend cannot take messages mid-turn. The running turn reports an
+    /// accepted message through its event sink as a `user_message_delivered`
+    /// event, ordered before any output that follows it, and one the turn
+    /// ends without using as `user_message_not_delivered`; both carry
+    /// `message_id` as `source.item_id`.
     fn send_message(
         &self,
         _project_path: &str,

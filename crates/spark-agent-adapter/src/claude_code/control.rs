@@ -46,6 +46,10 @@ pub(super) struct Control {
     /// Messages sent after the prompt whose uuid no result has confirmed
     /// yet, by uuid, with their caller's message id.
     pub undelivered: BTreeMap<String, String>,
+    /// Messages written mid-turn, as `(message_id, message)`, not yet
+    /// reported. Recorded with the write, so the turn reports each before
+    /// any output read after it.
+    pub sent: Vec<(String, String)>,
     /// A result left only background tasks running and no main model turn
     /// has started since.
     idle: bool,
@@ -74,6 +78,7 @@ impl Control {
             stopping: false,
             tasks: 0,
             undelivered: BTreeMap::new(),
+            sent: Vec::new(),
             idle: false,
             ended: false,
             logs: Vec::new(),
@@ -485,7 +490,13 @@ pub(super) fn send_message(
     }
     // The message starts model work that Stop must interrupt.
     control.idle = false;
-    control.send_user(json!(message), Some(message_id))
+    let sent = control.send_user(json!(message), Some(message_id));
+    if sent {
+        control
+            .sent
+            .push((message_id.to_string(), message.to_string()));
+    }
+    sent
 }
 
 pub(super) fn terminate(project_path: &str, conversation_id: &str) -> bool {

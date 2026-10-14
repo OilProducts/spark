@@ -122,7 +122,11 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::ContentDelta
             if event.channel == Some(TurnStreamChannel::Reasoning) =>
         {
-            let segment_id = reasoning_segment_id(assistant_turn_id, event);
+            let segment_id = continued_segment_id(
+                snapshot,
+                assistant_turn_id,
+                &reasoning_segment_id(assistant_turn_id, event),
+            );
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -146,7 +150,11 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::ContentDelta
             if event.channel == Some(TurnStreamChannel::Assistant) =>
         {
-            let segment_id = assistant_segment_id(assistant_turn_id, event);
+            let segment_id = continued_segment_id(
+                snapshot,
+                assistant_turn_id,
+                &assistant_segment_id(assistant_turn_id, event),
+            );
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -203,7 +211,12 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::ContentCompleted
             if event.channel == Some(TurnStreamChannel::Assistant) =>
         {
-            let segment_id = assistant_segment_id(assistant_turn_id, event);
+            let (segment_id, text) = continued_completed_text(
+                snapshot,
+                assistant_turn_id,
+                &assistant_segment_id(assistant_turn_id, event),
+                event_text(event),
+            );
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -218,7 +231,7 @@ pub fn materialize_segment_for_event(
                         build_segment_source(event, None),
                     )
                 });
-            if let Some(text) = event_text(event) {
+            if let Some(text) = text {
                 set_string_value(&mut segment, "content", &text);
             } else if let Some(turn_content) = find_turn(snapshot, assistant_turn_id)
                 .and_then(|turn| turn.get("content"))
@@ -242,7 +255,12 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::ContentCompleted
             if event.channel == Some(TurnStreamChannel::Reasoning) =>
         {
-            let segment_id = reasoning_segment_id(assistant_turn_id, event);
+            let (segment_id, text) = continued_completed_text(
+                snapshot,
+                assistant_turn_id,
+                &reasoning_segment_id(assistant_turn_id, event),
+                event_text(event),
+            );
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -257,7 +275,7 @@ pub fn materialize_segment_for_event(
                         build_segment_source(event, None),
                     )
                 });
-            if let Some(text) = event_text(event) {
+            if let Some(text) = text {
                 set_string_value(&mut segment, "content", &text);
             }
             set_string_value(&mut segment, "status", "complete");
@@ -474,6 +492,10 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::Other(kind) if kind == "user_message_delivered" => {
             let message_id = event.source.item_id.as_deref()?;
             let segment_id = format!("segment-user-message-{message_id}");
+            // A turn's output replays its events; the message keeps its place.
+            if let Some(segment) = find_segment(snapshot, &segment_id) {
+                return Some(segment.clone());
+            }
             let mut segment = segment_shell(
                 &segment_id,
                 assistant_turn_id,
@@ -696,6 +718,85 @@ pub fn agent_event_segment_shell(
     set_string_value(&mut segment, "updated_at", timestamp);
     set_string_value(&mut segment, "completed_at", timestamp);
     segment
+}
+
+/// Output for an item that was already streaming when a user message was
+/// delivered continues in a segment after that message, so the transcript
+/// keeps the order things happened in.
+fn continued_segment_id(snapshot: &Value, turn_id: &str, item_segment_id: &str) -> String {
+    let order = |segment: &Value| segment.get("order").and_then(Value::as_i64).unwrap_or(0);
+    let Some(item) = find_segment(snapshot, item_segment_id) else {
+        return item_segment_id.to_string();
+    };
+    let latest_message = snapshot
+        .get("segments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|segment| {
+            segment.get("turn_id").and_then(Value::as_str) == Some(turn_id)
+                && segment.get("kind").and_then(Value::as_str) == Some("user_message")
+        })
+        .max_by_key(|segment| order(segment));
+    match latest_message {
+        Some(message) if order(message) > order(item) => format!(
+            "{item_segment_id}-after-{}",
+            message.get("id").and_then(Value::as_str).unwrap_or("")
+        ),
+        _ => item_segment_id.to_string(),
+    }
+}
+
+/// Where an item's full completed text goes, and what of it to write: an
+/// item split by a delivered message completes with only the text its
+/// earlier parts do not show, or completes its last part when they show it
+/// all.
+fn continued_completed_text(
+    snapshot: &Value,
+    turn_id: &str,
+    item_segment_id: &str,
+    text: Option<String>,
+) -> (String, Option<String>) {
+    let segment_id = continued_segment_id(snapshot, turn_id, item_segment_id);
+    if segment_id == item_segment_id {
+        return (segment_id, text);
+    }
+    let continuation_prefix = format!("{item_segment_id}-after-");
+    let mut parts = snapshot
+        .get("segments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|segment| {
+            segment.get("id").and_then(Value::as_str).is_some_and(|id| {
+                id != segment_id && (id == item_segment_id || id.starts_with(&continuation_prefix))
+            })
+        })
+        .collect::<Vec<_>>();
+    parts.sort_by_key(|segment| segment.get("order").and_then(Value::as_i64));
+    let shown = parts
+        .iter()
+        .filter_map(|segment| segment.get("content").and_then(Value::as_str))
+        .collect::<String>();
+    let Some(rest) = text
+        .as_deref()
+        .and_then(|text| text.strip_prefix(shown.trim()))
+    else {
+        return (segment_id, text);
+    };
+    if let Some(rest) = non_empty_string(rest) {
+        return (segment_id, Some(rest));
+    }
+    let last = parts.last().expect("a split item has an earlier part");
+    (
+        last.get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        last.get("content")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

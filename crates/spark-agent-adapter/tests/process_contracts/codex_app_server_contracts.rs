@@ -297,6 +297,19 @@ fn send_message_reaches_turn_steer_on_the_running_turn() {
     let output = turn.join().expect("turn thread").expect("turn");
 
     assert_eq!(output.final_assistant_text.as_deref(), Some("Steered"));
+    let delivered = output
+        .events
+        .iter()
+        .position(|event| {
+            event.kind == TurnStreamEventKind::Other("user_message_delivered".into())
+                && event.source.item_id.as_deref() == Some("note-1")
+                && event.message.as_deref() == Some("Use the docs.")
+        })
+        .expect("delivered event");
+    // Reported before the output that follows the steer.
+    assert!(output.events[delivered..]
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::ContentCompleted));
     let steer = read_jsonrpc_log(&log_path)
         .into_iter()
         .find(|message| message["method"] == "turn/steer")
