@@ -15,6 +15,26 @@ pub const AGENT_INSTRUCTIONS_METADATA_KEY: &str = "spark.agent.instructions";
 
 pub type AgentTurnEventSink = Arc<dyn Fn(TurnStreamEvent) + Send + Sync + 'static>;
 
+/// Writes lines to an agent process's stdin from its own thread, so a process
+/// that stops reading never blocks the turn or a stop that kills it. Sending
+/// fails once a write has failed; dropping the sender closes stdin after the
+/// queued lines.
+pub(crate) fn stdin_writer(mut stdin: std::process::ChildStdin) -> std::sync::mpsc::Sender<String> {
+    use std::io::Write;
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in receiver {
+            if writeln!(stdin, "{line}")
+                .and_then(|()| stdin.flush())
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    sender
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentTurnRequest {
     pub conversation_id: String,

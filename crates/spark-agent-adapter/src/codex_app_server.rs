@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -456,7 +456,7 @@ fn thread_resume_failure_output(
 
 pub struct CodexAppServerClient {
     child: Child,
-    stdin: ChildStdin,
+    stdin: mpsc::Sender<String>,
     stdout: Receiver<String>,
     next_request_id: u64,
     pending_messages: VecDeque<Value>,
@@ -557,7 +557,7 @@ impl CodexAppServerClient {
         });
         let mut client = Self {
             child,
-            stdin,
+            stdin: crate::agent::stdin_writer(stdin),
             stdout: stdout_receiver,
             next_request_id: 0,
             pending_messages: VecDeque::new(),
@@ -1154,14 +1154,8 @@ impl CodexAppServerClient {
         })?;
         self.append_trace_line("outgoing", &line)?;
         self.stdin
-            .write_all(line.as_bytes())
-            .and_then(|_| self.stdin.write_all(b"\n"))
-            .and_then(|_| self.stdin.flush())
-            .map_err(|error| {
-                CodexAppServerError::runtime(format!(
-                    "codex app-server stdin write failed: {error}"
-                ))
-            })
+            .send(line)
+            .map_err(|_| CodexAppServerError::runtime("codex app-server stdin write failed"))
     }
 
     fn read_message(&mut self, wait: Duration) -> Result<Option<Value>, CodexAppServerError> {

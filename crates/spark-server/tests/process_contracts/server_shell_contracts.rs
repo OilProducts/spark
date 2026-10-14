@@ -696,32 +696,65 @@ fn worker_run_node_process_routes_llm_nodes_to_rust_adapter_boundary() {
     assert!(!reason.contains("no HTTP transport is configured"));
 }
 
-/// A node `timeout` ends a Codex turn that neither answers `turn/interrupt`
-/// nor completes, so the worker returns the timeout failure promptly.
+/// A Claude CLI that never reads stdin, so a prompt larger than the pipe
+/// blocks its write. It records its pid in `started`.
 #[cfg(unix)]
-#[test]
-fn worker_run_node_terminates_codex_turn_that_ignores_interrupt_at_timeout() {
-    use std::os::unix::fs::PermissionsExt;
-    let temp = tempfile::tempdir().expect("tempdir");
-    let codex = temp.path().join("codex");
-    fs::write(
-        &codex,
-        r#"#!/usr/bin/env python3
-import json, sys
+const STALLED_CLAUDE: &str = r#"#!/usr/bin/env python3
+import json, os, time
+print(json.dumps({'type':'system','subtype':'init','session_id':'s1','model':'m','tools':[],'capabilities':['interrupt_receipt_v1']}), flush=True)
+with open('started','w') as f: f.write(str(os.getpid()))
+time.sleep(600)
+"#;
+
+/// A Codex app-server that stops reading stdin once its thread starts, so a
+/// prompt larger than the pipe blocks the `turn/start` write.
+#[cfg(unix)]
+const STALLED_CODEX: &str = r#"#!/usr/bin/env python3
+import json, os, sys, time
 def send(x):
     print(json.dumps(x), flush=True)
-for line in sys.stdin:
-    m = json.loads(line)
+while True:
+    m = json.loads(sys.stdin.readline())
     method = m.get('method')
     if method == 'initialize': send({'id':m['id'],'result':{}})
-    elif method == 'thread/start': send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
-    elif method == 'turn/start': send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
-"#,
-    )
-    .expect("fake codex");
-    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).expect("executable");
+    elif method == 'thread/start':
+        send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
+        break
+with open('started','w') as f: f.write(str(os.getpid()))
+time.sleep(600)
+"#;
+
+/// A worker node whose agent stopped reading stdin mid-prompt still ends on
+/// its timeout or run cancel, with the agent process killed.
+#[cfg(unix)]
+fn assert_worker_stops_stalled_agent(provider: &str, cancel: bool) {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let bin = temp.path().join("agent");
+    let script = if provider == "codex" {
+        STALLED_CODEX
+    } else {
+        STALLED_CLAUDE
+    };
+    fs::write(&bin, script).expect("fake agent");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).expect("executable");
+    let run_id = format!("run-worker-{provider}-stalled");
+    let store = attractor_runtime::RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut run = attractor_runtime::CreateRunRequest::default();
+    run.record.run_id = run_id.clone();
+    run.record.working_directory = temp.path().to_string_lossy().into();
+    run.record.status = "running".into();
+    let paths = store.create_run(run).expect("run");
+    // Far beyond any pipe buffer.
+    let prompt = format!("Work {}", "x".repeat(1 << 20));
+    let runtime = if cancel {
+        json!({})
+    } else {
+        json!({"timeout": "1s"})
+    };
     let request = json!({
-        "run_id": "run-worker-codex-timeout",
+        "run_id": run_id,
         "stage_index": 0,
         "attempt": 0,
         "flow": {
@@ -730,48 +763,66 @@ for line in sys.stdin:
             "nodes": {
                 "task": {
                     "kind": "agent_task",
-                    "runtime": {"timeout": "1s"},
-                    "config": {"kind": "agent_task", "prompt": "Work forever"},
-                    "execution": {"llm_provider": "codex", "llm_model": "test-model"}
+                    "runtime": runtime,
+                    "config": {"kind": "agent_task", "prompt": prompt},
+                    "execution": {"llm_provider": provider, "llm_model": "test-model"}
                 }
             },
             "edges": []
         },
         "node_id": "task",
-        "prompt": "Work forever",
+        "prompt": prompt,
         "context": {},
         "context_logs": [],
-        "logs_root": null,
+        "logs_root": paths.logs_dir(),
         "working_dir": temp.path(),
         "backend_name": null,
         "model": null,
-        "config_dir": null
+        "config_dir": null,
+        "run_root": {"runs_dir": paths.runs_dir, "project_id": paths.project_id, "root": paths.root}
     });
     let started = std::time::Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_spark-server"))
         .args(["worker", "run-node"])
-        .env("SPARK_CODEX_APP_SERVER_BIN", &codex)
+        .env("SPARK_CLAUDE_CODE_BIN", &bin)
+        .env("SPARK_CODEX_APP_SERVER_BIN", &bin)
         .env(
             "ATTRACTOR_CODEX_RUNTIME_ROOT",
             temp.path().join("codex-runtime"),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .expect("spawn worker");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin
         .write_all((request.to_string() + "\n").as_bytes())
         .expect("write request");
-
-    let output = child.wait_with_output().expect("worker output");
-
-    // 1s timeout plus the 10s interrupt grace, with slack.
-    assert!(started.elapsed() < std::time::Duration::from_secs(20));
-    let stdout = String::from_utf8(output.stdout).expect("utf8 worker frames");
+    drop(stdin);
+    let mut stdout = child.stdout.take().expect("stdout");
+    let reader = std::thread::spawn(move || {
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).map(|_| output)
+    });
+    let agent_pid = temp.path().join("started");
+    let deadline = started + std::time::Duration::from_secs(30);
+    let mut canceled = false;
+    // 1s timeout plus the 10s interrupt grace, with slack; a hang fails here.
+    while child.try_wait().expect("worker status").is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("{provider} worker still running after its stop");
+        }
+        if cancel && !canceled && agent_pid.exists() {
+            let mut record = store.read_run_record(&paths).unwrap().unwrap();
+            record.status = "cancel_requested".into();
+            store.write_run_record(&paths, &record).unwrap();
+            canceled = true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let stdout = reader.join().unwrap().expect("worker stdout");
     let frame: Value =
         serde_json::from_str(stdout.lines().last().expect("result frame")).expect("worker frame");
     assert_eq!(frame["type"], json!("result"), "{stdout}");
@@ -779,7 +830,44 @@ for line in sys.stdin:
     let reason = frame["outcome"]["failure_reason"]
         .as_str()
         .unwrap_or_default();
-    assert!(reason.contains("timed out after 1 seconds"), "{reason}");
+    let expected = if cancel {
+        "Run canceled"
+    } else {
+        "timed out after 1 seconds"
+    };
+    assert!(reason.contains(expected), "{reason}");
+    let pid = fs::read_to_string(&agent_pid).expect("agent started");
+    let alive = Command::new("kill")
+        .args(["-0", &pid])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "{provider} agent {pid} still running");
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_run_node_stops_claude_that_stops_reading_stdin_at_timeout() {
+    assert_worker_stops_stalled_agent("claude-code", false);
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_run_node_stops_claude_that_stops_reading_stdin_on_cancel() {
+    assert_worker_stops_stalled_agent("claude-code", true);
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_run_node_stops_codex_that_stops_reading_stdin_at_timeout() {
+    assert_worker_stops_stalled_agent("codex", false);
+}
+
+#[cfg(unix)]
+#[test]
+fn worker_run_node_stops_codex_that_stops_reading_stdin_on_cancel() {
+    assert_worker_stops_stalled_agent("codex", true);
 }
 
 fn list_flow_files(root: &Path) -> Vec<String> {

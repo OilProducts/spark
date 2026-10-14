@@ -2,6 +2,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::process::{Child, ChildStdin};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::agent::AgentRequestUserInputAnswerRequest;
@@ -28,7 +29,7 @@ pub(super) enum Questions {
 
 pub(super) struct Control {
     pub child: Child,
-    stdin: Option<ChildStdin>,
+    stdin: Option<Sender<String>>,
     questions: Questions,
     /// Flow clarifications awaiting answers, by request id.
     clarifications: Vec<(String, crate::codergen::ClarificationPoll)>,
@@ -61,7 +62,7 @@ impl Control {
     ) -> Arc<Mutex<Self>> {
         let control = Arc::new(Mutex::new(Self {
             child,
-            stdin: Some(stdin),
+            stdin: Some(crate::agent::stdin_writer(stdin)),
             questions,
             clarifications: Vec::new(),
             enabled: false,
@@ -129,11 +130,11 @@ impl Control {
 
     fn send(&mut self, message: Value) -> bool {
         let line = message.to_string();
-        let result = self
+        let sent = self
             .stdin
-            .as_mut()
-            .map(|stdin| writeln!(stdin, "{line}").and_then(|()| stdin.flush()));
-        if !matches!(result, Some(Ok(()))) {
+            .as_ref()
+            .is_some_and(|stdin| stdin.send(line.clone()).is_ok());
+        if !sent {
             self.log("stdin write failed");
             self.one_shot();
             return false;
