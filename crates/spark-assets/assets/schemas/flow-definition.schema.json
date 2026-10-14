@@ -616,6 +616,13 @@
             "string",
             "null"
           ]
+        },
+        "timeout": {
+          "description": "Maximum node execution time, in seconds or as a duration such as `90s`, `15m` or `2h`. Agent and tool nodes past it fail.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"

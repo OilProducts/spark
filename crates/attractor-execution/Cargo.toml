@@ -20,4 +20,5 @@ toml = "0.8"
 
 [dev-dependencies]
 attractor-dsl = { path = "../attractor-dsl" }
+spark-agent-adapter = { path = "../spark-agent-adapter" }
 tempfile = "3.10"

@@ -215,6 +215,10 @@ pub struct NodeRuntimeConfig {
     /// convergence guard). Absent means the engine default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_entries: Option<u64>,
+    /// Maximum node execution time, in seconds or as a duration such as
+    /// `90s`, `15m` or `2h`. Agent and tool nodes past it fail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

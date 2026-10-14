@@ -721,6 +721,25 @@ where
                 })?;
                 store.append_event(&paths, cleanup_error_event(&run_id, cleanup_error))?;
             }
+            // Cancel interrupts the running node; its failure is the cancel,
+            // so finalize instead of recording or retrying it.
+            if raw_outcome.status == OutcomeStatus::Fail
+                && matches!(self.poll_control(), Some(ExecutionControlAction::Cancel))
+            {
+                return finalize_canceled(
+                    &store,
+                    &paths,
+                    &run_id,
+                    &mut record,
+                    &current_node,
+                    &completed_nodes,
+                    &context,
+                    &retry_counts,
+                    &node_outcomes,
+                    &route_trace,
+                    "aborted_by_user",
+                );
+            }
             let mut outcome = apply_outcome_context_updates_for_node(
                 &current_node,
                 node,

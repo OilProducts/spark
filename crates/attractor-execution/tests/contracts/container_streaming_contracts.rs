@@ -453,3 +453,172 @@ fn finalization_records_both_removal_failure_types_and_never_retries() {
         assert_eq!(*removals.lock().unwrap(), 1);
     }
 }
+
+/// Asks one question through the flow clarification handler and answers
+/// with what it receives, as an agent backend inside a worker would.
+struct AskingBackend(Option<spark_agent_adapter::codergen::ClarificationHandler>);
+
+impl spark_agent_adapter::CodergenBackend for AskingBackend {
+    fn set_clarification_handler(
+        &mut self,
+        handler: spark_agent_adapter::codergen::ClarificationHandler,
+    ) {
+        self.0 = Some(handler);
+    }
+
+    fn run(
+        &mut self,
+        _: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let handler = self
+            .0
+            .as_ref()
+            .expect("worker sets a clarification handler");
+        let mut poll = handler(json!({"agent_request_id": "q1", "questions": [
+            {"id": "question-1", "question": "Which audience?", "options": []}
+        ]}))
+        .map_err(spark_agent_adapter::CodergenError::Backend)?;
+        let answers = loop {
+            if let Some(answers) = poll().map_err(spark_agent_adapter::CodergenError::Backend)? {
+                break answers;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response: spark_agent_adapter::CodergenBackendResponse::Text(format!(
+                "Audience: {}",
+                answers["question-1"]
+            )),
+            events: Vec::new(),
+            usage: None,
+        })
+    }
+}
+
+#[test]
+fn worker_clarification_reaches_the_host_journal_and_reads_its_answer() {
+    let temp = tempfile::tempdir().unwrap();
+    let run_id = "worker-clarify";
+    let store = RunStore::for_runs_dir(temp.path().join("runs"));
+    let mut record = RunRecord::new(run_id, temp.path().to_string_lossy());
+    record.status = "running".into();
+    let paths = store
+        .create_run(CreateRunRequest {
+            record,
+            ..Default::default()
+        })
+        .unwrap();
+    let flow = attractor_dsl::parse_flow_definition(
+        r#"
+schema_version: "1"
+id: worker-clarify
+nodes:
+  start: { kind: start }
+  task: { kind: agent_task, config: { kind: agent_task, prompt: Pick an audience } }
+  done: { kind: exit }
+edges:
+  - { from: start, to: task }
+  - { from: task, to: done }
+"#,
+    )
+    .unwrap();
+    let request = WorkerNodeRequest {
+        run_id: run_id.into(),
+        flow,
+        node_id: "task".into(),
+        stage_index: 1,
+        attempt: 0,
+        prompt: "Pick an audience".into(),
+        context: Default::default(),
+        context_logs: Vec::new(),
+        logs_root: Some(paths.logs_dir()),
+        working_dir: temp.path().into(),
+        backend_name: None,
+        model: None,
+        config_dir: None,
+        run_root: Some(RunRootMetadata {
+            runs_dir: paths.runs_dir.clone(),
+            project_id: paths.project_id.clone(),
+            root: paths.root.clone(),
+        }),
+    };
+    let input = serde_json::to_vec(&request).unwrap();
+    let frames = SharedFrames::default();
+    let worker_frames = frames.clone();
+    let worker = std::thread::spawn(move || {
+        let runner = RuntimeHandlerRunner::new()
+            .with_codergen_backend_factory(|| Box::new(AskingBackend(None)));
+        run_worker_node_from_reader_writer(input.as_slice(), worker_frames, runner)
+    });
+
+    // The host reads questions from its own journal, not the worker's frames.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let question = loop {
+        if let Some(event) = attractor_runtime::read_raw_events(&paths)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "human_gate")
+        {
+            break event;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no human_gate in host journal"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    assert_eq!(question.payload["origin"], "agent_clarification");
+    assert_eq!(
+        store.read_run_record(&paths).unwrap().unwrap().status,
+        "waiting"
+    );
+    let question = json!(question.payload);
+    let mut answer = attractor_runtime::human_gate_answered_event(
+        run_id,
+        question["question_id"].as_str().unwrap(),
+        Some("task".into()),
+        None,
+        None,
+        "Developers",
+        None,
+    );
+    answer.payload.insert(
+        "clarification_id".into(),
+        question["clarification_id"].clone(),
+    );
+    attractor_runtime::clarification::accept_answer(&store, &paths, &question, answer).unwrap();
+
+    assert_eq!(worker.join().unwrap(), 0);
+    let output = String::from_utf8(frames.0.lock().unwrap().clone()).unwrap();
+    let frames = output
+        .lines()
+        .map(|line| serde_json::from_str::<WorkerFrame>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(frames.iter().any(|frame| matches!(
+        frame,
+        WorkerFrame::Event(EventFrame { event }) if event.event_type == "human_gate"
+    )));
+    let Some(WorkerFrame::Result(result)) = frames.last() else {
+        panic!("worker ended without a result: {output}");
+    };
+    assert_eq!(result.outcome["status"], "success", "{output}");
+    assert_eq!(
+        store.read_run_record(&paths).unwrap().unwrap().status,
+        "running"
+    );
+}
+
+#[derive(Clone, Default)]
+struct SharedFrames(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for SharedFrames {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}

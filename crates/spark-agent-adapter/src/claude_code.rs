@@ -96,7 +96,26 @@ impl ClaudeCodeBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
-        let questions = event_sink.is_some();
+        let questions = if event_sink.is_some() {
+            control::Questions::Chat
+        } else {
+            control::Questions::Deny
+        };
+        self.run(request, event_sink, questions)
+    }
+
+    /// A flow node turn: `AskUserQuestion` goes to the flow's clarification
+    /// handler; without one it is denied.
+    pub(crate) fn run_codergen_turn(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+        clarification_handler: Option<crate::codergen::ClarificationHandler>,
+    ) -> Result<AgentTurnOutput, ClaudeCodeError> {
+        let questions = match clarification_handler {
+            Some(handler) => control::Questions::Flow(handler),
+            None => control::Questions::Deny,
+        };
         self.run(request, event_sink, questions)
     }
 
@@ -106,14 +125,14 @@ impl ClaudeCodeBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
-        self.run(request, event_sink, false)
+        self.run(request, event_sink, control::Questions::Deny)
     }
 
     fn run(
         &self,
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
-        questions: bool,
+        questions: control::Questions,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
         let resumed_session_id =
             metadata_string(&request.metadata, "spark.runtime.claude_code.session_id")
@@ -124,7 +143,7 @@ impl ClaudeCodeBackend {
             &request,
             &event_sink,
             resumed_session_id.as_deref(),
-            questions,
+            &questions,
             &mut turn,
         ) {
             // The stored session never started, so start a fresh one.
@@ -134,7 +153,7 @@ impl ClaudeCodeBackend {
                 return Err(error);
             };
             turn = Turn::new(&request, false);
-            self.run_with_respawn(&request, &event_sink, None, questions, &mut turn)?;
+            self.run_with_respawn(&request, &event_sink, None, &questions, &mut turn)?;
             thread_resume_failure = Some(AgentThreadResumeFailure {
                 message: format!(
                     "claude code could not resume session {discarded_session_id}; started a fresh session"
@@ -185,7 +204,7 @@ impl ClaudeCodeBackend {
         request: &AgentTurnRequest,
         event_sink: &Option<AgentTurnEventSink>,
         resume_session_id: Option<&str>,
-        questions: bool,
+        questions: &control::Questions,
         turn: &mut Turn,
     ) -> Result<(), ClaudeCodeError> {
         let Err(error) = self.run_process(
@@ -225,7 +244,7 @@ impl ClaudeCodeBackend {
         event_sink: &Option<AgentTurnEventSink>,
         resume_session_id: Option<&str>,
         continuation: Option<&str>,
-        questions: bool,
+        questions: &control::Questions,
         turn: &mut Turn,
     ) -> Result<(), ClaudeCodeError> {
         let working_dir = PathBuf::from(&request.project_path);
@@ -332,7 +351,7 @@ impl ClaudeCodeBackend {
                 }
             }
         });
-        let control = control::Control::register(child, stdin, request, questions);
+        let control = control::Control::register(child, stdin, request, questions.clone());
         // The prompt travels over stdin so arbitrarily large composed prompts
         // never hit argv limits.
         // A failed write closes stdin; the process exit then reports it.
@@ -350,6 +369,7 @@ impl ClaudeCodeBackend {
         let started = std::time::Instant::now();
         let mut initialized = false;
         let mut exited_at: Option<std::time::Instant> = None;
+        let mut abandoned = None;
         while !control.lock().unwrap().ended {
             // Checked every iteration: continuous output must not hide an
             // exit or a missing system/init.
@@ -362,6 +382,11 @@ impl ClaudeCodeBackend {
                     control.log("system/init timeout; using one-shot input");
                     control.one_shot();
                     initialized = true;
+                }
+                if let Err(reason) = control.poll_clarifications() {
+                    control.log(&reason);
+                    abandoned = Some(reason);
+                    break;
                 }
             }
             // A leftover grandchild may hold stdout open past the process
@@ -427,6 +452,15 @@ impl ClaudeCodeBackend {
             ended
         };
         let status = reap(&control)?;
+        if let Some(reason) = abandoned {
+            // The run stopped waiting for an answer; do not resume the session.
+            turn.stopping = true;
+            return Err(ClaudeCodeError {
+                message: reason,
+                retryable: false,
+                details: None,
+            });
+        }
         if ended {
             // Stopped while idle: the last result, so far commentary, is final.
             if !turn.state.completed {

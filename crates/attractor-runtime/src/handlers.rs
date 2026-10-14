@@ -878,10 +878,14 @@ impl RuntimeHandlerRunner {
         runtime: &HandlerRuntime,
         event: attractor_core::RawRuntimeEvent,
     ) -> Result<()> {
+        // A container worker shares the host's run root: journal there so
+        // the host sees the event, and forward it so the host is notified.
+        let event = match &runtime.run_paths {
+            Some(paths) => self.append_and_notify(paths, event)?,
+            None => event,
+        };
         if let Some(sink) = &self.external_event_sink {
             sink(event)?;
-        } else if let Some(paths) = &runtime.run_paths {
-            self.append_and_notify(paths, event)?;
         }
         Ok(())
     }
@@ -891,9 +895,7 @@ impl RuntimeHandlerRunner {
         runtime: &HandlerRuntime,
         event: attractor_core::RawRuntimeEvent,
     ) -> Result<()> {
-        if let Some(sink) = &self.external_event_sink {
-            sink(event)?;
-        } else if let Some(paths) = &runtime.run_paths {
+        let event = if let Some(paths) = &runtime.run_paths {
             let _guard = self.event_append_lock.lock().map_err(|_| {
                 crate::error::RuntimeStorageError::io(
                     "lock runtime event append",
@@ -904,7 +906,12 @@ impl RuntimeHandlerRunner {
                     ),
                 )
             })?;
-            append_event(paths, event)?;
+            append_event(paths, event)?
+        } else {
+            event
+        };
+        if let Some(sink) = &self.external_event_sink {
+            sink(event)?;
         }
         Ok(())
     }
@@ -986,6 +993,20 @@ impl RuntimeHandlerRunner {
                         .is_some_and(|mode| {
                             mode.trim().to_ascii_lowercase().replace('-', "_") == "text_only"
                         });
+                    if let Some(paths) = runtime.run_paths.clone() {
+                        backend.set_cancel_check(Arc::new(move || {
+                            crate::records::read_run_record(&paths)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|record| {
+                                    matches!(
+                                        crate::records::normalize_run_status(&record.status)
+                                            .as_str(),
+                                        "cancel_requested" | "canceled"
+                                    )
+                                })
+                        }));
+                    }
                     if runtime.run_paths.is_some() && !text_only {
                         let runner = self.clone();
                         let question_runtime = runtime.clone();
@@ -1084,16 +1105,18 @@ impl RuntimeHandlerRunner {
                     );
                     runner.emit(&sink_runtime, raw_event)
                 };
-                let publish_result = if activity.is_some() && runner.external_event_sink.is_some() {
-                    runner.emit(
-                        &sink_runtime,
-                        crate::events::codergen_adapter_event(
-                            &run_id,
-                            &node_id,
-                            &event.event_type,
-                            serde_json::to_value(&event.payload).unwrap_or_else(|_| json!({})),
-                        ),
-                    )
+                // Published only: the execution activity is its durable record.
+                let publish_result = if let Some(sink) = runner
+                    .external_event_sink
+                    .as_ref()
+                    .filter(|_| activity.is_some())
+                {
+                    sink(crate::events::codergen_adapter_event(
+                        &run_id,
+                        &node_id,
+                        &event.event_type,
+                        serde_json::to_value(&event.payload).unwrap_or_else(|_| json!({})),
+                    ))
                 } else {
                     Ok(())
                 };

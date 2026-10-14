@@ -608,9 +608,13 @@ pub type ClarificationPoll =
     Box<dyn FnMut() -> Result<Option<BTreeMap<String, String>>, String> + Send>;
 pub type ClarificationHandler =
     std::sync::Arc<dyn Fn(Value) -> Result<ClarificationPoll, String> + Send + Sync>;
+/// Reports whether the node's run has been canceled.
+pub type CancelCheck = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
 pub trait CodergenBackend {
     fn set_clarification_handler(&mut self, _handler: ClarificationHandler) {}
+
+    fn set_cancel_check(&mut self, _check: CancelCheck) {}
 
     fn run(
         &mut self,
