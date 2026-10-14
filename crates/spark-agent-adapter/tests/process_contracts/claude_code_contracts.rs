@@ -1654,6 +1654,9 @@ fn claude_code_envelope_repairs_resume_the_first_attempts_session() {
     for (mode, reason) in [
         ("structured-violation", "context.undeclared"),
         ("structured-retries", "empty response"),
+        // Exhaustion wins over any envelope-looking text the turn left behind.
+        ("structured-retries-result-text", "empty response"),
+        ("structured-retries-assistant-text", "empty response"),
     ] {
         let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
         let _ = std::fs::remove_file(&log_path);
@@ -1710,6 +1713,41 @@ fn claude_code_envelope_repairs_resume_the_first_attempts_session() {
             .collect::<Vec<_>>();
         assert_eq!(completed, vec![json!(10), json!(5)], "{mode}");
     }
+}
+
+#[test]
+fn claude_code_envelope_repairs_stop_at_the_limit_when_retries_stay_exhausted() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let _mode_guard = EnvVarGuard::set(
+        "SPARK_FAKE_CLAUDE_CODE_MODE",
+        "structured-retries-result-text-always",
+    );
+
+    let execution = spark_agent_adapter::CodergenHandler::with_backend(
+        RustLlmCodergenBackend::new(Client::new()),
+    )
+    .execute(envelope_node_request(temp.path(), Some("status_envelope")))
+    .expect("execution");
+
+    assert_eq!(
+        execution.outcome.status,
+        attractor_core::OutcomeStatus::Fail
+    );
+    assert_eq!(
+        execution.repair_attempts,
+        spark_agent_adapter::codergen::DEFAULT_CONTRACT_REPAIR_ATTEMPTS
+    );
+    assert_eq!(execution.contract_violations.len(), 2);
+    let invocations = logged_invocations(&log_path);
+    assert_eq!(invocations.len(), 2);
+    assert_eq!(
+        arg_after(&invocations[1], "--resume").as_deref(),
+        Some("sess-fake-claude-1")
+    );
 }
 
 /// Opt-in smoke: one status-envelope node against the real CLI's

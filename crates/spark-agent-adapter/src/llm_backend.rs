@@ -325,20 +325,20 @@ impl RustLlmCodergenBackend {
         let structured_output_failed = output.events.iter().any(|event| {
             event.status.as_deref() == Some(STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_SUBTYPE)
         });
-        let response =
-            if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty) {
-                CodergenBackendResponse::Text(text.to_string())
-            } else if structured_output_failed {
-                CodergenBackendResponse::Text(String::new())
-            } else {
-                CodergenBackendResponse::Outcome(Outcome {
-                    status: OutcomeStatus::Fail,
-                    failure_reason: "claude code completed without assistant text".to_string(),
-                    retryable: Some(false),
-                    failure_kind: Some(FailureKind::Runtime),
-                    ..Outcome::new(OutcomeStatus::Fail)
-                })
-            };
+        // Any text such a turn left behind failed the schema, so it is ignored.
+        let response = if structured_output_failed {
+            CodergenBackendResponse::Text(String::new())
+        } else if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty) {
+            CodergenBackendResponse::Text(text.to_string())
+        } else {
+            CodergenBackendResponse::Outcome(Outcome {
+                status: OutcomeStatus::Fail,
+                failure_reason: "claude code completed without assistant text".to_string(),
+                retryable: Some(false),
+                failure_kind: Some(FailureKind::Runtime),
+                ..Outcome::new(OutcomeStatus::Fail)
+            })
+        };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
         for event in &output.events {
             events.push(claude_code_codergen_event_from_turn_stream_event(
