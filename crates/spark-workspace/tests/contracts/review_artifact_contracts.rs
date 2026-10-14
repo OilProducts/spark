@@ -275,24 +275,11 @@ fn completed_plan_segments_create_proposed_plan_artifacts() {
 #[test]
 fn rejected_plan_note_reaches_the_next_plan_mode_turn_only() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let settings = settings(temp.path());
+    let service = WorkspaceConversationService::new(settings(temp.path()));
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     let project = project_path.to_str().expect("utf-8");
-    seed_proposed_plan(&settings, project, "conversation-plan");
-    let service = WorkspaceConversationService::new(settings);
-    service
-        .review_proposed_plan(
-            "conversation-plan",
-            "proposed-plan-inline",
-            ProposedPlanReviewRequest {
-                project_path: project.to_string(),
-                disposition: "rejected".to_string(),
-                review_note: Some("Needs acceptance criteria.".to_string()),
-            },
-        )
-        .expect("rejected");
-    let send = |chat_mode: &str| {
+    let send = |chat_mode: &str, event: TurnStreamEvent| {
         let (prepared, _) = service
             .start_turn(
                 "conversation-plan",
@@ -304,28 +291,61 @@ fn rejected_plan_note_reaches_the_next_plan_mode_turn_only() {
                 },
             )
             .expect("start turn");
-        service
+        let snapshot = service
             .ingest_agent_turn_output(
                 "conversation-plan",
                 project,
                 &prepared.assistant_turn_id,
                 chat_mode,
                 AgentTurnOutput {
-                    events: vec![assistant_completed("Noted.")],
-                    final_assistant_text: Some("Noted.".to_string()),
+                    events: vec![event],
                     ..AgentTurnOutput::default()
                 },
             )
             .expect("ingest");
-        prepared.agent_turn_request.prompt
+        (prepared.agent_turn_request.prompt, snapshot)
+    };
+    let reject = |plan_id: &str, note: &str| {
+        service
+            .review_proposed_plan(
+                "conversation-plan",
+                plan_id,
+                ProposedPlanReviewRequest {
+                    project_path: project.to_string(),
+                    disposition: "rejected".to_string(),
+                    review_note: Some(note.to_string()),
+                },
+            )
+            .expect("rejected");
     };
 
-    assert_eq!(send("chat"), "Revise it.");
+    // Two pending plans; the older one is rejected while the newer still exists,
+    // in the same second the plan turns started.
+    send("plan", plan_completed("# Older Plan\n\n1. Step."));
+    let mut newer = plan_completed("# Newer Plan\n\n1. Step.");
+    newer.source.item_id = Some("plan-item-newer".to_string());
+    let (_, snapshot) = send("plan", newer);
+    let plans = snapshot["proposed_plans"].as_array().expect("plans");
+    assert_eq!(plans.len(), 2);
+    reject(
+        plans[0]["id"].as_str().expect("id"),
+        "Needs acceptance criteria.",
+    );
+
+    assert_eq!(send("chat", assistant_completed("Noted.")).0, "Revise it.");
     assert_eq!(
-        send("plan"),
+        send("plan", assistant_completed("Noted.")).0,
         "The user rejected your previous plan with this note:\nNeeds acceptance criteria.\n\nRevise it."
     );
-    assert_eq!(send("plan"), "Revise it.");
+    assert_eq!(send("plan", assistant_completed("Noted.")).0, "Revise it.");
+
+    // A plan turn that started earlier does not count as having received a later rejection.
+    reject(plans[1]["id"].as_str().expect("id"), "Split it up.");
+    assert_eq!(
+        send("plan", assistant_completed("Noted.")).0,
+        "The user rejected your previous plan with this note:\nSplit it up.\n\nRevise it."
+    );
+    assert_eq!(send("plan", assistant_completed("Noted.")).0, "Revise it.");
 }
 
 #[test]

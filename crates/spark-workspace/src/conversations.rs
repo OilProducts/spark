@@ -1335,6 +1335,30 @@ impl WorkspaceConversationService {
                 mutations.push(turn_mutation_from_value(queued)?);
             }
         }
+        // Rejection notes go to the next plan-mode turn once, marked delivered with it.
+        let mut rejection_notes = Vec::new();
+        if effective_chat_mode == "plan" {
+            for mut plan in snapshot["proposed_plans"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|plan| {
+                    plan["status"] == "rejected" && plan["review_note_delivered_turn_id"].is_null()
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+            {
+                let Some(note) = plan["review_note"].as_str().and_then(non_empty_string) else {
+                    continue;
+                };
+                rejection_notes.push(note);
+                plan["review_note_delivered_turn_id"] = json!(assistant_turn_id.clone());
+                mutations.push(ConversationMutation::ArtifactUpserted {
+                    collection: ArtifactCollection::ProposedPlans,
+                    artifact: plan,
+                });
+            }
+        }
         // Resolved before the turn persists, so a broken history rejects it.
         let history = agent_history_from_snapshot(&repository, &snapshot, &[])?;
         let commit = commit_conversation_mutations(
@@ -1414,14 +1438,13 @@ impl WorkspaceConversationService {
             spark_agent_adapter::AGENT_INSTRUCTIONS_METADATA_KEY.to_string(),
             json!(instructions),
         );
-        let prompt = match (effective_chat_mode == "plan")
-            .then(|| rejected_plan_note(&snapshot, &assistant_turn_id))
-            .flatten()
-        {
-            Some(note) => {
-                format!("The user rejected your previous plan with this note:\n{note}\n\n{message}")
-            }
-            None => message.clone(),
+        let prompt = if rejection_notes.is_empty() {
+            message.clone()
+        } else {
+            format!(
+                "The user rejected your previous plan with this note:\n{}\n\n{message}",
+                rejection_notes.join("\n\n")
+            )
         };
         let agent_turn_request = AgentTurnRequest {
             conversation_id: conversation_id.to_string(),
@@ -5153,26 +5176,6 @@ fn finalized_plan_segment(snapshot: &Value, assistant_turn_id: &str) -> Option<V
                     .is_some()
         })
         .cloned()
-}
-
-/// The newest proposed plan's rejection note, until a plan-mode turn other
-/// than `assistant_turn_id` has started since the rejection.
-fn rejected_plan_note(snapshot: &Value, assistant_turn_id: &str) -> Option<String> {
-    let plan = snapshot["proposed_plans"].as_array()?.last()?;
-    if plan["status"] != "rejected" {
-        return None;
-    }
-    let note = plan["review_note"].as_str().and_then(non_empty_string)?;
-    let rejected_at = plan["updated_at"].as_str()?;
-    let delivered = snapshot["turns"].as_array()?.iter().any(|turn| {
-        turn["role"] == "assistant"
-            && turn["id"] != assistant_turn_id
-            && turn["execution_settings"]["chat_mode"] == "plan"
-            && turn["timestamp"]
-                .as_str()
-                .is_some_and(|at| at >= rejected_at)
-    });
-    (!delivered).then_some(note)
 }
 
 fn finalized_assistant_segment(snapshot: &Value, assistant_turn_id: &str) -> Option<Value> {
