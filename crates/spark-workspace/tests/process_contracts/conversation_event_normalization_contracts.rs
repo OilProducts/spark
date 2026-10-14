@@ -4379,6 +4379,8 @@ struct LiveMessageBackend {
     delivered: Mutex<Vec<(String, String)>>,
     histories: Mutex<Vec<Vec<(String, String)>>>,
     released: (Mutex<bool>, Condvar),
+    /// Ends the turn with a plan instead of a final answer, as plan mode does.
+    plan: bool,
 }
 
 impl AgentTurnBackend for LiveMessageBackend {
@@ -4460,14 +4462,15 @@ impl AgentTurnBackend for LiveMessageBackend {
                 });
             }
         }
+        let channel = if self.plan { "plan" } else { "assistant" };
         sink(content_completed(
-            "assistant",
+            channel,
             "Done with the docs.",
             "t1",
             "a2",
         ));
         Ok(AgentTurnOutput {
-            final_assistant_text: Some("Done with the docs.".to_string()),
+            final_assistant_text: (!self.plan).then(|| "Done with the docs.".to_string()),
             ..AgentTurnOutput::default()
         })
     }
@@ -4475,8 +4478,19 @@ impl AgentTurnBackend for LiveMessageBackend {
 
 #[test]
 fn a_backend_reading_history_sees_each_message_delivered_into_a_turn_once_in_order() {
+    // A plan-mode turn ends with a plan rather than a final answer; the plan
+    // must stay in history alongside the delivered message.
+    for plan in [false, true] {
+        assert_delivered_history(plan);
+    }
+}
+
+fn assert_delivered_history(plan: bool) {
     let temp = tempfile::tempdir().unwrap();
-    let backend = Arc::new(LiveMessageBackend::default());
+    let backend = Arc::new(LiveMessageBackend {
+        plan,
+        ..LiveMessageBackend::default()
+    });
     let service = WorkspaceConversationService::new_with_agent_turn_backend(
         settings(temp.path()),
         backend.clone(),
@@ -4516,6 +4530,7 @@ fn a_backend_reading_history_sees_each_message_delivered_into_a_turn_once_in_ord
             pair("assistant", "Looking."),
             pair("user", "Use the docs."),
             pair("assistant", "Done with the docs."),
-        ]
+        ],
+        "plan: {plan}"
     );
 }

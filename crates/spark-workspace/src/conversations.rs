@@ -5825,7 +5825,7 @@ fn delivered_message_history(
                 && segment["status"] == "complete"
                 && matches!(
                     segment["kind"].as_str(),
-                    Some("assistant_message" | "user_message")
+                    Some("assistant_message" | "plan" | "user_message")
                 )
         })
         .collect::<Vec<_>>();

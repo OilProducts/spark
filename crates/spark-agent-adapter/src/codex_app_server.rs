@@ -325,12 +325,24 @@ impl CodexAppServerBackend {
             .lock()
             .unwrap()
             .push((message_id.to_string(), message.to_string(), sender));
-        drop(stop);
         // The turn loop answers once turn/steer returns; a turn that ends
         // first drops the sender.
-        receiver
-            .recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(1))
-            .unwrap_or(false)
+        match receiver.recv_timeout(REQUEST_TIMEOUT + Duration::from_secs(1)) {
+            Ok(accepted) => accepted,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Withdraw a message the turn has not taken, so it is only
+                // ever queued or delivered, never both. A taken message is
+                // mid turn/steer, which its own request timeout bounds.
+                let mut messages = stop.messages.lock().unwrap();
+                if let Some(index) = messages.iter().position(|(id, ..)| id == message_id) {
+                    messages.remove(index);
+                    return false;
+                }
+                drop(messages);
+                receiver.recv().unwrap_or(false)
+            }
+        }
     }
 
     /// Asks the conversation's running turn, if any, to stop.
