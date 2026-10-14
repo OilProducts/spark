@@ -213,6 +213,20 @@ function buildAssistantTimelineEntries(
             error: turn.error ?? null,
             presentation,
         })
+    } else if (turn.status === 'failed' && !entries.some((entry) => (
+        entry.kind === 'message' && entry.turnId === turn.id && entry.status === 'failed'
+    ))) {
+        // A failed turn whose visible rows are only reasoning, plans or tools still needs a row offering recovery.
+        entries.push({
+            id: `${turn.id}:failed`,
+            turnId: turn.id,
+            kind: 'message',
+            role: 'assistant',
+            content: '',
+            timestamp: turn.timestamp,
+            status: 'failed',
+            error: turn.error ?? null,
+        })
     }
 
     return entries
