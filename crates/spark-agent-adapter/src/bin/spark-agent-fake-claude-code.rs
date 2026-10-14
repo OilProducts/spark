@@ -136,6 +136,16 @@ fn main() {
         out.flush().unwrap();
     };
 
+    if mode == "request-before-init" {
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "early-1", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+        );
+        assert_eq!(
+            read_control(),
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": "early-1", "response": {"behavior": "allow", "updatedInput": {"command": "true"}}}})
+        );
+    }
     emit(
         &mut out,
         serde_json::json!({
@@ -186,6 +196,38 @@ fn main() {
             read_control(),
             json!({"type": "control_response", "response": {"subtype": "error", "request_id": "unknown-1", "error": "unsupported control request subtype: mystery"}})
         );
+    }
+    if mode == "duplicate-id" {
+        // Each repeat of an answered id still gets exactly one answer.
+        for (id, request, error) in [
+            (
+                "dup-1",
+                json!({"subtype": "can_use_tool"}),
+                "can_use_tool needs a tool_name and an object input",
+            ),
+            (
+                "dup-2",
+                json!({"subtype": "mystery"}),
+                "unsupported control request subtype: mystery",
+            ),
+        ] {
+            emit(
+                &mut out,
+                json!({"type": "control_request", "request_id": id, "request": request}),
+            );
+            assert_eq!(
+                read_control()["response"],
+                json!({"subtype": "error", "request_id": id, "error": error})
+            );
+            emit(
+                &mut out,
+                json!({"type": "control_request", "request_id": id, "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+            );
+            assert_eq!(
+                read_control()["response"],
+                json!({"subtype": "error", "request_id": id, "error": "duplicate control request id"})
+            );
+        }
     }
     if mode == "question-denied" {
         emit(

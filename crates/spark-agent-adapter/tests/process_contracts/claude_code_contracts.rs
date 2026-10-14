@@ -876,6 +876,8 @@ fn claude_code_control_answers_every_request_despite_malformed_traffic() {
         "malformed-response",
         "unknown-subtype",
         "dead-question",
+        "request-before-init",
+        "duplicate-id",
     ] {
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
         let request = agent_request(temp.path());

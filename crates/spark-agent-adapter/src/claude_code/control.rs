@@ -250,12 +250,18 @@ impl Control {
             self.log("control request missing request_id");
             return None;
         };
-        if !self.enabled {
-            self.log("control request while control is off");
+        // Answer whenever stdin is open, even before init; only interrupt
+        // waits for the advertised capability.
+        if self.stdin.is_none() {
+            self.log("control request after stdin closed");
             return None;
         }
         if !self.seen.insert(id.to_string()) {
             self.log("duplicate control request");
+            // A pending question still owes its one answer.
+            if !self.pending.contains_key(id) {
+                self.error(id, "duplicate control request id");
+            }
             return None;
         }
         let request = &message["request"];
@@ -385,7 +391,7 @@ pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {
     let delivered = find(&request.project_path, &request.conversation_id).is_some_and(|control| {
         let mut control = control.lock().unwrap();
-        if !control.enabled || !matches!(control.child.try_wait(), Ok(None)) {
+        if control.stdin.is_none() || !matches!(control.child.try_wait(), Ok(None)) {
             return false;
         }
         let Some(mut input) = control.pending.get(&request.request_id).cloned() else {
