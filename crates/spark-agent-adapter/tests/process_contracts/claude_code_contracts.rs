@@ -236,8 +236,9 @@ fn claude_code_backend_maps_stream_json_to_turn_events_and_final_text() {
         "--verbose",
         "--permission-mode",
         "--model",
-        // Backgrounded commands die with the turn, so the CLI must not offer them.
-        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1",
+        // Background tasks hold the turn open instead of being disabled.
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=\n",
+        "BASH_MAX_TIMEOUT_MS=3600000",
     ] {
         assert!(args.contains(expected), "missing {expected} in: {args}");
     }
@@ -622,6 +623,57 @@ fn real_claude_code_cli_lists_models_over_control_protocol() {
     assert!(!models.is_empty(), "empty model catalog from real CLI");
 }
 
+/// Opt-in smoke: a background Bash task holds a real chat turn open until its
+/// follow-up result, and Stop while only that task runs ends the turn.
+#[test]
+#[ignore = "requires an installed, logged-in claude CLI; consumes real usage"]
+fn real_claude_code_background_task_holds_the_turn_and_stop_ends_it() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let prompt = "Use the Bash tool with run_in_background set to true to run `sleep 20 && echo BUILD_DONE`. \
+        Then reply STARTED and end your turn without waiting. When the background task completes, reply FINISHED.";
+    let request = |prompt: &str| {
+        let mut request = agent_request(temp.path());
+        request.model = Some("haiku".to_string());
+        request.prompt = prompt.to_string();
+        request
+    };
+
+    let started = std::time::Instant::now();
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(request(prompt))
+        .expect("background turn");
+    let text = output.final_assistant_text.unwrap_or_default();
+    assert!(text.contains("FINISHED"), "unexpected final text: {text}");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(20));
+
+    let stop_request = request(prompt);
+    let (path, id) = (
+        stop_request.project_path.clone(),
+        stop_request.conversation_id.clone(),
+    );
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(
+            stop_request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::TokenUsageUpdated
+                    && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    assert!(ClaudeCodeBackend::new().interrupt(&path, &id));
+                }
+            })),
+        )
+        .expect("stopped turn");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let text = output.final_assistant_text.unwrap_or_default();
+    assert!(
+        text.contains("STARTED") && !text.contains("FINISHED"),
+        "unexpected final text: {text}"
+    );
+}
+
 #[test]
 fn claude_code_error_result_surfaces_as_backend_error() {
     let _lock = ENV_LOCK.lock().expect("env lock");
@@ -813,20 +865,26 @@ fn claude_code_interrupt_completes_normally_and_matches_receipt_ids() {
 }
 
 #[test]
-fn claude_code_malformed_control_degrades_and_dead_question_cannot_resume() {
+fn claude_code_control_answers_every_request_despite_malformed_traffic() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    // The fake asserts each answer it is owed before finishing the turn.
     for mode in [
         "malformed-json",
         "malformed-request",
         "malformed-response",
+        "unknown-subtype",
         "dead-question",
+        "request-before-init",
+        "duplicate-id",
     ] {
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
         let request = agent_request(temp.path());
         let answer = answer_request(&request);
-        let output = ClaudeCodeBackend::new().run_agent_turn(request).unwrap();
+        let output = ClaudeCodeBackend::new()
+            .run_agent_turn_with_event_sink(request, Some(Arc::new(|_| {})))
+            .unwrap();
         assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
         if mode.starts_with("malformed") {
             assert!(output
@@ -838,6 +896,207 @@ fn claude_code_malformed_control_degrades_and_dead_question_cannot_resume() {
             .answer_request_user_input(answer)
             .thread_resume_failure
             .is_some());
+    }
+}
+
+#[test]
+fn claude_code_init_fallback_denies_an_outstanding_question() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question-before-init");
+
+    let started = std::time::Instant::now();
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(agent_request(temp.path()), Some(Arc::new(|_| {})))
+        .unwrap();
+
+    // The fake asserts it received the denial before its result.
+    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
+#[test]
+fn claude_code_question_without_a_handler_is_denied() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question-denied");
+    // The flow path, and the sink-less entry points the boundary CLI uses.
+    let outputs = [
+        ClaudeCodeBackend::new()
+            .run_agent_turn_without_questions(agent_request(temp.path()), Some(Arc::new(|_| {})))
+            .unwrap(),
+        ClaudeCodeBackend::new()
+            .run_agent_turn(agent_request(temp.path()))
+            .unwrap(),
+        RustLlmAgentTurnBackend::new(Client::new())
+            .run_turn(agent_request(temp.path()))
+            .unwrap(),
+    ];
+    for output in outputs {
+        assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+        assert!(output
+            .events
+            .iter()
+            .all(|event| event.kind != TurnStreamEventKind::RequestUserInputRequested));
+    }
+}
+
+#[test]
+fn claude_code_background_task_holds_the_turn_until_its_follow_up_result() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "background");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .unwrap();
+
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("Build finished.")
+    );
+    let texts = output
+        .events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::ContentCompleted)
+        .map(|event| (event.content_delta.as_deref(), event.phase.as_deref()))
+        .collect::<Vec<_>>();
+    assert!(texts.contains(&(Some("Started a background build."), Some("commentary"))));
+    assert_eq!(
+        texts.last(),
+        Some(&(Some("Build finished."), Some("final_answer")))
+    );
+    assert_eq!(
+        output
+            .events
+            .iter()
+            .filter(|event| event.kind == TurnStreamEventKind::TurnCompleted)
+            .count(),
+        1
+    );
+    // Usage is the last cumulative modelUsage, not a sum of results.
+    assert_eq!(output.token_usage.unwrap()["output_tokens"], json!(50));
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(
+        log.contains("STDIN_CLOSED"),
+        "stdin closed at turn end: {log}"
+    );
+}
+
+#[test]
+fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "background-interrupt");
+    let request = agent_request(temp.path());
+    let (path, id) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+
+    let started = std::time::Instant::now();
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                // The first result's usage arrives while only the build runs.
+                if event.kind == TurnStreamEventKind::TokenUsageUpdated
+                    && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    assert!(ClaudeCodeBackend::new().interrupt(&path, &id));
+                }
+            })),
+        )
+        .unwrap();
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("Started a background build.")
+    );
+    let last = output.events.last().unwrap();
+    assert_eq!(last.kind, TurnStreamEventKind::TurnCompleted);
+    assert!(last.error.is_none());
+    assert!(output.events.iter().any(|event| {
+        event.phase.as_deref() == Some("final_answer")
+            && event.content_delta.as_deref() == Some("Started a background build.")
+    }));
+}
+
+#[test]
+fn claude_code_interrupt_after_a_queued_result_interrupts_the_next_model_turn() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "queued-interrupt");
+    let request = agent_request(temp.path());
+    let (path, id) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::TokenUsageUpdated
+                    && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    assert!(ClaudeCodeBackend::new().interrupt(&path, &id));
+                }
+            })),
+        )
+        .unwrap();
+
+    // The fake asserts it received the interrupt before stdin closed.
+    assert!(output.raw_log_lines.iter().any(|line| {
+        line.direction == "stdin" && line.line.contains(r#""subtype":"interrupt""#)
+    }));
+    let last = output.events.last().unwrap();
+    assert_eq!(last.kind, TurnStreamEventKind::TurnCompleted);
+    assert!(last.error.is_none());
+}
+
+#[test]
+fn claude_code_crash_after_init_resumes_the_session_once() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    // crash-orphan leaves a descendant holding stdout and stderr open;
+    // crash-chatty-orphan's descendant also keeps writing to stdout.
+    for mode in ["crash-after-init", "crash-orphan", "crash-chatty-orphan"] {
+        let temp = tempfile::tempdir().unwrap();
+        let log_path = temp.path().join("claude.log");
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+
+        let started = std::time::Instant::now();
+        let output = ClaudeCodeBackend::new()
+            .run_agent_turn(agent_request(temp.path()))
+            .unwrap();
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "{mode}"
+        );
+        assert_eq!(output.final_assistant_text.as_deref(), Some("Recovered."));
+        assert_eq!(output.app_thread_id.as_deref(), Some("sess-fake-claude-1"));
+        assert!(output.thread_resume_failure.is_none());
+        // The first process's output stays in the turn.
+        assert!(output
+            .events
+            .iter()
+            .any(|event| event.content_delta.as_deref() == Some("Working.")));
+        let log = std::fs::read_to_string(log_path).unwrap();
+        assert_eq!(log.matches("-- invocation --").count(), 2);
+        assert!(log.contains("--resume\nsess-fake-claude-1"));
+        assert!(log.contains("USER_CONTENT=\"Your previous process exited"));
     }
 }
 

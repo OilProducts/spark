@@ -1855,6 +1855,65 @@ fn claude_code_live_text_completions_update_delta_segments_in_place() {
     assert_eq!(live_segment_ids.len(), 2);
 }
 
+#[cfg(unix)]
+#[test]
+fn claude_code_result_only_follow_up_keeps_the_earlier_result_text() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    for (subtype, is_error) in [("success", false), ("error_during_execution", true)] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let settings = settings(temp.path());
+        // A background task's completion brings a second result with no
+        // assistant message of its own.
+        let script = temp.path().join("fake-claude.sh");
+        fs::write(
+            &script,
+            format!(
+                r#"#!/bin/sh
+read -r prompt
+echo '{{"type":"system","subtype":"init","session_id":"s","capabilities":["interrupt_receipt_v1"]}}'
+echo '{{"type":"system","subtype":"background_tasks_changed","session_id":"s","tasks":[{{"task_id":"b","task_type":"local_bash"}}]}}'
+echo '{{"type":"assistant","session_id":"s","message":{{"role":"assistant","content":[{{"type":"text","text":"Started the build."}}]}}}}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"Started the build.","session_id":"s","queued_turn_count":0}}'
+echo '{{"type":"system","subtype":"background_tasks_changed","session_id":"s","tasks":[]}}'
+echo '{{"type":"result","subtype":"{subtype}","is_error":{is_error},"result":"Build finished.","session_id":"s","queued_turn_count":0}}'
+cat > /dev/null
+"#
+            ),
+        )
+        .expect("script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", &script);
+        let service = WorkspaceConversationService::new(settings);
+
+        let snapshot = service
+            .execute_turn(
+                "conversation-claude-results",
+                ConversationTurnRequest {
+                    project_path: temp.path().to_string_lossy().to_string(),
+                    message: "Build it".to_string(),
+                    provider: Some("claude-code".to_string()),
+                    chat_mode: Some("chat".to_string()),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .expect("execute turn");
+
+        let contents = snapshot["segments"]
+            .as_array()
+            .expect("segments")
+            .iter()
+            .filter(|segment| segment["kind"] == "assistant_message")
+            .map(|segment| segment["content"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            contents,
+            ["Started the build.", "Build finished."],
+            "{subtype}"
+        );
+    }
+}
+
 #[test]
 fn claude_code_completed_tool_segment_preserves_canonical_command_payload() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -3203,6 +3262,77 @@ fn runtime_session_records_thread_continuity_and_tombstones_on_resume_failure() 
             .contains_key("spark.runtime.codex_app_server.thread_id"),
         "tombstoned continuity must not resume the failed thread"
     );
+}
+
+#[test]
+fn claude_code_failed_resume_is_tombstoned() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            app_thread_id: Some("claude-session-old".to_string()),
+            final_assistant_text: Some("First answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Answer without a session".to_string()),
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "discarded stale Claude Code session".to_string(),
+                error_code: Some("thread_resume_failure".to_string()),
+                details: Some(json!({"discarded_session_id": "claude-session-old"})),
+            }),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Continued answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+    let (conversation, project_path) = (
+        "conversation-claude-tombstone",
+        "/projects/claude-tombstone",
+    );
+    service
+        .update_conversation_settings(
+            conversation,
+            ConversationSettingsUpdate {
+                project_path: project_path.to_string(),
+                provider: Some("claude-code".to_string()),
+                model: Some(String::new()),
+                expected_revision: Some("0".into()),
+                llm_profile: None,
+                ..ConversationSettingsUpdate::default()
+            },
+        )
+        .expect("claude-code settings");
+    for message in ["first", "recover", "continue"] {
+        service
+            .execute_turn(
+                conversation,
+                ConversationTurnRequest {
+                    project_path: project_path.to_string(),
+                    message: message.to_string(),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .expect("claude-code turn");
+    }
+
+    let requests = requests.lock().expect("requests");
+    assert!(!requests[2]
+        .metadata
+        .contains_key("spark.runtime.claude_code.session_id"));
+    let session = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_runtime_session(conversation, Some(project_path))
+        .expect("session read")
+        .expect("session");
+    assert_eq!(session.thread_id.as_deref(), Some("claude-session-old"));
+    assert!(session.resume_failed);
 }
 
 #[test]

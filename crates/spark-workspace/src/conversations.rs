@@ -347,7 +347,8 @@ impl EnvironmentAgentTurnBackend {
 
 impl AgentTurnBackend for EnvironmentAgentTurnBackend {
     fn interrupt_turn(&self, project_path: &str, conversation_id: &str) -> bool {
-        spark_agent_adapter::ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
+        RustLlmAgentTurnBackend::new(unified_llm_adapter::Client::new())
+            .interrupt_turn(project_path, conversation_id)
     }
 
     fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
@@ -1367,19 +1368,19 @@ impl WorkspaceConversationService {
         if output
             .thread_resume_failure
             .as_ref()
-            .is_some_and(failure_is_codex_thread_resume)
+            .is_some_and(failure_is_thread_resume)
         {
             tombstone_runtime_session(&repository, conversation_id, &project_path);
-        } else {
-            record_runtime_session_thread(
-                &repository,
-                conversation_id,
-                &project_path,
-                assistant_turn_id,
-                output.app_thread_id.as_deref(),
-                runtime_session_provider,
-            );
         }
+        // A backend that recovered in a fresh thread replaces the tombstone.
+        record_runtime_session_thread(
+            &repository,
+            conversation_id,
+            &project_path,
+            assistant_turn_id,
+            output.app_thread_id.as_deref(),
+            runtime_session_provider,
+        );
         for mut event in output.events {
             let provenance = if persist_provider_events {
                 Some(repository.append_provider_event(
@@ -5246,11 +5247,11 @@ fn tombstone_runtime_session(
     let _ = repository.write_runtime_session(conversation_id, project_path, &session);
 }
 
-fn failure_is_codex_thread_resume(failure: &AgentThreadResumeFailure) -> bool {
+fn failure_is_thread_resume(failure: &AgentThreadResumeFailure) -> bool {
     failure.error_code.as_deref().is_some_and(|error_code| {
         matches!(
             error_code,
-            "codex_app_server_resume_failed" | "thread_resume_failed"
+            "codex_app_server_resume_failed" | "thread_resume_failed" | "thread_resume_failure"
         )
     })
 }

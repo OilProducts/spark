@@ -88,46 +88,146 @@ impl ClaudeCodeBackend {
         self.run_agent_turn_with_event_sink(request, None)
     }
 
+    /// A chat turn: `AskUserQuestion` reaches the request-user-input route
+    /// through the event sink. Without a sink nobody sees the question, so
+    /// it is denied.
     pub fn run_agent_turn_with_event_sink(
         &self,
-        mut request: AgentTurnRequest,
+        request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, ClaudeCodeError> {
+        let questions = event_sink.is_some();
+        self.run(request, event_sink, questions)
+    }
+
+    /// A turn nobody can answer questions in; `AskUserQuestion` is denied.
+    pub fn run_agent_turn_without_questions(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, ClaudeCodeError> {
+        self.run(request, event_sink, false)
+    }
+
+    fn run(
+        &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+        questions: bool,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
         let resumed_session_id =
             metadata_string(&request.metadata, "spark.runtime.claude_code.session_id")
                 .or_else(|| metadata_string(&request.metadata, "claude_code.session_id"));
-        match self.run_once(&request, event_sink.clone(), resumed_session_id.as_deref()) {
-            Ok(output) => Ok(output),
-            Err(error)
-                if resumed_session_id.is_some()
-                    && error.message.contains("without a result event") =>
-            {
-                request
-                    .metadata
-                    .remove("spark.runtime.claude_code.session_id");
-                request.metadata.remove("claude_code.session_id");
-                request.metadata.remove(MODEL_USAGE_SNAPSHOT_METADATA_KEY);
-                let mut output = self.run_once(&request, event_sink, None)?;
-                let discarded_session_id = resumed_session_id.unwrap();
-                output.thread_resume_failure = Some(AgentThreadResumeFailure {
-                    message: format!(
-                        "claude code could not resume session {discarded_session_id}; started a fresh session"
-                    ),
-                    error_code: Some("thread_resume_failure".to_string()),
-                    details: Some(json!({"discarded_session_id": discarded_session_id})),
-                });
-                Ok(output)
-            }
-            Err(error) => Err(error),
+        let mut turn = Turn::new(&request, resumed_session_id.is_some());
+        let mut thread_resume_failure = None;
+        if let Err(error) = self.run_with_respawn(
+            &request,
+            &event_sink,
+            resumed_session_id.as_deref(),
+            questions,
+            &mut turn,
+        ) {
+            // The stored session never started, so start a fresh one.
+            let Some(discarded_session_id) = resumed_session_id.filter(|_| {
+                turn.state.session_id.is_none() && error.message.contains("without a result event")
+            }) else {
+                return Err(error);
+            };
+            turn = Turn::new(&request, false);
+            self.run_with_respawn(&request, &event_sink, None, questions, &mut turn)?;
+            thread_resume_failure = Some(AgentThreadResumeFailure {
+                message: format!(
+                    "claude code could not resume session {discarded_session_id}; started a fresh session"
+                ),
+                error_code: Some("thread_resume_failure".to_string()),
+                details: Some(json!({"discarded_session_id": discarded_session_id})),
+            });
         }
+
+        let Turn {
+            app_turn_id,
+            state,
+            events,
+            raw_log_lines,
+            ..
+        } = turn;
+        if state.is_error {
+            let text = state.resolved_final_text();
+            return Err(ClaudeCodeError {
+                message: if auth::requires_login(&text) {
+                    auth::AUTH_REQUIRED_MESSAGE.to_string()
+                } else {
+                    format!(
+                        "claude code turn failed ({}): {text}",
+                        state.result_subtype.as_deref().unwrap_or("error"),
+                    )
+                },
+                retryable: false,
+                details: state.result_payload.clone(),
+            });
+        }
+        Ok(AgentTurnOutput {
+            app_thread_id: state.session_id.clone(),
+            app_turn_id: Some(app_turn_id),
+            final_assistant_text: non_empty(&state.resolved_final_text()).map(str::to_string),
+            token_usage: state.usage_payload.clone(),
+            token_usage_breakdown: state.usage_payload,
+            events,
+            raw_log_lines,
+            thread_resume_failure,
+        })
     }
 
-    fn run_once(
+    /// Runs the turn's process; if it dies before the turn ends once its
+    /// session is known, resumes that session once to finish the turn.
+    fn run_with_respawn(
         &self,
         request: &AgentTurnRequest,
-        event_sink: Option<AgentTurnEventSink>,
+        event_sink: &Option<AgentTurnEventSink>,
         resume_session_id: Option<&str>,
-    ) -> Result<AgentTurnOutput, ClaudeCodeError> {
+        questions: bool,
+        turn: &mut Turn,
+    ) -> Result<(), ClaudeCodeError> {
+        let Err(error) = self.run_process(
+            request,
+            event_sink,
+            resume_session_id,
+            None,
+            questions,
+            turn,
+        ) else {
+            return Ok(());
+        };
+        let Some(session_id) = turn.state.session_id.clone().filter(|_| !turn.stopping) else {
+            return Err(error);
+        };
+        tracing::warn!(error = %error.message, "Claude Code exited mid-turn; resuming its session");
+        turn.raw_log_lines.push(AgentRawLogLine {
+            direction: "control".into(),
+            line: format!("Claude Code control: respawning with --resume {session_id}"),
+        });
+        self.run_process(
+            request,
+            event_sink,
+            Some(&session_id),
+            Some(CONTINUATION_PROMPT),
+            questions,
+            turn,
+        )
+        .map_err(|_| error)
+    }
+
+    /// One Claude process. Ok once the turn has ended; Err if the process
+    /// exited first.
+    fn run_process(
+        &self,
+        request: &AgentTurnRequest,
+        event_sink: &Option<AgentTurnEventSink>,
+        resume_session_id: Option<&str>,
+        continuation: Option<&str>,
+        questions: bool,
+        turn: &mut Turn,
+    ) -> Result<(), ClaudeCodeError> {
         let working_dir = PathBuf::from(&request.project_path);
         if !working_dir.exists() {
             return Err(ClaudeCodeError::configuration(format!(
@@ -186,67 +286,61 @@ impl ClaudeCodeBackend {
         if let Some(file) = &instructions {
             command.arg("--append-system-prompt-file").arg(file.path());
         }
-        // A turn ends at the first result, which kills anything the agent
-        // backgrounded, so commands must run in the foreground. Long gates such
-        // as `just test` exceed Claude Code's 10-minute foreground cap.
+        // Background tasks hold the turn open, so keep them on even when Spark
+        // itself runs under an agent that disabled them. Long gates such as
+        // `just test` exceed Claude Code's 10-minute foreground cap.
         // ponytail: fixed 1h cap; make it configurable if a gate needs longer.
         command
-            .env("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "1")
+            .env_remove("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
             .env("BASH_DEFAULT_TIMEOUT_MS", "3600000")
             .env("BASH_MAX_TIMEOUT_MS", "3600000");
 
         // Attachments are read before spawning so a missing file fails cleanly.
-        let (prompt_text, content) = user_message_content(request, resume_session_id.is_none())?;
+        let content = match continuation {
+            Some(text) => json!(text),
+            None => {
+                let (prompt_text, content) =
+                    user_message_content(request, resume_session_id.is_none())?;
+                crate::initial_context::capture_if_configured(&request.metadata, &prompt_text)
+                    .map_err(|error| {
+                        ClaudeCodeError::configuration(format!(
+                            "initial context capture failed: {error}"
+                        ))
+                    })?;
+                content
+            }
+        };
         let mut child = command
             .spawn()
             .map_err(|error| launch_error(&executable, error))?;
-
+        let (Some(stdin), Some(stdout), Some(stderr)) =
+            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+        else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ClaudeCodeError::runtime(
+                "claude code did not expose its stdio",
+            ));
+        };
+        // Shared rather than joined: a leftover grandchild may hold stderr.
+        let stderr_lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stderr_handle = std::thread::spawn({
+            let stderr_lines = stderr_lines.clone();
+            move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    stderr_lines.lock().unwrap().push(line);
+                }
+            }
+        });
+        let control = control::Control::register(child, stdin, request, questions);
         // The prompt travels over stdin so arbitrarily large composed prompts
         // never hit argv limits.
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdin"))?;
-        let prompt = json!({"type": "user", "message": {"role": "user", "content": content}});
-        writeln!(stdin, "{prompt}")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| {
-                ClaudeCodeError::runtime(format!("claude code prompt write failed: {error}"))
-            })?;
+        // A failed write closes stdin; the process exit then reports it.
+        control.lock().unwrap().send_user(content);
 
-        crate::initial_context::capture_if_configured(&request.metadata, &prompt_text).map_err(
-            |error| {
-                ClaudeCodeError::configuration(format!("initial context capture failed: {error}"))
-            },
-        )?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stdout"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| ClaudeCodeError::runtime("claude code did not expose stderr"))?;
-        let stderr_handle = std::thread::spawn(move || {
-            BufReader::new(stderr)
-                .lines()
-                .map_while(Result::ok)
-                .collect::<Vec<_>>()
-        });
-
-        let app_turn_id = Uuid::new_v4().to_string();
-        let mut turn = ClaudeCodeTurnState::default();
-        if resume_session_id.is_some() {
-            if let Some(snapshot) = request.metadata.get(MODEL_USAGE_SNAPSHOT_METADATA_KEY) {
-                turn.start_model_usage = snapshot.clone();
-            }
-        }
-        let mut events: Vec<TurnStreamEvent> = Vec::new();
-        let mut raw_log_lines: Vec<AgentRawLogLine> = Vec::new();
-        let control = control::Control::register(child, stdin, request);
         let (sender, receiver) = mpsc::channel();
-        let reader = std::thread::spawn(move || {
+        // Detached: a leftover grandchild may hold stdout after the turn ends.
+        std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if sender.send(line).is_err() {
                     break;
@@ -255,17 +349,33 @@ impl ClaudeCodeBackend {
         });
         let started = std::time::Instant::now();
         let mut initialized = false;
-        loop {
+        let mut exited_at: Option<std::time::Instant> = None;
+        while !control.lock().unwrap().ended {
+            // Checked every iteration: continuous output must not hide an
+            // exit or a missing system/init.
+            {
+                let mut control = control.lock().unwrap();
+                if exited_at.is_none() && matches!(control.child.try_wait(), Ok(Some(_))) {
+                    exited_at = Some(std::time::Instant::now());
+                }
+                if !initialized && started.elapsed() >= Duration::from_secs(5) {
+                    control.log("system/init timeout; using one-shot input");
+                    control.one_shot();
+                    initialized = true;
+                }
+            }
+            // A leftover grandchild may hold stdout open past the process
+            // exit: stop once stdout goes quiet after the exit, or after a
+            // cap if the grandchild keeps writing.
+            if exited_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
+                break;
+            }
             let line = match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => line,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if !initialized && started.elapsed() >= Duration::from_secs(5) {
-                        control
-                            .lock()
-                            .unwrap()
-                            .degrade("system/init timeout; using one-shot input");
-                        initialized = true;
+                    if exited_at.is_some() {
+                        break;
                     }
                     continue;
                 }
@@ -273,18 +383,18 @@ impl ClaudeCodeBackend {
             if line.trim().is_empty() {
                 continue;
             }
-            raw_log_lines.push(AgentRawLogLine {
+            turn.raw_log_lines.push(AgentRawLogLine {
                 direction: "stdout".to_string(),
                 line: line.clone(),
             });
             let Ok(mut message) = serde_json::from_str::<Value>(&line) else {
-                control.lock().unwrap().degrade("malformed JSON on stdout");
+                control.lock().unwrap().log("malformed JSON on stdout");
                 continue;
             };
             if message["type"] == "system" && message["subtype"] == "init" {
                 initialized = true;
             }
-            let question = {
+            let (question, ended) = {
                 let mut control = control.lock().unwrap();
                 // 2.1.220 reports an interrupted stream as an error result.
                 // Only an acknowledged interrupt with an explicit abort reason
@@ -292,104 +402,149 @@ impl ClaudeCodeBackend {
                 if control.interrupted_result(&message) {
                     message["is_error"] = json!(false);
                     message["subtype"] = json!("success");
-                    // Promote the latest visible text to the final answer using
-                    // its existing item id, including a block cut off mid-delta.
-                    let latest = events.iter().rev().find(|event| {
-                        event.channel == Some(TurnStreamChannel::Assistant)
-                            && matches!(
-                                event.kind,
-                                TurnStreamEventKind::ContentDelta
-                                    | TurnStreamEventKind::ContentCompleted
-                            )
-                    });
-                    let text = latest
-                        .map(|latest| {
-                            turn.last_text_item_id = latest.source.item_id.clone();
-                            if latest.kind == TurnStreamEventKind::ContentCompleted {
-                                latest.content_delta.clone().unwrap_or_default()
-                            } else {
-                                events
-                                    .iter()
-                                    .filter(|event| {
-                                        event.kind == TurnStreamEventKind::ContentDelta
-                                            && event.source.item_id == latest.source.item_id
-                                    })
-                                    .filter_map(|event| event.content_delta.as_deref())
-                                    .collect::<String>()
-                            }
-                        })
-                        .unwrap_or_default();
+                    let (item_id, text) = latest_assistant_text(&turn.events);
+                    if item_id.is_some() {
+                        turn.state.last_text_item_id = item_id;
+                    }
                     message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
                 }
-                control.ingest(&message)
+                (control.ingest(&message), control.ended)
             };
-            let mut normalized = turn.ingest(&message);
+            let mut normalized = turn.state.ingest(&message, ended);
             if let Some(mut question) = question {
-                question.source.app_thread_id = turn.session_id.clone();
+                question.source.app_thread_id = turn.state.session_id.clone();
                 normalized.push(question);
             }
-            for mut event in normalized {
-                event.source.app_turn_id = Some(app_turn_id.clone());
-                if let Some(sink) = &event_sink {
-                    sink(event.clone());
+            turn.push(normalized, event_sink);
+        }
+
+        let ended = {
+            let mut control = control.lock().unwrap();
+            turn.stopping |= control.stopping;
+            turn.raw_log_lines.append(&mut control.logs);
+            let ended = control.ended;
+            control.end();
+            ended
+        };
+        let status = reap(&control)?;
+        if ended {
+            // Stopped while idle: the last result, so far commentary, is final.
+            if !turn.state.completed {
+                if let Some(result) = turn.state.result_payload.clone() {
+                    let events = turn.state.ingest_result(&result, true);
+                    turn.push(events, event_sink);
                 }
-                events.push(event);
+            }
+            return Ok(());
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !stderr_handle.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let stderr_lines = std::mem::take(&mut *stderr_lines.lock().unwrap());
+        let stderr_tail = stderr_lines[stderr_lines.len().saturating_sub(10)..].join("\n");
+        Err(ClaudeCodeError {
+            message: format!(
+                "claude code exited ({status}) {}; stderr tail:\n{stderr_tail}",
+                if turn.state.result_payload.is_none() {
+                    "without a result event"
+                } else {
+                    "before the turn ended"
+                }
+            ),
+            retryable: true,
+            details: None,
+        })
+    }
+}
+
+const CONTINUATION_PROMPT: &str =
+    "Your previous process exited before this turn finished. Continue the task where you left off.";
+const EXIT_GRACE: Duration = Duration::from_secs(3);
+
+/// Waits briefly for the ended process to exit on its own, then kills it.
+fn reap(
+    control: &std::sync::Mutex<control::Control>,
+) -> Result<std::process::ExitStatus, ClaudeCodeError> {
+    let deadline = std::time::Instant::now() + EXIT_GRACE;
+    loop {
+        let mut control = control.lock().unwrap();
+        match control.child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if std::time::Instant::now() < deadline => {}
+            _ => {
+                let _ = control.child.kill();
+                return control.child.wait().map_err(|error| {
+                    ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))
+                });
             }
         }
-
-        let mut control = control.lock().unwrap();
-        control.close();
-        raw_log_lines.append(&mut control.logs);
-        let status = control.child.wait().map_err(|error| {
-            ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))
-        })?;
         drop(control);
-        let _ = reader.join();
-        let stderr_lines = stderr_handle.join().unwrap_or_default();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
 
-        if turn.result_payload.is_none() {
-            let stderr_tail = stderr_lines
-                .iter()
-                .rev()
-                .take(10)
-                .rev()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Err(ClaudeCodeError {
-                message: format!(
-                    "claude code exited ({status}) without a result event; stderr tail:\n{stderr_tail}"
-                ),
-                retryable: true,
-                details: None,
-            });
-        }
-        if turn.is_error {
-            let text = turn.resolved_final_text();
-            return Err(ClaudeCodeError {
-                message: if auth::requires_login(&text) {
-                    auth::AUTH_REQUIRED_MESSAGE.to_string()
-                } else {
-                    format!(
-                        "claude code turn failed ({}): {text}",
-                        turn.result_subtype.as_deref().unwrap_or("error"),
-                    )
-                },
-                retryable: false,
-                details: turn.result_payload.clone(),
-            });
-        }
+/// The item id and text of the latest assistant text, including a block cut
+/// off mid-delta; a stopped turn promotes it to its final answer.
+pub(crate) fn latest_assistant_text(events: &[TurnStreamEvent]) -> (Option<String>, String) {
+    let Some(latest) = events.iter().rev().find(|event| {
+        event.channel == Some(TurnStreamChannel::Assistant)
+            && matches!(
+                event.kind,
+                TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted
+            )
+    }) else {
+        return (None, String::new());
+    };
+    let text = if latest.kind == TurnStreamEventKind::ContentCompleted {
+        latest.content_delta.clone().unwrap_or_default()
+    } else {
+        events
+            .iter()
+            .filter(|event| {
+                event.kind == TurnStreamEventKind::ContentDelta
+                    && event.source.item_id == latest.source.item_id
+            })
+            .filter_map(|event| event.content_delta.as_deref())
+            .collect()
+    };
+    (latest.source.item_id.clone(), text)
+}
 
-        Ok(AgentTurnOutput {
-            app_thread_id: turn.session_id.clone(),
-            app_turn_id: Some(app_turn_id),
-            final_assistant_text: non_empty(&turn.resolved_final_text()).map(str::to_string),
-            token_usage: turn.usage_payload.clone(),
-            token_usage_breakdown: turn.usage_payload.clone(),
-            events,
-            raw_log_lines,
-            thread_resume_failure: None,
-        })
+/// Everything one turn has gathered, across its results and processes.
+struct Turn {
+    app_turn_id: String,
+    state: ClaudeCodeTurnState,
+    events: Vec<TurnStreamEvent>,
+    raw_log_lines: Vec<AgentRawLogLine>,
+    stopping: bool,
+}
+
+impl Turn {
+    fn new(request: &AgentTurnRequest, resumed: bool) -> Self {
+        let mut state = ClaudeCodeTurnState::default();
+        if resumed {
+            if let Some(snapshot) = request.metadata.get(MODEL_USAGE_SNAPSHOT_METADATA_KEY) {
+                state.start_model_usage = snapshot.clone();
+            }
+        }
+        Self {
+            app_turn_id: Uuid::new_v4().to_string(),
+            state,
+            events: Vec::new(),
+            raw_log_lines: Vec::new(),
+            stopping: false,
+        }
+    }
+
+    fn push(&mut self, events: Vec<TurnStreamEvent>, event_sink: &Option<AgentTurnEventSink>) {
+        for mut event in events {
+            event.source.app_turn_id = Some(self.app_turn_id.clone());
+            if let Some(sink) = event_sink {
+                sink(event.clone());
+            }
+            self.events.push(event);
+        }
     }
 }
 
@@ -617,11 +772,15 @@ struct ClaudeCodeTurnState {
     usage_payload: Option<Value>,
     start_model_usage: Value,
     is_error: bool,
+    /// The final result has been reported; earlier results are commentary.
+    completed: bool,
     block_counter: usize,
     partial_block_ids: BTreeMap<usize, String>,
     pending_text_block_ids: VecDeque<String>,
     pending_reasoning_block_ids: VecDeque<String>,
     last_text_item_id: Option<String>,
+    /// The item the latest result's text was reported under.
+    result_item_id: Option<String>,
     tool_calls: BTreeMap<String, Value>,
 }
 
@@ -634,7 +793,8 @@ impl ClaudeCodeTurnState {
             .to_string()
     }
 
-    fn ingest(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
+    /// `last` marks a result that ends the turn.
+    fn ingest(&mut self, message: &Value, last: bool) -> Vec<TurnStreamEvent> {
         let message_type = message.get("type").and_then(Value::as_str).unwrap_or("");
         if let Some(session_id) = message.get("session_id").and_then(Value::as_str) {
             self.session_id
@@ -645,7 +805,7 @@ impl ClaudeCodeTurnState {
             "assistant" => self.ingest_assistant(message),
             "stream_event" => self.ingest_stream_event(message),
             "user" => self.ingest_user(message),
-            "result" => self.ingest_result(message),
+            "result" => self.ingest_result(message, last),
             other => vec![stream_event(
                 TurnStreamEventKind::Other(other.to_string()),
                 self.session_id.as_deref(),
@@ -870,7 +1030,16 @@ impl ClaudeCodeTurnState {
         events
     }
 
-    fn ingest_result(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
+    fn ingest_result(&mut self, message: &Value, last: bool) -> Vec<TurnStreamEvent> {
+        // Each result claims the latest assistant text once; a later result
+        // with no new text gets its own item, while promoting the same result
+        // on a stop reuses its item.
+        let item_id = self.last_text_item_id.take().or_else(|| {
+            self.result_item_id
+                .clone()
+                .filter(|_| self.result_payload.as_ref() == Some(message))
+        });
+        self.completed = last;
         self.result_payload = Some(message.clone());
         self.result_subtype = message
             .get("subtype")
@@ -886,10 +1055,11 @@ impl ClaudeCodeTurnState {
             .map(str::to_string);
         let mut events = Vec::new();
         if let Some(text) = self.result_text.as_deref().and_then(non_empty) {
-            let item_id = self.last_text_item_id.clone().unwrap_or_else(|| {
+            let item_id = item_id.unwrap_or_else(|| {
                 self.block_counter += 1;
                 format!("block-{}", self.block_counter)
             });
+            self.result_item_id = Some(item_id.clone());
             events.push(stream_event(
                 TurnStreamEventKind::ContentCompleted,
                 self.session_id.as_deref(),
@@ -899,7 +1069,8 @@ impl ClaudeCodeTurnState {
                     event.content_delta = Some(text.to_string());
                     event.message = Some(text.to_string());
                     event.source.item_id = Some(item_id);
-                    event.phase = Some("final_answer".to_string());
+                    event.phase =
+                        Some(if last { "final_answer" } else { "commentary" }.to_string());
                 },
             ));
         }
@@ -915,6 +1086,9 @@ impl ClaudeCodeTurnState {
                     event.token_usage = Some(usage_payload.clone());
                 },
             ));
+        }
+        if !last {
+            return events;
         }
         events.push(stream_event(
             TurnStreamEventKind::TurnCompleted,
