@@ -259,6 +259,27 @@ fn main() {
             .unwrap()
             .contains("best judgment"));
     }
+    if mode == "exit-plan-mode" {
+        // Probe 1: ExitPlanMode reaches can_use_tool with the plan as input.
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "exit-plan", "session_id": session_id, "request": {"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "input": {"plan": "# Plan\n\n- Do the thing.", "planFilePath": "/tmp/plan.md"}}}),
+        );
+        let answer = read_control()["response"].clone();
+        assert_eq!(answer["request_id"], "exit-plan");
+        if args
+            .windows(2)
+            .any(|pair| pair == ["--permission-mode", "plan"])
+        {
+            assert_eq!(answer["response"]["behavior"], "deny");
+            assert!(answer["response"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("submitted to the user for review"));
+        } else {
+            assert_eq!(answer["response"]["behavior"], "allow");
+        }
+    }
     if mode == "background" || mode == "background-interrupt" {
         // Probe 3: a background task keeps the session working past the
         // first result, and its completion starts a follow-up turn.

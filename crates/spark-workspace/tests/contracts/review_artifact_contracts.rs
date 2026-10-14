@@ -273,6 +273,62 @@ fn completed_plan_segments_create_proposed_plan_artifacts() {
 }
 
 #[test]
+fn rejected_plan_note_reaches_the_next_plan_mode_turn_only() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let project_path = temp.path().join("project");
+    fs::create_dir_all(&project_path).expect("project dir");
+    let project = project_path.to_str().expect("utf-8");
+    seed_proposed_plan(&settings, project, "conversation-plan");
+    let service = WorkspaceConversationService::new(settings);
+    service
+        .review_proposed_plan(
+            "conversation-plan",
+            "proposed-plan-inline",
+            ProposedPlanReviewRequest {
+                project_path: project.to_string(),
+                disposition: "rejected".to_string(),
+                review_note: Some("Needs acceptance criteria.".to_string()),
+            },
+        )
+        .expect("rejected");
+    let send = |chat_mode: &str| {
+        let (prepared, _) = service
+            .start_turn(
+                "conversation-plan",
+                ConversationTurnRequest {
+                    project_path: project.to_string(),
+                    message: "Revise it.".to_string(),
+                    chat_mode: Some(chat_mode.to_string()),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .expect("start turn");
+        service
+            .ingest_agent_turn_output(
+                "conversation-plan",
+                project,
+                &prepared.assistant_turn_id,
+                chat_mode,
+                AgentTurnOutput {
+                    events: vec![assistant_completed("Noted.")],
+                    final_assistant_text: Some("Noted.".to_string()),
+                    ..AgentTurnOutput::default()
+                },
+            )
+            .expect("ingest");
+        prepared.agent_turn_request.prompt
+    };
+
+    assert_eq!(send("chat"), "Revise it.");
+    assert_eq!(
+        send("plan"),
+        "The user rejected your previous plan with this note:\nNeeds acceptance criteria.\n\nRevise it."
+    );
+    assert_eq!(send("plan"), "Revise it.");
+}
+
+#[test]
 fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

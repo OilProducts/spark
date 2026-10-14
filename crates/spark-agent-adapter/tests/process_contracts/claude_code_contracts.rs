@@ -12,7 +12,7 @@ use spark_agent_adapter::{
     RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
     AGENT_INSTRUCTIONS_METADATA_KEY,
 };
-use spark_common::events::TurnStreamEventKind;
+use spark_common::events::{TurnStreamChannel, TurnStreamEventKind};
 use unified_llm_adapter::Client;
 
 use super::test_support::ENV_LOCK;
@@ -968,6 +968,58 @@ fn claude_code_question_without_a_handler_is_denied() {
             .iter()
             .all(|event| event.kind != TurnStreamEventKind::RequestUserInputRequested));
     }
+}
+
+#[test]
+fn claude_code_plan_mode_turn_submits_exit_plan_mode_as_the_plan() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let log = temp.path().join("args.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "exit-plan-mode");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let plan_events = |output: &spark_agent_adapter::AgentTurnOutput| {
+        output
+            .events
+            .iter()
+            .filter(|event| event.channel == Some(TurnStreamChannel::Plan))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    // The fake asserts the deny in plan mode and the allow otherwise.
+    let mut request = agent_request(temp.path());
+    request.chat_mode = Some("plan".into());
+    // The mode is per turn, resumed or not.
+    request.metadata.insert(
+        "spark.runtime.claude_code.session_id".into(),
+        json!("sess-plan"),
+    );
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(request, Some(Arc::new(|_| {})))
+        .unwrap();
+    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+    let plans = plan_events(&output);
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].kind, TurnStreamEventKind::ContentCompleted);
+    assert_eq!(
+        plans[0].content_delta.as_deref(),
+        Some("# Plan\n\n- Do the thing.")
+    );
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert!(args.contains("--resume\nsess-plan"));
+    assert!(args.contains("--permission-mode\nplan\n"));
+
+    std::fs::remove_file(&log).unwrap();
+    let mut request = agent_request(temp.path());
+    request.chat_mode = Some("chat".into());
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(request, Some(Arc::new(|_| {})))
+        .unwrap();
+    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+    assert!(plan_events(&output).is_empty());
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert!(args.contains("--permission-mode\nbypassPermissions\n"));
 }
 
 #[test]

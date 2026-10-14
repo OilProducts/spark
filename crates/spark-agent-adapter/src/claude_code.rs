@@ -288,11 +288,13 @@ impl ClaudeCodeBackend {
             .arg("--include-partial-messages")
             .arg("--verbose")
             .arg("--permission-mode")
-            .arg(
+            .arg(if plan_mode(request) {
+                "plan".to_string()
+            } else {
                 native
                     .and_then(|config| config.claude_permission_mode.clone())
-                    .unwrap_or_else(permission_mode),
-            )
+                    .unwrap_or_else(permission_mode)
+            })
             .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -440,7 +442,7 @@ impl ClaudeCodeBackend {
             if message["type"] == "system" && message["subtype"] == "init" {
                 initialized = true;
             }
-            let (sent, question, ended) = {
+            let (sent, request_event, ended) = {
                 let mut control = control.lock().unwrap();
                 // 2.1.220 reports an interrupted stream as an error result.
                 // Only an acknowledged interrupt with an explicit abort reason
@@ -461,9 +463,9 @@ impl ClaudeCodeBackend {
             };
             let mut normalized = turn.state.delivered_events(sent);
             normalized.extend(turn.state.ingest(&message, ended));
-            if let Some(mut question) = question {
-                question.source.app_thread_id = turn.state.session_id.clone();
-                normalized.push(question);
+            if let Some(mut event) = request_event {
+                event.source.app_thread_id = turn.state.session_id.clone();
+                normalized.push(event);
             }
             turn.push(normalized, event_sink);
         }
@@ -1417,6 +1419,13 @@ fn permission_mode() -> String {
         .ok()
         .and_then(|value| non_empty(&value).map(str::to_string))
         .unwrap_or_else(|| DEFAULT_PERMISSION_MODE.to_string())
+}
+
+fn plan_mode(request: &AgentTurnRequest) -> bool {
+    request
+        .chat_mode
+        .as_deref()
+        .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("plan"))
 }
 
 fn metadata_string(metadata: &BTreeMap<String, Value>, key: &str) -> Option<String> {
