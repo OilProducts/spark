@@ -36,6 +36,8 @@ const TOOL_RESULT_PREVIEW_LIMIT: usize = 4000;
 /// The resumed session's cumulative `modelUsage` at the start of a turn, as
 /// recorded in the previous turn's usage payload under `model_usage`.
 pub const MODEL_USAGE_SNAPSHOT_METADATA_KEY: &str = "spark.runtime.claude_code.model_usage";
+/// Result subtype of a `--json-schema` turn whose answer never validated.
+pub const STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_SUBTYPE: &str = "error_max_structured_output_retries";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeCodeError {
@@ -189,7 +191,9 @@ impl ClaudeCodeBackend {
             raw_log_lines,
             ..
         } = turn;
-        if state.is_error {
+        if state.is_error
+            && state.result_subtype.as_deref() != Some(STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_SUBTYPE)
+        {
             let text = state.resolved_final_text();
             return Err(ClaudeCodeError {
                 message: if auth::requires_login(&text) {
@@ -307,6 +311,12 @@ impl ClaudeCodeBackend {
         }
         if let Some(session_id) = resume_session_id {
             command.arg("--resume").arg(session_id);
+        }
+        if let Some(schema) = request
+            .metadata
+            .get(crate::codergen::STATUS_ENVELOPE_SCHEMA_METADATA_KEY)
+        {
+            command.arg("--json-schema").arg(schema.to_string());
         }
         // Pinned instructions ride every spawn, resumed or not; the file lives
         // until this turn's process has exited.

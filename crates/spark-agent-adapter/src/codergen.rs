@@ -21,8 +21,9 @@ use unified_llm_adapter::{
 
 use crate::session::SessionSteeringHandle;
 use crate::status_envelope::{
-    build_contract_repair_prompt, build_status_envelope_prompt_appendix,
-    coerce_structured_text_outcome, contract_failure_outcome, validate_write_contract_violation,
+    build_contract_repair_prompt, build_in_session_contract_repair_prompt,
+    build_status_envelope_prompt_appendix, coerce_structured_text_outcome,
+    contract_failure_outcome, status_envelope_json_schema, validate_write_contract_violation,
     StructuredContractViolation, StructuredTextOutcome,
 };
 
@@ -30,6 +31,10 @@ pub const RUNTIME_CONTEXT_CARRYOVER_KEY: &str = "_attractor.runtime.context_carr
 pub const DECLARED_CONTEXT_MISSING_SENTINEL: &str = "<missing>";
 pub const STATUS_ENVELOPE_RESPONSE_CONTRACT: &str = "status_envelope";
 pub const DEFAULT_CONTRACT_REPAIR_ATTEMPTS: u32 = 1;
+/// JSON Schema of a status-envelope node's response, for backends that can
+/// enforce it.
+pub const STATUS_ENVELOPE_SCHEMA_METADATA_KEY: &str =
+    "spark.runtime.codergen.status_envelope_schema";
 
 #[derive(Debug, Error)]
 pub enum CodergenError {
@@ -583,6 +588,10 @@ pub struct CodergenBackendOutput {
     pub events: Vec<CodergenEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
+    /// Request metadata that continues this attempt's session; a contract
+    /// repair carries it to repair in the same session.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resume_metadata: BTreeMap<String, Value>,
 }
 
 impl CodergenBackendOutput {
@@ -591,6 +600,7 @@ impl CodergenBackendOutput {
             response: CodergenBackendResponse::Text(text.into()),
             events: Vec::new(),
             usage: None,
+            resume_metadata: BTreeMap::new(),
         }
     }
 
@@ -599,6 +609,7 @@ impl CodergenBackendOutput {
             response: CodergenBackendResponse::Boolean(value),
             events: Vec::new(),
             usage: None,
+            resume_metadata: BTreeMap::new(),
         }
     }
 
@@ -607,6 +618,7 @@ impl CodergenBackendOutput {
             response: CodergenBackendResponse::Outcome(outcome),
             events: Vec::new(),
             usage: None,
+            resume_metadata: BTreeMap::new(),
         }
     }
 }
@@ -823,6 +835,12 @@ impl CodergenHandler {
         )
         .map_err(CodergenError::Backend)?;
         metadata.insert("spark.execution.reasoning".into(), reasoning);
+        if response_contract == STATUS_ENVELOPE_RESPONSE_CONTRACT {
+            metadata.insert(
+                STATUS_ENVELOPE_SCHEMA_METADATA_KEY.to_string(),
+                status_envelope_json_schema(&request.graph, &request.node_id, &write_contract),
+            );
+        }
         if let Some(stage_dir) = stage_dir.as_ref() {
             metadata.insert(
                 crate::initial_context::INITIAL_CONTEXT_PATH_METADATA_KEY.to_string(),
@@ -1016,7 +1034,12 @@ impl CodergenHandler {
                         ));
                     }
                     repair_attempts_used += 1;
-                    let repair_prompt = build_contract_repair_prompt(&violation);
+                    let repair_prompt = if output.resume_metadata.is_empty() {
+                        build_contract_repair_prompt(&violation)
+                    } else {
+                        current_request.metadata.extend(output.resume_metadata);
+                        build_in_session_contract_repair_prompt(&violation)
+                    };
                     events.push(event(
                         "codergen_contract_repair_attempt",
                         [

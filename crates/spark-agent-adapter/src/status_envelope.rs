@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use attractor_core::{
-    validate_context_updates_against_contract, ContextMap, ContextWriteContract, FailureKind,
-    Outcome, OutcomeStatus,
+    normalize_condition_literal, routing_edge_from_dot_edge, split_condition_clauses,
+    validate_context_updates_against_contract, ContextMap, ContextWriteContract, DotGraph,
+    FailureKind, Outcome, OutcomeStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -63,6 +64,81 @@ pub fn build_status_envelope_prompt_appendix(
         "- If no routing or context updates are needed, prefer: {\"outcome\":\"success\"}".to_string(),
     ]
     .join("\n")
+}
+
+/// JSON Schema for a node's status envelope: routing values come from the
+/// node's outgoing edges, `context_updates` keys from its write contract.
+pub fn status_envelope_json_schema(
+    graph: &DotGraph,
+    node_id: &str,
+    write_contract: &ContextWriteContract,
+) -> Value {
+    let edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.source == node_id)
+        .filter_map(|edge| routing_edge_from_dot_edge(edge).ok())
+        .collect::<Vec<_>>();
+    let mut labels = Vec::<String>::new();
+    let mut successors = Vec::<String>::new();
+    for edge in &edges {
+        // Routing matches an edge's label, and conditions compare
+        // `preferred_label` against their own literals.
+        let condition_labels = split_condition_clauses(edge.condition_text())
+            .into_iter()
+            .filter_map(|clause| {
+                let rest = clause.trim().strip_prefix("preferred_label")?.trim_start();
+                let literal = rest.strip_prefix("!=").or_else(|| rest.strip_prefix('='))?;
+                Some(normalize_condition_literal(literal))
+            });
+        for label in std::iter::once(edge.label.trim().to_string()).chain(condition_labels) {
+            if !label.is_empty() && !labels.contains(&label) {
+                labels.push(label);
+            }
+        }
+        let target = edge.target.as_str().to_string();
+        if !successors.contains(&target) {
+            successors.push(target);
+        }
+    }
+
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "outcome".into(),
+        json!({"type": "string", "enum": ["success", "fail", "partial_success", "retry"]}),
+    );
+    if !labels.is_empty() {
+        properties.insert(
+            "preferred_label".into(),
+            json!({"type": "string", "enum": labels}),
+        );
+    }
+    if !successors.is_empty() {
+        properties.insert(
+            "suggested_next_ids".into(),
+            json!({"type": "array", "items": {"type": "string", "enum": successors}}),
+        );
+    }
+    if !write_contract.allowed_keys.is_empty() {
+        let keys = write_contract
+            .allowed_keys
+            .iter()
+            .map(|key| (key.clone(), json!({})))
+            .collect::<serde_json::Map<_, _>>();
+        properties.insert(
+            "context_updates".into(),
+            json!({"type": "object", "properties": keys, "additionalProperties": false}),
+        );
+    }
+    properties.insert("notes".into(), json!({"type": "string"}));
+    properties.insert("failure_reason".into(), json!({"type": "string"}));
+    properties.insert("retryable".into(), json!({"type": "boolean"}));
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": ["outcome"],
+        "additionalProperties": false,
+    })
 }
 
 pub fn build_status_envelope_context_updates_contract_text(
@@ -261,6 +337,21 @@ pub fn build_contract_repair_prompt(violation: &StructuredContractViolation) -> 
         violation.raw_text.clone(),
     ]);
     lines.join("\n")
+}
+
+/// Repair for a session that still holds the task and the invalid answer.
+pub fn build_in_session_contract_repair_prompt(violation: &StructuredContractViolation) -> String {
+    [
+        format!(
+            "Your final answer violated the {} response contract.",
+            violation.response_contract
+        ),
+        format!("Validation error: {}", violation.reason),
+        "Re-emit only a corrected final answer for the same decision. Do not do new repository work."
+            .to_string(),
+        build_status_envelope_context_updates_contract_text(violation.write_contract.as_ref()),
+    ]
+    .join("\n")
 }
 
 pub fn contract_failure_outcome(violation: &StructuredContractViolation) -> Outcome {

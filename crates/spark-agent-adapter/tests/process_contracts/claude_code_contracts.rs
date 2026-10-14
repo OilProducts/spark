@@ -1528,3 +1528,213 @@ fn claude_code_sends_images_as_base64_blocks_and_files_as_references() {
     assert_eq!(blocks[2]["source"]["media_type"], "image/gif");
     assert_eq!(contents[1], json!("Prepare the change."));
 }
+
+fn envelope_node_request(
+    project_path: &std::path::Path,
+    response_contract: Option<&str>,
+) -> spark_agent_adapter::CodergenRequest {
+    use attractor_core::{DotAttribute, DotValue, DotValueType};
+    let source = json!({"schema_version":"1", "id":"flow",
+        "nodes":{"start":{"kind":"start"},
+            "review":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"Review the change."}},
+            "fix":{"kind":"agent_task", "config":{"kind":"agent_task", "prompt":"fix"}},
+            "end":{"kind":"exit"}},
+        "edges":[{"from":"start","to":"review"},
+            {"from":"review","to":"end","label":"Approve"},
+            {"from":"review","to":"fix","label":"Rework"},
+            {"from":"fix","to":"end"}]
+    });
+    let mut graph = attractor_dsl::parse_flow_definition(&source.to_string())
+        .unwrap()
+        .to_runtime_dot_graph();
+    let node = graph.nodes.get_mut("review").unwrap();
+    let mut attrs = vec![
+        ("llm_provider", "claude-code"),
+        ("spark.writes_context", r#"["context.review.notes"]"#),
+    ];
+    attrs.extend(response_contract.map(|value| ("codergen.response_contract", value)));
+    for (key, value) in attrs {
+        node.attrs.insert(
+            key.to_string(),
+            DotAttribute {
+                key: key.to_string(),
+                value: DotValue::String(value.to_string()),
+                value_type: DotValueType::String,
+                line: 0,
+            },
+        );
+    }
+    spark_agent_adapter::CodergenRequest {
+        node_id: "review".to_string(),
+        node: node.clone(),
+        graph,
+        context: Default::default(),
+        logs_root: None,
+        fallback_model: None,
+        fallback_provider: None,
+        fallback_profile: None,
+        fallback_reasoning_effort: None,
+        project_path: Some(project_path.to_path_buf()),
+        metadata: BTreeMap::new(),
+    }
+}
+
+/// Each logged invocation's argument list.
+fn logged_invocations(log_path: &std::path::Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(log_path)
+        .expect("args log")
+        .split("-- invocation --")
+        .filter(|chunk| chunk.contains("-p"))
+        .map(|chunk| chunk.lines().map(str::to_string).collect())
+        .collect()
+}
+
+fn arg_after(args: &[String], flag: &str) -> Option<String> {
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+}
+
+#[test]
+fn claude_code_status_envelope_node_passes_its_schema_and_routes_from_the_structured_result() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "structured");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    let request = envelope_node_request(temp.path(), Some("status_envelope"));
+    let expected_schema = spark_agent_adapter::status_envelope_json_schema(
+        &request.graph,
+        "review",
+        &attractor_core::resolve_context_write_contract(&request.node.attrs),
+    );
+
+    let execution = spark_agent_adapter::CodergenHandler::with_backend(
+        RustLlmCodergenBackend::new(Client::new()),
+    )
+    .execute(request)
+    .expect("execution");
+
+    assert_eq!(
+        execution.outcome.status,
+        attractor_core::OutcomeStatus::Success
+    );
+    assert_eq!(execution.outcome.preferred_label, "Approve");
+    assert_eq!(execution.repair_attempts, 0);
+    let invocations = logged_invocations(&log_path);
+    assert_eq!(invocations.len(), 1);
+    let schema = arg_after(&invocations[0], "--json-schema").expect("--json-schema");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&schema).unwrap(),
+        expected_schema
+    );
+    assert_eq!(
+        expected_schema["properties"]["preferred_label"]["enum"],
+        json!(["Approve", "Rework"])
+    );
+
+    // A node without the envelope contract passes no schema.
+    std::fs::remove_file(&log_path).unwrap();
+    spark_agent_adapter::CodergenHandler::with_backend(RustLlmCodergenBackend::new(Client::new()))
+        .execute(envelope_node_request(temp.path(), None))
+        .expect("execution");
+    let invocations = logged_invocations(&log_path);
+    assert_eq!(invocations.len(), 1);
+    assert!(!invocations[0].iter().any(|arg| arg == "--json-schema"));
+}
+
+#[test]
+fn claude_code_envelope_repairs_resume_the_first_attempts_session() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("claude-args.log");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    for (mode, reason) in [
+        ("structured-violation", "context.undeclared"),
+        ("structured-retries", "empty response"),
+    ] {
+        let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let _ = std::fs::remove_file(&log_path);
+
+        let execution = spark_agent_adapter::CodergenHandler::with_backend(
+            RustLlmCodergenBackend::new(Client::new()),
+        )
+        .execute(envelope_node_request(temp.path(), Some("status_envelope")))
+        .expect("execution");
+
+        assert_eq!(
+            execution.outcome.status,
+            attractor_core::OutcomeStatus::Success,
+            "{mode}"
+        );
+        assert_eq!(execution.outcome.preferred_label, "Approve", "{mode}");
+        assert_eq!(execution.repair_attempts, 1, "{mode}");
+        assert!(
+            execution.contract_violations[0].reason.contains(reason),
+            "{mode}: {:?}",
+            execution.contract_violations
+        );
+        let invocations = logged_invocations(&log_path);
+        assert_eq!(invocations.len(), 2, "{mode}");
+        assert_eq!(arg_after(&invocations[0], "--resume"), None, "{mode}");
+        assert_eq!(
+            arg_after(&invocations[1], "--resume").as_deref(),
+            Some("sess-fake-claude-1"),
+            "{mode}"
+        );
+        // The repair keeps the schema, and its message is the short in-session one.
+        assert!(invocations[1].iter().any(|arg| arg == "--json-schema"));
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        let repair_message = log
+            .lines()
+            .filter(|line| line.starts_with("USER_CONTENT="))
+            .nth(1)
+            .expect("repair message");
+        assert!(
+            repair_message.contains("Validation error"),
+            "{repair_message}"
+        );
+        assert!(
+            !repair_message.contains("Review the change."),
+            "{repair_message}"
+        );
+
+        // Run usage counts both attempts; the resumed one only its delta.
+        let completed = execution
+            .events
+            .iter()
+            .filter(|event| event.event_type == "claude_code_request_completed")
+            .map(|event| event.payload["token_usage"]["output_tokens"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(completed, vec![json!(10), json!(5)], "{mode}");
+    }
+}
+
+/// Opt-in smoke: one status-envelope node against the real CLI's
+/// `--json-schema`. Run with the same command as the other real tests.
+#[test]
+#[ignore = "requires an installed, logged-in claude CLI; consumes real usage"]
+fn real_claude_code_status_envelope_node_returns_a_schema_valid_outcome() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _mode_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_PERMISSION_MODE", "default");
+    let mut request = envelope_node_request(temp.path(), Some("status_envelope"));
+    request.node.attrs.get_mut("prompt").expect("prompt").value = attractor_core::DotValue::String(
+        "Do not use any tools. Finish with outcome success and preferred_label Rework.".to_string(),
+    );
+
+    let execution = spark_agent_adapter::CodergenHandler::with_backend(
+        RustLlmCodergenBackend::new(Client::new()),
+    )
+    .execute(request)
+    .expect("execution");
+
+    assert_eq!(
+        execution.outcome.status,
+        attractor_core::OutcomeStatus::Success
+    );
+    assert_eq!(execution.outcome.preferred_label, "Rework");
+    assert!(execution.contract_violations.is_empty());
+}

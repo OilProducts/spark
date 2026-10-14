@@ -404,6 +404,7 @@ impl spark_agent_adapter::CodergenBackend for UsageEmittingBackend {
                 ]),
             )],
             usage: None,
+            resume_metadata: Default::default(),
         })
     }
 }
@@ -477,6 +478,7 @@ impl spark_agent_adapter::CodergenBackend for LiveUsageBackend {
             ),
             events: vec![event],
             usage: None,
+            resume_metadata: Default::default(),
         })
     }
 }

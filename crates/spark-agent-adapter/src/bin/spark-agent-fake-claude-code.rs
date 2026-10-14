@@ -580,6 +580,43 @@ fn main() {
         return;
     }
 
+    if mode.starts_with("structured") {
+        // `--json-schema`: the answer arrives as a StructuredOutput call and
+        // the result's text is that object. The first attempt of the
+        // violation and retries modes fails; a resumed repair answers validly.
+        let resumed = args.iter().any(|arg| arg == "--resume");
+        let usage = |tokens: u64| {
+            json!({"claude-opus-4-8": {"inputTokens": tokens, "outputTokens": tokens,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "thinkingTokens": 0, "costUSD": 0.0}})
+        };
+        let model_usage = usage(if resumed { 15 } else { 10 });
+        if mode == "structured-retries" && !resumed {
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "error_max_structured_output_retries", "is_error": true,
+                    "session_id": session_id, "modelUsage": model_usage}),
+            );
+            return;
+        }
+        let answer = if mode == "structured-violation" && !resumed {
+            json!({"outcome": "success", "context_updates": {"context.undeclared": 1}})
+        } else {
+            json!({"outcome": "success", "preferred_label": "Approve"})
+        };
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_structured", "name": "StructuredOutput", "input": answer}
+            ]}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": answer.to_string(),
+                "structured_output": answer, "session_id": session_id, "modelUsage": model_usage}),
+        );
+        return;
+    }
+
     if mode == "result-only" || mode == "empty-result" {
         emit(
             &mut out,

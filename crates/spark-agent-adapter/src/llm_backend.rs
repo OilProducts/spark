@@ -14,6 +14,7 @@ use crate::agent::{
 };
 use crate::claude_code::{
     usage_from_claude_code_usage_payload, ClaudeCodeBackend, CLAUDE_CODE_BACKEND,
+    MODEL_USAGE_SNAPSHOT_METADATA_KEY, STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_SUBTYPE,
 };
 use crate::codergen::{
     ActiveCodergenSession, CodergenBackend, CodergenBackendOutput, CodergenBackendRequest,
@@ -262,6 +263,7 @@ impl RustLlmCodergenBackend {
             response,
             events,
             usage,
+            resume_metadata: BTreeMap::new(),
         })
     }
 
@@ -318,9 +320,16 @@ impl RustLlmCodergenBackend {
             .token_usage
             .as_ref()
             .and_then(usage_from_claude_code_usage_payload);
+        // A turn that exhausted its structured-output retries is a contract
+        // violation the parser reports, so it is repaired like one.
+        let structured_output_failed = output.events.iter().any(|event| {
+            event.status.as_deref() == Some(STRUCTURED_OUTPUT_RETRIES_EXHAUSTED_SUBTYPE)
+        });
         let response =
             if let Some(text) = output.final_assistant_text.as_deref().and_then(non_empty) {
                 CodergenBackendResponse::Text(text.to_string())
+            } else if structured_output_failed {
+                CodergenBackendResponse::Text(String::new())
             } else {
                 CodergenBackendResponse::Outcome(Outcome {
                     status: OutcomeStatus::Fail,
@@ -371,10 +380,29 @@ impl RustLlmCodergenBackend {
                 ),
             ]),
         ));
+        let mut resume_metadata = BTreeMap::new();
+        if let Some(session_id) = output.app_thread_id.as_deref().and_then(non_empty) {
+            resume_metadata.insert(
+                "spark.runtime.claude_code.session_id".to_string(),
+                json!(session_id),
+            );
+            // The session's cumulative usage, which the resumed attempt subtracts.
+            if let Some(model_usage) = output
+                .token_usage
+                .as_ref()
+                .and_then(|usage| usage.get("model_usage"))
+            {
+                resume_metadata.insert(
+                    MODEL_USAGE_SNAPSHOT_METADATA_KEY.to_string(),
+                    model_usage.clone(),
+                );
+            }
+        }
         Ok(CodergenBackendOutput {
             response,
             events,
             usage,
+            resume_metadata,
         })
     }
 
@@ -455,6 +483,7 @@ impl RustLlmCodergenBackend {
                 ]),
             )],
             usage: Some(response.usage),
+            resume_metadata: BTreeMap::new(),
         })
     }
 
@@ -630,6 +659,7 @@ impl NodeStop {
             response: CodergenBackendResponse::Outcome(outcome),
             events: Vec::new(),
             usage: None,
+            resume_metadata: BTreeMap::new(),
         })
     }
 }
@@ -762,6 +792,7 @@ fn codergen_output_from_session(
         response,
         events,
         usage,
+        resume_metadata: BTreeMap::new(),
     }
 }
 
