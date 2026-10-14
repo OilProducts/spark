@@ -48,8 +48,9 @@ fn main() {
                     .unwrap_or_default();
                 let _ = writeln!(
                     log,
-                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
-                    args.join("\n")
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nBASH_MAX_TIMEOUT_MS={}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
+                    args.join("\n"),
+                    env::var("BASH_MAX_TIMEOUT_MS").unwrap_or_default()
                 );
             }
         }
@@ -72,6 +73,10 @@ fn main() {
             if let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) {
                 if message["type"] == "user" {
                     assert_eq!(message["message"]["role"], "user");
+                    assert!(
+                        message["uuid"].as_str().is_some(),
+                        "user messages carry a uuid"
+                    );
                     assert_user_content(&message["message"]["content"]);
                     append_log(&format!("USER_CONTENT={}", message["message"]["content"]));
                     break;
@@ -165,11 +170,98 @@ fn main() {
         }
         emit(
             &mut out,
-            json!({"type": "control_request", "request_id": "ignored", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
+            json!({"type": "control_request", "request_id": "after-malformed", "request": {"subtype": "can_use_tool", "tool_name": "Bash", "input": {"command": "true"}}}),
         );
+        assert_eq!(
+            read_control(),
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": "after-malformed", "response": {"behavior": "allow", "updatedInput": {"command": "true"}}}})
+        );
+    }
+    if mode == "unknown-subtype" {
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "unknown-1", "request": {"subtype": "mystery"}}),
+        );
+        assert_eq!(
+            read_control(),
+            json!({"type": "control_response", "response": {"subtype": "error", "request_id": "unknown-1", "error": "unsupported control request subtype: mystery"}})
+        );
+    }
+    if mode == "question-denied" {
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "question-1", "request": {"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [{"question": "Which color?", "options": [{"label": "Red"}]}]}}}),
+        );
+        let denial = read_control();
+        assert_eq!(denial["response"]["request_id"], "question-1");
+        assert_eq!(denial["response"]["response"]["behavior"], "deny");
+        assert!(denial["response"]["response"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("best judgment"));
+    }
+    if mode == "background" || mode == "background-interrupt" {
+        // Probe 3: a background task keeps the session working past the
+        // first result, and its completion starts a follow-up turn.
+        let usage = |input: u64, output: u64| {
+            json!({"claude-opus-4-8": {"inputTokens": input, "outputTokens": output,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "thinkingTokens": 0, "costUSD": 0.0}})
+        };
+        let tasks = |live: bool| {
+            let mut tasks = vec![
+                json!({"task_id": "watch", "task_type": "monitor", "description": "watcher", "ambient": true}),
+            ];
+            if live {
+                tasks.push(
+                    json!({"task_id": "build", "task_type": "local_bash", "description": "build"}),
+                );
+            }
+            json!({"type": "system", "subtype": "background_tasks_changed", "session_id": session_id, "tasks": tasks})
+        };
+        emit(&mut out, tasks(true));
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Started a background build."}]}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Started a background build.",
+                "session_id": session_id, "result_index": 0, "queued_turn_count": 0, "modelUsage": usage(3, 30)}),
+        );
+        if mode == "background" {
+            emit(
+                &mut out,
+                json!({"type": "system", "subtype": "task_notification", "session_id": session_id, "task_id": "build", "status": "completed"}),
+            );
+            emit(&mut out, tasks(false));
+            emit(
+                &mut out,
+                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Build finished."}]}}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "Build finished.",
+                    "session_id": session_id, "result_index": 1, "queued_turn_count": 0, "modelUsage": usage(5, 50)}),
+            );
+        }
         let mut remaining = String::new();
         std::io::stdin().read_to_string(&mut remaining).unwrap();
-        assert!(remaining.is_empty(), "must cease control responses");
+        append_log("STDIN_CLOSED");
+        return;
+    }
+    if mode == "crash-after-init" {
+        if !args.iter().any(|arg| arg == "--resume") {
+            emit(
+                &mut out,
+                json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+            );
+            std::process::exit(1);
+        }
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Recovered.", "session_id": session_id}),
+        );
+        return;
     }
     if mode == "question"
         || mode == "dead-question"

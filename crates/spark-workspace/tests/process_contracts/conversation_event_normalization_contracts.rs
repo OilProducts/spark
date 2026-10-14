@@ -3206,6 +3206,77 @@ fn runtime_session_records_thread_continuity_and_tombstones_on_resume_failure() 
 }
 
 #[test]
+fn claude_code_failed_resume_is_tombstoned() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            app_thread_id: Some("claude-session-old".to_string()),
+            final_assistant_text: Some("First answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Answer without a session".to_string()),
+            thread_resume_failure: Some(AgentThreadResumeFailure {
+                message: "discarded stale Claude Code session".to_string(),
+                error_code: Some("thread_resume_failure".to_string()),
+                details: Some(json!({"discarded_session_id": "claude-session-old"})),
+            }),
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Continued answer".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let service = WorkspaceConversationService::new_with_agent_turn_backend(
+        settings.clone(),
+        Arc::new(backend),
+    );
+    let (conversation, project_path) = (
+        "conversation-claude-tombstone",
+        "/projects/claude-tombstone",
+    );
+    service
+        .update_conversation_settings(
+            conversation,
+            ConversationSettingsUpdate {
+                project_path: project_path.to_string(),
+                provider: Some("claude-code".to_string()),
+                model: Some(String::new()),
+                expected_revision: Some("0".into()),
+                llm_profile: None,
+                ..ConversationSettingsUpdate::default()
+            },
+        )
+        .expect("claude-code settings");
+    for message in ["first", "recover", "continue"] {
+        service
+            .execute_turn(
+                conversation,
+                ConversationTurnRequest {
+                    project_path: project_path.to_string(),
+                    message: message.to_string(),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .expect("claude-code turn");
+    }
+
+    let requests = requests.lock().expect("requests");
+    assert!(!requests[2]
+        .metadata
+        .contains_key("spark.runtime.claude_code.session_id"));
+    let session = spark_storage::ConversationRepository::new(&settings.data_dir)
+        .read_runtime_session(conversation, Some(project_path))
+        .expect("session read")
+        .expect("session");
+    assert_eq!(session.thread_id.as_deref(), Some("claude-session-old"));
+    assert!(session.resume_failed);
+}
+
+#[test]
 fn claude_code_recovery_keeps_fresh_turn_and_replaces_runtime_session() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

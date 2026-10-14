@@ -160,6 +160,12 @@ fn run_default(
                     awaiting_request_user_input_response = true;
                 } else if mode == "gated" {
                     emit_gated_turn(&mut stdout);
+                } else if mode == "interruptible" {
+                    // Runs until Spark sends turn/interrupt.
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": "msg-answer", "delta": "Half done."}}),
+                    );
                 } else if tool_calls {
                     emit_tool_notifications(&mut stdout);
                     emit_turn_completion(
@@ -180,6 +186,17 @@ fn run_default(
                         true,
                     );
                 }
+            }
+            "turn/interrupt" if mode == "interruptible" => {
+                assert_eq!(
+                    message["params"],
+                    json!({"threadId": "thread-test", "turnId": "turn-test"})
+                );
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                write_json(
+                    &mut stdout,
+                    json!({"method": "turn/completed", "params": {"threadId": "thread-test", "turn": {"id": "turn-test", "status": "interrupted", "error": null}}}),
+                );
             }
             "model/list" => write_json(
                 &mut stdout,

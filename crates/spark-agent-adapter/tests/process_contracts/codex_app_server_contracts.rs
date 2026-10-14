@@ -203,6 +203,59 @@ fn initialize_and_turn_payload_contracts_match_codex_app_server_schema() {
 }
 
 #[test]
+fn interrupt_stops_the_running_turn_as_a_normal_completion() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "interruptible");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let request = AgentTurnRequest {
+        conversation_id: "codex-stop".to_string(),
+        project_path: temp.path().to_string_lossy().to_string(),
+        prompt: "Work".to_string(),
+        history: Vec::new(),
+        provider: Some("codex".to_string()),
+        model: None,
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: None,
+        metadata: BTreeMap::new(),
+    };
+    assert!(!CodexAppServerBackend::new().interrupt(&request.project_path, "codex-stop"));
+    let path = request.project_path.clone();
+
+    let output = CodexAppServerBackend::new()
+        .run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::ContentDelta {
+                    assert!(CodexAppServerBackend::new().interrupt(&path, "codex-stop"));
+                }
+            })),
+        )
+        .expect("stopped turn completes");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Half done."));
+    let answer = output
+        .events
+        .iter()
+        .find(|event| event.phase.as_deref() == Some("final_answer"))
+        .expect("final answer");
+    assert_eq!(answer.source.item_id.as_deref(), Some("msg-answer"));
+    let completed = output.events.last().expect("turn completed");
+    assert_eq!(completed.kind, TurnStreamEventKind::TurnCompleted);
+    assert!(completed.error.is_none());
+    assert!(read_jsonrpc_log(&log_path)
+        .iter()
+        .any(|message| message["method"] == "turn/interrupt"));
+}
+
+#[test]
 fn model_list_is_supported_and_matches_generated_schema_shape() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
