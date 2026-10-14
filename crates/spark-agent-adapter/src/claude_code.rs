@@ -88,13 +88,16 @@ impl ClaudeCodeBackend {
         self.run_agent_turn_with_event_sink(request, None)
     }
 
-    /// A chat turn: `AskUserQuestion` reaches the request-user-input route.
+    /// A chat turn: `AskUserQuestion` reaches the request-user-input route
+    /// through the event sink. Without a sink nobody sees the question, so
+    /// it is denied.
     pub fn run_agent_turn_with_event_sink(
         &self,
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
-        self.run(request, event_sink, true)
+        let questions = event_sink.is_some();
+        self.run(request, event_sink, questions)
     }
 
     /// A turn nobody can answer questions in; `AskUserQuestion` is denied.

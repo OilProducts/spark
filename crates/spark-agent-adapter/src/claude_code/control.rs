@@ -34,7 +34,8 @@ pub(super) struct Control {
     prompted: bool,
     /// Messages sent after the prompt whose uuid no result has confirmed yet.
     undelivered: BTreeSet<String>,
-    /// A result arrived and no main model turn has started since.
+    /// A result left only background tasks running and no main model turn
+    /// has started since.
     idle: bool,
     pub ended: bool,
     pub logs: Vec<AgentRawLogLine>,
@@ -199,15 +200,13 @@ impl Control {
                     self.undelivered.remove(uuid);
                 }
                 // Background work and queued messages each bring another result.
-                if !self.enabled
-                    || self.stopping
-                    || (self.tasks == 0
-                        && message["queued_turn_count"].as_u64().unwrap_or(0) == 0
-                        && self.undelivered.is_empty())
-                {
+                let inputs_done = message["queued_turn_count"].as_u64().unwrap_or(0) == 0
+                    && self.undelivered.is_empty();
+                if !self.enabled || self.stopping || (self.tasks == 0 && inputs_done) {
                     self.end();
                 } else {
-                    self.idle = true;
+                    // Queued input starts another model turn that Stop must interrupt.
+                    self.idle = inputs_done;
                 }
             }
             "control_request" => return self.route(message),

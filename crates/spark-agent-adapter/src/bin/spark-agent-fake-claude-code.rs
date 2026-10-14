@@ -249,6 +249,29 @@ fn main() {
         append_log("STDIN_CLOSED");
         return;
     }
+    if mode == "queued-interrupt" {
+        // A queued message holds the turn past the first result, so Stop must
+        // interrupt the queued model turn instead of closing stdin.
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "First answer.",
+                "session_id": session_id, "queued_turn_count": 1, "modelUsage": {"claude-opus-4-8": {"inputTokens": 1, "outputTokens": 1}}}),
+        );
+        let interrupt = read_control();
+        assert_eq!(interrupt["request"], json!({"subtype": "interrupt"}));
+        emit(
+            &mut out,
+            json!({"type": "control_response", "response": {"subtype": "success", "request_id": interrupt["request_id"], "response": {"still_queued": []}}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                "terminal_reason": "aborted_streaming", "session_id": session_id, "queued_turn_count": 0}),
+        );
+        let mut remaining = String::new();
+        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        return;
+    }
     if mode == "crash-after-init" || mode == "crash-orphan" {
         if !args.iter().any(|arg| arg == "--resume") {
             emit(

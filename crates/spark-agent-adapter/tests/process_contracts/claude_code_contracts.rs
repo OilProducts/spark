@@ -880,7 +880,9 @@ fn claude_code_control_answers_every_request_despite_malformed_traffic() {
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
         let request = agent_request(temp.path());
         let answer = answer_request(&request);
-        let output = ClaudeCodeBackend::new().run_agent_turn(request).unwrap();
+        let output = ClaudeCodeBackend::new()
+            .run_agent_turn_with_event_sink(request, Some(Arc::new(|_| {})))
+            .unwrap();
         assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
         if mode.starts_with("malformed") {
             assert!(output
@@ -901,14 +903,25 @@ fn claude_code_question_without_a_handler_is_denied() {
     let temp = tempfile::tempdir().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
     let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question-denied");
-    let output = ClaudeCodeBackend::new()
-        .run_agent_turn_without_questions(agent_request(temp.path()), None)
-        .unwrap();
-    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
-    assert!(output
-        .events
-        .iter()
-        .all(|event| event.kind != TurnStreamEventKind::RequestUserInputRequested));
+    // The flow path, and the sink-less entry points the boundary CLI uses.
+    let outputs = [
+        ClaudeCodeBackend::new()
+            .run_agent_turn_without_questions(agent_request(temp.path()), Some(Arc::new(|_| {})))
+            .unwrap(),
+        ClaudeCodeBackend::new()
+            .run_agent_turn(agent_request(temp.path()))
+            .unwrap(),
+        RustLlmAgentTurnBackend::new(Client::new())
+            .run_turn(agent_request(temp.path()))
+            .unwrap(),
+    ];
+    for output in outputs {
+        assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+        assert!(output
+            .events
+            .iter()
+            .all(|event| event.kind != TurnStreamEventKind::RequestUserInputRequested));
+    }
 }
 
 #[test]
@@ -996,6 +1009,40 @@ fn claude_code_interrupt_while_waiting_on_background_tasks_ends_the_turn() {
         event.phase.as_deref() == Some("final_answer")
             && event.content_delta.as_deref() == Some("Started a background build.")
     }));
+}
+
+#[test]
+fn claude_code_interrupt_after_a_queued_result_interrupts_the_next_model_turn() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "queued-interrupt");
+    let request = agent_request(temp.path());
+    let (path, id) = (
+        request.project_path.clone(),
+        request.conversation_id.clone(),
+    );
+    let stopped = std::sync::atomic::AtomicBool::new(false);
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::TokenUsageUpdated
+                    && !stopped.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    assert!(ClaudeCodeBackend::new().interrupt(&path, &id));
+                }
+            })),
+        )
+        .unwrap();
+
+    // The fake asserts it received the interrupt before stdin closed.
+    assert!(output.raw_log_lines.iter().any(|line| {
+        line.direction == "stdin" && line.line.contains(r#""subtype":"interrupt""#)
+    }));
+    let last = output.events.last().unwrap();
+    assert_eq!(last.kind, TurnStreamEventKind::TurnCompleted);
+    assert!(last.error.is_none());
 }
 
 #[test]
