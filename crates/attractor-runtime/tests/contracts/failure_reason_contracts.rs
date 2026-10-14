@@ -40,6 +40,7 @@ impl spark_agent_adapter::CodergenBackend for ContractFollowingAgent {
             response: spark_agent_adapter::CodergenBackendResponse::Text(response.to_string()),
             events: Vec::new(),
             usage: None,
+            resume_metadata: Default::default(),
         })
     }
 }

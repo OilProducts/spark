@@ -418,6 +418,7 @@ impl spark_agent_adapter::CodergenBackend for StreamingFakeBackend {
             response: spark_agent_adapter::CodergenBackendResponse::Text("done".to_string()),
             events,
             usage: None,
+            resume_metadata: Default::default(),
         })
     }
 }

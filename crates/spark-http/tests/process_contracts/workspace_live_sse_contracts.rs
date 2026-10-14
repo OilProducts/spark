@@ -2973,6 +2973,7 @@ impl spark_agent_adapter::CodergenBackend for SlowStreamingCodergenBackend {
             ),
             events: vec![streamed],
             usage: None,
+            resume_metadata: Default::default(),
         })
     }
 }

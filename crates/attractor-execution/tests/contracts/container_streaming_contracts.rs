@@ -492,6 +492,7 @@ impl spark_agent_adapter::CodergenBackend for AskingBackend {
             )),
             events: Vec::new(),
             usage: None,
+            resume_metadata: Default::default(),
         })
     }
 }

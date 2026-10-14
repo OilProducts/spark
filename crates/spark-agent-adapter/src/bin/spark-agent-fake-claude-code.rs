@@ -580,6 +580,54 @@ fn main() {
         return;
     }
 
+    if mode.starts_with("structured") {
+        // `--json-schema`: the answer arrives as a StructuredOutput call and
+        // the result's text is that object. The first attempt of the
+        // violation and retries modes fails; a resumed repair answers validly.
+        // The retries-*-text modes leave a parseable envelope in the result
+        // or in assistant text; -always never stops exhausting retries.
+        let resumed = args.iter().any(|arg| arg == "--resume");
+        let usage = |tokens: u64| {
+            json!({"claude-opus-4-8": {"inputTokens": tokens, "outputTokens": tokens,
+            "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0, "thinkingTokens": 0, "costUSD": 0.0}})
+        };
+        let model_usage = usage(if resumed { 15 } else { 10 });
+        if mode.starts_with("structured-retries") && (!resumed || mode.ends_with("-always")) {
+            let leftover = json!({"outcome": "success", "preferred_label": "Rework"}).to_string();
+            let mut result = json!({"type": "result", "subtype": "error_max_structured_output_retries",
+                "is_error": true, "session_id": session_id, "modelUsage": model_usage});
+            if mode.contains("result-text") {
+                result["result"] = json!(leftover);
+            }
+            if mode.contains("assistant-text") {
+                emit(
+                    &mut out,
+                    json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant",
+                        "content": [{"type": "text", "text": leftover}]}}),
+                );
+            }
+            emit(&mut out, result);
+            return;
+        }
+        let answer = if mode == "structured-violation" && !resumed {
+            json!({"outcome": "success", "context_updates": {"context.undeclared": 1}})
+        } else {
+            json!({"outcome": "success", "preferred_label": "Approve"})
+        };
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_structured", "name": "StructuredOutput", "input": answer}
+            ]}}),
+        );
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": answer.to_string(),
+                "structured_output": answer, "session_id": session_id, "modelUsage": model_usage}),
+        );
+        return;
+    }
+
     if mode == "result-only" || mode == "empty-result" {
         emit(
             &mut out,

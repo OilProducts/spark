@@ -90,8 +90,8 @@ pub use status_envelope::{
     build_contract_repair_prompt, build_status_envelope_context_updates_contract_text,
     build_status_envelope_prompt_appendix, coerce_structured_text_outcome,
     contract_failure_outcome, extract_structured_outcome_payload, status_envelope_allowed_keys,
-    validate_write_contract_violation, ModeledOutcomeParseResult, PlainTextParseResult,
-    StructuredContractViolation, StructuredTextOutcome,
+    status_envelope_json_schema, validate_write_contract_violation, ModeledOutcomeParseResult,
+    PlainTextParseResult, StructuredContractViolation, StructuredTextOutcome,
 };
 pub use subagents::{
     create_child_session, ChildSessionOptions, SubAgentError, SubAgentHandle, SubAgentLimitError,
