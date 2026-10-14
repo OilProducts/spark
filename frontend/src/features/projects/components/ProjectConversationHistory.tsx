@@ -200,8 +200,6 @@ const FlowLaunchRow = memo(function FlowLaunchRow({
     formatConversationTimestamp: (value: string) => string
     isLatestFlowLaunch: boolean
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
-    /** Resends a failed turn's message. */
-    onRetryTurn?: (turnId: string) => void | Promise<void>
 }) {
     return (
         <li
