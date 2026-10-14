@@ -27,7 +27,7 @@ import type { ConversationTimelineEntry } from '@/features/projects/model/types'
 import { loadConversationSegmentToolOutput } from '@/features/projects/services/conversationArtifacts'
 import { flowTitle, formatRunDate, runStatusKind } from '@/features/runs/model/runOverviewModel'
 import { STATUS_LABELS } from '@/features/runs/model/shared'
-import { submitConversationRequestUserInputValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
+import { retryConversationTurnValidated, submitConversationRequestUserInputValidated, type ConversationSnapshotResponse } from '@/lib/api/conversationsApi'
 import { cn } from '@/lib/utils'
 import { parseTurn, runKinds, runStatusLabel, type MissionRun } from './model/missionModel'
 
@@ -96,6 +96,13 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
             setSubmitting(current => { const next = { ...current }; delete next[requestId]; return next })
         }
     }
+    // A failed turn resends its delivered prompt as a new turn of the mission's conversation.
+    const [retryError, setRetryError] = useState<string | null>(null)
+    function retryTurn(turnId: string) {
+        setRetryError(null)
+        void retryConversationTurnValidated(conversationId, turnId, project).then(reload)
+            .catch((e: unknown) => setRetryError(e instanceof Error ? e.message : String(e)))
+    }
     const [showThinking, setShowThinking] = useState(false)
     const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({})
     const [expandedToolCalls, setExpandedToolCalls] = useState<Record<string, boolean>>({})
@@ -129,7 +136,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
                         ? <ThinkingRow key={key} entry={entry} isExpanded={expandedThinking[entry.id] === true} onToggleThinkingEntryExpanded={toggleKey(setExpandedThinking)} formatConversationTimestamp={formatTime} testIdPrefix="mission" />
                         : null
                 }
-                return <MessageRow key={key} entry={entry} enableCopy formatConversationTimestamp={formatTime} />
+                return <MessageRow key={key} entry={entry} enableCopy formatConversationTimestamp={formatTime} onRetryTurn={retryTurn} />
             case 'plan': return <MessageRow key={key} entry={entry} enableCopy formatConversationTimestamp={formatTime} />
             case 'flow_launch': {
                 const launch = launchesById.get(entry.artifactId)
@@ -205,6 +212,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
     const turns = splitTurns(entries)
     return <>
         {error && <InlineError>{error}</InlineError>}
+        {retryError && <InlineError>{retryError}</InlineError>}
         <SectionHeading as="h3" action={<ShowThinkingToggle pressed={showThinking} onPressedChange={setShowThinking} />}>Log</SectionHeading>
         {loading && !entries.length
             ? <p className="text-xs text-muted-foreground" aria-live="polite">Restoring thread history...</p>

@@ -271,6 +271,7 @@ export function useProjectsHomeController() {
     const {
         onChatComposerKeyDown,
         onChatComposerSubmit,
+        onRetryTurn,
         onSwitchChatMode,
     } = useConversationComposer({
         activeProjectPath,
@@ -445,6 +446,7 @@ export function useProjectsHomeController() {
             onReviewFlowRunRequest,
             onReviewProposedPlan,
             onOpenFlowRun,
+            onRetryTurn,
         },
         sidebarProps: {
             isNarrowViewport,

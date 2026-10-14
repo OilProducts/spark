@@ -19,8 +19,8 @@ use spark_storage::{read_trigger_definition, DeletedProjectRecord, ProjectRecord
 use spark_workspace::conversations::{
     ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
-    FlowRunRequestReviewRequest, ProposedPlanReviewRequest, RunContinueRequest, RunLaunchRequest,
-    RunRetryRequest, WorkspaceConversationService,
+    FlowRunRequestReviewRequest, PreparedConversationTurn, ProposedPlanReviewRequest,
+    RunContinueRequest, RunLaunchRequest, RunRetryRequest, WorkspaceConversationService,
 };
 use spark_workspace::live::{
     conversation_envelopes_after, conversation_event_envelope, conversation_snapshot_envelope,
@@ -128,6 +128,10 @@ pub fn router() -> Router<HttpAppState> {
         .route(
             "/conversations/{conversation_id}/turns",
             post(send_conversation_turn),
+        )
+        .route(
+            "/conversations/{conversation_id}/turns/{turn_id}/retry",
+            post(retry_conversation_turn),
         )
         .route(
             "/conversations/{conversation_id}/request-user-input/{request_id}/answer",
@@ -361,20 +365,75 @@ async fn send_conversation_turn(
         &runtime_handler_runner_factory,
         &agent_turn_backend,
         &run_event_observer,
+    );
+    run_conversation_turn(
+        settings,
+        live_hub,
+        service,
+        conversation_id,
+        project_path,
+        move |service, conversation_id| service.start_turn(conversation_id, request),
     )
-    .with_live_publisher(live_publisher(&live_hub));
+    .await
+}
+
+async fn retry_conversation_turn(
+    State(settings): State<Arc<SparkSettings>>,
+    State(runtime_handler_runner_factory): State<attractor_api::RuntimeHandlerRunnerFactory>,
+    State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
+    State(run_event_observer): State<RunEventObserverHandle>,
+    State(live_hub): State<Arc<WorkspaceLiveHub>>,
+    AxumPath((conversation_id, turn_id)): AxumPath<(String, String)>,
+    payload: Result<Json<ConversationProjectPathRequest>, JsonRejection>,
+) -> ApiResult<Value> {
+    let project_path = json_payload(payload)?.project_path;
+    let service = conversation_service(
+        &settings,
+        &runtime_handler_runner_factory,
+        &agent_turn_backend,
+        &run_event_observer,
+    );
+    let project_path_for_start = project_path.clone();
+    run_conversation_turn(
+        settings,
+        live_hub,
+        service,
+        conversation_id,
+        project_path,
+        move |service, conversation_id| {
+            service.retry_turn(conversation_id, &project_path_for_start, &turn_id)
+        },
+    )
+    .await
+}
+
+/// Starts a turn, answers with the started snapshot, and completes the turn in
+/// the background while publishing its progress.
+async fn run_conversation_turn(
+    settings: Arc<SparkSettings>,
+    live_hub: Arc<WorkspaceLiveHub>,
+    service: WorkspaceConversationService,
+    conversation_id: String,
+    project_path: String,
+    start: impl FnOnce(
+            &WorkspaceConversationService,
+            &str,
+        ) -> Result<(PreparedConversationTurn, Value), WorkspaceError>
+        + Send
+        + 'static,
+) -> ApiResult<Value> {
+    let service = service.with_live_publisher(live_publisher(&live_hub));
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let conversation_id_for_start = conversation_id.clone();
     let service_for_start = service.clone();
-    let (prepared, started_snapshot) = tokio::task::spawn_blocking(move || {
-        service_for_start.start_turn(&conversation_id_for_start, request)
-    })
-    .await
-    .map_err(|error| {
-        WorkspaceApiError(WorkspaceError::Internal(format!(
-            "conversation turn start task failed: {error}"
-        )))
-    })??;
+    let (prepared, started_snapshot) =
+        tokio::task::spawn_blocking(move || start(&service_for_start, &conversation_id_for_start))
+            .await
+            .map_err(|error| {
+                WorkspaceApiError(WorkspaceError::Internal(format!(
+                    "conversation turn start task failed: {error}"
+                )))
+            })??;
     publish_conversation_after(
         &settings,
         &live_hub,
@@ -400,8 +459,13 @@ async fn send_conversation_turn(
     tokio::spawn(async move {
         let completion_conversation_id = prepared_for_completion.conversation_id.clone();
         let completion_project_path = prepared_for_completion.project_path.clone();
+        let missions = mission_service(&settings_for_completion);
+        let (mission_project, mission_id) = (
+            completion_project_path.clone(),
+            completion_conversation_id.clone(),
+        );
         let completion_result = tokio::task::spawn_blocking(move || {
-            service_for_completion.complete_started_turn_with_progress_payloads(
+            let completed = service_for_completion.complete_started_turn_with_progress_payloads(
                 prepared_for_completion,
                 started_snapshot_for_completion,
                 move |payload| {
@@ -417,7 +481,15 @@ async fn send_conversation_turn(
                         revision,
                     ));
                 },
-            )
+            );
+            // A mission's inbox may have filled while this turn ran.
+            if missions
+                .conversation_mission(&mission_project, &mission_id)
+                .is_some()
+            {
+                let _ = missions.process(&mission_project, &mission_id);
+            }
+            completed
         })
         .await;
 
@@ -454,7 +526,7 @@ async fn send_conversation_turn(
 }
 
 #[derive(Deserialize)]
-struct ConversationInterruptRequest {
+struct ConversationProjectPathRequest {
     project_path: String,
 }
 
@@ -464,7 +536,7 @@ async fn interrupt_conversation_turn(
     State(agent_turn_backend): State<Arc<dyn AgentTurnBackend>>,
     State(run_event_observer): State<RunEventObserverHandle>,
     AxumPath(conversation_id): AxumPath<String>,
-    payload: Result<Json<ConversationInterruptRequest>, JsonRejection>,
+    payload: Result<Json<ConversationProjectPathRequest>, JsonRejection>,
 ) -> ApiResult<Value> {
     let request = json_payload(payload)?;
     let service = conversation_service(

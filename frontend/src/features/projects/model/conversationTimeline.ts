@@ -93,6 +93,7 @@ function buildAssistantTimelineEntries(
         if (segment.kind === 'assistant_message') {
             entries.push({
                 id: segment.id,
+                turnId: turn.id,
                 kind: 'message',
                 role: 'assistant',
                 content: segment.content,
@@ -203,6 +204,7 @@ function buildAssistantTimelineEntries(
         const presentation = turn.status === 'complete' || turn.status === 'failed' ? 'default' : 'thinking'
         entries.push({
             id: `${turn.id}:${presentation}:placeholder`,
+            turnId: turn.id,
             kind: 'message',
             role: 'assistant',
             content: turn.content,

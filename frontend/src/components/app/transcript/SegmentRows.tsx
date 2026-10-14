@@ -52,6 +52,8 @@ export interface TranscriptAttachment {
 
 export interface TranscriptMessageEntry {
     id: string
+    /** The assistant turn this entry belongs to. */
+    turnId?: string
     role: 'user' | 'assistant'
     content: string
     timestamp: string
@@ -477,12 +479,15 @@ export const MessageRow = memo(function MessageRow({
     enableCopy = false,
     formatConversationTimestamp,
     attachmentUrl,
+    onRetryTurn,
 }: {
     entry: TranscriptMessageEntry
     enableCopy?: boolean
     formatConversationTimestamp: (value: string) => string
     /** Where a message's attachments download from; without it they are not shown. */
     attachmentUrl?: (attachmentId: string) => string
+    /** Resends a failed turn's message; without it failed turns offer no retry. */
+    onRetryTurn?: (turnId: string) => void
 }) {
     const shouldRenderAssistantMarkdown =
         entry.role === 'assistant'
@@ -499,6 +504,9 @@ export const MessageRow = memo(function MessageRow({
         && isCodexAuthError(entry.error || entry.content)
     const needsClaudeLogin = entry.role === 'assistant' && entry.status === 'failed'
         && isClaudeCodeAuthError(entry.error || entry.content)
+    const turnId = entry.turnId
+    const retry = entry.role === 'assistant' && entry.status === 'failed' && turnId && onRetryTurn
+        ? () => onRetryTurn(turnId) : undefined
     const canCopy = enableCopy && (
         (entry.role === 'user' && entry.content.length > 0)
         || (
@@ -546,8 +554,11 @@ export const MessageRow = memo(function MessageRow({
                 {entry.attachments?.length && attachmentUrl ? (
                     <MessageAttachments attachments={entry.attachments} attachmentUrl={attachmentUrl} />
                 ) : null}
-                {needsCodexLogin && <CodexReconnect />}
-                {needsClaudeLogin && <ClaudeCodeReconnect />}
+                {(needsCodexLogin || needsClaudeLogin || retry) && <div className="flex flex-wrap gap-2">
+                    {needsCodexLogin && <CodexReconnect />}
+                    {needsClaudeLogin && <ClaudeCodeReconnect onRetry={retry} />}
+                    {retry && <Button size="sm" variant="outline" className="mt-2" onClick={retry}>Retry</Button>}
+                </div>}
             </div>
         </li>
     )

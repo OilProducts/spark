@@ -406,7 +406,7 @@ impl WorkspaceMissionService {
     }
     /// The mission whose conversation this is, if any: a mission's
     /// conversation id is the mission id.
-    pub(crate) fn conversation_mission(
+    pub fn conversation_mission(
         &self,
         project: &str,
         conversation_id: &str,

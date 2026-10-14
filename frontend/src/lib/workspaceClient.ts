@@ -54,6 +54,7 @@ export {
     reviewFlowRunRequestValidated,
     reviewProposedPlanValidated,
     sendConversationTurnValidated,
+    retryConversationTurnValidated,
     submitConversationRequestUserInputValidated,
     interruptConversationTurnValidated,
     updateConversationSettingsValidated,

@@ -1,5 +1,6 @@
 import type { Dispatch, FormEvent, KeyboardEvent, SetStateAction } from 'react'
 import {
+    retryConversationTurnValidated,
     sendConversationTurnValidated,
     type ConversationChatMode,
     type ConversationSnapshotResponse,
@@ -136,31 +137,56 @@ export function useConversationComposer({
             : parsedCommand?.kind === 'switch_mode' ? '' : trimmed
         const chatMode = parsedCommand?.chatMode ?? null
         const attachmentIds = sending.map((entry) => entry.attachment!.id)
-        const afterRevision = getCurrentConversationRevision(conversationId)
-        setPendingConversationTurn({ conversationId, afterRevision })
-        // The activity bar follows the turn even after the chat is left.
-        const { setRunningChat } = useStore.getState()
-        setRunningChat(conversationId, { projectPath: activeProjectPath, revision: afterRevision, sending: true })
-        try {
-            const snapshot = await sendConversationTurnValidated(conversationId, {
-                project_path: activeProjectPath,
-                message: messageToSend,
-                ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
-                chat_mode: chatMode,
-            })
+        await runTurn(conversationId, 'Unable to send the project chat turn.', () => sendConversationTurnValidated(conversationId, {
+            project_path: activeProjectPath,
+            message: messageToSend,
+            ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
+            chat_mode: chatMode,
+        }), () => {
             // Accepted: clear what was sent, keeping anything typed or attached meanwhile.
             clearSentAttachments(conversationId, sending.map((entry) => entry.localId))
             const store = useStore.getState()
             if (store.homeProjectSessionsByPath[activeProjectPath]?.chatDraft === chatDraft) {
                 store.updateHomeProjectSession(activeProjectPath, { chatDraft: '' })
             }
+        })
+    }
+
+    /** Resends a failed turn's message as a new turn; the draft is left alone. */
+    const onRetryTurn = async (turnId: string) => {
+        const conversationId = activeProjectPath ? getCurrentConversationId(activeProjectPath) : null
+        if (!activeProjectPath || !conversationId || isChatInputDisabled) {
+            return
+        }
+        setPanelError(null)
+        await runTurn(conversationId, 'Unable to retry the project chat turn.', () => retryConversationTurnValidated(conversationId, turnId, activeProjectPath))
+    }
+
+    /** Starts a turn through `start`, tracking it as running until the server answers. */
+    const runTurn = async (
+        conversationId: string,
+        failure: string,
+        start: () => Promise<ConversationSnapshotResponse>,
+        onAccepted?: () => void,
+    ) => {
+        if (!activeProjectPath) {
+            return
+        }
+        const afterRevision = getCurrentConversationRevision(conversationId)
+        setPendingConversationTurn({ conversationId, afterRevision })
+        // The activity bar follows the turn even after the chat is left.
+        const { setRunningChat } = useStore.getState()
+        setRunningChat(conversationId, { projectPath: activeProjectPath, revision: afterRevision, sending: true })
+        try {
+            const snapshot = await start()
+            onAccepted?.()
             setPendingConversationTurn(null)
             const shouldKeepFocusOnReplyThread = getCurrentConversationId(activeProjectPath) === conversationId
             applyConversationSnapshot(activeProjectPath, snapshot, 'send-response', {
                 forceWorkspaceSync: shouldKeepFocusOnReplyThread,
             })
         } catch (error) {
-            const message = formatErrorMessage(error, 'Unable to send the project chat turn.')
+            const message = formatErrorMessage(error, failure)
             setPanelError(message)
             // A rejected send may still have started a turn; the server decides whether the chat runs.
             void reconcileRunningChat(conversationId, activeProjectPath)
@@ -186,6 +212,7 @@ export function useConversationComposer({
     return {
         onChatComposerKeyDown,
         onChatComposerSubmit,
+        onRetryTurn,
         onSwitchChatMode,
     }
 }
