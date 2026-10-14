@@ -64,6 +64,8 @@ export interface ConversationTimelineRequestUserInput {
 export type ConversationTimelineEntry =
     | {
         id: string
+        /** The assistant turn this entry belongs to. */
+        turnId?: string
         kind: 'message'
         role: 'user' | 'assistant'
         content: string

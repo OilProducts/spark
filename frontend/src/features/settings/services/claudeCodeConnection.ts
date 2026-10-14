@@ -51,7 +51,7 @@ export function submitClaudeCodeSignInCode(code: string) {
     }, 'Claude Code sign-in code', parseClaudeCodeConnection)
 }
 
-// Also matches turns that failed before Spark recognized sign-in errors.
+// Matches the CLI's own auth errors, bare or wrapped by an older Spark, like the adapter's `requires_login`.
 export function isClaudeCodeAuthError(message: string | null | undefined): boolean {
-    return !!message && /claude code needs sign-in|claude code turn failed \([^)]*\): (failed to authenticate|.*please run \/login)/i.test(message)
+    return !!message && /claude code needs sign-in|please run \/login|^\s*(claude code turn failed \([^)]*\): )?failed to authenticate/i.test(message)
 }

@@ -1263,6 +1263,44 @@ impl WorkspaceConversationService {
         Ok((prepared, snapshot))
     }
 
+    /// Starts a new turn that resends the user input of a failed assistant
+    /// turn: its text, including a mission's delivered prompt, and attachments.
+    pub fn retry_turn(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        turn_id: &str,
+    ) -> WorkspaceResult<(PreparedConversationTurn, Value)> {
+        let project_path = self.bound_chat_project_path(conversation_id, project_path)?;
+        let snapshot = self
+            .repository()
+            .read_snapshot(conversation_id, Some(&project_path))?
+            .unwrap_or(Value::Null);
+        let failed = find_turn(&snapshot, turn_id)
+            .filter(|turn| turn["role"] == "assistant")
+            .ok_or_else(|| WorkspaceError::NotFound(format!("Unknown turn: {turn_id}")))?;
+        if failed["status"] != "failed" {
+            return Err(WorkspaceError::Conflict(
+                "Only a failed turn can be retried.".to_string(),
+            ));
+        }
+        let user = failed["parent_turn_id"]
+            .as_str()
+            .and_then(|id| find_turn(&snapshot, id))
+            .ok_or_else(|| {
+                WorkspaceError::Validation("The failed turn has no message to retry.".to_string())
+            })?;
+        self.start_turn(
+            conversation_id,
+            ConversationTurnRequest {
+                project_path,
+                message: user["content"].as_str().unwrap_or_default().to_string(),
+                attachment_ids: crate::attachments::turn_attachment_ids(user),
+                ..Default::default()
+            },
+        )
+    }
+
     pub fn ingest_agent_turn_output(
         &self,
         conversation_id: &str,

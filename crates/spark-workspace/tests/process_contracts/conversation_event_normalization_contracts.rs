@@ -3715,3 +3715,158 @@ fn claude_stream_interrupt_error_result_completes_shortened_turn() {
     );
     assert_eq!(text_segments[0]["status"], "complete");
 }
+
+fn turn_with<'a>(snapshot: &'a Value, role: &str, nth: usize) -> &'a Value {
+    snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["role"] == role && turn["kind"] == "message")
+        .nth(nth)
+        .unwrap_or_else(|| panic!("{role} turn {nth} in {snapshot}"))
+}
+
+/// Retries the failed assistant turn with the fake CLI signed in again and
+/// checks the new turn resent the same user text.
+fn assert_retry_succeeds(
+    service: &WorkspaceConversationService,
+    id: &str,
+    project: &str,
+    log: &Path,
+    text: &str,
+) {
+    let failed = service.get_snapshot(id, Some(project)).unwrap();
+    let failed_turn = turn_with(&failed, "assistant", 0);
+    assert_eq!(failed_turn["status"], "failed", "{failed}");
+    assert!(failed_turn["error"]
+        .as_str()
+        .unwrap()
+        .contains("Claude Code needs sign-in"));
+    let failed_id = failed_turn["id"].as_str().unwrap();
+    let user_turn = turn_with(&failed, "user", 0)["id"].clone();
+    assert!(matches!(
+        service.retry_turn(id, project, user_turn.as_str().unwrap()),
+        Err(WorkspaceError::NotFound(_))
+    ));
+
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
+    let (prepared, started) = service.retry_turn(id, project, failed_id).unwrap();
+    assert_eq!(prepared.prompt, text);
+    let completed = service
+        .complete_started_turn_with_progress_payloads(prepared, started, |_| {})
+        .unwrap();
+    assert_eq!(turn_with(&completed, "user", 1)["content"], text);
+    assert_eq!(turn_with(&completed, "assistant", 1)["status"], "complete");
+    let sent = std::fs::read_to_string(log).unwrap().matches(text).count();
+    assert!(sent >= 2, "both attempts carry the user text");
+}
+
+#[test]
+fn a_chat_turn_failed_on_sign_in_retries_with_the_same_message() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let log = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set(
+        "SPARK_CLAUDE_CODE_BIN",
+        env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
+    );
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+    {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "auth-error");
+        let (prepared, started) = service
+            .start_turn(
+                "retry-chat",
+                ConversationTurnRequest {
+                    project_path: project.clone(),
+                    message: "Summarize the plan".into(),
+                    provider: Some("claude-code".into()),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .unwrap();
+        let _ = service.complete_started_turn_with_progress_payloads(prepared, started, |_| {});
+    }
+    assert_retry_succeeds(&service, "retry-chat", &project, &log, "Summarize the plan");
+}
+
+#[test]
+fn a_mission_turn_failed_on_sign_in_retries_with_the_same_delivered_prompt() {
+    use spark_workspace::missions::{install_runtime, MissionRuntime, WorkspaceMissionService};
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let log = temp.path().join("claude.log");
+    let _bin = EnvVarGuard::set(
+        "SPARK_CLAUDE_CODE_BIN",
+        env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
+    );
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let config = settings(temp.path());
+    install_runtime(
+        &config,
+        MissionRuntime {
+            agent_turn_backend: WorkspaceConversationService::default_agent_turn_backend(&config),
+            publish: Arc::new(|_| {}),
+        },
+    );
+    let missions = WorkspaceMissionService::new(config.clone());
+    let mission = missions
+        .create(
+            &project,
+            serde_json::from_value(json!({"fields": {"title": "Retry"}})).unwrap(),
+        )
+        .unwrap();
+    let service = WorkspaceConversationService::new(config.clone());
+    service
+        .update_conversation_settings(
+            &mission.id,
+            ConversationSettingsUpdate {
+                project_path: project.clone(),
+                provider: Some("claude-code".into()),
+                expected_revision: Some("0".into()),
+                ..ConversationSettingsUpdate::default()
+            },
+        )
+        .unwrap();
+    {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "auth-error");
+        missions.start(&project, &mission.id).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while turn_status(&service, &mission.id, &project) != Some("failed".into()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "mission turn never failed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert_retry_succeeds(
+        &service,
+        &mission.id,
+        &project,
+        &log,
+        "Begin work on this mission.",
+    );
+}
+
+fn turn_status(service: &WorkspaceConversationService, id: &str, project: &str) -> Option<String> {
+    let snapshot = service.get_snapshot(id, Some(project)).ok()?;
+    snapshot["turns"]
+        .as_array()?
+        .iter()
+        .find(|turn| turn["role"] == "assistant")?["status"]
+        .as_str()
+        .map(str::to_string)
+}

@@ -1671,3 +1671,87 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         noted_revision
     );
 }
+
+#[tokio::test]
+async fn retry_route_resends_only_a_failed_turn() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let backend = ScriptedAgentTurnBackend::new(vec![
+        AgentTurnOutput {
+            events: vec![stream_error_event("sign in first")],
+            ..AgentTurnOutput::default()
+        },
+        AgentTurnOutput {
+            final_assistant_text: Some("Done.".to_string()),
+            ..AgentTurnOutput::default()
+        },
+    ]);
+    let requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let (id, project) = ("conversation-http-retry", "/projects/http-retry");
+    let base = format!("/workspace/api/conversations/{id}");
+    let body = json!({"project_path": project});
+    let assistant_turn = |snapshot: &Value, status: &str| {
+        snapshot["turns"]
+            .as_array()
+            .expect("turns")
+            .iter()
+            .find(|turn| turn["role"] == "assistant" && turn["status"] == status)
+            .map(|turn| turn["id"].as_str().expect("id").to_string())
+    };
+
+    let sent = request_json(
+        app.clone(),
+        "POST",
+        &format!("{base}/turns"),
+        Some(json!({"project_path": project, "message": "Try again later"})),
+    )
+    .await;
+    assert_eq!(sent.0, StatusCode::OK);
+    let failed = wait_for_conversation_snapshot(&settings, id, project, |snapshot| {
+        assistant_turn(snapshot, "failed").is_some()
+    })
+    .await;
+    let failed_id = assistant_turn(&failed, "failed").expect("failed turn");
+
+    for turn in ["turn-unknown", failed["turns"][0]["id"].as_str().unwrap()] {
+        let rejected = request_json(
+            app.clone(),
+            "POST",
+            &format!("{base}/turns/{turn}/retry"),
+            Some(body.clone()),
+        )
+        .await;
+        assert_eq!(rejected.0, StatusCode::NOT_FOUND, "{}", rejected.1);
+    }
+
+    let retried = request_json(
+        app.clone(),
+        "POST",
+        &format!("{base}/turns/{failed_id}/retry"),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(retried.0, StatusCode::OK, "{}", retried.1);
+    let completed = wait_for_conversation_snapshot(&settings, id, project, |snapshot| {
+        assistant_turn(snapshot, "complete").is_some()
+    })
+    .await;
+    let prompts = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .map(|request| request.prompt.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, ["Try again later", "Try again later"]);
+
+    let complete_id = assistant_turn(&completed, "complete").expect("complete turn");
+    let rejected = request_json(
+        app,
+        "POST",
+        &format!("{base}/turns/{complete_id}/retry"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(rejected.0, StatusCode::CONFLICT, "{}", rejected.1);
+}

@@ -46,9 +46,10 @@ fn main() {
                     .and_then(|path| env::split_paths(&path).next())
                     .map(|dir| dir.display().to_string())
                     .unwrap_or_default();
+                let config_dir = env::var("CLAUDE_CONFIG_DIR").unwrap_or_default();
                 let _ = writeln!(
                     log,
-                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
+                    "{}\nCLAUDE_CODE_DISABLE_BACKGROUND_TASKS={background}\nCLAUDE_CONFIG_DIR={config_dir}\nPATH_FIRST={path_first}{instructions}\n-- invocation --",
                     args.join("\n")
                 );
             }

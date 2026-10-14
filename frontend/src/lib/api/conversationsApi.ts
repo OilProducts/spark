@@ -968,6 +968,24 @@ export async function sendConversationTurnValidated(
     )
 }
 
+/** Resends a failed assistant turn's message as a new turn. */
+export async function retryConversationTurnValidated(
+    conversationId: string,
+    turnId: string,
+    projectPath: string,
+): Promise<ConversationSnapshotResponse> {
+    return fetchWorkspaceJsonValidated(
+        `/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/retry`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ project_path: projectPath }),
+        },
+        '/workspace/api/conversations/{id}/turns/{turnId}/retry',
+        parseConversationSnapshotResponse,
+    )
+}
+
 export async function updateConversationSettingsValidated(
     conversationId: string,
     payload: {

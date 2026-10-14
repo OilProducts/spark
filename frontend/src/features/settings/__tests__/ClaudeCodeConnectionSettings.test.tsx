@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ClaudeCodeConnectionControls } from '../ClaudeCodeConnectionSettings'
@@ -65,4 +65,34 @@ it('leaves other failures alone and rejects unsafe sign-in links', () => {
         expect(() => parseClaudeCodeConnection({ ...pending, login_url }, 'test')).toThrow()
     }
     expect(parseClaudeCodeConnection(connected, 'test')).toEqual(connected)
+})
+
+it('shows sign-in text instead of the raw CLI error and retries the failed turn after sign-in', async () => {
+    const user = userEvent.setup()
+    const onRetryTurn = vi.fn()
+    vi.mocked(claudeCodeConnectionRequest).mockResolvedValueOnce(disconnected).mockResolvedValueOnce(pending).mockResolvedValue(connected)
+    render(<ul><MessageRow entry={{ id: 'segment', turnId: 'turn-failed', role: 'assistant', timestamp: '', status: 'failed',
+        content: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+        error: 'Claude Code needs sign-in. Sign in to Claude, then retry your message or run.' }}
+    formatConversationTimestamp={() => ''} onRetryTurn={onRetryTurn} /></ul>)
+    expect(screen.getByText('Claude Code needs sign-in. Your conversation is saved.')).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to authenticate/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetryTurn).toHaveBeenLastCalledWith('turn-failed')
+    cleanup()
+
+    // The CLI's bare text alone, with no friendly error from the adapter.
+    const raw = 'Failed to authenticate: OAuth session expired and could not be refreshed'
+    render(<ul><MessageRow entry={{ id: 'segment', turnId: 'turn-failed', role: 'assistant', timestamp: '', status: 'failed',
+        content: raw, error: raw }} formatConversationTimestamp={() => ''} onRetryTurn={onRetryTurn} /></ul>)
+    expect(screen.getByText('Claude Code needs sign-in. Your conversation is saved.')).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to authenticate/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Sign in to Claude' }))
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByText(/Signed in as spark@example.test/, {}, { timeout: 3000 })
+    await user.click(within(dialog).getByRole('button', { name: 'Retry' }))
+    expect(onRetryTurn).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

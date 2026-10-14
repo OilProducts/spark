@@ -73,6 +73,8 @@ interface ProjectConversationHistoryProps {
         reviewNote?: string | null,
     ) => void | Promise<void>
     onOpenFlowRun: (request: { run_id?: string | null; flow_name: string }) => void
+    /** Resends a failed turn's message. */
+    onRetryTurn?: (turnId: string) => void | Promise<void>
 }
 
 function conversationEntryKey(entry: ConversationTimelineEntry) {
@@ -376,6 +378,7 @@ export function ProjectConversationHistory({
     onReviewFlowRunRequest,
     onReviewProposedPlan,
     onOpenFlowRun,
+    onRetryTurn,
 }: ProjectConversationHistoryProps) {
     const [planReviewNotes, setPlanReviewNotes] = useState<Record<string, string>>({})
     const [fullToolOutputs, setFullToolOutputs] = useState<Record<string, string>>({})
@@ -563,6 +566,7 @@ export function ProjectConversationHistory({
                     enableCopy
                     formatConversationTimestamp={formatConversationTimestamp}
                     attachmentUrl={attachmentUrl}
+                    onRetryTurn={onRetryTurn && ((turnId) => void onRetryTurn(turnId))}
                 />
             )
         }

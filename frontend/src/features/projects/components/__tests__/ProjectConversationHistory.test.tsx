@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ProjectConversationHistory } from '@/features/projects/components/ProjectConversationHistory'
 import { ShowThinkingToggle } from '@/components/app/transcript/SegmentRows'
 import { useStore } from '@/store'
+import { getConversationTimelineEntries, hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
 import { ProjectConversationMarkdown } from '@/features/projects/components/ProjectConversationMarkdown'
 import { TranscriptCopyButton } from '@/components/app/transcript/TranscriptCopyButton'
 import type {
@@ -71,6 +72,7 @@ const makeHistoryElement = (
         pendingProposedPlanId?: string | null
         requestUserInputActionError?: string | null
         submittingRequestUserInputIds?: Record<string, boolean>
+        onRetryTurn?: (turnId: string) => void
     } = {},
 ) =>
     <ProjectConversationHistory
@@ -98,6 +100,7 @@ const makeHistoryElement = (
         onReviewFlowRunRequest={overrides.onReviewFlowRunRequest ?? vi.fn()}
         onReviewProposedPlan={overrides.onReviewProposedPlan ?? vi.fn()}
         onOpenFlowRun={overrides.onOpenFlowRun ?? vi.fn()}
+        onRetryTurn={overrides.onRetryTurn}
     />
 
 const renderHistory = (
@@ -361,6 +364,29 @@ const makeProposedPlan = (
 })
 
 describe('ProjectConversationHistory', () => {
+    it.each(['reasoning', 'plan'] as const)('offers Retry on a failed chat turn with only a %s segment', async (kind) => {
+        const at = '2026-03-10T10:00:00Z'
+        const entries = getConversationTimelineEntries(hydrateConversationRecordFromSnapshot({
+            schema_version: 5, revision: 0, conversation_id: 'conversation-1', conversation_handle: 'thread-1', project_path: '/tmp/project',
+            chat_mode: 'chat', title: 'Chat', created_at: at, updated_at: at,
+            turns: [
+                { id: 'turn-user', role: 'user', content: 'Hi', timestamp: at, kind: 'message', status: 'complete', artifact_id: null },
+                { id: 'turn-failed', role: 'assistant', content: '', timestamp: at, kind: 'message', status: 'failed', artifact_id: null, error: 'Turn interrupted.' },
+            ],
+            segments: [{
+                id: 'only-segment', turn_id: 'turn-failed', order: 1, kind, role: 'assistant', status: 'failed', timestamp: at,
+                updated_at: at, completed_at: at, content: 'Partial work.', artifact_id: null, error: null, source: null, tool_call: null,
+            }],
+            event_log: [], flow_run_requests: [], flow_launches: [], proposed_plans: [],
+        }))
+        const onRetryTurn = vi.fn()
+        renderHistory(entries, { onRetryTurn })
+
+        expect(screen.getByText('Turn interrupted.')).toBeInTheDocument()
+        await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+        expect(onRetryTurn).toHaveBeenCalledWith('turn-failed')
+    })
+
     it('keeps successful copy feedback for 2 seconds, restarts it, and cleans up on unmount', async () => {
         vi.useFakeTimers()
         const writeText = vi.fn().mockResolvedValue(undefined)

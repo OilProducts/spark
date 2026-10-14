@@ -7,8 +7,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from '@/components/ui/input'
 import { claudeCodeConnectionRequest, submitClaudeCodeSignInCode, type ClaudeCodeConnection } from './services/claudeCodeConnection'
 
-/** `autoStart` begins sign-in as soon as the connection reads signed out. */
-export function ClaudeCodeConnectionControls({ autoStart = false }: { autoStart?: boolean }) {
+/** `autoStart` begins sign-in as soon as the connection reads signed out; `onRetry` is offered once signed in. */
+export function ClaudeCodeConnectionControls({ autoStart = false, onRetry }: { autoStart?: boolean; onRetry?: () => void }) {
     const [connection, setConnection] = useState<ClaudeCodeConnection | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -59,7 +59,7 @@ export function ClaudeCodeConnectionControls({ autoStart = false }: { autoStart?
             {!connection ? (error ? 'Connection unavailable.' : 'Checking connection…')
                 : pending ? 'Waiting for sign-in… Finish in the browser window that opened.'
                     : connection.status === 'connected'
-                        ? `Signed in${connection.account?.email ? ` as ${connection.account.email}` : ''}${connection.account?.plan ? ` (${connection.account.plan})` : ''}. You can retry your message or run.`
+                        ? `Signed in${connection.account?.email ? ` as ${connection.account.email}` : ''}${connection.account?.plan ? ` (${connection.account.plan})` : ''}.${onRetry ? '' : ' You can retry your message or run.'}`
                         : 'Claude Code needs sign-in.'}
         </p>
         {connection?.message && <p>{connection.message}</p>}
@@ -76,6 +76,7 @@ export function ClaudeCodeConnectionControls({ autoStart = false }: { autoStart?
             </form>
         </div>}
         <div className="flex flex-wrap gap-2">
+            {onRetry && connection?.status === 'connected' && <Button size="sm" onClick={onRetry}>Retry</Button>}
             {pending ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void request('cancel')}>Cancel sign-in</Button>
                 : <Button size="sm" variant="outline" disabled={disabled} onClick={() => void request('login')}>
                     {connection?.status === 'connected' ? 'Sign in again' : 'Sign in to Claude'}
@@ -93,15 +94,19 @@ export function ClaudeCodeConnectionSettings() {
     </Card>
 }
 
-export function ClaudeCodeReconnect() {
-    return <Dialog>
+/** `onRetry` resends the failed turn the dialog was opened from. */
+export function ClaudeCodeReconnect({ onRetry }: { onRetry?: () => void }) {
+    const [open, setOpen] = useState(false)
+    return <Dialog open={open} onOpenChange={setOpen}>
         <DialogTrigger asChild><Button size="sm" variant="outline" className="mt-2">Sign in to Claude</Button></DialogTrigger>
         <DialogContent>
             <DialogHeader>
                 <DialogTitle>Sign in to Claude</DialogTitle>
-                <DialogDescription>Your conversation is saved. Sign in, then close this dialog and retry your message or run.</DialogDescription>
+                <DialogDescription>
+                    {onRetry ? 'Your conversation is saved. Sign in, then retry.' : 'Your conversation is saved. Sign in, then close this dialog and retry your message or run.'}
+                </DialogDescription>
             </DialogHeader>
-            <ClaudeCodeConnectionControls autoStart />
+            <ClaudeCodeConnectionControls autoStart onRetry={onRetry && (() => { setOpen(false); onRetry() })} />
         </DialogContent>
     </Dialog>
 }

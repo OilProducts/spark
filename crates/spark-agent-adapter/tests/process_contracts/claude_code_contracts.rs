@@ -976,6 +976,46 @@ fn claude_code_sign_in_reports_cli_failures_and_cancels_without_signing_in() {
 }
 
 #[test]
+fn configured_claude_config_dir_reaches_auth_status_login_and_turns() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config_dir = temp.path().join("claude-config");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let log = temp.path().join("claude-args.log");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let _binary = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", "/missing/env-binary");
+    let native = sign_in_settings(&config_dir);
+
+    // The fake CLI keeps its sign-in under CLAUDE_CONFIG_DIR.
+    let mut connection = ClaudeCodeConnection::default();
+    connection.start_login(&native, |_| {}).unwrap();
+    connection.submit_code("good#state").unwrap();
+    settled_status(&mut connection, &native, |status| {
+        status.status == "connected"
+    });
+    assert!(config_dir.join("fake-signed-in").exists());
+    assert_eq!(
+        ClaudeCodeConnection::default()
+            .status(&native)
+            .unwrap()
+            .status,
+        "connected"
+    );
+
+    let mut request = agent_request(temp.path());
+    request.metadata.insert(
+        "spark.execution.settings".into(),
+        json!({"configuration": {"agents": {"native": native}}}),
+    );
+    ClaudeCodeBackend::new().run_agent_turn(request).unwrap();
+    let args = std::fs::read_to_string(log).unwrap();
+    assert!(
+        args.contains(&format!("CLAUDE_CONFIG_DIR={}\n", config_dir.display())),
+        "{args}"
+    );
+}
+
+#[test]
 fn claude_code_auth_failure_asks_for_sign_in_and_keeps_the_cli_reason() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");

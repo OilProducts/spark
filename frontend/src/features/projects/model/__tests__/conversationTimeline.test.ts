@@ -363,4 +363,53 @@ describe('conversation timeline normalization', () => {
       }),
     }))
   })
+
+  describe('failed turn recovery row', () => {
+    const failedTurn = { ...baseSnapshot.turns[1], status: 'failed' as const, error: 'Failed to authenticate: 401' }
+    const segment = (kind: 'reasoning' | 'plan' | 'assistant_message', status: 'complete' | 'failed') => ({
+      ...baseSnapshot.segments[1],
+      id: `${kind}-segment`,
+      kind,
+      status,
+      content: `${kind} text`,
+      error: status === 'failed' ? 'Failed to authenticate: 401' : null,
+    })
+    const recoveryRows = (timeline: ReturnType<typeof buildTimeline>) => timeline.filter((entry) => (
+      entry.kind === 'message' && entry.turnId === 'turn-assistant' && entry.status === 'failed'
+    ))
+
+    it.each([
+      ['reasoning only', [segment('reasoning', 'complete')], 'reasoning'],
+      ['plan only', [segment('plan', 'failed')], 'plan'],
+    ] as const)('adds one retryable row to a failed turn with %s, keeping its segments', (_, segments, kept) => {
+      const timeline = buildTimeline({ ...baseSnapshot, turns: [baseSnapshot.turns[0], failedTurn], segments: [...segments] })
+
+      expect(timeline.some((entry) => entry.id === `${kept}-segment`)).toBe(true)
+      expect(recoveryRows(timeline)).toEqual([expect.objectContaining({
+        role: 'assistant', content: '', error: 'Failed to authenticate: 401',
+      })])
+    })
+
+    it('reuses a failed assistant message as the recovery row', () => {
+      const timeline = buildTimeline({
+        ...baseSnapshot,
+        turns: [baseSnapshot.turns[0], failedTurn],
+        segments: [segment('reasoning', 'complete'), segment('assistant_message', 'failed')],
+      })
+
+      expect(recoveryRows(timeline).map((entry) => entry.id)).toEqual(['assistant_message-segment'])
+    })
+
+    it('offers recovery from only the last failed assistant message of a turn', () => {
+      const first = { ...segment('assistant_message', 'failed'), id: 'first-message', order: 0 }
+      const last = { ...segment('assistant_message', 'failed'), order: 5 }
+      const timeline = buildTimeline({
+        ...baseSnapshot,
+        turns: [baseSnapshot.turns[0], failedTurn],
+        segments: [first, last],
+      })
+
+      expect(recoveryRows(timeline).map((entry) => entry.id)).toEqual(['assistant_message-segment'])
+    })
+  })
 })
