@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -863,6 +863,17 @@ impl CodexAppServerClient {
                     tracing::warn!(%response, "codex app-server turn/interrupt failed");
                 }
             }
+            if let Some(pending) = self.pending_request_user_input.as_ref() {
+                last_activity = Instant::now();
+                if stopping {
+                    // A stopped turn leaves its question unanswered; dropping unregisters it.
+                    self.pending_request_user_input = None;
+                } else if let Some(answers) = pending.pending.take_answers() {
+                    let id = pending.jsonrpc_request_id.clone();
+                    self.pending_request_user_input = None;
+                    self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
+                }
+            }
             if !self.workflow_questions.is_empty() {
                 last_activity = Instant::now();
                 let mut index = 0;
@@ -939,7 +950,6 @@ impl CodexAppServerClient {
                 }
             }
             events.extend(normalized);
-            self.answer_pending_request_user_input()?;
             if completed {
                 break;
             }
@@ -1108,18 +1118,6 @@ impl CodexAppServerClient {
         }))
     }
 
-    fn answer_pending_request_user_input(&mut self) -> Result<(), CodexAppServerError> {
-        let Some(pending_response) = self.pending_request_user_input.take() else {
-            return Ok(());
-        };
-        let result = pending_response.wait_for_result(&mut self.child)?;
-        self.send_json(&json!({
-            "jsonrpc": "2.0",
-            "id": pending_response.jsonrpc_request_id,
-            "result": result,
-        }))
-    }
-
     fn send_json(&mut self, payload: &Value) -> Result<(), CodexAppServerError> {
         let line = serde_json::to_string(payload).map_err(|error| {
             CodexAppServerError::runtime(format!("codex app-server request encode failed: {error}"))
@@ -1178,21 +1176,9 @@ struct PendingRequestUserInputResponse {
     pending: Arc<PendingRequestUserInput>,
 }
 
-impl PendingRequestUserInputResponse {
-    fn wait_for_result(&self, child: &mut Child) -> Result<Value, CodexAppServerError> {
-        loop {
-            if let Some(answers) = self.pending.take_answers() {
-                unregister_request_user_input(&self.pending);
-                return Ok(request_user_input_response_payload(&answers));
-            }
-            if child.try_wait().ok().flatten().is_some() {
-                unregister_request_user_input(&self.pending);
-                return Err(CodexAppServerError::runtime(
-                    "codex app-server exited before request-user-input was answered",
-                ));
-            }
-            self.pending.wait_for_answer(Duration::from_millis(100));
-        }
+impl Drop for PendingRequestUserInputResponse {
+    fn drop(&mut self) {
+        unregister_request_user_input(&self.pending);
     }
 }
 
@@ -1203,7 +1189,6 @@ struct PendingRequestUserInput {
     app_turn_id: Option<String>,
     aliases: Vec<String>,
     state: Mutex<PendingRequestUserInputState>,
-    ready: Condvar,
 }
 
 #[derive(Debug, Default)]
@@ -1216,16 +1201,9 @@ impl PendingRequestUserInput {
         self.state.lock().ok()?.answers.take()
     }
 
-    fn wait_for_answer(&self, timeout: Duration) {
-        if let Ok(guard) = self.state.lock() {
-            let _ = self.ready.wait_timeout(guard, timeout);
-        }
-    }
-
     fn deliver_answers(&self, answers: BTreeMap<String, String>) {
         if let Ok(mut state) = self.state.lock() {
             state.answers = Some(answers);
-            self.ready.notify_all();
         }
     }
 }
@@ -1267,7 +1245,6 @@ fn register_request_user_input_response(message: &Value) -> PendingRequestUserIn
         app_turn_id,
         aliases,
         state: Mutex::new(PendingRequestUserInputState::default()),
-        ready: Condvar::new(),
     });
     if let Ok(mut registry) = request_user_input_registry().lock() {
         for key in request_user_input_registry_keys(&pending) {

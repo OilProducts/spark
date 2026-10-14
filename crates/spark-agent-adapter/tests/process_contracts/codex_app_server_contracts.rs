@@ -584,6 +584,90 @@ fn app_server_request_user_input_blocks_until_backend_answer_is_submitted() {
 }
 
 #[test]
+fn interrupt_while_awaiting_request_user_input_stops_the_turn() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("codex-rpc.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard =
+        EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "interruptible-question");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let _runtime_guard = EnvVarGuard::set(
+        "ATTRACTOR_CODEX_RUNTIME_ROOT",
+        temp.path().join("codex-runtime"),
+    );
+    let project_path = temp.path().to_string_lossy().into_owned();
+    let (event_sender, event_receiver) = mpsc::channel();
+    let request = AgentTurnRequest {
+        conversation_id: "codex-stop-question".to_string(),
+        project_path: project_path.clone(),
+        prompt: "Ask me".to_string(),
+        history: Vec::new(),
+        provider: Some("codex".to_string()),
+        model: None,
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: Some("agent".to_string()),
+        metadata: BTreeMap::new(),
+    };
+    let run_handle = thread::spawn(move || {
+        CodexAppServerBackend::new().run_agent_turn_with_event_sink(
+            request,
+            Some(Arc::new(move |event| {
+                if event.kind == TurnStreamEventKind::RequestUserInputRequested {
+                    let _ = event_sender.send(event);
+                }
+            })),
+        )
+    });
+    event_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("pending request event");
+
+    assert!(CodexAppServerBackend::new().interrupt(&project_path, "codex-stop-question"));
+    let output = run_handle
+        .join()
+        .expect("turn thread")
+        .expect("stopped turn completes");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Stopped."));
+    let completed = output.events.last().expect("turn completed");
+    assert_eq!(completed.kind, TurnStreamEventKind::TurnCompleted);
+    assert!(completed.error.is_none());
+    let messages = read_jsonrpc_log(&log_path);
+    assert!(messages
+        .iter()
+        .any(|message| message["method"] == "turn/interrupt"));
+    assert!(!messages.iter().any(
+        |message| message["id"] == json!("server-request-1") && message.get("result").is_some()
+    ));
+    let late_answer = CodexAppServerBackend::new()
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "codex-stop-question".to_string(),
+            project_path,
+            request_id: "choice".to_string(),
+            assistant_turn_id: "assistant-turn-1".to_string(),
+            answers: BTreeMap::from([("choice".to_string(), "A".to_string())]),
+            request_user_input: None,
+            history: Vec::new(),
+            provider: Some("codex".to_string()),
+            model: None,
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("late answer");
+    assert_eq!(
+        late_answer
+            .thread_resume_failure
+            .and_then(|failure| failure.error_code)
+            .as_deref(),
+        Some("request_user_input_not_pending")
+    );
+}
+
+#[test]
 fn runtime_environment_prepends_first_party_tool_bin_to_path() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");

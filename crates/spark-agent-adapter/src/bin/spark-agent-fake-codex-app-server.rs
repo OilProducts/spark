@@ -16,7 +16,7 @@ fn main() {
             log_path,
             &mode,
             mode == "model-list",
-            mode == "request-user-input",
+            mode == "request-user-input" || mode == "interruptible-question",
             mode == "tool-calls",
         );
     }
@@ -38,7 +38,7 @@ fn run_default(
     for raw in stdin.lock().lines().map_while(Result::ok) {
         let message = serde_json::from_str::<Value>(&raw).expect("json-rpc request");
         log_message(log_path.as_ref(), &message);
-        if awaiting_request_user_input_response {
+        if awaiting_request_user_input_response && message.get("method").is_none() {
             awaiting_request_user_input_response = false;
             emit_turn_completion(
                 &mut stdout,
@@ -187,7 +187,7 @@ fn run_default(
                     );
                 }
             }
-            "turn/interrupt" if mode == "interruptible" => {
+            "turn/interrupt" if mode == "interruptible" || mode == "interruptible-question" => {
                 assert_eq!(
                     message["params"],
                     json!({"threadId": "thread-test", "turnId": "turn-test"})
