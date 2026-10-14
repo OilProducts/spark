@@ -38,6 +38,7 @@ impl TokenUsageBucket {
             || self.cached_input_tokens > 0
             || self.output_tokens > 0
             || self.total_tokens > 0
+            || self.cost_usd.is_some_and(|cost| cost > 0.0)
     }
 
     /// Lenient parse across the payload dialects backends emit: normalized
