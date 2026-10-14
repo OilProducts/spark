@@ -229,6 +229,14 @@ function buildAssistantTimelineEntries(
         })
     }
 
+    // Only the turn's last failed message offers recovery, so a failure is retried from one row.
+    let lastFailed: { turnId?: string } | null = null
+    for (const entry of entries) {
+        if (entry.kind !== 'message' || entry.turnId !== turn.id || entry.status !== 'failed') continue
+        if (lastFailed) delete lastFailed.turnId
+        lastFailed = entry
+    }
+
     return entries
 }
 

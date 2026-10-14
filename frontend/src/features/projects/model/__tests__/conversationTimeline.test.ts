@@ -399,5 +399,17 @@ describe('conversation timeline normalization', () => {
 
       expect(recoveryRows(timeline).map((entry) => entry.id)).toEqual(['assistant_message-segment'])
     })
+
+    it('offers recovery from only the last failed assistant message of a turn', () => {
+      const first = { ...segment('assistant_message', 'failed'), id: 'first-message', order: 0 }
+      const last = { ...segment('assistant_message', 'failed'), order: 5 }
+      const timeline = buildTimeline({
+        ...baseSnapshot,
+        turns: [baseSnapshot.turns[0], failedTurn],
+        segments: [first, last],
+      })
+
+      expect(recoveryRows(timeline).map((entry) => entry.id)).toEqual(['assistant_message-segment'])
+    })
   })
 })
