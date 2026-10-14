@@ -349,28 +349,30 @@ impl ClaudeCodeBackend {
         });
         let started = std::time::Instant::now();
         let mut initialized = false;
-        let mut exited = false;
+        let mut exited_at: Option<std::time::Instant> = None;
         while !control.lock().unwrap().ended {
+            // Checked every iteration: continuous output must not hide an
+            // exit or a missing system/init.
+            {
+                let mut control = control.lock().unwrap();
+                if exited_at.is_none() && matches!(control.child.try_wait(), Ok(Some(_))) {
+                    exited_at = Some(std::time::Instant::now());
+                }
+                if !initialized && started.elapsed() >= Duration::from_secs(5) {
+                    control.log("system/init timeout; using one-shot input");
+                    control.one_shot();
+                    initialized = true;
+                }
+            }
+            // A leftover grandchild may hold stdout open past the process
+            // exit; drain what the process wrote, then stop.
+            if exited_at.is_some_and(|at| at.elapsed() >= Duration::from_millis(200)) {
+                break;
+            }
             let line = match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => line,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // A leftover grandchild may hold stdout open past the
-                    // process exit; stop after one more quiet interval.
-                    if matches!(control.lock().unwrap().child.try_wait(), Ok(Some(_))) {
-                        if exited {
-                            break;
-                        }
-                        exited = true;
-                    }
-                    if !initialized && started.elapsed() >= Duration::from_secs(5) {
-                        let mut control = control.lock().unwrap();
-                        control.log("system/init timeout; using one-shot input");
-                        control.one_shot();
-                        initialized = true;
-                    }
-                    continue;
-                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
             };
             if line.trim().is_empty() {
                 continue;

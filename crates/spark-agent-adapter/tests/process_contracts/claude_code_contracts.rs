@@ -900,6 +900,23 @@ fn claude_code_control_answers_every_request_despite_malformed_traffic() {
 }
 
 #[test]
+fn claude_code_init_fallback_denies_an_outstanding_question() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "question-before-init");
+
+    let started = std::time::Instant::now();
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn_with_event_sink(agent_request(temp.path()), Some(Arc::new(|_| {})))
+        .unwrap();
+
+    // The fake asserts it received the denial before its result.
+    assert_eq!(output.final_assistant_text.as_deref(), Some("All set."));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
+#[test]
 fn claude_code_question_without_a_handler_is_denied() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
@@ -1051,8 +1068,9 @@ fn claude_code_interrupt_after_a_queued_result_interrupts_the_next_model_turn() 
 fn claude_code_crash_after_init_resumes_the_session_once() {
     let _lock = ENV_LOCK.lock().unwrap();
     let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
-    // crash-orphan leaves a descendant holding stdout and stderr open.
-    for mode in ["crash-after-init", "crash-orphan"] {
+    // crash-orphan leaves a descendant holding stdout and stderr open;
+    // crash-chatty-orphan's descendant also keeps writing to stdout.
+    for mode in ["crash-after-init", "crash-orphan", "crash-chatty-orphan"] {
         let temp = tempfile::tempdir().unwrap();
         let log_path = temp.path().join("claude.log");
         let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);

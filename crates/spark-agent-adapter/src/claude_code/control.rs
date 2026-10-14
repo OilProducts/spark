@@ -94,10 +94,16 @@ impl Control {
     }
 
     /// Closes stdin so the CLI ends at its result, as it does without control.
+    /// Pending questions are denied first: the CLI waits on every request.
     pub fn one_shot(&mut self) {
         self.enabled = false;
+        for id in std::mem::take(&mut self.pending).into_keys() {
+            self.deny(
+                &id,
+                "No one can answer this question now; proceed with your best judgment.",
+            );
+        }
         self.stdin.take();
-        self.pending.clear();
     }
 
     pub fn log(&mut self, reason: &str) {

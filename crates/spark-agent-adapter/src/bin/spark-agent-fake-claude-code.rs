@@ -136,6 +136,22 @@ fn main() {
         out.flush().unwrap();
     };
 
+    if mode == "question-before-init" {
+        // Never sends system/init: the init fallback must answer the
+        // outstanding question before it closes stdin.
+        emit(
+            &mut out,
+            json!({"type": "control_request", "request_id": "early-q", "request": {"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [{"question": "Which?", "options": [{"label": "A"}, {"label": "B"}]}]}}}),
+        );
+        let response = read_control();
+        assert_eq!(response["response"]["request_id"], "early-q");
+        assert_eq!(response["response"]["response"]["behavior"], "deny");
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "All set.", "session_id": session_id}),
+        );
+        return;
+    }
     if mode == "request-before-init" {
         emit(
             &mut out,
@@ -314,7 +330,7 @@ fn main() {
         std::io::stdin().read_to_string(&mut remaining).unwrap();
         return;
     }
-    if mode == "crash-after-init" || mode == "crash-orphan" {
+    if mode == "crash-after-init" || mode == "crash-orphan" || mode == "crash-chatty-orphan" {
         if !args.iter().any(|arg| arg == "--resume") {
             emit(
                 &mut out,
@@ -325,6 +341,17 @@ fn main() {
                 // neither reaches EOF when this process exits.
                 std::process::Command::new("sleep")
                     .arg("30")
+                    .spawn()
+                    .unwrap();
+            }
+            if mode == "crash-chatty-orphan" {
+                // The descendant keeps writing blank and non-JSON lines, so
+                // stdout is never quiet after this process exits.
+                std::process::Command::new("sh")
+                    .args([
+                        "-c",
+                        "for i in $(seq 1500); do echo; echo noise; sleep 0.02; done",
+                    ])
                     .spawn()
                     .unwrap();
             }
