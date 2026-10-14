@@ -365,14 +365,20 @@ impl ClaudeCodeBackend {
                 }
             }
             // A leftover grandchild may hold stdout open past the process
-            // exit; drain what the process wrote, then stop.
-            if exited_at.is_some_and(|at| at.elapsed() >= Duration::from_millis(200)) {
+            // exit: stop once stdout goes quiet after the exit, or after a
+            // cap if the grandchild keeps writing.
+            if exited_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) {
                 break;
             }
             let line = match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => line,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if exited_at.is_some() {
+                        break;
+                    }
+                    continue;
+                }
             };
             if line.trim().is_empty() {
                 continue;
