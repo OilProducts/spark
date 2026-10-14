@@ -513,7 +513,8 @@ fn reap(
             Ok(Some(status)) => return Ok(status),
             Ok(None) if std::time::Instant::now() < deadline => {}
             _ => {
-                let _ = control.child.kill();
+                let pid = control.child.id();
+                crate::local_environment::terminate_process_group(pid, Some(&mut control.child));
                 return control.child.wait().map_err(|error| {
                     ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))
                 });
@@ -1321,6 +1322,8 @@ fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
         .map(PathBuf::from)
         .unwrap_or_else(claude_code_executable);
     let mut command = Command::new(&executable);
+    // Its own process group, so a forced stop also ends the agent's tools.
+    crate::local_environment::configure_process_group(&mut command);
     // The agent's shell runs the spark CLI against this Spark, as Codex sessions do.
     command.envs(crate::codex_app_server::spark_agent_environment(
         env::var("PATH").ok().as_deref(),

@@ -474,7 +474,9 @@ pub(super) fn terminate(project_path: &str, conversation_id: &str) -> bool {
     }
     control.stopping = true;
     control.end();
-    control.child.kill().is_ok()
+    let pid = control.child.id();
+    crate::local_environment::terminate_process_group(pid, Some(&mut control.child));
+    true
 }
 
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {

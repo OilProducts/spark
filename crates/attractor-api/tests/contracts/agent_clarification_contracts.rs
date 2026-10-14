@@ -484,9 +484,11 @@ elif 'LONG' in prompt:
 /// A Claude CLI without `interrupt_receipt_v1`: control closes its stdin and
 /// only killing the process stops it.
 const FAKE_CLAUDE_WITHOUT_INTERRUPT: &str = r#"#!/usr/bin/env python3
-import json, sys, time
+import json, subprocess, sys, time
 print(json.dumps({'type':'system','subtype':'init','session_id':'s1','model':'m','tools':[]}), flush=True)
 assert 'LONG' in sys.stdin.readline()
+# A tool subprocess the agent started; stopping the node must end it too.
+open('tool','w').write(str(subprocess.Popen(['sleep','600']).pid))
 open('started','w').close()
 time.sleep(600)
 "#;
@@ -515,7 +517,7 @@ for line in sys.stdin:
 /// never answers `turn/interrupt`, otherwise it acknowledges the interrupt but
 /// never completes the turn. It records its pid in `started`.
 const FAKE_CODEX_UNRESPONSIVE: &str = r#"#!/usr/bin/env python3
-import json, os, sys
+import json, os, subprocess, sys
 def send(x):
     print(json.dumps(x), flush=True)
 for line in sys.stdin:
@@ -527,6 +529,8 @@ for line in sys.stdin:
         send({'id':m['id'],'result':{'thread':{'id':'thread'}}})
     elif method == 'turn/start':
         send({'id':m['id'],'result':{'turn':{'id':'turn'}}})
+        # A tool subprocess the agent started; stopping the node must end it too.
+        with open(cwd+'/tool','w') as f: f.write(str(subprocess.Popen(['sleep','600']).pid))
         with open(cwd+'/started','w') as f: f.write(str(os.getpid()))
     elif method == 'turn/interrupt' and not cwd.endswith('cancel'):
         send({'id':m['id'],'result':{}})
@@ -538,6 +542,24 @@ fn install(temp: &Path, name: &str, script: &str) -> std::path::PathBuf {
     fs::write(&bin, script).unwrap();
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
     bin
+}
+
+/// Asserts the pid recorded in a project file is gone (allowing for reaping).
+fn assert_pid_gone(project: &Path, file: &str) {
+    let pid = fs::read_to_string(project.join(file)).unwrap();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(!alive(), "{} {file} {pid} still running", project.display());
 }
 
 /// Starts a one-agent-node run in its own project directory.
@@ -708,6 +730,9 @@ fn claude_code_node_without_interrupt_is_terminated_on_cancel_and_timeout() {
         attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
     );
     assert_cancel_and_timeout(&service, &settings, temp.path(), "claude-code");
+    for id in ["claude-code-cancel", "claude-code-timeout"] {
+        assert_pid_gone(&temp.path().join(id), "tool");
+    }
     match old_bin {
         Some(value) => std::env::set_var("SPARK_CLAUDE_CODE_BIN", value),
         None => std::env::remove_var("SPARK_CLAUDE_CODE_BIN"),
@@ -735,14 +760,8 @@ fn codex_node_that_does_not_stop_is_terminated_on_cancel_and_timeout() {
     // `wait` bounds each stop at 15s, past the 10s interrupt grace.
     assert_cancel_and_timeout(&service, &settings, temp.path(), "codex");
     for id in ["codex-cancel", "codex-timeout"] {
-        let pid = fs::read_to_string(temp.path().join(id).join("started")).unwrap();
-        let alive = std::process::Command::new("kill")
-            .args(["-0", &pid])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap()
-            .success();
-        assert!(!alive, "{id} app-server {pid} still running");
+        assert_pid_gone(&temp.path().join(id), "started");
+        assert_pid_gone(&temp.path().join(id), "tool");
     }
     for (key, value) in [
         ("SPARK_CODEX_APP_SERVER_BIN", old_bin),

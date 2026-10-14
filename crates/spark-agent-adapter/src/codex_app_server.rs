@@ -510,6 +510,8 @@ impl CodexAppServerClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Its own process group, so a forced stop also ends the agent's tools.
+        crate::local_environment::configure_process_group(&mut command);
         let mut child = command.spawn().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 CodexAppServerError::configuration(format!(
@@ -1072,7 +1074,8 @@ impl CodexAppServerClient {
         if !self.stop.terminate.load(Ordering::SeqCst) {
             return Ok(());
         }
-        let _ = self.child.kill();
+        let pid = self.child.id();
+        crate::local_environment::terminate_process_group(pid, Some(&mut self.child));
         Err(CodexAppServerError::runtime(
             "codex app-server was terminated after its turn did not stop",
         ))
@@ -1575,7 +1578,10 @@ struct CodexJsonrpcTraceLine<'a> {
 impl Drop for CodexAppServerClient {
     fn drop(&mut self) {
         self.workflow_questions.clear();
-        let _ = self.child.kill();
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let pid = self.child.id();
+            crate::local_environment::terminate_process_group(pid, Some(&mut self.child));
+        }
         let _ = self.child.wait();
     }
 }

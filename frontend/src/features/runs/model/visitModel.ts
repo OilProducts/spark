@@ -270,6 +270,9 @@ export function buildRunVisits({
     }
 
     const runEnded = runStatus !== null && TERMINAL_RUN_STATUSES.has(runStatus)
+    // A node stopped by cancel has no stage end of its own; it ends with the run.
+    const runEndedAt = [...events].reverse()
+        .find((event) => event.type === 'PipelineFailed' || event.type === 'PipelineCompleted')?.receivedAt ?? null
     const waiting = new Set(waitingNodeIds)
     const settle = (draft: VisitDraft, isLastRootVisit: boolean) => {
         const { visit } = draft
@@ -287,6 +290,7 @@ export function buildRunVisits({
             visit.outcome = terminal
         } else if (runEnded) {
             visit.outcome = 'interrupted'
+            visit.endedAt ??= runEndedAt
         } else {
             visit.outcome = waiting.has(visit.nodeId) ? 'waiting' : 'running'
         }

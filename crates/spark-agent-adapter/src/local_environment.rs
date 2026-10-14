@@ -666,7 +666,7 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
-fn configure_process_group(command: &mut Command) {
+pub(crate) fn configure_process_group(command: &mut Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -679,7 +679,9 @@ fn configure_process_group(command: &mut Command) {
     }
 }
 
-fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Child>) {
+/// Terminates a process group started with `configure_process_group`: TERM,
+/// then KILL after a grace period, so tool subprocesses die with their agent.
+pub(crate) fn terminate_process_group(process_group_id: u32, mut child: Option<&mut Child>) {
     #[cfg(unix)]
     {
         use rustix::process::{kill_process_group, test_kill_process_group, Pid, Signal};
