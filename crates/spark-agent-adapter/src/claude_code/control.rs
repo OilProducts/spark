@@ -9,6 +9,9 @@ use crate::agent::AgentRequestUserInputAnswerRequest;
 
 const NO_QUESTION_HANDLER: &str =
     "No one can answer questions during this turn. Proceed on your best judgment and state the assumptions you made.";
+const PLAN_SUBMITTED: &str =
+    "Your plan was submitted to the user for review. Stop here; do not implement it.";
+const PLAN_MISSING: &str = "ExitPlanMode needs your plan in `plan`.";
 
 type Key = (String, String);
 type Registry = Mutex<BTreeMap<Key, Weak<Mutex<Control>>>>;
@@ -31,6 +34,8 @@ pub(super) struct Control {
     pub child: Child,
     stdin: Option<Sender<String>>,
     questions: Questions,
+    /// A plan-mode turn: `ExitPlanMode` submits the turn's plan.
+    plan_mode: bool,
     /// Flow clarifications awaiting answers, by request id.
     clarifications: Vec<(String, crate::codergen::ClarificationPoll)>,
     enabled: bool,
@@ -68,6 +73,7 @@ impl Control {
             child,
             stdin: Some(crate::agent::stdin_writer(stdin)),
             questions,
+            plan_mode: plan_mode(request),
             clarifications: Vec::new(),
             enabled: false,
             initialized: false,
@@ -312,6 +318,27 @@ impl Control {
             self.error(id, "can_use_tool needs a tool_name and an object input");
             return None;
         };
+        if tool == "ExitPlanMode" && self.plan_mode {
+            let Some(plan) = input["plan"].as_str().and_then(non_empty) else {
+                self.deny(id, PLAN_MISSING);
+                return None;
+            };
+            let plan = plan.to_string();
+            self.deny(id, PLAN_SUBMITTED);
+            // The plan Codex reports as a completed Plan item; one item per
+            // turn, so a resubmitted plan replaces the earlier one.
+            return Some(stream_event(
+                TurnStreamEventKind::ContentCompleted,
+                message["session_id"].as_str(),
+                "plan_completed",
+                |event| {
+                    event.channel = Some(TurnStreamChannel::Plan);
+                    event.content_delta = Some(plan.clone());
+                    event.message = Some(plan);
+                    event.source.item_id = Some("plan".into());
+                },
+            ));
+        }
         if tool != "AskUserQuestion" {
             self.allow(id, input.clone());
             return None;

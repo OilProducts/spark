@@ -3785,6 +3785,50 @@ fn claude_chat_turns_on_one_session_each_report_their_own_usage_delta() {
 }
 
 #[test]
+fn claude_plan_mode_turn_creates_a_pending_review_proposed_plan() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let _bin = EnvVarGuard::set(
+        "SPARK_CLAUDE_CODE_BIN",
+        env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
+    );
+    // The fake submits a plan through ExitPlanMode and asserts the deny.
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "exit-plan-mode");
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+
+    let snapshot = service
+        .execute_turn(
+            "claude-plan",
+            ConversationTurnRequest {
+                project_path: project,
+                message: "Plan it.".into(),
+                provider: Some("claude-code".into()),
+                chat_mode: Some("plan".into()),
+                ..ConversationTurnRequest::default()
+            },
+        )
+        .unwrap();
+
+    let plan = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|segment| segment["kind"] == "plan")
+        .expect("plan segment");
+    assert_eq!(plan["content"], "# Plan\n\n- Do the thing.");
+    let artifact = &snapshot["proposed_plans"][0];
+    assert_eq!(artifact["status"], "pending_review");
+    assert_eq!(artifact["content"], "# Plan\n\n- Do the thing.");
+    assert_eq!(plan["artifact_id"], artifact["id"]);
+}
+
+#[test]
 fn claude_stream_interrupt_error_result_completes_shortened_turn() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();
