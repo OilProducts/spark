@@ -33,6 +33,9 @@ const CLAUDE_CODE_PERMISSION_MODE_ENV: &str = "SPARK_CLAUDE_CODE_PERMISSION_MODE
 const CLAUDE_CODE_CONFIG_DIR_ENV: &str = "SPARK_CLAUDE_CODE_CONFIG_DIR";
 const DEFAULT_PERMISSION_MODE: &str = "bypassPermissions";
 const TOOL_RESULT_PREVIEW_LIMIT: usize = 4000;
+/// The resumed session's cumulative `modelUsage` at the start of a turn, as
+/// recorded in the previous turn's usage payload under `model_usage`.
+pub const MODEL_USAGE_SNAPSHOT_METADATA_KEY: &str = "spark.runtime.claude_code.model_usage";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeCodeError {
@@ -103,6 +106,7 @@ impl ClaudeCodeBackend {
                     .metadata
                     .remove("spark.runtime.claude_code.session_id");
                 request.metadata.remove("claude_code.session_id");
+                request.metadata.remove(MODEL_USAGE_SNAPSHOT_METADATA_KEY);
                 let mut output = self.run_once(&request, event_sink, None)?;
                 let discarded_session_id = resumed_session_id.unwrap();
                 output.thread_resume_failure = Some(AgentThreadResumeFailure {
@@ -233,6 +237,11 @@ impl ClaudeCodeBackend {
 
         let app_turn_id = Uuid::new_v4().to_string();
         let mut turn = ClaudeCodeTurnState::default();
+        if resume_session_id.is_some() {
+            if let Some(snapshot) = request.metadata.get(MODEL_USAGE_SNAPSHOT_METADATA_KEY) {
+                turn.start_model_usage = snapshot.clone();
+            }
+        }
         let mut events: Vec<TurnStreamEvent> = Vec::new();
         let mut raw_log_lines: Vec<AgentRawLogLine> = Vec::new();
         let control = control::Control::register(child, stdin, request);
@@ -606,6 +615,7 @@ struct ClaudeCodeTurnState {
     result_subtype: Option<String>,
     result_payload: Option<Value>,
     usage_payload: Option<Value>,
+    start_model_usage: Value,
     is_error: bool,
     block_counter: usize,
     partial_block_ids: BTreeMap<usize, String>,
@@ -893,15 +903,9 @@ impl ClaudeCodeTurnState {
                 },
             ));
         }
-        if let Some(usage) = message.get("usage").filter(|value| !value.is_null()) {
-            let mut usage_payload = usage.clone();
-            if let Some(object) = usage_payload.as_object_mut() {
-                for key in ["total_cost_usd", "num_turns", "duration_ms"] {
-                    if let Some(value) = message.get(key) {
-                        object.insert(key.to_string(), value.clone());
-                    }
-                }
-            }
+        if let Some(model_usage) = message.get("modelUsage").filter(|value| value.is_object()) {
+            let usage_payload =
+                usage_payload_from_model_usage(model_usage, &self.start_model_usage);
             self.usage_payload = Some(usage_payload.clone());
             events.push(stream_event(
                 TurnStreamEventKind::TokenUsageUpdated,
@@ -1026,6 +1030,53 @@ fn tool_result_preview(block: &Value) -> Value {
     }
 }
 
+/// `modelUsage` is cumulative per Claude session, so a turn's usage is the
+/// per-model delta against the session's snapshot at turn start. Input
+/// includes cache reads and creation; cached input is the cache reads. The
+/// cumulative snapshot rides along as `model_usage` for the next resumed turn.
+fn usage_payload_from_model_usage(model_usage: &Value, start: &Value) -> Value {
+    let read = |entry: &Value, key: &str| entry.get(key).and_then(Value::as_f64).unwrap_or(0.0);
+    let mut by_model = serde_json::Map::new();
+    let (mut input, mut cached, mut creation, mut output, mut cost) = (0, 0, 0, 0, 0.0);
+    for (model, current) in model_usage.as_object().into_iter().flatten() {
+        let delta = |key| (read(current, key) - read(&start[model.as_str()], key)).max(0.0);
+        let model_cached = delta("cacheReadInputTokens") as u64;
+        let model_creation = delta("cacheCreationInputTokens") as u64;
+        let model_input = delta("inputTokens") as u64 + model_cached + model_creation;
+        let model_output = delta("outputTokens") as u64;
+        let model_cost = delta("costUSD");
+        if model_input + model_output == 0 && model_cost == 0.0 {
+            continue;
+        }
+        input += model_input;
+        cached += model_cached;
+        creation += model_creation;
+        output += model_output;
+        cost += model_cost;
+        by_model.insert(
+            model.clone(),
+            json!({
+                "input_tokens": model_input,
+                "cached_input_tokens": model_cached,
+                "cache_creation_input_tokens": model_creation,
+                "output_tokens": model_output,
+                "total_tokens": model_input + model_output,
+                "cost_usd": model_cost,
+            }),
+        );
+    }
+    json!({
+        "input_tokens": input,
+        "cached_input_tokens": cached,
+        "cache_creation_input_tokens": creation,
+        "output_tokens": output,
+        "total_tokens": input + output,
+        "cost_usd": cost,
+        "by_model": by_model,
+        "model_usage": model_usage,
+    })
+}
+
 pub fn usage_from_claude_code_usage_payload(payload: &Value) -> Option<Usage> {
     let object = payload.as_object()?;
     let read = |key: &str| object.get(key).and_then(Value::as_u64);
@@ -1034,7 +1085,7 @@ pub fn usage_from_claude_code_usage_payload(payload: &Value) -> Option<Usage> {
         output_tokens: read("output_tokens").unwrap_or(0),
         total_tokens: 0,
         reasoning_tokens: None,
-        cache_read_tokens: read("cache_read_input_tokens"),
+        cache_read_tokens: read("cached_input_tokens"),
         cache_write_tokens: read("cache_creation_input_tokens"),
         raw: Some(payload.clone()),
     };

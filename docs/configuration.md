@@ -226,6 +226,12 @@ paste the code it shows. Claude Code stores and refreshes the credentials. A
 turn that fails because the sign-in expired offers the same sign-in from the
 transcript.
 
+Spark requires Claude Code **2.1.281 or newer**. Spark relies on the
+stream-json session fixes in 2.1.281 and on the per-session cumulative
+`modelUsage` and cost that 2.1.277+ reports, from which each turn's token usage
+and cost are taken. Control features are gated on the capabilities the CLI
+announces at startup, so Spark does not check the version at runtime.
+
 Optional native fields are `codex_binary`, `codex_runtime_root`, `codex_seed_dir`,
 `claude_binary`, and `claude_config_dir`. Existing `SPARK_CODEX_APP_SERVER_BIN`,
 `ATTRACTOR_CODEX_RUNTIME_ROOT`, `ATTRACTOR_CODEX_SEED_DIR`, `SPARK_CLAUDE_CODE_BIN`,

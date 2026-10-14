@@ -34,7 +34,7 @@ pub use attachments::{AgentAttachment, AGENT_ATTACHMENTS_METADATA_KEY};
 pub use claude_code::{
     claude_code_models_from_list_result, list_available_claude_code_models,
     usage_from_claude_code_usage_payload, ClaudeCodeBackend, ClaudeCodeError,
-    ClaudeCodeModelMetadata, CLAUDE_CODE_BACKEND,
+    ClaudeCodeModelMetadata, CLAUDE_CODE_BACKEND, MODEL_USAGE_SNAPSHOT_METADATA_KEY,
 };
 pub use codergen::{
     ActiveCodergenSession, ActiveCodergenSessionGuard, CodergenBackend, CodergenBackendOutput,

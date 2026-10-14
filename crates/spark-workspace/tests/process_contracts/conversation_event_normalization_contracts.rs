@@ -3605,6 +3605,56 @@ fn claude_questions_checkpoint_resume_and_expire_using_existing_segments() {
 }
 
 #[test]
+fn claude_chat_turns_on_one_session_each_report_their_own_usage_delta() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let project = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let _bin = EnvVarGuard::set(
+        "SPARK_CLAUDE_CODE_BIN",
+        env!("CARGO_BIN_EXE_spark-workspace-fake-claude-code"),
+    );
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
+    let service = WorkspaceConversationService::new(settings(temp.path()));
+    for message in ["first", "second"] {
+        service
+            .execute_turn(
+                "claude-usage",
+                ConversationTurnRequest {
+                    project_path: project.clone(),
+                    message: message.into(),
+                    provider: Some("claude-code".into()),
+                    ..ConversationTurnRequest::default()
+                },
+            )
+            .unwrap();
+    }
+    let snapshot = service
+        .get_snapshot("claude-usage", Some(&project))
+        .unwrap();
+    let usage = snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["role"] == "assistant")
+        .map(|turn| {
+            assert_eq!(turn["app_thread_id"], "sess-fake-claude-1");
+            assert_eq!(turn["token_usage_breakdown"], turn["token_usage"]);
+            (
+                turn["token_usage"]["input_tokens"].clone(),
+                turn["token_usage"]["by_model"]["claude-opus-4-8"]["cost_usd"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    // The second result's modelUsage is cumulative; the turn reports only its delta.
+    assert_eq!(usage, [(json!(12), json!(0.5)), (json!(101), json!(0.25))]);
+}
+
+#[test]
 fn claude_stream_interrupt_error_result_completes_shortened_turn() {
     let _lock = ENV_LOCK.lock().unwrap();
     let temp = tempfile::tempdir().unwrap();

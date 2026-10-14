@@ -44,6 +44,100 @@ fn completed_entry(sequence: u64, adapter_event_type: &str, payload: Value) -> J
 }
 
 #[test]
+fn claude_code_usage_counts_under_reported_models_with_reported_cost() {
+    let by_model = json!({
+        "claude-sonnet-5-5": {"input_tokens": 1000, "cached_input_tokens": 600,
+            "cache_creation_input_tokens": 100, "output_tokens": 50, "total_tokens": 1050,
+            "cost_usd": 0.25},
+        "claude-haiku-5-5": {"input_tokens": 20, "cached_input_tokens": 0,
+            "output_tokens": 5, "total_tokens": 25, "cost_usd": 0.001},
+    });
+    let entries = vec![
+        // In flight: the session event's usage counts under the reported models.
+        journal_entry(
+            1,
+            "CodergenAdapter",
+            json!({"adapter_event_type": "claude_code_session_event", "node_id": "plan",
+                "payload": {"token_usage": {"input_tokens": 1020, "by_model": by_model}}}),
+        ),
+        completed_entry(
+            2,
+            "claude_code_request_completed",
+            json!({"node_id": "implement", "model": "haiku",
+                "token_usage": {"input_tokens": 1020, "output_tokens": 55, "by_model": by_model}}),
+        ),
+    ];
+
+    let breakdown = project_run_usage(&entries, "fallback-model").expect("usage");
+    assert_eq!(
+        breakdown.by_model.keys().collect::<Vec<_>>(),
+        ["claude-haiku-5-5", "claude-sonnet-5-5"]
+    );
+    let sonnet = breakdown.by_model["claude-sonnet-5-5"];
+    assert_eq!(sonnet.input_tokens, 2000);
+    assert_eq!(sonnet.cached_input_tokens, 1200);
+    assert_eq!(breakdown.totals.output_tokens, 110);
+
+    let cost = estimate_model_cost(&breakdown).expect("cost");
+    assert_eq!(cost["status"], "estimated");
+    assert_eq!(cost["unpriced_models"], json!([]));
+    assert_eq!(cost["by_model"]["claude-sonnet-5-5"]["amount"], json!(0.5));
+    assert_eq!(cost["by_model"]["claude-haiku-5-5"]["amount"], json!(0.002));
+    assert_eq!(cost["amount"], json!(0.502));
+}
+
+#[test]
+fn claude_code_cost_only_model_keeps_its_reported_cost() {
+    let cost_only = json!({"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0,
+        "total_tokens": 0, "cost_usd": 0.25});
+    let session = |sequence, by_model: Value| {
+        journal_entry(
+            sequence,
+            "CodergenAdapter",
+            json!({"adapter_event_type": "claude_code_session_event", "node_id": "plan",
+                "payload": {"token_usage": {"by_model": by_model}}}),
+        )
+    };
+    let completed = |sequence, by_model: Value| {
+        journal_entry(
+            sequence,
+            "CodergenAdapter",
+            json!({"adapter_event_type": "claude_code_request_completed", "node_id": "plan",
+                "payload": {"model": "sonnet", "token_usage": {"by_model": by_model}}}),
+        )
+    };
+
+    // Alone: the in-flight session event and then its completion.
+    let alone = json!({"claude-sonnet-5-5": cost_only});
+    let in_flight = project_run_usage(&[session(1, alone.clone())], "fallback").expect("usage");
+    assert_eq!(in_flight.by_model["claude-sonnet-5-5"].cost_usd, Some(0.25));
+    let entries = vec![session(1, alone.clone()), completed(2, alone)];
+    let breakdown = project_run_usage(&entries, "fallback").expect("usage");
+    assert_eq!(breakdown.totals.total_tokens, 0);
+    let cost = estimate_model_cost(&breakdown).expect("cost");
+    assert_eq!(cost["status"], "estimated");
+    assert_eq!(cost["amount"], json!(0.25));
+
+    // Alongside a token-bearing model, counted once after completion.
+    let both = json!({
+        "claude-sonnet-5-5": cost_only,
+        "claude-haiku-5-5": {"input_tokens": 20, "output_tokens": 5, "total_tokens": 25,
+            "cost_usd": 0.001},
+    });
+    let entries = vec![session(1, both.clone()), completed(2, both)];
+    let breakdown = project_run_usage(&entries, "fallback").expect("usage");
+    assert_eq!(
+        breakdown.by_model.keys().collect::<Vec<_>>(),
+        ["claude-haiku-5-5", "claude-sonnet-5-5"]
+    );
+    assert_eq!(breakdown.totals.total_tokens, 25);
+    let cost = estimate_model_cost(&breakdown).expect("cost");
+    assert_eq!(cost["unpriced_models"], json!([]));
+    assert_eq!(cost["by_model"]["claude-sonnet-5-5"]["amount"], json!(0.25));
+    assert_eq!(cost["amount"], json!(0.251));
+}
+
+#[test]
 fn request_completed_events_aggregate_by_model_across_payload_dialects() {
     let entries = vec![
         // Normalized rust Usage shape.

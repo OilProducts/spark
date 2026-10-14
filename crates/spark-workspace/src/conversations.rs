@@ -1188,6 +1188,20 @@ impl WorkspaceConversationService {
                 "spark.runtime.codex_app_server.thread_id"
             };
             metadata.insert(key.to_string(), json!(thread_id));
+            // The resumed session's cumulative usage, which the next turn subtracts.
+            let model_usage = snapshot["turns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .rev()
+                .filter(|turn| turn["app_thread_id"].as_str() == Some(thread_id))
+                .find_map(|turn| turn["token_usage"].get("model_usage"));
+            if let Some(model_usage) = model_usage {
+                metadata.insert(
+                    spark_agent_adapter::MODEL_USAGE_SNAPSHOT_METADATA_KEY.to_string(),
+                    model_usage.clone(),
+                );
+            }
         }
         if metadata["spark.execution.settings"]["configuration"]["agents"]["native"]
             ["codex_jsonrpc_trace"]

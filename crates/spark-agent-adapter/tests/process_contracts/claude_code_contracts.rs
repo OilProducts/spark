@@ -436,6 +436,55 @@ fn claude_code_result_only_and_empty_result_contracts() {
 }
 
 #[test]
+fn claude_code_usage_is_the_per_model_delta_of_cumulative_model_usage() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "default");
+
+    let fresh = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect("fresh turn");
+    let usage = fresh.token_usage.expect("fresh usage");
+    assert_eq!(usage["input_tokens"], json!(12));
+    assert_eq!(usage["cached_input_tokens"], json!(5));
+    assert_eq!(usage["output_tokens"], json!(34));
+    assert_eq!(
+        usage["by_model"]["claude-opus-4-8"],
+        json!({"input_tokens": 10, "cached_input_tokens": 5, "cache_creation_input_tokens": 2,
+            "output_tokens": 30, "total_tokens": 40, "cost_usd": 0.5})
+    );
+    assert_eq!(
+        usage["by_model"]["claude-haiku-4-5"]["input_tokens"],
+        json!(2)
+    );
+    assert_eq!(fresh.token_usage_breakdown.as_ref(), Some(&usage));
+
+    let mut resumed_request = agent_request(temp.path());
+    resumed_request.metadata.insert(
+        "spark.runtime.claude_code.session_id".to_string(),
+        json!(fresh.app_thread_id.expect("session id")),
+    );
+    resumed_request.metadata.insert(
+        "spark.runtime.claude_code.model_usage".to_string(),
+        usage["model_usage"].clone(),
+    );
+    let resumed = ClaudeCodeBackend::new()
+        .run_agent_turn(resumed_request)
+        .expect("resumed turn")
+        .token_usage
+        .expect("resumed usage");
+    assert_eq!(
+        resumed["by_model"],
+        json!({"claude-opus-4-8": {"input_tokens": 101, "cached_input_tokens": 100,
+            "cache_creation_input_tokens": 0, "output_tokens": 10, "total_tokens": 111,
+            "cost_usd": 0.25}})
+    );
+    assert_eq!(resumed["input_tokens"], json!(101));
+    assert_eq!(resumed["cost_usd"], json!(0.25));
+}
+
+#[test]
 fn claude_code_codergen_streams_prefix_and_reports_completed_event_with_usage() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
