@@ -328,15 +328,13 @@ pub fn materialize_segment_for_event(
                         build_segment_source(event, None),
                     )
                 });
-            set_string_value(
-                &mut segment,
-                "content",
-                if complete {
-                    "Context compacted to continue the turn."
-                } else {
-                    "Compacting conversation context..."
-                },
-            );
+            // The backend may say how much the compaction freed.
+            let content = match event.message.as_deref().and_then(non_empty_string) {
+                Some(message) if complete => message,
+                _ if complete => "Context compacted to continue the turn.".to_string(),
+                _ => "Compacting conversation context...".to_string(),
+            };
+            set_string_value(&mut segment, "content", &content);
             set_string_value(
                 &mut segment,
                 "status",

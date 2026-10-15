@@ -102,6 +102,14 @@ export type ConversationTimelineEntry =
         status: ConversationSegmentStatus
     }
     | {
+        /** An agent warning such as a retry or rate limit. */
+        id: string
+        kind: 'warning'
+        role: 'system'
+        timestamp: string
+        content: string
+    }
+    | {
         id: string
         kind: 'request_user_input'
         role: 'system'

@@ -856,6 +856,49 @@ fn runtime_environment_seeds_only_from_the_explicit_seed_dir_never_the_host_home
 }
 
 #[test]
+fn app_server_error_codex_will_retry_is_a_warning_and_the_turn_goes_on() {
+    let mut state = CodexAppServerTurnState::default();
+    let events = process_codex_app_server_message(
+        &json!({
+            "method": "error",
+            "params": {"error": {"message": "stream disconnected"}, "threadId": "t", "turnId": "u", "willRetry": true}
+        }),
+        &mut state,
+    );
+
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, TurnStreamEventKind::Other("warning".into()));
+    assert_eq!(
+        events[0].message.as_deref(),
+        Some("stream disconnected; retrying")
+    );
+    assert!(events[0].error.is_none());
+    assert!(
+        state.turn_status.is_none() && state.turn_error.is_none() && state.last_error.is_none()
+    );
+}
+
+#[test]
+fn app_server_token_usage_records_context_occupancy() {
+    let mut state = CodexAppServerTurnState::default();
+    let events = process_codex_app_server_message(
+        &json!({
+            "method": "thread/tokenUsage/updated",
+            "params": {"threadId": "t", "turnId": "u", "tokenUsage": {
+                "total": {"totalTokens": 90000, "inputTokens": 80000, "cachedInputTokens": 0, "outputTokens": 10000, "reasoningOutputTokens": 0},
+                "last": {"totalTokens": 25000, "inputTokens": 24000, "cachedInputTokens": 20000, "outputTokens": 1000, "reasoningOutputTokens": 0},
+                "modelContextWindow": 258400
+            }}
+        }),
+        &mut state,
+    );
+
+    let context = json!({"used_tokens": 24000, "window_tokens": 258400});
+    assert_eq!(events[0].token_usage.as_ref().unwrap()["context"], context);
+    assert_eq!(state.last_token_usage_payload.unwrap()["context"], context);
+}
+
+#[test]
 fn app_server_error_notification_reads_generated_error_message_shape() {
     let mut state = CodexAppServerTurnState::default();
     let events = process_codex_app_server_message(

@@ -719,6 +719,15 @@ describe('ProjectConversationHistory', () => {
         expect(within(row).getByText('Context compacted to continue the turn.')).toBeVisible()
     })
 
+    it('renders agent warnings as event lines', () => {
+        renderHistory([
+            { id: 'warning-1', kind: 'warning', role: 'system', timestamp: '2026-03-10T10:00:11Z', content: 'API error 529 (overloaded); retrying in 4s (attempt 2 of 10)' },
+        ])
+
+        const row = screen.getByTestId('project-warning-row-warning-1')
+        expect(within(row).getByText('API error 529 (overloaded); retrying in 4s (attempt 2 of 10)')).toBeVisible()
+    })
+
     it('renders plan entries as dedicated markdown cards', () => {
         renderHistory([
             makePlanEntry({

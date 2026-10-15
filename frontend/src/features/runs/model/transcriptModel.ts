@@ -12,6 +12,8 @@ export type RunTranscriptRow =
     | { kind: 'message'; segment: RunTranscriptSegment; entry: TranscriptMessageEntry }
     | { kind: 'thinking'; segment: RunTranscriptSegment; entry: TranscriptMessageEntry }
     | { kind: 'tool_call'; segment: RunTranscriptSegment; entry: TranscriptToolCallEntry }
+    /** A context compaction or agent warning, shown as an event line. */
+    | { kind: 'event'; segment: RunTranscriptSegment; text: string; warning: boolean }
 
 // Turn and segment ids are only unique within one node execution, so
 // identity is composed from the execution (run, node, visit, attempt).
@@ -80,7 +82,13 @@ export function buildRunTranscriptRow(segment: RunTranscriptSegment): RunTranscr
             },
         }
     }
-    // Other kinds (agent events, request_user_input, compaction) are visible
-    // in the raw journal; the transcript stays focused on the agent exchange.
+    if (segment.kind === 'context_compaction') {
+        return { kind: 'event', segment, text: segment.content || 'Context compacted.', warning: false }
+    }
+    if (segment.kind === 'agent_event' && segment.category === 'warning') {
+        return { kind: 'event', segment, text: segment.content, warning: true }
+    }
+    // Other kinds (other agent events, request_user_input) are visible in the
+    // raw journal; the transcript stays focused on the agent exchange.
     return null
 }
