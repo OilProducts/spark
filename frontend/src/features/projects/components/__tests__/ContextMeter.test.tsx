@@ -14,7 +14,6 @@ describe('ContextMeter', () => {
             turn('a1', 'assistant', { context: { used_tokens: 900_000, window_tokens: 1_000_000 } }),
             turn('a2', 'assistant', { input_tokens: 5, context: { used_tokens: 24_000, window_tokens: 1_000_000 } }),
             turn('u3', 'user'),
-            turn('a3', 'assistant', { input_tokens: 5 }),
         ])
         const { rerender } = render(<ContextMeter usage={usage} />)
         expect(screen.getByTestId('chat-context-meter')).toHaveTextContent('Context 24k / 1M · 2%')
@@ -23,6 +22,12 @@ describe('ContextMeter', () => {
         expect(screen.getByTestId('chat-context-meter')).toHaveTextContent('Context window 200k')
 
         rerender(<ContextMeter usage={latestContextUsage([turn('a1', 'assistant', { input_tokens: 5 }), turn('u2', 'user')])} />)
+        expect(screen.queryByTestId('chat-context-meter')).toBeNull()
+
+        rerender(<ContextMeter usage={latestContextUsage([
+            turn('a1', 'assistant', { context: { used_tokens: 900_000, window_tokens: 1_000_000 } }),
+            turn('a2', 'assistant', { input_tokens: 5 }),
+        ])} />)
         expect(screen.queryByTestId('chat-context-meter')).toBeNull()
     })
 })

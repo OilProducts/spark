@@ -6,19 +6,15 @@ export interface ContextUsage {
     window_tokens: number
 }
 
-/** The context the latest assistant turn that reported one recorded. */
+/** The context the latest assistant turn recorded, or null when that turn recorded none. */
 export function latestContextUsage(turns: Array<ConversationTurnResponse | undefined>): ContextUsage | null {
-    for (let index = turns.length - 1; index >= 0; index -= 1) {
-        const turn = turns[index]
-        const context = turn?.role === 'assistant' ? turn.token_usage?.context as Partial<ContextUsage> | undefined : undefined
-        if (typeof context?.window_tokens === 'number' && context.window_tokens > 0) {
-            return {
-                window_tokens: context.window_tokens,
-                ...(typeof context.used_tokens === 'number' ? { used_tokens: context.used_tokens } : {}),
-            }
-        }
+    const turn = [...turns].reverse().find((candidate) => candidate?.role === 'assistant')
+    const context = turn?.token_usage?.context as Partial<ContextUsage> | undefined
+    if (typeof context?.window_tokens !== 'number' || context.window_tokens <= 0) return null
+    return {
+        window_tokens: context.window_tokens,
+        ...(typeof context.used_tokens === 'number' ? { used_tokens: context.used_tokens } : {}),
     }
-    return null
 }
 
 const tokens = (count: number) => (
