@@ -2575,6 +2575,7 @@ fn tool_call_payload_from_codex_item(item: &Map<String, Value>, default_status: 
     match object_text(item, &["type"]).as_deref() {
         Some("commandExecution") => command_execution_tool_call_payload(item, default_status),
         Some("fileChange") => file_change_tool_call_payload(item, default_status),
+        Some("collabAgentToolCall") => subagent_tool_call_payload(item, default_status),
         _ => Value::Object(item.clone()),
     }
 }
@@ -2613,6 +2614,30 @@ fn command_execution_tool_call_payload(
             .map(Value::String)
             .unwrap_or(Value::Null),
     );
+    Value::Object(tool_call)
+}
+
+/// A collab agent call, shown like any backend's subagent call. Items from
+/// the child thread arrive on their own thread and are not nested here.
+fn subagent_tool_call_payload(item: &Map<String, Value>, default_status: &str) -> Value {
+    let mut tool_call = Map::from_iter([
+        (
+            "id".to_string(),
+            json!(object_text(item, &["id"]).unwrap_or_else(|| "subagent".to_string())),
+        ),
+        ("kind".to_string(), json!("subagent")),
+        (
+            "status".to_string(),
+            json!(normalize_tool_status(item, default_status)),
+        ),
+        (
+            "title".to_string(),
+            json!(object_text(item, &["tool"]).unwrap_or_else(|| "Subagent".to_string())),
+        ),
+    ]);
+    if let Some(prompt) = object_text(item, &["prompt"]) {
+        tool_call.insert("prompt".to_string(), json!(prompt));
+    }
     Value::Object(tool_call)
 }
 
@@ -2804,8 +2829,12 @@ fn reasoning_summary_parts_from_item(item: &Map<String, Value>) -> Option<Vec<St
 }
 
 fn is_tool_item(item: &Map<String, Value>) -> bool {
-    object_text(item, &["type"])
-        .is_some_and(|item_type| matches!(item_type.as_str(), "commandExecution" | "fileChange"))
+    object_text(item, &["type"]).is_some_and(|item_type| {
+        matches!(
+            item_type.as_str(),
+            "commandExecution" | "fileChange" | "collabAgentToolCall"
+        )
+    })
 }
 
 fn is_context_compaction_item(item: &Map<String, Value>) -> bool {

@@ -25,7 +25,7 @@ import {
     ToolCallGroupRow,
     ToolCallRow,
 } from '@/components/app/transcript/SegmentRows'
-import { groupTranscript } from '@/components/app/transcript/groupTranscript'
+import { groupTranscript, type TranscriptToolCallNode } from '@/components/app/transcript/groupTranscript'
 import { statusTextClassName } from '@/components/app/status'
 import { Empty, EmptyDescription, EmptyHeader } from '@/components/ui/empty'
 import { Button } from '@/components/ui/button'
@@ -444,7 +444,12 @@ export function ProjectConversationHistory({
         onToggleToolCallExpanded,
     ])
 
-    const renderToolCall = (entry: ToolCallEntry, variant: 'row' | 'line' = 'row') => (
+    /** A tool call with any subagent calls nested under it as lines. */
+    const renderToolCall = (
+        entry: ToolCallEntry,
+        variant: 'row' | 'line' = 'row',
+        children: TranscriptToolCallNode<ConversationTimelineEntry>[] = [],
+    ): ReactNode => (
         <ToolCallRow
             key={conversationEntryKey(entry)}
             entry={entry}
@@ -454,6 +459,7 @@ export function ProjectConversationHistory({
             isExpanded={expandedToolCalls[entry.toolCall.id] === true}
             loadFullOutputError={fullToolOutputErrors[entry.id] ?? null}
             onToggleToolCallExpanded={() => onToolCallExpanded(entry)}
+            childCalls={children.map((child) => isToolCallEntry(child.item) ? renderToolCall(child.item, 'line', child.children) : null)}
         />
     )
 
@@ -584,8 +590,8 @@ export function ProjectConversationHistory({
         return blocks.map((block) => {
             if (block.kind === 'item') return renderEntryRow(block.item)
             const [firstMember] = block.members
-            if (block.members.length === 1 && isToolCallEntry(firstMember.item)) {
-                return renderToolCall(firstMember.item)
+            if (block.members.length === 1 && firstMember.kind === 'tool_call' && isToolCallEntry(firstMember.item)) {
+                return renderToolCall(firstMember.item, 'row', firstMember.children)
             }
             return (
                 <ToolCallGroupRow
@@ -595,9 +601,9 @@ export function ProjectConversationHistory({
                     onToggle={() => setOpenToolGroups((current) => ({ ...current, [block.id]: !current[block.id] }))}
                     testId={`project-tool-group-${firstMember.kind === 'tool_call' ? firstMember.toolCall.id : firstMember.item.id}`}
                 >
-                    {block.members.map(({ item }) => isToolCallEntry(item)
-                        ? renderToolCall(item, 'line')
-                        : isThinkingEntry(item) ? renderThinking(item) : null)}
+                    {block.members.map((member) => member.kind === 'tool_call' && isToolCallEntry(member.item)
+                        ? renderToolCall(member.item, 'line', member.children)
+                        : isThinkingEntry(member.item) ? renderThinking(member.item) : null)}
                 </ToolCallGroupRow>
             )
         })

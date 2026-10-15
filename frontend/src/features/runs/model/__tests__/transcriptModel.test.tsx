@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import { useRunTranscriptStore } from '../../state/runTranscriptStore'
@@ -76,6 +76,55 @@ describe('buildRunTranscriptRow', () => {
     render(<RunTranscript rows={rows} showThinking={false} />)
     expect(screen.getByTestId('run-event-row-s-compaction')).toHaveTextContent('Context compacted (21.6k \u2192 1.9k tokens).')
     expect(screen.getByTestId('run-event-row-s-warning')).toHaveTextContent('Rate limited until 15:00 UTC')
+  })
+})
+
+describe('RunTranscript subagent nesting', () => {
+  const toolSegment = (id: string, toolCall: Partial<NonNullable<RunTranscriptSegment['tool_call']>>) => segment({
+    id: `s-${id}`,
+    kind: 'tool_call',
+    role: 'system',
+    tool_call: { id, kind: 'command_execution', status: 'completed', title: id, command: `run ${id}`, file_paths: [], ...toolCall },
+  })
+
+  it('renders a subagent\'s calls nested under its row, collapsed behind a count', () => {
+    const rows = [
+      toolSegment('agent', { kind: 'subagent', title: 'Find the config loader', command: null, subagent_type: 'Explore', summary: 'Found it' }),
+      toolSegment('grep', { kind: 'dynamic_tool', title: 'Grep', command: null, file_paths: ['/src'], parent_call_id: 'agent' }),
+      toolSegment('read', { kind: 'dynamic_tool', title: 'Read', command: null, file_paths: ['/src/config.rs'], parent_call_id: 'agent' }),
+      toolSegment('top', {}),
+    ].map((entry) => buildRunTranscriptRow(entry)!)
+    render(<RunTranscript rows={rows} showThinking={false} />)
+
+    // Top-level calls still fold into one group; nested calls are not counted there.
+    const group = screen.getByTestId('run-tool-group-tool-group:agent')
+    expect(group).toHaveTextContent('Ran 1 command, used 1 tool')
+    fireEvent.click(group)
+    const agent = screen.getByTestId('run-tool-call-toggle-agent')
+    expect(agent).toHaveTextContent('Find the config loader')
+    expect(agent).toHaveTextContent('Explore')
+    expect(agent).toHaveTextContent('Found it')
+    expect(screen.getByTestId('run-tool-call-toggle-top')).toBeInTheDocument()
+
+    const nested = screen.getByTestId('run-tool-call-children-agent')
+    expect(nested).toHaveTextContent('2 tool calls')
+    expect(nested).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('run-tool-call-toggle-grep')).toBeNull()
+    fireEvent.click(nested)
+    expect(nested.closest('li')).toContainElement(screen.getByTestId('run-tool-call-toggle-grep'))
+    expect(screen.getByTestId('run-tool-call-toggle-read')).toHaveTextContent('/src/config.rs')
+  })
+
+  it('shows the subagent\'s reported tool count when fewer calls arrived', () => {
+    const rows = [
+      toolSegment('agent', { kind: 'subagent', title: 'Explore', command: null, tool_uses: 3 }),
+      toolSegment('grep', { kind: 'dynamic_tool', title: 'Grep', command: null, parent_call_id: 'agent' }),
+      toolSegment('solo', { kind: 'subagent', title: 'Background', command: null, tool_uses: 2 }),
+    ].map((entry) => buildRunTranscriptRow(entry)!)
+    render(<RunTranscript rows={rows} showThinking={false} />)
+    fireEvent.click(screen.getByTestId('run-tool-group-tool-group:agent'))
+    expect(screen.getByTestId('run-tool-call-children-agent')).toHaveTextContent('3 tool calls')
+    expect(screen.getByTestId('run-tool-call-children-solo')).toHaveTextContent('2 tool calls')
   })
 })
 

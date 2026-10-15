@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type ComponentProps } from 'react'
 import { TriangleAlert } from 'lucide-react'
 
-import { groupTranscript, type TranscriptItemClass } from '@/components/app/transcript/groupTranscript'
+import { groupTranscript, type TranscriptItemClass, type TranscriptToolCallNode } from '@/components/app/transcript/groupTranscript'
 import { statusTextClassName } from '@/components/app/status'
 import {
     EventLine,
@@ -77,6 +77,21 @@ export function RunTranscriptRowItem({
     return <MessageRow entry={row.entry} formatConversationTimestamp={formatTimestamp} />
 }
 
+/** A grouped tool call as a line, with any subagent calls nested under it. */
+function RunToolCallLine({ node, expansion }: { node: TranscriptToolCallNode<RunTranscriptRow>; expansion: TranscriptExpansionState }) {
+    if (node.item.kind !== 'tool_call') return null
+    return (
+        <ToolCallRow
+            variant="line"
+            entry={node.item.entry}
+            isExpanded={expansion.expandedToolCalls[node.toolCall.id] === true}
+            onToggleToolCallExpanded={expansion.onToggleToolCall}
+            testIdPrefix="run"
+            childCalls={node.children.map((child) => <RunToolCallLine key={child.item.segment.id} node={child} expansion={expansion} />)}
+        />
+    )
+}
+
 const classifyRow = (row: RunTranscriptRow): TranscriptItemClass => (
     row.kind === 'tool_call'
         ? { kind: 'tool_call', toolCall: row.entry.toolCall }
@@ -108,15 +123,8 @@ export function RunTranscript({
                             testId={`run-tool-group-${block.id}`}
                         >
                             {block.members.map((member) => (
-                                member.item.kind === 'tool_call' ? (
-                                    <ToolCallRow
-                                        key={member.item.segment.id}
-                                        variant="line"
-                                        entry={member.item.entry}
-                                        isExpanded={expansion.expandedToolCalls[member.item.entry.toolCall.id] === true}
-                                        onToggleToolCallExpanded={expansion.onToggleToolCall}
-                                        testIdPrefix="run"
-                                    />
+                                member.kind === 'tool_call' ? (
+                                    <RunToolCallLine key={member.item.segment.id} node={member} expansion={expansion} />
                                 ) : showThinking ? (
                                     <RunTranscriptRowItem key={member.item.segment.id} row={member.item} expansion={expansion} />
                                 ) : null

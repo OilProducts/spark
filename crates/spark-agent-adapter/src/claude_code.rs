@@ -994,6 +994,11 @@ impl ClaudeCodeTurnState {
                 let text = retry_message(message);
                 return vec![self.warning("system_api_retry", text, message)];
             }
+            // A subagent's lifecycle updates the tool call that spawned it.
+            "task_started" | "task_updated" => return Vec::new(),
+            "task_progress" | "task_notification" => {
+                return self.subagent_update(subtype, message).into_iter().collect();
+            }
             _ => {}
         }
         let raw_kind = format!("system_{subtype}");
@@ -1024,7 +1029,50 @@ impl ClaudeCodeTurnState {
         )
     }
 
+    /// Folds a `task_progress` or `task_notification` frame into the parent
+    /// subagent call and re-emits it; no new segment.
+    fn subagent_update(&mut self, subtype: &str, message: &Value) -> Option<TurnStreamEvent> {
+        let id = message.get("tool_use_id").and_then(Value::as_str)?;
+        let tool_call = self.tool_calls.get_mut(id)?.as_object_mut()?;
+        let status = if subtype == "task_progress" {
+            if let Some(description) = message.get("description").filter(|value| value.is_string())
+            {
+                tool_call.insert("progress".to_string(), description.clone());
+            }
+            "updated"
+        } else {
+            if let Some(summary) = message.get("summary").filter(|value| value.is_string()) {
+                tool_call.insert("summary".to_string(), summary.clone());
+            }
+            match message.get("status").and_then(Value::as_str) {
+                Some("completed") => "completed",
+                _ => "failed",
+            }
+        };
+        if let Some(tool_uses) = message
+            .pointer("/usage/tool_uses")
+            .filter(|value| value.is_u64())
+        {
+            tool_call.insert("tool_uses".to_string(), tool_uses.clone());
+        }
+        let tool_call = Value::Object(tool_call.clone());
+        // ToolCallStarted re-upserts the segment live; the tool_result stays
+        // the call's one completion event.
+        Some(stream_event(
+            TurnStreamEventKind::ToolCallStarted,
+            self.session_id.as_deref(),
+            &format!("system_{subtype}"),
+            |event| {
+                event.tool_call = Some(tool_call);
+                event.status = Some(status.to_string());
+            },
+        ))
+    }
+
     fn ingest_assistant(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
+        // A subagent's text and thinking stay out of the main turn; its tool
+        // calls nest under the call that spawned it.
+        let parent_call_id = message.get("parent_tool_use_id").and_then(Value::as_str);
         let mut events = Vec::new();
         let blocks = message
             .pointer("/message/content")
@@ -1033,6 +1081,7 @@ impl ClaudeCodeTurnState {
             .unwrap_or_default();
         for block in blocks {
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                "text" | "thinking" if parent_call_id.is_some() => {}
                 "text" => {
                     let text = block.get("text").and_then(Value::as_str).unwrap_or("");
                     if text.trim().is_empty() {
@@ -1074,7 +1123,10 @@ impl ClaudeCodeTurnState {
                     ));
                 }
                 "tool_use" => {
-                    let tool_call = canonical_tool_call(&block);
+                    let mut tool_call = canonical_tool_call(&block);
+                    if let Some(parent_call_id) = parent_call_id {
+                        tool_call["parent_call_id"] = json!(parent_call_id);
+                    }
                     if let Some(id) = block.get("id").and_then(Value::as_str) {
                         self.tool_calls.insert(id.to_string(), tool_call.clone());
                     }
@@ -1095,6 +1147,9 @@ impl ClaudeCodeTurnState {
     }
 
     fn ingest_stream_event(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
+        if !message["parent_tool_use_id"].is_null() {
+            return Vec::new();
+        }
         let event = message.get("event").unwrap_or(message);
         if event.get("type").and_then(Value::as_str) == Some("message_start") {
             self.partial_block_ids.clear();
@@ -1199,6 +1254,15 @@ impl ClaudeCodeTurnState {
             if let Some(payload) = tool_call.as_object_mut() {
                 payload.insert("output".to_string(), tool_result_preview(&block));
                 payload.insert("is_error".to_string(), Value::Bool(is_error));
+                if let Some(parent_call_id) = message
+                    .get("parent_tool_use_id")
+                    .filter(|id| id.is_string())
+                {
+                    payload.insert("parent_call_id".to_string(), parent_call_id.clone());
+                }
+            }
+            if let Some(id) = id.as_str() {
+                self.tool_calls.insert(id.to_string(), tool_call.clone());
             }
             events.push(stream_event(
                 if is_error {
@@ -1334,6 +1398,18 @@ fn canonical_tool_call(block: &Value) -> Value {
                 payload.insert("file_paths".to_string(), json!([path]));
             }
             payload.insert("title".to_string(), json!(name));
+        }
+        "Agent" | "Task" => {
+            payload.insert("kind".to_string(), json!("subagent"));
+            payload.insert(
+                "title".to_string(),
+                json!(input_string("description").unwrap_or(name)),
+            );
+            for key in ["subagent_type", "prompt"] {
+                if let Some(value) = input_string(key) {
+                    payload.insert(key.to_string(), json!(value));
+                }
+            }
         }
         _ => {
             payload.insert("kind".to_string(), json!("dynamic_tool"));

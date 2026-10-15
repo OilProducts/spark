@@ -1802,3 +1802,41 @@ fn turn_input_sends_images_as_local_images_and_other_files_as_references() {
     assert!(!resumed_text.contains("earlier"));
     assert_eq!(inputs[2], json!([{"type": "text", "text": "Plain text"}]));
 }
+
+#[test]
+fn app_server_collab_agent_calls_become_subagent_tool_calls() {
+    let mut state = CodexAppServerTurnState::default();
+    let item = |status: &str| {
+        json!({"id": "collab-1", "type": "collabAgentToolCall", "tool": "spawnAgent",
+            "prompt": "Find the config loader.", "model": "gpt-5.5", "status": status,
+            "senderThreadId": "thread-parent", "receiverThreadIds": ["thread-child"], "agentsStates": {}})
+    };
+    let events = [
+        json!({"method": "item/started", "params": {"threadId": "thread-parent", "turnId": "turn-1", "item": item("inProgress")}}),
+        json!({"method": "item/completed", "params": {"threadId": "thread-parent", "turnId": "turn-1", "item": item("completed")}}),
+    ]
+    .iter()
+    .flat_map(|message| process_codex_app_server_message(message, &mut state))
+    .collect::<Vec<_>>();
+
+    let kinds = events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            TurnStreamEventKind::ToolCallStarted,
+            TurnStreamEventKind::ToolCallCompleted
+        ]
+    );
+    for (event, status) in events.iter().zip(["running", "completed"]) {
+        let call = event.tool_call.as_ref().unwrap();
+        assert_eq!(call["id"], "collab-1");
+        assert_eq!(call["kind"], "subagent");
+        assert_eq!(call["title"], "spawnAgent");
+        assert_eq!(call["prompt"], "Find the config loader.");
+        assert_eq!(call["status"], status);
+        assert_eq!(event.source.item_id.as_deref(), Some("collab-1"));
+    }
+}

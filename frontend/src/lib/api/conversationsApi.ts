@@ -59,7 +59,7 @@ export interface ConversationSegmentResponse {
     artifact_id?: string | null
     phase?: string | null
     tool_call?: {
-        kind: 'command_execution' | 'file_change' | 'dynamic_tool'
+        kind: 'command_execution' | 'file_change' | 'dynamic_tool' | 'subagent'
         status: 'running' | 'completed' | 'failed' | 'yielded'
         completion_reason?: string | null
         id: string
@@ -69,6 +69,14 @@ export interface ConversationSegmentResponse {
         output_size?: number | null
         output_truncated?: boolean
         file_paths: string[]
+        /** The call that spawned this one, for a subagent's own calls. */
+        parent_call_id?: string | null
+        subagent_type?: string | null
+        prompt?: string | null
+        progress?: string | null
+        summary?: string | null
+        /** How many tool calls a subagent reported making. */
+        tool_uses?: number | null
     } | null
     request_user_input?: {
         request_id: string
@@ -383,14 +391,15 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         tool_call: toolCall && typeof toolCall.title === 'string' && typeof toolCall.id === 'string'
             ? {
                 id: toolCall.id,
-                kind: toolCall.kind === 'file_change'
-                    ? 'file_change'
-                    : toolCall.kind === 'dynamic_tool'
-                        ? 'dynamic_tool'
-                        : 'command_execution',
+                kind: toolCall.kind === 'file_change' || toolCall.kind === 'dynamic_tool' || toolCall.kind === 'subagent'
+                    ? toolCall.kind
+                    : 'command_execution',
+                // A payload without its own status takes the segment's.
                 status: toolCall.status === 'running' || toolCall.status === 'failed' || toolCall.status === 'yielded'
                     ? toolCall.status
-                    : 'completed',
+                    : typeof toolCall.status !== 'string' && status !== 'complete'
+                        ? (status === 'failed' ? 'failed' : 'running')
+                        : 'completed',
                 completion_reason: asOptionalNullableString(toolCall.completion_reason),
                 title: toolCall.title,
                 command: asOptionalNullableString(toolCall.command),
@@ -398,6 +407,12 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
                 output_size: typeof toolCall.output_size === 'number' ? toolCall.output_size : null,
                 output_truncated: toolCall.output_truncated === true,
                 file_paths: Array.isArray(toolCall.file_paths) ? toolCall.file_paths.map((entry) => String(entry)) : [],
+                parent_call_id: asOptionalNullableString(toolCall.parent_call_id),
+                subagent_type: asOptionalNullableString(toolCall.subagent_type),
+                prompt: asOptionalNullableString(toolCall.prompt),
+                progress: asOptionalNullableString(toolCall.progress),
+                summary: asOptionalNullableString(toolCall.summary),
+                tool_uses: typeof toolCall.tool_uses === 'number' ? toolCall.tool_uses : null,
             }
             : null,
         request_user_input: requestUserInput && typeof requestUserInput.request_id === 'string'
