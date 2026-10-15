@@ -291,9 +291,11 @@ impl Control {
             "control_request" => return self.route(message),
             "control_response" => {
                 let response = &message["response"];
-                if self.context_request.as_ref().map(|(id, _)| id.as_str())
-                    == response["request_id"].as_str()
-                {
+                if response["request_id"].as_str().is_some_and(|id| {
+                    self.context_request
+                        .as_ref()
+                        .is_some_and(|(pending, _)| pending == id)
+                }) {
                     // Failure is silent: the result's context window stands.
                     let usage = &response["response"];
                     if let (Some(used), Some(window)) =

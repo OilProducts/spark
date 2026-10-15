@@ -185,10 +185,19 @@ fn main() {
             writeln!(out, "{{invalid").unwrap();
             out.flush().unwrap();
         } else if mode == "malformed-response" {
-            emit(
-                &mut out,
-                json!({"type": "control_response", "response": {"subtype": "success", "request_id": "unknown", "response": {"still_queued": []}}}),
-            );
+            // An unknown id, then missing, null and non-string ids, which must
+            // not be taken for the absent context-usage request.
+            for response in [
+                json!({"subtype": "success", "request_id": "unknown", "response": {"still_queued": []}}),
+                json!({"subtype": "success", "response": {"totalTokens": 1, "maxTokens": 2}}),
+                json!({"subtype": "success", "request_id": null, "response": {}}),
+                json!({"subtype": "success", "request_id": 7, "response": {}}),
+            ] {
+                emit(
+                    &mut out,
+                    json!({"type": "control_response", "response": response}),
+                );
+            }
         } else {
             emit(
                 &mut out,
