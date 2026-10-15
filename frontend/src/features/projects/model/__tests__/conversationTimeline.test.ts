@@ -295,6 +295,36 @@ describe('conversation timeline normalization', () => {
     }))
   })
 
+  it('renders agent warnings but not other agent events after hydration', () => {
+    const agentEvent = (id: string, category: string, content: string) => ({
+      id,
+      turn_id: 'turn-assistant',
+      order: 1,
+      kind: 'agent_event',
+      category,
+      role: 'system',
+      status: 'complete',
+      timestamp: '2026-03-10T10:00:11Z',
+      updated_at: '2026-03-10T10:00:11Z',
+      content,
+    })
+    const timeline = buildTimeline({
+      ...baseSnapshot,
+      segments: [
+        agentEvent('warning-segment', 'warning', 'Rate limit warning: 5-hour window at 82%, resets 15:00 UTC'),
+        agentEvent('session-segment', 'lifecycle', 'session started'),
+        ...baseSnapshot.segments,
+      ],
+    } as typeof baseSnapshot)
+
+    expect(timeline).toContainEqual(expect.objectContaining({
+      id: 'warning-segment',
+      kind: 'warning',
+      content: 'Rate limit warning: 5-hour window at 82%, resets 15:00 UTC',
+    }))
+    expect(timeline).not.toContainEqual(expect.objectContaining({ id: 'session-segment' }))
+  })
+
   it('renders pending request_user_input segments as inline conversation request entries after hydration', () => {
     const timeline = buildTimeline({
       ...baseSnapshot,

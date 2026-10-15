@@ -22,6 +22,7 @@ import { cn } from '@/lib/utils'
 import { formatConversationAgeShort, formatConversationTimestamp } from '../model/projectsHomeState'
 import type { ComposerAttachment } from '../model/types'
 import { ComposerAttachments } from './ComposerAttachments'
+import { ContextMeter, type ContextUsage } from './ContextMeter'
 
 interface ProjectConversationSurfaceProps {
     activeProjectLabel: string | null
@@ -30,6 +31,8 @@ interface ProjectConversationSurfaceProps {
     activeConversationHandle?: string | null
     activeConversationUpdatedAt?: string | null
     activeChatMode: ConversationChatMode | null
+    /** The latest assistant turn's context occupancy, for the meter. */
+    contextUsage?: ContextUsage | null
     onChatModeChange?: (mode: ConversationChatMode) => void
     /** Whether the transcript has thinking to reveal; the toggle is omitted otherwise. */
     hasThinking: boolean
@@ -82,6 +85,7 @@ export function ProjectConversationSurface({
     activeConversationHandle = null,
     activeConversationUpdatedAt = null,
     activeChatMode,
+    contextUsage = null,
     onChatModeChange,
     hasThinking,
     showThinking,
@@ -278,6 +282,7 @@ export function ProjectConversationSurface({
                                         </p>
                                         {modelSettingsSource ? <span className="text-xs text-muted-foreground">{MODEL_SOURCE_LABELS[modelSettingsSource]}</span> : null}
                                         {defaultModel ? <span className="text-xs text-muted-foreground">Provider default: {defaultModel}</span> : null}
+                                        <ContextMeter usage={contextUsage} />
                                         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                                             {onAddAttachments ? (
                                                 <>

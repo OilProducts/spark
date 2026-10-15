@@ -1843,7 +1843,18 @@ pub fn process_codex_app_server_message(
             }
         }
         "thread/tokenUsage/updated" => {
-            if let Some(token_usage) = params.get("tokenUsage").cloned() {
+            if let Some(mut token_usage) = params.get("tokenUsage").cloned() {
+                // The latest request's input is what the context holds now.
+                if let Some(window) = token_usage["modelContextWindow"].as_u64() {
+                    let mut context = json!({"window_tokens": window});
+                    if let Some(used) = token_usage
+                        .pointer("/last/inputTokens")
+                        .and_then(Value::as_u64)
+                    {
+                        context["used_tokens"] = json!(used);
+                    }
+                    token_usage["context"] = context;
+                }
                 state.last_token_usage_payload = Some(token_usage.clone());
                 state.last_token_total = token_usage
                     .pointer("/total/totalTokens")
@@ -1873,6 +1884,18 @@ pub fn process_codex_app_server_message(
                 .and_then(auth::error_message)
                 .or_else(|| object_text(&params, &["message"]))
                 .unwrap_or_else(|| "codex app-server error".to_string());
+            // Codex retries this one itself; the turn goes on.
+            if params.get("willRetry").and_then(Value::as_bool) == Some(true) {
+                events.push(
+                    event(
+                        TurnStreamEventKind::Other("warning".into()),
+                        "error_will_retry",
+                    )
+                    .content(Some(format!("{error}; retrying")))
+                    .build(),
+                );
+                return events;
+            }
             state.turn_status = Some("failed".to_string());
             state.turn_error = Some(error.clone());
             state.last_error = Some(error.clone());

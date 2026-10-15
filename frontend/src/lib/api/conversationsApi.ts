@@ -46,7 +46,9 @@ export interface ConversationSegmentResponse {
     turn_id: string
     order: number
     /** `user_message`: a message delivered into the running turn. */
-    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input' | 'flow_run_request' | 'flow_launch' | 'user_message'
+    kind: 'assistant_message' | 'plan' | 'reasoning' | 'tool_call' | 'context_compaction' | 'request_user_input' | 'flow_run_request' | 'flow_launch' | 'user_message' | 'agent_event'
+    /** An `agent_event`'s category; only `warning` is shown. */
+    category?: string | null
     role: 'assistant' | 'system' | 'user'
     status: 'pending' | 'streaming' | 'complete' | 'failed' | 'running'
     timestamp: string
@@ -346,6 +348,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         || record.kind === 'flow_run_request'
         || record.kind === 'flow_launch'
         || record.kind === 'user_message'
+        || record.kind === 'agent_event'
         ? record.kind
         : null
     if (!kind) {
@@ -376,6 +379,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
         error: asOptionalNullableString(record.error),
         artifact_id: asOptionalNullableString(record.artifact_id),
         phase: asOptionalNullableString(record.phase),
+        category: asOptionalNullableString(record.category),
         tool_call: toolCall && typeof toolCall.title === 'string' && typeof toolCall.id === 'string'
             ? {
                 id: toolCall.id,

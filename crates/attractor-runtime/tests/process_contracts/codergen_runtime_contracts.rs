@@ -647,3 +647,127 @@ nodes:
         "Fix the failing test."
     );
 }
+
+/// Streams an agent warning and a finished compaction, as adapters report them.
+struct StatusEventsBackend;
+
+impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
+    fn run(
+        &mut self,
+        request: spark_agent_adapter::CodergenBackendRequest,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        self.run_with_event_sink(request, None)
+    }
+
+    fn run_with_event_sink(
+        &mut self,
+        _request: spark_agent_adapter::CodergenBackendRequest,
+        event_sink: Option<spark_agent_adapter::CodergenEventSink>,
+    ) -> Result<spark_agent_adapter::CodergenBackendOutput, spark_agent_adapter::CodergenError>
+    {
+        let events = [
+            json!({"kind": "warning", "message": "API error 529 (overloaded); retrying in 4s (attempt 2 of 10)"}),
+            json!({"kind": "context_compaction_completed", "message": "Context compacted (21.6k \u{2192} 1.9k tokens)."}),
+            json!({"kind": "session_start", "message": "session started"}),
+        ]
+        .into_iter()
+        .map(|event| {
+            spark_agent_adapter::CodergenEvent::new(
+                "turn_stream_event",
+                BTreeMap::from([("turn_stream_event".to_string(), event)]),
+            )
+        })
+        .collect::<Vec<_>>();
+        if let Some(sink) = &event_sink {
+            events.iter().cloned().for_each(|event| sink(event));
+        }
+        Ok(spark_agent_adapter::CodergenBackendOutput {
+            response: spark_agent_adapter::CodergenBackendResponse::Text("done".to_string()),
+            events,
+            usage: None,
+            resume_metadata: Default::default(),
+        })
+    }
+}
+
+#[test]
+fn node_transcripts_keep_agent_warnings_and_compaction() {
+    let flow = FlowDefinition::from_yaml_str(
+        r#"
+schema_version: '1'
+id: g
+nodes:
+  task:
+    kind: agent_task
+    config:
+      kind: agent_task
+      prompt: Ship it
+"#,
+    )
+    .expect("flow parses");
+    let node = flow.nodes.get("task").expect("task").clone();
+    let temp = tempdir().unwrap();
+    let paths = RunRootPaths::new(temp.path(), "project", "run-1").unwrap();
+    std::fs::create_dir_all(paths.logs_dir()).unwrap();
+    RuntimeHandlerRunner::new()
+        .with_codergen_backend_factory(|| Box::new(StatusEventsBackend))
+        .with_external_event_sink(|_| Ok(()))
+        .execute(NodeExecutionRequest {
+            node_id: "task".to_string(),
+            stage_index: 0,
+            attempt: 0,
+            context: ContextMap::new(),
+            prompt: "Ship it".to_string(),
+            node_attrs: node_attrs_for_handler("task", &node),
+            node,
+            flow: flow.clone(),
+            outgoing_edges: outgoing_routing_edges(&flow, "task").unwrap(),
+            run_paths: Some(paths.clone()),
+            run_workdir: temp.path().to_path_buf(),
+            run_id: "run-1".to_string(),
+            fallback_model: None,
+            fallback_provider: None,
+            fallback_profile: None,
+            fallback_reasoning_effort: None,
+        })
+        .expect("codergen executes");
+
+    let records =
+        spark_storage::ActivityRepository::new(paths.logs_dir().join("task/executions/0-0"))
+            .read_transcript_records()
+            .unwrap();
+    let segments = records
+        .iter()
+        .filter_map(|record| match record {
+            spark_storage::TranscriptRecord::SegmentUpsert { segment, .. } => Some((
+                segment.kind.as_str(),
+                segment.content.as_str(),
+                segment
+                    .extra
+                    .get("category")
+                    .and_then(|value| value.as_str()),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // Session start/end stay out of the transcript.
+    assert_eq!(
+        &segments[..2],
+        [
+            (
+                "agent_event",
+                "API error 529 (overloaded); retrying in 4s (attempt 2 of 10)",
+                Some("warning")
+            ),
+            (
+                "context_compaction",
+                "Context compacted (21.6k \u{2192} 1.9k tokens).",
+                None
+            ),
+        ]
+    );
+    assert!(!segments
+        .iter()
+        .any(|segment| segment.1 == "session started"));
+}

@@ -409,6 +409,10 @@ impl ClaudeCodeBackend {
                 if exited_at.is_none() && matches!(control.child.try_wait(), Ok(Some(_))) {
                     exited_at = Some(std::time::Instant::now());
                 }
+                control.expire_context_request(exited_at.is_some());
+                if control.ended {
+                    break;
+                }
                 if !initialized && started.elapsed() >= Duration::from_secs(5) {
                     control.log("system/init timeout; using one-shot input");
                     control.one_shot();
@@ -469,7 +473,7 @@ impl ClaudeCodeBackend {
                 // Taken with the line: a message written before the CLI
                 // produced this line is reported before it.
                 let sent = std::mem::take(&mut control.sent);
-                (sent, control.ingest(&message), control.ended)
+                (sent, control.ingest(&message), control.finished())
             };
             let mut normalized = turn.state.delivered_events(sent);
             normalized.extend(turn.state.ingest(&message, ended));
@@ -482,6 +486,14 @@ impl ClaudeCodeBackend {
 
         let (ended, undelivered, sent) = {
             let mut control = control.lock().unwrap();
+            // Output ended while the context usage was pending: the turn is done.
+            control.expire_context_request(true);
+            // Answered after the turn completed, so it rides the turn's output.
+            if let (Some(context), Some(usage)) =
+                (control.context.take(), turn.state.usage_payload.as_mut())
+            {
+                usage["context"] = context;
+            }
             turn.stopping |= control.stopping;
             turn.raw_log_lines.append(&mut control.logs);
             let ended = control.ended;
@@ -900,6 +912,15 @@ impl ClaudeCodeTurnState {
             "stream_event" => self.ingest_stream_event(message),
             "user" => self.ingest_user(message),
             "result" => self.ingest_result(message, last),
+            // Protocol traffic; Control answers it and the raw log keeps it.
+            "control_response" => Vec::new(),
+            "rate_limit_event" => {
+                let info = &message["rate_limit_info"];
+                match rate_limit_message(info) {
+                    Some(text) => vec![self.warning("rate_limit_event", text, message)],
+                    None => Vec::new(),
+                }
+            }
             other => vec![stream_event(
                 TurnStreamEventKind::Other(other.to_string()),
                 self.session_id.as_deref(),
@@ -933,6 +954,48 @@ impl ClaudeCodeTurnState {
             .get("subtype")
             .and_then(Value::as_str)
             .unwrap_or("system");
+        let compaction = |kind, text: Option<String>| {
+            stream_event(
+                kind,
+                self.session_id.as_deref(),
+                &format!("system_{subtype}"),
+                |event| {
+                    event.message = text;
+                    event.details = Some(message.clone());
+                },
+            )
+        };
+        match subtype {
+            "status" if message["status"] == "compacting" => {
+                return vec![compaction(
+                    TurnStreamEventKind::ContextCompactionStarted,
+                    None,
+                )];
+            }
+            "compact_boundary" => {
+                let metadata = &message["compact_metadata"];
+                let freed = match (
+                    metadata["pre_tokens"].as_u64(),
+                    metadata["post_tokens"].as_u64(),
+                ) {
+                    (Some(pre), Some(post)) => Some(format!(
+                        "Context compacted ({} \u{2192} {} tokens).",
+                        short_tokens(pre),
+                        short_tokens(post)
+                    )),
+                    _ => None,
+                };
+                return vec![compaction(
+                    TurnStreamEventKind::ContextCompactionCompleted,
+                    freed,
+                )];
+            }
+            "api_retry" => {
+                let text = retry_message(message);
+                return vec![self.warning("system_api_retry", text, message)];
+            }
+            _ => {}
+        }
         let raw_kind = format!("system_{subtype}");
         vec![stream_event(
             TurnStreamEventKind::Other(raw_kind.clone()),
@@ -946,6 +1009,19 @@ impl ClaudeCodeTurnState {
                 event.details = Some(message.clone());
             },
         )]
+    }
+
+    /// A backend-neutral warning, shown as an agent event.
+    fn warning(&self, raw_kind: &str, text: String, message: &Value) -> TurnStreamEvent {
+        stream_event(
+            TurnStreamEventKind::Other("warning".into()),
+            self.session_id.as_deref(),
+            raw_kind,
+            |event| {
+                event.message = Some(text);
+                event.details = Some(message.clone());
+            },
+        )
     }
 
     fn ingest_assistant(&mut self, message: &Value) -> Vec<TurnStreamEvent> {
@@ -1350,7 +1426,7 @@ fn usage_payload_from_model_usage(model_usage: &Value, start: &Value) -> Value {
             }),
         );
     }
-    json!({
+    let mut payload = json!({
         "input_tokens": input,
         "cached_input_tokens": cached,
         "cache_creation_input_tokens": creation,
@@ -1359,7 +1435,83 @@ fn usage_payload_from_model_usage(model_usage: &Value, start: &Value) -> Value {
         "cost_usd": cost,
         "by_model": by_model,
         "model_usage": model_usage,
-    })
+    });
+    // Without a live context usage answer only the window is known.
+    // ponytail: the largest window stands in for the session's main model.
+    if let Some(window) = model_usage
+        .as_object()
+        .into_iter()
+        .flat_map(|models| models.values())
+        .filter_map(|entry| entry["contextWindow"].as_u64())
+        .max()
+    {
+        payload["context"] = json!({"window_tokens": window});
+    }
+    payload
+}
+
+/// `21559` as `21.6k`.
+fn short_tokens(tokens: u64) -> String {
+    match tokens {
+        0..=999 => tokens.to_string(),
+        1_000..=999_999 => format!("{:.1}k", tokens as f64 / 1e3),
+        _ => format!("{:.1}M", tokens as f64 / 1e6),
+    }
+}
+
+/// `api_retry`: "API error 529 (overloaded); retrying in 4s (attempt 2 of 10)".
+fn retry_message(message: &Value) -> String {
+    let mut text = "API error".to_string();
+    if let Some(status) = message["error_status"].as_u64() {
+        text.push_str(&format!(" {status}"));
+    }
+    if let Some(error) = message["error"].as_str().and_then(non_empty) {
+        text.push_str(&format!(" ({error})"));
+    }
+    text.push_str("; retrying");
+    if let Some(delay) = message["retry_delay_ms"].as_u64() {
+        text.push_str(&format!(" in {}s", delay.div_ceil(1000)));
+    }
+    if let (Some(attempt), Some(max)) =
+        (message["attempt"].as_u64(), message["max_retries"].as_u64())
+    {
+        text.push_str(&format!(" (attempt {attempt} of {max})"));
+    }
+    text
+}
+
+/// A `rate_limit_event` worth showing; `allowed` is not.
+fn rate_limit_message(info: &Value) -> Option<String> {
+    let status = info["status"].as_str()?;
+    if status == "allowed" {
+        return None;
+    }
+    let resets = info["resetsAt"]
+        .as_i64()
+        .and_then(|at| time::OffsetDateTime::from_unix_timestamp(at).ok())
+        .map(|at| format!("{:02}:{:02} UTC", at.hour(), at.minute()));
+    if status == "rejected" {
+        return Some(match resets {
+            Some(at) => format!("Rate limited until {at}"),
+            None => "Rate limited".to_string(),
+        });
+    }
+    let kind = info["rateLimitType"].as_str();
+    let mut text = "Rate limit warning".to_string();
+    if let Some(kind) = kind {
+        let window = kind
+            .replace("five", "5")
+            .replace("seven", "7")
+            .replace('_', "-");
+        text.push_str(&format!(": {window} window"));
+        if let Some(used) = info["unifiedWindows"][kind]["utilization"].as_f64() {
+            text.push_str(&format!(" at {:.0}%", used * 100.0));
+        }
+    }
+    if let Some(at) = resets {
+        text.push_str(&format!(", resets {at}"));
+    }
+    Some(text)
 }
 
 pub fn usage_from_claude_code_usage_payload(payload: &Value) -> Option<Usage> {

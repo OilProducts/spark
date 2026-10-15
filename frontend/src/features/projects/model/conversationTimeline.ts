@@ -139,6 +139,16 @@ function buildAssistantTimelineEntries(
             })
             return
         }
+        if (segment.kind === 'agent_event' && segment.category === 'warning') {
+            entries.push({
+                id: segment.id,
+                kind: 'warning',
+                role: 'system',
+                content: segment.content,
+                timestamp: segment.timestamp,
+            })
+            return
+        }
         if (segment.kind === 'request_user_input' && segment.request_user_input) {
             entries.push({
                 id: segment.id,

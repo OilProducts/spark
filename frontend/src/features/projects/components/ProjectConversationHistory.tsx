@@ -1,4 +1,5 @@
 import { memo, useCallback, useState, type ReactNode } from 'react'
+import { TriangleAlert } from 'lucide-react'
 import { loadConversationSegmentToolOutput } from '../services/conversationArtifacts'
 import type {
     ConversationTimelineEntry,
@@ -495,6 +496,8 @@ export function ProjectConversationHistory({
             )
         case 'context_compaction':
             return <li key={key}><EventLine data-testid={`project-context-compaction-row-${entry.id}`}>{entry.content}</EventLine></li>
+        case 'warning':
+            return <li key={key}><EventLine data-testid={`project-warning-row-${entry.id}`} icon={<TriangleAlert className={statusTextClassName('warning')} />}>{entry.content}</EventLine></li>
         case 'request_user_input':
             return (
                 <RequestUserInputRow

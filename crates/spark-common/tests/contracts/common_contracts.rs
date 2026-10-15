@@ -426,3 +426,30 @@ fn reasoning_settings_are_nullable_backward_compatible_and_field_validated() {
         .to_string()
         .contains("thinking_budget_tokens"));
 }
+
+#[test]
+fn compaction_segment_says_what_it_freed_when_the_backend_reports_it() {
+    let content = |message: Option<&str>| {
+        let event: TurnStreamEvent = serde_json::from_value(json!({
+            "kind": "context_compaction_completed",
+            "message": message,
+            "source": {"app_turn_id": "turn-app"},
+        }))
+        .unwrap();
+        let mut snapshot = json!({"segments": []});
+        spark_common::segments::materialize_segment_for_event(
+            &mut snapshot,
+            "turn-1",
+            &event,
+            "2026-10-15T00:00:00Z",
+            None,
+        )
+        .unwrap()["content"]
+            .clone()
+    };
+    assert_eq!(
+        content(Some("Context compacted (21.6k \u{2192} 1.9k tokens).")),
+        "Context compacted (21.6k \u{2192} 1.9k tokens)."
+    );
+    assert_eq!(content(None), "Context compacted to continue the turn.");
+}

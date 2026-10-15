@@ -23,6 +23,7 @@ import { debugProjectChat } from '../model/projectChatDebug'
 import { isThinkingEntry } from '../model/conversationTimeline'
 import { buildProjectsHomeViewModel } from '../model/projectsHomeViewModel'
 import { projectLabel } from '../model/projectChoices'
+import { latestContextUsage } from '../components/ContextMeter'
 import type { ConversationTimelineEntry } from '../model/types'
 import {
     buildProjectConversationId,
@@ -43,6 +44,8 @@ function buildConversationHistoryRevisionKey(history: ConversationTimelineEntry[
         return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.mode}:${latestEntry.timestamp}`
     case 'context_compaction':
         return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.status}:${latestEntry.content}:${latestEntry.timestamp}`
+    case 'warning':
+        return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.content}:${latestEntry.timestamp}`
     case 'request_user_input':
         return `${history.length}:${latestEntry.kind}:${latestEntry.id}:${latestEntry.status}:${latestEntry.requestUserInput.status}:${JSON.stringify(latestEntry.requestUserInput.answers)}:${latestEntry.timestamp}`
     case 'tool_call':
@@ -468,6 +471,7 @@ export function useProjectsHomeController() {
             activeConversationHandle: activeConversationRecord?.conversation_handle || activeConversationSummary?.conversation_handle || null,
             activeConversationUpdatedAt: activeConversationRecord?.updated_at ?? activeConversationSummary?.updated_at ?? null,
             activeChatMode,
+            contextUsage: latestContextUsage((activeConversationRecord?.orderedTurnIds ?? []).map((turnId) => activeConversationRecord?.turnsById[turnId])),
             onChatModeChange: (mode: ConversationChatMode) => { void onSwitchChatMode(mode) },
             hasThinking: activeConversationHistory.some((entry) => isThinkingEntry(entry) && entry.content.trim().length > 0),
             showThinking,

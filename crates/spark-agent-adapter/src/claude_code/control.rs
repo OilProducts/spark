@@ -12,6 +12,7 @@ const NO_QUESTION_HANDLER: &str =
 const PLAN_SUBMITTED: &str =
     "Your plan was submitted to the user for review. Stop here; do not implement it.";
 const PLAN_MISSING: &str = "ExitPlanMode needs your plan in `plan`.";
+const CONTEXT_USAGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 type Key = (String, String);
 type Registry = Mutex<BTreeMap<Key, Weak<Mutex<Control>>>>;
@@ -58,6 +59,11 @@ pub(super) struct Control {
     /// A result left only background tasks running and no main model turn
     /// has started since.
     idle: bool,
+    /// The `get_context_usage` request sent after the final result, with
+    /// when it gives up; the turn ends at its answer.
+    context_request: Option<(String, std::time::Instant)>,
+    /// `{used_tokens, window_tokens}` from the answered request.
+    pub context: Option<Value>,
     pub ended: bool,
     pub logs: Vec<AgentRawLogLine>,
 }
@@ -86,6 +92,8 @@ impl Control {
             undelivered: BTreeMap::new(),
             sent: Vec::new(),
             idle: false,
+            context_request: None,
+            context: None,
             ended: false,
             logs: Vec::new(),
         }));
@@ -108,6 +116,40 @@ impl Control {
                 message["terminal_reason"].as_str(),
                 Some("aborted_streaming" | "aborted_tools")
             )
+    }
+
+    /// The final result has arrived; the turn ends once the context usage
+    /// request is answered or times out.
+    pub fn finished(&self) -> bool {
+        self.ended || self.context_request.is_some()
+    }
+
+    /// Ends a turn still waiting on its context usage once it is overdue or
+    /// the process has exited. Silent: the result's context window stands.
+    pub fn expire_context_request(&mut self, exited: bool) {
+        if self
+            .context_request
+            .as_ref()
+            .is_some_and(|(_, deadline)| exited || std::time::Instant::now() >= *deadline)
+        {
+            self.context_request = None;
+            self.end();
+        }
+    }
+
+    /// Asks the still-open session how full its context is. No more
+    /// messages or interrupts go in meanwhile. False if it cannot be asked.
+    fn request_context_usage(&mut self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        self.enabled = false;
+        let id = Uuid::new_v4().to_string();
+        if !self.send(json!({"type": "control_request", "request_id": id, "request": {"subtype": "get_context_usage"}})) {
+            return false;
+        }
+        self.context_request = Some((id, std::time::Instant::now() + CONTEXT_USAGE_TIMEOUT));
+        true
     }
 
     /// Ends the turn: no more input, answers or interrupts reach the process.
@@ -238,7 +280,9 @@ impl Control {
                 let inputs_done = message["queued_turn_count"].as_u64().unwrap_or(0) == 0
                     && self.undelivered.is_empty();
                 if !self.enabled || self.stopping || (self.tasks == 0 && inputs_done) {
-                    self.end();
+                    if !self.request_context_usage() {
+                        self.end();
+                    }
                 } else {
                     // Queued input starts another model turn that Stop must interrupt.
                     self.idle = inputs_done;
@@ -247,7 +291,21 @@ impl Control {
             "control_request" => return self.route(message),
             "control_response" => {
                 let response = &message["response"];
-                if self.interrupt.is_some()
+                if response["request_id"].as_str().is_some_and(|id| {
+                    self.context_request
+                        .as_ref()
+                        .is_some_and(|(pending, _)| pending == id)
+                }) {
+                    // Failure is silent: the result's context window stands.
+                    let usage = &response["response"];
+                    if let (Some(used), Some(window)) =
+                        (usage["totalTokens"].as_u64(), usage["maxTokens"].as_u64())
+                    {
+                        self.context = Some(json!({"used_tokens": used, "window_tokens": window}));
+                    }
+                    self.context_request = None;
+                    self.end();
+                } else if self.interrupt.is_some()
                     && self.interrupt.as_deref() == response["request_id"].as_str()
                     && response["subtype"] == "success"
                     && response["response"]["still_queued"]

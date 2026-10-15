@@ -1,9 +1,11 @@
+import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
 import { useRunTranscriptStore } from '../../state/runTranscriptStore'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import { buildRunTranscriptRow } from '../transcriptModel'
+import { RunTranscript } from '../../components/RunTranscriptGroups'
 
 const segment = (overrides: Partial<RunTranscriptSegment>): RunTranscriptSegment => ({
   id: 'segment-1',
@@ -34,7 +36,7 @@ const segment = (overrides: Partial<RunTranscriptSegment>): RunTranscriptSegment
 })
 
 describe('buildRunTranscriptRow', () => {
-  it('maps messages, reasoning and tool calls onto the shared rows and skips other kinds', () => {
+  it('maps messages, reasoning, tool calls, compaction and warnings onto the shared rows and skips other kinds', () => {
     const rows = [
       segment({ id: 's-answer' }),
       segment({ id: 's-thinking', kind: 'reasoning', content: '**Weighing options** details here' }),
@@ -54,9 +56,26 @@ describe('buildRunTranscriptRow', () => {
           file_paths: [],
         },
       }),
-      segment({ id: 's-compaction', kind: 'context_compaction' }),
+      segment({ id: 's-compaction', kind: 'context_compaction', role: 'system', content: '' }),
+      segment({ id: 's-warning', kind: 'agent_event', category: 'warning', role: 'system', content: 'API error 529; retrying' }),
+      segment({ id: 's-session', kind: 'agent_event', category: 'lifecycle', role: 'system', content: 'session started' }),
+      segment({ id: 's-question', kind: 'request_user_input', role: 'system' }),
     ].map(buildRunTranscriptRow)
-    expect(rows.map((row) => row?.kind ?? null)).toEqual(['message', 'thinking', 'tool_call', null])
+    expect(rows.map((row) => row?.kind ?? null)).toEqual(['message', 'thinking', 'tool_call', 'event', 'event', null, null])
+    expect(rows.slice(3, 5)).toEqual([
+      expect.objectContaining({ text: 'Context compacted.', warning: false }),
+      expect.objectContaining({ text: 'API error 529; retrying', warning: true }),
+    ])
+  })
+
+  it('renders compaction and warning rows as event lines', () => {
+    const rows = [
+      segment({ id: 's-compaction', kind: 'context_compaction', role: 'system', content: 'Context compacted (21.6k \u2192 1.9k tokens).' }),
+      segment({ id: 's-warning', kind: 'agent_event', category: 'warning', role: 'system', content: 'Rate limited until 15:00 UTC' }),
+    ].map((entry) => buildRunTranscriptRow(entry)!)
+    render(<RunTranscript rows={rows} showThinking={false} />)
+    expect(screen.getByTestId('run-event-row-s-compaction')).toHaveTextContent('Context compacted (21.6k \u2192 1.9k tokens).')
+    expect(screen.getByTestId('run-event-row-s-warning')).toHaveTextContent('Rate limited until 15:00 UTC')
   })
 })
 

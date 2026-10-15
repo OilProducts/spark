@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
-import { Check, CircleHelp, Flag, Pencil, Play, X, Zap } from 'lucide-react'
+import { Check, CircleHelp, Flag, Pencil, Play, TriangleAlert, X, Zap } from 'lucide-react'
 import { useStore } from '@/store'
 import { buildRunsHash } from '@/app/runsRouting'
 import { InlineError } from '@/components/app/inline-error'
@@ -157,6 +157,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
             </li>
             case 'mode_change': return <li key={key}><EventLine at={when(entry.timestamp)}>{entry.mode === 'plan' ? 'Switched to Plan mode' : 'Switched to Chat mode'}</EventLine></li>
             case 'context_compaction': return <li key={key}><EventLine at={when(entry.timestamp)}>{entry.content}</EventLine></li>
+            case 'warning': return <li key={key}><EventLine icon={<TriangleAlert className={statusTextClassName('warning')} />} at={when(entry.timestamp)}>{entry.content}</EventLine></li>
             // The worked separator is the turn header's meta; missions never raise run requests.
             default: return null
         }

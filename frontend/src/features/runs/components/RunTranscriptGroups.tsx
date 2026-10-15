@@ -1,7 +1,10 @@
 import { useCallback, useMemo, useState, type ComponentProps } from 'react'
+import { TriangleAlert } from 'lucide-react'
 
 import { groupTranscript, type TranscriptItemClass } from '@/components/app/transcript/groupTranscript'
+import { statusTextClassName } from '@/components/app/status'
 import {
+    EventLine,
     MessageRow,
     ThinkingRow,
     ToolCallGroupRow,
@@ -49,6 +52,15 @@ export function RunTranscriptRowItem({
                 onToggleToolCallExpanded={expansion.onToggleToolCall}
                 testIdPrefix="run"
             />
+        )
+    }
+    if (row.kind === 'event') {
+        return (
+            <li>
+                <EventLine data-testid={`run-event-row-${row.segment.id}`} icon={row.warning ? <TriangleAlert className={statusTextClassName('warning')} /> : undefined}>
+                    {row.text}
+                </EventLine>
+            </li>
         )
     }
     if (row.kind === 'thinking') {

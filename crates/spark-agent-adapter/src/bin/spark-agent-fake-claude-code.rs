@@ -185,10 +185,19 @@ fn main() {
             writeln!(out, "{{invalid").unwrap();
             out.flush().unwrap();
         } else if mode == "malformed-response" {
-            emit(
-                &mut out,
-                json!({"type": "control_response", "response": {"subtype": "success", "request_id": "unknown", "response": {"still_queued": []}}}),
-            );
+            // An unknown id, then missing, null and non-string ids, which must
+            // not be taken for the absent context-usage request.
+            for response in [
+                json!({"subtype": "success", "request_id": "unknown", "response": {"still_queued": []}}),
+                json!({"subtype": "success", "response": {"totalTokens": 1, "maxTokens": 2}}),
+                json!({"subtype": "success", "request_id": null, "response": {}}),
+                json!({"subtype": "success", "request_id": 7, "response": {}}),
+            ] {
+                emit(
+                    &mut out,
+                    json!({"type": "control_response", "response": response}),
+                );
+            }
         } else {
             emit(
                 &mut out,
@@ -324,8 +333,7 @@ fn main() {
                     "session_id": session_id, "result_index": 1, "queued_turn_count": 0, "modelUsage": usage(5, 50)}),
             );
         }
-        let mut remaining = String::new();
-        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        drain_stdin();
         append_log("STDIN_CLOSED");
         return;
     }
@@ -357,8 +365,7 @@ fn main() {
             json!({"type": "result", "subtype": "success", "is_error": false, "result": "Read your note.",
                 "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [uuid]}),
         );
-        let mut remaining = String::new();
-        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        drain_stdin();
         return;
     }
     if mode == "mid-turn-message" || mode == "mid-turn-stop" {
@@ -407,8 +414,7 @@ fn main() {
                     "session_id": session_id, "queued_turn_count": 0, "user_message_uuids": [uuid]}),
             );
         }
-        let mut remaining = String::new();
-        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        drain_stdin();
         append_log("STDIN_CLOSED");
         return;
     }
@@ -431,8 +437,7 @@ fn main() {
             json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
                 "terminal_reason": "aborted_streaming", "session_id": session_id, "queued_turn_count": 0}),
         );
-        let mut remaining = String::new();
-        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        drain_stdin();
         return;
     }
     if mode == "crash-after-init" || mode == "crash-orphan" || mode == "crash-chatty-orphan" {
@@ -631,6 +636,31 @@ fn main() {
         return;
     }
 
+    if mode == "status-events" {
+        // Frames as CLI 2.1.296 reports compaction, retries and rate limits.
+        for frame in [
+            json!({"type": "system", "subtype": "api_retry", "session_id": session_id, "attempt": 2, "max_retries": 10,
+                "retry_delay_ms": 3500, "error_status": 529, "error": "overloaded"}),
+            json!({"type": "rate_limit_event", "session_id": session_id, "rate_limit_info": {"status": "allowed",
+                "resetsAt": 1_790_000_000, "rateLimitType": "five_hour"}}),
+            json!({"type": "rate_limit_event", "session_id": session_id, "rate_limit_info": {"status": "allowed_warning",
+                "resetsAt": 1_790_002_800, "rateLimitType": "five_hour",
+                "unifiedWindows": {"five_hour": {"utilization": 0.82, "resetsAt": 1_790_002_800}}}}),
+            json!({"type": "system", "subtype": "status", "session_id": session_id, "status": "compacting"}),
+            json!({"type": "system", "subtype": "status", "session_id": session_id, "status": null, "compact_result": "success"}),
+            json!({"type": "system", "subtype": "compact_boundary", "session_id": session_id,
+                "compact_metadata": {"trigger": "auto", "pre_tokens": 21559, "post_tokens": 1887, "duration_ms": 4697}}),
+            json!({"type": "user", "session_id": session_id, "message": {"role": "user",
+                "content": "This session is being continued from a previous conversation. Summary: ..."}}),
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Done.", "session_id": session_id,
+                "modelUsage": {"claude-opus-4-8": {"inputTokens": 3, "outputTokens": 30, "contextWindow": 1_000_000}}}),
+        ] {
+            emit(&mut out, frame);
+        }
+        drain_stdin();
+        return;
+    }
     if mode == "result-only" || mode == "empty-result" {
         emit(
             &mut out,
@@ -890,6 +920,28 @@ fn main() {
             },
         }),
     );
+}
+
+/// Reads stdin to EOF, answering the `get_context_usage` request Spark
+/// sends once a turn's final result is in.
+fn drain_stdin() {
+    let mut line = String::new();
+    while std::io::stdin()
+        .read_line(&mut line)
+        .map(|read| read > 0)
+        .unwrap_or(false)
+    {
+        let message = serde_json::from_str::<Value>(&line).unwrap_or_default();
+        if message["request"]["subtype"] == "get_context_usage" {
+            append_log("GET_CONTEXT_USAGE");
+            println!(
+                "{}",
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": message["request_id"],
+                    "response": {"totalTokens": 24000, "maxTokens": 1000000, "percentage": 2.4, "categories": []}}})
+            );
+        }
+        line.clear();
+    }
 }
 
 fn read_control() -> Value {

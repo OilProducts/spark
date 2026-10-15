@@ -1816,3 +1816,57 @@ fn real_claude_code_status_envelope_node_returns_a_schema_valid_outcome() {
     assert_eq!(execution.outcome.preferred_label, "Rework");
     assert!(execution.contract_violations.is_empty());
 }
+
+#[test]
+fn claude_code_status_frames_become_compaction_and_warnings_and_the_turn_records_context_usage() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude-args.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "status-events");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .unwrap();
+
+    let shown = output
+        .events
+        .iter()
+        .filter(|event| {
+            !matches!(&event.kind, TurnStreamEventKind::Other(kind) if kind.starts_with("system_"))
+        })
+        .map(|event| (event.kind.as_str(), event.message.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &shown[..4],
+        [
+            (
+                "warning",
+                Some("API error 529 (overloaded); retrying in 4s (attempt 2 of 10)")
+            ),
+            // `allowed` shows nothing.
+            (
+                "warning",
+                Some("Rate limit warning: 5-hour window at 82%, resets 15:00 UTC")
+            ),
+            ("context_compaction_started", None),
+            (
+                "context_compaction_completed",
+                Some("Context compacted (21.6k \u{2192} 1.9k tokens).")
+            ),
+        ]
+    );
+    // The compaction summary is neither a user nor an assistant message.
+    assert!(!output.events.iter().any(|event| event
+        .message
+        .as_deref()
+        .is_some_and(|text| text.contains("being continued"))));
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Done."));
+    assert_eq!(
+        output.token_usage.as_ref().unwrap()["context"],
+        json!({"used_tokens": 24000, "window_tokens": 1000000})
+    );
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert!(log.contains("GET_CONTEXT_USAGE"), "{log}");
+}

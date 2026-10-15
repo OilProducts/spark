@@ -95,7 +95,7 @@ fn materialize_execution_suffix(
                 | "tool_call_failed"
                 | "request_user_input_requested"
                 | "context_compaction_completed"
-                | "agent_event_completed"
+                | "warning"
         ) {
             continue;
         }
@@ -107,7 +107,7 @@ fn materialize_execution_suffix(
             "tool_call_completed" | "tool_call_failed" => "tool_call",
             "request_user_input_requested" => "request_user_input",
             "context_compaction_completed" => "context_compaction",
-            "agent_event_completed" => "agent_event",
+            "warning" => "agent_event",
             _ => match channel {
                 "reasoning" => "reasoning",
                 "plan" => "plan",
@@ -119,7 +119,7 @@ fn materialize_execution_suffix(
             .and_then(Value::as_str)
             .map(str::to_owned)
             .unwrap_or_else(|| format!("event-{}", stored.sequence));
-        let segment = serde_json::from_value(json!({
+        let mut segment = json!({
             "id": id, "turn_id": "response", "order": revision as i64 - 2,
             "kind": segment_kind, "role": "assistant",
             "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
@@ -128,7 +128,16 @@ fn materialize_execution_suffix(
             "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),
             "tool_call": unit.get("tool_call"), "request_user_input": unit.get("request_user_input"),
             "source": unit.get("source"),
-        })).map_err(|source| spark_storage::StorageError::JsonWrite { path: activity.transcript_path(), source })?;
+        });
+        if kind == "warning" {
+            segment["category"] = json!("warning");
+        }
+        let segment = serde_json::from_value(segment).map_err(|source| {
+            spark_storage::StorageError::JsonWrite {
+                path: activity.transcript_path(),
+                source,
+            }
+        })?;
         activity.append_transcript(&spark_storage::TranscriptRecord::SegmentUpsert {
             revision,
             committed_at: stored.committed_at,
