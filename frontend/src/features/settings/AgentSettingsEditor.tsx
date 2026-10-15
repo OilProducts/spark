@@ -7,6 +7,7 @@ import { Field, FieldLabel } from '@/components/ui/field'
 import { useAgentSettingsEditor } from './hooks/useAgentSettingsEditor'
 import { SaveStatus } from './SaveStatus'
 
+const defaultPath = (key: string) => key === 'claude_config_dir' ? '<SPARK_HOME>/runtime/claude' : 'Platform default'
 const labels = { max_turns: 'Maximum turns', max_tool_rounds_per_input: 'Maximum tool rounds per input', default_command_timeout_ms: 'Default command timeout (milliseconds)', max_command_timeout_ms: 'Maximum command timeout (milliseconds)', loop_detection_window: 'Loop detection window', max_subagent_depth: 'Maximum subagent depth', codex_binary: 'Codex binary', codex_runtime_root: 'Codex runtime root', codex_seed_dir: 'Codex seed directory', claude_binary: 'Claude binary', claude_config_dir: 'Claude configuration directory', codex_jsonrpc_trace: 'Codex JSON-RPC tracing', agent_trace: 'Agent tracing' } as const
 
 export function AgentSettingsEditor() {
@@ -29,8 +30,8 @@ export function AgentSettingsEditor() {
                 <FieldLabel htmlFor={`agent-native-${key}`}>{labels[key]}</FieldLabel>
                 <Input id={`agent-native-${key}`} aria-describedby={`agent-native-${key}-error`} aria-invalid={editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim()} value={editor.draft?.native?.[key] ?? ''} onChange={(event) => editor.setDraft((draft) => draft && ({ ...draft, native: { ...draft.native, [key]: event.target.value || null } }))} />
                 {editor.draft?.native?.[key] != null && !editor.draft.native[key]?.trim() && <p id={`agent-native-${key}-error`} role="alert">Enter a nonempty path or leave blank for the default.</p>}
-                {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs">Startup: {editor.saved.active_startup[key] ?? 'Platform default'} · Retained until restart</p>}
-                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? 'Platform default' : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
+                {!editor.saved?.effective && editor.saved?.active_startup && ['codex_runtime_root', 'codex_seed_dir', 'claude_config_dir'].includes(key) && <p className="text-xs">Startup: {editor.saved.active_startup[key] ?? defaultPath(key)} · Retained until restart</p>}
+                <p className="text-xs">Effective: {editor.saved?.effective ? editor.saved.effective.native?.[key] ?? defaultPath(key) : 'Unavailable'} · {editor.saved?.sources?.[`native.${key}`]}{key.endsWith('_binary') ? '' : ' · Requires restart'}</p>
             </Field>)}
             </details>
             <details><summary>Permissions and environment</summary>

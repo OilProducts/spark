@@ -1445,6 +1445,46 @@ fn configured_claude_config_dir_reaches_auth_status_login_and_turns() {
 }
 
 #[test]
+fn default_claude_config_dir_is_spark_owned_and_needs_its_own_sign_in() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let spark_home = temp.path().join("spark-home");
+    let config_dir = spark_home.join("runtime/claude");
+    let _spark_home = EnvVarGuard::set("SPARK_HOME", &spark_home);
+    let _configured = EnvVarGuard::set("SPARK_CLAUDE_CODE_CONFIG_DIR", "");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let log = temp.path().join("claude-args.log");
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let native = spark_common::agent_settings::NativeAgentSettings {
+        claude_binary: Some(fake_claude_code_bin().into()),
+        ..Default::default()
+    };
+
+    // A fresh Spark-owned dir is not signed in, even if ~/.claude is.
+    let mut connection = ClaudeCodeConnection::default();
+    assert_eq!(connection.status(&native).unwrap().status, "disconnected");
+    assert!(config_dir.is_dir());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "not-logged-in");
+    let error = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .expect_err("not signed in");
+    assert_eq!(error.message, AUTH_REQUIRED_MESSAGE);
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        args.contains(&format!("CLAUDE_CONFIG_DIR={}\n", config_dir.display())),
+        "{args}"
+    );
+
+    // Sign-in runs `claude auth login` against that same dir.
+    connection.start_login(&native, |_| {}).unwrap();
+    connection.submit_code("good#state").unwrap();
+    settled_status(&mut connection, &native, |status| {
+        status.status == "connected"
+    });
+    assert!(config_dir.join("fake-signed-in").exists());
+}
+
+#[test]
 fn claude_code_auth_failure_asks_for_sign_in_and_keeps_the_cli_reason() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
