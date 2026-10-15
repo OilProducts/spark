@@ -75,6 +75,8 @@ export interface ConversationSegmentResponse {
         prompt?: string | null
         progress?: string | null
         summary?: string | null
+        /** How many tool calls a subagent reported making. */
+        tool_uses?: number | null
     } | null
     request_user_input?: {
         request_id: string
@@ -410,6 +412,7 @@ export function parseConversationSegmentResponse(value: unknown): ConversationSe
                 prompt: asOptionalNullableString(toolCall.prompt),
                 progress: asOptionalNullableString(toolCall.progress),
                 summary: asOptionalNullableString(toolCall.summary),
+                tool_uses: typeof toolCall.tool_uses === 'number' ? toolCall.tool_uses : null,
             }
             : null,
         request_user_input: requestUserInput && typeof requestUserInput.request_id === 'string'

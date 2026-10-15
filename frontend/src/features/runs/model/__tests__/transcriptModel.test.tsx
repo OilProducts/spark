@@ -114,6 +114,18 @@ describe('RunTranscript subagent nesting', () => {
     expect(nested.closest('li')).toContainElement(screen.getByTestId('run-tool-call-toggle-grep'))
     expect(screen.getByTestId('run-tool-call-toggle-read')).toHaveTextContent('/src/config.rs')
   })
+
+  it('shows the subagent\'s reported tool count when fewer calls arrived', () => {
+    const rows = [
+      toolSegment('agent', { kind: 'subagent', title: 'Explore', command: null, tool_uses: 3 }),
+      toolSegment('grep', { kind: 'dynamic_tool', title: 'Grep', command: null, parent_call_id: 'agent' }),
+      toolSegment('solo', { kind: 'subagent', title: 'Background', command: null, tool_uses: 2 }),
+    ].map((entry) => buildRunTranscriptRow(entry)!)
+    render(<RunTranscript rows={rows} showThinking={false} />)
+    fireEvent.click(screen.getByTestId('run-tool-group-tool-group:agent'))
+    expect(screen.getByTestId('run-tool-call-children-agent')).toHaveTextContent('3 tool calls')
+    expect(screen.getByTestId('run-tool-call-children-solo')).toHaveTextContent('2 tool calls')
+  })
 })
 
 describe('runTranscriptStore.applySegmentUpsert', () => {

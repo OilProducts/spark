@@ -52,6 +52,7 @@ export const toTranscriptToolCall = (toolCall: NonNullable<ConversationSegmentRe
     subagentType: toolCall.subagent_type ?? null,
     prompt: toolCall.prompt ?? null,
     progress: toolCall.summary ?? toolCall.progress ?? null,
+    toolUses: toolCall.tool_uses ?? null,
 })
 
 export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`

@@ -47,6 +47,8 @@ export interface TranscriptToolCall {
     prompt?: string | null
     /** A subagent's latest progress, or its final summary. */
     progress?: string | null
+    /** The subagent's own count of its tool calls, which may exceed the calls received. */
+    toolUses?: number | null
 }
 
 
@@ -213,8 +215,11 @@ function ToolCallDetails({
 }
 
 /** A subagent call's own calls: "3 tool calls", collapsed until opened, then indented below. */
-function NestedToolCalls({ parentId, testIdPrefix, children }: { parentId: string; testIdPrefix: string; children: ReactNode[] }) {
+function NestedToolCalls({ parentId, testIdPrefix, count, children }: { parentId: string; testIdPrefix: string; count: number; children: ReactNode[] }) {
     const [isExpanded, setIsExpanded] = useState(false)
+    if (children.length === 0) {
+        return <p data-testid={`${testIdPrefix}-tool-call-children-${parentId}`} className="ml-5 text-xs text-muted-foreground">{plural(count, 'tool call')}</p>
+    }
     return (
         <div className="ml-5 min-w-0">
             <button
@@ -225,7 +230,7 @@ function NestedToolCalls({ parentId, testIdPrefix, children }: { parentId: strin
                 className="inline-flex items-center gap-1 text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
                 <ChevronRight aria-hidden="true" className={cn('size-3 shrink-0 transition-transform', isExpanded && 'rotate-90')} />
-                {plural(children.length, 'tool call')}
+                {plural(count, 'tool call')}
             </button>
             {isExpanded ? (
                 <ul className="mt-1 flex min-w-0 flex-col gap-0.5 border-l border-border pl-3">{children}</ul>
@@ -284,8 +289,9 @@ export const ToolCallRow = memo(function ToolCallRow({
     const subagentType = entry.toolCall.subagentType ? (
         <span className="shrink-0 font-sans text-muted-foreground/70">{entry.toolCall.subagentType}</span>
     ) : null
-    const nested = childCalls?.length ? (
-        <NestedToolCalls parentId={entry.toolCall.id} testIdPrefix={testIdPrefix}>{childCalls}</NestedToolCalls>
+    const nestedCount = Math.max(childCalls?.length ?? 0, entry.toolCall.toolUses ?? 0)
+    const nested = nestedCount > 0 ? (
+        <NestedToolCalls parentId={entry.toolCall.id} testIdPrefix={testIdPrefix} count={nestedCount}>{childCalls ?? []}</NestedToolCalls>
     ) : null
 
     if (variant === 'line') {
