@@ -1594,9 +1594,10 @@ pub fn utility_cli_command(
         if let Some(effort) = effort {
             command.arg("--effort").arg(effort);
         }
-        if let Some(config_dir) = native.and_then(|config| config.claude_config_dir) {
-            command.env("CLAUDE_CONFIG_DIR", config_dir);
-        }
+        command.env(
+            "CLAUDE_CONFIG_DIR",
+            crate::claude_code::claude_config_dir(native.as_ref()),
+        );
     }
     command.current_dir(work_dir);
     Ok(command)

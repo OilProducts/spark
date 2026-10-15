@@ -3327,7 +3327,8 @@ fn utility_cli_commands_are_one_shot_without_tools_sessions_or_project() {
         "model_settings": {"reasoning_summary": "concise"},
         "configuration": {"agents": {"native": {
             "claude_binary": "/opt/claude", "codex_binary": "/opt/codex",
-            "codex_runtime_root": temp.path().join("codex-runtime")
+            "codex_runtime_root": temp.path().join("codex-runtime"),
+            "claude_config_dir": temp.path().join("claude-config")
         }}}
     }});
     let args = |command: &std::process::Command| {
@@ -3364,6 +3365,10 @@ fn utility_cli_commands_are_one_shot_without_tools_sessions_or_project() {
         );
     }
     assert!(!claude_args.iter().any(|arg| arg == "--resume"));
+    assert!(claude
+        .get_envs()
+        .any(|(key, value)| key == "CLAUDE_CONFIG_DIR"
+            && value == Some(temp.path().join("claude-config").as_os_str())));
 
     let codex = spark_agent_adapter::utility_cli_command(
         &utility_call("codex", metadata),

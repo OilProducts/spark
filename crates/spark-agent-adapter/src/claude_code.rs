@@ -1398,15 +1398,26 @@ fn claude_command(native: Option<&NativeAgentSettings>) -> (PathBuf, Command) {
     command.envs(crate::codex_app_server::spark_agent_environment(
         env::var("PATH").ok().as_deref(),
     ));
-    if let Some(config_dir) = match native {
+    command.env("CLAUDE_CONFIG_DIR", claude_config_dir(native));
+    (executable, command)
+}
+
+/// The configured config dir, else Spark's own `<SPARK_HOME>/runtime/claude`,
+/// so the user's personal ~/.claude never reaches Spark's agents.
+pub(crate) fn claude_config_dir(native: Option<&NativeAgentSettings>) -> PathBuf {
+    let configured = match native {
         Some(config) => config.claude_config_dir.clone(),
         None => env::var(CLAUDE_CODE_CONFIG_DIR_ENV)
             .ok()
             .and_then(|value| non_empty(&value).map(str::to_string)),
-    } {
-        command.env("CLAUDE_CONFIG_DIR", config_dir);
-    }
-    (executable, command)
+    };
+    configured.map(PathBuf::from).unwrap_or_else(|| {
+        let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+        env_map.extend(crate::codex_app_server::spark_agent_environment(None));
+        let dir = crate::codex_app_server::spark_runtime_dir(&env_map, "claude");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    })
 }
 
 fn launch_error(executable: &Path, error: std::io::Error) -> ClaudeCodeError {

@@ -560,17 +560,20 @@ fn main() {
         std::process::exit(1);
     }
 
-    if mode == "error" || mode == "auth-error" {
+    if mode == "error" || mode == "auth-error" || mode == "not-logged-in" {
         emit(
             &mut out,
             serde_json::json!({
                 "type": "result",
                 "subtype": "error_during_execution",
                 "is_error": true,
-                "result": if mode == "auth-error" {
-                    "Failed to authenticate: OAuth session expired and could not be refreshed"
-                } else {
-                    "simulated failure"
+                "result": match mode.as_str() {
+                    "auth-error" => {
+                        "Failed to authenticate: OAuth session expired and could not be refreshed"
+                    }
+                    // What a never-signed-in CLAUDE_CONFIG_DIR ends a turn with.
+                    "not-logged-in" => "Not logged in \u{b7} Please run /login",
+                    _ => "simulated failure",
                 },
                 "session_id": session_id,
                 "num_turns": 1,

@@ -215,8 +215,16 @@ installations with copied or expired credentials should reconnect here; signing
 in preserves conversations and replaces credentials through Codex's login API.
 Authentication failures also offer a reconnect dialog directly in the transcript.
 OAuth credentials are never copied from the host or seed directory and are not
-part of Spark's settings documents. Seed directories provide configuration and
-plugin caches only.
+part of Spark's settings documents. Spark's Codex home is its own: your
+`~/.codex` (or `CODEX_HOME`) config and plugins are not copied. Only an explicit
+seed directory (`codex_seed_dir`) seeds it, with configuration and plugin caches
+only.
+
+Spark's Claude Code uses its own config directory,
+`<SPARK_HOME>/runtime/claude` by default, and needs its own one-time sign-in.
+Your personal `~/.claude` settings, CLAUDE.md, hooks, plugins, MCP servers and
+memory do not apply to Spark's agents. Set `claude_config_dir` to use another
+location.
 
 Claude Code authentication is managed through **Settings → Claude Code
 connection**, which runs `claude auth login` with the same binary and
@@ -237,7 +245,9 @@ Optional native fields are `codex_binary`, `codex_runtime_root`, `codex_seed_dir
 `ATTRACTOR_CODEX_RUNTIME_ROOT`, `ATTRACTOR_CODEX_SEED_DIR`, `SPARK_CLAUDE_CODE_BIN`,
 `SPARK_CLAUDE_CODE_CONFIG_DIR`, and `SPARK_CLAUDE_CODE_PERMISSION_MODE` overrides
 retain precedence. Diagnostics retain `SPARK_DEBUG_CODEX_JSONRPC` and
-`SPARK_DEBUG_AGENT_TRACE` precedence. Agent runtime/seed/config-home changes are
+`SPARK_DEBUG_AGENT_TRACE` precedence. When unset, `codex_runtime_root` is
+`<SPARK_HOME>/runtime/codex` and `claude_config_dir` is
+`<SPARK_HOME>/runtime/claude`. Agent runtime/seed/config-home changes are
 restart settings; reads distinguish saved values from the running locations.
 Binary and permission choices apply to new work. Native model discovery uses
 these choices and keys its short-lived operational cache by configuration.

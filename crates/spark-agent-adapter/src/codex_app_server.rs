@@ -2050,14 +2050,6 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
     }
     let path = env_map.get("PATH").cloned();
     env_map.extend(spark_agent_environment(path.as_deref()));
-    let original_home = env_map
-        .get("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let original_codex_home = env_map
-        .get("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| original_home.join(".codex"));
     let runtime_root = runtime_root(&env_map);
     ensure_dir(&runtime_root)?;
     let codex_home = runtime_root.join(".codex");
@@ -2073,39 +2065,26 @@ pub(crate) fn build_codex_runtime_environment_with_settings(
         ensure_dir(directory)?;
     }
 
-    let explicit_seed = env_map
+    // Only an explicit seed dir seeds Spark's Codex home; the user's own
+    // CODEX_HOME or ~/.codex never reaches it.
+    let seed = env_map
         .get(CODEX_SEED_DIR_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/codex-seed"));
-    let mut seed_candidates = Vec::new();
-    for candidate in [explicit_seed, original_codex_home] {
-        if candidate != codex_home && !seed_candidates.contains(&candidate) {
-            seed_candidates.push(candidate);
-        }
-    }
     // OAuth credentials must come from a login in this home. Even a one-time
     // copy shares the host's refresh token and can invalidate either session.
-    for file_name in ["config.toml"] {
-        let destination = codex_home.join(file_name);
-        if let Some(source) = seed_candidates
-            .iter()
-            .map(|candidate| candidate.join(file_name))
-            .find(|candidate| candidate.is_file())
-        {
-            let _ = copy_file_if_changed(&source, &destination);
-        }
+    if seed != codex_home {
+        let _ = copy_file_if_changed(&seed.join("config.toml"), &codex_home.join("config.toml"));
+        let _ = copy_tree_contents(
+            &seed.join("plugins").join("cache"),
+            &codex_home.join("plugins").join("cache"),
+        );
     }
     force_standard_service_tier(&codex_home.join("config.toml")).map_err(|error| {
         CodexAppServerError::configuration(format!(
             "codex runtime config could not default to the standard service tier: {error}"
         ))
     })?;
-    for candidate in seed_candidates {
-        let _ = copy_tree_contents(
-            &candidate.join("plugins").join("cache"),
-            &codex_home.join("plugins").join("cache"),
-        );
-    }
 
     env_map.insert(
         "HOME".to_string(),
@@ -2131,21 +2110,23 @@ fn runtime_root(env_map: &BTreeMap<String, String>) -> PathBuf {
         .get(CODEX_RUNTIME_ROOT_ENV)
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
+        .unwrap_or_else(|| spark_runtime_dir(env_map, "codex"))
+}
+
+/// An agent's own home under Spark's: `<SPARK_HOME>/runtime/<agent>`.
+pub(crate) fn spark_runtime_dir(env_map: &BTreeMap<String, String>, agent: &str) -> PathBuf {
+    env_map
+        .get("SPARK_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
         .or_else(|| {
             env_map
-                .get("SPARK_HOME")
-                .filter(|value| !value.trim().is_empty())
-                .map(|spark_home| PathBuf::from(spark_home).join("runtime").join("codex"))
+                .get("HOME")
+                .map(|home| PathBuf::from(home).join(".spark"))
         })
-        .or_else(|| {
-            env_map.get("HOME").map(|home| {
-                PathBuf::from(home)
-                    .join(".spark")
-                    .join("runtime")
-                    .join("codex")
-            })
-        })
-        .unwrap_or_else(|| PathBuf::from(".spark").join("runtime").join("codex"))
+        .unwrap_or_else(|| PathBuf::from(".spark"))
+        .join("runtime")
+        .join(agent)
 }
 
 /// A model the local codex install can actually serve, per `model/list`.

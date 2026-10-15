@@ -792,26 +792,31 @@ fn runtime_environment_never_overwrites_an_existing_runtime_auth_file() {
         fs::read_to_string(isolated_codex_home.join("auth.json")).expect("runtime auth"),
         r#"{"owner":"runtime"}"#
     );
-    // Non-credential config is still seeded.
-    assert!(isolated_codex_home.join("config.toml").is_file());
+    // The host config is not copied either; Spark's own config is created.
+    let config = fs::read_to_string(isolated_codex_home.join("config.toml")).expect("config");
+    assert!(!config.contains("gpt-5.6-sol"), "{config}");
+    assert!(config.contains("service_tier = \"standard\""), "{config}");
 }
 
 #[test]
-fn runtime_environment_uses_isolated_codex_home_and_seeds_from_host_home() {
+fn runtime_environment_seeds_only_from_the_explicit_seed_dir_never_the_host_home() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_root = temp.path().join("runtime-codex");
     let host_codex_home = temp.path().join("host-codex-home");
-    fs::create_dir_all(&host_codex_home).expect("host codex home");
-    fs::write(host_codex_home.join("auth.json"), r#"{"seed":true}"#).expect("seed auth");
-    fs::write(
-        host_codex_home.join("config.toml"),
-        "model = \"gpt-5.6-sol\"\nservice_tier = \"fast\"\n",
-    )
-    .expect("seed config");
+    let seed_dir = temp.path().join("seed");
+    for (dir, model) in [(&host_codex_home, "host-model"), (&seed_dir, "seed-model")] {
+        fs::create_dir_all(dir.join("plugins/cache/plugin")).expect("plugin cache");
+        fs::write(dir.join("plugins/cache/plugin/manifest"), model).expect("plugin");
+        fs::write(dir.join("auth.json"), r#"{"seed":true}"#).expect("auth");
+        fs::write(
+            dir.join("config.toml"),
+            format!("model = \"{model}\"\nservice_tier = \"fast\"\n"),
+        )
+        .expect("config");
+    }
     let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", &runtime_root);
-    let _seed_guard =
-        EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", temp.path().join("missing-seed"));
+    let _seed_guard = EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", &seed_dir);
     let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", &host_codex_home);
 
     let env = build_codex_runtime_environment().expect("runtime env");
@@ -821,15 +826,32 @@ fn runtime_environment_uses_isolated_codex_home_and_seeds_from_host_home() {
         env.get("CODEX_HOME").map(PathBuf::from),
         Some(isolated_codex_home.clone())
     );
-    assert_ne!(isolated_codex_home, host_codex_home);
     assert!(!isolated_codex_home.join("auth.json").exists());
     assert_eq!(
         fs::read_to_string(isolated_codex_home.join("config.toml")).expect("seeded config"),
-        "model = \"gpt-5.6-sol\"\nservice_tier = \"standard\"\n"
+        "model = \"seed-model\"\nservice_tier = \"standard\"\n"
     );
     assert_eq!(
+        fs::read_to_string(isolated_codex_home.join("plugins/cache/plugin/manifest"))
+            .expect("seeded plugin"),
+        "seed-model"
+    );
+
+    // Without a seed dir, the host home's config and plugins still stay out.
+    let runtime_root = temp.path().join("runtime-unseeded");
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", &runtime_root);
+    let _seed_guard =
+        EnvVarGuard::set("ATTRACTOR_CODEX_SEED_DIR", temp.path().join("missing-seed"));
+    build_codex_runtime_environment().expect("runtime env");
+    let isolated_codex_home = runtime_root.join(".codex");
+    assert_eq!(
+        fs::read_to_string(isolated_codex_home.join("config.toml")).expect("own config"),
+        "service_tier = \"standard\"\n"
+    );
+    assert!(!isolated_codex_home.join("plugins/cache").exists());
+    assert_eq!(
         fs::read_to_string(host_codex_home.join("config.toml")).expect("host config"),
-        "model = \"gpt-5.6-sol\"\nservice_tier = \"fast\"\n"
+        "model = \"host-model\"\nservice_tier = \"fast\"\n"
     );
 }
 
