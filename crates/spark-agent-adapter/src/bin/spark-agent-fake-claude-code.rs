@@ -661,6 +661,57 @@ fn main() {
         drain_stdin();
         return;
     }
+    if mode == "subagent" {
+        // Frames as CLI 2.1.296 reports a synchronous Agent subagent.
+        let parent = "toolu_agent";
+        let sub = |content: serde_json::Value, role: &str| {
+            json!({"type": role, "session_id": session_id, "parent_tool_use_id": parent,
+                "agent_id": "agent-1", "message": {"role": role, "content": content}})
+        };
+        for frame in [
+            json!({"type": "assistant", "session_id": session_id, "parent_tool_use_id": null, "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Delegating."},
+                {"type": "tool_use", "id": parent, "name": "Agent", "input": {
+                    "description": "Find the config loader", "prompt": "Locate where config is loaded.", "subagent_type": "Explore"}}]}}),
+            json!({"type": "system", "subtype": "task_started", "session_id": session_id, "task_id": "task-1", "tool_use_id": parent,
+                "description": "Find the config loader", "subagent_type": "Explore", "task_type": "local_agent", "spawn_depth": 1,
+                "prompt": "Locate where config is loaded."}),
+            sub(
+                json!([{"type": "text", "text": "Locate where config is loaded."}]),
+                "user",
+            ),
+            json!({"type": "stream_event", "session_id": session_id, "parent_tool_use_id": parent,
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Subagent partial"}}}),
+            sub(
+                json!([{"type": "thinking", "thinking": "Subagent thinking"},
+                {"type": "text", "text": "Subagent narration"},
+                {"type": "tool_use", "id": "toolu_sub_grep", "name": "Grep", "input": {"pattern": "load_config", "path": "/src"}}]),
+                "assistant",
+            ),
+            json!({"type": "system", "subtype": "task_progress", "session_id": session_id, "task_id": "task-1", "tool_use_id": parent,
+                "description": "Running Grep", "usage": {"total_tokens": 1200, "tool_uses": 1, "duration_ms": 900}, "last_tool_name": "Grep"}),
+            sub(
+                json!([{"type": "tool_result", "tool_use_id": "toolu_sub_grep", "content": "src/config.rs"}]),
+                "user",
+            ),
+            sub(
+                json!([{"type": "text", "text": "Config loads in src/config.rs."}]),
+                "assistant",
+            ),
+            json!({"type": "system", "subtype": "task_updated", "session_id": session_id, "task_id": "task-1",
+                "patch": {"status": "completed", "end_time": 1_790_000_000}}),
+            json!({"type": "system", "subtype": "task_notification", "session_id": session_id, "task_id": "task-1", "tool_use_id": parent,
+                "status": "completed", "summary": "Found the config loader", "usage": {"total_tokens": 1500, "tool_uses": 1, "duration_ms": 1500}}),
+            json!({"type": "user", "session_id": session_id, "parent_tool_use_id": null, "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": parent, "content": [{"type": "text", "text": "Config loads in src/config.rs."}]}]}}),
+            json!({"type": "assistant", "session_id": session_id, "parent_tool_use_id": null, "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}}),
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Done.", "session_id": session_id}),
+        ] {
+            emit(&mut out, frame);
+        }
+        drain_stdin();
+        return;
+    }
     if mode == "result-only" || mode == "empty-result" {
         emit(
             &mut out,

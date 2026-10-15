@@ -670,6 +670,8 @@ impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
             json!({"kind": "warning", "message": "API error 529 (overloaded); retrying in 4s (attempt 2 of 10)"}),
             json!({"kind": "context_compaction_completed", "message": "Context compacted (21.6k \u{2192} 1.9k tokens)."}),
             json!({"kind": "session_start", "message": "session started"}),
+            json!({"kind": "tool_call_completed", "tool_call": {"id": "toolu_sub_grep", "kind": "dynamic_tool",
+                "title": "Grep", "file_paths": [], "parent_call_id": "toolu_agent"}}),
         ]
         .into_iter()
         .map(|event| {
@@ -770,4 +772,15 @@ nodes:
     assert!(!segments
         .iter()
         .any(|segment| segment.1 == "session started"));
+    // A subagent's call keeps the call it nests under.
+    let nested = records
+        .iter()
+        .find_map(|record| match record {
+            spark_storage::TranscriptRecord::SegmentUpsert { segment, .. } => {
+                segment.tool_call.clone()
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(nested["parent_call_id"], "toolu_agent");
 }

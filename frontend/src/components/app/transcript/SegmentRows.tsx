@@ -1,4 +1,4 @@
-import { memo, type ComponentProps, type ReactNode } from 'react'
+import { memo, useState, type ComponentProps, type ReactNode } from 'react'
 import { ClaudeCodeReconnect } from '@/features/settings/ClaudeCodeConnectionSettings'
 import { CodexReconnect } from '@/features/settings/CodexConnectionSettings'
 import { isClaudeCodeAuthError } from '@/features/settings/services/claudeCodeConnection'
@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { StatusDot, statusTextClassName, type StatusTone } from '../status'
 import { stripShellWrapper } from './displayCommand'
-import type { ToolGroupSummary } from './groupTranscript'
+import { plural, type ToolGroupSummary } from './groupTranscript'
 import { TranscriptCopyButton } from './TranscriptCopyButton'
 
 // Shared presentational rows for agent transcripts. A chat turn, a mission log and a
@@ -32,7 +32,7 @@ export const getSurfaceToneClassName = (tone: SurfaceTone) => (
 
 export interface TranscriptToolCall {
     id: string
-    kind: 'command_execution' | 'file_change' | 'dynamic_tool'
+    kind: 'command_execution' | 'file_change' | 'dynamic_tool' | 'subagent'
     status: 'running' | 'completed' | 'failed' | 'yielded'
     completionReason?: string | null
     title: string
@@ -41,7 +41,14 @@ export interface TranscriptToolCall {
     outputSize?: number | null
     outputTruncated?: boolean
     filePaths: string[]
+    /** The subagent call this call was made under; it renders nested there. */
+    parentCallId?: string | null
+    subagentType?: string | null
+    prompt?: string | null
+    /** A subagent's latest progress, or its final summary. */
+    progress?: string | null
 }
+
 
 export interface TranscriptAttachment {
     id: string
@@ -127,6 +134,9 @@ export const summarizeToolCallDetail = (toolCall: TranscriptToolCall): string | 
     if (toolCall.filePaths.length > 0) {
         return toolCall.filePaths[0]
     }
+    if (toolCall.progress) {
+        return toolCall.progress
+    }
     if (toolCall.output) {
         return toolCall.output.split(/\r?\n/, 1)[0]?.trim() || null
     }
@@ -165,6 +175,11 @@ function ToolCallDetails({
     const hasPreviewOnly = entry.toolCall.outputTruncated === true && fullOutput === null
     return (
         <div className={cn('mt-1.5 mb-2 space-y-2', className)}>
+            {entry.toolCall.prompt ? (
+                <p className="whitespace-pre-wrap break-words rounded-md bg-muted px-2 py-1 text-xs text-foreground [overflow-wrap:anywhere]">
+                    {entry.toolCall.prompt}
+                </p>
+            ) : null}
             {entry.toolCall.command ? (
                 <p className="whitespace-pre-wrap break-words rounded-md bg-muted px-2 py-1 font-mono text-xs text-foreground [overflow-wrap:anywhere]">
                     {entry.toolCall.command}
@@ -197,11 +212,34 @@ function ToolCallDetails({
     )
 }
 
+/** A subagent call's own calls: "3 tool calls", collapsed until opened, then indented below. */
+function NestedToolCalls({ parentId, testIdPrefix, children }: { parentId: string; testIdPrefix: string; children: ReactNode[] }) {
+    const [isExpanded, setIsExpanded] = useState(false)
+    return (
+        <div className="ml-5 min-w-0">
+            <button
+                type="button"
+                data-testid={`${testIdPrefix}-tool-call-children-${parentId}`}
+                aria-expanded={isExpanded}
+                onClick={() => setIsExpanded((current) => !current)}
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            >
+                <ChevronRight aria-hidden="true" className={cn('size-3 shrink-0 transition-transform', isExpanded && 'rotate-90')} />
+                {plural(children.length, 'tool call')}
+            </button>
+            {isExpanded ? (
+                <ul className="mt-1 flex min-w-0 flex-col gap-0.5 border-l border-border pl-3">{children}</ul>
+            ) : null}
+        </div>
+    )
+}
+
 /**
  * One tool call. `variant="row"` (default) is the standalone chevron row; `variant="line"`
  * is the compact monospace line inside an expanded ToolCallGroupRow. Both show the
  * command without its shell wrapper, keep the full command in the tooltip and the
- * expanded body, and mark anything that did not simply complete.
+ * expanded body, and mark anything that did not simply complete. A subagent call shows
+ * its type and lists the calls it made (`childCalls`, rendered by the surface) beneath.
  */
 export const ToolCallRow = memo(function ToolCallRow({
     entry,
@@ -212,6 +250,7 @@ export const ToolCallRow = memo(function ToolCallRow({
     onToggleToolCallExpanded,
     testIdPrefix = 'project',
     variant = 'row',
+    childCalls,
 }: {
     entry: TranscriptToolCallEntry
     fullOutput?: string | null
@@ -221,6 +260,7 @@ export const ToolCallRow = memo(function ToolCallRow({
     onToggleToolCallExpanded: (toolCallId: string) => void
     testIdPrefix?: string
     variant?: 'row' | 'line'
+    childCalls?: ReactNode[]
 }) {
     const statusPresentation = getToolCallStatusPresentation(entry.toolCall.status)
     const summaryDetail = entry.toolCall.command
@@ -241,6 +281,12 @@ export const ToolCallRow = memo(function ToolCallRow({
             className={variant === 'row' ? 'pl-5' : undefined}
         />
     ) : null
+    const subagentType = entry.toolCall.subagentType ? (
+        <span className="shrink-0 font-sans text-muted-foreground/70">{entry.toolCall.subagentType}</span>
+    ) : null
+    const nested = childCalls?.length ? (
+        <NestedToolCalls parentId={entry.toolCall.id} testIdPrefix={testIdPrefix}>{childCalls}</NestedToolCalls>
+    ) : null
 
     if (variant === 'line') {
         return (
@@ -256,12 +302,14 @@ export const ToolCallRow = memo(function ToolCallRow({
                     {isCommand ? null : (
                         <span className="shrink-0 font-sans text-muted-foreground">{entry.toolCall.title}</span>
                     )}
+                    {subagentType}
                     <span className="min-w-0 flex-1 truncate">
                         {summaryDetail ?? (entry.toolCall.status === 'running' ? '' : 'No additional details')}
                     </span>
                     {statusMark}
                 </button>
                 {details}
+                {nested}
             </li>
         )
     }
@@ -280,12 +328,14 @@ export const ToolCallRow = memo(function ToolCallRow({
                 {isCommand ? null : (
                     <span className="shrink-0 text-muted-foreground">{entry.toolCall.title}</span>
                 )}
+                {subagentType}
                 <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground group-hover:text-foreground">
                     {summaryDetail ?? (entry.toolCall.status === 'running' ? '' : 'No additional details')}
                 </span>
                 {statusMark}
             </button>
             {details}
+            {nested}
         </li>
     )
 })

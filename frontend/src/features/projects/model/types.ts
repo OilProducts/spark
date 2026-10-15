@@ -7,6 +7,7 @@ import type {
     FlowRunRequestResponse,
     ProposedPlanArtifactResponse,
 } from '@/lib/workspaceClient'
+import type { TranscriptToolCall } from '@/components/app/transcript/SegmentRows'
 
 /** A file in a chat's unsent draft; `attachment` is set once the upload lands. */
 export interface ComposerAttachment {
@@ -26,18 +27,7 @@ export type ProjectProposedPlan = ProposedPlanArtifactResponse
 export type ConversationTurnStatus = ConversationTurnResponse['status']
 export type ConversationSegmentStatus = ConversationSegmentResponse['status']
 
-export interface ConversationTimelineToolCall {
-    id: string
-    kind: 'command_execution' | 'file_change' | 'dynamic_tool'
-    status: 'running' | 'completed' | 'failed' | 'yielded'
-    completionReason?: string | null
-    title: string
-    command?: string | null
-    output?: string | null
-    outputSize?: number | null
-    outputTruncated?: boolean
-    filePaths: string[]
-}
+export type ConversationTimelineToolCall = TranscriptToolCall
 
 export interface ConversationTimelineRequestUserInputQuestion {
     id: string

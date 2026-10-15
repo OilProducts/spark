@@ -3,6 +3,7 @@ import type {
     TranscriptMessageEntry,
     TranscriptToolCallEntry,
 } from '@/components/app/transcript/SegmentRows'
+import { toTranscriptToolCall } from '@/components/app/transcript/groupTranscript'
 
 // Maps projected run segments onto the shared transcript row shapes. A run
 // transcript is the same activity a chat turn is; the visit model scopes rows
@@ -67,18 +68,7 @@ export function buildRunTranscriptRow(segment: RunTranscriptSegment): RunTranscr
             entry: {
                 id: segment.id,
                 timestamp: segment.timestamp,
-                toolCall: {
-                    id: segment.tool_call.id,
-                    kind: segment.tool_call.kind,
-                    status: segment.tool_call.status,
-                    completionReason: segment.tool_call.completion_reason ?? null,
-                    title: segment.tool_call.title,
-                    command: segment.tool_call.command ?? null,
-                    output: segment.tool_call.output ?? null,
-                    outputSize: segment.tool_call.output_size ?? null,
-                    outputTruncated: segment.tool_call.output_truncated === true,
-                    filePaths: segment.tool_call.file_paths,
-                },
+                toolCall: toTranscriptToolCall(segment.tool_call),
             },
         }
     }

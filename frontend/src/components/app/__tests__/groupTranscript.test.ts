@@ -24,6 +24,18 @@ const shape = (items: Item[]) => groupTranscript(items, classify).map((block) =>
         : `[${block.members.map((member) => member.kind === 'tool_call' ? member.toolCall.id : member.item.kind === 'thinking' ? member.item.id : '?').join(' ')}]`)
 
 describe('groupTranscript', () => {
+    it('nests a subagent\'s calls under the call that spawned it and keeps top-level folding', () => {
+        const items = [
+            message('m1'), call('agent', { kind: 'subagent' }), call('c1', { parentCallId: 'agent' }), call('c2', { parentCallId: 'agent' }),
+            call('b'), call('orphan', { parentCallId: 'missing' }), message('m2'),
+        ]
+        expect(shape(items)).toEqual(['m1', '[agent b orphan]', 'm2'])
+        const group = groupTranscript(items, classify)[1]
+        const agent = group.kind === 'tool_group' ? group.members[0] : null
+        expect(agent?.kind === 'tool_call' ? agent.children.map((child) => child.toolCall.id) : null).toEqual(['c1', 'c2'])
+        expect(group.kind === 'tool_group' ? group.summary.label : null).toBe('Ran 2 commands, used 1 tool')
+    })
+
     it('folds consecutive tool calls and the thinking between them into one group', () => {
         expect(shape([message('m1'), call('a'), thinking('t1'), call('b'), call('c'), message('m2'), call('d')]))
             .toEqual(['m1', '[a t1 b c]', 'm2', '[d]'])

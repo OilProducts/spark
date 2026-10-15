@@ -1870,3 +1870,79 @@ fn claude_code_status_frames_become_compaction_and_warnings_and_the_turn_records
     let log = std::fs::read_to_string(log_path).unwrap();
     assert!(log.contains("GET_CONTEXT_USAGE"), "{log}");
 }
+
+#[test]
+fn claude_code_subagent_frames_nest_under_the_spawning_call() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", "subagent");
+
+    let output = ClaudeCodeBackend::new()
+        .run_agent_turn(agent_request(temp.path()))
+        .unwrap();
+
+    // The subagent's text and thinking never reach the main turn.
+    let texts = output
+        .events
+        .iter()
+        .filter(|event| event.channel.is_some())
+        .filter_map(|event| event.message.as_deref())
+        .collect::<Vec<_>>();
+    assert!(
+        texts.iter().all(|text| !text.contains("Subagent")),
+        "{texts:?}"
+    );
+    assert!(
+        !texts.contains(&"Config loads in src/config.rs."),
+        "{texts:?}"
+    );
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Done."));
+
+    let calls = |id: &str| {
+        output
+            .events
+            .iter()
+            .filter_map(|event| {
+                let call = event.tool_call.as_ref()?;
+                (call["id"] == id).then(|| (event.kind.clone(), event.status.clone(), call.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
+    let grep = calls("toolu_sub_grep");
+    assert_eq!(grep.len(), 2);
+    assert!(grep
+        .iter()
+        .all(|(_, _, call)| call["parent_call_id"] == "toolu_agent"));
+
+    // task_progress and task_notification update the parent; task_started
+    // and task_updated add nothing.
+    let agent = calls("toolu_agent");
+    let kinds = agent
+        .iter()
+        .map(|(kind, status, _)| (kind.as_str(), status.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            ("tool_call_started", Some("started")),
+            ("tool_call_started", Some("updated")),
+            ("tool_call_started", Some("completed")),
+            ("tool_call_completed", Some("completed")),
+        ]
+    );
+    let started = &agent[0].2;
+    assert_eq!(started["kind"], "subagent");
+    assert_eq!(started["title"], "Find the config loader");
+    assert_eq!(started["subagent_type"], "Explore");
+    assert!(started.get("parent_call_id").is_none());
+    assert_eq!(agent[1].2["progress"], "Running Grep");
+    assert_eq!(agent[1].2["tool_uses"], 1);
+    let completed = &agent[3].2;
+    assert_eq!(completed["summary"], "Found the config loader");
+    assert_eq!(completed["output"], "Config loads in src/config.rs.");
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| matches!(&event.kind, TurnStreamEventKind::Other(kind) if kind.starts_with("system_task"))));
+}

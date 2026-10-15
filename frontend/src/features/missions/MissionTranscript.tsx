@@ -5,7 +5,7 @@ import { buildRunsHash } from '@/app/runsRouting'
 import { InlineError } from '@/components/app/inline-error'
 import { SectionHeading } from '@/components/app/section-heading'
 import { statusTextClassName } from '@/components/app/status'
-import { groupTranscript } from '@/components/app/transcript/groupTranscript'
+import { groupTranscript, type TranscriptToolCallNode } from '@/components/app/transcript/groupTranscript'
 import {
     AssistantTurnHeader,
     EventLine,
@@ -191,6 +191,15 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
         return <li key={`notice:${entry.id}`}><EventLine data-testid="mission-event" icon={<X className={statusTextClassName('destructive')} />} at={when(entry.timestamp)} title={entry.label}>{entry.label.split('\n')[0]}</EventLine></li>
     }
 
+    /** A grouped tool call as a line, with any subagent calls nested under it. */
+    function toolCallLine({ item, toolCall, children }: TranscriptToolCallNode<Entry>): ReactNode {
+        if (item.kind !== 'tool_call') return null
+        const output = fullOutputs[item.id]
+        return <ToolCallRow key={toolCall.id} variant="line" entry={item} isExpanded={expandedToolCalls[toolCall.id] === true} onToggleToolCallExpanded={() => toggleToolCall(item)}
+            fullOutput={output?.output ?? null} isLoadingFullOutput={output !== undefined && output.output === undefined && output.error === undefined}
+            loadFullOutputError={output?.error ?? null} testIdPrefix="mission" childCalls={children.map(toolCallLine)} />
+    }
+
     function assistantTurn(turn: Extract<Turn, { kind: 'assistant' }>, key: string) {
         const blocks = groupTranscript(turn.entries, entry => entry.kind === 'tool_call' ? { kind: 'tool_call', toolCall: entry.toolCall } : isThinking(entry) ? { kind: 'thinking' } : { kind: 'other' })
         const meta = [formatTime(turn.entries[0]?.timestamp ?? ''), turn.worked && `worked ${turn.worked}`].filter(Boolean).join(' · ')
@@ -199,11 +208,7 @@ export function MissionTranscript({ conversation, project, runs }: { conversatio
             <ul className="flex min-w-0 flex-col gap-3 pl-[30px]">
                 {blocks.map(block => block.kind === 'tool_group'
                     ? <ToolCallGroupRow key={block.id} summary={block.summary} isExpanded={openGroups[block.id] === true} onToggle={() => toggleKey(setOpenGroups)(block.id)} testId={`mission-tool-group-${block.id}`}>
-                        {block.members.map(member => member.kind === 'tool_call' && member.item.kind === 'tool_call'
-                            ? <ToolCallRow key={member.toolCall.id} variant="line" entry={member.item} isExpanded={expandedToolCalls[member.toolCall.id] === true} onToggleToolCallExpanded={() => toggleToolCall(member.item as ToolCallEntry)}
-                                fullOutput={fullOutputs[member.item.id]?.output ?? null} isLoadingFullOutput={fullOutputs[member.item.id] !== undefined && fullOutputs[member.item.id].output === undefined && fullOutputs[member.item.id].error === undefined}
-                                loadFullOutputError={fullOutputs[member.item.id]?.error ?? null} testIdPrefix="mission" />
-                            : row(member.item))}
+                        {block.members.map(member => member.kind === 'tool_call' ? toolCallLine(member) : row(member.item))}
                     </ToolCallGroupRow>
                     : row(block.item))}
             </ul>
