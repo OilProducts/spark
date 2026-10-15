@@ -224,7 +224,8 @@ Spark's Claude Code uses its own config directory,
 `<SPARK_HOME>/runtime/claude` by default, and needs its own one-time sign-in.
 Your personal `~/.claude` settings, CLAUDE.md, hooks, plugins, MCP servers and
 memory do not apply to Spark's agents. Set `claude_config_dir` to use another
-location.
+location. Claude Code keeps a separate sign-in for every explicitly set
+directory, even `~/.claude`, so sign in once after changing it.
 
 Claude Code authentication is managed through **Settings → Claude Code
 connection**, which runs `claude auth login` with the same binary and
