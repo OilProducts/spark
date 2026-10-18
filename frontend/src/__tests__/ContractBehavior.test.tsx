@@ -1302,6 +1302,10 @@ describe('Frontend contract behavior', () => {
     ])
     expect(settingsTab).toHaveAccessibleName('Settings')
     expect(chatsTab).toHaveAccessibleName('Chats')
+    // Each icon shows its name under it.
+    expect(within(screen.getByTestId('activity-bar')).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'Overview', 'Chats', 'Missions', 'Runs', 'Triggers', 'Flows', 'Inbox', 'Settings',
+    ])
 
     chatsTab.focus()
     expect(chatsTab).toHaveFocus()

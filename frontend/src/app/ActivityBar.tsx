@@ -27,6 +27,10 @@ const RUNNING_RUN_STATUSES = new Set(['running', 'queued', 'pause_requested', 'a
 type ActivityDot = 'waiting' | 'running' | 'unread' | null
 const DOT_LABELS = { waiting: 'waiting on you', running: 'running', unread: 'new since you last looked' }
 
+// An icon with its name under it; on a phone-width top row there is only room for the icon.
+const ITEM_CLASS = 'relative flex h-12 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg border border-transparent text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-sm:size-11'
+const LABEL_CLASS = 'text-xs leading-none max-sm:hidden'
+
 /** Which views have something waiting on you or running, for the dots on their icons. */
 export function activityDots(
     attention: AttentionItem[],
@@ -77,17 +81,20 @@ function AttentionBell({ items, narrow }: { items: AttentionItem[]; narrow: bool
                 aria-label={items.length > 0 ? `${items.length} items waiting on you` : 'Nothing waiting on you'}
                 title="Waiting on you"
                 onClick={() => setOpen((previous) => !previous)}
-                className="relative flex size-11 items-center justify-center rounded-lg text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className={ITEM_CLASS}
             >
-                <Bell className="size-4.5" />
-                {items.length > 0 && (
-                    <span
-                        data-testid="attention-bell-count"
-                        className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
-                    >
-                        {items.length}
-                    </span>
-                )}
+                <span className="relative">
+                    <Bell className="size-4.5" />
+                    {items.length > 0 && (
+                        <span
+                            data-testid="attention-bell-count"
+                            className="absolute -right-2.5 -top-2 flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-xs font-medium text-warning-foreground"
+                        >
+                            {items.length}
+                        </span>
+                    )}
+                </span>
+                <span className={LABEL_CLASS}>Inbox</span>
             </button>
             {open && (
                 <div
@@ -171,19 +178,21 @@ export function ActivityBar() {
                 data-activity-mode={mode}
                 aria-label={dot ? `${label} (${DOT_LABELS[dot]})` : label}
                 aria-current={isActive ? 'page' : undefined}
-                title={label}
                 onClick={() => setViewMode(mode)}
                 onKeyDown={(event) => onKeyDown(event, mode)}
-                className="relative flex size-11 shrink-0 items-center justify-center rounded-lg border border-transparent text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring aria-[current=page]:border-border aria-[current=page]:bg-background aria-[current=page]:text-primary"
+                className={cn(ITEM_CLASS, 'transition-colors aria-[current=page]:border-border aria-[current=page]:bg-background aria-[current=page]:text-primary')}
             >
-                <Icon className="size-4.5" />
-                {dot ? (
-                    <span
-                        data-testid={`${testId}-dot`}
-                        data-dot={dot}
-                        className={cn('absolute right-2.5 top-2.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : 'bg-primary')}
-                    />
-                ) : null}
+                <span className="relative">
+                    <Icon className="size-4.5" />
+                    {dot ? (
+                        <span
+                            data-testid={`${testId}-dot`}
+                            data-dot={dot}
+                            className={cn('absolute -right-1 -top-0.5 size-1.5 rounded-full', dot === 'waiting' ? 'bg-warning' : 'bg-primary')}
+                        />
+                    ) : null}
+                </span>
+                <span className={LABEL_CLASS}>{label}</span>
             </button>
         )
     }
