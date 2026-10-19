@@ -3799,3 +3799,102 @@ fn native_interrupt_stops_a_model_stream_in_flight() {
         .collect::<Vec<_>>();
     assert_eq!(errors, [Some("Stopped.")]);
 }
+
+/// Answers the first request with one shell call running `command`.
+struct ShellCallAdapter {
+    calls: Arc<Mutex<Vec<Request>>>,
+    command: String,
+}
+
+impl ProviderAdapter for ShellCallAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, AdapterError> {
+        unreachable!("the session streams")
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        let first = {
+            let mut calls = self.calls.lock().expect("calls");
+            calls.push(request);
+            calls.len() == 1
+        };
+        let mut events = vec![Ok(StreamEvent::text_delta("Running."))];
+        if first {
+            events.push(Ok(StreamEvent {
+                tool_call: Some(ToolCall::new(
+                    "call-shell",
+                    "shell",
+                    json!({"command": self.command}),
+                )),
+                ..StreamEvent::new(StreamEventType::ToolCallEnd)
+            }));
+        }
+        events.push(Ok(StreamEvent::finish(
+            if first {
+                FinishReason::ToolCalls
+            } else {
+                FinishReason::Stop
+            },
+            None,
+        )));
+        Ok(stream_events(events.into_iter()))
+    }
+}
+
+#[test]
+fn native_interrupt_kills_a_running_shell_command() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let started = temp.path().join("started");
+    let finished = temp.path().join("finished");
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ShellCallAdapter {
+        calls: Arc::clone(&calls),
+        command: format!(
+            "touch '{}'; sleep 2; touch '{}'",
+            started.display(),
+            finished.display()
+        ),
+    });
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+    let steering = SessionSteeringHandle::new();
+    let begun = Instant::now();
+    let run = {
+        let steering = steering.clone();
+        let request = chat_turn_request(None, temp.path());
+        thread::spawn(move || {
+            RustLlmAgentTurnBackend::new(client).run_steerable_turn(request, steering, None)
+        })
+    };
+    while !started.exists() {
+        assert!(
+            begun.elapsed() < Duration::from_secs(5),
+            "command never started"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    assert!(steering.interrupt());
+    let output = run.join().expect("thread").expect("interrupted output");
+
+    assert!(
+        begun.elapsed() < Duration::from_secs(2),
+        "the turn waited for the command"
+    );
+    let errors = output
+        .events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::Error)
+        .map(|event| event.error.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(errors, [Some("Stopped.")]);
+    assert_eq!(
+        calls.lock().expect("calls").len(),
+        1,
+        "no request after stop"
+    );
+    thread::sleep(Duration::from_millis(2500).saturating_sub(begun.elapsed()));
+    assert!(!finished.exists(), "the killed command kept running");
+}

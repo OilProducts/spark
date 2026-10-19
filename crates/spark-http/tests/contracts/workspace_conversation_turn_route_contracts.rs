@@ -1969,6 +1969,162 @@ async fn codex_chat_turn_takes_a_steered_message_through_the_default_backend() {
     assert!(std::fs::read_to_string(&log).unwrap().contains("Use tabs."));
 }
 
+/// Reruns `test` in a child process, where it may point the default backend
+/// at a fake CLI through the environment. True in the child.
+fn in_child_process(test: &str) -> bool {
+    const CHILD: &str = "SPARK_CHAT_ROUTE_CHILD_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("workspace_conversation_turn_route_contracts::{test}"),
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
+/// An app whose Claude Code chat turns run the fake CLI in `mode`; returns
+/// it with its settings, a project path and the fake's log.
+fn fake_claude_code_app(root: &Path, mode: &str) -> (axum::Router, SparkSettings, String, PathBuf) {
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let log = root.join("claude.log");
+    std::env::set_var(
+        "SPARK_CLAUDE_CODE_BIN",
+        binaries.join("spark-agent-fake-claude-code"),
+    );
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let settings = settings(root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    (
+        spark_http::build_app(settings.clone()),
+        settings,
+        project.to_string_lossy().to_string(),
+        log,
+    )
+}
+
+async fn send_claude_code_message(
+    app: &axum::Router,
+    conversation_id: &str,
+    project: &str,
+    message: &str,
+) {
+    let response = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(json!({"project_path": project, "message": message, "provider": "claude-code"})),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+}
+
+async fn wait_for_log(log: &Path, needle: &str) {
+    for _ in 0..500 {
+        if std::fs::read_to_string(log).is_ok_and(|text| text.contains(needle)) {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{needle} never logged");
+}
+
+#[tokio::test]
+async fn claude_code_stop_before_control_starts_is_sent_once_it_does() {
+    if !in_child_process("claude_code_stop_before_control_starts_is_sent_once_it_does") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_claude_code_app(temp.path(), "interrupt-aborted");
+    let gate = temp.path().join("init-gate");
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_GATE", &gate);
+
+    send_claude_code_message(&app, "claude-stop", &project, "Start the work").await;
+    wait_for_log(&log, "USER_CONTENT=").await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/claude-stop/interrupt",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    // Only now does the CLI report system/init and accept control requests.
+    std::fs::write(&gate, "").unwrap();
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "claude-stop", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    assert_eq!(snapshot["turns"][1]["status"], "complete", "{snapshot}");
+    assert_eq!(snapshot["turns"][1]["content"], "Shortened turn.");
+}
+
+#[tokio::test]
+async fn claude_code_message_never_replayed_before_exit_starts_the_next_turn() {
+    if !in_child_process("claude_code_message_never_replayed_before_exit_starts_the_next_turn") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_claude_code_app(temp.path(), "steer-exit");
+
+    send_claude_code_message(&app, "claude-exit", &project, "Start the work").await;
+    wait_for_log(&log, "USER_CONTENT=").await;
+    send_claude_code_message(&app, "claude-exit", &project, "Then add tests.").await;
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "claude-exit", &project, |s| {
+        assistant_turns_settled(s, 2)
+    })
+    .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    let contents = turns
+        .iter()
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        [
+            "Start the work",
+            "First reply.",
+            "Then add tests.",
+            "All set."
+        ]
+    );
+    assert!(
+        !snapshot["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|segment| segment["kind"] == "user_message"),
+        "the message was never delivered into the first turn"
+    );
+    let prompts = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("USER_CONTENT="))
+        .count();
+    assert_eq!(prompts, 2);
+}
+
 /// The first call waits until released, so a message can be steered into
 /// the running native session; every call answers with the next reply.
 struct GatedAdapter {

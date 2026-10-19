@@ -94,6 +94,9 @@ struct SessionSteeringState {
     /// Interrupt aborts it: the attached session's request abort signal, so
     /// a model request in flight stops too.
     abort: AbortSignal,
+    /// The attached session's abort handle, which also kills the commands its
+    /// tools are running.
+    session: Option<SessionAbortHandle>,
 }
 
 impl Default for SessionSteeringState {
@@ -102,6 +105,7 @@ impl Default for SessionSteeringState {
             queue: VecDeque::new(),
             accepting: true,
             abort: AbortSignal::new(),
+            session: None,
         }
     }
 }
@@ -201,6 +205,9 @@ impl SessionSteeringHandle {
     pub fn interrupt(&self) -> bool {
         let state = self.state.lock().expect("session steering queue lock");
         state.abort.abort("Stopped.");
+        if let Some(session) = state.session.as_ref() {
+            session.abort_with_reason("Stopped.");
+        }
         state.accepting
     }
 
@@ -666,6 +673,7 @@ impl Session {
                 self.abort_controller.abort("Stopped.");
             }
             state.abort = self.abort_signal();
+            state.session = Some(self.abort_handle());
         }
         self.external_steering = Some(handle);
     }
@@ -1237,6 +1245,7 @@ impl Session {
                     && !has_subagent_calls,
                 host_controls: ToolHostControls::new(Some(steering_hook), Some(follow_up_hook)),
                 subagent_runtime: Some(subagent_runtime.clone()),
+                abort_signal: Some(self.abort_signal()),
                 event_hook: Some(Arc::new(move |event| {
                     captured_events
                         .lock()

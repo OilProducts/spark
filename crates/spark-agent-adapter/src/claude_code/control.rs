@@ -23,8 +23,9 @@ pub(super) struct Control {
     seen: BTreeSet<String>,
     interrupt: Option<String>,
     interrupted: bool,
-    /// Steering written to stdin and not yet echoed back, by message uuid.
-    steering: BTreeMap<String, SteeringTurn>,
+    /// Steering written to stdin and not yet echoed back, in send order,
+    /// with its message uuid.
+    steering: Vec<(String, SteeringTurn)>,
     pub logs: Vec<AgentRawLogLine>,
 }
 
@@ -43,7 +44,7 @@ impl Control {
             seen: BTreeSet::new(),
             interrupt: None,
             interrupted: false,
-            steering: BTreeMap::new(),
+            steering: Vec::new(),
             logs: Vec::new(),
         }));
         let mut entries = registry().lock().unwrap();
@@ -84,8 +85,30 @@ impl Control {
         ) {
             return Err(turn);
         }
-        self.steering.insert(id, turn);
+        self.steering.push((id, turn));
         Ok(())
+    }
+
+    /// Steering written but never echoed back, in send order. The CLI did
+    /// not take it in, so the caller carries it into the next turn.
+    pub fn take_unacknowledged(&mut self) -> Vec<SteeringTurn> {
+        self.steering.drain(..).map(|(_, turn)| turn).collect()
+    }
+
+    /// Sends one interrupt request; true when one is sent or already stands.
+    /// False until `system/init` enables control.
+    pub fn interrupt(&mut self) -> bool {
+        if !self.enabled || !matches!(self.child.try_wait(), Ok(None)) {
+            return false;
+        }
+        if self.interrupt.is_some() || self.interrupted {
+            return true;
+        }
+        let id = Uuid::new_v4().to_string();
+        self.interrupt = Some(id.clone());
+        self.send(
+            json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
+        )
     }
 
     pub fn close(&mut self) {
@@ -129,7 +152,9 @@ impl Control {
 
     pub fn ingest(&mut self, message: &Value) -> Option<TurnStreamEvent> {
         if message["type"] == "user" && message["isReplay"] == true {
-            let turn = self.steering.remove(message["uuid"].as_str()?)?;
+            let uuid = message["uuid"].as_str()?;
+            let index = self.steering.iter().position(|(id, _)| id == uuid)?;
+            let (_, turn) = self.steering.remove(index);
             let text = turn.text();
             return Some(stream_event(
                 TurnStreamEventKind::Other("steering_injected".into()),
@@ -299,21 +324,7 @@ fn find(project_path: &str, conversation_id: &str) -> Option<Arc<Mutex<Control>>
 }
 
 pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
-    let Some(control) = find(project_path, conversation_id) else {
-        return false;
-    };
-    let mut control = control.lock().unwrap();
-    if !control.enabled || !matches!(control.child.try_wait(), Ok(None)) {
-        return false;
-    }
-    if control.interrupt.is_some() {
-        return true;
-    }
-    let id = Uuid::new_v4().to_string();
-    control.interrupt = Some(id.clone());
-    control.send(
-        json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
-    )
+    find(project_path, conversation_id).is_some_and(|control| control.lock().unwrap().interrupt())
 }
 
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {

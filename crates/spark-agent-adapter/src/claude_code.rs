@@ -278,9 +278,14 @@ impl ClaudeCodeBackend {
         });
         let started = std::time::Instant::now();
         let mut initialized = false;
+        let mut interrupt_sent = false;
         loop {
             if let Some(steering) = steering {
                 let mut control = control.lock().unwrap();
+                // A Stop that came before system/init enabled control is sent now.
+                if !interrupt_sent && steering.interrupt_requested() {
+                    interrupt_sent = control.interrupt();
+                }
                 if control.accepts_input() {
                     for turn in steering.drain_queued() {
                         if let Err(turn) = control.steer(turn) {
@@ -373,6 +378,9 @@ impl ClaudeCodeBackend {
 
         let mut control = control.lock().unwrap();
         control.close();
+        if let Some(steering) = steering {
+            steering.requeue_front(control.take_unacknowledged());
+        }
         raw_log_lines.append(&mut control.logs);
         let status = control.child.wait().map_err(|error| {
             ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))

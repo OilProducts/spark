@@ -55,6 +55,7 @@ fn main() {
         }
     }
 
+    let mut prompt = Value::Null;
     // Control-protocol mode: with stream-json input the caller drives via
     // control requests (model discovery) instead of a prompt turn, and keeps
     // stdin open, so answer line by line instead of reading to EOF.
@@ -74,6 +75,7 @@ fn main() {
                     assert_eq!(message["message"]["role"], "user");
                     assert_user_content(&message["message"]["content"]);
                     append_log(&format!("USER_CONTENT={}", message["message"]["content"]));
+                    prompt = message["message"]["content"].clone();
                     break;
                 }
                 if message["type"] == "control_request"
@@ -131,6 +133,12 @@ fn main() {
         out.flush().unwrap();
     };
 
+    // Holds system/init back until the gate file exists.
+    if let Ok(gate) = env::var("SPARK_FAKE_CLAUDE_CODE_GATE") {
+        while !std::path::Path::new(&gate).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     emit(
         &mut out,
         serde_json::json!({
@@ -285,6 +293,22 @@ fn main() {
         std::io::stdin().read_to_string(&mut remaining).unwrap();
         assert!(remaining.is_empty(), "stdin closes after the last result");
         return;
+    }
+
+    // steer-exit: the first turn exits after its result without echoing the
+    // message written mid-turn; later turns answer as usual.
+    if mode == "steer-exit" && prompt.to_string().contains("Start the work") {
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+        );
+        let steer = read_control();
+        assert_eq!(steer["type"], "user");
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "First reply.", "session_id": session_id, "terminal_reason": "completed"}),
+        );
+        std::process::exit(0);
     }
 
     if mode == "interrupt-aborted" || mode == "interrupt-error" {
