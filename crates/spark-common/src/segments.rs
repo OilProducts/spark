@@ -469,6 +469,43 @@ pub fn materialize_segment_for_event(
             upsert_segment(snapshot, segment.clone());
             Some(segment)
         }
+        // A user message delivered into the running turn, placed where the
+        // provider took it in.
+        TurnStreamEventKind::Other(kind) if kind == "steering_injected" => {
+            let details = event.details.as_ref();
+            let key = details
+                .and_then(|details| details.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    provider_sequence.map(|sequence| format!("{assistant_turn_id}-seq{sequence}"))
+                })?;
+            let segment_id = format!("segment-user-message-{key}");
+            if let Some(existing) = find_segment(snapshot, &segment_id) {
+                return Some(existing.clone());
+            }
+            let mut segment = segment_shell(
+                &segment_id,
+                assistant_turn_id,
+                next_turn_segment_order(snapshot, assistant_turn_id),
+                "user_message",
+                "user",
+                "complete",
+                now,
+                build_segment_source(event, None),
+            );
+            set_string_value(
+                &mut segment,
+                "content",
+                event.message.as_deref().unwrap_or(""),
+            );
+            set_string_value(&mut segment, "completed_at", now);
+            if let Some(attachments) = details.and_then(|details| details.get("attachments")) {
+                set_value(&mut segment, "attachments", attachments.clone());
+            }
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
         TurnStreamEventKind::Other(kind) if is_agent_event_kind(kind) => {
             let segment_id = agent_event_segment_id(assistant_turn_id, event, provider_sequence);
             let (category, status) = match kind.as_str() {

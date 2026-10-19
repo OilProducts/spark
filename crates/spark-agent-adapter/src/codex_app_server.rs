@@ -785,12 +785,25 @@ impl CodexAppServerClient {
         turn_id: &str,
         message: &str,
     ) -> Result<(), CodexAppServerError> {
+        self.steer_turn_with_input(
+            thread_id,
+            turn_id,
+            vec![json!({"type": "text", "text": message})],
+        )
+    }
+
+    fn steer_turn_with_input(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        input: Vec<Value>,
+    ) -> Result<(), CodexAppServerError> {
         let response = self.send_request(
             "turn/steer",
             Some(json!({
                 "threadId": thread_id,
                 "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": message}],
+                "input": input,
             })),
         )?;
         if response.get("error").is_some() {
@@ -824,9 +837,29 @@ impl CodexAppServerClient {
         let mut state = CodexAppServerTurnState::default();
         let mut events = Vec::new();
         let mut last_activity = Instant::now();
+        let mut interrupt_sent = false;
         loop {
             if let Some(handle) = steering.as_ref() {
-                self.drain_steering(handle, thread_id, expected_turn_id, &mut events)?;
+                self.drain_steering(
+                    handle,
+                    thread_id,
+                    expected_turn_id,
+                    &mut events,
+                    event_sink.as_ref(),
+                )?;
+                if !interrupt_sent && handle.interrupt_requested() {
+                    interrupt_sent = true;
+                    let response = self.send_request(
+                        "turn/interrupt",
+                        Some(json!({"threadId": thread_id, "turnId": expected_turn_id})),
+                    )?;
+                    if response.get("error").is_some() {
+                        return Err(rpc_error(
+                            "codex app-server turn/interrupt failed",
+                            &response,
+                        ));
+                    }
+                }
             }
             if !self.workflow_questions.is_empty() {
                 last_activity = Instant::now();
@@ -887,6 +920,9 @@ impl CodexAppServerClient {
                 break;
             }
         }
+        if interrupt_sent && state.turn_status.as_deref() == Some("interrupted") {
+            return Err(CodexAppServerError::runtime("Stopped."));
+        }
         if state
             .turn_status
             .as_deref()
@@ -917,14 +953,30 @@ impl CodexAppServerClient {
         thread_id: &str,
         turn_id: &str,
         events: &mut Vec<TurnStreamEvent>,
+        event_sink: Option<&AgentTurnEventSink>,
     ) -> Result<(), CodexAppServerError> {
         for steering_turn in handle.drain_queued() {
             let text = steering_turn.text();
-            if text.trim().is_empty() {
+            let attachments = crate::attachments::request_attachments(&steering_turn.metadata);
+            if text.trim().is_empty() && attachments.is_empty() {
                 continue;
             }
-            self.steer_turn(thread_id, turn_id, &text)?;
-            events.push(TurnStreamEvent {
+            // Same input shape as turn/start: file references in the text,
+            // native images as localImage items.
+            let prompt =
+                crate::attachments::prompt_with_attachment_references(&text, &attachments, &[]);
+            let mut input = Vec::new();
+            if !prompt.is_empty() {
+                input.push(json!({"type": "text", "text": prompt}));
+            }
+            input.extend(
+                attachments
+                    .iter()
+                    .filter(|attachment| attachment.is_native_image())
+                    .map(|attachment| json!({"type": "localImage", "path": attachment.path})),
+            );
+            self.steer_turn_with_input(thread_id, turn_id, input)?;
+            let event = TurnStreamEvent {
                 kind: TurnStreamEventKind::Other("steering_injected".to_string()),
                 channel: None,
                 source: TurnStreamSource {
@@ -945,7 +997,11 @@ impl CodexAppServerClient {
                     .then(|| json!(steering_turn.metadata)),
                 phase: Some("intervention".to_string()),
                 status: Some("delivered".to_string()),
-            });
+            };
+            if let Some(sink) = event_sink {
+                sink(event.clone());
+            }
+            events.push(event);
         }
         Ok(())
     }

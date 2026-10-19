@@ -278,6 +278,7 @@ export function useProjectsHomeController() {
         attachments: composerAttachments.attachments,
         isUploadBlocking: composerAttachments.isUploadBlocking,
         isChatInputDisabled: isChatSubmissionDisabled,
+        isTurnRunning: projectsHomeViewModel.hasActiveAssistantTurn,
         ensureConversationId,
         getCurrentConversationId: (projectPath) => (
             useStore.getState().projectSessionsByPath[projectPath]?.conversationId ?? null
@@ -494,7 +495,8 @@ export function useProjectsHomeController() {
             conversationBodyRef,
             onSyncConversationPinnedState: syncConversationPinnedState,
             onScrollConversationToBottom: scrollConversationToBottom,
-            onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn && ['claude-code', 'claude_code'].includes(activeProjectChatProvider.trim().toLowerCase()) ? onStopTurn : undefined,
+            isTurnRunning: projectsHomeViewModel.hasActiveAssistantTurn,
+            onStopTurn: projectsHomeViewModel.hasActiveAssistantTurn ? onStopTurn : undefined,
             onChatComposerSubmit,
             onChatComposerKeyDown,
             onChatDraftChange: setChatDraft,

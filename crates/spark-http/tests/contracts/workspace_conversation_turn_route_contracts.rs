@@ -1671,3 +1671,300 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
         noted_revision
     );
 }
+
+/// Each first turn waits until it is steered (or released, or interrupted),
+/// then answers; later turns answer at once.
+struct SteeringBackend {
+    requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
+    deliver: bool,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AgentTurnBackend for SteeringBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_steerable_turn(request, Default::default(), None)
+    }
+
+    fn run_steerable_turn(
+        &self,
+        request: AgentTurnRequest,
+        steering: spark_agent_adapter::SessionSteeringHandle,
+        event_sink: Option<spark_agent_adapter::AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let index = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request);
+            requests.len()
+        };
+        let mut events = Vec::new();
+        let started = std::time::Instant::now();
+        while index == 1 && started.elapsed() < std::time::Duration::from_secs(5) {
+            if steering.interrupt_requested() {
+                return Err(AgentError {
+                    message: "Stopped.".into(),
+                    retryable: false,
+                    raw: None,
+                });
+            }
+            if self.deliver {
+                let queued = steering.drain_queued();
+                if !queued.is_empty() {
+                    for turn in queued {
+                        let mut event = content_completed(
+                            TurnStreamChannel::Assistant,
+                            &turn.text(),
+                            "app-steer",
+                            "steer",
+                        );
+                        event.kind = TurnStreamEventKind::Other("steering_injected".into());
+                        event.channel = None;
+                        event.phase = None;
+                        event.details = Some(json!(turn.metadata));
+                        events.push(event);
+                    }
+                    break;
+                }
+            } else if self.release.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let answer = format!("Answer {index}.");
+        events.push(content_completed(
+            TurnStreamChannel::Assistant,
+            &answer,
+            "app-steer",
+            &format!("answer-{index}"),
+        ));
+        if let Some(sink) = event_sink {
+            for event in &events {
+                sink(event.clone());
+            }
+        }
+        Ok(AgentTurnOutput {
+            events,
+            final_assistant_text: Some(answer),
+            ..AgentTurnOutput::default()
+        })
+    }
+}
+
+fn steering_app(
+    settings: &SparkSettings,
+    deliver: bool,
+) -> (
+    axum::Router,
+    Arc<Mutex<Vec<AgentTurnRequest>>>,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let backend = SteeringBackend {
+        requests: Arc::clone(&requests),
+        deliver,
+        release: Arc::clone(&release),
+    };
+    (
+        build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend)),
+        requests,
+        release,
+    )
+}
+
+async fn send_message(app: &axum::Router, conversation_id: &str, message: &str) -> Value {
+    let response = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(json!({"project_path": "/projects/steer", "message": message, "provider": "codex"})),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    response.1
+}
+
+fn assistant_turns_settled(snapshot: &Value, count: usize) -> bool {
+    let turns = snapshot["turns"].as_array().unwrap();
+    turns
+        .iter()
+        .filter(|turn| turn["role"] == "assistant")
+        .count()
+        == count
+        && turns
+            .iter()
+            .all(|turn| turn["status"] == "complete" || turn["status"] == "failed")
+}
+
+#[tokio::test]
+async fn message_sent_during_a_turn_is_steered_into_it_and_persisted_in_place() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let (app, requests, _) = steering_app(&settings, true);
+
+    send_message(&app, "steer-chat", "Start the work").await;
+    let steered = send_message(&app, "steer-chat", "Use tabs.").await;
+    assert_eq!(
+        steered["turns"].as_array().unwrap().len(),
+        2,
+        "a steered message adds no turn"
+    );
+
+    // Read back from disk by a fresh service, as after a reload.
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "steer-chat", "/projects/steer", |s| {
+            assistant_turns_settled(s, 1)
+        })
+        .await;
+    let assistant = &snapshot["turns"][1];
+    assert_eq!(assistant["status"], "complete");
+    assert_eq!(assistant["content"], "Answer 1.");
+    let segments = snapshot["segments"].as_array().unwrap();
+    let steered = segments
+        .iter()
+        .find(|segment| segment["kind"] == "user_message")
+        .expect("steered message segment");
+    assert_eq!(steered["role"], "user");
+    assert_eq!(steered["content"], "Use tabs.");
+    assert_eq!(steered["turn_id"], assistant["id"]);
+    let answer = segments
+        .iter()
+        .find(|segment| segment["kind"] == "assistant_message")
+        .expect("answer segment");
+    assert!(steered["order"].as_i64() < answer["order"].as_i64());
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn message_the_turn_never_took_in_starts_the_next_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let (app, requests, release) = steering_app(&settings, false);
+
+    send_message(&app, "steer-late", "Start the work").await;
+    send_message(&app, "steer-late", "Then add tests.").await;
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "steer-late", "/projects/steer", |s| {
+            assistant_turns_settled(s, 2)
+        })
+        .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    let users = turns
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(users, ["Start the work", "Then add tests."]);
+    assert_eq!(turns[3]["content"], "Answer 2.");
+    let prompts = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.prompt.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, ["Start the work", "Then add tests."]);
+}
+
+#[tokio::test]
+async fn interrupt_stops_a_running_codex_or_native_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let (app, _, _) = steering_app(&settings, true);
+
+    send_message(&app, "stop-running", "Start the work").await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/stop-running/interrupt",
+        Some(json!({"project_path": "/projects/steer"})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "stop-running", "/projects/steer", |s| {
+            assistant_turns_settled(s, 1)
+        })
+        .await;
+    assert_eq!(snapshot["turns"][1]["error"], "Stopped.");
+}
+
+#[tokio::test]
+async fn codex_chat_turn_takes_a_steered_message_through_the_default_backend() {
+    // Runs in a child process: it points the default backend at the fake
+    // app-server through the environment.
+    const CHILD: &str = "SPARK_STEERED_CODEX_CHAT_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "workspace_conversation_turn_route_contracts::codex_chat_turn_takes_a_steered_message_through_the_default_backend",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut settings = settings(temp.path());
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let log = temp.path().join("codex.log");
+    std::env::set_var(
+        "SPARK_CODEX_APP_SERVER_BIN",
+        binaries.join("spark-agent-fake-codex-app-server"),
+    );
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", "steerable");
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log);
+    settings.agents.native.codex_runtime_root =
+        Some(temp.path().join("codex-runtime").to_string_lossy().into());
+    let app = spark_http::build_app(settings.clone());
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = project.to_string_lossy().to_string();
+    let send = |message: &'static str| {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/conversations/codex-steer/turns",
+            Some(
+                json!({"project_path": project, "message": message, "provider": "codex", "model": "gpt-codex-test"}),
+            ),
+        )
+    };
+
+    let started = send("Start the work").await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
+    for _ in 0..500 {
+        if std::fs::read_to_string(&log).is_ok_and(|log| log.contains("turn/start")) {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let steered = send("Use tabs.").await;
+    assert_eq!(steered.0, StatusCode::OK, "{}", steered.1);
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-steer", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    assert_eq!(snapshot["turns"][1]["content"], "Steered");
+    assert!(snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|segment| segment["kind"] == "user_message" && segment["content"] == "Use tabs."));
+    assert!(std::fs::read_to_string(&log).unwrap().contains("Use tabs."));
+}

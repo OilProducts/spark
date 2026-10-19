@@ -537,7 +537,7 @@ describe('ProjectsPanel', () => {
     expect(within(history).getAllByText('Show this message immediately.')).toHaveLength(1)
     expect(history).not.toHaveTextContent('Visible.')
     expect(screen.getByTestId('project-ai-conversation-history-list')).not.toHaveTextContent('Worked for')
-    expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Thinking...')
+    expect(screen.getByTestId('project-chat-stop')).toBeInTheDocument()
   })
 
   it('renders the assistant reply even when the backend canonicalizes project_path', async () => {
@@ -626,14 +626,17 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it.each(['codex', 'claude-code'])('disables sending during an active %s turn and wires Claude Stop', async (provider) => {
+  it.each(['codex', 'claude-code'])('steers messages sent during an active %s turn and wires Stop', async (provider) => {
     const user = userEvent.setup()
     const sendRequests: string[] = []
+    const sentBodies: unknown[] = []
+    let activeSnapshot: unknown = null
 
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = resolveRequestUrl(input)
+        if (url.includes('/workspace/api/projects/chat-models')) return availableCodexModelsResponse()
         if (url.endsWith('/interrupt') && init?.method === 'POST') {
           sendRequests.push(url)
           expect(JSON.parse(String(init.body))).toEqual({ project_path: '/tmp/chat-project' })
@@ -663,7 +666,7 @@ describe('ProjectsPanel', () => {
           })
         }
         if (url.includes('/workspace/api/conversations/conversation-active-turn') && !url.includes('/turns')) {
-          return new Response(JSON.stringify(withSnapshotSchema({
+          return new Response(JSON.stringify(activeSnapshot = withSnapshotSchema({
             conversation_id: 'conversation-active-turn',
             conversation_handle: 'amber-otter',
             project_path: '/tmp/chat-project',
@@ -723,8 +726,10 @@ describe('ProjectsPanel', () => {
         }
         if (url.includes('/workspace/api/conversations/') && init?.method === 'POST') {
           sendRequests.push(url)
-          return new Response(JSON.stringify({ detail: 'should not send while assistant turn is active' }), {
-            status: 500,
+          sentBodies.push(JSON.parse(String(init.body)))
+          // A steered message changes nothing until the turn delivers it.
+          return new Response(JSON.stringify(activeSnapshot), {
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           })
         }
@@ -745,22 +750,26 @@ describe('ProjectsPanel', () => {
     })
     expect(screen.getByTestId('chat-handle')).toHaveTextContent('amber-otter')
 
-    await user.type(screen.getByTestId('project-ai-conversation-input'), 'Can I interrupt?')
-
-    const sendButton = screen.getByTestId('project-ai-conversation-send-button')
-    expect(sendButton).toBeDisabled()
-    expect(sendButton).toHaveAccessibleName('Thinking...')
-
-    await user.click(sendButton)
-
+    expect(screen.getByTestId('project-active-chat-mode-badge')).toBeDisabled()
+    const input = screen.getByTestId('project-ai-conversation-input')
+    await user.type(input, '/plan')
+    await user.keyboard('{Enter}')
+    expect(screen.getByTestId('project-panel-error')).toHaveTextContent('Switch modes after the running turn finishes.')
     expect(sendRequests).toHaveLength(0)
-    if (provider === 'claude-code') {
-      await user.click(screen.getByTestId('project-chat-stop'))
-      await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/interrupt']))
-      expect(sendButton).toBeDisabled()
-    } else {
-      expect(screen.queryByTestId('project-chat-stop')).not.toBeInTheDocument()
-    }
+
+    await user.clear(input)
+    await user.type(input, 'Also cover the edge case.')
+    const sendButton = screen.getByTestId('project-ai-conversation-send-button')
+    expect(sendButton).toBeEnabled()
+    expect(sendButton).toHaveAccessibleName('Send')
+    await user.keyboard('{Enter}')
+
+    await waitFor(() => expect(sendRequests).toEqual(['/workspace/api/conversations/conversation-active-turn/turns']))
+    expect(sentBodies[0]).toMatchObject({ project_path: '/tmp/chat-project', message: 'Also cover the edge case.' })
+    await waitFor(() => expect(input).toHaveValue(''))
+
+    await user.click(screen.getByTestId('project-chat-stop'))
+    await waitFor(() => expect(sendRequests.at(-1)).toBe('/workspace/api/conversations/conversation-active-turn/interrupt'))
   })
 
   it('renders assistant tool calls before the completed assistant summary for the same turn', async () => {
@@ -2074,7 +2083,7 @@ describe('ProjectsPanel', () => {
     expect(snapshotFetchCount).toBe(1)
   })
 
-  it('returns the send button to Send once the assistant turn completes even if the original POST is still pending', async () => {
+  it('ends the running turn state once the assistant turn completes even if the original POST is still pending', async () => {
     class MockEventSource {
       static instances: MockEventSource[] = []
 
@@ -2190,7 +2199,7 @@ describe('ProjectsPanel', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Thinking...')
+      expect(screen.getByTestId('project-chat-stop')).toBeInTheDocument()
     })
 
     act(() => {
@@ -2254,6 +2263,7 @@ describe('ProjectsPanel', () => {
     await waitFor(() => {
       expect(screen.getByTestId('project-ai-conversation-history-list')).toHaveTextContent('Working on it.')
       expect(screen.getByTestId('project-ai-conversation-send-button')).toHaveAccessibleName('Send')
+      expect(screen.queryByTestId('project-chat-stop')).not.toBeInTheDocument()
     })
 
     resolveTurnResponse?.(

@@ -204,20 +204,19 @@ impl ConversationRepository {
 }
 
 impl ConversationRepository {
-    /// Ids referenced by the committed turns. Callers hold the conversation lock.
+    /// Ids referenced by the committed turns and by messages steered into a
+    /// running turn. Callers hold the conversation lock.
     fn referenced_attachment_ids(
         &self,
         conversation_id: &str,
         project_path: &str,
     ) -> Result<HashSet<String>> {
-        Ok(self
-            .read_snapshot(conversation_id, Some(project_path))?
-            .as_ref()
-            .and_then(|snapshot| snapshot.get("turns"))
-            .and_then(Value::as_array)
+        let snapshot = self.read_snapshot(conversation_id, Some(project_path))?;
+        Ok(["turns", "segments"]
             .into_iter()
+            .filter_map(|key| snapshot.as_ref()?.get(key)?.as_array())
             .flatten()
-            .flat_map(|turn| turn_attachment_ids(turn.get("attachments")))
+            .flat_map(|entry| turn_attachment_ids(entry.get("attachments")))
             .collect())
     }
 }

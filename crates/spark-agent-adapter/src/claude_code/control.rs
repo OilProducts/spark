@@ -5,6 +5,7 @@ use std::process::{Child, ChildStdin};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::agent::AgentRequestUserInputAnswerRequest;
+use crate::history::SteeringTurn;
 
 type Key = (String, String);
 type Registry = Mutex<BTreeMap<Key, Weak<Mutex<Control>>>>;
@@ -22,6 +23,8 @@ pub(super) struct Control {
     seen: BTreeSet<String>,
     interrupt: Option<String>,
     interrupted: bool,
+    /// Steering written to stdin and not yet echoed back, by message uuid.
+    steering: BTreeMap<String, SteeringTurn>,
     pub logs: Vec<AgentRawLogLine>,
 }
 
@@ -40,6 +43,7 @@ impl Control {
             seen: BTreeSet::new(),
             interrupt: None,
             interrupted: false,
+            steering: BTreeMap::new(),
             logs: Vec::new(),
         }));
         let mut entries = registry().lock().unwrap();
@@ -61,6 +65,27 @@ impl Control {
                 message["terminal_reason"].as_str(),
                 Some("aborted_streaming" | "aborted_tools")
             )
+    }
+
+    pub fn accepts_input(&mut self) -> bool {
+        self.enabled && self.stdin.is_some() && matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Writes one steering message as a stream-json user message; on failure
+    /// hands it back undelivered.
+    pub fn steer(&mut self, turn: SteeringTurn) -> Result<(), SteeringTurn> {
+        let attachments = crate::attachments::request_attachments(&turn.metadata);
+        let Ok((_, content)) = user_message_content(&turn.text(), &attachments, &[]) else {
+            return Err(turn);
+        };
+        let id = Uuid::new_v4().to_string();
+        if !self.send(
+            json!({"type": "user", "uuid": id, "message": {"role": "user", "content": content}}),
+        ) {
+            return Err(turn);
+        }
+        self.steering.insert(id, turn);
+        Ok(())
     }
 
     pub fn close(&mut self) {
@@ -103,6 +128,21 @@ impl Control {
     }
 
     pub fn ingest(&mut self, message: &Value) -> Option<TurnStreamEvent> {
+        if message["type"] == "user" && message["isReplay"] == true {
+            let turn = self.steering.remove(message["uuid"].as_str()?)?;
+            let text = turn.text();
+            return Some(stream_event(
+                TurnStreamEventKind::Other("steering_injected".into()),
+                message["session_id"].as_str(),
+                "user_replay",
+                |event| {
+                    event.message = Some(text);
+                    event.details = (!turn.metadata.is_empty()).then(|| json!(turn.metadata));
+                    event.phase = Some("intervention".into());
+                    event.status = Some("delivered".into());
+                },
+            ));
+        }
         if message["type"] == "system" && message["subtype"] == "init" {
             if self.initialized {
                 self.degrade("duplicate system/init");
@@ -121,7 +161,13 @@ impl Control {
             return None;
         }
         if message["type"] == "result" {
-            self.close();
+            if self.steering.is_empty() {
+                self.close();
+            } else {
+                // The CLI runs the written steering as a follow-up turn.
+                self.initialized = false;
+                self.interrupted = false;
+            }
             return None;
         }
         let kind = message["type"].as_str().unwrap_or_default();

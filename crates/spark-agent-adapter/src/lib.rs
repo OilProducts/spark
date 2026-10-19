@@ -84,7 +84,7 @@ pub use project_docs::{
 };
 pub use session::{
     detect_loop, tool_call_signature, LlmClientHandle, Session, SessionAbortHandle, SessionState,
-    ToolCallSignature, LOOP_DETECTION_WARNING,
+    SessionSteeringHandle, ToolCallSignature, LOOP_DETECTION_WARNING,
 };
 pub use status_envelope::{
     build_contract_repair_prompt, build_status_envelope_context_updates_contract_text,

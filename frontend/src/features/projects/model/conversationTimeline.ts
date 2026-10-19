@@ -90,6 +90,19 @@ function buildAssistantTimelineEntries(
             })
             return
         }
+        if (segment.kind === 'user_message') {
+            entries.push({
+                id: segment.id,
+                kind: 'message',
+                role: 'user',
+                content: segment.content,
+                timestamp: segment.timestamp,
+                status: 'complete',
+                error: null,
+                ...(segment.attachments?.length ? { attachments: segment.attachments } : {}),
+            })
+            return
+        }
         if (segment.kind === 'assistant_message') {
             entries.push({
                 id: segment.id,

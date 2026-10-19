@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use attractor_api::{
     ContinuePipelineRequest, PipelineStartRequest, RuntimeHandlerRunnerFactory,
@@ -12,7 +12,7 @@ use serde_json::{json, Map, Value};
 use spark_agent_adapter::{
     AgentError, AgentRequestUserInputAnswerRequest, AgentThreadResumeFailure, AgentTurnBackend,
     AgentTurnEventSink, AgentTurnOutput, AgentTurnRequest, AssistantTurn, HistoryTurn,
-    RustLlmAgentTurnBackend, UserTurn,
+    RustLlmAgentTurnBackend, SessionSteeringHandle, SteeringTurn, UserTurn,
 };
 use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
 use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
@@ -231,6 +231,57 @@ pub struct PreparedConversationTurn {
     pub agent_turn_request: AgentTurnRequest,
 }
 
+/// What a send did: started a turn the caller must complete, or steered the
+/// message into the turn already running.
+#[derive(Debug)]
+pub enum ConversationSend {
+    Started(PreparedConversationTurn, Value),
+    Steered(Value),
+}
+
+/// A chat turn this process is running. Sends while it runs are steered into it.
+#[derive(Default)]
+struct ActiveTurn {
+    steering: SessionSteeringHandle,
+    /// Sent after the turn stopped taking steering; they start the next turn.
+    next: Vec<SteeringTurn>,
+}
+
+/// Spark data dir, project path, conversation id.
+type ActiveTurnKey = (PathBuf, String, String);
+
+fn active_turns() -> std::sync::MutexGuard<'static, BTreeMap<ActiveTurnKey, ActiveTurn>> {
+    static TURNS: OnceLock<Mutex<BTreeMap<ActiveTurnKey, ActiveTurn>>> = OnceLock::new();
+    TURNS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Ends `steering`'s registration and returns its undelivered messages.
+fn take_active_turn(
+    turns: &mut BTreeMap<ActiveTurnKey, ActiveTurn>,
+    key: &ActiveTurnKey,
+    steering: &SessionSteeringHandle,
+) -> Vec<SteeringTurn> {
+    if turns.get(key).map(|active| &active.steering) != Some(steering) {
+        return Vec::new();
+    }
+    let active = turns.remove(key).unwrap_or_default();
+    let mut leftovers = active.steering.close_and_drain();
+    leftovers.extend(active.next);
+    leftovers
+}
+
+/// Unregisters a turn whose completion unwound before doing it itself.
+struct ActiveTurnGuard(ActiveTurnKey, SessionSteeringHandle);
+
+impl Drop for ActiveTurnGuard {
+    fn drop(&mut self) {
+        take_active_turn(&mut active_turns(), &self.0, &self.1);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConversationDeleteResponse {
     pub status: &'static str,
@@ -359,8 +410,17 @@ impl AgentTurnBackend for EnvironmentAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
+        self.run_steerable_turn(request, SessionSteeringHandle::new(), event_sink)
+    }
+
+    fn run_steerable_turn(
+        &self,
+        request: AgentTurnRequest,
+        steering: SessionSteeringHandle,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
         let client = self.client_for_execution(&request.metadata, &std::env::vars().collect())?;
-        RustLlmAgentTurnBackend::new(client).run_turn_with_event_sink(request, event_sink)
+        RustLlmAgentTurnBackend::new(client).run_steerable_turn(request, steering, event_sink)
     }
 
     fn answer_request_user_input(
@@ -397,6 +457,14 @@ fn agent_turn_backend_error(error: AgentError) -> WorkspaceError {
 }
 
 impl WorkspaceConversationService {
+    fn active_turn_key(&self, project_path: &str, conversation_id: &str) -> ActiveTurnKey {
+        (
+            self.settings.data_dir.clone(),
+            project_path.to_string(),
+            conversation_id.to_string(),
+        )
+    }
+
     pub fn new(settings: SparkSettings) -> Self {
         Self::new_with_runtime_handler_runner_factory(
             settings,
@@ -988,6 +1056,94 @@ impl WorkspaceConversationService {
         Ok(snapshot)
     }
 
+    /// Starts a turn, or steers the message into the turn this process is
+    /// already running for the conversation.
+    pub fn send_turn(
+        &self,
+        conversation_id: &str,
+        request: ConversationTurnRequest,
+    ) -> WorkspaceResult<ConversationSend> {
+        let project_path = self.chat_project_path(conversation_id, &request.project_path)?;
+        let mut turns = active_turns();
+        if let Some(active) = turns.get_mut(&self.active_turn_key(&project_path, conversation_id)) {
+            let steering = self.steering_turn(conversation_id, &project_path, &request)?;
+            if !active
+                .steering
+                .queue_steering_with_metadata(steering.content.clone(), steering.metadata.clone())
+            {
+                active.next.push(steering);
+            }
+            return Ok(ConversationSend::Steered(
+                self.get_snapshot(conversation_id, Some(&project_path))?,
+            ));
+        }
+        let (prepared, snapshot) = self.start_turn(conversation_id, request)?;
+        turns.insert(
+            self.active_turn_key(&prepared.project_path, conversation_id),
+            ActiveTurn::default(),
+        );
+        Ok(ConversationSend::Started(prepared, snapshot))
+    }
+
+    /// A message for the running turn. Its `id` names the transcript segment
+    /// the delivery event becomes; attachments ride as for a new turn.
+    fn steering_turn(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        request: &ConversationTurnRequest,
+    ) -> WorkspaceResult<SteeringTurn> {
+        let message = request.message.trim().to_string();
+        if message.is_empty() && request.attachment_ids.is_empty() {
+            return Err(WorkspaceError::Validation(
+                "Message is required.".to_string(),
+            ));
+        }
+        let snapshot = self
+            .repository()
+            .read_snapshot(conversation_id, Some(project_path))?
+            .ok_or_else(|| {
+                WorkspaceError::NotFound(format!("Unknown conversation: {conversation_id}"))
+            })?;
+        let current_chat_mode =
+            normalize_chat_mode(snapshot["chat_mode"].as_str().unwrap_or("chat"));
+        if request
+            .chat_mode
+            .as_deref()
+            .map(validate_chat_mode)
+            .transpose()?
+            .is_some_and(|chat_mode| chat_mode != current_chat_mode)
+        {
+            return Err(WorkspaceError::Conflict(
+                "Switch modes after the running turn finishes.".to_string(),
+            ));
+        }
+        let attachments =
+            self.resolve_turn_attachments(conversation_id, project_path, &request.attachment_ids)?;
+        validate_provider_attachments(
+            snapshot["provider"].as_str().unwrap_or("codex"),
+            &attachments,
+        )?;
+        let mut metadata = BTreeMap::from([(
+            "id".to_string(),
+            json!(format!("turn-{}", uuid::Uuid::new_v4().simple())),
+        )]);
+        if !attachments.is_empty() {
+            metadata.insert(
+                "attachments".to_string(),
+                attachments
+                    .iter()
+                    .map(crate::attachments::turn_attachment_reference)
+                    .collect(),
+            );
+            metadata.insert(
+                spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+                json!(attachments),
+            );
+        }
+        Ok(SteeringTurn::with_metadata(message, metadata))
+    }
+
     pub fn start_turn(
         &self,
         conversation_id: &str,
@@ -1561,16 +1717,75 @@ impl WorkspaceConversationService {
         self.complete_started_turn_with_progress_payloads(prepared, started_snapshot, progress)
     }
 
+    /// Runs a started turn to its end. Messages steered into it that it never
+    /// took in start the next turn, which this call runs too.
     pub fn complete_started_turn_with_progress_payloads<F>(
         &self,
-        prepared: PreparedConversationTurn,
-        started_snapshot: Value,
+        mut prepared: PreparedConversationTurn,
+        mut started_snapshot: Value,
         progress: F,
     ) -> WorkspaceResult<Value>
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let progress = Arc::new(progress);
+        let progress: Arc<dyn Fn(Value) + Send + Sync> = Arc::new(progress);
+        loop {
+            let key = self.active_turn_key(&prepared.project_path, &prepared.conversation_id);
+            let (project_path, conversation_id) = (key.1.clone(), key.2.clone());
+            let steering = active_turns()
+                .get(&key)
+                .map(|active| active.steering.clone())
+                .unwrap_or_default();
+            let _guard = ActiveTurnGuard(key.clone(), steering.clone());
+            let result =
+                self.run_started_turn(&prepared, started_snapshot, &progress, steering.clone());
+            let mut turns = active_turns();
+            let mut leftovers = take_active_turn(&mut turns, &key, &steering).into_iter();
+            let Some(first) = leftovers.next() else {
+                return result;
+            };
+            let before_revision = self
+                .repository()
+                .read_snapshot(&conversation_id, Some(&project_path))?
+                .map(|snapshot| snapshot_revision(&snapshot))
+                .unwrap_or(0);
+            let (next, next_snapshot) = self.start_turn(
+                &conversation_id,
+                ConversationTurnRequest {
+                    project_path: project_path.clone(),
+                    message: first.text(),
+                    attachment_ids: spark_storage::conversation::turn_attachment_ids(
+                        first.metadata.get("attachments"),
+                    ),
+                    ..ConversationTurnRequest::default()
+                },
+            )?;
+            let active = ActiveTurn::default();
+            for turn in leftovers {
+                active
+                    .steering
+                    .queue_steering_with_metadata(turn.content, turn.metadata);
+            }
+            turns.insert(key.clone(), active);
+            drop(turns);
+            for payload in
+                self.read_events_after(&conversation_id, &project_path, before_revision)?
+            {
+                progress(payload);
+            }
+            prepared = next;
+            started_snapshot = next_snapshot;
+        }
+    }
+
+    fn run_started_turn(
+        &self,
+        prepared: &PreparedConversationTurn,
+        started_snapshot: Value,
+        progress: &Arc<dyn Fn(Value) + Send + Sync>,
+        steering: SessionSteeringHandle,
+    ) -> WorkspaceResult<Value> {
+        let progress = Arc::clone(progress);
         let (event_sink, provider_event_error) = live_conversation_turn_event_sink(
             started_snapshot,
             prepared.assistant_turn_id.clone(),
@@ -1580,9 +1795,11 @@ impl WorkspaceConversationService {
             prepared.project_path.clone(),
             progress,
         );
-        let output = self
-            .agent_turn_backend
-            .run_turn_with_event_sink(prepared.agent_turn_request.clone(), Some(event_sink));
+        let output = self.agent_turn_backend.run_steerable_turn(
+            prepared.agent_turn_request.clone(),
+            steering,
+            Some(event_sink),
+        );
         if let Some(error) = provider_event_error
             .lock()
             .map_err(|_| {
@@ -1601,7 +1818,7 @@ impl WorkspaceConversationService {
                 output,
                 false,
             ),
-            Err(error) => self.ingest_agent_turn_backend_failure(&prepared, error),
+            Err(error) => self.ingest_agent_turn_backend_failure(prepared, error),
         }
     }
 
@@ -1709,9 +1926,15 @@ impl WorkspaceConversationService {
             .ok_or_else(|| {
                 WorkspaceError::NotFound(format!("Unknown conversation: {conversation_id}"))
             })?;
+        // Claude Code stops through its control channel; Codex and native
+        // turns watch their steering handle.
+        let steered = active_turns()
+            .get(&self.active_turn_key(&project_path, conversation_id))
+            .is_some_and(|active| active.steering.interrupt());
         Ok(self
             .agent_turn_backend
-            .interrupt_turn(&project_path, conversation_id))
+            .interrupt_turn(&project_path, conversation_id)
+            || steered)
     }
 
     /// Whether the conversation has an assistant turn pending or streaming.
@@ -4391,15 +4614,17 @@ impl LiveConversationTurnState {
         // The running turn is its conversation's only writer, so it commits
         // each finished segment itself: a client opening the conversation
         // mid-turn sees everything done so far, and a crash loses at most the
-        // segment in progress. Pending user input must survive a restart too.
-        if matches!(
+        // segment in progress. Pending user input and steered messages must
+        // survive a restart too.
+        if (matches!(
             event.kind,
             TurnStreamEventKind::ContentCompleted
                 | TurnStreamEventKind::ToolCallCompleted
                 | TurnStreamEventKind::ToolCallFailed
                 | TurnStreamEventKind::ContextCompactionCompleted
                 | TurnStreamEventKind::RequestUserInputRequested
-        ) && self.commit_pending()
+        ) || event.kind == TurnStreamEventKind::Other("steering_injected".into()))
+            && self.commit_pending()
         {
             return Ok(());
         }

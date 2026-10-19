@@ -17,7 +17,7 @@ use spark_agent_adapter::AgentTurnBackend;
 use spark_common::settings::SparkSettings;
 use spark_storage::{read_trigger_definition, DeletedProjectRecord, ProjectRecord};
 use spark_workspace::conversations::{
-    ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest,
+    ConversationDeleteResponse, ConversationRequestUserInputAnswerRequest, ConversationSend,
     ConversationSettingsUpdate, ConversationTurnRequest, FlowRunRequestCreateByHandleRequest,
     FlowRunRequestReviewRequest, ProposedPlanReviewRequest, RunContinueRequest, RunLaunchRequest,
     RunRetryRequest, WorkspaceConversationService,
@@ -366,8 +366,8 @@ async fn send_conversation_turn(
     let before_revision = current_conversation_revision(&service, &conversation_id, &project_path);
     let conversation_id_for_start = conversation_id.clone();
     let service_for_start = service.clone();
-    let (prepared, started_snapshot) = tokio::task::spawn_blocking(move || {
-        service_for_start.start_turn(&conversation_id_for_start, request)
+    let sent = tokio::task::spawn_blocking(move || {
+        service_for_start.send_turn(&conversation_id_for_start, request)
     })
     .await
     .map_err(|error| {
@@ -375,6 +375,11 @@ async fn send_conversation_turn(
             "conversation turn start task failed: {error}"
         )))
     })??;
+    let (prepared, started_snapshot) = match sent {
+        ConversationSend::Started(prepared, snapshot) => (prepared, snapshot),
+        // The running turn persists and publishes the message when it is delivered.
+        ConversationSend::Steered(snapshot) => return Ok(Json(snapshot)),
+    };
     publish_conversation_after(
         &settings,
         &live_hub,

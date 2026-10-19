@@ -9,8 +9,8 @@ use spark_agent_adapter::{
     list_available_claude_code_models, AgentAttachment, AgentTurnBackend, AgentTurnRequest,
     ClaudeCodeBackend, ClaudeCodeModelMetadata, CodergenBackend, CodergenBackendRequest,
     CodergenBackendResponse, CodergenError, CodergenRuntimeMode, HistoryTurn,
-    RustLlmAgentTurnBackend, RustLlmCodergenBackend, UserTurn, AGENT_ATTACHMENTS_METADATA_KEY,
-    AGENT_INSTRUCTIONS_METADATA_KEY,
+    RustLlmAgentTurnBackend, RustLlmCodergenBackend, SessionSteeringHandle, UserTurn,
+    AGENT_ATTACHMENTS_METADATA_KEY, AGENT_INSTRUCTIONS_METADATA_KEY,
 };
 use spark_common::events::TurnStreamEventKind;
 use unified_llm_adapter::Client;
@@ -1009,4 +1009,53 @@ fn claude_code_sends_images_as_base64_blocks_and_files_as_references() {
     );
     assert_eq!(blocks[2]["source"]["media_type"], "image/gif");
     assert_eq!(contents[1], json!("Prepare the change."));
+}
+
+#[test]
+fn claude_code_steering_is_written_to_stdin_and_delivered_when_echoed() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let log_path = temp.path().join("claude-args.log");
+    let _bin = EnvVarGuard::set("SPARK_CLAUDE_CODE_BIN", fake_claude_code_bin());
+    let _log = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_LOG", log_path.as_os_str());
+    // steer-late: the message lands during the final reply, so the CLI runs
+    // it after the first result and the turn stays open for it.
+    for mode in ["steer", "steer-late"] {
+        let _mode = EnvVarGuard::set("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+        let steering = SessionSteeringHandle::new();
+        let queued = steering.clone();
+        let once = std::sync::Once::new();
+        let output = ClaudeCodeBackend::new()
+            .run_steerable_turn(
+                agent_request(temp.path()),
+                Some(steering.clone()),
+                Some(Arc::new(move |event| {
+                    if event.source.raw_kind.as_deref() == Some("system_init") {
+                        once.call_once(|| {
+                            queued.queue_steering_with_metadata(
+                                "Keep it short.",
+                                BTreeMap::from([("id".to_string(), json!("steer-claude"))]),
+                            );
+                        });
+                    }
+                })),
+            )
+            .unwrap();
+
+        assert_eq!(
+            output.final_assistant_text.as_deref(),
+            Some("Steered reply.")
+        );
+        let delivered = output
+            .events
+            .iter()
+            .filter(|event| event.kind == TurnStreamEventKind::Other("steering_injected".into()))
+            .collect::<Vec<_>>();
+        assert_eq!(delivered.len(), 1, "{mode}");
+        assert_eq!(delivered[0].message.as_deref(), Some("Keep it short."));
+        assert_eq!(delivered[0].details, Some(json!({"id": "steer-claude"})));
+        assert!(steering.close_and_drain().is_empty());
+    }
+    let log = std::fs::read_to_string(log_path).unwrap();
+    assert_eq!(log.matches("STEER_CONTENT=\"Keep it short.\"").count(), 2);
 }

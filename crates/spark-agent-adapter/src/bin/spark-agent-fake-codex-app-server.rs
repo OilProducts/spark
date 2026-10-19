@@ -279,6 +279,13 @@ fn run_steerable(log_path: Option<PathBuf>) {
                 &mut stdout,
                 json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),
             ),
+            "turn/interrupt" => {
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                write_json(
+                    &mut stdout,
+                    json!({"method": "turn/completed", "params": {"threadId": "thread-steer", "turn": {"id": "turn-steer", "status": "interrupted"}}}),
+                );
+            }
             "turn/steer" => {
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 emit_turn_completion(

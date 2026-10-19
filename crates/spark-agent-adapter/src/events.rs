@@ -94,7 +94,7 @@ impl EventKind {
             Self::Other(value) if value == "request_user_input_requested" => {
                 TurnStreamEventKind::RequestUserInputRequested
             }
-            Self::SessionStart | Self::SessionEnd | Self::Warning => {
+            Self::SessionStart | Self::SessionEnd | Self::Warning | Self::SteeringInjected => {
                 TurnStreamEventKind::Other(self.as_str().to_string())
             }
             Self::ProcessingEnd => TurnStreamEventKind::TurnCompleted,
@@ -252,6 +252,7 @@ impl SessionEvent {
         };
         let message = content_delta.clone().or_else(|| match self.kind {
             EventKind::Error | EventKind::Warning => session_error_message(&self.data),
+            EventKind::SteeringInjected => data_string(&self.data, &["content"]),
             _ => data_string(&self.data, &["message"]),
         });
 
@@ -279,7 +280,8 @@ impl SessionEvent {
                 EventKind::SessionStart
                 | EventKind::SessionEnd
                 | EventKind::ProcessingEnd
-                | EventKind::Warning => Some(Value::Object(
+                | EventKind::Warning
+                | EventKind::SteeringInjected => Some(Value::Object(
                     self.data.clone().into_iter().collect::<Map<_, _>>(),
                 )),
                 _ => None,

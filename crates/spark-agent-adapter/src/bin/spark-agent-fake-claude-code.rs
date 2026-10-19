@@ -252,6 +252,41 @@ fn main() {
         }
     }
 
+    // steer: a message written mid-turn is taken in before the final reply.
+    // steer-late: it arrives during the final reply, so it runs as a
+    // follow-up turn after the first result, as the installed CLI does.
+    if mode == "steer" || mode == "steer-late" {
+        assert!(args.iter().any(|arg| arg == "--replay-user-messages"));
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+        );
+        let steer = read_control();
+        assert_eq!(steer["type"], "user");
+        assert_user_content(&steer["message"]["content"]);
+        append_log(&format!("STEER_CONTENT={}", steer["message"]["content"]));
+        let echo = json!({"type": "user", "session_id": session_id, "uuid": steer["uuid"], "isReplay": true, "message": steer["message"]});
+        if mode == "steer-late" {
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "First reply.", "session_id": session_id, "terminal_reason": "completed"}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "system", "subtype": "init", "session_id": session_id, "model": model, "capabilities": ["interrupt_receipt_v1"]}),
+            );
+        }
+        emit(&mut out, echo);
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Steered reply.", "session_id": session_id, "terminal_reason": "completed"}),
+        );
+        let mut remaining = String::new();
+        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        assert!(remaining.is_empty(), "stdin closes after the last result");
+        return;
+    }
+
     if mode == "interrupt-aborted" || mode == "interrupt-error" {
         emit(
             &mut out,

@@ -91,6 +91,7 @@ impl LlmClientHandle {
 struct SessionSteeringState {
     queue: VecDeque<SteeringTurn>,
     accepting: bool,
+    interrupted: bool,
 }
 
 impl Default for SessionSteeringState {
@@ -98,6 +99,7 @@ impl Default for SessionSteeringState {
         Self {
             queue: VecDeque::new(),
             accepting: true,
+            interrupted: false,
         }
     }
 }
@@ -173,6 +175,29 @@ impl SessionSteeringHandle {
             .lock()
             .expect("session steering queue lock")
             .accepting = false;
+    }
+
+    /// Stops accepting steering and returns what was queued but never
+    /// delivered, so the caller can carry it into the next turn.
+    pub fn close_and_drain(&self) -> Vec<SteeringTurn> {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        state.accepting = false;
+        state.queue.drain(..).collect()
+    }
+
+    /// Asks the running turn to stop. Returns whether a turn was still
+    /// accepting input to stop.
+    pub fn interrupt(&self) -> bool {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        state.interrupted = true;
+        state.accepting
+    }
+
+    pub fn interrupt_requested(&self) -> bool {
+        self.state
+            .lock()
+            .expect("session steering queue lock")
+            .interrupted
     }
 }
 
@@ -534,7 +559,12 @@ impl Session {
     }
 
     fn abort_requested(&self) -> bool {
-        self.abort_signaled || self.abort_controller.signal.aborted()
+        self.abort_signaled
+            || self.abort_controller.signal.aborted()
+            || self
+                .external_steering
+                .as_ref()
+                .is_some_and(SessionSteeringHandle::interrupt_requested)
     }
 
     pub fn mark_processing(&mut self) {
