@@ -2125,11 +2125,13 @@ async fn claude_code_message_never_replayed_before_exit_starts_the_next_turn() {
     assert_eq!(prompts, 2);
 }
 
-/// The first call waits until released, so a message can be steered into
-/// the running native session; every call answers with the next reply.
+/// Each call before `gated` waits until `released` passes its index, so
+/// messages can be steered into the running native session between calls;
+/// every call answers with the next reply.
 struct GatedAdapter {
     calls: Arc<Mutex<Vec<LlmRequest>>>,
-    release: Arc<std::sync::atomic::AtomicBool>,
+    released: Arc<std::sync::atomic::AtomicUsize>,
+    gated: usize,
     replies: &'static [&'static str],
 }
 
@@ -2144,7 +2146,8 @@ impl ProviderAdapter for GatedAdapter {
             calls.push(request.clone());
             calls.len() - 1
         };
-        while index == 0 && !self.release.load(std::sync::atomic::Ordering::SeqCst) {
+        while index < self.gated && self.released.load(std::sync::atomic::Ordering::SeqCst) <= index
+        {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         Ok(Response {
@@ -2174,12 +2177,18 @@ async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let native_app = || {
         let adapter: Arc<dyn ProviderAdapter> = Arc::new(GatedAdapter {
             calls: Arc::clone(&calls),
-            release: Arc::clone(&release),
-            replies: &["Working.", "Answer 1.", "Answer 2."],
+            released: Arc::clone(&released),
+            gated: 2,
+            replies: &[
+                "Starting with the parser.",
+                "Switched the parser to tabs.",
+                "Added parser tests for tabs.",
+                "Answer 2.",
+            ],
         });
         build_app_with_rust_llm_client(
             settings.clone(),
@@ -2200,11 +2209,13 @@ async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn
 
     let app = native_app();
     assert_eq!(send(app.clone(), "Start the work").await.0, StatusCode::OK);
-    while calls.lock().unwrap().is_empty() {
-        sleep(Duration::from_millis(10)).await;
+    for (index, steering) in ["Use tabs.", "Also add tests."].into_iter().enumerate() {
+        while calls.lock().unwrap().len() <= index {
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(send(app.clone(), steering).await.0, StatusCode::OK);
+        released.store(index + 1, std::sync::atomic::Ordering::SeqCst);
     }
-    assert_eq!(send(app.clone(), "Use tabs.").await.0, StatusCode::OK);
-    release.store(true, std::sync::atomic::Ordering::SeqCst);
     wait_for_conversation_snapshot(&settings, "native-steer", "/projects/steer", |s| {
         assistant_turns_settled(s, 1)
     })
@@ -2217,7 +2228,10 @@ async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn
             assistant_turns_settled(s, 2)
         })
         .await;
-    assert_eq!(snapshot["turns"][1]["content"], "Answer 1.");
+    assert_eq!(
+        snapshot["turns"][1]["content"],
+        "Added parser tests for tabs."
+    );
     assert_eq!(snapshot["turns"][3]["content"], "Answer 2.");
     let mut first_turn = snapshot["segments"]
         .as_array()
@@ -2237,12 +2251,18 @@ async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn
             .iter()
             .map(|segment| segment["content"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["Working.", "Use tabs.", "Answer 1."],
-        "the steered message sits where the session took it in"
+        [
+            "Starting with the parser.",
+            "Use tabs.",
+            "Switched the parser to tabs.",
+            "Also add tests.",
+            "Added parser tests for tabs.",
+        ],
+        "each steered message sits where the session took it in"
     );
     let calls = calls.lock().unwrap();
-    assert_eq!(calls.len(), 3);
-    let conversation = calls[2]
+    assert_eq!(calls.len(), 4);
+    let conversation = calls[3]
         .messages
         .iter()
         .skip(1)
@@ -2252,9 +2272,22 @@ async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn
         conversation,
         [
             ("User".to_string(), "Start the work".to_string()),
+            (
+                "Assistant".to_string(),
+                "Starting with the parser.".to_string()
+            ),
             ("User".to_string(), "Use tabs.".to_string()),
-            ("Assistant".to_string(), "Answer 1.".to_string()),
+            (
+                "Assistant".to_string(),
+                "Switched the parser to tabs.".to_string()
+            ),
+            ("User".to_string(), "Also add tests.".to_string()),
+            (
+                "Assistant".to_string(),
+                "Added parser tests for tabs.".to_string()
+            ),
             ("User".to_string(), "Next.".to_string()),
-        ]
+        ],
+        "earlier replies of the steered turn stay in order, the last only once"
     );
 }

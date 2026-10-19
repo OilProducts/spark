@@ -5683,35 +5683,55 @@ fn agent_history_from_snapshot(
         .flatten()
     {
         // Messages steered into an assistant turn are its user_message
-        // segments; they go before the reply when delivered before it.
+        // segments. They interleave with the turn's earlier completed replies
+        // by order; the turn's own content is its last reply.
         let turn_id = turn["id"].as_str().unwrap_or_default();
-        let mut steered = segments
+        let own = agent_history_turn_from_persisted_turn(turn, excluded_turn_ids);
+        let reply_order = match own {
+            Some(HistoryTurn::Assistant(_)) => finalized_assistant_segment(snapshot, turn_id)
+                .and_then(|segment| segment["order"].as_i64())
+                .unwrap_or(i64::MAX),
+            _ => i64::MAX,
+        };
+        let order = |segment: &Value| segment["order"].as_i64().unwrap_or(0);
+        let mut interleaved = segments
             .iter()
-            .filter(|segment| segment["turn_id"] == turn_id && segment["kind"] == "user_message")
+            .filter(|segment| {
+                segment["turn_id"] == turn_id
+                    && (segment["kind"] == "user_message"
+                        || (segment["kind"] == "assistant_message"
+                            && segment["status"] == "complete"
+                            && is_final_answer_phase(segment["phase"].as_str())
+                            && order(segment) < reply_order))
+            })
             .collect::<Vec<_>>();
-        steered.sort_by_key(|segment| segment["order"].as_i64().unwrap_or(0));
-        let reply_order = finalized_assistant_segment(snapshot, turn_id)
-            .and_then(|segment| segment["order"].as_i64())
-            .unwrap_or(i64::MAX);
-        let after = steered
+        interleaved.sort_by_key(|segment| order(segment));
+        let after = interleaved
             .iter()
-            .position(|segment| segment["order"].as_i64().unwrap_or(0) > reply_order)
-            .unwrap_or(steered.len());
-        let steered_turn = |segment: &&Value| {
-            let mut user_turn = UserTurn::new(segment["content"].as_str().unwrap_or_default());
-            user_turn.timestamp = history_turn_timestamp(segment);
+            .position(|segment| order(segment) > reply_order)
+            .unwrap_or(interleaved.len());
+        let segment_turn = |segment: &&Value| {
+            let content = segment["content"].as_str().unwrap_or_default();
+            let timestamp = history_turn_timestamp(segment);
+            if segment["kind"] == "assistant_message" {
+                let mut assistant_turn = AssistantTurn::new(content);
+                assistant_turn.timestamp = timestamp;
+                return Ok(HistoryTurn::Assistant(assistant_turn));
+            }
+            let mut user_turn = UserTurn::new(content);
+            user_turn.timestamp = timestamp;
             with_attachments(user_turn, segment)
         };
-        for segment in &steered[..after] {
-            history.push(steered_turn(segment)?);
+        for segment in &interleaved[..after] {
+            history.push(segment_turn(segment)?);
         }
-        match agent_history_turn_from_persisted_turn(turn, excluded_turn_ids) {
+        match own {
             Some(HistoryTurn::User(user_turn)) => history.push(with_attachments(user_turn, turn)?),
             Some(history_turn) => history.push(history_turn),
             None => {}
         }
-        for segment in &steered[after..] {
-            history.push(steered_turn(segment)?);
+        for segment in &interleaved[after..] {
+            history.push(segment_turn(segment)?);
         }
     }
     Ok(history)
