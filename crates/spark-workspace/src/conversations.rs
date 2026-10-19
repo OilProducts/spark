@@ -5030,17 +5030,19 @@ fn finalized_plan_segment(snapshot: &Value, assistant_turn_id: &str) -> Option<V
         .cloned()
 }
 
+/// The turn's last finished reply: text before a steered message is not it.
 fn finalized_assistant_segment(snapshot: &Value, assistant_turn_id: &str) -> Option<Value> {
     snapshot
         .get("segments")
         .and_then(Value::as_array)?
         .iter()
-        .find(|segment| {
+        .filter(|segment| {
             segment.get("turn_id").and_then(Value::as_str) == Some(assistant_turn_id)
                 && segment.get("kind").and_then(Value::as_str) == Some("assistant_message")
                 && segment.get("status").and_then(Value::as_str) == Some("complete")
                 && is_final_answer_phase(segment.get("phase").and_then(Value::as_str))
         })
+        .max_by_key(|segment| segment["order"].as_i64().unwrap_or(0))
         .cloned()
 }
 
@@ -5651,6 +5653,28 @@ fn agent_history_from_snapshot(
 ) -> WorkspaceResult<Vec<HistoryTurn>> {
     let conversation_id = snapshot["conversation_id"].as_str().unwrap_or_default();
     let project_path = snapshot_project_path(snapshot).unwrap_or_default();
+    let with_attachments = |mut user_turn: UserTurn, entry: &Value| {
+        for id in crate::attachments::turn_attachment_ids(entry) {
+            let attachment = crate::attachments::resolve_attachment(
+                repository,
+                conversation_id,
+                &project_path,
+                &id,
+            )?
+            .ok_or_else(|| {
+                WorkspaceError::Conflict(format!(
+                    "Attachment {id} from an earlier message is missing or unreadable, so the conversation history cannot be sent."
+                ))
+            })?;
+            user_turn.attachments.push(attachment);
+        }
+        Ok::<_, WorkspaceError>(HistoryTurn::User(user_turn))
+    };
+    let segments = snapshot
+        .get("segments")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let mut history = Vec::new();
     for turn in snapshot
         .get("turns")
@@ -5658,28 +5682,37 @@ fn agent_history_from_snapshot(
         .into_iter()
         .flatten()
     {
-        let Some(mut history_turn) =
-            agent_history_turn_from_persisted_turn(turn, excluded_turn_ids)
-        else {
-            continue;
+        // Messages steered into an assistant turn are its user_message
+        // segments; they go before the reply when delivered before it.
+        let turn_id = turn["id"].as_str().unwrap_or_default();
+        let mut steered = segments
+            .iter()
+            .filter(|segment| segment["turn_id"] == turn_id && segment["kind"] == "user_message")
+            .collect::<Vec<_>>();
+        steered.sort_by_key(|segment| segment["order"].as_i64().unwrap_or(0));
+        let reply_order = finalized_assistant_segment(snapshot, turn_id)
+            .and_then(|segment| segment["order"].as_i64())
+            .unwrap_or(i64::MAX);
+        let after = steered
+            .iter()
+            .position(|segment| segment["order"].as_i64().unwrap_or(0) > reply_order)
+            .unwrap_or(steered.len());
+        let steered_turn = |segment: &&Value| {
+            let mut user_turn = UserTurn::new(segment["content"].as_str().unwrap_or_default());
+            user_turn.timestamp = history_turn_timestamp(segment);
+            with_attachments(user_turn, segment)
         };
-        if let HistoryTurn::User(user_turn) = &mut history_turn {
-            for id in crate::attachments::turn_attachment_ids(turn) {
-                let attachment = crate::attachments::resolve_attachment(
-                    repository,
-                    conversation_id,
-                    &project_path,
-                    &id,
-                )?
-                .ok_or_else(|| {
-                    WorkspaceError::Conflict(format!(
-                        "Attachment {id} from an earlier message is missing or unreadable, so the conversation history cannot be sent."
-                    ))
-                })?;
-                user_turn.attachments.push(attachment);
-            }
+        for segment in &steered[..after] {
+            history.push(steered_turn(segment)?);
         }
-        history.push(history_turn);
+        match agent_history_turn_from_persisted_turn(turn, excluded_turn_ids) {
+            Some(HistoryTurn::User(user_turn)) => history.push(with_attachments(user_turn, turn)?),
+            Some(history_turn) => history.push(history_turn),
+            None => {}
+        }
+        for segment in &steered[after..] {
+            history.push(steered_turn(segment)?);
+        }
     }
     Ok(history)
 }

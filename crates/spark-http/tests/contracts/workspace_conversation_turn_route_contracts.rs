@@ -1749,7 +1749,7 @@ impl AgentTurnBackend for SteeringBackend {
     }
 }
 
-fn steering_app(
+pub(crate) fn steering_app(
     settings: &SparkSettings,
     deliver: bool,
 ) -> (
@@ -1967,4 +1967,138 @@ async fn codex_chat_turn_takes_a_steered_message_through_the_default_backend() {
         .iter()
         .any(|segment| segment["kind"] == "user_message" && segment["content"] == "Use tabs."));
     assert!(std::fs::read_to_string(&log).unwrap().contains("Use tabs."));
+}
+
+/// The first call waits until released, so a message can be steered into
+/// the running native session; every call answers with the next reply.
+struct GatedAdapter {
+    calls: Arc<Mutex<Vec<LlmRequest>>>,
+    release: Arc<std::sync::atomic::AtomicBool>,
+    replies: &'static [&'static str],
+}
+
+impl ProviderAdapter for GatedAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, request: LlmRequest) -> Result<Response, AdapterError> {
+        let index = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(request.clone());
+            calls.len() - 1
+        };
+        while index == 0 && !self.release.load(std::sync::atomic::Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(Response {
+            model: request.model.clone(),
+            provider: "openai".to_string(),
+            message: Message::assistant(self.replies[index]),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        self.complete(request).map(|response| {
+            stream_events(
+                vec![
+                    Ok(StreamEvent::text_delta(response.text())),
+                    Ok(StreamEvent::finish(response.finish_reason, None)),
+                ]
+                .into_iter(),
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let native_app = || {
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(GatedAdapter {
+            calls: Arc::clone(&calls),
+            release: Arc::clone(&release),
+            replies: &["Working.", "Answer 1.", "Answer 2."],
+        });
+        build_app_with_rust_llm_client(
+            settings.clone(),
+            Client::from_adapters(vec![adapter], Some("OPENAI")).unwrap(),
+        )
+    };
+    let send = |app: axum::Router, message: &'static str| {
+        request_json(
+            app,
+            "POST",
+            "/workspace/api/conversations/native-steer/turns",
+            Some(
+                json!({"project_path": "/projects/steer", "message": message,
+                "provider": "openai", "model": "gpt-native-test"}),
+            ),
+        )
+    };
+
+    let app = native_app();
+    assert_eq!(send(app.clone(), "Start the work").await.0, StatusCode::OK);
+    while calls.lock().unwrap().is_empty() {
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(send(app.clone(), "Use tabs.").await.0, StatusCode::OK);
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+    wait_for_conversation_snapshot(&settings, "native-steer", "/projects/steer", |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+
+    // A new service reads the conversation back from disk, as after a reload.
+    assert_eq!(send(native_app(), "Next.").await.0, StatusCode::OK);
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "native-steer", "/projects/steer", |s| {
+            assistant_turns_settled(s, 2)
+        })
+        .await;
+    assert_eq!(snapshot["turns"][1]["content"], "Answer 1.");
+    assert_eq!(snapshot["turns"][3]["content"], "Answer 2.");
+    let mut first_turn = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| {
+            segment["turn_id"] == snapshot["turns"][1]["id"]
+                && matches!(
+                    segment["kind"].as_str(),
+                    Some("assistant_message" | "user_message")
+                )
+        })
+        .collect::<Vec<_>>();
+    first_turn.sort_by_key(|segment| segment["order"].as_i64());
+    assert_eq!(
+        first_turn
+            .iter()
+            .map(|segment| segment["content"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Working.", "Use tabs.", "Answer 1."],
+        "the steered message sits where the session took it in"
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    let conversation = calls[2]
+        .messages
+        .iter()
+        .skip(1)
+        .map(|message| (format!("{:?}", message.role), message.text()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        conversation,
+        [
+            ("User".to_string(), "Start the work".to_string()),
+            ("User".to_string(), "Use tabs.".to_string()),
+            ("Assistant".to_string(), "Answer 1.".to_string()),
+            ("User".to_string(), "Next.".to_string()),
+        ]
+    );
 }

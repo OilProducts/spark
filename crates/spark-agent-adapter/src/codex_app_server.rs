@@ -785,25 +785,12 @@ impl CodexAppServerClient {
         turn_id: &str,
         message: &str,
     ) -> Result<(), CodexAppServerError> {
-        self.steer_turn_with_input(
-            thread_id,
-            turn_id,
-            vec![json!({"type": "text", "text": message})],
-        )
-    }
-
-    fn steer_turn_with_input(
-        &mut self,
-        thread_id: &str,
-        turn_id: &str,
-        input: Vec<Value>,
-    ) -> Result<(), CodexAppServerError> {
         let response = self.send_request(
             "turn/steer",
             Some(json!({
                 "threadId": thread_id,
                 "expectedTurnId": turn_id,
-                "input": input,
+                "input": [{"type": "text", "text": message}],
             })),
         )?;
         if response.get("error").is_some() {
@@ -838,15 +825,18 @@ impl CodexAppServerClient {
         let mut events = Vec::new();
         let mut last_activity = Instant::now();
         let mut interrupt_sent = false;
+        let mut steering_rejected = false;
         loop {
             if let Some(handle) = steering.as_ref() {
-                self.drain_steering(
-                    handle,
-                    thread_id,
-                    expected_turn_id,
-                    &mut events,
-                    event_sink.as_ref(),
-                )?;
+                if !steering_rejected {
+                    steering_rejected = self.drain_steering(
+                        handle,
+                        thread_id,
+                        expected_turn_id,
+                        &mut events,
+                        event_sink.as_ref(),
+                    )?;
+                }
                 if !interrupt_sent && handle.interrupt_requested() {
                     interrupt_sent = true;
                     let response = self.send_request(
@@ -954,8 +944,9 @@ impl CodexAppServerClient {
         turn_id: &str,
         events: &mut Vec<TurnStreamEvent>,
         event_sink: Option<&AgentTurnEventSink>,
-    ) -> Result<(), CodexAppServerError> {
-        for steering_turn in handle.drain_queued() {
+    ) -> Result<bool, CodexAppServerError> {
+        let mut queued = handle.drain_queued().into_iter();
+        while let Some(steering_turn) = queued.next() {
             let text = steering_turn.text();
             let attachments = crate::attachments::request_attachments(&steering_turn.metadata);
             if text.trim().is_empty() && attachments.is_empty() {
@@ -975,7 +966,19 @@ impl CodexAppServerClient {
                     .filter(|attachment| attachment.is_native_image())
                     .map(|attachment| json!({"type": "localImage", "path": attachment.path})),
             );
-            self.steer_turn_with_input(thread_id, turn_id, input)?;
+            // The turn can end before it takes the message: put it and the
+            // rest back, in order, for the caller's next turn.
+            let response = self.send_request(
+                "turn/steer",
+                Some(json!({"threadId": thread_id, "expectedTurnId": turn_id, "input": input})),
+            );
+            if !response
+                .as_ref()
+                .is_ok_and(|response| response.get("error").is_none())
+            {
+                handle.requeue_front(std::iter::once(steering_turn).chain(queued));
+                return response.map(|_| true);
+            }
             let event = TurnStreamEvent {
                 kind: TurnStreamEventKind::Other("steering_injected".to_string()),
                 channel: None,
@@ -1003,7 +1006,7 @@ impl CodexAppServerClient {
             }
             events.push(event);
         }
-        Ok(())
+        Ok(false)
     }
 
     fn wait_for_response(

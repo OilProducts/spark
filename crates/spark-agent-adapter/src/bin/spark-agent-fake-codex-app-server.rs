@@ -9,8 +9,8 @@ fn main() {
     let mode =
         env::var("SPARK_FAKE_CODEX_APP_SERVER_MODE").unwrap_or_else(|_| "default".to_string());
     let log_path = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_LOG").map(PathBuf::from);
-    if mode == "steerable" {
-        run_steerable(log_path);
+    if mode == "steerable" || mode == "steer-race" {
+        run_steerable(log_path, mode == "steer-race");
     } else {
         run_default(
             log_path,
@@ -256,7 +256,8 @@ fn emit_gated_turn(stdout: &mut impl Write) {
     );
 }
 
-fn run_steerable(log_path: Option<PathBuf>) {
+/// `race`: the turn completes before the first turn/steer, which is rejected.
+fn run_steerable(log_path: Option<PathBuf>, race: bool) {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
 
@@ -284,6 +285,20 @@ fn run_steerable(log_path: Option<PathBuf>) {
                 write_json(
                     &mut stdout,
                     json!({"method": "turn/completed", "params": {"threadId": "thread-steer", "turn": {"id": "turn-steer", "status": "interrupted"}}}),
+                );
+            }
+            "turn/steer" if race => {
+                emit_turn_completion(
+                    &mut stdout,
+                    "thread-steer",
+                    "turn-steer",
+                    "msg-done",
+                    "Done",
+                    false,
+                );
+                write_json(
+                    &mut stdout,
+                    json!({"id": request_id, "error": {"code": -32600, "message": "no active turn to steer"}}),
                 );
             }
             "turn/steer" => {

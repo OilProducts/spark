@@ -3566,6 +3566,79 @@ fn chat_turn_steers_into_running_codex_turn_with_attachments_and_interrupts() {
     wait_for_logged_method(&log_path, "turn/interrupt");
 }
 
+#[test]
+fn codex_turn_completing_before_turn_steer_keeps_every_undelivered_message_in_order() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let log_path = temp.path().join("rpc-log.jsonl");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "steer-race");
+    let _log_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_LOG", log_path.as_os_str());
+    let runtime_root = temp.path().join("codex-runtime");
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
+    let image = temp.path().join("shot.png");
+    fs::write(&image, b"png").expect("image");
+    let attachments = json!([{
+        "id": "att-1",
+        "filename": "shot.png",
+        "media_type": "image/png",
+        "size_bytes": 3,
+        "path": image.to_string_lossy(),
+    }]);
+    // Queued before the turn starts, so the first drain takes all three in
+    // one batch and the fake rejects the first turn/steer after completing.
+    let steering = SessionSteeringHandle::new();
+    for (index, text) in ["First.", "Second.", "Third."].into_iter().enumerate() {
+        let mut metadata = BTreeMap::from([("id".to_string(), json!(format!("steer-{index}")))]);
+        if index == 1 {
+            metadata.insert(
+                spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+                attachments.clone(),
+            );
+        }
+        assert!(steering.queue_steering_with_metadata(text, metadata));
+    }
+
+    let output = RustLlmAgentTurnBackend::new(Client::new())
+        .run_steerable_turn(
+            chat_turn_request(Some("codex"), temp.path()),
+            steering.clone(),
+            None,
+        )
+        .expect("the turn completed on its own");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Done"));
+    assert!(
+        steering_events(&output.events).is_empty(),
+        "nothing was delivered"
+    );
+    let steer_calls = fs::read_to_string(&log_path)
+        .expect("rpc log")
+        .lines()
+        .filter(|line| line.contains("\"turn/steer\""))
+        .count();
+    assert_eq!(
+        steer_calls, 1,
+        "no more steering after the turn rejected it"
+    );
+    let leftovers = steering.close_and_drain();
+    assert_eq!(
+        leftovers.iter().map(|turn| turn.text()).collect::<Vec<_>>(),
+        ["First.", "Second.", "Third."]
+    );
+    assert_eq!(
+        leftovers
+            .iter()
+            .map(|turn| turn.metadata["id"].clone())
+            .collect::<Vec<_>>(),
+        [json!("steer-0"), json!("steer-1"), json!("steer-2")]
+    );
+    assert_eq!(
+        leftovers[1].metadata[spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY],
+        attachments
+    );
+}
+
 /// Queues a steering message while answering the first request.
 struct SteeredDuringStreamAdapter {
     calls: Arc<Mutex<Vec<Request>>>,
@@ -3665,4 +3738,64 @@ fn chat_turn_steers_into_running_native_session_and_interrupts() {
         // The finished session takes no more steering; the caller keeps it.
         assert!(!steering.queue_steering("Too late."));
     }
+}
+
+/// Streams one delta per pull; interrupts the turn once two were pulled.
+struct InterruptedMidStreamAdapter {
+    pulled: Arc<std::sync::atomic::AtomicUsize>,
+    steering: SessionSteeringHandle,
+}
+
+impl ProviderAdapter for InterruptedMidStreamAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, AdapterError> {
+        unreachable!("the session streams")
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        let pulled = Arc::clone(&self.pulled);
+        let steering = self.steering.clone();
+        Ok(stream_events((0..100).map(move |index| {
+            if pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                steering.interrupt();
+            }
+            Ok(if index == 99 {
+                StreamEvent::finish(FinishReason::Stop, None)
+            } else {
+                StreamEvent::text_delta(format!("word{index} "))
+            })
+        })))
+    }
+}
+
+#[test]
+fn native_interrupt_stops_a_model_stream_in_flight() {
+    let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let steering = SessionSteeringHandle::new();
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(InterruptedMidStreamAdapter {
+        pulled: Arc::clone(&pulled),
+        steering: steering.clone(),
+    });
+    let client = Client::from_adapters(vec![adapter], Some("OPENAI")).expect("client");
+
+    let result = RustLlmAgentTurnBackend::new(client).run_steerable_turn(
+        chat_turn_request(None, Path::new("/repo")),
+        steering,
+        None,
+    );
+
+    let pulled = pulled.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(pulled < 5, "the stream kept going: {pulled} events pulled");
+    let output = result.expect("interrupted output");
+    assert_eq!(output.final_assistant_text, None);
+    let errors = output
+        .events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::Error)
+        .map(|event| event.error.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(errors, [Some("Stopped.")]);
 }

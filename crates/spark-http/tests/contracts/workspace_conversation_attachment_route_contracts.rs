@@ -13,7 +13,7 @@ use spark_storage::{ConversationRepository, StorageError};
 use tower::ServiceExt;
 
 use super::workspace_conversation_turn_route_contracts::{
-    request_json, settings, wait_for_conversation_snapshot, ScriptedAgentTurnBackend,
+    request_json, settings, steering_app, wait_for_conversation_snapshot, ScriptedAgentTurnBackend,
 };
 
 const PROJECT: &str = "/projects/attachments";
@@ -755,4 +755,71 @@ async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
     let (pruned_ids, deleted_draft) = blocked.join().expect("thread");
     assert_eq!(pruned_ids, vec![draft["id"].as_str().unwrap().to_string()]);
     assert!(!deleted_draft);
+}
+
+#[tokio::test]
+async fn steered_message_and_its_attachment_are_history_for_a_fresh_session_after_reload() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let (app, _, _) = steering_app(&settings, true);
+    let (_, image) = upload(&app, "chat-steer", "shot.png", PNG.to_vec()).await;
+    let (status, _) = send(
+        &app,
+        "chat-steer",
+        json!({"project_path": PROJECT, "message": "Start", "provider": "codex"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = send(
+        &app,
+        "chat-steer",
+        json!({"project_path": PROJECT, "message": "See this.", "provider": "codex",
+            "attachment_ids": [image["id"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_for_answers(&settings, "chat-steer", 1).await;
+
+    // A new service reads the transcript from disk and sends the full history,
+    // as for a fresh provider session.
+    let backend = answers(1);
+    let requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let (status, _) = send(
+        &app,
+        "chat-steer",
+        json!({"project_path": PROJECT, "message": "Next.", "provider": "codex"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    wait_for_answers(&settings, "chat-steer", 2).await;
+
+    let history = requests.lock().expect("requests")[0].history.clone();
+    let summary = history
+        .iter()
+        .map(|turn| match turn {
+            HistoryTurn::User(user) => (
+                "user",
+                user.text(),
+                user.attachments
+                    .iter()
+                    .map(|attachment| attachment.id.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            HistoryTurn::Assistant(assistant) => ("assistant", assistant.text(), vec![]),
+            _ => ("other", String::new(), vec![]),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            ("user", "Start".to_string(), vec![]),
+            (
+                "user",
+                "See this.".to_string(),
+                vec![image["id"].as_str().unwrap().to_string()]
+            ),
+            ("assistant", "Answer 1.".to_string(), vec![]),
+        ]
+    );
 }

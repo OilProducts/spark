@@ -91,7 +91,9 @@ impl LlmClientHandle {
 struct SessionSteeringState {
     queue: VecDeque<SteeringTurn>,
     accepting: bool,
-    interrupted: bool,
+    /// Interrupt aborts it: the attached session's request abort signal, so
+    /// a model request in flight stops too.
+    abort: AbortSignal,
 }
 
 impl Default for SessionSteeringState {
@@ -99,7 +101,7 @@ impl Default for SessionSteeringState {
         Self {
             queue: VecDeque::new(),
             accepting: true,
-            interrupted: false,
+            abort: AbortSignal::new(),
         }
     }
 }
@@ -161,6 +163,15 @@ impl SessionSteeringHandle {
             .collect()
     }
 
+    /// Puts back, ahead of anything queued since, messages a drain took but
+    /// could not deliver.
+    pub(crate) fn requeue_front(&self, turns: impl IntoIterator<Item = SteeringTurn>) {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        let newer = std::mem::take(&mut state.queue);
+        state.queue.extend(turns);
+        state.queue.extend(newer);
+    }
+
     fn drain_and_close_if_empty(&self) -> Vec<SteeringTurn> {
         let mut state = self.state.lock().expect("session steering queue lock");
         if state.queue.is_empty() {
@@ -188,8 +199,8 @@ impl SessionSteeringHandle {
     /// Asks the running turn to stop. Returns whether a turn was still
     /// accepting input to stop.
     pub fn interrupt(&self) -> bool {
-        let mut state = self.state.lock().expect("session steering queue lock");
-        state.interrupted = true;
+        let state = self.state.lock().expect("session steering queue lock");
+        state.abort.abort("Stopped.");
         state.accepting
     }
 
@@ -197,7 +208,8 @@ impl SessionSteeringHandle {
         self.state
             .lock()
             .expect("session steering queue lock")
-            .interrupted
+            .abort
+            .aborted()
     }
 }
 
@@ -559,12 +571,7 @@ impl Session {
     }
 
     fn abort_requested(&self) -> bool {
-        self.abort_signaled
-            || self.abort_controller.signal.aborted()
-            || self
-                .external_steering
-                .as_ref()
-                .is_some_and(SessionSteeringHandle::interrupt_requested)
+        self.abort_signaled || self.abort_controller.signal.aborted()
     }
 
     pub fn mark_processing(&mut self) {
@@ -653,6 +660,13 @@ impl Session {
     }
 
     pub fn attach_steering_handle(&mut self, handle: SessionSteeringHandle) {
+        {
+            let mut state = handle.state.lock().expect("session steering queue lock");
+            if state.abort.aborted() {
+                self.abort_controller.abort("Stopped.");
+            }
+            state.abort = self.abort_signal();
+        }
         self.external_steering = Some(handle);
     }
 
