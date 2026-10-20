@@ -353,7 +353,7 @@ fn waited_and_detached_container_launches_dispatch_through_docker_and_record_pla
         let (service, commands) = service_with_fake_docker(settings.clone());
         let response = service.start_pipeline(PipelineStartRequest {
             run_id: Some(run_id.to_string()),
-            flow_content: Some(worker_flow()),
+            flow_name: Some(crate::install_flow(&settings, worker_flow())),
             working_directory: temp.path().join("project").to_string_lossy().to_string(),
             execution_profile_id: Some("container".to_string()),
             wait: Some(wait),
@@ -394,7 +394,7 @@ fn native_launch_never_invokes_docker() {
     let (service, commands) = service_with_fake_docker(settings.clone());
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some("native-no-docker".to_string()),
-        flow_content: Some(worker_flow()),
+        flow_name: Some(crate::install_flow(&settings, worker_flow())),
         working_directory: temp.path().join("project").to_string_lossy().to_string(),
         wait: Some(true),
         ..PipelineStartRequest::default()
@@ -434,6 +434,7 @@ fn seed_retry(settings: &SparkSettings, run_id: &str) {
             manifest: None,
             flow_source: Some(worker_flow()),
             flow_definition_json: Some(flow.to_canonical_json_string()),
+            flow_files: None,
         })
         .expect("seed run");
 }
@@ -690,7 +691,7 @@ fn container_lifetime_spans_nodes_retry_and_summary_and_cleanup_preserves_outcom
                 let flow = worker_flow().replace("  task:\n", "  task:\n    retry: {max_retries: 1}\n").replace("  done:\n    kind: exit", "  done:\n    kind: exit\n    config:\n      kind: exit\n      result_summary: true");
                 let response = service.start_pipeline(PipelineStartRequest {
                     run_id: Some(run_id.into()),
-                    flow_content: Some(flow),
+                    flow_name: Some(crate::install_flow(&settings, flow)),
                     working_directory: temp.path().join("project").to_string_lossy().into(),
                     execution_profile_id: Some("container".into()),
                     wait: Some(true),
@@ -827,7 +828,7 @@ edges:
     for run_id in ["smoke-first", "smoke-second"] {
         let response = service.start_pipeline(PipelineStartRequest {
             run_id: Some(run_id.into()),
-            flow_content: Some(flow.into()),
+            flow_name: Some(crate::install_flow(&settings, flow)),
             working_directory: settings.project_root.to_string_lossy().into(),
             execution_profile_id: Some("container".into()),
             wait: Some(true),

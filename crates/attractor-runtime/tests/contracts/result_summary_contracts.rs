@@ -117,6 +117,7 @@ fn execute_flow(
         &flow,
         None,
         None,
+        None,
         &launch_context,
         &runtime_context,
     )
@@ -273,6 +274,7 @@ fn summarizer_failure_falls_back_and_records_the_error() {
         &flow,
         None,
         None,
+        None,
         &launch_context,
         &runtime_context,
     )
@@ -324,6 +326,7 @@ fn summarizer_resolves_through_the_real_codergen_graph_lookup() {
         &store,
         &record,
         &flow,
+        None,
         None,
         None,
         &launch_context,

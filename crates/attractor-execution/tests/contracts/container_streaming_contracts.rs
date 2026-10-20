@@ -119,6 +119,7 @@ fn fixture(
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .unwrap();
     let flow = attractor_dsl::parse_flow_definition(
@@ -310,6 +311,7 @@ fn worker_protocol_preserves_repeated_visit_and_retry_execution_identity() {
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .unwrap();
     let flow = attractor_dsl::parse_flow_definition(

@@ -7,6 +7,7 @@
 //! boundaries.
 
 pub mod agent_settings;
+pub mod approvals;
 pub mod debug;
 pub mod error;
 pub mod events;

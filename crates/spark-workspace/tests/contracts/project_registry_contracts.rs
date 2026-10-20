@@ -457,7 +457,10 @@ fn missing_project_profile_lookup_keeps_native_fallback_without_registration() {
     fs::create_dir_all(&settings.project_root).unwrap();
     let response = attractor_api::AttractorApiService::new(settings.clone()).start_pipeline(
         attractor_api::PipelineStartRequest {
-            flow_content: Some(super::review_artifact_contracts::simple_flow().into()),
+            flow_name: Some(crate::install_flow(
+                &settings,
+                super::review_artifact_contracts::simple_flow(),
+            )),
             working_directory: settings.project_root.to_string_lossy().into_owned(),
             project_default_execution_profile_id: default_profile,
             wait: Some(true),

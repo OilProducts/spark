@@ -102,3 +102,7 @@ fn write_conversation_snapshot(data_dir: &std::path::Path, snapshot: &serde_json
             .expect("conversation handle");
     }
 }
+#[path = "contracts/flow_install.rs"]
+mod flow_install;
+#[allow(unused_imports)]
+pub(crate) use flow_install::{approve_flow, install_flow};

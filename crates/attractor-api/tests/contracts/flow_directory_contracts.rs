@@ -57,6 +57,15 @@ fn flow() -> FlowDefinition {
     parse_flow_definition(FLOW).expect("valid flow")
 }
 
+/// Editor saves stamp `generated` on the files they write.
+fn without_generated(mut flow: FlowDefinition) -> FlowDefinition {
+    flow.generated = None;
+    for node in flow.nodes.values_mut() {
+        node.generated = None;
+    }
+    flow
+}
+
 fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
     fs::read_dir(dir)
         .expect("flow dir")
@@ -252,7 +261,10 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
     let content = loaded.body["content"].as_str().expect("content");
     assert!(content.contains("role: reviewer"));
     assert!(!content.contains("careful reviewer"));
-    assert_eq!(parse_flow_definition(content).expect("authored"), flow());
+    assert_eq!(
+        without_generated(parse_flow_definition(content).expect("authored")),
+        flow()
+    );
 
     let resolved = attractor_dsl::load_resolved_flow_content(
         &settings.flows_dir,
@@ -300,7 +312,10 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
             assert_eq!(&after[name], bytes, "{name} must stay byte-identical");
         }
     }
-    assert_eq!(read_flow_dir(&dir).expect("load"), edited);
+    assert_eq!(
+        without_generated(read_flow_dir(&dir).expect("load")),
+        edited
+    );
 
     let mut removed = edited.clone();
     removed.nodes.remove("check");
@@ -314,7 +329,10 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     });
     save(&removed);
     assert!(!dir.join("check.md").exists());
-    assert_eq!(read_flow_dir(&dir).expect("load"), removed.normalize());
+    assert_eq!(
+        without_generated(read_flow_dir(&dir).expect("load")),
+        removed.normalize()
+    );
     assert!(!files(&dir).keys().any(|name| name.starts_with('.')));
     // Temp files live beside the flow directory and are renamed away.
     assert!(fs::read_dir(dir.parent().expect("parent"))
@@ -447,6 +465,8 @@ fn authored_child_workdir_does_not_change_the_flow_ref_base() {
     )
     .expect("parent");
     write_flow_dir(&settings.flows_dir.join("team/parent"), &parent).expect("parent");
+    crate::approve_flow(&settings, &settings.flows_dir.join("team/workers/child"));
+    crate::approve_flow(&settings, &settings.flows_dir.join("team/parent"));
     let project = temp.path().join("project");
     fs::create_dir_all(project.join("worktree")).expect("worktree");
 
@@ -517,7 +537,7 @@ fn settings(root: &Path) -> SparkSettings {
 }
 
 #[test]
-fn editor_launches_with_inline_content_execute_the_resolved_form() {
+fn named_launches_execute_the_resolved_form() {
     use std::io::{BufRead, Read, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
@@ -559,13 +579,13 @@ edges:
   - {from: first, to: second}
   - {from: second, to: done}
 "#;
-    // The editor sends the authored content together with the flow's name.
+    // Runs launch the approved flow on disk by name.
+    let name = crate::install_flow(&settings, flow);
     let launch = |run_id: &str| {
         service.start_pipeline(attractor_api::PipelineStartRequest {
             wait: Some(true),
             run_id: Some(run_id.to_string()),
-            flow_content: Some(flow.to_string()),
-            flow_name: Some("inline-review".to_string()),
+            flow_name: Some(name.clone()),
             model: Some("launch-model".to_string()),
             llm_provider: Some("openai_compatible".to_string()),
             working_directory: temp.path().join("project").to_string_lossy().into_owned(),
@@ -589,6 +609,12 @@ edges:
         "---\ntype: Role\nexecution:\n  llm_model: role-model\n---\n\nYou are a careful reviewer.\n",
     )
     .expect("role");
+    attractor_dsl::accept(
+        &attractor_dsl::TrustStore::for_settings(&settings),
+        &settings.roles_dir().join("reviewer.md"),
+        "human:test",
+    )
+    .expect("approve role");
     let server = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut requests = Vec::new();

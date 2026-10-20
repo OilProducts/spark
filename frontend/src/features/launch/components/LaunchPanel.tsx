@@ -51,7 +51,7 @@ export function LaunchPanel({
     onClose,
 }: LaunchPanelProps) {
     const isNarrowViewport = useNarrowViewport()
-    const { startFromFlowContent, logUnexpectedLaunchError } = useStartPipeline()
+    const { startFlow, logUnexpectedLaunchError } = useStartPipeline()
     const placement = useExecutionPlacement(true, projectPath)
     const lockMetadata = useFlowLaunchMetadata(target.previewSource.kind === 'flow' ? target.flowName : null)
     const {
@@ -147,11 +147,15 @@ export function LaunchPanel({
                 return
             }
 
-            const flowContent = await target.loadFlowContent()
-            const result = await startFromFlowContent(
+            if (!target.flowName) {
+                setRunStartError('This run has no installed flow to launch.')
+                return
+            }
+            await target.prepareLaunch?.()
+            const result = await startFlow(
                 {
                     projectPath,
-                    flowSource: target.flowName || '',
+                    flowSource: target.flowName,
                     workingDirectory,
                     model: model.trim() || null,
                     llmProvider: selectedLlmProfile ? '' : selectedLlmProvider,
@@ -161,7 +165,6 @@ export function LaunchPanel({
                     executionProfileId: placement.selectedProfileId || null,
                     projectDefaultExecutionProfileId: placement.projectDefaultProfileId,
                 },
-                flowContent,
                 { onGitPolicyWarning: setGitPolicyWarning },
             )
             if (result.status === 'cancelled') {

@@ -220,6 +220,10 @@ pub fn run_metadata_event_with_graph_paths(
         "flow_definition_path".to_string(),
         path_value_if_exists(flow_definition_path),
     );
+    event.payload.insert(
+        "flow_files_path".to_string(),
+        path_value_if_exists(flow_dir.join(crate::store::FLOW_FILES_MANIFEST)),
+    );
     event
 }
 

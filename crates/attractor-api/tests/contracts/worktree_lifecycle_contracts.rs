@@ -149,8 +149,8 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     let flow_dir = settings.flows_dir.join("lifecycle");
-    write_flow(&flow_dir.join("parent"), PARENT_FLOW);
-    write_flow(&flow_dir.join("workers/child"), CHILD_FLOW);
+    write_flow(&settings, &flow_dir.join("parent"), PARENT_FLOW);
+    write_flow(&settings, &flow_dir.join("workers/child"), CHILD_FLOW);
 
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo dir");
@@ -255,7 +255,7 @@ fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-runs-root".to_string()),
-        flow_content: Some(RUNS_ROOT_FLOW.to_string()),
+        flow_name: Some(crate::install_flow(&settings, RUNS_ROOT_FLOW.to_string())),
         working_directory: project.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -281,10 +281,11 @@ fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
     );
 }
 
-fn write_flow(dir: &Path, yaml: &str) {
+fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(settings, dir);
 }

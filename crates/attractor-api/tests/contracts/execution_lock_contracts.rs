@@ -96,6 +96,7 @@ fn project_lock(key: &str) -> ExecutionLockSpec {
 }
 
 fn start_locked_run(
+    settings: &SparkSettings,
     service: &AttractorApiService,
     run_id: &str,
     working_directory: &Path,
@@ -104,7 +105,7 @@ fn start_locked_run(
 ) {
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some(run_id.to_string()),
-        flow_content: Some(flow),
+        flow_name: Some(crate::install_flow(settings, flow)),
         working_directory: working_directory.to_string_lossy().to_string(),
         execution_lock: lock,
         ..PipelineStartRequest::default()
@@ -156,6 +157,7 @@ fn project_scope_lock_queues_conflicting_runs_and_promotes_fifo() {
     let service = AttractorApiService::new(settings.clone());
 
     start_locked_run(
+        &settings,
         &service,
         "run-lock-a",
         &project,
@@ -169,6 +171,7 @@ fn project_scope_lock_queues_conflicting_runs_and_promotes_fifo() {
     });
 
     start_locked_run(
+        &settings,
         &service,
         "run-lock-b",
         &project,
@@ -226,6 +229,7 @@ fn linked_worktrees_of_one_repository_share_lock_identity() {
     let service = AttractorApiService::new(settings.clone());
 
     start_locked_run(
+        &settings,
         &service,
         "run-wt-a",
         &project,
@@ -239,6 +243,7 @@ fn linked_worktrees_of_one_repository_share_lock_identity() {
     });
 
     start_locked_run(
+        &settings,
         &service,
         "run-wt-b",
         &worktree,
@@ -273,6 +278,7 @@ fn different_lock_keys_do_not_conflict() {
     let service = AttractorApiService::new(settings.clone());
 
     start_locked_run(
+        &settings,
         &service,
         "run-key-a",
         &project,
@@ -286,6 +292,7 @@ fn different_lock_keys_do_not_conflict() {
     });
 
     start_locked_run(
+        &settings,
         &service,
         "run-key-b",
         &project,
@@ -320,6 +327,7 @@ fn all_math_catalog_flows_serialize_per_project_while_other_projects_run() {
     let math_lock = || Some(project_lock("math-research"));
 
     start_locked_run(
+        &settings,
         &service,
         "math-explore-a",
         &project_a,
@@ -333,6 +341,7 @@ fn all_math_catalog_flows_serialize_per_project_while_other_projects_run() {
         read_lock(&settings, "math-explore-a").is_some_and(|lock| lock.state == "holding")
     });
     start_locked_run(
+        &settings,
         &service,
         "math-formalize-a",
         &project_a,
@@ -340,6 +349,7 @@ fn all_math_catalog_flows_serialize_per_project_while_other_projects_run() {
         math_lock(),
     );
     start_locked_run(
+        &settings,
         &service,
         "math-prove-a",
         &project_a,
@@ -353,6 +363,7 @@ fn all_math_catalog_flows_serialize_per_project_while_other_projects_run() {
     });
 
     start_locked_run(
+        &settings,
         &service,
         "math-prove-b",
         &project_b,
@@ -389,7 +400,10 @@ fn unsupported_lock_scope_is_a_validation_error() {
 
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-bad-scope".to_string()),
-        flow_content: Some(tool_flow("bad", "printf done")),
+        flow_name: Some(crate::install_flow(
+            &settings,
+            tool_flow("bad", "printf done"),
+        )),
         working_directory: temp.path().join("repo").to_string_lossy().to_string(),
         execution_lock: Some(ExecutionLockSpec {
             scope: "global".to_string(),
@@ -416,9 +430,10 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     fs::create_dir_all(&settings.config_dir).unwrap();
     let project = temp.path().join("repo");
     init_git_repo(&project);
-    // An unnamed (inline) parent resolves flow_ref against the flows root.
+    // The parent installs as tests/parent; its flow_ref resolves beside it.
     write_flow(
-        &settings.flows_dir.join("child"),
+        &settings,
+        &settings.flows_dir.join("tests/child"),
         &tool_flow(
             "child",
             &format!(
@@ -450,6 +465,7 @@ edges:
     let service = AttractorApiService::new(settings.clone());
     let store = RunStore::for_settings(&settings);
     start_locked_run(
+        &settings,
         &service,
         "parent",
         &project,
@@ -471,6 +487,7 @@ edges:
     let identity = read_lock(&settings, "parent").unwrap().identity;
     assert_eq!(read_lock(&settings, &child_id).unwrap().identity, identity);
     start_locked_run(
+        &settings,
         &service,
         "competitor",
         &project,
@@ -519,10 +536,11 @@ edges:
     });
 }
 
-fn write_flow(dir: &Path, yaml: &str) {
+fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(settings, dir);
 }

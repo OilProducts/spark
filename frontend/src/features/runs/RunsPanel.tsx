@@ -2,7 +2,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { selectSelectedRunId, selectSelectedRunSession } from '@/state/runsSessionSelectors'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '@/store'
-import { LaunchPanel, loadRunSnapshotFlowContent, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
+import { LaunchPanel, useFlowCatalog, type ContinuationDraft } from '@/features/launch'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { useNarrowViewport } from '@/lib/useNarrowViewport'
@@ -638,7 +638,6 @@ export function RunsPanel() {
                         <LaunchPanel
                             target={{
                                 flowName: rerunRun.flow_name || null,
-                                loadFlowContent: () => loadRunSnapshotFlowContent(rerunRun.run_id),
                                 previewSource: {
                                     kind: 'runSnapshot',
                                     runId: rerunRun.run_id,

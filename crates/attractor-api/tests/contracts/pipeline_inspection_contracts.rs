@@ -73,7 +73,7 @@ fn inspection_routes_read_durable_pipeline_state_and_artifacts() {
     let start = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-inspect".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
         launch_context: Some(
@@ -192,7 +192,7 @@ fn artifact_endpoint_rejects_symlink_file_escape() {
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-symlink-artifact".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -236,7 +236,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-journal".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -436,7 +436,7 @@ fn journal_events_questions_and_mounted_dispatch_preserve_route_shapes() {
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-other".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -474,14 +474,14 @@ fn run_listing_filters_by_project_path_query() {
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-project-a".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_a.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-project-b".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_b.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -522,6 +522,7 @@ fn run_listing_includes_worktree_child_under_parent_project() {
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .expect("create child run");
 
@@ -558,7 +559,7 @@ fn journal_page_keeps_parent_and_child_sequence_spaces_independent() {
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-combined-parent".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -576,6 +577,7 @@ fn journal_page_keeps_parent_and_child_sequence_spaces_independent() {
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .expect("create child run");
     store

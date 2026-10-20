@@ -130,6 +130,26 @@ then behave like node settings, so they also beat launch-time model and
 reasoning overrides. The editor shows the authored form (`role` set, prompt
 without role text); runs execute and snapshot the resolved form.
 
+## Trust and Approval
+
+`flow.md`, node files and role files may carry the OKF trust fields:
+`generated: { by, at }`, `verified` (a list of `{ by, at }`, or one bare
+mapping) and `status` (`draft`, `stable` (the default) or `deprecated`). `by`
+is `human:<id>`, `<producer>/<version>` or `process:<id>`; `at` is ISO 8601
+with an explicit offset. Editor saves set `generated: human:<id>` (`human_id`
+in `spark.toml`, else the OS username) on the files they change and keep each
+file's `verified`.
+
+A run starts only from approved live files. Every file it uses must have an
+entry for its exact bytes in `$SPARK_HOME/config/approvals.jsonl`, and none may
+be `deprecated`; otherwise the launch, a `flow_name` continue or a subflow child
+is refused, naming each file. Bundled seeding and editor saves log their
+writes. After editing a live file by hand, run `spark flow accept <path>`.
+Agents write proposals under `$SPARK_HOME/candidates/` (mirroring
+`flows/<flow>/<node>.md` or `roles/<name>.md`) with `generated` and
+`status: draft`; `spark flow promote <path>` validates and installs them.
+Each run records the hash of every file it used in `artifacts/flow/files.json`.
+
 ## Tool Context Bindings
 
 Tool nodes compose with context through two optional `config` maps:

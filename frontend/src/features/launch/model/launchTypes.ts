@@ -24,6 +24,7 @@ export type LaunchPreviewSource =
 
 export interface LaunchTarget {
     flowName: string | null
-    loadFlowContent: () => Promise<string>
+    /** Runs before launching, e.g. to flush the editor's pending save: runs launch the saved flow by name. */
+    prepareLaunch?: () => Promise<void>
     previewSource: LaunchPreviewSource
 }

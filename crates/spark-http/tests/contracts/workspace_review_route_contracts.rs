@@ -366,6 +366,7 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> &'static str {

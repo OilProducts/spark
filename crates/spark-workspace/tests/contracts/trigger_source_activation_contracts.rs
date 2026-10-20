@@ -335,6 +335,7 @@ fn write_flow(settings: &SparkSettings, name: &str) {
         .expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn flow_event_definition(

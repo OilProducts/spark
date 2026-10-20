@@ -28,7 +28,7 @@ it.each(['launch', 'continuation'])('selects a delayed %s even after the chat pr
     let request!: Promise<unknown>
     await act(async () => {
         request = kind === 'launch'
-            ? result.current.startFromFlowContent(form, 'flow')
+            ? result.current.startFlow(form)
             : result.current.continueFromRun('source', form, { startNodeId: 'review', flowSourceMode: 'snapshot' })
     })
     act(() => useStore.getState().setActiveProjectPath('/b'))
@@ -40,7 +40,7 @@ it.each(['launch', 'continuation'])('selects a delayed %s even after the chat pr
 it('does not recreate selections or sessions for a removed launch project', async () => {
     const { result } = renderHook(() => useStartPipeline(), { wrapper: DialogProvider })
     let request!: Promise<unknown>
-    await act(async () => { request = result.current.startFromFlowContent(form, 'flow') })
+    await act(async () => { request = result.current.startFlow(form) })
     act(() => useStore.getState().removeProject('/a', '/b'))
     await act(async () => { complete({ status: 'queued', pipeline_id: 'removed-a' }); await request })
     expect(useStore.getState().runsListSession.selectedRunId).toBe('b')

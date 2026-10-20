@@ -1634,7 +1634,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     assert!(!path.exists());
     let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
         "run_id":"native-after-rejected-save", "working_directory":project, "wait":true,
-        "flow_content":"schema_version: '1'\nid: native\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n"
+        "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: native\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n")
     }))).await;
     assert_eq!(launched.0, StatusCode::OK, "{launched:?}");
     let bundle = attractor_runtime::RunStore::for_settings(&settings)
@@ -1699,7 +1699,7 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
                 .is_empty());
             let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
                 "run_id":"invalid-defaults", "working_directory":project, "wait":true,
-                "flow_content":"schema_version: '1'\nid: invalid\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n"
+                "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: invalid\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n")
             }))).await;
             assert_eq!(
                 launched.1["status"], "validation_error",
@@ -2157,4 +2157,5 @@ fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
         &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }

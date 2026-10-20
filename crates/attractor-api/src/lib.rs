@@ -13,10 +13,9 @@ use attractor_core::{
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    flow_name_from_path, inject_flow_goal, load_flow_content, load_resolved_flow_content,
-    parse_flow_definition, read_named_flow_source as read_typed_named_flow_source,
-    resolve_flow_path, resolve_flow_ref, resolve_flow_roles, write_flow_dir, FlowSourceError,
-    FLOW_FILE,
+    flow_name_from_path, load_approved_flow, parse_flow_definition,
+    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, resolve_flow_ref,
+    resolve_flow_roles, save_flow_dir, FlowSourceError, TrustStore, FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -337,8 +336,6 @@ pub struct ContinuePipelineRequest {
 pub struct PipelineStartRequest {
     #[serde(default)]
     pub run_id: Option<String>,
-    #[serde(default)]
-    pub flow_content: Option<String>,
     #[serde(default = "default_working_directory")]
     pub working_directory: String,
     #[serde(default)]
@@ -390,7 +387,6 @@ impl Default for PipelineStartRequest {
     fn default() -> Self {
         Self {
             run_id: None,
-            flow_content: None,
             working_directory: default_working_directory(),
             model: None,
             llm_provider: None,
@@ -442,6 +438,8 @@ pub struct ResolvedContinueFlow {
     pub flow_source: Option<String>,
     #[serde(default)]
     pub flow_definition_json: Option<String>,
+    #[serde(default)]
+    pub flow_files: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default)]
     pub flow_name: Option<String>,
 }
@@ -497,6 +495,7 @@ impl RuntimeControlService {
             flow: resolved_flow.flow,
             flow_source: resolved_flow.flow_source,
             flow_definition_json: resolved_flow.flow_definition_json,
+            flow_files: resolved_flow.flow_files,
             working_directory: request.working_directory,
             model: request.model,
             llm_provider: request.llm_provider,
@@ -1513,7 +1512,7 @@ impl AttractorApiService {
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
-        save_flow_request(&self.settings.flows_dir, req.name, &flow)
+        save_flow_request(&self.settings, req.name, &flow)
     }
 
     pub fn delete_flow(&self, name: &str) -> RuntimeRouteResponse {
@@ -1554,51 +1553,42 @@ impl AttractorApiService {
     pub fn start_pipeline(&self, request: PipelineStartRequest) -> RuntimeRouteResponse {
         let store = self.observed_store();
         let wait_for_terminal = request.wait.unwrap_or(false);
-        let flow_name = trimmed_option(request.flow_name.as_deref());
-        let mut flow_content = trimmed_option(request.flow_content.as_deref());
-        // Preview resolves an unnamed flow's refs against the flows root too.
-        let mut flow_source_dir = Some(self.settings.flows_dir.clone());
-        if flow_content.is_none() {
-            let Some(flow_name) = flow_name.as_deref() else {
-                return validation_error_response("Either flow_content or flow_name is required.");
-            };
-            match load_flow_content(&self.settings.flows_dir, flow_name) {
-                Ok(content) => flow_content = Some(content),
-                Err(error) => {
-                    return RuntimeRouteResponse::json(
-                        200,
-                        json!({
-                            "status": if error.status_code() == 400 { "validation_error" } else { "failed" },
-                            "error": error.detail(),
-                        }),
-                    );
-                }
+        // Runs start only from the live files on disk, through the trust gate.
+        let Some(flow_name) = trimmed_option(request.flow_name.as_deref()) else {
+            return validation_error_response("flow_name is required.");
+        };
+        let trust = TrustStore::for_settings(&self.settings);
+        let loaded = resolve_flow_path(&self.settings.flows_dir, &flow_name).and_then(|path| {
+            if path.join(FLOW_FILE).is_file() {
+                load_approved_flow(&trust, &path).map(|approved| (path, approved))
+            } else {
+                Err(FlowSourceError::new(
+                    404,
+                    format!("Flow not found: {flow_name}"),
+                ))
             }
-        }
-        if let Some(flow_name) = flow_name.as_deref() {
-            if let Ok(flow_path) = resolve_flow_path(&self.settings.flows_dir, flow_name) {
-                if flow_path.exists() {
-                    flow_source_dir = flow_path.parent().map(Path::to_path_buf);
-                }
+        });
+        let (flow_path, approved) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) if error.diagnostics().is_empty() => {
+                return RuntimeRouteResponse::json(
+                    200,
+                    json!({
+                        "status": if error.status_code() == 400 { "validation_error" } else { "failed" },
+                        "error": error.detail(),
+                    }),
+                );
             }
-        }
-
-        let mut flow_content = flow_content.unwrap_or_default();
-        if let Some(goal) = trimmed_option(request.goal.as_deref()) {
-            flow_content = match inject_flow_goal(&flow_content, &goal) {
-                Ok(content) => content,
-                Err(error) => return flow_definition_validation_response(error),
-            };
-        }
-
-        // Named and inline launches both carry the authored form; resolve
-        // roles once here so selection, execution and the snapshot see it.
-        let flow = match parse_flow_definition(&flow_content)
-            .and_then(|flow| resolve_flow_roles(&flow, &self.settings.roles_dir()))
-        {
-            Ok(flow) => flow,
             Err(error) => return flow_definition_validation_response(error),
         };
+        let flow_source_dir = flow_path.parent().map(Path::to_path_buf);
+        let flow_files = approved.files;
+        // The manifest hashes the files as read; the goal is injected after.
+        let mut flow = approved.flow;
+        if let Some(goal) = trimmed_option(request.goal.as_deref()) {
+            flow.goal = goal;
+        }
+        let flow = flow.normalize();
         let flow_content = match attractor_dsl::flow_yaml(&flow) {
             Ok(content) => content,
             Err(error) => return flow_definition_validation_response(error),
@@ -1745,19 +1735,7 @@ impl AttractorApiService {
         let execution_metadata = attractor_execution::build_launch_metadata(&execution_selection);
 
         let mut record = RunRecord::new(&run_id, &working_directory);
-        // Content launches have no catalog flow name; the flow's title (or
-        // id) is the run's real identity everywhere it shows.
-        record.flow_name = flow_name
-            .clone()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| {
-                let title = flow.title.trim();
-                if title.is_empty() {
-                    flow.id.trim().to_string()
-                } else {
-                    title.to_string()
-                }
-            });
+        record.flow_name = flow_name;
         record.working_directory = working_directory.clone();
         record.project_path = working_directory.clone();
         record.model = display_model.clone();
@@ -1835,11 +1813,14 @@ impl AttractorApiService {
                 json!(flow_source_dir.to_string_lossy().to_string()),
             );
         }
-        // Subflow children resolve their roles from the same directory.
-        runtime_context.insert(
-            "internal.roles_dir".to_string(),
-            json!(self.settings.roles_dir().to_string_lossy().to_string()),
-        );
+        // Subflow children pass the same trust gate, against the same files.
+        for (key, path) in [
+            ("internal.flows_dir", &trust.flows_dir),
+            ("internal.roles_dir", &trust.roles_dir),
+            ("internal.approvals_log", &trust.log_path),
+        ] {
+            runtime_context.insert(key.to_string(), json!(path.to_string_lossy().to_string()));
+        }
 
         if let Err(error) = fs::create_dir_all(&working_directory) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
@@ -1854,6 +1835,7 @@ impl AttractorApiService {
             &flow,
             Some(flow_content.clone()),
             Some(flow_definition_json),
+            Some(flow_files),
             &launch_context,
             &runtime_context,
         ) {
@@ -2288,12 +2270,23 @@ impl AttractorApiService {
         }
         let source_record = source.record.as_ref();
         let mode = request.flow_source_mode.trim().to_lowercase();
-        let (flow_name, flow_content) = if mode == "snapshot" {
+        let (flow_name, flow_content, flow_files) = if mode == "snapshot" {
             let flow_name = source_record
                 .map(|record| record.flow_name.clone())
                 .unwrap_or_default();
+            // Snapshot mode reuses the stored resolved source, so it keeps the
+            // source run's manifest and is not gated.
+            let flow_files = fs::read(
+                source
+                    .paths
+                    .artifacts_dir()
+                    .join("flow")
+                    .join(attractor_runtime::FLOW_FILES_MANIFEST),
+            )
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
             match store.read_graph_source(&source.paths) {
-                Ok(Some(source)) => (flow_name, source),
+                Ok(Some(source)) => (flow_name, source, flow_files),
                 Ok(None) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2311,12 +2304,15 @@ impl AttractorApiService {
                     json!({"status": "validation_error", "error": "flow_name is required when flow_source_mode is flow_name."}),
                 );
             };
-            match load_resolved_flow_content(
-                &self.settings.flows_dir,
-                &self.settings.roles_dir(),
-                &flow_name,
-            ) {
-                Ok(content) => (flow_name, content),
+            let trust = TrustStore::for_settings(&self.settings);
+            let loaded = resolve_flow_path(&self.settings.flows_dir, &flow_name)
+                .and_then(|path| load_approved_flow(&trust, &path))
+                .and_then(|approved| {
+                    attractor_dsl::flow_yaml(&approved.flow)
+                        .map(|content| (content, approved.files))
+                });
+            match loaded {
+                Ok((content, files)) => (flow_name, content, Some(files)),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2344,6 +2340,7 @@ impl AttractorApiService {
                 flow: flow.clone(),
                 flow_source: Some(flow_content.clone()),
                 flow_definition_json: Some(flow.to_canonical_json_string()),
+                flow_files,
                 flow_name: Some(flow_name),
             },
         );
@@ -3104,11 +3101,14 @@ fn dispatch_pipeline_route(
     }
 }
 
+/// Writes the changed files of a flow, stamped `generated` by the local
+/// human, and logs `human_save` for each.
 fn save_flow_request(
-    flows_dir: &Path,
+    settings: &SparkSettings,
     name: String,
     flow: &FlowDefinition,
 ) -> RuntimeRouteResponse {
+    let flows_dir = settings.flows_dir.as_path();
     let flow_path = match resolve_flow_path(flows_dir, &name) {
         Ok(path) => path,
         Err(error) => return flow_source_error_response(error),
@@ -3128,7 +3128,24 @@ fn save_flow_request(
             json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
         );
     }
-    if let Err(error) = write_flow_dir(&flow_path, flow) {
+    let by = spark_storage::settings::human_actor(&settings.config_dir);
+    let generated = attractor_core::Attribution {
+        by: by.clone(),
+        at: spark_common::approvals::timestamp_now(),
+    };
+    let written = match save_flow_dir(&flow_path, flow, &generated) {
+        Ok(written) => written,
+        Err(error) => return flow_source_error_response(error),
+    };
+    let written = written
+        .iter()
+        .map(|file| flow_path.join(file))
+        .collect::<Vec<_>>();
+    if let Err(error) = TrustStore::for_settings(settings).record_written(
+        spark_common::approvals::EVENT_HUMAN_SAVE,
+        &by,
+        &written,
+    ) {
         return flow_source_error_response(error);
     }
     let name = match flow_name_from_path(flows_dir, &flow_path) {
@@ -3550,9 +3567,11 @@ fn graph_artifact_paths(paths: &attractor_runtime::RunRootPaths) -> Value {
     let flow_dir = paths.artifacts_dir().join("flow");
     let source_path = flow_dir.join("flow-source.yaml");
     let definition_path = flow_dir.join("flow-definition.json");
+    let files_path = flow_dir.join(attractor_runtime::FLOW_FILES_MANIFEST);
     json!({
         "flow_source_path": source_path.exists().then(|| source_path.to_string_lossy().to_string()),
         "flow_definition_path": definition_path.exists().then(|| definition_path.to_string_lossy().to_string()),
+        "flow_files_path": files_path.exists().then(|| files_path.to_string_lossy().to_string()),
     })
 }
 

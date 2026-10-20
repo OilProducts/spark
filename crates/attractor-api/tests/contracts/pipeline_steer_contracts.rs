@@ -179,9 +179,9 @@ fn node_log_contains(settings: &SparkSettings, run_id: &str, node_id: &str, text
     false
 }
 
-fn content(flow: String) -> PipelineStartRequest {
+fn content(settings: &SparkSettings, flow: String) -> PipelineStartRequest {
     PipelineStartRequest {
-        flow_content: Some(flow),
+        flow_name: Some(crate::install_flow(settings, flow)),
         ..Default::default()
     }
 }
@@ -218,7 +218,7 @@ fn steer_delivers_to_active_codex_agent_node() {
         &settings,
         "steer-codex",
         "codex",
-        content(agent_flow("steer_codex")),
+        content(&settings, agent_flow("steer_codex")),
     );
     wait_for_log(&log, "turn/start", 1);
 
@@ -274,7 +274,7 @@ fn steer_delivers_to_active_claude_code_agent_node() {
         &settings,
         "steer-claude",
         "claude-code",
-        content(agent_flow("steer_claude")),
+        content(&settings, agent_flow("steer_claude")),
     );
     wait_for_log(&log, "USER_CONTENT=", 1);
 
@@ -315,10 +315,12 @@ fn steer_targets_agent_node_of_child_run() {
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.flows_dir).unwrap();
     write_flow(
+        &settings,
         &settings.flows_dir.join("child"),
         &agent_flow("steer_child"),
     );
     write_flow(
+        &settings,
         &settings.flows_dir.join("parent"),
         r#"schema_version: "1"
 id: steer_parent
@@ -388,6 +390,7 @@ fn steer_rejects_ambiguous_target_until_a_node_is_named() {
         "steer-fork",
         "codex",
         content(
+            &settings,
             r#"schema_version: "1"
 id: steer_fork
 nodes:
@@ -473,6 +476,7 @@ fn steer_follows_a_parallel_branch_past_its_entry_node() {
         "steer-chain",
         "codex",
         content(
+            &settings,
             r#"schema_version: "1"
 id: steer_chain
 nodes:
@@ -524,10 +528,8 @@ fn steer_rejects_when_no_agent_node_is_active() {
     let started = service.start_pipeline(PipelineStartRequest {
         run_id: Some("steer-idle".into()),
         working_directory: settings.project_root.to_string_lossy().into(),
-        flow_content: Some(
-            "schema_version: \"1\"\nid: idle\nnodes:\n  start: { kind: start }\n  done: { kind: exit }\nedges:\n- { from: start, to: done }\n"
-                .into(),
-        ),
+        flow_name: Some(crate::install_flow(&settings,
+            "schema_version: \"1\"\nid: idle\nnodes:\n  start: { kind: start }\n  done: { kind: exit }\nedges:\n- { from: start, to: done }\n")),
         wait: Some(true),
         ..Default::default()
     });
@@ -560,6 +562,7 @@ fn steer_counts_unsteerable_agent_nodes_when_resolving_the_target() {
         "steer-mixed",
         "codex",
         content(
+            &settings,
             r#"schema_version: "1"
 id: steer_mixed
 nodes:
@@ -789,7 +792,7 @@ fn steer_left_queued_when_a_codex_turn_ends_is_recorded_undelivered() {
         &settings,
         "steer-codex-late",
         "codex",
-        content(agent_flow("steer_codex_late")),
+        content(&settings, agent_flow("steer_codex_late")),
     );
     wait_for_log(&log, "turn/start", 1);
 
@@ -832,7 +835,10 @@ fn steer_left_queued_when_a_claude_code_turn_ends_is_recorded_undelivered() {
         &settings,
         "steer-claude-late",
         "claude-code",
-        content(agent_flow("steer_claude_late").replace("Do the work", "Start the work")),
+        content(
+            &settings,
+            agent_flow("steer_claude_late").replace("Do the work", "Start the work"),
+        ),
     );
     wait_for_log(&log_path("SPARK_FAKE_CLAUDE_CODE_LOG"), "USER_CONTENT=", 1);
 
@@ -875,7 +881,7 @@ fn steer_rejects_claude_code_without_stdin_control() {
         &settings,
         "steer-claude-legacy",
         "claude-code",
-        content(agent_flow("steer_claude_legacy")),
+        content(&settings, agent_flow("steer_claude_legacy")),
     );
     // The CLI advertised no interrupt_receipt_v1, so Spark closed its input.
     wait_for_log(&log_path("SPARK_FAKE_CLAUDE_CODE_LOG"), "STDIN_CLOSED", 1);
@@ -899,10 +905,11 @@ fn steer_rejects_claude_code_without_stdin_control() {
     wait_for_status(&settings, "steer-claude-legacy", "completed");
 }
 
-fn write_flow(dir: &Path, yaml: &str) {
+fn write_flow(settings: &SparkSettings, dir: &Path, yaml: &str) {
     attractor_dsl::write_flow_dir(
         dir,
         &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(settings, dir);
 }

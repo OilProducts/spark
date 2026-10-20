@@ -134,14 +134,6 @@ pub fn flow_name_from_path(
     Ok(parts.join("/"))
 }
 
-/// Reads a named flow directory in its authored form, as one YAML document.
-pub fn load_flow_content(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<String, FlowSourceError> {
-    flow_yaml(&read_named_flow(flows_dir, flow_name)?)
-}
-
 /// Reads a named flow directory in the resolved form runs execute: roles
 /// merged in, as one YAML document.
 pub fn load_resolved_flow_content(
@@ -281,17 +273,6 @@ pub fn canonicalize_flow_yaml(source: &str) -> Result<String, FlowSourceError> {
         FlowSourceError::new(
             500,
             format!("Unable to serialize canonical flow YAML: {source}"),
-        )
-    })
-}
-
-pub fn inject_flow_goal(flow_content: &str, goal: &str) -> Result<String, FlowSourceError> {
-    let mut flow = parse_flow_definition(flow_content)?;
-    flow.goal = goal.trim().to_string();
-    serde_yaml::to_string(&flow.normalize()).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!("Unable to serialize flow with launch goal: {source}"),
         )
     })
 }

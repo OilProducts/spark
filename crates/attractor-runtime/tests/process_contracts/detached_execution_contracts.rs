@@ -138,6 +138,7 @@ fn prepared_start_produces_the_same_journal_as_fresh() {
         &flow,
         None,
         None,
+        None,
         &LaunchContext::empty(),
         &Default::default(),
     )
@@ -222,6 +223,7 @@ fn disk_control_cancels_a_run_mid_flight() {
         &store,
         &cancel_record,
         &flow,
+        None,
         None,
         None,
         &LaunchContext::empty(),
@@ -350,6 +352,7 @@ fn a_cancel_during_a_run_record_update_waits_and_is_not_lost() {
         &store,
         &record("run-record-lock", &project_path),
         &simple_flow(),
+        None,
         None,
         None,
         &LaunchContext::empty(),

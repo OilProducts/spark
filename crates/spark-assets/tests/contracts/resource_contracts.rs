@@ -772,10 +772,12 @@ fn settings(root: &Path) -> SparkSettings {
 
 #[test]
 fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
-    use sha2::{Digest, Sha256};
-    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    use spark_common::approvals::{
+        append_approvals, approval_entries, sha256_hex as hash, EVENT_HUMAN_SAVE, EVENT_INSTALLED,
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
+    let log = dir.join("config/approvals.jsonl");
     let assets = flows::starter_flow_assets().expect("bundled flows");
     let [same, stale, edited, unknown, ..] = &assets[..] else {
         panic!("at least four bundled flows")
@@ -788,15 +790,29 @@ fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
     write(&same.name, same.content.as_bytes());
     write(&stale.name, b"older packaged version\n");
     write(&edited.name, b"edited: true\n");
-    write(&unknown.name, b"installed before the manifest existed\n");
-    let manifest = serde_json::json!({
-        same.name.clone(): hash(b"anything"),
-        stale.name.clone(): hash(b"older packaged version\n"),
-        edited.name.clone(): hash(edited.content.as_bytes()),
-    });
-    fs::write(
-        dir.join(flows::PACKAGED_FLOW_HASHES),
-        serde_json::to_vec(&manifest).unwrap(),
+    write(&unknown.name, b"installed before the log existed\n");
+    let installed = |name: &String, bytes: &[u8]| (format!("flows/{name}"), hash(bytes));
+    append_approvals(
+        &log,
+        &approval_entries(
+            EVENT_INSTALLED,
+            "spark/test",
+            [
+                installed(&same.name, b"anything"),
+                installed(&stale.name, b"older packaged version\n"),
+                installed(&edited.name, edited.content.as_bytes()),
+            ],
+        ),
+    )
+    .unwrap();
+    // Only `installed` entries mark what seeding put there.
+    append_approvals(
+        &log,
+        &approval_entries(
+            EVENT_HUMAN_SAVE,
+            "human:test",
+            [installed(&edited.name, b"edited: true\n")],
+        ),
     )
     .unwrap();
 
@@ -806,7 +822,7 @@ fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
     let flow_of = |name: &str| name.rsplit_once('/').unwrap().0.to_string();
     assert_eq!(flow_of(&edited.name), flow_of(&unknown.name));
     assert_eq!(
-        flows::locally_edited_flows(dir),
+        flows::locally_edited_flows(dir, &log),
         vec![flow_of(&edited.name)]
     );
 }

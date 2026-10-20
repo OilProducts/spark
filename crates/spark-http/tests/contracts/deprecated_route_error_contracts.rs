@@ -34,7 +34,7 @@ async fn deprecated_pipeline_events_streams_gap_fill_with_sse_headers() {
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-http-events".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: temp.path().join("Project").to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -69,7 +69,7 @@ async fn deprecated_pipeline_event_errors_and_route_boundaries_stay_json() {
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-http-errors".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: temp.path().join("Project").to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });

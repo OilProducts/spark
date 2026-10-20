@@ -1241,10 +1241,10 @@ describe('RunsPanel', () => {
       return url.endsWith('/attractor/pipelines') && init?.method === 'POST'
     })
     expect(startCall).toBeDefined()
-    // The launch reproduces the exact flow snapshot that ran, not the current
-    // catalog flow.
-    expect(JSON.parse(String(startCall?.[1]?.body))).toMatchObject({
-      flow_content: 'schema_version: "1"\nid: rerun_flow\n',
+    // The launch runs the installed flow by name; runs start only from live files.
+    const startBody = JSON.parse(String(startCall?.[1]?.body))
+    expect(startBody).not.toHaveProperty('flow_content')
+    expect(startBody).toMatchObject({
       flow_name: 'selected.dot',
       working_directory: '/tmp/project-one/worktree',
       launch_context: { 'context.topic': 'original topic' },
