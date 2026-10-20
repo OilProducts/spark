@@ -34,6 +34,9 @@ pub const CODEX_APP_SERVER_BACKEND: &str = "codex_app_server";
 /// server launch or an OAuth token refresh sits in front of the first reply.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Queued behind the notifications that arrived before a `turn/steer`
+/// response, so the delivery lands in the order the app-server produced it.
+const STEERING_INJECTED_METHOD: &str = "spark/steeringInjected";
 const CODEX_RUNTIME_ROOT_ENV: &str = "ATTRACTOR_CODEX_RUNTIME_ROOT";
 const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
 static CODEX_SPARK_HOME: OnceLock<PathBuf> = OnceLock::new();
@@ -829,13 +832,7 @@ impl CodexAppServerClient {
         loop {
             if let Some(handle) = steering.as_ref() {
                 if !steering_rejected {
-                    steering_rejected = self.drain_steering(
-                        handle,
-                        thread_id,
-                        expected_turn_id,
-                        &mut events,
-                        event_sink.as_ref(),
-                    )?;
+                    steering_rejected = self.drain_steering(handle, thread_id, expected_turn_id)?;
                 }
                 if !interrupt_sent && handle.interrupt_requested() {
                     interrupt_sent = true;
@@ -879,6 +876,13 @@ impl CodexAppServerClient {
                 continue;
             };
             last_activity = Instant::now();
+            if let Some(event) = steering_injected_event(&message, thread_id, expected_turn_id) {
+                if let Some(sink) = event_sink.as_ref() {
+                    sink(event.clone());
+                }
+                events.push(event);
+                continue;
+            }
             let extracted_turn_id = extract_turn_id(&message);
             if extracted_turn_id
                 .as_deref()
@@ -908,6 +912,18 @@ impl CodexAppServerClient {
             self.answer_pending_request_user_input()?;
             if completed {
                 break;
+            }
+        }
+        // Deliveries the turn accepted just before it completed.
+        for message in std::mem::take(&mut self.pending_messages) {
+            match steering_injected_event(&message, thread_id, expected_turn_id) {
+                Some(event) => {
+                    if let Some(sink) = event_sink.as_ref() {
+                        sink(event.clone());
+                    }
+                    events.push(event);
+                }
+                None => self.pending_messages.push_back(message),
             }
         }
         if interrupt_sent && state.turn_status.as_deref() == Some("interrupted") {
@@ -942,8 +958,6 @@ impl CodexAppServerClient {
         handle: &SessionSteeringHandle,
         thread_id: &str,
         turn_id: &str,
-        events: &mut Vec<TurnStreamEvent>,
-        event_sink: Option<&AgentTurnEventSink>,
     ) -> Result<bool, CodexAppServerError> {
         let mut queued = handle.drain_queued().into_iter();
         while let Some(steering_turn) = queued.next() {
@@ -979,32 +993,10 @@ impl CodexAppServerClient {
                 handle.requeue_front(std::iter::once(steering_turn).chain(queued));
                 return response.map(|_| true);
             }
-            let event = TurnStreamEvent {
-                kind: TurnStreamEventKind::Other("steering_injected".to_string()),
-                channel: None,
-                source: TurnStreamSource {
-                    backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
-                    app_thread_id: Some(thread_id.to_string()),
-                    app_turn_id: Some(turn_id.to_string()),
-                    raw_kind: Some("turn_steer".to_string()),
-                    ..TurnStreamSource::default()
-                },
-                content_delta: Some(text.clone()),
-                message: Some(text),
-                tool_call: None,
-                request_user_input: None,
-                token_usage: None,
-                error: None,
-                error_code: None,
-                details: (!steering_turn.metadata.is_empty())
-                    .then(|| json!(steering_turn.metadata)),
-                phase: Some("intervention".to_string()),
-                status: Some("delivered".to_string()),
-            };
-            if let Some(sink) = event_sink {
-                sink(event.clone());
-            }
-            events.push(event);
+            self.pending_messages.push_back(json!({
+                "method": STEERING_INJECTED_METHOD,
+                "params": {"text": text, "metadata": steering_turn.metadata},
+            }));
         }
         Ok(false)
     }
@@ -1573,6 +1565,43 @@ pub fn parse_jsonrpc_line(line: &str) -> Option<Value> {
     serde_json::from_str::<Value>(line)
         .ok()
         .filter(Value::is_object)
+}
+
+/// The transcript event for a steering delivery queued by `drain_steering`.
+fn steering_injected_event(
+    message: &Value,
+    thread_id: &str,
+    turn_id: &str,
+) -> Option<TurnStreamEvent> {
+    if message.get("method").and_then(Value::as_str) != Some(STEERING_INJECTED_METHOD) {
+        return None;
+    }
+    let text = message["params"]["text"].as_str().unwrap_or_default();
+    let metadata = &message["params"]["metadata"];
+    Some(TurnStreamEvent {
+        kind: TurnStreamEventKind::Other("steering_injected".to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
+            app_thread_id: Some(thread_id.to_string()),
+            app_turn_id: Some(turn_id.to_string()),
+            raw_kind: Some("turn_steer".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: Some(text.to_string()),
+        message: Some(text.to_string()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: metadata
+            .as_object()
+            .is_some_and(|metadata| !metadata.is_empty())
+            .then(|| metadata.clone()),
+        phase: Some("intervention".to_string()),
+        status: Some("delivered".to_string()),
+    })
 }
 
 pub fn process_codex_app_server_message(

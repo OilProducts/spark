@@ -65,6 +65,16 @@ impl WorkspaceConversationService {
         attachment_id: &str,
     ) -> WorkspaceResult<Value> {
         let project_path = self.bound_chat_project_path(conversation_id, project_path)?;
+        // Held through the delete, so a send cannot start referencing it.
+        let turns = crate::conversations::active_turns();
+        if turns
+            .get(&self.active_turn_key(&project_path, conversation_id))
+            .is_some_and(|active| active.attachment_ids.contains(attachment_id))
+        {
+            return Err(WorkspaceError::Conflict(
+                "This attachment belongs to a sent message and stays until the conversation is deleted.".to_string(),
+            ));
+        }
         if !self.repository().delete_unreferenced_attachment(
             conversation_id,
             &project_path,
@@ -124,6 +134,14 @@ impl WorkspaceConversationService {
         conversation_id: &str,
         project_path: &str,
     ) -> WorkspaceResult<Vec<String>> {
+        // ponytail: skips the whole prune while steered messages hold uploads.
+        let turns = crate::conversations::active_turns();
+        if turns
+            .get(&self.active_turn_key(project_path, conversation_id))
+            .is_some_and(|active| !active.attachment_ids.is_empty())
+        {
+            return Ok(Vec::new());
+        }
         Ok(self.repository().prune_attachments(
             conversation_id,
             project_path,

@@ -12,6 +12,31 @@ use time::OffsetDateTime;
 use unified_llm_adapter::{StreamEvent, StreamEventType, Usage};
 use uuid::Uuid;
 
+/// The latest visible assistant text in `events` and its item id, including
+/// a block cut off mid-delta. A turn the user stopped settles with it.
+pub fn latest_assistant_text(events: &[TurnStreamEvent]) -> Option<(Option<String>, String)> {
+    let latest = events.iter().rev().find(|event| {
+        event.channel == Some(TurnStreamChannel::Assistant)
+            && matches!(
+                event.kind,
+                TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted
+            )
+    })?;
+    let text = if latest.kind == TurnStreamEventKind::ContentCompleted {
+        latest.content_delta.clone().unwrap_or_default()
+    } else {
+        events
+            .iter()
+            .filter(|event| {
+                event.kind == TurnStreamEventKind::ContentDelta
+                    && event.source.item_id == latest.source.item_id
+            })
+            .filter_map(|event| event.content_delta.as_deref())
+            .collect()
+    };
+    Some((latest.source.item_id.clone(), text))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventKind {
     SessionStart,

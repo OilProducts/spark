@@ -9,8 +9,11 @@ fn main() {
     let mode =
         env::var("SPARK_FAKE_CODEX_APP_SERVER_MODE").unwrap_or_else(|_| "default".to_string());
     let log_path = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_LOG").map(PathBuf::from);
-    if mode == "steerable" || mode == "steer-race" {
-        run_steerable(log_path, mode == "steer-race");
+    if matches!(
+        mode.as_str(),
+        "steerable" | "steer-race" | "steer-early-output" | "steer-partial"
+    ) {
+        run_steerable(log_path, &mode);
     } else {
         run_default(
             log_path,
@@ -256,8 +259,11 @@ fn emit_gated_turn(stdout: &mut impl Write) {
     );
 }
 
-/// `race`: the turn completes before the first turn/steer, which is rejected.
-fn run_steerable(log_path: Option<PathBuf>, race: bool) {
+/// `steer-race`: the turn completes before the first turn/steer, which is
+/// rejected. `steer-early-output`: output arrives before the turn/steer
+/// response. `steer-partial`: the turn streams half an answer, then waits.
+fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
+    let race = mode == "steer-race";
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
 
@@ -276,10 +282,18 @@ fn run_steerable(log_path: Option<PathBuf>, race: bool) {
                 &mut stdout,
                 json!({"id": request_id, "result": {"thread": {"id": "thread-steer"}}}),
             ),
-            "turn/start" => write_json(
-                &mut stdout,
-                json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),
-            ),
+            "turn/start" => {
+                write_json(
+                    &mut stdout,
+                    json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),
+                );
+                if mode == "steer-partial" {
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-steer", "turnId": "turn-steer", "itemId": "msg-half", "delta": "Half an answer."}}),
+                    );
+                }
+            }
             "turn/interrupt" => {
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 write_json(
@@ -302,6 +316,12 @@ fn run_steerable(log_path: Option<PathBuf>, race: bool) {
                 );
             }
             "turn/steer" => {
+                if mode == "steer-early-output" {
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/completed", "params": {"threadId": "thread-steer", "turnId": "turn-steer", "item": {"type": "AgentMessage", "id": "msg-early", "content": [{"type": "Text", "text": "Reading the file."}], "phase": "commentary"}}}),
+                    );
+                }
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 emit_turn_completion(
                     &mut stdout,

@@ -333,29 +333,10 @@ impl ClaudeCodeBackend {
                     message["subtype"] = json!("success");
                     // Promote the latest visible text to the final answer using
                     // its existing item id, including a block cut off mid-delta.
-                    let latest = events.iter().rev().find(|event| {
-                        event.channel == Some(TurnStreamChannel::Assistant)
-                            && matches!(
-                                event.kind,
-                                TurnStreamEventKind::ContentDelta
-                                    | TurnStreamEventKind::ContentCompleted
-                            )
-                    });
-                    let text = latest
-                        .map(|latest| {
-                            turn.last_text_item_id = latest.source.item_id.clone();
-                            if latest.kind == TurnStreamEventKind::ContentCompleted {
-                                latest.content_delta.clone().unwrap_or_default()
-                            } else {
-                                events
-                                    .iter()
-                                    .filter(|event| {
-                                        event.kind == TurnStreamEventKind::ContentDelta
-                                            && event.source.item_id == latest.source.item_id
-                                    })
-                                    .filter_map(|event| event.content_delta.as_deref())
-                                    .collect::<String>()
-                            }
+                    let text = crate::events::latest_assistant_text(&events)
+                        .map(|(item_id, text)| {
+                            turn.last_text_item_id = item_id;
+                            text
                         })
                         .unwrap_or_default();
                     message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));

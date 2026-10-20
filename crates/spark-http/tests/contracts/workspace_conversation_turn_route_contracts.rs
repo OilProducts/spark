@@ -1886,7 +1886,202 @@ async fn interrupt_stops_a_running_codex_or_native_turn() {
             assistant_turns_settled(s, 1)
         })
         .await;
-    assert_eq!(snapshot["turns"][1]["error"], "Stopped.");
+    assert_stopped(&snapshot, "Stopped.");
+}
+
+/// A stop settles the turn as a finished answer, as Claude Code's does.
+fn assert_stopped(snapshot: &Value, content: &str) {
+    let assistant = &snapshot["turns"][1];
+    assert_eq!(assistant["status"], "complete", "{snapshot}");
+    assert_eq!(assistant["content"], content, "{snapshot}");
+    assert!(assistant.get("error").is_none(), "{snapshot}");
+}
+
+/// Streams half an answer, then trickles empty deltas until stopped.
+struct StoppableAdapter {
+    pulled: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ProviderAdapter for StoppableAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, _request: LlmRequest) -> Result<Response, AdapterError> {
+        unreachable!("the session streams")
+    }
+
+    fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        let pulled = Arc::clone(&self.pulled);
+        Ok(stream_events((0..500).map(move |index| {
+            if pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(match index {
+                0 => StreamEvent::text_delta("Half an answer."),
+                499 => StreamEvent::finish(FinishReason::Stop, None),
+                _ => StreamEvent::text_delta(""),
+            })
+        })))
+    }
+}
+
+#[tokio::test]
+async fn stopped_native_turn_settles_with_its_partial_answer() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StoppableAdapter {
+        pulled: Arc::clone(&pulled),
+    });
+    let app = build_app_with_rust_llm_client(
+        settings.clone(),
+        Client::from_adapters(vec![adapter], Some("OPENAI")).unwrap(),
+    );
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/native-stop/turns",
+        Some(
+            json!({"project_path": "/projects/steer", "message": "Start the work",
+            "provider": "openai", "model": "gpt-native-test"}),
+        ),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    // The half answer was taken once the next delta is pulled.
+    while pulled.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/native-stop/interrupt",
+        Some(json!({"project_path": "/projects/steer"})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "native-stop", "/projects/steer", |s| {
+            assistant_turns_settled(s, 1)
+        })
+        .await;
+    assert_stopped(&snapshot, "Half an answer.");
+    assert!(pulled.load(std::sync::atomic::Ordering::SeqCst) < 400);
+}
+
+/// An app whose Codex chat turns run the fake app-server in `mode`; returns
+/// it with its settings, a project path and the fake's log.
+fn fake_codex_app(root: &Path, mode: &str) -> (axum::Router, SparkSettings, String, PathBuf) {
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let log = root.join("codex.log");
+    std::env::set_var(
+        "SPARK_CODEX_APP_SERVER_BIN",
+        binaries.join("spark-agent-fake-codex-app-server"),
+    );
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", mode);
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log);
+    let mut settings = settings(root);
+    settings.agents.native.codex_runtime_root =
+        Some(root.join("codex-runtime").to_string_lossy().into());
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    (
+        spark_http::build_app(settings.clone()),
+        settings,
+        project.to_string_lossy().to_string(),
+        log,
+    )
+}
+
+async fn send_codex_message(
+    app: &axum::Router,
+    conversation_id: &str,
+    project: &str,
+    message: &str,
+) {
+    let response = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(
+            json!({"project_path": project, "message": message, "provider": "codex",
+            "model": "gpt-codex-test"}),
+        ),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+}
+
+#[tokio::test]
+async fn stopped_codex_turn_settles_with_its_partial_answer() {
+    if !in_child_process("stopped_codex_turn_settles_with_its_partial_answer") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_codex_app(temp.path(), "steer-partial");
+
+    send_codex_message(&app, "codex-stop", &project, "Start the work").await;
+    wait_for_log(&log, "turn/start").await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/codex-stop/interrupt",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-stop", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    assert_stopped(&snapshot, "Half an answer.");
+    wait_for_log(&log, "turn/interrupt").await;
+}
+
+#[tokio::test]
+async fn codex_output_before_the_steer_response_stays_ahead_of_the_steered_message() {
+    if !in_child_process(
+        "codex_output_before_the_steer_response_stays_ahead_of_the_steered_message",
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_codex_app(temp.path(), "steer-early-output");
+
+    send_codex_message(&app, "codex-order", &project, "Start the work").await;
+    wait_for_log(&log, "turn/start").await;
+    send_codex_message(&app, "codex-order", &project, "Use tabs.").await;
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-order", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    let mut segments = snapshot["segments"].as_array().unwrap().clone();
+    segments.sort_by_key(|segment| segment["order"].as_i64());
+    let contents = segments
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment["kind"].as_str(),
+                Some("assistant_message" | "user_message")
+            )
+        })
+        .map(|segment| segment["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        ["Reading the file.", "Use tabs.", "Steered"],
+        "{snapshot}"
+    );
 }
 
 #[tokio::test]

@@ -61,7 +61,7 @@ pub use environment::{
     CommandOptions, DirEntry, EnvironmentError, EnvironmentInheritancePolicy, EnvironmentResult,
     ExecResult, ExecutionEnvironment, ExecutionEnvironmentBackend, GrepOptions,
 };
-pub use events::{EventKind, SessionEvent};
+pub use events::{latest_assistant_text, EventKind, SessionEvent};
 pub use history::{
     history_to_messages, AssistantTurn, HistoryTurn, SteeringTurn, SystemTurn, ToolResultsTurn,
     TurnContent, UserTurn,

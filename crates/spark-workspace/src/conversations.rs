@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -241,16 +241,37 @@ pub enum ConversationSend {
 
 /// A chat turn this process is running. Sends while it runs are steered into it.
 #[derive(Default)]
-struct ActiveTurn {
+pub(crate) struct ActiveTurn {
     steering: SessionSteeringHandle,
     /// Sent after the turn stopped taking steering; they start the next turn.
     next: Vec<SteeringTurn>,
+    /// Attachments of the messages sent into it, which stay until it ends.
+    pub(crate) attachment_ids: HashSet<String>,
+}
+
+impl ActiveTurn {
+    /// Registers a turn that still has to take in `queued`.
+    fn with_queued(queued: impl IntoIterator<Item = SteeringTurn>) -> Self {
+        let mut active = Self::default();
+        for turn in queued {
+            active
+                .attachment_ids
+                .extend(spark_storage::conversation::turn_attachment_ids(
+                    turn.metadata.get("attachments"),
+                ));
+            active
+                .steering
+                .queue_steering_with_metadata(turn.content, turn.metadata);
+        }
+        active
+    }
 }
 
 /// Spark data dir, project path, conversation id.
-type ActiveTurnKey = (PathBuf, String, String);
+pub(crate) type ActiveTurnKey = (PathBuf, String, String);
 
-fn active_turns() -> std::sync::MutexGuard<'static, BTreeMap<ActiveTurnKey, ActiveTurn>> {
+pub(crate) fn active_turns() -> std::sync::MutexGuard<'static, BTreeMap<ActiveTurnKey, ActiveTurn>>
+{
     static TURNS: OnceLock<Mutex<BTreeMap<ActiveTurnKey, ActiveTurn>>> = OnceLock::new();
     TURNS
         .get_or_init(Mutex::default)
@@ -457,7 +478,11 @@ fn agent_turn_backend_error(error: AgentError) -> WorkspaceError {
 }
 
 impl WorkspaceConversationService {
-    fn active_turn_key(&self, project_path: &str, conversation_id: &str) -> ActiveTurnKey {
+    pub(crate) fn active_turn_key(
+        &self,
+        project_path: &str,
+        conversation_id: &str,
+    ) -> ActiveTurnKey {
         (
             self.settings.data_dir.clone(),
             project_path.to_string(),
@@ -1067,12 +1092,16 @@ impl WorkspaceConversationService {
         let mut turns = active_turns();
         if let Some(active) = turns.get_mut(&self.active_turn_key(&project_path, conversation_id)) {
             let steering = self.steering_turn(conversation_id, &project_path, &request)?;
+            active
+                .attachment_ids
+                .extend(request.attachment_ids.iter().cloned());
             if !active
                 .steering
                 .queue_steering_with_metadata(steering.content.clone(), steering.metadata.clone())
             {
                 active.next.push(steering);
             }
+            drop(turns);
             return Ok(ConversationSend::Steered(
                 self.get_snapshot(conversation_id, Some(&project_path))?,
             ));
@@ -1740,42 +1769,106 @@ impl WorkspaceConversationService {
             let result =
                 self.run_started_turn(&prepared, started_snapshot, &progress, steering.clone());
             let mut turns = active_turns();
-            let mut leftovers = take_active_turn(&mut turns, &key, &steering).into_iter();
-            let Some(first) = leftovers.next() else {
+            let leftovers = take_active_turn(&mut turns, &key, &steering);
+            if leftovers.is_empty() {
                 return result;
-            };
+            }
             let before_revision = self
                 .repository()
                 .read_snapshot(&conversation_id, Some(&project_path))?
                 .map(|snapshot| snapshot_revision(&snapshot))
                 .unwrap_or(0);
-            let (next, next_snapshot) = self.start_turn(
-                &conversation_id,
-                ConversationTurnRequest {
-                    project_path: project_path.clone(),
-                    message: first.text(),
-                    attachment_ids: spark_storage::conversation::turn_attachment_ids(
-                        first.metadata.get("attachments"),
-                    ),
-                    ..ConversationTurnRequest::default()
-                },
-            )?;
-            let active = ActiveTurn::default();
-            for turn in leftovers {
-                active
-                    .steering
-                    .queue_steering_with_metadata(turn.content, turn.metadata);
+            // A message that cannot start shows as a failed exchange; the
+            // ones after it still go.
+            let mut leftovers = leftovers.into_iter();
+            let mut started = None;
+            for turn in leftovers.by_ref() {
+                match self.start_turn(
+                    &conversation_id,
+                    ConversationTurnRequest {
+                        project_path: project_path.clone(),
+                        message: turn.text(),
+                        attachment_ids: spark_storage::conversation::turn_attachment_ids(
+                            turn.metadata.get("attachments"),
+                        ),
+                        ..ConversationTurnRequest::default()
+                    },
+                ) {
+                    Ok(next) => {
+                        started = Some(next);
+                        break;
+                    }
+                    Err(error) => self.record_unstarted_message(
+                        &conversation_id,
+                        &project_path,
+                        &turn,
+                        &error,
+                    )?,
+                }
             }
-            turns.insert(key.clone(), active);
+            if started.is_some() {
+                turns.insert(key.clone(), ActiveTurn::with_queued(leftovers));
+            }
             drop(turns);
             for payload in
                 self.read_events_after(&conversation_id, &project_path, before_revision)?
             {
                 progress(payload);
             }
+            let Some((next, next_snapshot)) = started else {
+                return result
+                    .and_then(|_| self.get_snapshot(&conversation_id, Some(&project_path)));
+            };
             prepared = next;
             started_snapshot = next_snapshot;
         }
+    }
+
+    /// Commits a steered message that could not start its turn as a failed
+    /// exchange carrying the reason. Its attachments are left off: the
+    /// failure may be that they are gone, and a commit cannot reference them.
+    fn record_unstarted_message(
+        &self,
+        conversation_id: &str,
+        project_path: &str,
+        turn: &SteeringTurn,
+        error: &WorkspaceError,
+    ) -> WorkspaceResult<()> {
+        let repository = self.repository();
+        let base_revision = repository
+            .read_snapshot(conversation_id, Some(project_path))?
+            .map(|snapshot| snapshot_revision(&snapshot))
+            .unwrap_or(0);
+        let user_turn = json!({
+            "id": turn.metadata.get("id").cloned()
+                .unwrap_or_else(|| json!(format!("turn-{}", uuid::Uuid::new_v4().simple()))),
+            "role": "user",
+            "content": turn.text(),
+            "timestamp": iso_now(),
+            "status": "failed",
+            "kind": "message",
+        });
+        let assistant_turn = json!({
+            "id": format!("turn-{}", uuid::Uuid::new_v4().simple()),
+            "role": "assistant",
+            "content": "",
+            "timestamp": iso_now(),
+            "status": "failed",
+            "kind": "message",
+            "error": error.to_string(),
+            "parent_turn_id": user_turn["id"],
+        });
+        commit_conversation_mutations(
+            &repository,
+            conversation_id,
+            project_path,
+            base_revision,
+            vec![
+                turn_mutation_from_value(&user_turn)?,
+                turn_mutation_from_value(&assistant_turn)?,
+            ],
+        )?;
+        Ok(())
     }
 
     fn run_started_turn(
@@ -1795,11 +1888,38 @@ impl WorkspaceConversationService {
             prepared.project_path.clone(),
             progress,
         );
+        // Kept so a turn the user stops can settle with what it produced.
+        let live_events = Arc::new(Mutex::new(Vec::new()));
+        let event_sink: AgentTurnEventSink = {
+            let live_events = Arc::clone(&live_events);
+            Arc::new(move |event: TurnStreamEvent| {
+                live_events
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(event.clone());
+                event_sink(event);
+            })
+        };
         let output = self.agent_turn_backend.run_steerable_turn(
             prepared.agent_turn_request.clone(),
-            steering,
+            steering.clone(),
             Some(event_sink),
         );
+        // Codex and native turns end a stop as an error; it settles like a
+        // finished turn instead, as Claude Code's does.
+        let output = if steering.interrupt_requested()
+            && output.as_ref().map_or(true, |output| {
+                output
+                    .events
+                    .iter()
+                    .any(|event| event.kind == TurnStreamEventKind::Error)
+            }) {
+            Ok(stopped_turn_output(std::mem::take(
+                &mut *live_events.lock().unwrap_or_else(PoisonError::into_inner),
+            )))
+        } else {
+            output
+        };
         if let Some(error) = provider_event_error
             .lock()
             .map_err(|_| {
@@ -5028,6 +5148,26 @@ fn finalized_plan_segment(snapshot: &Value, assistant_turn_id: &str) -> Option<V
                     .is_some()
         })
         .cloned()
+}
+
+/// A stopped turn's output: what it streamed, without the stop's error,
+/// answered by its latest visible text or "Stopped.".
+fn stopped_turn_output(mut events: Vec<TurnStreamEvent>) -> AgentTurnOutput {
+    events.retain(|event| event.kind != TurnStreamEventKind::Error);
+    let (item_id, text) = spark_agent_adapter::latest_assistant_text(&events)
+        .filter(|(_, text)| !text.trim().is_empty())
+        .unwrap_or_else(|| (None, "Stopped.".to_string()));
+    let mut answer = TurnStreamEvent::content_delta(TurnStreamChannel::Assistant, text.clone());
+    answer.kind = TurnStreamEventKind::ContentCompleted;
+    answer.source.item_id =
+        Some(item_id.unwrap_or_else(|| format!("stopped-{}", uuid::Uuid::new_v4().simple())));
+    answer.phase = Some("final_answer".to_string());
+    events.push(answer);
+    AgentTurnOutput {
+        events,
+        final_assistant_text: Some(text),
+        ..AgentTurnOutput::default()
+    }
 }
 
 /// The turn's last finished reply: text before a steered message is not it.
