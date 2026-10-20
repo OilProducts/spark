@@ -2080,6 +2080,53 @@ async fn claude_code_stop_before_control_starts_is_sent_once_it_does() {
 }
 
 #[tokio::test]
+async fn claude_code_stop_with_queued_steering_runs_it_once_and_stops_the_follow_up() {
+    if !in_child_process(
+        "claude_code_stop_with_queued_steering_runs_it_once_and_stops_the_follow_up",
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_claude_code_app(temp.path(), "interrupt-queued");
+    let stop = || {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/conversations/claude-queued/interrupt",
+            Some(json!({"project_path": project})),
+        )
+    };
+
+    send_claude_code_message(&app, "claude-queued", &project, "Start the work").await;
+    wait_for_log(&log, "USER_CONTENT=").await;
+    send_claude_code_message(&app, "claude-queued", &project, "Then add tests.").await;
+    wait_for_log(&log, "STEER_CONTENT=").await;
+    assert_eq!(stop().await.1, json!({"interrupted": true}));
+    wait_for_log(&log, "FOLLOW_UP_RUNNING").await;
+    assert_eq!(stop().await.1, json!({"interrupted": true}));
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "claude-queued", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "{snapshot}");
+    assert_eq!(turns[1]["status"], "complete", "{snapshot}");
+    assert_eq!(turns[1]["content"], "Following up.");
+    let steered = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == "user_message")
+        .collect::<Vec<_>>();
+    assert_eq!(steered.len(), 1, "{snapshot}");
+    assert_eq!(steered[0]["content"], "Then add tests.");
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(log.matches("USER_CONTENT=").count(), 1, "{log}");
+    assert_eq!(log.matches("STEER_CONTENT=").count(), 1, "{log}");
+}
+
+#[tokio::test]
 async fn claude_code_message_never_replayed_before_exit_starts_the_next_turn() {
     if !in_child_process("claude_code_message_never_replayed_before_exit_starts_the_next_turn") {
         return;

@@ -282,12 +282,20 @@ impl Control {
             }
             "control_response" => {
                 let response = &message["response"];
+                // still_queued lists steering the CLI holds for the follow-up
+                // turn it runs after the interrupted one; each must be ours.
                 if self.interrupt.as_deref() != response["request_id"].as_str()
                     || self.interrupt.is_none()
                     || response["subtype"] != "success"
                     || !response["response"]["still_queued"]
                         .as_array()
-                        .is_some_and(|ids| ids.is_empty())
+                        .is_some_and(|ids| {
+                            ids.iter().all(|id| {
+                                self.steering
+                                    .iter()
+                                    .any(|(uuid, _)| id.as_str() == Some(uuid))
+                            })
+                        })
                 {
                     self.degrade("unexpected or malformed interrupt receipt");
                 } else {
