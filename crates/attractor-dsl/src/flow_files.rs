@@ -272,6 +272,16 @@ pub fn resolve_flow_roles(
         }
         node.execution = merge_execution(node.execution.take(), execution);
     }
+    // Role settings merged into a node must pass the same checks as node settings.
+    if errors.is_empty() {
+        let authored = flow.diagnostics();
+        errors.extend(
+            resolved
+                .diagnostics()
+                .into_iter()
+                .filter(|diagnostic| !authored.contains(diagnostic)),
+        );
+    }
     if !errors.is_empty() {
         return Err(FlowDefinitionError {
             count: errors.len(),

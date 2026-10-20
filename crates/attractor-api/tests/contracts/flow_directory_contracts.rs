@@ -217,7 +217,30 @@ fn editor_sees_the_authored_form_and_launches_execute_the_resolved_form() {
         .to_string()
         .contains("unknown role 'reviewer'"));
 
+    // Settings a role contributes are validated like the node's own.
     fs::create_dir_all(settings.roles_dir()).expect("roles");
+    for (execution, expected) in [
+        ("reasoning_mode: turbo", "reasoning_mode must be one of"),
+        ("llm_profile: missing-profile", "Unknown profile reference"),
+    ] {
+        fs::write(
+            settings.roles_dir().join("reviewer.md"),
+            format!("---\ntype: Role\nexecution:\n  {execution}\n---\n\nPersona.\n"),
+        )
+        .expect("role");
+        let rejected = service.save_flow(SaveFlowRequest {
+            name: "review".to_string(),
+            content: FLOW.to_string(),
+        });
+        assert_ne!(rejected.status_code, 200, "{}", rejected.body);
+        assert!(
+            rejected.body.to_string().contains(expected),
+            "{}",
+            rejected.body
+        );
+    }
+    assert!(!settings.flows_dir.join("review").exists());
+
     fs::write(settings.roles_dir().join("reviewer.md"), ROLE).expect("role");
     let saved = service.save_flow(SaveFlowRequest {
         name: "review".to_string(),

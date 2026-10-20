@@ -1502,14 +1502,16 @@ impl AttractorApiService {
             Ok(flow) => flow,
             Err(error) => return flow_save_definition_error_response(error),
         };
+        // Validate the resolved form, so role-provided profiles are checked too.
+        let resolved = match resolve_flow_roles(&flow, &self.settings.roles_dir()) {
+            Ok(resolved) => resolved,
+            Err(error) => return flow_save_definition_error_response(error),
+        };
         if let Err(error) = spark_storage::settings::validate_profile_references(
             &self.settings.config_dir,
-            &json!(flow),
+            &json!(resolved),
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
-        }
-        if let Err(error) = resolve_flow_roles(&flow, &self.settings.roles_dir()) {
-            return flow_save_definition_error_response(error);
         }
         save_flow_request(&self.settings.flows_dir, req.name, &flow)
     }

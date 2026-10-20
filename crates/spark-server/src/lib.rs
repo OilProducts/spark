@@ -897,6 +897,14 @@ fn seed_packaged_files(
     let mut created = Vec::new();
     let mut updated = Vec::new();
     let mut skipped = Vec::new();
+    // Flow directories present before seeding. A packaged node file missing
+    // from one of them was deleted locally, so it stays deleted.
+    let present_flow_dirs = assets
+        .iter()
+        .filter_map(|(name, _)| name.strip_suffix("flow.md"))
+        .filter(|dir| flows_dir.join(dir).join("flow.md").is_file())
+        .map(|dir| flows_dir.join(dir))
+        .collect::<std::collections::BTreeSet<_>>();
 
     for (relative_name, content) in assets {
         let target_path = flows_dir.join(&relative_name);
@@ -911,6 +919,16 @@ fn seed_packaged_files(
 
         let packaged_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
         let existed = target_path.exists();
+        if !existed
+            && !force
+            && prior_hashes.contains_key(&relative_name)
+            && target_path
+                .parent()
+                .is_some_and(|dir| present_flow_dirs.contains(dir))
+        {
+            skipped.push(relative_name);
+            continue;
+        }
         if existed && !force {
             let current_hash = fs::read(&target_path)
                 .map(|content| format!("{:x}", Sha256::digest(content)))

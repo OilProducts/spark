@@ -339,6 +339,13 @@ fn init_respects_skip_and_force_counts() {
     )
     .expect("updated manifest");
 
+    // A node deleted in the editor stays deleted; a deleted flow is restored.
+    let deleted_node = flows_dir.join("examples/simple-linear/summarize.md");
+    fs::remove_file(&deleted_node).expect("delete node");
+    let deleted_flow = flows_dir.join("examples/parallel-review");
+    let deleted_flow_files = fs::read_dir(&deleted_flow).expect("flow dir").count();
+    fs::remove_dir_all(&deleted_flow).expect("delete flow");
+
     let second = run_with_args_and_env(
         [
             "spark-server",
@@ -351,9 +358,12 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(second.exit_code, 0);
-    assert!(second
-        .stdout
-        .ends_with(&format!("created=0 updated=1 skipped={}\n", flow_count - 1)));
+    assert!(second.stdout.ends_with(&format!(
+        "created={deleted_flow_files} updated=1 skipped={}\n",
+        flow_count - 1 - deleted_flow_files
+    )));
+    assert!(!deleted_node.exists());
+    assert!(deleted_flow.join("flow.md").is_file());
     assert_eq!(
         fs::read_to_string(&edited_flow).expect("edited flow"),
         "edited: true\n"
@@ -378,7 +388,8 @@ fn init_respects_skip_and_force_counts() {
     assert_eq!(forced.exit_code, 0);
     assert!(forced
         .stdout
-        .ends_with(&format!("created=0 updated={flow_count} skipped=0\n")));
+        .ends_with(&format!("created=1 updated={} skipped=0\n", flow_count - 1)));
+    assert!(deleted_node.is_file());
     assert_ne!(
         fs::read_to_string(&edited_flow).expect("forced flow"),
         "edited: true\n"
