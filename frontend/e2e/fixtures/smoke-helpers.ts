@@ -150,7 +150,7 @@ export async function gotoWithRegisteredProject(page: Page, projectPath: string)
 }
 
 export async function createFlowForSmokeTest(page: Page, flowPrefix: string): Promise<string> {
-  const flowName = `${flowPrefix}-${Date.now()}.yaml`
+  const flowName = `${flowPrefix}-${Date.now()}`
   const saveResponse = await page.request.post('/attractor/api/flows', {
     data: { name: flowName, content: smokeFixtureContent },
   })

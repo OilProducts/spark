@@ -260,7 +260,7 @@ export function NodeInspectorPanel({
                                         aria-describedby={`${id}-child-flow-help`}
                                         value={((selectedNode?.data?.flow_ref as string) || (selectedNode?.data?.['stack.child_flow_ref'] as string)) || ''}
                                         onChange={(event) => onPropertyChange('flow_ref', event.target.value)}
-                                        placeholder="child.yaml"
+                                        placeholder="child"
                                     />
                                 </div>
                                 <div className="space-y-1.5">

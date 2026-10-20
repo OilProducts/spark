@@ -172,8 +172,8 @@ describe('Editor sidebar manual refresh', () => {
         const user = userEvent.setup()
 
         fetchFlowListMock
-            .mockResolvedValueOnce(['alpha.yaml'])
-            .mockResolvedValueOnce(['alpha.yaml', 'beta.yaml'])
+            .mockResolvedValueOnce(['alpha'])
+            .mockResolvedValueOnce(['alpha', 'beta'])
 
         renderWithFlowProvider(<SidebarHarness />)
 
@@ -187,48 +187,16 @@ describe('Editor sidebar manual refresh', () => {
 
         await waitFor(() => {
             expect(saveFlowContentMock).toHaveBeenCalledWith(
-                'beta.yaml',
+                'beta',
                 expect.stringContaining('schema_version: "1.0"'),
             )
         })
         await waitFor(() => {
             expect(fetchFlowListMock).toHaveBeenCalledTimes(2)
-            expect(useStore.getState().activeFlow).toBe('beta.yaml')
+            expect(useStore.getState().activeFlow).toBe('beta')
         })
 
-        expect(screen.getByRole('button', { name: 'beta.yaml' })).toBeVisible()
-    })
-
-    it('preserves an explicit yml extension when creating a flow', async () => {
-        const user = userEvent.setup()
-
-        fetchFlowListMock
-            .mockResolvedValueOnce([])
-            .mockResolvedValueOnce(['team/review/new-flow.yml'])
-
-        renderWithFlowProvider(<SidebarHarness />)
-
-        await waitFor(() => {
-            expect(fetchFlowListMock).toHaveBeenCalledTimes(1)
-        })
-
-        await user.click(screen.getByRole('button', { name: 'Create flow' }))
-        await user.type(screen.getByTestId('shared-dialog-input'), 'team/review/new-flow.yml')
-        await user.click(screen.getByTestId('shared-dialog-confirm'))
-
-        await waitFor(() => {
-            expect(saveFlowContentMock).toHaveBeenCalledWith(
-                'team/review/new-flow.yml',
-                expect.stringContaining('title: "team/review/new-flow.yml"'),
-            )
-        })
-        expect(saveFlowContentMock).not.toHaveBeenCalledWith(
-            'team/review/new-flow.yml.yaml',
-            expect.any(String),
-        )
-        await waitFor(() => {
-            expect(useStore.getState().activeFlow).toBe('team/review/new-flow.yml')
-        })
+        expect(screen.getByRole('button', { name: 'beta' })).toBeVisible()
     })
 
     it('keeps delete-flow refresh behavior intact', async () => {

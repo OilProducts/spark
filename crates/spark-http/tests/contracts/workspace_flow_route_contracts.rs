@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use axum::body::{to_bytes, Body};
@@ -36,11 +35,11 @@ edges:
   - from: human_review
     to: done
 "#;
-    write_flow(&settings, "ops/review/inspectable.yaml", flow_content);
-    write_flow(&settings, "disabled.yaml", &simple_flow("disabled"));
+    write_flow(&settings, "ops/review/inspectable", flow_content);
+    write_flow(&settings, "disabled", &simple_flow("disabled"));
     set_flow_launch_policy(
         &settings.config_dir,
-        "ops/review/inspectable.yaml",
+        "ops/review/inspectable",
         LAUNCH_POLICY_AGENT_REQUESTABLE,
     )
     .expect("policy");
@@ -65,12 +64,12 @@ edges:
     .await;
     assert_eq!(agent.0, StatusCode::OK);
     assert_eq!(agent.1.as_array().expect("flows").len(), 1);
-    assert_eq!(agent.1[0]["name"], "ops/review/inspectable.yaml");
+    assert_eq!(agent.1[0]["name"], "ops/review/inspectable");
 
     let detail = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable.yaml?surface=agent",
+        "/workspace/api/flows/ops/review/inspectable?surface=agent",
         None,
     )
     .await;
@@ -81,38 +80,42 @@ edges:
     let raw = request_text(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable.yaml/raw?surface=agent",
+        "/workspace/api/flows/ops/review/inspectable/raw?surface=agent",
         None,
     )
     .await;
     assert_eq!(raw.0, StatusCode::OK);
     assert!(raw.2.starts_with("text/yaml"));
-    assert_eq!(raw.3, Some("ops/review/inspectable.yaml".to_string()));
-    assert_eq!(raw.1, flow_content);
+    assert_eq!(raw.3, Some("ops/review/inspectable".to_string()));
+    assert_eq!(
+        attractor_dsl::parse_flow_definition(&raw.1).expect("raw flow"),
+        attractor_dsl::read_flow_dir(&settings.flows_dir.join("ops/review/inspectable"))
+            .expect("stored flow")
+    );
 
     let validation = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/ops/review/inspectable.yaml/validate",
+        "/workspace/api/flows/ops/review/inspectable/validate",
         None,
     )
     .await;
     assert_eq!(validation.0, StatusCode::OK);
-    assert_eq!(validation.1["name"], "ops/review/inspectable.yaml");
+    assert_eq!(validation.1["name"], "ops/review/inspectable");
     assert_eq!(validation.1["status"], "ok");
 
     let policy = request_json(
         app,
         "PUT",
-        "/workspace/api/flows/ops/review/inspectable.yaml/launch-policy",
+        "/workspace/api/flows/ops/review/inspectable/launch-policy",
         Some(json!({"launch_policy": "trigger_only", "expected_revision": detail.1["revision"]})),
     )
     .await;
     assert_eq!(policy.0, StatusCode::OK);
-    assert_eq!(policy.1["name"], "ops/review/inspectable.yaml");
+    assert_eq!(policy.1["name"], "ops/review/inspectable");
     assert_eq!(policy.1["launch_policy"], "trigger_only");
     assert_eq!(
-        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable.yaml")
+        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable")
             .expect("stored")
             .launch_policy
             .as_deref(),
@@ -124,8 +127,8 @@ edges:
 async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and_json() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "hidden.yaml", &simple_flow("hidden"));
-    set_flow_launch_policy(&settings.config_dir, "hidden.yaml", "trigger_only").expect("policy");
+    write_flow(&settings, "hidden", &simple_flow("hidden"));
+    set_flow_launch_policy(&settings.config_dir, "hidden", "trigger_only").expect("policy");
     let app = build_app(settings);
 
     let invalid_surface = request_json(
@@ -141,20 +144,14 @@ async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and
         json!({"detail": "Flow surface must be 'human' or 'agent'."})
     );
 
-    let missing = request_json(
-        app.clone(),
-        "GET",
-        "/workspace/api/flows/missing.yaml",
-        None,
-    )
-    .await;
+    let missing = request_json(app.clone(), "GET", "/workspace/api/flows/missing", None).await;
     assert_eq!(missing.0, StatusCode::NOT_FOUND);
-    assert_eq!(missing.1, json!({"detail": "Unknown flow: missing.yaml"}));
+    assert_eq!(missing.1, json!({"detail": "Unknown flow: missing"}));
 
     let escaped = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/../escape.yaml/raw",
+        "/workspace/api/flows/../escape/raw",
         None,
     )
     .await;
@@ -167,17 +164,17 @@ async fn workspace_flow_routes_return_json_errors_for_surface_missing_safety_and
     let hidden = request_json(
         app.clone(),
         "GET",
-        "/workspace/api/flows/hidden.yaml/raw?surface=agent",
+        "/workspace/api/flows/hidden/raw?surface=agent",
         None,
     )
     .await;
     assert_eq!(hidden.0, StatusCode::NOT_FOUND);
-    assert_eq!(hidden.1, json!({"detail": "Unknown flow: hidden.yaml"}));
+    assert_eq!(hidden.1, json!({"detail": "Unknown flow: hidden"}));
 
     let malformed = request_text(
         app,
         "PUT",
-        "/workspace/api/flows/hidden.yaml/launch-policy",
+        "/workspace/api/flows/hidden/launch-policy",
         Some("{not-json"),
     )
     .await;
@@ -241,9 +238,11 @@ async fn request_text(
 }
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(path, content).expect("flow");
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
+    )
+    .expect("write flow");
 }
 
 fn simple_flow(id: &str) -> String {
@@ -277,13 +276,13 @@ fn settings(root: &Path) -> SparkSettings {
 async fn flow_policy_adapter_requires_revision_and_rejects_stale_clients() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    write_flow(&settings, "policy.yaml", &simple_flow("policy"));
+    write_flow(&settings, "policy", &simple_flow("policy"));
     let app = build_app(settings);
-    let detail = request_json(app.clone(), "GET", "/workspace/api/flows/policy.yaml", None).await;
+    let detail = request_json(app.clone(), "GET", "/workspace/api/flows/policy", None).await;
     let missing = request_json(
         app.clone(),
         "PUT",
-        "/workspace/api/flows/policy.yaml/launch-policy",
+        "/workspace/api/flows/policy/launch-policy",
         Some(json!({"launch_policy":"agent_requestable"})),
     )
     .await;
@@ -293,7 +292,7 @@ async fn flow_policy_adapter_requires_revision_and_rejects_stale_clients() {
     let saved = request_json(
         app.clone(),
         "PUT",
-        "/workspace/api/flows/policy.yaml/launch-policy",
+        "/workspace/api/flows/policy/launch-policy",
         Some(payload.clone()),
     )
     .await;
@@ -301,12 +300,12 @@ async fn flow_policy_adapter_requires_revision_and_rejects_stale_clients() {
     let stale = request_json(
         app.clone(),
         "PUT",
-        "/workspace/api/flows/policy.yaml/launch-policy",
+        "/workspace/api/flows/policy/launch-policy",
         Some(payload),
     )
     .await;
     assert_eq!(stale.0, StatusCode::CONFLICT);
-    let detail = request_json(app, "GET", "/workspace/api/flows/policy.yaml", None).await;
+    let detail = request_json(app, "GET", "/workspace/api/flows/policy", None).await;
     assert_eq!(detail.1["revision"], saved.1["revision"]);
     assert_eq!(detail.1["launch_policy"], "agent_requestable");
 }

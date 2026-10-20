@@ -26,6 +26,32 @@
             "string",
             "null"
           ]
+        },
+        "reasoning_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking_budget_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -71,6 +97,32 @@
         "reasoning_effort": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "reasoning_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking_budget_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
             "null"
           ]
         }
@@ -212,6 +264,13 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "role": {
+          "description": "Role file (`roles/<name>.md`) whose persona and execution defaults the loader merges into this `agent_task` node. Only the authored form sets it.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "runtime": {
@@ -605,6 +664,23 @@
         "goal_gate": {
           "type": "boolean"
         },
+        "max_entries": {
+          "description": "Maximum number of times routing may enter this node within one run. Exceeding it fails the run instead of looping (failure-edge convergence guard). Absent means the engine default.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "recovery_policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RecoveryPolicy"
+            }
+          ],
+          "description": "Behavior when this node was started but not checkpointed before a restart."
+        },
         "retry_target": {
           "type": [
             "string",
@@ -619,6 +695,13 @@
         }
       },
       "type": "object"
+    },
+    "RecoveryPolicy": {
+      "enum": [
+        "rerun",
+        "pause"
+      ],
+      "type": "string"
     },
     "RetryConfig": {
       "properties": {

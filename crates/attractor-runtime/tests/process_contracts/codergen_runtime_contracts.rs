@@ -553,8 +553,8 @@ nodes:
 #[test]
 fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../spark-assets/assets/flows/software-development/implement-change.yaml");
-    let flow = FlowDefinition::from_yaml_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        .join("../spark-assets/assets/flows/software-development/implement-change");
+    let flow = attractor_dsl::read_flow_dir(&path).unwrap();
     let graph = attractor_runtime::flow_runtime::flow_graph_for_handler_compat(&flow);
     let logs_root = tempdir().unwrap();
     let mut codergen = RuntimeCodergen::simulation(graph, Some(logs_root.path().to_path_buf()));

@@ -25,6 +25,7 @@ tower = { version = "0.5", features = ["util"] }
 unified-llm-adapter = { path = "../unified-llm-adapter" }
 
 [dev-dependencies]
+attractor-dsl = { path = "../attractor-dsl" }
 attractor-core = { path = "../attractor-core" }
 attractor-runtime = { path = "../attractor-runtime" }
 futures-util = "0.3"

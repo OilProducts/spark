@@ -24,7 +24,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
     let other_path = temp.path().join("other");
     fs::create_dir_all(&project_path).expect("project dir");
     fs::create_dir_all(&other_path).expect("other dir");
-    write_flow(&settings, "ops/run.yaml", simple_flow());
+    write_flow(&settings, "ops/run", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -39,7 +39,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/run.yaml",
+            "flow_name": "ops/run",
             "summary": "Launch from route.",
             "conversation_handle": "amber-anchor",
             "project_path": project_path.to_string_lossy(),
@@ -73,17 +73,19 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         json!(["body", "flow_name"])
     );
 
-    write_flow(
-        &settings,
-        "ops/invalid.yaml",
-        "schema_version: '1'\nid: broken\nnodes: [",
-    );
+    let invalid_dir = settings.flows_dir.join("ops/invalid");
+    fs::create_dir_all(&invalid_dir).expect("invalid flow dir");
+    fs::write(
+        invalid_dir.join("flow.md"),
+        "---\ntype: Flow\nid: broken\nnodes: [\n---\n",
+    )
+    .expect("invalid flow");
     let invalid_launch = request_json(
         app.clone(),
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/invalid.yaml",
+            "flow_name": "ops/invalid",
             "summary": "Launch invalid YAML.",
             "conversation_handle": "amber-anchor"
         })),
@@ -189,7 +191,7 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
             "flow_source_mode": "snapshot",
             "conversation_handle": "amber-anchor",
             "project_path": project_path.to_string_lossy(),
-            "flow_name": "ignored.yaml"
+            "flow_name": "ignored"
         })),
     )
     .await;
@@ -220,12 +222,12 @@ async fn run_routes_launch_retry_continue_and_preserve_route_validation() {
         .as_array()
         .expect("launches")
         .iter()
-        .any(|entry| entry["flow_name"] == "ops/run.yaml" && entry["status"] == "launched"));
+        .any(|entry| entry["flow_name"] == "ops/run" && entry["status"] == "launched"));
     assert!(!snapshot["flow_launches"]
         .as_array()
         .expect("launches")
         .iter()
-        .any(|entry| entry["flow_name"] == "ops/invalid.yaml"));
+        .any(|entry| entry["flow_name"] == "ops/invalid"));
 }
 
 #[tokio::test]
@@ -234,7 +236,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
     let settings = settings(temp.path());
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
-    write_flow(&settings, "ops/rust-boundary.yaml", simple_flow());
+    write_flow(&settings, "ops/rust-boundary", simple_flow());
     let calls = Arc::new(Mutex::new(Vec::new()));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(RecordingAdapter::new(
         "openai_compatible",
@@ -254,7 +256,7 @@ async fn run_launch_route_executes_codergen_through_injected_rust_llm_client() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/rust-boundary.yaml",
+            "flow_name": "ops/rust-boundary",
             "summary": "Launch through the Rust adapter boundary.",
             "project_path": project_path.to_string_lossy(),
             "model": "gpt-route-boundary",
@@ -344,7 +346,7 @@ async fn request_raw(
 
 fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "ops/retry.yaml".to_string();
+    record.flow_name = "ops/retry".to_string();
     record.status = "failed".to_string();
     record.last_error = "previous failure".to_string();
     RunStore::for_settings(settings)
@@ -360,7 +362,7 @@ fn seed_failed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) 
 
 fn seed_completed_run(settings: &SparkSettings, run_id: &str, project_path: &Path) {
     let mut record = RunRecord::new(run_id, project_path.to_string_lossy());
-    record.flow_name = "ops/source.yaml".to_string();
+    record.flow_name = "ops/source".to_string();
     record.status = "completed".to_string();
     RunStore::for_settings(settings)
         .create_run(CreateRunRequest {
@@ -437,9 +439,11 @@ fn seed_conversation(settings: &SparkSettings, project_path: &str, conversation_
 }
 
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow dir");
-    fs::write(path, content).expect("flow");
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
+    )
+    .expect("write flow");
 }
 
 fn simple_flow() -> &'static str {

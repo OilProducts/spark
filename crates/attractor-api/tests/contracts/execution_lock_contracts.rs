@@ -416,18 +416,17 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     fs::create_dir_all(&settings.config_dir).unwrap();
     let project = temp.path().join("repo");
     init_git_repo(&project);
-    let child_path = project.join("child.yaml");
-    fs::write(
-        &child_path,
-        tool_flow(
+    // An unnamed (inline) parent resolves flow_ref against the flows root.
+    write_flow(
+        &settings.flows_dir.join("child"),
+        &tool_flow(
             "child",
             &format!(
                 "({}); test -f retry-child",
                 wait_for_release_file_command("release-child")
             ),
         ),
-    )
-    .unwrap();
+    );
     let parent_flow = format!(
         r#"schema_version: '1'
 id: parent
@@ -436,7 +435,7 @@ nodes:
   child:
     kind: subflow
     runtime: {{ error_policy: continue }}
-    config: {{ kind: subflow, flow_ref: child.yaml }}
+    config: {{ kind: subflow, flow_ref: child }}
   wait:
     kind: tool
     config: {{ kind: tool, command: '{}' }}
@@ -518,4 +517,12 @@ edges:
         read_status(&settings, &child_id) == "completed"
             && read_lock(&settings, &child_id).is_some_and(|l| l.state == "released")
     });
+}
+
+fn write_flow(dir: &Path, yaml: &str) {
+    attractor_dsl::write_flow_dir(
+        dir,
+        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
+    )
+    .expect("write flow");
 }

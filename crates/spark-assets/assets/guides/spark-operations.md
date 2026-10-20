@@ -52,40 +52,40 @@ curl http://127.0.0.1:8000/workspace/api/flows?surface=agent
 Describe one flow:
 
 ```bash
-spark flow describe --flow examples/simple-linear.yaml --text
+spark flow describe --flow examples/simple-linear --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear.yaml?surface=agent
+curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear?surface=agent
 ```
 
 Fetch raw YAML for a stored flow:
 
 ```bash
-spark flow get --flow examples/simple-linear.yaml --text
+spark flow get --flow examples/simple-linear --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear.yaml/raw?surface=agent
+curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/raw?surface=agent
 ```
 
-Validate a file you are editing directly:
+Validate a flow directory you are editing directly:
 
 ```bash
-spark flow validate --file /absolute/path/to/flow.yaml --text
+spark flow validate --file /absolute/path/to/flows/my-flow --text
 ```
 
 Validate a stored flow through the server:
 
 ```bash
-spark flow validate --flow examples/simple-linear.yaml --text
+spark flow validate --flow examples/simple-linear --text
 ```
 
 ```bash
-curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear.yaml/validate
+curl http://127.0.0.1:8000/workspace/api/flows/examples/simple-linear/validate
 ```
 
-Format a file you are editing directly:
+Format a single-document flow YAML file, such as one you will convert or paste into the editor:
 
 ```bash
 spark flow format --file /absolute/path/to/flow.yaml
@@ -106,7 +106,7 @@ Launch a flow immediately inside the active conversation:
 ```bash
 spark run launch \
   --conversation amber-otter \
-  --flow examples/simple-linear.yaml \
+  --flow examples/simple-linear \
   --summary "Inspect the repo and summarize next steps."
 ```
 
@@ -115,7 +115,7 @@ curl -X POST http://127.0.0.1:8000/workspace/api/runs/launch \
   -H 'Content-Type: application/json' \
   -d '{
     "conversation_handle": "amber-otter",
-    "flow_name": "examples/simple-linear.yaml",
+    "flow_name": "examples/simple-linear",
     "summary": "Inspect the repo and summarize next steps."
   }'
 ```
@@ -124,7 +124,7 @@ Launch a detached flow immediately against an explicit project:
 
 ```bash
 spark run launch \
-  --flow examples/simple-linear.yaml \
+  --flow examples/simple-linear \
   --summary "Inspect the repo and summarize next steps." \
   --project /absolute/path/to/project
 ```
@@ -133,7 +133,7 @@ spark run launch \
 curl -X POST http://127.0.0.1:8000/workspace/api/runs/launch \
   -H 'Content-Type: application/json' \
   -d '{
-    "flow_name": "examples/simple-linear.yaml",
+    "flow_name": "examples/simple-linear",
     "summary": "Inspect the repo and summarize next steps.",
     "project_path": "/absolute/path/to/project"
   }'
@@ -143,7 +143,7 @@ Launch with explicit goal text or launch context:
 
 ```bash
 spark run launch \
-  --flow examples/implement-review-loop.yaml \
+  --flow examples/implement-review-loop \
   --summary "Implement the approved change." \
   --project /absolute/path/to/project \
   --goal "Add the requested endpoint and tests." \
@@ -158,7 +158,7 @@ Source-checkout launch against the development backend:
 
 ```bash
 SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- run launch \
-  --flow examples/simple-linear.yaml \
+  --flow examples/simple-linear \
   --summary "Inspect the repo and summarize next steps." \
   --project "$PWD" \
   --launch-context-json '{"context.request.summary":"Inspect the checkout."}'
@@ -169,7 +169,7 @@ Launch a run from a conversation (agents use this; it launches immediately, prin
 ```bash
 spark convo run-request \
   --conversation amber-otter \
-  --flow software-development/spec-implementation/implement-spec.yaml \
+  --flow software-development/spec-implementation/implement-spec \
   --summary "Draft the implementation flow for the approved spec."
 ```
 
@@ -178,7 +178,7 @@ curl -X POST \
   http://127.0.0.1:8000/workspace/api/conversations/by-handle/amber-otter/flow-run-requests \
   -H 'Content-Type: application/json' \
   -d '{
-    "flow_name": "software-development/spec-implementation/implement-spec.yaml",
+    "flow_name": "software-development/spec-implementation/implement-spec",
     "summary": "Draft the implementation flow for the approved spec."
   }'
 ```
@@ -246,7 +246,7 @@ spark run continue \
   --run <run_id> \
   --start-node run_milestone \
   --flow-source-mode flow_name \
-  --flow examples/simple-linear.yaml \
+  --flow examples/simple-linear \
   --conversation amber-otter
 ```
 
@@ -257,7 +257,7 @@ curl -X POST http://127.0.0.1:8000/workspace/api/runs/<run_id>/continue \
     "conversation_handle": "amber-otter",
     "start_node": "run_milestone",
     "flow_source_mode": "flow_name",
-    "flow_name": "examples/simple-linear.yaml"
+    "flow_name": "examples/simple-linear"
   }'
 ```
 

@@ -194,7 +194,7 @@ fn owned_run(
     spark_storage::workspace_missions::MissionRepository::new(&mission_root(settings, project))
         .transact::<WorkspaceError>(mission_id, |value| {
             let mut value = value.unwrap();
-            value["runs"].as_array_mut().unwrap().push(json!({"run_id":run_id,"flow_name":"work/seeded.yaml","summary":"Seeded work","launched_at":"t","status":"running"}));
+            value["runs"].as_array_mut().unwrap().push(json!({"run_id":run_id,"flow_name":"work/seeded","summary":"Seeded work","launched_at":"t","status":"running"}));
             Ok(value)
         })
         .unwrap();
@@ -252,7 +252,7 @@ fn legacy_records_load_and_unstarted_finished_cards_are_archived() {
             "id": id, "project_id": project_id, "project_path": harness.project,
             "created_at": format!("2026-01-01 {id}"), "updated_at": "2026-01-01", "revision": 1,
             "fields": {"title": id, "description": "Kept", "stage": stage, "archived": false,
-                "reaction_flow": "missions/react.yaml", "hooks": [{"on": "run.completed", "do": "ignore"}],
+                "reaction_flow": "missions/react", "hooks": [{"on": "run.completed", "do": "ignore"}],
                 "budget": {"concurrent_runs": 2, "total_runs": 5, "reactions": 10}},
             "activity": [{"revision": 1, "actor": "human", "note": ""}],
             "state": "old state", "execution": {"substate": "attention", "reason": "held"},
@@ -525,8 +525,8 @@ fn start_snapshots_the_playbook_into_the_record_and_the_frame() {
 #[test]
 fn events_during_a_turn_are_delivered_as_one_next_turn() {
     let harness = Harness::new();
-    harness.agent_requestable("work/ok.yaml", simple_flow());
-    harness.agent_requestable("work/fail.yaml", &tool_flow("exit 1"));
+    harness.agent_requestable("work/ok", simple_flow());
+    harness.agent_requestable("work/fail", &tool_flow("exit 1"));
     let mission = harness.create(json!({"title": "Ship", "description": "Deliver"}));
     harness
         .missions
@@ -534,11 +534,9 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
         .unwrap();
     harness.wait_turns(1);
     // The agent launches two runs during its first turn.
-    let first = harness
-        .launch(&mission.id, "work/ok.yaml", "Build it")
-        .unwrap();
+    let first = harness.launch(&mission.id, "work/ok", "Build it").unwrap();
     let second = harness
-        .launch(&mission.id, "work/fail.yaml", "Break it")
+        .launch(&mission.id, "work/fail", "Break it")
         .unwrap();
     let launched = harness.get(&mission.id);
     let roster: Vec<_> = launched
@@ -555,8 +553,8 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
     assert_eq!(
         roster,
         [
-            (first.as_str(), "work/ok.yaml", "Build it"),
-            (second.as_str(), "work/fail.yaml", "Break it")
+            (first.as_str(), "work/ok", "Build it"),
+            (second.as_str(), "work/fail", "Break it")
         ]
     );
     let store = attractor_runtime::RunStore::for_settings(&harness.settings);
@@ -592,10 +590,10 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
     assert_eq!(lines.len(), 3, "{}", prompts[1]);
     assert_eq!(
         lines[0],
-        format!("Run {first} (work/ok.yaml, \"Build it\") ended completed.")
+        format!("Run {first} (work/ok, \"Build it\") ended completed.")
     );
     assert!(lines[1].starts_with(&format!(
-        "Run {second} (work/fail.yaml, \"Break it\") ended failed"
+        "Run {second} (work/fail, \"Break it\") ended failed"
     )));
     assert_eq!(lines[2], "User: Prefer the smaller fix");
     let mission = harness.get(&mission.id);
@@ -614,8 +612,8 @@ fn events_during_a_turn_are_delivered_as_one_next_turn() {
 #[test]
 fn launches_over_budget_or_outside_the_catalog_are_refused() {
     let harness = Harness::new();
-    harness.agent_requestable("work/slow.yaml", &tool_flow("sleep 30"));
-    write_flow(&harness.settings, "work/private.yaml", simple_flow());
+    harness.agent_requestable("work/slow", &tool_flow("sleep 30"));
+    write_flow(&harness.settings, "work/private", simple_flow());
     let mission = harness
         .create(json!({"title": "Budgeted", "budget": {"concurrent_runs": 1, "total_runs": 2}}));
     harness
@@ -624,18 +622,14 @@ fn launches_over_budget_or_outside_the_catalog_are_refused() {
         .unwrap();
     harness.wait_turns(1);
     let refused = harness
-        .launch(&mission.id, "work/private.yaml", "Nope")
+        .launch(&mission.id, "work/private", "Nope")
         .unwrap_err();
     assert!(
         refused.to_string().contains("not agent-requestable"),
         "{refused}"
     );
-    harness
-        .launch(&mission.id, "work/slow.yaml", "One")
-        .unwrap();
-    let refused = harness
-        .launch(&mission.id, "work/slow.yaml", "Two")
-        .unwrap_err();
+    harness.launch(&mission.id, "work/slow", "One").unwrap();
+    let refused = harness.launch(&mission.id, "work/slow", "Two").unwrap_err();
     assert!(
         refused.to_string().contains("concurrent_runs (1)"),
         "{refused}"
@@ -648,7 +642,7 @@ fn launches_over_budget_or_outside_the_catalog_are_refused() {
     harness.agent.release(1);
     assert_eq!(canceled.status, MissionStatus::Closed);
     let refused = harness
-        .launch(&mission.id, "work/slow.yaml", "Three")
+        .launch(&mission.id, "work/slow", "Three")
         .unwrap_err();
     assert!(refused.to_string().contains("closed"), "{refused}");
 }
@@ -660,7 +654,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
     let entered = harness._temp.path().join("entered-canceled-run");
     // Keep the tool in flight until cancellation; expire the gate if the test fails.
     harness.agent_requestable(
-        "work/slow.yaml",
+        "work/slow",
         &tool_flow(&format!(
             "touch '{}'; for i in $(seq 1 600); do [ -f '{}' ] && exit 0; sleep 0.1; done; exit 1",
             entered.display(),
@@ -673,9 +667,7 @@ fn cancel_stops_owned_runs_and_closes_the_mission() {
         .start(&harness.project, &mission.id)
         .unwrap();
     harness.wait_turns(1);
-    let run = harness
-        .launch(&mission.id, "work/slow.yaml", "Long")
-        .unwrap();
+    let run = harness.launch(&mission.id, "work/slow", "Long").unwrap();
     wait_for("the tool to enter its gate", || entered.exists());
     harness.agent.release(1);
     let canceled = harness
@@ -817,7 +809,7 @@ fn recovery_fails_stale_turns_and_delivers_missing_terminal_events() {
     harness.wait_turns(2);
     assert_eq!(
         harness.agent.prompts()[1],
-        "Run run-lost (work/seeded.yaml, \"Seeded work\") ended failed."
+        "Run run-lost (work/seeded, \"Seeded work\") ended failed."
     );
     harness.wait_idle(&mission.id);
     let mission = harness.get(&mission.id);
@@ -857,14 +849,14 @@ fn missions_stay_inside_their_project() {
 #[test]
 fn ordinary_conversations_launch_directly_without_mission_integration() {
     let harness = Harness::new();
-    harness.agent_requestable("ops/review.yaml", simple_flow());
+    harness.agent_requestable("ops/review", simple_flow());
     seed_conversation(&harness.settings, &harness.project, "conversation-task");
     let mission = harness.create(json!({"title": "Unrelated"}));
     let response = WorkspaceConversationService::new(harness.settings.clone())
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".into(),
+                flow_name: "ops/review".into(),
                 summary: "Execute work".into(),
                 execution_profile_id: Some("native".into()),
                 ..Default::default()
@@ -1032,7 +1024,7 @@ fn question_ids_are_scoped_to_owning_runs_across_descendants_and_roots() {
 fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
     for status in ["canceled", "failed", "validation_error", "completed"] {
         let harness = Harness::new();
-        harness.agent_requestable("work/next.yaml", simple_flow());
+        harness.agent_requestable("work/next", simple_flow());
         let mission = harness.create(json!({
             "title": "Continue after termination", "budget": {"concurrent_runs": 1}
         }));
@@ -1076,7 +1068,7 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
         harness.missions.deliver_run_events("child").unwrap();
         assert_eq!(harness.get(&mission.id).runs[0].status, "waiting");
         assert!(harness
-            .launch(&mission.id, "work/next.yaml", "Blocked")
+            .launch(&mission.id, "work/next", "Blocked")
             .unwrap_err()
             .to_string()
             .contains("concurrent_runs (1)"));
@@ -1112,7 +1104,7 @@ fn terminal_roots_with_unanswered_descendant_gates_release_capacity() {
             .unwrap()
             .is_none());
         let next = harness
-            .launch(&mission.id, "work/next.yaml", "Continue")
+            .launch(&mission.id, "work/next", "Continue")
             .unwrap();
         harness.settle(&next);
         harness.agent.release(1);
@@ -1338,12 +1330,12 @@ fn the_offered_question_is_one_still_unanswered() {
 fn answering_a_live_child_gate_resumes_the_run_tree() {
     let harness = Harness::new();
     harness.agent_requestable(
-        "work/parent.yaml",
+        "work/parent",
         &json!({
             "schema_version":"1", "id":"parent",
             "nodes": {
                 "start":{"kind":"start"},
-                "child":{"kind":"subflow","config":{"kind":"subflow","flow_ref":"child.yaml"}},
+                "child":{"kind":"subflow","config":{"kind":"subflow","flow_ref":"child"}},
                 "done":{"kind":"exit"}
             },
             "edges":[{"from":"start","to":"child"},{"from":"child","to":"done"}]
@@ -1352,7 +1344,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     );
     write_flow(
         &harness.settings,
-        "work/child.yaml",
+        "work/child",
         &json!({
             "schema_version":"1", "id":"child",
             "nodes": {
@@ -1377,7 +1369,7 @@ fn answering_a_live_child_gate_resumes_the_run_tree() {
     .create_flow_run_request_by_handle(
         &harness.handle(&mission.id),
         FlowRunRequestCreateByHandleRequest {
-            flow_name: "work/parent.yaml".into(),
+            flow_name: "work/parent".into(),
             summary: "Handle child gate".into(),
             execution_profile_id: Some("native".into()),
             ..Default::default()

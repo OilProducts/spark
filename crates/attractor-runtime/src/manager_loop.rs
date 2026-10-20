@@ -376,41 +376,37 @@ fn autostart_child_pipeline(
     } else {
         resolve_child_workdir_path(context, &runtime.run_workdir, &authored_child_workdir)
     };
-    let child_flow_path = resolve_child_flow_path(
-        &child_flow_ref,
-        &child_workdir_path,
-        context,
-        !authored_child_workdir.is_empty(),
-    );
-    if !child_flow_path.exists() {
+    let Some(child_flow_path) =
+        resolve_child_flow_path(&child_flow_ref, &child_workdir_path, context)
+    else {
         return Ok(Some(fail_outcome(format!(
-            "Child flow file not found: {}",
+            "Invalid child flow_ref: {child_flow_ref}"
+        ))));
+    };
+    if !child_flow_path.join(attractor_dsl::FLOW_FILE).is_file() {
+        return Ok(Some(fail_outcome(format!(
+            "Child flow not found: {}",
             child_flow_path.display()
         ))));
     }
 
-    let child_source = match fs::read_to_string(&child_flow_path) {
+    // Children execute the resolved form, like root launches.
+    let roles_dir = context_path(context, "internal.roles_dir").unwrap_or_default();
+    let child_flow = match attractor_dsl::read_flow_dir(&child_flow_path)
+        .and_then(|flow| attractor_dsl::resolve_flow_roles(&flow, &roles_dir))
+    {
+        Ok(flow) => flow,
+        Err(error) => {
+            return Ok(Some(fail_outcome(format!(
+                "Child flow is invalid: {}",
+                error.detail()
+            ))));
+        }
+    };
+    let child_source = match attractor_dsl::flow_yaml(&child_flow) {
         Ok(source) => source,
-        Err(error) => {
-            return Ok(Some(fail_outcome(format!(
-                "Unable to read child flow file: {error}"
-            ))));
-        }
+        Err(error) => return Ok(Some(fail_outcome(error.detail().to_string()))),
     };
-    let child_flow = match FlowDefinition::from_yaml_str(&child_source) {
-        Ok(flow) => flow.normalize(),
-        Err(error) => {
-            return Ok(Some(fail_outcome(format!(
-                "Failed to parse child flow YAML: {error}"
-            ))));
-        }
-    };
-    if let Err(error) = child_flow.validate() {
-        return Ok(Some(fail_outcome(format!(
-            "Child flow is invalid: {}",
-            error.detail
-        ))));
-    }
 
     let child_flow_name = (!child_flow.title.trim().is_empty())
         .then(|| child_flow.title.trim().to_string())
@@ -1480,23 +1476,16 @@ fn git_common_dir(dir: &Path) -> Option<PathBuf> {
     fs::canonicalize(&text).ok()
 }
 
+/// Flow refs resolve against the directory containing the parent flow, as in
+/// preview; the child's execution workdir never changes the base.
 fn resolve_child_flow_path(
     child_flow_ref: &str,
     child_workdir_path: &Path,
     context: &ContextMap,
-    child_workdir_is_authored: bool,
-) -> PathBuf {
-    let child_flow_path = PathBuf::from(child_flow_ref);
-    if child_flow_path.is_absolute() {
-        return child_flow_path;
-    }
-    let base_dir = if child_workdir_is_authored {
-        child_workdir_path.to_path_buf()
-    } else {
-        context_path(context, "internal.flow_source_dir")
-            .unwrap_or_else(|| child_workdir_path.to_path_buf())
-    };
-    resolve_path_from_base(child_flow_path, &base_dir)
+) -> Option<PathBuf> {
+    let base_dir = context_path(context, "internal.flow_source_dir")
+        .unwrap_or_else(|| child_workdir_path.to_path_buf());
+    attractor_dsl::resolve_flow_ref(&base_dir, child_flow_ref)
 }
 
 fn resolve_path_from_base(raw_path: impl AsRef<Path>, base_dir: &Path) -> PathBuf {

@@ -314,27 +314,25 @@ fn steer_targets_agent_node_of_child_run() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.flows_dir).unwrap();
-    fs::write(
-        settings.flows_dir.join("child.yaml"),
-        agent_flow("steer_child"),
-    )
-    .unwrap();
-    fs::write(
-        settings.flows_dir.join("parent.yaml"),
+    write_flow(
+        &settings.flows_dir.join("child"),
+        &agent_flow("steer_child"),
+    );
+    write_flow(
+        &settings.flows_dir.join("parent"),
         r#"schema_version: "1"
 id: steer_parent
 nodes:
   start: { kind: start }
   branch:
     kind: subflow
-    config: { kind: subflow, flow_ref: child.yaml }
+    config: { kind: subflow, flow_ref: child }
   done: { kind: exit }
 edges:
 - { from: start, to: branch }
 - { from: branch, to: done }
 "#,
-    )
-    .unwrap();
+    );
     let service = service(&settings);
     let log = log_path("SPARK_FAKE_CODEX_APP_SERVER_LOG");
     start(
@@ -343,7 +341,7 @@ edges:
         "steer-parent",
         "codex",
         PipelineStartRequest {
-            flow_name: Some("parent.yaml".into()),
+            flow_name: Some("parent".into()),
             ..Default::default()
         },
     );
@@ -899,4 +897,12 @@ fn steer_rejects_claude_code_without_stdin_control() {
 
     fs::write(log_path("SPARK_FAKE_CLAUDE_CODE_RELEASE"), "").unwrap();
     wait_for_status(&settings, "steer-claude-legacy", "completed");
+}
+
+fn write_flow(dir: &Path, yaml: &str) {
+    attractor_dsl::write_flow_dir(
+        dir,
+        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
+    )
+    .expect("write flow");
 }

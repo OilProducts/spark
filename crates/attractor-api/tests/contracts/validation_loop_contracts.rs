@@ -205,32 +205,30 @@ fn packaged_software_development_flows_validate_cleanly() {
     let flows = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../spark-assets/assets/flows/software-development");
     let mut seen = 0;
-    let mut stack = vec![flows];
+    let mut stack = vec![flows.clone()];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).expect("read flows dir") {
             let path = entry.expect("entry").path();
             if path.is_dir() {
                 stack.push(path);
-                continue;
             }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("yaml") {
-                continue;
-            }
-            let source = fs::read_to_string(&path).expect("read flow");
-            let preview = attractor_api::preview_named_flow_source(
-                path.parent().expect("parent"),
-                path.file_name().expect("name").to_str().expect("utf8"),
-                &source,
-            );
-            assert_eq!(
-                preview.status_code,
-                200,
-                "{} failed validation: {:?}",
-                path.display(),
-                preview.body,
-            );
-            seen += 1;
         }
+        if !dir.join("flow.md").is_file() {
+            continue;
+        }
+        let name = dir
+            .strip_prefix(&flows)
+            .expect("relative")
+            .to_str()
+            .expect("utf8");
+        let source = attractor_api::read_named_flow_source(&flows, name).expect("read flow");
+        let preview = attractor_api::preview_named_flow_source(&flows, name, &source.content);
+        assert_eq!(
+            preview.status_code, 200,
+            "{name} failed validation: {:?}",
+            preview.body,
+        );
+        seen += 1;
     }
     assert!(seen >= 10, "expected the packaged flow library, saw {seen}");
 }
