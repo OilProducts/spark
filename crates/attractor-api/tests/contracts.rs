@@ -12,6 +12,8 @@ mod pipeline_control_contracts;
 mod pipeline_inspection_contracts;
 #[path = "contracts/pipeline_lifecycle_contracts.rs"]
 mod pipeline_lifecycle_contracts;
+#[path = "contracts/pipeline_steer_contracts.rs"]
+mod pipeline_steer_contracts;
 #[path = "contracts/preview_route_contracts.rs"]
 mod preview_route_contracts;
 #[path = "contracts/run_recovery_contracts.rs"]

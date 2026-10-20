@@ -307,6 +307,20 @@ impl CodergenSessionInterventionBroker {
         }
     }
 
+    /// Sessions currently accepting steering, keyed by run or not.
+    pub fn active_sessions(&self) -> Vec<ActiveCodergenSession> {
+        let state = self
+            .inner
+            .lock()
+            .expect("codergen intervention broker lock");
+        state
+            .active
+            .values()
+            .chain(state.unkeyed_active.values())
+            .map(|entry| entry.session.clone())
+            .collect()
+    }
+
     pub fn request_child_intervention(
         &self,
         request: CodergenChildInterventionRequest,
@@ -433,24 +447,31 @@ impl CodergenSessionInterventionBroker {
                 "Active Rust codergen session is no longer accepting steering.",
             );
         }
-        let is_codex_app_server = active.provider.trim().eq_ignore_ascii_case("codex")
-            && normalized_optional(active.llm_profile.as_deref()).is_none();
+        let provider = active.provider.trim();
+        let (delivery_mode, message) = if provider.eq_ignore_ascii_case("codex")
+            && normalized_optional(active.llm_profile.as_deref()).is_none()
+        {
+            (
+                "codex_app_server_turn",
+                "Intervention delivered to active Codex app-server turn.",
+            )
+        } else if provider.eq_ignore_ascii_case("claude-code") {
+            (
+                "claude_code_turn",
+                "Intervention delivered to active Claude Code turn.",
+            )
+        } else {
+            (
+                "rust_boundary_codergen_turn",
+                "Intervention delivered to active Rust codergen session.",
+            )
+        };
         CodergenChildInterventionResult {
             run_id: request.child_run_id,
             status: "delivered".to_string(),
-            delivery_mode: if is_codex_app_server {
-                "codex_app_server_turn"
-            } else {
-                "rust_boundary_codergen_turn"
-            }
-            .to_string(),
+            delivery_mode: delivery_mode.to_string(),
             reason: request.reason,
-            message: if is_codex_app_server {
-                "Intervention delivered to active Codex app-server turn."
-            } else {
-                "Intervention delivered to active Rust codergen session."
-            }
-            .to_string(),
+            message: message.to_string(),
             target_node_id: request.target_node_id,
         }
     }

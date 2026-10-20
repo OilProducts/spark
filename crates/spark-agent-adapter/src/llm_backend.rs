@@ -277,8 +277,23 @@ impl RustLlmCodergenBackend {
                 ));
             }) as AgentTurnEventSink
         });
+        let steering = SessionSteeringHandle::new();
+        let _active_session = self.intervention_broker.as_ref().map(|broker| {
+            broker.register(ActiveCodergenSession {
+                node_id: request.node_id.clone(),
+                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
+                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
+                provider: "claude-code".to_string(),
+                model: request.model.clone(),
+                llm_profile: request.llm_profile.clone(),
+                reasoning_effort: request.reasoning_effort.clone(),
+                project_path: request.project_path.clone(),
+                metadata: request.metadata.clone(),
+                steering: steering.clone(),
+            })
+        });
         let output = ClaudeCodeBackend::new()
-            .run_agent_turn_with_event_sink(agent_request, turn_event_sink)
+            .run_steerable_turn(agent_request, Some(steering), turn_event_sink)
             .map_err(|error| CodergenError::Backend(error.message))?;
         let usage = output
             .token_usage

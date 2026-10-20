@@ -685,19 +685,24 @@ impl RuntimeHandlerRunner {
     }
 
     pub fn with_rust_llm_client(mut self, client: unified_llm_adapter::Client) -> Self {
-        self.rust_llm_client = Some(client.clone());
-        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
-        let factory_broker = broker.clone();
-        self.codergen_backend_factory = Some(Arc::new(move || {
-            Box::new(
-                spark_agent_adapter::RustLlmCodergenBackend::with_intervention_broker(
-                    client.clone(),
-                    factory_broker.clone(),
-                ),
-            )
-        }));
+        self.set_rust_llm_client(client);
+        self
+    }
+
+    /// Shares `broker` with other runners, so a caller outside the run (the
+    /// steer route) can reach its codergen sessions. Set it before the client.
+    pub fn with_codergen_intervention_broker(
+        mut self,
+        broker: spark_agent_adapter::CodergenSessionInterventionBroker,
+    ) -> Self {
         self.codergen_intervention_broker = Some(broker);
         self
+    }
+
+    pub fn codergen_intervention_broker(
+        &self,
+    ) -> Option<&spark_agent_adapter::CodergenSessionInterventionBroker> {
+        self.codergen_intervention_broker.as_ref()
     }
 
     pub fn set_codergen_backend_factory(
@@ -711,7 +716,10 @@ impl RuntimeHandlerRunner {
 
     pub fn set_rust_llm_client(&mut self, client: unified_llm_adapter::Client) {
         self.rust_llm_client = Some(client.clone());
-        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
+        let broker = self
+            .codergen_intervention_broker
+            .clone()
+            .unwrap_or_default();
         let factory_broker = broker.clone();
         self.codergen_backend_factory = Some(Arc::new(move || {
             Box::new(
