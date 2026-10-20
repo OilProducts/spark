@@ -638,11 +638,9 @@ export function RunsPanel() {
                         <LaunchPanel
                             target={{
                                 flowName: rerunRun.flow_name || null,
-                                previewSource: {
-                                    kind: 'runSnapshot',
-                                    runId: rerunRun.run_id,
-                                    displayName: rerunRun.flow_name || null,
-                                },
+                                // Re-run launches the installed flow by name, so its live inputs and defaults drive
+                                // the form; the recorded launch context only seeds initial values.
+                                previewSource: { kind: 'flow', flowName: rerunRun.flow_name },
                             }}
                             projectPath={rerunRun.project_path || rerunRun.working_directory || null}
                             initialLaunchContext={rerunRun.launch_context ?? null}
