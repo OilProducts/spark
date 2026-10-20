@@ -360,11 +360,27 @@ pub fn human_actor(config_dir: &Path) -> String {
             .map(str::to_string)
     });
     let id = configured
-        .or_else(|| std::env::var("USER").ok())
-        .or_else(|| std::env::var("USERNAME").ok())
+        .or_else(os_username)
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| "unknown".to_string());
     format!("human:{}", id.trim())
+}
+
+/// The account this process runs as, from the OS rather than `USER`/`USERNAME`,
+/// which any caller can set.
+fn os_username() -> Option<String> {
+    let command = if cfg!(windows) { "whoami" } else { "id" };
+    let mut command = std::process::Command::new(command);
+    if !cfg!(windows) {
+        command.arg("-un");
+    }
+    let output = command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let name = String::from_utf8(output.stdout).ok()?;
+    // Windows `whoami` prints DOMAIN\user.
+    Some(name.trim().rsplit('\\').next()?.to_string())
 }
 
 /// Validate the core version at every entry point, including non-Desktop reads/writes.

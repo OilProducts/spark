@@ -513,6 +513,34 @@ fn promote_requires_draft_candidates_that_validate_and_installs_them_verified() 
     );
 }
 
+#[test]
+fn promote_refuses_a_role_whose_dependent_flow_does_not_assemble() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_role(&settings, ROLE);
+    let live_role = settings.roles_dir().join("reviewer.md");
+    approve(&settings, &live_role);
+    let live = install(&settings, "demo", REVIEW_FLOW);
+    // The flow references the role but no longer assembles.
+    edit(&live.join("review.md"), "to: done", "to: missing");
+    assert!(read_flow_dir(&live).is_err());
+
+    let candidates = settings.data_dir.join("candidates");
+    let candidate = candidates.join("roles/reviewer.md");
+    fs::create_dir_all(candidate.parent().expect("parent")).expect("candidates");
+    let draft = "---\ntype: Role\ngenerated: {by: codex/gpt-5, at: '2026-10-20T12:00:00+00:00'}\nstatus: draft\n---\n\nYou are a stricter reviewer.\n";
+    fs::write(&candidate, draft).expect("candidate");
+    let role_before = fs::read(&live_role).expect("role");
+    let log_before = read_approvals(&log(&settings)).expect("log");
+
+    let error = promote(&trust(&settings), &candidates, &candidate, "human:tester")
+        .expect_err("dependent flow is invalid");
+    assert!(error.detail().contains("flow demo"), "{}", error.detail());
+    assert_eq!(fs::read(&live_role).expect("role"), role_before);
+    assert_eq!(read_approvals(&log(&settings)).expect("log"), log_before);
+    assert_eq!(fs::read_to_string(&candidate).expect("candidate"), draft);
+}
+
 fn install(settings: &SparkSettings, name: &str, yaml: &str) -> PathBuf {
     let dir = settings.flows_dir.join(name);
     attractor_dsl::write_flow_dir(&dir, &parse_flow_definition(yaml).expect("flow"))

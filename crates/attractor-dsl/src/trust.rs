@@ -306,6 +306,25 @@ pub fn promote(
     Ok(entries)
 }
 
+/// Whether any node file in `dir` names one of `roles`, read from each file's
+/// frontmatter alone so a flow that fails to assemble is still found.
+fn flow_uses_roles(dir: &Path, roles: &BTreeMap<String, String>) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        fs::read_to_string(entry.path()).is_ok_and(|text| {
+            split_frontmatter(&text)
+                .ok()
+                .and_then(|(frontmatter, _)| {
+                    serde_yaml::from_str::<serde_yaml::Value>(frontmatter).ok()
+                })
+                .and_then(|value| value.get("role")?.as_str().map(str::to_string))
+                .is_some_and(|role| roles.contains_key(&role))
+        })
+    })
+}
+
 /// Every flow that would use the promoted files must still assemble and
 /// validate, with its roles resolved.
 fn promotion_problems(
@@ -372,20 +391,15 @@ fn promotion_problems(
             if overlays.contains_key(&flow) {
                 continue;
             }
-            let Ok(authored) = read_flow_dir_texts(&trust.flows_dir.join(&flow))
-                .and_then(|texts| assemble_flow_files(&texts))
-            else {
+            let dir = trust.flows_dir.join(&flow);
+            if !flow_uses_roles(&dir, &roles) {
                 continue;
-            };
-            let uses_role = authored.nodes.values().any(|node| {
-                node.role
-                    .as_ref()
-                    .is_some_and(|role| roles.contains_key(role))
-            });
-            if uses_role {
-                if let Err(error) = resolve_flow_roles_with(&authored, role_text) {
-                    problems.push(format!("flow {flow}: {}", error.detail()));
-                }
+            }
+            if let Err(error) = read_flow_dir_texts(&dir)
+                .and_then(|texts| assemble_flow_files(&texts))
+                .and_then(|authored| resolve_flow_roles_with(&authored, role_text))
+            {
+                problems.push(format!("flow {flow}: {}", error.detail()));
             }
         }
     }

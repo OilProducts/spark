@@ -628,4 +628,27 @@ fn process_flow_accept_and_promote_act_on_spark_home() {
 
     let refused = spark(&["flow", "promote", "flows/team/work/done.md"]);
     assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+
+    // Without human_id the actor is the OS account, whatever USER/USERNAME
+    // say or whether they are set at all.
+    fs::write(home.join("config/spark.toml"), "").expect("toml");
+    let os_user = Command::new("id").arg("-un").output().expect("id");
+    let os_user = String::from_utf8(os_user.stdout).expect("utf8");
+    let expected = format!("human:{}", os_user.trim());
+    for fabricated in [true, false] {
+        let mut command = Command::new(spark_bin());
+        command
+            .args(["flow", "accept", "flows/team/work/flow.md"])
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home);
+        if fabricated {
+            command
+                .env("USER", "fabricated-review-user")
+                .env("USERNAME", "fabricated-review-user");
+        }
+        let accepted = command.output().expect("run spark");
+        assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+        assert_eq!(log().last().expect("entry").by, expected);
+    }
 }
