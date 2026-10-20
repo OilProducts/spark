@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use attractor_core::{
-    attr_i64, attr_string, validate_context_updates_against_contract, ContextMap,
-    ContextWriteContract, DotGraph, FailureKind, Outcome, OutcomeStatus,
+    attr_i64, attr_string, is_exact_outcome_fail_condition,
+    validate_context_updates_against_contract, ContextMap, ContextWriteContract, DotGraph,
+    FailureKind, Outcome, OutcomeStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -71,7 +72,8 @@ pub fn build_status_envelope_prompt_appendix(
 }
 
 /// Lists the node's outgoing edges in the order routing checks them:
-/// conditional edges, then labeled unconditional edges, then the default.
+/// conditional edges (an exact `outcome=fail` first, as it wins on failure),
+/// then labeled unconditional edges, then the default.
 fn build_status_envelope_routes_text(graph: &DotGraph, node_id: &str) -> Option<String> {
     let mut edges = graph
         .edges
@@ -92,9 +94,12 @@ fn build_status_envelope_routes_text(graph: &DotGraph, node_id: &str) -> Option<
     // Stable sort keeps labeled unconditional edges in declaration order: routing takes the first match.
     edges.sort_by_key(|(condition, label, weight, target)| {
         match (condition.is_empty(), label.is_empty()) {
-            (false, _) => (0, Reverse(*weight), *target),
-            (true, false) => (1, Reverse(0), ""),
-            (true, true) => (2, Reverse(*weight), *target),
+            (false, _) if is_exact_outcome_fail_condition(condition) => {
+                (0, Reverse(*weight), *target)
+            }
+            (false, _) => (1, Reverse(*weight), *target),
+            (true, false) => (2, Reverse(0), ""),
+            (true, true) => (3, Reverse(*weight), *target),
         }
     });
     let mut lines = vec!["Routes from this node, checked in this order:".to_string()];

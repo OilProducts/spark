@@ -69,6 +69,7 @@ fn routed_edges() -> Value {
         {"from":"work","to":"review","label":"Escalate"},
         {"from":"work","to":"retry","condition":"outcome=retry","weight":1},
         {"from":"work","to":"fix","condition":"outcome=fail","weight":5},
+        {"from":"work","to":"review","condition":"outcome=fail && context.flag=1","weight":9},
         {"from":"fix","to":"work"},
         {"from":"retry","to":"work"},
         {"from":"review","to":"end"}
@@ -81,6 +82,7 @@ fn status_envelope_appendix_lists_routes_in_routing_precedence_order() {
     let routes = [
         "Routes from this node, checked in this order:",
         "- When the condition `outcome=fail` holds: go to \"Fix It\".",
+        "- When the condition `outcome=fail && context.flag=1` holds: go to \"Human Review\".",
         "- When the condition `outcome=retry` holds: go to \"retry\".",
         "- With \"preferred_label\": \"Escalate\": go to \"Human Review\".",
         "- Default: go to \"Done\".",
