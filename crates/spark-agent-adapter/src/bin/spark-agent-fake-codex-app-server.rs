@@ -11,7 +11,7 @@ fn main() {
     let log_path = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_LOG").map(PathBuf::from);
     if matches!(
         mode.as_str(),
-        "steerable" | "steer-race" | "steer-early-output" | "steer-partial"
+        "steerable" | "steer-race" | "steer-early-output" | "steer-partial" | "steer-exit"
     ) {
         run_steerable(log_path, &mode);
     } else {
@@ -262,8 +262,10 @@ fn emit_gated_turn(stdout: &mut impl Write) {
 /// `steer-race`: the turn completes before the first turn/steer, which is
 /// rejected. `steer-early-output`: output arrives before the turn/steer
 /// response. `steer-partial`: the turn streams half an answer, then waits.
+/// `steer-exit`: accepts the first turn/steer, then exits on the next.
 fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
     let race = mode == "steer-race";
+    let mut steers = 0;
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
 
@@ -300,6 +302,13 @@ fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
                     &mut stdout,
                     json!({"method": "turn/completed", "params": {"threadId": "thread-steer", "turn": {"id": "turn-steer", "status": "interrupted"}}}),
                 );
+            }
+            "turn/steer" if mode == "steer-exit" => {
+                steers += 1;
+                if steers > 1 {
+                    std::process::exit(1);
+                }
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
             }
             "turn/steer" if race => {
                 emit_turn_completion(

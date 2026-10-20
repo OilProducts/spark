@@ -829,92 +829,97 @@ impl CodexAppServerClient {
         let mut last_activity = Instant::now();
         let mut interrupt_sent = false;
         let mut steering_rejected = false;
-        loop {
-            if let Some(handle) = steering.as_ref() {
-                if !steering_rejected {
-                    steering_rejected = self.drain_steering(handle, thread_id, expected_turn_id)?;
-                }
-                if !interrupt_sent && handle.interrupt_requested() {
-                    interrupt_sent = true;
-                    let response = self.send_request(
-                        "turn/interrupt",
-                        Some(json!({"threadId": thread_id, "turnId": expected_turn_id})),
-                    )?;
-                    if response.get("error").is_some() {
-                        return Err(rpc_error(
-                            "codex app-server turn/interrupt failed",
-                            &response,
-                        ));
+        // A later failure must not drop steering the turn already accepted.
+        let streamed = (|| -> Result<(), CodexAppServerError> {
+            loop {
+                if let Some(handle) = steering.as_ref() {
+                    if !steering_rejected {
+                        steering_rejected =
+                            self.drain_steering(handle, thread_id, expected_turn_id)?;
+                    }
+                    if !interrupt_sent && handle.interrupt_requested() {
+                        interrupt_sent = true;
+                        let response = self.send_request(
+                            "turn/interrupt",
+                            Some(json!({"threadId": thread_id, "turnId": expected_turn_id})),
+                        )?;
+                        if response.get("error").is_some() {
+                            return Err(rpc_error(
+                                "codex app-server turn/interrupt failed",
+                                &response,
+                            ));
+                        }
                     }
                 }
-            }
-            if !self.workflow_questions.is_empty() {
-                last_activity = Instant::now();
-                let mut index = 0;
-                while index < self.workflow_questions.len() {
-                    let answers = (self.workflow_questions[index].1)()
-                        .map_err(CodexAppServerError::runtime)?;
-                    if let Some(answers) = answers {
-                        let (id, _poll) = self.workflow_questions.remove(index);
-                        self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
-                    } else {
-                        index += 1;
+                if !self.workflow_questions.is_empty() {
+                    last_activity = Instant::now();
+                    let mut index = 0;
+                    while index < self.workflow_questions.len() {
+                        let answers = (self.workflow_questions[index].1)()
+                            .map_err(CodexAppServerError::runtime)?;
+                        if let Some(answers) = answers {
+                            let (id, _poll) = self.workflow_questions.remove(index);
+                            self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
+                        } else {
+                            index += 1;
+                        }
                     }
                 }
-            }
-            if last_activity.elapsed() >= TURN_IDLE_TIMEOUT {
-                return Err(CodexAppServerError::runtime(
-                    "codex app-server turn timed out waiting for activity",
-                ));
-            }
-            let Some(message) = self.next_message(Duration::from_millis(100))? else {
-                if self.child.try_wait().ok().flatten().is_some() {
+                if last_activity.elapsed() >= TURN_IDLE_TIMEOUT {
                     return Err(CodexAppServerError::runtime(
-                        "codex app-server exited before turn completion",
+                        "codex app-server turn timed out waiting for activity",
                     ));
                 }
-                continue;
-            };
-            last_activity = Instant::now();
-            if let Some(event) = steering_injected_event(&message, thread_id, expected_turn_id) {
+                let Some(message) = self.next_message(Duration::from_millis(100))? else {
+                    if self.child.try_wait().ok().flatten().is_some() {
+                        return Err(CodexAppServerError::runtime(
+                            "codex app-server exited before turn completion",
+                        ));
+                    }
+                    continue;
+                };
+                last_activity = Instant::now();
+                if let Some(event) = steering_injected_event(&message, thread_id, expected_turn_id)
+                {
+                    if let Some(sink) = event_sink.as_ref() {
+                        sink(event.clone());
+                    }
+                    events.push(event);
+                    continue;
+                }
+                let extracted_turn_id = extract_turn_id(&message);
+                if extracted_turn_id
+                    .as_deref()
+                    .is_some_and(|turn_id| turn_id != expected_turn_id)
+                {
+                    continue;
+                }
+                let mut normalized = process_codex_app_server_message(&message, &mut state);
+                for event in &mut normalized {
+                    if event.source.app_thread_id.is_none() {
+                        event.source.app_thread_id = Some(thread_id.to_string());
+                    }
+                    if event.source.app_turn_id.is_none() {
+                        event.source.app_turn_id = Some(expected_turn_id.to_string());
+                    }
+                }
+                let completed = normalized
+                    .iter()
+                    .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
+                    && extracted_turn_id.as_deref() == Some(expected_turn_id);
                 if let Some(sink) = event_sink.as_ref() {
-                    sink(event.clone());
+                    for event in &normalized {
+                        sink(event.clone());
+                    }
                 }
-                events.push(event);
-                continue;
-            }
-            let extracted_turn_id = extract_turn_id(&message);
-            if extracted_turn_id
-                .as_deref()
-                .is_some_and(|turn_id| turn_id != expected_turn_id)
-            {
-                continue;
-            }
-            let mut normalized = process_codex_app_server_message(&message, &mut state);
-            for event in &mut normalized {
-                if event.source.app_thread_id.is_none() {
-                    event.source.app_thread_id = Some(thread_id.to_string());
-                }
-                if event.source.app_turn_id.is_none() {
-                    event.source.app_turn_id = Some(expected_turn_id.to_string());
+                events.extend(normalized);
+                self.answer_pending_request_user_input()?;
+                if completed {
+                    return Ok(());
                 }
             }
-            let completed = normalized
-                .iter()
-                .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
-                && extracted_turn_id.as_deref() == Some(expected_turn_id);
-            if let Some(sink) = event_sink.as_ref() {
-                for event in &normalized {
-                    sink(event.clone());
-                }
-            }
-            events.extend(normalized);
-            self.answer_pending_request_user_input()?;
-            if completed {
-                break;
-            }
-        }
-        // Deliveries the turn accepted just before it completed.
+        })();
+        // Deliveries the turn accepted just before it completed or failed.
         for message in std::mem::take(&mut self.pending_messages) {
             match steering_injected_event(&message, thread_id, expected_turn_id) {
                 Some(event) => {
@@ -926,6 +931,7 @@ impl CodexAppServerClient {
                 None => self.pending_messages.push_back(message),
             }
         }
+        streamed?;
         if interrupt_sent && state.turn_status.as_deref() == Some("interrupted") {
             return Err(CodexAppServerError::runtime("Stopped."));
         }

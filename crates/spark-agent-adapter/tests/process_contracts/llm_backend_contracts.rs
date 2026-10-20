@@ -3639,6 +3639,46 @@ fn codex_turn_completing_before_turn_steer_keeps_every_undelivered_message_in_or
     );
 }
 
+#[test]
+fn codex_steering_accepted_before_a_failed_steer_reaches_the_live_sink() {
+    let _lock = ENV_LOCK.lock().expect("env lock");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _bin_guard = EnvVarGuard::set("SPARK_CODEX_APP_SERVER_BIN", fake_codex_app_server_bin());
+    let _mode_guard = EnvVarGuard::set("SPARK_FAKE_CODEX_APP_SERVER_MODE", "steer-exit");
+    let runtime_root = temp.path().join("codex-runtime");
+    let _runtime_guard = EnvVarGuard::set("ATTRACTOR_CODEX_RUNTIME_ROOT", runtime_root.as_os_str());
+    // One drain takes both; the fake accepts the first and exits on the second.
+    let steering = SessionSteeringHandle::new();
+    assert!(steering.queue_steering("Use tabs."));
+    assert!(steering.queue_steering("Use spaces."));
+    let live = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&live);
+
+    RustLlmAgentTurnBackend::new(Client::new())
+        .run_steerable_turn(
+            chat_turn_request(Some("codex"), temp.path()),
+            steering.clone(),
+            Some(Arc::new(move |event| {
+                sink_events.lock().unwrap().push(event)
+            })),
+        )
+        .expect_err("the app-server exited");
+
+    let delivered = steering_events(&live.lock().unwrap());
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["Use tabs."]
+    );
+    let leftovers = steering.close_and_drain();
+    assert_eq!(
+        leftovers.iter().map(|turn| turn.text()).collect::<Vec<_>>(),
+        ["Use spaces."]
+    );
+}
+
 /// Queues a steering message while answering the first request.
 struct SteeredDuringStreamAdapter {
     calls: Arc<Mutex<Vec<Request>>>,

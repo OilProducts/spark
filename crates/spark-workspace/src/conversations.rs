@@ -15,7 +15,9 @@ use spark_agent_adapter::{
     RustLlmAgentTurnBackend, SessionSteeringHandle, SteeringTurn, UserTurn,
 };
 use spark_common::debug::{codex_jsonrpc_trace_enabled, CODEX_JSONRPC_TRACE_PATH_METADATA_KEY};
-use spark_common::events::{TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind};
+use spark_common::events::{
+    TurnStreamChannel, TurnStreamEvent, TurnStreamEventKind, TurnStreamSource,
+};
 use spark_common::project::normalize_project_path;
 use spark_common::segments::{
     event_text, find_segment, non_empty_string, normalize_assistant_text, remove_key,
@@ -5154,13 +5156,17 @@ fn finalized_plan_segment(snapshot: &Value, assistant_turn_id: &str) -> Option<V
 /// answered by its latest visible text or "Stopped.".
 fn stopped_turn_output(mut events: Vec<TurnStreamEvent>) -> AgentTurnOutput {
     events.retain(|event| event.kind != TurnStreamEventKind::Error);
-    let (item_id, text) = spark_agent_adapter::latest_assistant_text(&events)
+    let (source, text) = spark_agent_adapter::latest_assistant_text(&events)
         .filter(|(_, text)| !text.trim().is_empty())
-        .unwrap_or_else(|| (None, "Stopped.".to_string()));
+        .unwrap_or_else(|| (TurnStreamSource::default(), "Stopped.".to_string()));
+    // The streamed block's source, so the answer settles into its segment.
     let mut answer = TurnStreamEvent::content_delta(TurnStreamChannel::Assistant, text.clone());
     answer.kind = TurnStreamEventKind::ContentCompleted;
-    answer.source.item_id =
-        Some(item_id.unwrap_or_else(|| format!("stopped-{}", uuid::Uuid::new_v4().simple())));
+    answer.source = source;
+    answer
+        .source
+        .item_id
+        .get_or_insert_with(|| format!("stopped-{}", uuid::Uuid::new_v4().simple()));
     answer.phase = Some("final_answer".to_string());
     events.push(answer);
     AgentTurnOutput {

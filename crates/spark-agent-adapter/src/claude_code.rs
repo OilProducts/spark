@@ -334,8 +334,8 @@ impl ClaudeCodeBackend {
                     // Promote the latest visible text to the final answer using
                     // its existing item id, including a block cut off mid-delta.
                     let text = crate::events::latest_assistant_text(&events)
-                        .map(|(item_id, text)| {
-                            turn.last_text_item_id = item_id;
+                        .map(|(source, text)| {
+                            turn.last_text_item_id = source.item_id;
                             text
                         })
                         .unwrap_or_default();

@@ -19,7 +19,7 @@ use tokio::time::{sleep, Duration};
 use tower::ServiceExt;
 use unified_llm_adapter::{
     stream_events, ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
-    Request as LlmRequest, Response, StreamEvent, StreamEvents, Usage,
+    Request as LlmRequest, Response, StreamEvent, StreamEventType, StreamEvents, ToolCall, Usage,
 };
 
 #[tokio::test]
@@ -1897,9 +1897,11 @@ fn assert_stopped(snapshot: &Value, content: &str) {
     assert!(assistant.get("error").is_none(), "{snapshot}");
 }
 
-/// Streams half an answer, then trickles empty deltas until stopped.
+/// Streams half an answer, then trickles empty deltas until stopped. With
+/// `earlier_reply`, a first request reasons, replies and calls a tool first.
 struct StoppableAdapter {
     pulled: Arc<std::sync::atomic::AtomicUsize>,
+    earlier_reply: std::sync::atomic::AtomicBool,
 }
 
 impl ProviderAdapter for StoppableAdapter {
@@ -1912,6 +1914,24 @@ impl ProviderAdapter for StoppableAdapter {
     }
 
     fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        if self
+            .earlier_reply
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(stream_events(
+                [
+                    StreamEvent::reasoning_delta("Thinking it over."),
+                    StreamEvent::text_delta("A finished reply."),
+                    StreamEvent {
+                        tool_call: Some(ToolCall::new("call-1", "missing_tool", json!({}))),
+                        ..StreamEvent::new(StreamEventType::ToolCallEnd)
+                    },
+                    StreamEvent::finish(FinishReason::ToolCalls, None),
+                ]
+                .into_iter()
+                .map(Ok),
+            ));
+        }
         let pulled = Arc::clone(&self.pulled);
         Ok(stream_events((0..500).map(move |index| {
             if pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
@@ -1928,11 +1948,18 @@ impl ProviderAdapter for StoppableAdapter {
 
 #[tokio::test]
 async fn stopped_native_turn_settles_with_its_partial_answer() {
+    stop_native_turn(false).await;
+    // Neither the reasoning nor the earlier reply joins the partial answer.
+    stop_native_turn(true).await;
+}
+
+async fn stop_native_turn(earlier_reply: bool) {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
     let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let adapter: Arc<dyn ProviderAdapter> = Arc::new(StoppableAdapter {
         pulled: Arc::clone(&pulled),
+        earlier_reply: earlier_reply.into(),
     });
     let app = build_app_with_rust_llm_client(
         settings.clone(),
@@ -2044,6 +2071,15 @@ async fn stopped_codex_turn_settles_with_its_partial_answer() {
     })
     .await;
     assert_stopped(&snapshot, "Half an answer.");
+    // The settled answer updates the streamed segment.
+    let replies = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == "assistant_message")
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 1, "{snapshot}");
+    assert_eq!(replies[0]["content"], "Half an answer.", "{snapshot}");
     wait_for_log(&log, "turn/interrupt").await;
 }
 
