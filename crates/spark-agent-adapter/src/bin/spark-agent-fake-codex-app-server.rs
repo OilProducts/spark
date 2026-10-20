@@ -262,7 +262,9 @@ fn emit_gated_turn(stdout: &mut impl Write) {
 /// `steer-race`: the turn completes before the first turn/steer, which is
 /// rejected. `steer-early-output`: output arrives before the turn/steer
 /// response. `steer-partial`: the turn streams half an answer, then waits.
-/// `steer-exit`: accepts the first turn/steer, then exits on the next.
+/// `steer-exit`: accepts the first turn/steer, then exits on the next; with
+/// SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR set, turn/start answers only once its
+/// `start` file exists.
 fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
     let race = mode == "steer-race";
     let mut steers = 0;
@@ -285,6 +287,13 @@ fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
                 json!({"id": request_id, "result": {"thread": {"id": "thread-steer"}}}),
             ),
             "turn/start" => {
+                if let Some(gate_dir) = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR")
+                    .filter(|_| mode == "steer-exit")
+                {
+                    while !PathBuf::from(&gate_dir).join("start").exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
                 write_json(
                     &mut stdout,
                     json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),

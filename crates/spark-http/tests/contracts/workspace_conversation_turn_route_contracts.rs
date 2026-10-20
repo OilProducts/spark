@@ -2084,6 +2084,66 @@ async fn stopped_codex_turn_settles_with_its_partial_answer() {
 }
 
 #[tokio::test]
+async fn codex_steer_accepted_before_a_failed_steer_is_persisted_once() {
+    if !in_child_process("codex_steer_accepted_before_a_failed_steer_is_persisted_once") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    // The fake accepts the first turn/steer and exits on the second.
+    let (app, settings, project, log) = fake_codex_app(temp.path(), "steer-exit");
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR", temp.path());
+
+    send_codex_message(&app, "codex-steer-exit", &project, "Start the work").await;
+    wait_for_log(&log, "turn/start").await;
+    // Both wait on the gated turn/start, so one drain steers them in a row.
+    send_codex_message(&app, "codex-steer-exit", &project, "Use tabs.").await;
+    send_codex_message(&app, "codex-steer-exit", &project, "Use spaces.").await;
+    std::fs::write(temp.path().join("start"), "").unwrap();
+
+    // The unaccepted message starts the next turn, which is then stopped.
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-steer-exit", &project, |s| {
+        s["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| turn["role"] == "user" && turn["content"] == "Use spaces.")
+    })
+    .await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/codex-steer-exit/interrupt",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    wait_for_conversation_snapshot(&settings, "codex-steer-exit", &project, |s| {
+        assistant_turns_settled(s, 2)
+    })
+    .await;
+
+    let snapshot = WorkspaceConversationService::new(settings.clone())
+        .get_snapshot("codex-steer-exit", Some(&project))
+        .unwrap();
+    let steered = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == "user_message")
+        .map(|segment| segment["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(steered, ["Use tabs."], "{snapshot}");
+    let turns = snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(turns, ["Start the work", "Use spaces."], "{snapshot}");
+}
+
+#[tokio::test]
 async fn codex_output_before_the_steer_response_stays_ahead_of_the_steered_message() {
     if !in_child_process(
         "codex_output_before_the_steer_response_stays_ahead_of_the_steered_message",
