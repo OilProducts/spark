@@ -3847,14 +3847,13 @@ fn running_agent_nodes(
             let Some(node_id) = event.payload.get("node_id").and_then(Value::as_str) else {
                 continue;
             };
-            // ponytail: a parallel branch is tracked by its start node only;
-            // later nodes inside a branch emit no stage events.
-            let branch = event.payload.get("branch").and_then(Value::as_str);
-            match (event.event_type.as_str(), branch) {
+            // Nodes inside a parallel branch report as branch nodes.
+            let branch_node = event.payload.get("branch_node_id").and_then(Value::as_str);
+            match (event.event_type.as_str(), branch_node) {
                 ("StageStarted", _) => open.insert(node_id.to_string()),
                 ("StageCompleted" | "StageFailed" | "StageRetrying", _) => open.remove(node_id),
-                ("ParallelBranchStarted", Some(branch)) => open.insert(branch.to_string()),
-                ("ParallelBranchCompleted", Some(branch)) => open.remove(branch),
+                ("ParallelBranchNodeStarted", Some(node_id)) => open.insert(node_id.to_string()),
+                ("ParallelBranchNodeCompleted", Some(node_id)) => open.remove(node_id),
                 _ => false,
             };
         }

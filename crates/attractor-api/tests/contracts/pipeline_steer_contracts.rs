@@ -1,6 +1,7 @@
 use attractor_api::{AttractorApiService, PipelineStartRequest};
 use attractor_runtime::{
-    parallel_branch_started_event, stage_started_event, CreateRunRequest, RunStore,
+    parallel_branch_node_started_event, parallel_branch_started_event, stage_started_event,
+    CreateRunRequest, RunStore,
 };
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
@@ -459,6 +460,65 @@ edges:
 }
 
 #[test]
+fn steer_follows_a_parallel_branch_past_its_entry_node() {
+    let envs = codex_env("branch-chain");
+    if !in_child_process("steer_follows_a_parallel_branch_past_its_entry_node", &envs) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    let log = log_path("SPARK_FAKE_CODEX_APP_SERVER_LOG");
+    start(
+        &service,
+        &settings,
+        "steer-chain",
+        "codex",
+        content(
+            r#"schema_version: "1"
+id: steer_chain
+nodes:
+  start: { kind: start }
+  fork:
+    kind: parallel
+    config: { kind: parallel, join_policy: wait_all }
+  first:
+    kind: agent_task
+    config: { kind: agent_task, prompt: First work }
+  second:
+    kind: agent_task
+    config: { kind: agent_task, prompt: Second work }
+  join:
+    kind: fan_in
+    config: { kind: fan_in }
+  done: { kind: exit }
+edges:
+- { from: start, to: fork }
+- { from: fork, to: first }
+- { from: first, to: second }
+- { from: second, to: join }
+- { from: join, to: done }
+"#
+            .into(),
+        ),
+    );
+    // Each steer ends the fake's open turn, so `first` completes and the
+    // branch moves on to `second`; the runtime then runs both again from
+    // the fork.
+    for (node, count) in [("first", 1), ("second", 2), ("first", 3), ("second", 4)] {
+        wait_for_log(&log, "turn/start", count);
+        let result = steer(
+            &service,
+            "steer-chain",
+            json!({"message": format!("Finish {node}.")}),
+        );
+        assert_eq!(result["status"], "delivered", "{result}");
+        assert_eq!(result["target_node_id"], node);
+    }
+    wait_for_status(&settings, "steer-chain", "completed");
+}
+
+#[test]
 fn steer_rejects_when_no_agent_node_is_active() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
@@ -608,6 +668,18 @@ edges:
             .append_event(
                 &paths,
                 parallel_branch_started_event("steer-unsupported", "fork", branch, index),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &paths,
+                parallel_branch_node_started_event(
+                    "steer-unsupported",
+                    "fork",
+                    branch,
+                    index,
+                    branch,
+                ),
             )
             .unwrap();
     }

@@ -237,6 +237,8 @@ export const TIMELINE_TYPE_LABELS: Record<string, string> = {
     ParallelCompleted: 'Fan-out completed',
     ParallelBranchStarted: 'Branch started',
     ParallelBranchCompleted: 'Branch completed',
+    ParallelBranchNodeStarted: 'Branch node started',
+    ParallelBranchNodeCompleted: 'Branch node completed',
     InterviewStarted: 'Gate opened',
     InterviewCompleted: 'Input received',
     human_gate: 'Waiting for input',

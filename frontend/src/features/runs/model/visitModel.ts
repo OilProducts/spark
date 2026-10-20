@@ -101,6 +101,11 @@ interface VisitDraft {
     journalReason: string | null
 }
 
+interface BranchDraft extends VisitDraft {
+    parent: VisitDraft
+    branchIndex: number
+}
+
 export function buildRunVisits({
     runId,
     runStatus,
@@ -151,7 +156,7 @@ export function buildRunVisits({
     // Stage events: a retry of the same stage starts a new attempt.
     const startsByStage = new Map<string, number>()
     const openByStage = new Map<string, VisitDraft>()
-    const branchDrafts: VisitDraft[] = []
+    const branchDrafts: BranchDraft[] = []
     for (const event of events) {
         const nodeId = event.nodeId
         const stageIndex = event.stageIndex ?? (typeof event.payload.index === 'number' ? event.payload.index : null)
@@ -208,6 +213,42 @@ export function buildRunVisits({
         return match
     }
 
+    const branchDraft = (parent: VisitDraft, key: string, nodeId: string, branchIndex: number, event: TimelineEventEntry): BranchDraft => {
+        const node = flowNodes[nodeId]
+        return {
+            visit: {
+                ...parent.visit,
+                key,
+                nodeId,
+                label: node?.label || humanizeNodeId(nodeId),
+                kind: node?.kind ?? 'agent_task',
+                startedAt: event.receivedAt,
+                endedAt: null,
+                status: null,
+                next: null,
+                childRun: null,
+                parentKey: parent.visit.key,
+            },
+            startSequence: event.sequence,
+            terminal: null,
+            journalReason: null,
+            parent,
+            branchIndex,
+        }
+    }
+    // The branch's latest visit: the fan-out node and branch index match.
+    const latestBranchDraft = (event: TimelineEventEntry): BranchDraft | undefined => [...branchDrafts].reverse().find((candidate) => (
+        candidate.parent.visit.nodeId === event.nodeId && candidate.branchIndex === event.payload.index
+    ))
+    const openBranchDraft = (event: TimelineEventEntry): BranchDraft | undefined => {
+        const latest = latestBranchDraft(event)
+        return latest?.terminal === null ? latest : undefined
+    }
+    const closeBranchDraft = (draft: BranchDraft, event: TimelineEventEntry, terminal: NonNullable<VisitDraft['terminal']>) => {
+        draft.visit.endedAt = event.receivedAt
+        draft.terminal = terminal
+    }
+
     // Child runs and parallel branches hang off the visit that started them.
     for (const event of events) {
         if (event.type === 'ChildRunStarted') {
@@ -236,35 +277,30 @@ export function buildRunVisits({
             const parent = latestRootVisitBefore(event.nodeId, event.sequence)
             if (branch && parent) {
                 const branchIndex = typeof event.payload.index === 'number' ? event.payload.index : branchDrafts.length
-                const node = flowNodes[branch]
-                branchDrafts.push({
-                    visit: {
-                        ...parent.visit,
-                        key: JSON.stringify([runId, branch, parent.visit.stageIndex, parent.visit.attempt, 'branch', branchIndex]),
-                        nodeId: branch,
-                        label: node?.label || humanizeNodeId(branch),
-                        kind: node?.kind ?? 'agent_task',
-                        startedAt: event.receivedAt,
-                        endedAt: null,
-                        status: null,
-                        next: null,
-                        childRun: null,
-                        parentKey: parent.visit.key,
-                    },
-                    startSequence: event.sequence,
-                    terminal: null,
-                    journalReason: null,
-                })
+                const key = JSON.stringify([runId, branch, parent.visit.stageIndex, parent.visit.attempt, 'branch', branchIndex])
+                branchDrafts.push(branchDraft(parent, key, branch, branchIndex, event))
+            }
+        } else if (event.type === 'ParallelBranchNodeStarted') {
+            // Each later node a branch runs is a visit of its own.
+            const nodeId = asString(event.payload.branch_node_id)
+            const latest = latestBranchDraft(event)
+            if (nodeId && latest && !(latest.terminal === null && latest.visit.nodeId === nodeId)) {
+                if (latest.terminal === null) {
+                    closeBranchDraft(latest, event, 'succeeded')
+                }
+                const key = JSON.stringify([runId, nodeId, latest.visit.stageIndex, latest.visit.attempt, 'branch', latest.branchIndex, event.sequence])
+                branchDrafts.push(branchDraft(latest.parent, key, nodeId, latest.branchIndex, event))
+            }
+        } else if (event.type === 'ParallelBranchNodeCompleted') {
+            const open = openBranchDraft(event)
+            if (open && open.visit.nodeId === event.payload.branch_node_id) {
+                closeBranchDraft(open, event, event.payload.outcome === 'fail' ? 'failed'
+                    : event.payload.outcome === 'partial_success' ? 'partly_succeeded' : 'succeeded')
             }
         } else if (event.type === 'ParallelBranchCompleted') {
-            const branch = asString(event.payload.branch)
-            const draft = branchDrafts.find((candidate) => (
-                candidate.visit.nodeId === branch && candidate.terminal === null
-                && JSON.parse(candidate.visit.parentKey ?? '[]')[1] === event.nodeId
-            ))
-            if (draft) {
-                draft.visit.endedAt = event.receivedAt
-                draft.terminal = event.payload.success === false ? 'failed' : 'succeeded'
+            const open = openBranchDraft(event)
+            if (open) {
+                closeBranchDraft(open, event, event.payload.success === false ? 'failed' : 'succeeded')
             }
         }
     }
@@ -319,11 +355,10 @@ export function buildRunVisits({
     const ordered: RunVisit[] = []
     for (const draft of rootDrafts) {
         ordered.push(draft.visit)
-        for (const branch of branchDrafts) {
-            if (branch.visit.parentKey === draft.visit.key) {
-                ordered.push(branch.visit)
-            }
-        }
+        ordered.push(...branchDrafts
+            .filter((branch) => branch.parent === draft)
+            .sort((left, right) => left.branchIndex - right.branchIndex || left.startSequence - right.startSequence)
+            .map((branch) => branch.visit))
     }
     const byNode = new Map<string, RunVisit[]>()
     for (const visit of ordered) {
