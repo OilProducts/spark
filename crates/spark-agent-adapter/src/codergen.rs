@@ -775,7 +775,11 @@ impl CodergenHandler {
         if response_contract == STATUS_ENVELOPE_RESPONSE_CONTRACT {
             prompt = format!(
                 "{prompt}\n\n{}",
-                build_status_envelope_prompt_appendix(Some(&write_contract))
+                build_status_envelope_prompt_appendix(
+                    Some(&write_contract),
+                    &request.graph,
+                    &request.node_id,
+                )
             );
         }
         prompt = compose_prompt(&prompt, &request.context, &read_contract.declared_keys);

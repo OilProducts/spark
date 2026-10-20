@@ -549,3 +549,26 @@ nodes:
         .join("task/executions/0-0/response.md")
         .exists());
 }
+
+#[test]
+fn bundled_implement_change_evaluate_prompt_lists_its_routes() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../spark-assets/assets/flows/software-development/implement-change.yaml");
+    let flow = FlowDefinition::from_yaml_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let graph = attractor_runtime::flow_runtime::flow_graph_for_handler_compat(&flow);
+    let logs_root = tempdir().unwrap();
+    let mut codergen = RuntimeCodergen::simulation(graph, Some(logs_root.path().to_path_buf()));
+
+    codergen
+        .execute("evaluate", ContextMap::new())
+        .expect("codergen executes");
+
+    let prompt = std::fs::read_to_string(logs_root.path().join("evaluate/prompt.md")).unwrap();
+    let routes = [
+        "Routes from this node, checked in this order:",
+        "- When the condition `outcome=fail` holds: go to \"Implement\".",
+        "- When the condition `outcome=success` holds: go to \"Validate\".",
+    ]
+    .join("\n");
+    assert!(prompt.contains(&routes), "{prompt}");
+}
