@@ -28,7 +28,7 @@ export function useFlowSaveScheduler<T = void>({
     }, [])
 
     const executeSaveRequest = useCallback((request: PendingFlowSaveRequest) => {
-        void saveFlowContent(request.flowName, request.content)
+        return saveFlowContent(request.flowName, request.content)
     }, [])
 
     const createSaveRequest = useCallback((payload: T | undefined): PendingFlowSaveRequest | null => {
@@ -48,7 +48,7 @@ export function useFlowSaveScheduler<T = void>({
         }
         clearScheduledSave()
         pendingSaveRef.current = null
-        executeSaveRequest(pendingSave)
+        void executeSaveRequest(pendingSave)
     }, [clearScheduledSave, executeSaveRequest])
 
     const clearPendingSave = useCallback(() => {
@@ -70,17 +70,18 @@ export function useFlowSaveScheduler<T = void>({
             if (!pendingSave) {
                 return
             }
-            executeSaveRequest(pendingSave)
+            void executeSaveRequest(pendingSave)
         }, debounceMs)
     }, [clearScheduledSave, createSaveRequest, debounceMs, executeSaveRequest])
 
-    const saveNow = useCallback((payload?: T) => {
+    /** Saves the given content now; resolves true once it is persisted. */
+    const saveNow = useCallback((payload?: T): Promise<boolean> => {
         const request = createSaveRequest(payload)
         if (!request) {
-            return
+            return Promise.resolve(false)
         }
         clearPendingSave()
-        executeSaveRequest(request)
+        return executeSaveRequest(request)
     }, [clearPendingSave, createSaveRequest, executeSaveRequest])
 
     useEffect(() => {

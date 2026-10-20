@@ -57,10 +57,9 @@ export function resetFlowSaveBaselines(): void {
 
 const inFlightSaves = new Set<Promise<boolean>>()
 
-/** Waits for every save in flight; false when any of them failed. */
-export async function waitForFlowSaves(): Promise<boolean> {
-    const results = await Promise.all([...inFlightSaves])
-    return results.every(Boolean)
+/** Waits for every save in flight to settle. */
+export async function waitForFlowSaves(): Promise<void> {
+    await Promise.all([...inFlightSaves])
 }
 
 export function saveFlowContent(name: string, content: string): Promise<boolean> {

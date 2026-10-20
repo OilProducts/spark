@@ -214,6 +214,32 @@ pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceE
     Ok(flow.normalize())
 }
 
+/// Parses editor content with every incoming `generated`/`verified` removed
+/// first, so malformed attribution is ignored rather than rejected; the
+/// save keeps the disk values and stamps its own.
+pub fn parse_editor_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
+    let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(source) else {
+        return parse_flow_definition(source);
+    };
+    let strip = |value: &mut serde_yaml::Value| {
+        if let Some(map) = value.as_mapping_mut() {
+            map.remove("generated");
+            map.remove("verified");
+        }
+    };
+    strip(&mut value);
+    if let Some(nodes) = value
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.as_mapping_mut())
+    {
+        nodes.values_mut().for_each(strip);
+    }
+    match serde_yaml::to_string(&value) {
+        Ok(stripped) => parse_flow_definition(&stripped),
+        Err(_) => parse_flow_definition(source),
+    }
+}
+
 pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinitionError> {
     flow.validate()?;
     let diagnostics: Vec<_> = crate::validate_graph(&flow.to_runtime_dot_graph())

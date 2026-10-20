@@ -138,6 +138,24 @@ fn editor_save_stamps_changed_files_keeps_disk_verified_and_logs_human_save() {
         entries_for(&settings, "flows/team/review/check.md").len(),
         1
     );
+
+    // Malformed incoming attribution is dropped before validation, not rejected.
+    let before = files(&dir);
+    let mut raw = json!(read_flow_dir(&dir).expect("load"));
+    raw["generated"] = json!("not an attribution");
+    raw["verified"] = json!([{"by": "nobody", "at": "2026-99-99T99:99:99+99:99"}]);
+    raw["nodes"]["review"]["generated"] = json!(5);
+    raw["nodes"]["review"]["verified"] = json!({"by": "human:x"});
+    let response = service.save_flow(SaveFlowRequest {
+        name: "team/review".to_string(),
+        content: raw.to_string(),
+    });
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_eq!(files(&dir), before);
+    assert_eq!(
+        entries_for(&settings, "flows/team/review/review.md").len(),
+        2
+    );
 }
 
 #[test]

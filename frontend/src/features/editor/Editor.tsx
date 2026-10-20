@@ -334,7 +334,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         });
     }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
-    const { flushPendingSave, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
+    const { flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName,
         debounceMs: 250,
         buildContent: (snapshot, currentFlowName) => generateFlowYaml(
@@ -1577,10 +1577,12 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         <LaunchPanel
                             target={{
                                 flowName,
-                                // Runs launch the saved flow by name: save pending edits first.
+                                // Runs launch the saved flow by name: persist the current
+                                // content first (a no-op when already saved, a retry after
+                                // a failed autosave), after any earlier save settles.
                                 prepareLaunch: async () => {
-                                    flushPendingSave();
-                                    if (!(await waitForFlowSaves())) {
+                                    await waitForFlowSaves();
+                                    if (!(await saveNow({ nodes, edges }))) {
                                         throw new Error('Saving the flow failed; fix the save error before running.');
                                     }
                                 },

@@ -1497,7 +1497,7 @@ impl AttractorApiService {
                     return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
                 }
             };
-        let flow = match attractor_dsl::parse_flow_definition(&req.content) {
+        let flow = match attractor_dsl::parse_editor_flow_definition(&req.content) {
             Ok(flow) => flow,
             Err(error) => return flow_save_definition_error_response(error),
         };

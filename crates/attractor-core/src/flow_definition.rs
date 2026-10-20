@@ -136,44 +136,10 @@ fn valid_actor(actor: &str) -> bool {
         .is_some_and(|(producer, version)| non_blank(producer) && non_blank(version))
 }
 
-/// `YYYY-MM-DDTHH:MM:SS[.fraction]` followed by `Z` or `±HH:MM`.
+/// RFC 3339 (the ISO 8601 profile that requires an offset), with real
+/// calendar, clock and offset values.
 fn valid_offset_timestamp(value: &str) -> bool {
-    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
-    let Some((date, time)) = value.split_once('T') else {
-        return false;
-    };
-    let date_ok = date.len() == 10
-        && digits(&date[0..4])
-        && &date[4..5] == "-"
-        && digits(&date[5..7])
-        && &date[7..8] == "-"
-        && digits(&date[8..10]);
-    let (clock, offset) = match time.find(['Z', 'z', '+', '-']) {
-        Some(index) => time.split_at(index),
-        None => return false,
-    };
-    let clock = clock.split_once('.').map_or(
-        clock,
-        |(whole, fraction)| {
-            if digits(fraction) {
-                whole
-            } else {
-                ""
-            }
-        },
-    );
-    let clock_ok = clock.len() == 8
-        && digits(&clock[0..2])
-        && &clock[2..3] == ":"
-        && digits(&clock[3..5])
-        && &clock[5..6] == ":"
-        && digits(&clock[6..8]);
-    let offset_ok = matches!(offset, "Z" | "z")
-        || (offset.len() == 6
-            && digits(&offset[1..3])
-            && &offset[3..4] == ":"
-            && digits(&offset[4..6]));
-    date_ok && clock_ok && offset_ok
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

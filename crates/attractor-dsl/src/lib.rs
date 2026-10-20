@@ -18,9 +18,9 @@ pub use flow_files::{
 };
 pub use flow_sources::{
     canonicalize_flow_yaml, ensure_flows_dir, flow_name_from_path, flow_yaml, list_flow_names,
-    load_resolved_flow_content, normalize_flow_name, parse_flow_definition, read_named_flow_source,
-    resolve_flow_path, resolve_flow_ref, validate_flow_definition, FlowSourceError,
-    NamedFlowSource,
+    load_resolved_flow_content, normalize_flow_name, parse_editor_flow_definition,
+    parse_flow_definition, read_named_flow_source, resolve_flow_path, resolve_flow_ref,
+    validate_flow_definition, FlowSourceError, NamedFlowSource,
 };
 pub use transforms::{
     apply_graph_transforms, apply_graph_transforms_with_extra, build_transform_pipeline,

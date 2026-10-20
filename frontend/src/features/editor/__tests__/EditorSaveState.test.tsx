@@ -73,17 +73,17 @@ describe('Editor save state behavior', () => {
     })
   })
 
-  it('waits for in-flight saves before a launch and reports a failed one', async () => {
+  it('waits for in-flight saves to settle', async () => {
     let respond!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve })))
     void saveFlowContent('demo', 'schema_version: "1"\nid: demo\n')
     let settled = false
-    const waited = waitForFlowSaves().then((ok) => { settled = true; return ok })
+    const waited = waitForFlowSaves().then(() => { settled = true })
     await Promise.resolve()
     expect(settled).toBe(false)
     respond(new Response(JSON.stringify({ detail: 'disk full' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
-    expect(await waited).toBe(false)
-    expect(await waitForFlowSaves()).toBe(true)
+    await waited
+    expect(settled).toBe(true)
   })
 
   it('supports retrying a transient network failure', async () => {

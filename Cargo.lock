@@ -283,6 +283,7 @@ dependencies = [
  "serde_yaml",
  "spark-common",
  "thiserror 1.0.69",
+ "time",
 ]
 
 [[package]]
