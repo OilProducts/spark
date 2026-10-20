@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use attractor_core::{
@@ -232,24 +232,28 @@ pub fn render_flow_files(
 /// changed (untouched files stay byte-identical), each atomically, and
 /// deleting the files of removed nodes. Returns the written file names.
 pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, FlowSourceError> {
-    write_flow_files(dir, flow, None)
+    write_flow_files(dir, flow, None, |_| Ok(()))
 }
 
 /// An editor save: like [`write_flow_dir`], but incoming `generated` and
 /// `verified` are ignored. Every file keeps both from disk, so the comparison
 /// ignores them, and each changed file gets `generated: <generated>`.
+/// `record` gets each changed file's path and final text before anything is
+/// written; when it fails, nothing is written, so a retry still sees the change.
 pub fn save_flow_dir(
     dir: &Path,
     flow: &FlowDefinition,
     generated: &Attribution,
+    record: impl FnOnce(&[(PathBuf, String)]) -> Result<(), FlowSourceError>,
 ) -> Result<Vec<String>, FlowSourceError> {
-    write_flow_files(dir, flow, Some(generated))
+    write_flow_files(dir, flow, Some(generated), record)
 }
 
 fn write_flow_files(
     dir: &Path,
     flow: &FlowDefinition,
     generated: Option<&Attribution>,
+    record: impl FnOnce(&[(PathBuf, String)]) -> Result<(), FlowSourceError>,
 ) -> Result<Vec<String>, FlowSourceError> {
     let mut flow = flow.normalize();
     let _guard = FLOW_DIR_LOCK
@@ -275,6 +279,12 @@ fn write_flow_files(
         }
         files = render_flow_files(&flow)?;
     }
+    record(
+        &changed
+            .iter()
+            .map(|name| (dir.join(name), files[name].clone()))
+            .collect::<Vec<_>>(),
+    )?;
     fs::create_dir_all(dir).map_err(|error| write_error(dir, error))?;
     let temp_dir = dir.parent().unwrap_or(dir);
     let dir_name = dir

@@ -3133,19 +3133,14 @@ fn save_flow_request(
         by: by.clone(),
         at: spark_common::approvals::timestamp_now(),
     };
-    let written = match save_flow_dir(&flow_path, flow, &generated) {
-        Ok(written) => written,
-        Err(error) => return flow_source_error_response(error),
-    };
-    let written = written
-        .iter()
-        .map(|file| flow_path.join(file))
-        .collect::<Vec<_>>();
-    if let Err(error) = TrustStore::for_settings(settings).record_written(
-        spark_common::approvals::EVENT_HUMAN_SAVE,
-        &by,
-        &written,
-    ) {
+    // Approvals are logged before the files are written: a failed log leaves
+    // the old files, so a retry of the same content still saves and logs it.
+    let trust = TrustStore::for_settings(settings);
+    if let Err(error) = save_flow_dir(&flow_path, flow, &generated, |files| {
+        trust
+            .record(spark_common::approvals::EVENT_HUMAN_SAVE, &by, files)
+            .map(|_| ())
+    }) {
         return flow_source_error_response(error);
     }
     let name = match flow_name_from_path(flows_dir, &flow_path) {

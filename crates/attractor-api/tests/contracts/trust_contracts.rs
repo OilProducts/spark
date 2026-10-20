@@ -156,6 +156,42 @@ fn editor_save_stamps_changed_files_keeps_disk_verified_and_logs_human_save() {
         entries_for(&settings, "flows/team/review/review.md").len(),
         2
     );
+
+    // A save whose approval cannot be logged writes nothing, so retrying the
+    // same content still saves and approves it.
+    let mut edited = read_flow_dir(&dir).expect("load");
+    if let Some(attractor_core::NodeConfig::AgentTask { prompt }) = edited
+        .nodes
+        .get_mut("review")
+        .expect("review")
+        .config
+        .as_mut()
+    {
+        *prompt = "Review three times.".to_string();
+    }
+    let content = attractor_dsl::flow_yaml(&edited).expect("yaml");
+    let kept_log = settings.config_dir.join("approvals.kept");
+    fs::rename(log(&settings), &kept_log).expect("move log");
+    fs::create_dir(log(&settings)).expect("unwritable log");
+    let failed = service.save_flow(SaveFlowRequest {
+        name: "team/review".to_string(),
+        content: content.clone(),
+    });
+    assert_ne!(failed.status_code, 200, "{}", failed.body);
+    assert_eq!(files(&dir), before);
+    fs::remove_dir(log(&settings)).expect("drop dir");
+    fs::rename(&kept_log, log(&settings)).expect("restore log");
+    let retried = service.save_flow(SaveFlowRequest {
+        name: "team/review".to_string(),
+        content,
+    });
+    assert_eq!(retried.status_code, 200, "{}", retried.body);
+    let review_entries = entries_for(&settings, "flows/team/review/review.md");
+    assert_eq!(review_entries.len(), 3);
+    assert_eq!(
+        review_entries[2],
+        ("human_save".to_string(), file_hash(&dir.join("review.md")))
+    );
 }
 
 #[test]

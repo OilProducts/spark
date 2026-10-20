@@ -94,11 +94,25 @@ impl TrustStore {
     ) -> Result<Vec<ApprovalEntry>, FlowSourceError> {
         let mut files = Vec::new();
         for path in paths {
-            let key = self.key(path).ok_or_else(|| outside_error(path))?;
             let bytes = fs::read(path).map_err(|error| io_error(path, error))?;
-            files.push((key, sha256_hex(&bytes)));
+            files.push((path.clone(), bytes));
         }
-        let entries = approval_entries(event, by, files);
+        self.record(event, by, &files)
+    }
+
+    /// Logs `event` for each file's path and the bytes it holds or will hold.
+    pub fn record(
+        &self,
+        event: &str,
+        by: &str,
+        files: &[(PathBuf, impl AsRef<[u8]>)],
+    ) -> Result<Vec<ApprovalEntry>, FlowSourceError> {
+        let mut hashes = Vec::new();
+        for (path, bytes) in files {
+            let key = self.key(path).ok_or_else(|| outside_error(path))?;
+            hashes.push((key, sha256_hex(bytes.as_ref())));
+        }
+        let entries = approval_entries(event, by, hashes);
         self.append(&entries)?;
         Ok(entries)
     }
@@ -284,6 +298,10 @@ pub fn promote(
         ));
     }
 
+    // ponytail: files are replaced one by one, and the CLI process cannot take
+    // the server's FLOW_DIR_LOCK, so a launch racing a multi-file promotion can
+    // load a mix of approved old and promoted files; add a cross-process lock if
+    // promotions ever run while launches are frequent.
     let mut files = Vec::new();
     for (key, (_, text)) in &promoted {
         let live = trust.live_path(key).expect("checked above");
