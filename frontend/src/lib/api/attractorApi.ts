@@ -189,6 +189,14 @@ export interface PipelineCancelResponse {
     pipeline_id: string
 }
 
+export interface PipelineSteerResponse {
+    /** delivered | rejected, or validation_error with `error`. */
+    status: string
+    reason: string | null
+    message: string | null
+    error: string | null
+}
+
 export interface PipelineCheckpointResponse {
     pipeline_id: string
     checkpoint: Record<string, unknown>
@@ -511,6 +519,16 @@ export function parsePipelineCancelResponse(payload: unknown, endpoint = '/attra
     return {
         status: expectString(record.status, endpoint, 'status'),
         pipeline_id: expectString(record.pipeline_id, endpoint, 'pipeline_id'),
+    }
+}
+
+export function parsePipelineSteerResponse(payload: unknown, endpoint = '/attractor/pipelines/{id}/steer'): PipelineSteerResponse {
+    const record = expectObjectRecord(payload, endpoint)
+    return {
+        status: expectString(record.status, endpoint, 'status'),
+        reason: asOptionalNullableString(record.reason) ?? null,
+        message: asOptionalNullableString(record.message) ?? null,
+        error: asOptionalNullableString(record.error) ?? null,
     }
 }
 
@@ -965,6 +983,19 @@ export async function fetchPipelineCancelValidated(pipelineId: string): Promise<
         { method: 'POST' },
         '/attractor/pipelines/{id}/cancel',
         parsePipelineCancelResponse,
+    )
+}
+
+export async function fetchPipelineSteerValidated(
+    pipelineId: string,
+    body: { message: string; target_run_id?: string; target_node_id?: string },
+): Promise<PipelineSteerResponse> {
+    const url = attractorUrl(`/pipelines/${encodeURIComponent(pipelineId)}/steer`)
+    return fetchJsonWithValidation(
+        url,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+        '/attractor/pipelines/{id}/steer',
+        parsePipelineSteerResponse,
     )
 }
 

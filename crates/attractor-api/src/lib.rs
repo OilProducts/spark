@@ -19,9 +19,9 @@ use attractor_dsl::{
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
-    human_intervention_requested_event, ContinueRunRequest, ExecuteRunRequest, ExecutionStart,
-    PipelineExecutor, RunBundle, RunStore, RuntimeControlError, RuntimeControls,
-    RuntimeHandlerRunner,
+    human_intervention_requested_event, ChildInterventionRequest, ChildInterventionResult,
+    ContinueRunRequest, ExecuteRunRequest, ExecutionStart, PipelineExecutor, RunBundle, RunStore,
+    RuntimeControlError, RuntimeControls, RuntimeHandlerRunner,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -2439,25 +2439,22 @@ impl AttractorApiService {
                 return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
             }
         };
-        let (target_run_id, target_node_id) = intervention_target(&bundle, &request);
-        let result = json!({
-            "run_id": target_run_id,
-            "status": "rejected",
-            "delivery_mode": "none",
-            "reason": "no_active_child_run",
-            "message": "No active child run is available for intervention.",
-            "target_node_id": target_node_id,
-        });
+        let result = match self.steer_active_agent(&store, pipeline_id, &request, message) {
+            Ok(result) => result,
+            Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
+        };
+        let target_run_id = result.run_id.clone();
+        let result = json!(result);
         if let Err(error) = store.append_event(
             &bundle.paths,
             human_intervention_requested_event(
                 pipeline_id,
                 &target_run_id,
-                target_node_id.clone(),
+                result["target_node_id"].as_str().map(str::to_string),
                 message,
-                "rejected",
-                "none",
-                "no_active_child_run",
+                result["status"].as_str().unwrap_or_default(),
+                result["delivery_mode"].as_str().unwrap_or_default(),
+                result["reason"].as_str().unwrap_or_default(),
                 result.clone(),
             ),
         ) {
@@ -2474,6 +2471,101 @@ impl AttractorApiService {
             );
         }
         RuntimeRouteResponse::json(200, Value::Object(payload))
+    }
+
+    /// Delivers `message` to the one live agent session of the target: the
+    /// named run, else this run and its descendant runs, narrowed by node.
+    /// Uses the runner's intervention path, as manager-loop steering does.
+    fn steer_active_agent(
+        &self,
+        store: &RunStore,
+        pipeline_id: &str,
+        request: &PipelineSteerRequest,
+        message: &str,
+    ) -> std::result::Result<ChildInterventionResult, String> {
+        let target_node_id = trimmed_option(request.target_node_id.as_deref());
+        let runs = match trimmed_option(request.target_run_id.as_deref()) {
+            Some(run_id) => vec![run_id],
+            None => run_tree(store, pipeline_id).map_err(|error| error.to_string())?,
+        };
+        let runner = (self.runtime_handler_runner_factory.as_ref())();
+        let sessions = runner
+            .codergen_intervention_broker()
+            .map(|broker| broker.active_sessions())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|session| {
+                session
+                    .child_run_id
+                    .as_ref()
+                    .is_some_and(|run_id| runs.contains(run_id))
+                    && target_node_id
+                        .as_ref()
+                        .is_none_or(|node_id| &session.node_id == node_id)
+            })
+            .collect::<Vec<_>>();
+        let rejected = |run_id: &str, node_id: Option<String>, reason: &str, message: String| {
+            ChildInterventionResult {
+                run_id: run_id.to_string(),
+                status: "rejected".to_string(),
+                delivery_mode: "none".to_string(),
+                reason: reason.to_string(),
+                message,
+                target_node_id: node_id,
+            }
+        };
+        // Every active agent node is a candidate, steerable or not, so an
+        // unsupported agent makes the target ambiguous rather than invisible.
+        let mut targets = running_agent_nodes(store, &runs)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|(_, node_id)| target_node_id.as_ref().is_none_or(|id| id == node_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        targets.extend(sessions.iter().map(|session| {
+            (
+                session.child_run_id.clone().unwrap_or_default(),
+                session.node_id.clone(),
+            )
+        }));
+        Ok(match targets.iter().collect::<Vec<_>>().as_slice() {
+            [] => rejected(
+                runs.first().map(String::as_str).unwrap_or(pipeline_id),
+                target_node_id,
+                "no_active_agent_node",
+                "No agent node is running in this run.".to_string(),
+            ),
+            [(run_id, node_id)] => match sessions.first() {
+                Some(session) => runner.request_child_intervention(ChildInterventionRequest {
+                    child_run_id: run_id.clone(),
+                    message: message.to_string(),
+                    parent_run_id: pipeline_id.to_string(),
+                    parent_node_id: String::new(),
+                    root_run_id: session.root_run_id.clone().unwrap_or_default(),
+                    reason: String::new(),
+                    source: "human".to_string(),
+                    cycle: None,
+                    target_node_id: Some(node_id.clone()),
+                }),
+                None => rejected(
+                    run_id,
+                    Some(node_id.clone()),
+                    "provider_steering_unsupported",
+                    format!("Agent node {node_id} is running, but its provider cannot be steered."),
+                ),
+            },
+            many => rejected(
+                pipeline_id,
+                target_node_id,
+                "ambiguous_target",
+                format!(
+                    "Several agent nodes are running ({}); choose one to steer.",
+                    many.iter()
+                        .map(|(run_id, node_id)| format!("{run_id}/{node_id}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ),
+        })
     }
 
     pub fn patch_pipeline_metadata(
@@ -2708,8 +2800,11 @@ pub fn default_runtime_handler_runner_factory() -> RuntimeHandlerRunnerFactory {
 pub fn rust_llm_runtime_handler_runner_factory(
     client: unified_llm_adapter::Client,
 ) -> RuntimeHandlerRunnerFactory {
+    // One broker for every run, so the steer route reaches their sessions.
+    let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
     Arc::new(move || {
         RuntimeHandlerRunner::new()
+            .with_codergen_intervention_broker(broker.clone())
             .with_rust_llm_client(client.clone())
             // Real deployments block human gates until answered; the default
             // factory (tests) keeps skip semantics.
@@ -3698,13 +3793,6 @@ fn normalize_after_sequence(value: Option<i64>) -> Result<Option<u64>, String> {
     }
 }
 
-fn context_path(context: &ContextMap, key: &str) -> Option<String> {
-    context
-        .get(key)
-        .and_then(value_to_string)
-        .filter(|value| !value.is_empty())
-}
-
 fn value_to_string(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
@@ -3715,27 +3803,71 @@ fn value_to_string(value: &Value) -> Option<String> {
     }
 }
 
-fn intervention_target(
-    bundle: &RunBundle,
-    request: &PipelineSteerRequest,
-) -> (String, Option<String>) {
-    if let Some(target_run_id) = trimmed_option(request.target_run_id.as_deref()) {
-        return (
-            target_run_id,
-            trimmed_option(request.target_node_id.as_deref()),
+/// `run_id` followed by every run it launched, transitively.
+fn run_tree(store: &RunStore, run_id: &str) -> attractor_runtime::Result<Vec<String>> {
+    let mut runs = vec![run_id.to_string()];
+    let mut index = 0;
+    while index < runs.len() {
+        for child in store.list_child_run_bundles(&runs[index])? {
+            if !runs.contains(&child.paths.run_id) {
+                runs.push(child.paths.run_id);
+            }
+        }
+        index += 1;
+    }
+    Ok(runs)
+}
+
+/// `(run, node)` for each agent node a running run in `runs` has started
+/// and not yet finished, per its stage events.
+fn running_agent_nodes(
+    store: &RunStore,
+    runs: &[String],
+) -> attractor_runtime::Result<Vec<(String, String)>> {
+    let mut active = Vec::new();
+    for run_id in runs {
+        let Some(bundle) = store.read_run_bundle(run_id)? else {
+            continue;
+        };
+        if bundle
+            .record
+            .as_ref()
+            .is_none_or(|record| record.status != "running")
+        {
+            continue;
+        }
+        let Some(flow) = store
+            .read_graph_source(&bundle.paths)?
+            .and_then(|source| parse_flow_definition(&source).ok())
+        else {
+            continue;
+        };
+        let mut open = std::collections::BTreeSet::new();
+        for event in &bundle.raw_events {
+            let Some(node_id) = event.payload.get("node_id").and_then(Value::as_str) else {
+                continue;
+            };
+            // Nodes inside a parallel branch report as branch nodes.
+            let branch_node = event.payload.get("branch_node_id").and_then(Value::as_str);
+            match (event.event_type.as_str(), branch_node) {
+                ("StageStarted", _) => open.insert(node_id.to_string()),
+                ("StageCompleted" | "StageFailed" | "StageRetrying", _) => open.remove(node_id),
+                ("ParallelBranchNodeStarted", Some(node_id)) => open.insert(node_id.to_string()),
+                ("ParallelBranchNodeCompleted", Some(node_id)) => open.remove(node_id),
+                _ => false,
+            };
+        }
+        active.extend(
+            open.into_iter()
+                .filter(|node_id| {
+                    flow.nodes
+                        .get(node_id)
+                        .is_some_and(|node| node.kind == attractor_core::NodeKind::AgentTask)
+                })
+                .map(|node_id| (run_id.clone(), node_id)),
         );
     }
-    let context = bundle
-        .checkpoint
-        .as_ref()
-        .map(|checkpoint| &checkpoint.context);
-    let target_run_id = context
-        .and_then(|context| context_path(context, "context.stack.child.run_id"))
-        .unwrap_or_else(|| bundle.paths.run_id.clone());
-    let target_node_id = trimmed_option(request.target_node_id.as_deref()).or_else(|| {
-        context.and_then(|context| context_path(context, "context.stack.child.active_stage"))
-    });
-    (target_run_id, target_node_id)
+    Ok(active)
 }
 
 fn query_i64(query: &str, key: &str) -> Option<i64> {

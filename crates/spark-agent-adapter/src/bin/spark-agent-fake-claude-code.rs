@@ -155,6 +155,13 @@ fn main() {
         let mut remaining = String::new();
         std::io::stdin().read_to_string(&mut remaining).unwrap();
         assert!(remaining.is_empty(), "legacy must receive EOF after prompt");
+        // Holds the turn open after input closed until the release file exists.
+        if let Ok(release) = env::var("SPARK_FAKE_CLAUDE_CODE_RELEASE") {
+            append_log("STDIN_CLOSED");
+            while !std::path::Path::new(&release).exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
     }
     if mode.starts_with("malformed") {
         if mode == "malformed-json" {

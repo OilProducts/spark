@@ -33,7 +33,8 @@ use crate::context::{
 use crate::error::Result;
 use crate::events::{
     append_event, interview_completed_event, interview_started_event,
-    parallel_branch_completed_event, parallel_branch_started_event, parallel_completed_event,
+    parallel_branch_completed_event, parallel_branch_node_completed_event,
+    parallel_branch_node_started_event, parallel_branch_started_event, parallel_completed_event,
     parallel_started_event,
 };
 use crate::executor::{
@@ -96,6 +97,7 @@ fn materialize_execution_suffix(
                 | "request_user_input_requested"
                 | "context_compaction_completed"
                 | "agent_event_completed"
+                | "steering_undelivered"
         ) {
             continue;
         }
@@ -122,7 +124,7 @@ fn materialize_execution_suffix(
         let segment = serde_json::from_value(json!({
             "id": id, "turn_id": "response", "order": revision as i64 - 2,
             "kind": segment_kind, "role": "assistant",
-            "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
+            "status": if matches!(kind, "tool_call_failed" | "steering_undelivered") { "failed" } else { "complete" },
             "timestamp": stored.committed_at, "updated_at": stored.committed_at,
             "completed_at": stored.committed_at,
             "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),
@@ -685,19 +687,24 @@ impl RuntimeHandlerRunner {
     }
 
     pub fn with_rust_llm_client(mut self, client: unified_llm_adapter::Client) -> Self {
-        self.rust_llm_client = Some(client.clone());
-        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
-        let factory_broker = broker.clone();
-        self.codergen_backend_factory = Some(Arc::new(move || {
-            Box::new(
-                spark_agent_adapter::RustLlmCodergenBackend::with_intervention_broker(
-                    client.clone(),
-                    factory_broker.clone(),
-                ),
-            )
-        }));
+        self.set_rust_llm_client(client);
+        self
+    }
+
+    /// Shares `broker` with other runners, so a caller outside the run (the
+    /// steer route) can reach its codergen sessions. Set it before the client.
+    pub fn with_codergen_intervention_broker(
+        mut self,
+        broker: spark_agent_adapter::CodergenSessionInterventionBroker,
+    ) -> Self {
         self.codergen_intervention_broker = Some(broker);
         self
+    }
+
+    pub fn codergen_intervention_broker(
+        &self,
+    ) -> Option<&spark_agent_adapter::CodergenSessionInterventionBroker> {
+        self.codergen_intervention_broker.as_ref()
     }
 
     pub fn set_codergen_backend_factory(
@@ -711,7 +718,10 @@ impl RuntimeHandlerRunner {
 
     pub fn set_rust_llm_client(&mut self, client: unified_llm_adapter::Client) {
         self.rust_llm_client = Some(client.clone());
-        let broker = spark_agent_adapter::CodergenSessionInterventionBroker::default();
+        let broker = self
+            .codergen_intervention_broker
+            .clone()
+            .unwrap_or_default();
         let factory_broker = broker.clone();
         self.codergen_backend_factory = Some(Arc::new(move || {
             Box::new(
@@ -1891,8 +1901,11 @@ impl RuntimeHandlerRunner {
                                     .map_err(|error| {
                                         RuntimeNodeError::runtime(error.to_string())
                                     })?;
-                                    let payload =
-                                        self.execute_branch_from(&branch_runtime, &branch_id)?;
+                                    let payload = self.execute_branch_from(
+                                        &branch_runtime,
+                                        &branch_id,
+                                        branch_index,
+                                    )?;
                                     let success = branch_succeeded(&payload);
                                     self.emit(
                                         &branch_runtime,
@@ -1966,6 +1979,7 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: &HandlerRuntime,
         start_node: &str,
+        branch_index: usize,
     ) -> std::result::Result<Value, RuntimeNodeError> {
         let fan_in_nodes = fan_in_nodes(&runtime.flow);
         let mut values = crate::flow_runtime::flow_context_seed(&runtime.flow);
@@ -2050,10 +2064,29 @@ impl RuntimeHandlerRunner {
                 fallback_profile: runtime.fallback_profile.clone(),
                 fallback_reasoning_effort: runtime.fallback_reasoning_effort.clone(),
             };
+            let emit_node_event = |event| {
+                self.emit(runtime, event)
+                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))
+            };
+            emit_node_event(parallel_branch_node_started_event(
+                &runtime.run_id,
+                &runtime.node_id,
+                start_node,
+                branch_index,
+                &current_node,
+            ))?;
             let raw_outcome = match self.execute_request(request) {
                 Ok(outcome) => outcome,
                 Err(error) => handler_error_outcome(error),
             };
+            emit_node_event(parallel_branch_node_completed_event(
+                &runtime.run_id,
+                &runtime.node_id,
+                start_node,
+                branch_index,
+                &current_node,
+                raw_outcome.status.to_string(),
+            ))?;
             let outcome = crate::context::apply_outcome_context_updates(
                 &current_node,
                 &node_attrs,

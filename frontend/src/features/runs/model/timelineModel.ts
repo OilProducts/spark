@@ -24,6 +24,8 @@ const TIMELINE_EVENT_TYPES: Record<string, TimelineEventCategory> = {
     ParallelStarted: 'parallel',
     ParallelBranchStarted: 'parallel',
     ParallelBranchCompleted: 'parallel',
+    ParallelBranchNodeStarted: 'parallel',
+    ParallelBranchNodeCompleted: 'parallel',
     ParallelCompleted: 'parallel',
     InterviewStarted: 'interview',
     InterviewInform: 'interview',

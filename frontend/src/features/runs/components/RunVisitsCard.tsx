@@ -11,6 +11,7 @@ import { Well } from '@/components/app/well'
 import { TIMELINE_UPDATE_BUDGET_MS } from '@/lib/performanceBudgets'
 import { isPerformanceDebugEnabled } from '@/lib/performanceDebug'
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { formatTimestamp, type ArtifactListEntry, type TimelineEventEntry } from '../model/shared'
 import {
@@ -27,6 +28,7 @@ import {
     type VisitMark,
 } from '../model/visitModel'
 import { RunTranscript } from './RunTranscriptGroups'
+import { useRunActions, type SteerResult } from '../hooks/useRunActions'
 
 // Colour marks exceptions: a successful visit carries no icon, a visit that was sent
 // back (or didn't pass) a warning return arrow, a failure a destructive cross.
@@ -579,6 +581,9 @@ function RunVisitView({
                 ) : (
                     <p className="text-sm text-muted-foreground">No transcript was recorded for this visit.</p>
                 )}
+                {visit.kind === 'agent_task' ? (
+                    <RunSteerForm runId={visit.runId} nodeId={visit.nodeId} running={visit.outcome === 'running'} />
+                ) : null}
                 {returned ? (
                     <div data-testid="run-visit-ended" className="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
                         <span aria-hidden="true" className="h-px flex-1 bg-border" />
@@ -607,6 +612,70 @@ function RunVisitView({
                 </p>
             ) : null}
         </article>
+    )
+}
+
+// Sends a message to the running agent node. Every outcome stays visible: a
+// rejection or HTTP error keeps the draft so it can be resent, and the last
+// result outlives the visit ending, while the input does not.
+function RunSteerForm({ runId, nodeId, running }: { runId: string; nodeId: string; running: boolean }) {
+    const { sendSteer } = useRunActions()
+    const [draft, setDraft] = useState('')
+    const [sending, setSending] = useState(false)
+    const [result, setResult] = useState<SteerResult | null>(null)
+    const send = async () => {
+        setSending(true)
+        const next = await sendSteer(runId, nodeId, draft)
+        setResult(next)
+        if (next.delivered) {
+            setDraft('')
+        }
+        setSending(false)
+    }
+    if (!running && !result) {
+        return null
+    }
+    return (
+        <form
+            data-testid="run-visit-steer"
+            className="flex flex-col gap-2"
+            onSubmit={(event) => {
+                event.preventDefault()
+                void send()
+            }}
+        >
+            {running ? (
+                <Textarea
+                    data-testid="run-visit-steer-input"
+                    aria-label="Message to the running agent"
+                    placeholder="Message the running agent…"
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    disabled={sending}
+                    className="bg-background"
+                />
+            ) : null}
+            <div className="flex flex-wrap items-start gap-3">
+                {running ? (
+                    <Button
+                        type="submit"
+                        data-testid="run-visit-steer-send"
+                        variant="outline"
+                        size="sm"
+                        disabled={sending || draft.trim().length === 0}
+                    >
+                        Send
+                    </Button>
+                ) : null}
+                {result ? (
+                    result.delivered ? (
+                        <p data-testid="run-visit-steer-delivered" role="status" className="text-sm text-muted-foreground">{result.text}</p>
+                    ) : (
+                        <InlineError data-testid="run-visit-steer-rejected" dense className="flex-1">{result.text}</InlineError>
+                    )
+                ) : null}
+            </div>
+        </form>
     )
 }
 

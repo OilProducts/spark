@@ -245,6 +245,37 @@ describe('buildRunVisits', () => {
     expect(visits[0].next?.key).toBe(visits[3].key)
   })
 
+  it('gives each node a parallel branch runs its own visit', () => {
+    const branchNode = (type: string, node: string, extra: Record<string, unknown> = {}) => (
+      event(type, { node_id: 'fan_out', branch: 'first', index: 0, branch_node_id: node, ...extra })
+    )
+    const journal = [
+      started('fan_out', 0),
+      event('ParallelBranchStarted', { node_id: 'fan_out', branch: 'first', index: 0 }),
+      branchNode('ParallelBranchNodeStarted', 'first'),
+      branchNode('ParallelBranchNodeCompleted', 'first', { outcome: 'success' }),
+      branchNode('ParallelBranchNodeStarted', 'second'),
+    ]
+    const running = build({ journal, runStatus: 'running' })
+    // Only the node the branch is on now is running, so only it can be steered.
+    expect(running.map((visit) => [visit.label, visit.parentKey === running[0].key, visit.outcome])).toEqual([
+      ['Fan out', false, 'running'],
+      ['First', true, 'succeeded'],
+      ['Second', true, 'running'],
+    ])
+
+    const done = build({
+      journal: [
+        ...journal,
+        branchNode('ParallelBranchNodeCompleted', 'second', { outcome: 'fail' }),
+        event('ParallelBranchCompleted', { node_id: 'fan_out', branch: 'first', index: 0, success: false }),
+        completed('fan_out', 0),
+      ],
+      runStatus: 'completed',
+    })
+    expect(done.map((visit) => visit.outcome)).toEqual(['succeeded', 'succeeded', 'did_not_pass'])
+  })
+
   it('adds a visit as live data arrives and then completes it', () => {
     const journal = [...stage('start', 0), ...stage('evaluate', 1, 'fail')]
     const before = build({ journal, runStatus: 'running' })

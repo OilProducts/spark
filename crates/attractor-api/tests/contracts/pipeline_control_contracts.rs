@@ -300,7 +300,7 @@ fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     assert_eq!(steer.body["pipeline_id"], json!("run-steer"));
     assert_eq!(steer.body["target_run_id"], json!("child-run"));
     assert_eq!(steer.body["status"], json!("rejected"));
-    assert_eq!(steer.body["reason"], json!("no_active_child_run"));
+    assert_eq!(steer.body["reason"], json!("no_active_agent_node"));
 
     let bundle = RunStore::for_settings(&settings)
         .read_run_bundle("run-steer")

@@ -305,6 +305,9 @@ impl ClaudeCodeBackend {
                             .unwrap()
                             .degrade("system/init timeout; using one-shot input");
                         initialized = true;
+                        if let Some(steering) = steering {
+                            steering.close();
+                        }
                     }
                     continue;
                 }
@@ -341,7 +344,15 @@ impl ClaudeCodeBackend {
                         .unwrap_or_default();
                     message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
                 }
-                control.ingest(&message)
+                let question = control.ingest(&message);
+                // Without stdin control (no interrupt_receipt_v1, or the turn
+                // has ended) nothing queued can reach the turn.
+                if initialized && !control.accepts_input() {
+                    if let Some(steering) = steering {
+                        steering.close();
+                    }
+                }
+                question
             };
             let mut normalized = turn.ingest(&message);
             if let Some(mut question) = question {

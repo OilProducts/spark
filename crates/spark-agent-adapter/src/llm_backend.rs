@@ -156,21 +156,25 @@ impl RustLlmCodergenBackend {
                 steering: steering.clone(),
             })
         });
-        let output = CodexAppServerBackend::new()
-            .run_agent_turn_with_capture_observer(
-                agent_request,
-                Some(steering),
-                turn_event_sink,
-                capture_sink,
-                self.clarification_handler.clone(),
-            )
-            .map_err(|error| {
-                if error.artifact {
-                    CodergenError::Artifact(error.message)
-                } else {
-                    codex_app_server_codergen_error(error)
-                }
-            })?;
+        let output = CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
+            agent_request,
+            Some(steering.clone()),
+            turn_event_sink.clone(),
+            capture_sink,
+            self.clarification_handler.clone(),
+        );
+        let undelivered = record_undelivered_steering(
+            &steering,
+            CODEX_APP_SERVER_BACKEND,
+            turn_event_sink.as_ref(),
+        );
+        let output = output.map_err(|error| {
+            if error.artifact {
+                CodergenError::Artifact(error.message)
+            } else {
+                codex_app_server_codergen_error(error)
+            }
+        })?;
         let usage = output
             .token_usage
             .as_ref()
@@ -195,7 +199,7 @@ impl RustLlmCodergenBackend {
             })
         };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
-        for event in &output.events {
+        for event in output.events.iter().chain(&undelivered) {
             let codergen_event = codergen_event_from_turn_stream_event(&request, event);
             events.push(codergen_event);
         }
@@ -277,9 +281,29 @@ impl RustLlmCodergenBackend {
                 ));
             }) as AgentTurnEventSink
         });
-        let output = ClaudeCodeBackend::new()
-            .run_agent_turn_with_event_sink(agent_request, turn_event_sink)
-            .map_err(|error| CodergenError::Backend(error.message))?;
+        let steering = SessionSteeringHandle::new();
+        let _active_session = self.intervention_broker.as_ref().map(|broker| {
+            broker.register(ActiveCodergenSession {
+                node_id: request.node_id.clone(),
+                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
+                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
+                provider: "claude-code".to_string(),
+                model: request.model.clone(),
+                llm_profile: request.llm_profile.clone(),
+                reasoning_effort: request.reasoning_effort.clone(),
+                project_path: request.project_path.clone(),
+                metadata: request.metadata.clone(),
+                steering: steering.clone(),
+            })
+        });
+        let output = ClaudeCodeBackend::new().run_steerable_turn(
+            agent_request,
+            Some(steering.clone()),
+            turn_event_sink.clone(),
+        );
+        let undelivered =
+            record_undelivered_steering(&steering, CLAUDE_CODE_BACKEND, turn_event_sink.as_ref());
+        let output = output.map_err(|error| CodergenError::Backend(error.message))?;
         let usage = output
             .token_usage
             .as_ref()
@@ -297,7 +321,7 @@ impl RustLlmCodergenBackend {
                 })
             };
         let mut events = capture_event.into_iter().collect::<Vec<_>>();
-        for event in &output.events {
+        for event in output.events.iter().chain(&undelivered) {
             events.push(claude_code_codergen_event_from_turn_stream_event(
                 &request, event,
             ));
@@ -664,6 +688,47 @@ fn codergen_event_from_session_event_with_metadata(
         );
     }
     CodergenEvent::new("rust_agent_session_event", payload)
+}
+
+/// Closes a workflow agent's steering and reports each message its turn
+/// ended without taking. The node has no next turn to carry them, so each is
+/// recorded on the node as undelivered instead of vanishing.
+fn record_undelivered_steering(
+    steering: &SessionSteeringHandle,
+    backend: &str,
+    event_sink: Option<&AgentTurnEventSink>,
+) -> Vec<TurnStreamEvent> {
+    let events = steering
+        .close_and_drain()
+        .into_iter()
+        .enumerate()
+        .map(|(index, turn)| TurnStreamEvent {
+            kind: TurnStreamEventKind::Other("steering_undelivered".to_string()),
+            channel: None,
+            source: TurnStreamSource {
+                backend: Some(backend.to_string()),
+                item_id: Some(format!("steering-undelivered-{index}")),
+                ..TurnStreamSource::default()
+            },
+            content_delta: None,
+            message: Some(format!(
+                "Steering message not delivered; the turn ended before taking it: {}",
+                turn.text()
+            )),
+            tool_call: None,
+            request_user_input: None,
+            token_usage: None,
+            error: None,
+            error_code: None,
+            details: Some(json!(turn.metadata)),
+            phase: Some("intervention".to_string()),
+            status: Some("undelivered".to_string()),
+        })
+        .collect::<Vec<_>>();
+    if let Some(sink) = event_sink {
+        events.iter().for_each(|event| sink(event.clone()));
+    }
+    events
 }
 
 fn codergen_event_from_turn_stream_event(
