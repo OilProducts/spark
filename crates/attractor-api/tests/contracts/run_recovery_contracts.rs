@@ -77,7 +77,7 @@ nodes:
   branch:
     kind: subflow
     runtime: { recovery_policy: pause }
-    config: { kind: subflow, flow_ref: child.yaml }
+    config: { kind: subflow, flow_ref: child }
     manager: { poll_interval: 0s, max_cycles: 1 }
   done: { kind: exit }
 edges:

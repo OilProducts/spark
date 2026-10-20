@@ -583,7 +583,7 @@ function nodeConfigFromAttrs(kind: string, attrs: CanonicalAttrMap, baseConfig?:
             ...base,
             kind,
             flow_ref: readStringAttr(attrs, 'flow_ref')
-                || String(base.flow_ref ?? 'child.yaml'),
+                || String(base.flow_ref ?? 'child'),
             input_map: asRecord(attrs.input_map) ?? asRecord(base.input_map) ?? undefined,
         })
     }

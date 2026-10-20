@@ -201,7 +201,7 @@ describe('Inspector and node authoring behavior', () => {
       kind: 'subflow',
       shape: 'house',
       config: { kind: 'subflow', prompt: 'Do it' },
-      flow_ref: 'child.yaml',
+      flow_ref: 'child',
     })
     expect(subflowData).not.toHaveProperty('type')
 

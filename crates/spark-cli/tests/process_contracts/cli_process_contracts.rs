@@ -90,7 +90,7 @@ fn process_source_checkout_default_target_guard_remains_exit_one() {
 fn process_flow_list_text_executes_http_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"name":"examples/simple.yaml","title":"Simple Flow","description":"Small starter."}]"#,
+        r#"[{"name":"examples/simple","title":"Simple Flow","description":"Small starter."}]"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -102,7 +102,7 @@ fn process_flow_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "examples/simple.yaml: Simple Flow\n  Small starter.\n"
+        "examples/simple: Simple Flow\n  Small starter.\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     assert_eq!(
@@ -124,7 +124,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
             "flow",
             "get",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--base-url",
             base_url.as_str(),
         ])
@@ -137,7 +137,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
     let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout json");
     assert_eq!(
         payload["name"],
-        "software-development/implement-change-request.yaml"
+        "software-development/implement-change-request"
     );
     assert_eq!(payload["content"], flow_yaml);
     assert_eq!(
@@ -145,7 +145,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
             .recv_timeout(Duration::from_secs(2))
             .expect("request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml/raw?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/raw?surface=agent"
     );
 }
 
@@ -153,7 +153,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
 fn process_http_404_maps_to_stderr_json_and_exit_three() {
     let (base_url, _requests) = serve_once(HttpResponse::json(
         404,
-        r#"{"detail":"Unknown flow: missing.yaml"}"#,
+        r#"{"detail":"Unknown flow: missing"}"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -161,7 +161,7 @@ fn process_http_404_maps_to_stderr_json_and_exit_three() {
             "flow",
             "describe",
             "--flow",
-            "missing.yaml",
+            "missing",
             "--base-url",
             base_url.as_str(),
         ])
@@ -173,7 +173,7 @@ fn process_http_404_maps_to_stderr_json_and_exit_three() {
     assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n"
+        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
     );
 }
 
@@ -189,7 +189,7 @@ fn process_http_nested_detail_error_maps_to_stderr_json() {
             "flow",
             "describe",
             "--flow",
-            "invalid.yaml",
+            "invalid",
             "--base-url",
             base_url.as_str(),
         ])
@@ -219,7 +219,7 @@ fn process_convo_run_request_posts_json_payload() {
             "--conversation",
             "amber-otter",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--summary",
             "Process request",
             "--goal",
@@ -246,7 +246,7 @@ fn process_convo_run_request_posts_json_payload() {
     assert_eq!(
         serde_json::from_str::<Value>(&request.body).expect("request json"),
         serde_json::json!({
-            "flow_name": "software-development/implement-change-request.yaml",
+            "flow_name": "software-development/implement-change-request",
             "goal": "Ship it.",
             "summary": "Process request"
         })
@@ -290,7 +290,7 @@ fn process_trigger_stdin_payload_errors_before_server_dispatch() {
 fn process_trigger_list_text_executes_http_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -302,7 +302,7 @@ fn process_trigger_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "trigger-123: Nightly [webhook] -> ops/run.yaml\n  enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  enabled=True protected=False\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     let request = requests

@@ -7,7 +7,7 @@ fn definition() -> TriggerDefinition {
     serde_json::from_value(json!({
         "id": "revision-test", "name": "Original", "enabled": true, "protected": false,
         "source_type": "schedule", "created_at": "2026-09-11T00:00:00Z", "updated_at": "2026-09-11T00:00:00Z",
-        "action": {"flow_name": "test.yaml", "static_context": {}},
+        "action": {"flow_name": "test", "static_context": {}},
         "source": {"kind": "interval", "interval_seconds": 60}
     })).unwrap()
 }

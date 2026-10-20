@@ -74,7 +74,7 @@ fn preview_service_accepts_flow_name_and_expand_children_flags() {
     let response = preview_with_flows_dir(
         PreviewRequest {
             flow_content: simple_flow(),
-            flow_name: Some("nested/parent.yaml".to_string()),
+            flow_name: Some("nested/parent".to_string()),
             expand_children: true,
         },
         &flows_dir,
@@ -88,9 +88,11 @@ fn preview_service_accepts_flow_name_and_expand_children_flags() {
 fn preview_service_expands_subflow_children_from_flows_dir() {
     let temp = tempfile::tempdir().expect("tempdir");
     let flows_dir = temp.path().join("flows");
-    let nested_dir = flows_dir.join("nested");
-    std::fs::create_dir_all(&nested_dir).expect("flows dir");
-    std::fs::write(nested_dir.join("child.yaml"), child_flow()).expect("child flow");
+    attractor_dsl::write_flow_dir(
+        &flows_dir.join("nested/child"),
+        &attractor_dsl::parse_flow_definition(&child_flow()).expect("valid flow"),
+    )
+    .expect("child flow");
 
     let response = preview_with_flows_dir(
         PreviewRequest {
@@ -105,7 +107,7 @@ nodes:
     label: Child
     config:
       kind: subflow
-      flow_ref: child.yaml
+      flow_ref: child
   done:
     kind: exit
 edges:
@@ -115,7 +117,7 @@ edges:
     to: done
 "#
             .to_string(),
-            flow_name: Some("nested/parent.yaml".to_string()),
+            flow_name: Some("nested/parent".to_string()),
             expand_children: true,
         },
         &flows_dir,
@@ -125,7 +127,7 @@ edges:
     assert_eq!(response.body["status"], json!("ok"));
     assert_eq!(
         response.body["graph"]["child_previews"]["child"]["flow_name"],
-        json!("nested/child.yaml")
+        json!("nested/child")
     );
     assert!(
         response.body["graph"]["child_previews"]["child"]["graph"]["nodes"]

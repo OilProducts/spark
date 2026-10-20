@@ -397,6 +397,12 @@ pub fn initialize_runtime_with_options(
         options.force,
     )?;
     seed_packaged_files(
+        &settings.roles_dir(),
+        spark_assets::roles::assets(),
+        spark_assets::roles::PACKAGED_ROLE_HASHES,
+        options.force,
+    )?;
+    seed_packaged_files(
         &settings.data_dir.join("playbooks"),
         spark_assets::playbooks::assets(),
         ".packaged-playbook-hashes.json",

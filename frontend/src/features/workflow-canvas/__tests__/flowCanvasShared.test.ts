@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 
@@ -13,7 +13,10 @@ import { describe, expect, it } from 'vitest'
 const repoRoot = resolve(process.cwd(), '..')
 const previewFixtureCache = new Map<string, PreviewResponsePayload>()
 const require = createRequire(import.meta.url)
-const { load: loadYaml } = require('js-yaml') as { load: (source: string) => unknown }
+const { load: loadYaml, dump: dumpYaml } = require('js-yaml') as {
+    load: (source: string) => unknown
+    dump: (value: unknown) => string
+}
 
 function loadStarterFlowPreview(flowRelativePath: string, expandChildren: boolean): PreviewResponsePayload {
     const cacheKey = `${flowRelativePath}:${expandChildren ? 'expanded' : 'parent-only'}`
@@ -61,7 +64,7 @@ interface LooseFlowDefinition extends LooseRecord {
 }
 
 function buildPreviewPayloadFromFlowFile(flowPath: string, expandChildren: boolean): PreviewResponsePayload {
-    if (flowPath.endsWith('.yaml') || flowPath.endsWith('.yml')) {
+    if (statSync(flowPath).isDirectory()) {
         return buildPreviewPayloadFromFlowDefinition(flowPath, expandChildren)
     }
     return buildPreviewPayloadFromYamlCompatFile(flowPath, expandChildren)
@@ -100,8 +103,44 @@ function buildPreviewPayloadFromFlowDefinition(flowPath: string, expandChildren:
     }
 }
 
+const NODE_BODY_KEYS: Record<string, string> = {
+    agent_task: 'prompt',
+    human_gate: 'prompt',
+    exit: 'result_summary_prompt',
+    tool: 'command',
+}
+
+// Assembles a flow directory (flow.md plus one <node>.md per node) the way
+// the server loader does.
 function parseFlowYamlFile(flowPath: string): LooseFlowDefinition {
-    return loadYaml(readFileSync(flowPath, 'utf-8')) as LooseFlowDefinition
+    const readMarkdown = (file: string) => {
+        const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(readFileSync(resolve(flowPath, file), 'utf-8'))
+        return {
+            meta: (loadYaml(match?.[1] ?? '') ?? {}) as LooseRecord,
+            body: (match?.[2] ?? '').trim(),
+        }
+    }
+    const header = readMarkdown('flow.md')
+    const nodes: Record<string, LooseFlowNode> = {}
+    const edges: LooseFlowEdge[] = []
+    for (const file of readdirSync(flowPath).filter((name) => name.endsWith('.md') && name !== 'flow.md')) {
+        const nodeId = file.slice(0, -'.md'.length)
+        const { meta, body } = readMarkdown(file)
+        const { type, title, routes, config, ...rest } = meta
+        const kind = String(type)
+        const bodyKey = NODE_BODY_KEYS[kind]
+        const bodyValue = kind === 'tool' ? body.replace(/^`{3,}.*\n|`{3,}$/g, '') : body
+        nodes[nodeId] = {
+            ...rest,
+            kind,
+            label: typeof title === 'string' ? title : '',
+            config: { ...(config as LooseRecord | undefined), kind, ...(bodyKey && bodyValue ? { [bodyKey]: bodyValue } : {}) },
+        }
+        for (const route of (routes as LooseFlowEdge[] | undefined) ?? []) {
+            edges.push({ from: nodeId, ...route })
+        }
+    }
+    return { ...header.meta, goal: header.body, nodes, edges }
 }
 
 function flowDefinitionToPreviewGraph(flow: LooseFlowDefinition): NonNullable<PreviewResponsePayload['graph']> {
@@ -821,25 +860,25 @@ describe('flowCanvasShared', () => {
     it.each([
         {
             flowName: 'implement-spec.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec.yaml',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec',
             expandChildren: false,
             expectedDerivedNodeId: null,
         },
         {
             flowName: 'implement-spec.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec.yaml',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-spec',
             expandChildren: true,
             expectedDerivedNodeId: '__child_preview_cluster__run_milestone',
         },
         {
             flowName: 'implement-milestone.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone.yaml',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone',
             expandChildren: false,
             expectedDerivedNodeId: null,
         },
         {
             flowName: 'implement-milestone.yaml',
-            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone.yaml',
+            flowRelativePath: 'crates/spark-assets/assets/flows/software-development/spec-implementation/implement-milestone',
             expandChildren: true,
             expectedDerivedNodeId: null,
         },
@@ -849,7 +888,7 @@ describe('flowCanvasShared', () => {
         expandChildren,
         expectedDerivedNodeId,
     }) => {
-        const sourceYaml = readFileSync(resolve(repoRoot, flowRelativePath), 'utf-8')
+        const sourceYaml = dumpYaml(parseFlowYamlFile(resolve(repoRoot, flowRelativePath)))
         const preview = loadStarterFlowPreview(flowRelativePath, expandChildren)
 
         expect(preview.status).toBe('ok')

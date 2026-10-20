@@ -74,7 +74,7 @@ nodes:
     kind: subflow
     config:
       kind: subflow
-      flow_ref: workers/child.yaml
+      flow_ref: workers/child
     manager:
       child_workdir_from: context.workspace.path
   finalize_commit:
@@ -149,9 +149,8 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     let settings = settings(temp.path());
     fs::create_dir_all(&settings.config_dir).expect("config dir");
     let flow_dir = settings.flows_dir.join("lifecycle");
-    fs::create_dir_all(flow_dir.join("workers")).expect("flow dirs");
-    fs::write(flow_dir.join("parent.yaml"), PARENT_FLOW).expect("write parent flow");
-    fs::write(flow_dir.join("workers/child.yaml"), CHILD_FLOW).expect("write child flow");
+    write_flow(&flow_dir.join("parent"), PARENT_FLOW);
+    write_flow(&flow_dir.join("workers/child"), CHILD_FLOW);
 
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("repo dir");
@@ -168,7 +167,7 @@ fn visible_worktree_lifecycle_commits_child_work_on_branch_and_removes_worktree(
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-lifecycle".to_string()),
-        flow_name: Some("lifecycle/parent.yaml".to_string()),
+        flow_name: Some("lifecycle/parent".to_string()),
         working_directory: repo.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -280,4 +279,12 @@ fn tool_nodes_can_bind_the_runtime_runs_root_from_context() {
         bundle.paths.root.starts_with(&probed),
         "the probed root must actually contain this run"
     );
+}
+
+fn write_flow(dir: &Path, yaml: &str) {
+    attractor_dsl::write_flow_dir(
+        dir,
+        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
+    )
+    .expect("write flow");
 }

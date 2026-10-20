@@ -1883,31 +1883,44 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     };
 
     let flow_path = expand_user_path(&options.file, env);
-    let raw_content = match std::fs::read_to_string(&flow_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return json_error(
-                format!("Flow file not found: {}", options.file),
-                EXIT_GENERAL_FAILURE,
-            );
-        }
-        Err(error) => {
-            return json_error(
-                format!("Unable to read flow file {}: {error}", options.file),
-                EXIT_GENERAL_FAILURE,
-            );
-        }
-    };
-
-    let mut response = match FlowDefinition::from_yaml_str(&raw_content) {
-        Ok(flow) => {
-            let flow = flow.normalize();
-            match attractor_dsl::validate_flow_definition(&flow) {
-                Ok(()) => object_from_value(flow_definition_preview_payload(&flow)),
-                Err(error) => flow_definition_error_payload(&error, "validation_error"),
+    // A flow directory validates as the loader assembles it.
+    let loaded = if flow_path.is_dir() {
+        attractor_dsl::read_flow_dir(&flow_path).map_err(|error| {
+            let error = FlowDefinitionError {
+                count: error.diagnostics().len().max(1),
+                detail: error.detail().to_string(),
+                diagnostics: error.diagnostics().to_vec(),
+            };
+            (error, "validation_error")
+        })
+    } else {
+        let raw_content = match std::fs::read_to_string(&flow_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return json_error(
+                    format!("Flow file not found: {}", options.file),
+                    EXIT_GENERAL_FAILURE,
+                );
             }
-        }
-        Err(error) => flow_definition_error_payload(&error, "parse_error"),
+            Err(error) => {
+                return json_error(
+                    format!("Unable to read flow file {}: {error}", options.file),
+                    EXIT_GENERAL_FAILURE,
+                );
+            }
+        };
+        FlowDefinition::from_yaml_str(&raw_content)
+            .map_err(|error| (error, "parse_error"))
+            .and_then(|flow| {
+                let flow = flow.normalize();
+                attractor_dsl::validate_flow_definition(&flow)
+                    .map(|()| flow)
+                    .map_err(|error| (error, "validation_error"))
+            })
+    };
+    let mut response = match loaded {
+        Ok(flow) => object_from_value(flow_definition_preview_payload(&flow)),
+        Err((error, status)) => flow_definition_error_payload(&error, status),
     };
     response.insert(
         "name".to_string(),

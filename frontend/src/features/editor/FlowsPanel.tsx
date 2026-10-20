@@ -62,16 +62,15 @@ function useFlowCatalogPanel() {
     const createNewFlow = async () => {
         const name = await prompt({
             title: 'Create flow',
-            description: 'Enter a flow path such as demos/demo.yaml.',
+            description: 'Enter a flow path such as demos/demo.',
             label: 'Flow path',
-            placeholder: 'demos/demo.yaml',
+            placeholder: 'demos/demo',
             confirmLabel: 'Create',
             requireInput: true,
         })
         if (!name) return;
 
-        const hasYamlExtension = /\.(ya?ml)$/i.test(name)
-        const fileName = hasYamlExtension ? name : `${name}.yaml`;
+        const fileName = name;
         const flowId = sanitizeFlowId(fileName);
         const quoteYaml = (value: string) => JSON.stringify(value)
         const defaults = [

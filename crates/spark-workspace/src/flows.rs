@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::Path;
 
 use attractor_core::{FlowDefinition, NodeKind};
@@ -165,23 +164,19 @@ impl WorkspaceFlowService {
     }
 
     pub fn validate_flow(&self, flow_name: &str) -> WorkspaceResult<Value> {
+        self.ensure_flow_exists(flow_name)?;
         let path = attractor_api::resolve_logical_flow_path(&self.settings.flows_dir, flow_name)
             .map_err(|error| flow_source_error(error, Some(flow_name)))?;
-        if !path.exists() {
-            return Err(WorkspaceError::NotFound(format!(
-                "Unknown flow: {flow_name}"
-            )));
-        }
-        let content = fs::read_to_string(&path).map_err(|error| {
-            WorkspaceError::Internal(format!(
-                "Unable to read flow file {}: {error}",
-                path.display()
-            ))
-        })?;
         let name = attractor_dsl::flow_name_from_path(&self.settings.flows_dir, &path)
             .map_err(|error| flow_source_error(error, Some(flow_name)))?;
-        let preview =
-            attractor_api::preview_named_flow_source(&self.settings.flows_dir, &name, &content);
+        let preview = match attractor_dsl::read_flow_dir(&path)
+            .and_then(|flow| attractor_dsl::flow_yaml(&flow))
+        {
+            Ok(content) => {
+                attractor_api::preview_named_flow_source(&self.settings.flows_dir, &name, &content)
+            }
+            Err(error) => attractor_api::flow_source_error_preview(&error),
+        };
         let path = path.canonicalize().unwrap_or(path);
         let mut payload = Map::new();
         payload.insert("name".to_string(), Value::String(name));
@@ -251,7 +246,7 @@ impl WorkspaceFlowService {
     pub fn ensure_flow_exists(&self, flow_name: &str) -> WorkspaceResult<()> {
         let path = attractor_api::resolve_logical_flow_path(&self.settings.flows_dir, flow_name)
             .map_err(|error| flow_source_error(error, Some(flow_name)))?;
-        if path.exists() {
+        if path.join(attractor_dsl::FLOW_FILE).is_file() {
             Ok(())
         } else {
             Err(WorkspaceError::NotFound(format!(
@@ -293,10 +288,7 @@ fn build_flow_summary(
     entry: FlowCatalogEntry,
 ) -> WorkspaceFlowSummary {
     let fallback_title = flow_stem(flow_name);
-    let Ok(content) = fs::read_to_string(flow_path) else {
-        return fallback_summary(flow_name, fallback_title, entry);
-    };
-    match attractor_dsl::parse_flow_definition(&content) {
+    match attractor_dsl::read_flow_dir(flow_path) {
         Ok(flow) => build_flow_summary_from_definition(flow_name, &flow, entry),
         Err(_) => fallback_summary(flow_name, fallback_title, entry),
     }

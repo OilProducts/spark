@@ -498,6 +498,13 @@ pub struct SparkSettings {
     pub project_roots: Vec<PathBuf>,
 }
 
+impl SparkSettings {
+    /// Role files (`roles/<name>.md`) that flow nodes reference.
+    pub fn roles_dir(&self) -> PathBuf {
+        self.data_dir.join("roles")
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SettingsOverrides {
     pub data_dir: Option<PathBuf>,

@@ -13,9 +13,9 @@ use attractor_core::{
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    canonicalize_flow_yaml, ensure_flows_dir, flow_name_from_path, inject_flow_goal,
-    load_flow_content, parse_flow_definition,
-    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, FlowSourceError,
+    flow_name_from_path, inject_flow_goal, load_resolved_flow_content, parse_flow_definition,
+    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, resolve_flow_ref,
+    resolve_flow_roles, write_flow_dir, FlowSourceError, FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -1477,25 +1477,16 @@ impl AttractorApiService {
         }
     }
 
+    /// The flow directory assembled into one YAML document, in its authored
+    /// form (roles referenced, not merged).
     pub fn get_flow(&self, name: &str) -> RuntimeRouteResponse {
-        let flow_path = match resolve_flow_path(&self.settings.flows_dir, name) {
-            Ok(path) => path,
-            Err(error) => return flow_source_error_response(error),
-        };
-        if !flow_path.exists() {
-            return RuntimeRouteResponse::json(404, json!({"detail": "Flow not found."}));
+        match read_typed_named_flow_source(&self.settings.flows_dir, name) {
+            Ok(source) => RuntimeRouteResponse::json(
+                200,
+                json!({"name": source.name, "content": source.content}),
+            ),
+            Err(error) => flow_source_error_response(error),
         }
-        let content = match fs::read_to_string(&flow_path) {
-            Ok(content) => content,
-            Err(error) => {
-                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
-            }
-        };
-        let name = match flow_name_from_path(&self.settings.flows_dir, &flow_path) {
-            Ok(name) => name,
-            Err(error) => return flow_source_error_response(error),
-        };
-        RuntimeRouteResponse::json(200, json!({"name": name, "content": content}))
     }
 
     pub fn save_flow(&self, req: SaveFlowRequest) -> RuntimeRouteResponse {
@@ -1516,7 +1507,10 @@ impl AttractorApiService {
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
-        save_flow_request(&self.settings.flows_dir, req)
+        if let Err(error) = resolve_flow_roles(&flow, &self.settings.roles_dir()) {
+            return flow_save_definition_error_response(error);
+        }
+        save_flow_request(&self.settings.flows_dir, req.name, &flow)
     }
 
     pub fn delete_flow(&self, name: &str) -> RuntimeRouteResponse {
@@ -1524,10 +1518,10 @@ impl AttractorApiService {
             Ok(path) => path,
             Err(error) => return flow_source_error_response(error),
         };
-        if !flow_path.exists() {
+        if !flow_path.join(FLOW_FILE).is_file() {
             return RuntimeRouteResponse::json(404, json!({"detail": "Flow not found."}));
         }
-        match fs::remove_file(&flow_path) {
+        match fs::remove_dir_all(&flow_path) {
             Ok(()) => RuntimeRouteResponse::json(200, json!({"status": "deleted"})),
             Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
         }
@@ -1564,7 +1558,11 @@ impl AttractorApiService {
             let Some(flow_name) = flow_name.as_deref() else {
                 return validation_error_response("Either flow_content or flow_name is required.");
             };
-            match load_flow_content(&self.settings.flows_dir, flow_name) {
+            match load_resolved_flow_content(
+                &self.settings.flows_dir,
+                &self.settings.roles_dir(),
+                flow_name,
+            ) {
                 Ok(content) => flow_content = Some(content),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
@@ -1829,6 +1827,11 @@ impl AttractorApiService {
                 json!(flow_source_dir.to_string_lossy().to_string()),
             );
         }
+        // Subflow children resolve their roles from the same directory.
+        runtime_context.insert(
+            "internal.roles_dir".to_string(),
+            json!(self.settings.roles_dir().to_string_lossy().to_string()),
+        );
 
         if let Err(error) = fs::create_dir_all(&working_directory) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
@@ -2300,7 +2303,11 @@ impl AttractorApiService {
                     json!({"status": "validation_error", "error": "flow_name is required when flow_source_mode is flow_name."}),
                 );
             };
-            match load_flow_content(&self.settings.flows_dir, &flow_name) {
+            match load_resolved_flow_content(
+                &self.settings.flows_dir,
+                &self.settings.roles_dir(),
+                &flow_name,
+            ) {
                 Ok(content) => (flow_name, content),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
@@ -2852,7 +2859,7 @@ pub fn preview_with_config(
 pub fn list_logical_flow_names(
     flows_dir: impl AsRef<Path>,
 ) -> Result<Vec<String>, FlowSourceError> {
-    list_flow_names(flows_dir.as_ref())
+    attractor_dsl::list_flow_names(flows_dir)
 }
 
 pub fn resolve_logical_flow_path(
@@ -2867,6 +2874,11 @@ pub fn read_named_flow_source(
     flow_name: &str,
 ) -> Result<NamedFlowSource, FlowSourceError> {
     read_typed_named_flow_source(flows_dir, flow_name)
+}
+
+/// A preview response reporting a flow that failed to load.
+pub fn flow_source_error_preview(error: &FlowSourceError) -> PreviewRouteResponse {
+    PreviewRouteResponse::json(200, flow_definition_validation_payload(error))
 }
 
 pub fn preview_named_flow_source(
@@ -3084,62 +3096,32 @@ fn dispatch_pipeline_route(
     }
 }
 
-fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
-    let flows_dir = ensure_flows_dir(flows_dir)?;
-    let mut paths = Vec::new();
-    collect_yaml_paths(&flows_dir, &mut paths).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!(
-                "Unable to list flows directory {}: {source}",
-                flows_dir.display()
-            ),
-        )
-    })?;
-    let mut names = paths
-        .into_iter()
-        .map(|path| flow_name_from_path(&flows_dir, path))
-        .collect::<Result<Vec<_>, _>>()?;
-    names.sort();
-    Ok(names)
-}
-
-fn collect_yaml_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_yaml_paths(&path, paths)?;
-        } else if matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("yaml" | "yml")
-        ) {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn save_flow_request(flows_dir: &Path, req: SaveFlowRequest) -> RuntimeRouteResponse {
-    let canonical_content = match canonicalize_flow_yaml(&req.content) {
-        Ok(content) => content,
-        Err(error) => return flow_save_definition_error_response(error),
-    };
-
-    let flow_path = match resolve_flow_path(flows_dir, &req.name) {
+fn save_flow_request(
+    flows_dir: &Path,
+    name: String,
+    flow: &FlowDefinition,
+) -> RuntimeRouteResponse {
+    let flow_path = match resolve_flow_path(flows_dir, &name) {
         Ok(path) => path,
         Err(error) => return flow_source_error_response(error),
     };
-    if let Some(parent) = flow_path.parent() {
-        if let Err(error) = fs::create_dir_all(parent) {
-            return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
-        }
+    // A flow directory holds only its own files: never turn a folder of
+    // flows into a flow, or nest a flow inside another.
+    let folder_of_flows = !flow_path.join(FLOW_FILE).is_file()
+        && fs::read_dir(&flow_path).is_ok_and(|mut entries| entries.next().is_some());
+    let inside_flow = flow_path
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != flows_dir)
+        .any(|dir| dir.join(FLOW_FILE).is_file());
+    if folder_of_flows || inside_flow {
+        return RuntimeRouteResponse::json(
+            409,
+            json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
+        );
     }
-    if let Err(error) = fs::write(&flow_path, canonical_content) {
-        return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+    if let Err(error) = write_flow_dir(&flow_path, flow) {
+        return flow_source_error_response(error);
     }
     let name = match flow_name_from_path(flows_dir, &flow_path) {
         Ok(name) => name,
@@ -3463,7 +3445,15 @@ fn child_preview_map(
         let Some(NodeConfig::Subflow { flow_ref, .. }) = node.config.as_ref() else {
             continue;
         };
-        let child_name = resolve_child_flow_name(parent_flow_name, flow_ref);
+        let parent_dir = parent_flow_name
+            .and_then(|name| resolve_flow_path(flows_dir, name).ok())
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| flows_dir.to_path_buf());
+        let Ok(child_name) =
+            flow_name_from_path(flows_dir, resolve_flow_ref(&parent_dir, flow_ref))
+        else {
+            continue;
+        };
         let Ok(source) = read_typed_named_flow_source(flows_dir, &child_name) else {
             continue;
         };
@@ -3480,24 +3470,6 @@ fn child_preview_map(
         );
     }
     Value::Object(previews)
-}
-
-fn resolve_child_flow_name(parent_flow_name: Option<&str>, flow_ref: &str) -> String {
-    let flow_ref = flow_ref.trim().replace('\\', "/");
-    if flow_ref.contains('/') {
-        return flow_ref;
-    }
-    let Some(parent_flow_name) = parent_flow_name else {
-        return flow_ref;
-    };
-    let parent = Path::new(parent_flow_name);
-    match parent.parent() {
-        Some(parent_dir) if !parent_dir.as_os_str().is_empty() => parent_dir
-            .join(flow_ref)
-            .to_string_lossy()
-            .replace('\\', "/"),
-        _ => flow_ref,
-    }
 }
 
 fn flow_preview_graph_payload(flow: &FlowDefinition) -> Value {

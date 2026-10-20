@@ -62,7 +62,7 @@ fn launch_unknown_image_argument_keeps_usage_error_category() {
             "run",
             "launch",
             "--flow",
-            "test-dispatch.yaml",
+            "test-dispatch",
             "--summary",
             "Launch directly",
             "--project",
@@ -99,8 +99,8 @@ fn flow_list_text_executes_http_request_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
         r#"[
-          {"name":"examples/simple.yaml","title":"Simple Flow","description":"Small starter."},
-          {"name":"ops/review.yaml","title":"ops/review.yaml","description":""}
+          {"name":"examples/simple","title":"Simple Flow","description":"Small starter."},
+          {"name":"ops/review","title":"ops/review","description":""}
         ]"#,
     ));
     let output = run_with_args_and_env(
@@ -118,7 +118,7 @@ fn flow_list_text_executes_http_request_and_renders_rows() {
     assert_eq!(output.exit_code, 0);
     assert_eq!(
         output.stdout,
-        "examples/simple.yaml: Simple Flow\n  Small starter.\nops/review.yaml\n"
+        "examples/simple: Simple Flow\n  Small starter.\nops/review\n"
     );
     assert_eq!(output.stderr, "");
     let request = requests
@@ -145,7 +145,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
             "--conversation",
             "amber-otter",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--summary",
             "Run the approved scope",
             "--goal",
@@ -186,7 +186,7 @@ fn convo_run_request_posts_payload_and_prints_response_json() {
         serde_json::from_str::<Value>(&request.body).expect("request json"),
         serde_json::json!({
             "execution_profile_id": "local-dev",
-            "flow_name": "software-development/implement-change-request.yaml",
+            "flow_name": "software-development/implement-change-request",
             "goal": "Implement it.",
             "launch_context": {"context.request.summary": "Run the approved scope"},
             "llm_profile": "implementation",
@@ -208,7 +208,7 @@ fn run_launch_requires_project_when_conversation_is_omitted() {
             "run",
             "launch",
             "--flow",
-            "test.yaml",
+            "test",
             "--summary",
             "Launch directly",
             "--base-url",
@@ -238,7 +238,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "run",
             "launch",
             "--flow",
-            "test.yaml",
+            "test",
             "--summary",
             "Launch directly",
             "--project",
@@ -267,7 +267,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
         serde_json::from_str::<Value>(&launch_request.body).expect("launch body"),
         serde_json::json!({
             "execution_profile_id": "local-review",
-            "flow_name": "test.yaml",
+            "flow_name": "test",
             "llm_profile": "launch-profile",
             "llm_provider": "anthropic",
             "model": "gpt-5.3",
@@ -321,7 +321,7 @@ fn run_launch_retry_and_continue_send_expected_json_bodies() {
             "--flow-source-mode",
             "snapshot",
             "--flow",
-            "ignored.yaml",
+            "ignored",
             "--project",
             "/repo",
             "--conversation",
@@ -365,7 +365,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
         200,
         r#"{
-          "name":"software-development/implement-change-request.yaml",
+          "name":"software-development/implement-change-request",
           "title":"Implement Change Request",
           "description":"Execute approved work items.",
           "effective_launch_policy":"agent_requestable",
@@ -382,7 +382,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
             "flow",
             "describe",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--text",
             "--base-url",
             describe_base_url.as_str(),
@@ -400,14 +400,14 @@ fn flow_describe_and_validate_text_match_python_labels() {
             .recv_timeout(Duration::from_secs(2))
             .expect("describe request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request?surface=agent"
     );
 
     let (validate_base_url, validate_requests) = serve_once(HttpResponse::json(
         200,
         r#"{
-          "name":"software-development/implement-change-request.yaml",
-          "path":"/flows/software-development/implement-change-request.yaml",
+          "name":"software-development/implement-change-request",
+          "path":"/flows/software-development/implement-change-request",
           "status":"invalid",
           "diagnostics":[{"severity":"error","rule_id":"missing-edge","message":"Missing edge.","line":7}],
           "errors":["Missing edge."]
@@ -419,7 +419,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
             "flow",
             "validate",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--text",
             "--base-url",
             validate_base_url.as_str(),
@@ -436,7 +436,7 @@ fn flow_describe_and_validate_text_match_python_labels() {
             .recv_timeout(Duration::from_secs(2))
             .expect("validate request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml/validate"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/validate"
     );
 }
 
@@ -451,7 +451,7 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
             "flow",
             "get",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--base-url",
             json_base_url.as_str(),
         ],
@@ -461,7 +461,7 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
     let payload = serde_json::from_str::<Value>(&json_output.stdout).expect("stdout json");
     assert_eq!(
         payload["name"],
-        "software-development/implement-change-request.yaml"
+        "software-development/implement-change-request"
     );
     assert!(payload["content"]
         .as_str()
@@ -472,7 +472,7 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
             .recv_timeout(Duration::from_secs(2))
             .expect("json request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml/raw?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/raw?surface=agent"
     );
 
     let text_flow_yaml = "schema_version: \"1\"\nid: plain\n";
@@ -483,7 +483,7 @@ fn flow_get_wraps_json_and_raw_text_preserves_trailing_newline_rule() {
             "flow",
             "get",
             "--flow",
-            "plain.yaml",
+            "plain",
             "--text",
             "--base-url",
             text_base_url.as_str(),
@@ -499,7 +499,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
     let env = BTreeMap::new();
     let (missing_base_url, _missing_requests) = serve_once(HttpResponse::json(
         404,
-        r#"{"detail":"Unknown flow: missing.yaml"}"#,
+        r#"{"detail":"Unknown flow: missing"}"#,
     ));
     let missing_output = run_with_args_and_env(
         [
@@ -507,7 +507,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "missing.yaml",
+            "missing",
             "--base-url",
             missing_base_url.as_str(),
         ],
@@ -517,7 +517,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
     assert_eq!(missing_output.stdout, "");
     assert_eq!(
         missing_output.stderr,
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n"
+        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
     );
 
     let (validation_base_url, _validation_requests) = serve_once(HttpResponse::json(
@@ -550,7 +550,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "conflict.yaml",
+            "conflict",
             "--base-url",
             top_level_error_base_url.as_str(),
         ],
@@ -572,7 +572,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "invalid.yaml",
+            "invalid",
             "--base-url",
             nested_error_base_url.as_str(),
         ],
@@ -592,7 +592,7 @@ fn http_errors_map_detail_payloads_and_validation_arrays() {
             "flow",
             "describe",
             "--flow",
-            "server-error.yaml",
+            "server-error",
             "--base-url",
             text_error_base_url.as_str(),
         ],
@@ -787,7 +787,7 @@ fn flow_format_file_prints_canonical_numeric_values() {
     assert_eq!(output.exit_code, 0);
     assert_eq!(
         output.stdout,
-        "schema_version: '1'\nid: numeric-flow\ntitle: Numeric Flow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n  start:\n    kind: start\n    label: ''\n    description: ''\n    ui:\n      x: 1e-6\n      y: 1e16\nedges:\n- from: start\n  to: done\n  label: ''\n  condition: ''\n  weight: 10000000000000000\n"
+        "schema_version: '1'\nid: numeric-flow\ntitle: Numeric Flow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n    config:\n      kind: exit\n  start:\n    kind: start\n    label: ''\n    description: ''\n    config:\n      kind: start\n    ui:\n      x: 1e-6\n      y: 1e16\nedges:\n- from: start\n  to: done\n  label: ''\n  condition: ''\n  weight: 10000000000000000\n"
     );
     assert_eq!(output.stderr, "");
     let _ = fs::remove_dir_all(temp_dir);
@@ -988,6 +988,28 @@ fn flow_validate_file_json_uses_local_preview_without_source_checkout_guard() {
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["diagnostics"], Value::Array(Vec::new()));
     assert_eq!(payload["errors"], Value::Array(Vec::new()));
+
+    // A flow directory validates as the loader assembles it.
+    let flow_dir = temp_dir.join("valid-flow");
+    attractor_dsl::write_flow_dir(
+        &flow_dir,
+        &attractor_dsl::parse_flow_definition(valid_flow_source()).expect("valid flow"),
+    )
+    .expect("write flow dir");
+    let output = run_with_args_and_env(
+        [
+            "spark",
+            "flow",
+            "validate",
+            "--file",
+            flow_dir.to_str().expect("path"),
+        ],
+        &env,
+    );
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    let payload: Value = serde_json::from_str(&output.stdout).expect("valid json");
+    assert_eq!(payload["name"], "valid-flow");
+    assert_eq!(payload["status"], "ok");
     let _ = fs::remove_dir_all(temp_dir);
 }
 
@@ -1098,7 +1120,7 @@ fn flow_validate_file_and_flow_are_mutually_exclusive() {
             "flow",
             "validate",
             "--flow",
-            "examples/simple-linear.yaml",
+            "examples/simple-linear",
             "--file",
             "local.yaml",
         ],
@@ -1133,7 +1155,7 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
             "spark",
             "flow",
             "describe",
-            "--flow=software-development/implement-change-request.yaml",
+            "--flow=software-development/implement-change-request",
             "--base-url=http://127.0.0.1:8020",
         ],
         &env,
@@ -1143,7 +1165,7 @@ fn request_plans_resolve_target_order_and_escape_path_segments() {
     assert_eq!(explicit_plan.base_url, "http://127.0.0.1:8020");
     assert_eq!(
         explicit_plan.path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request?surface=agent"
     );
 }
 
@@ -1205,7 +1227,7 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     let env = BTreeMap::new();
     let (list_base_url, list_requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
     let list_output = run_with_args_and_env(
         [
@@ -1230,7 +1252,7 @@ fn trigger_commands_execute_http_requests_and_render_text() {
 
     let (list_text_base_url, _list_text_requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
     let list_text_output = run_with_args_and_env(
         [
@@ -1246,12 +1268,12 @@ fn trigger_commands_execute_http_requests_and_render_text() {
     assert_eq!(list_text_output.exit_code, 0);
     assert_eq!(
         list_text_output.stdout,
-        "trigger-123: Nightly [webhook] -> ops/run.yaml\n  enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  enabled=True protected=False\n"
     );
 
     let (describe_base_url, describe_requests) = serve_once(HttpResponse::json(
         200,
-        r#"{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml","project_path":"/repo"},"state":{"last_fired_at":null,"last_result":null,"next_run_at":null},"webhook_secret":"secret-123"}"#,
+        r#"{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run","project_path":"/repo"},"state":{"last_fired_at":null,"last_result":null,"next_run_at":null},"webhook_secret":"secret-123"}"#,
     ));
     let describe_output = run_with_args_and_env(
         [
@@ -1274,7 +1296,7 @@ Name: Nightly\n\
 Source Type: webhook\n\
 Enabled: True\n\
 Protected: False\n\
-Flow Target: ops/run.yaml\n\
+Flow Target: ops/run\n\
 Project Target: /repo\n\
 Last Fired: (never)\n\
 Last Result: (none)\n\
@@ -1297,7 +1319,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
     let payload_path = temp_dir.join("trigger.json");
     fs::write(
         &payload_path,
-        r#"{"name":"Nightly","source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"source":{}}"#,
+        r#"{"name":"Nightly","source_type":"webhook","action":{"flow_name":"ops/run"},"source":{}}"#,
     )
     .expect("write trigger payload");
 
@@ -1329,7 +1351,7 @@ fn trigger_create_update_delete_use_payloads_and_percent_encoded_ids() {
         serde_json::json!({
             "name": "Nightly",
             "source_type": "webhook",
-            "action": {"flow_name": "ops/run.yaml"},
+            "action": {"flow_name": "ops/run"},
             "source": {}
         })
     );
@@ -1443,7 +1465,7 @@ fn launch_goal_sources_are_mutually_exclusive() {
             "run",
             "launch",
             "--flow",
-            "test.yaml",
+            "test",
             "--summary",
             "Summary",
             "--project",
@@ -1608,7 +1630,7 @@ fn messy_flow_source() -> &'static str {
 }
 
 fn formatted_flow_source() -> &'static str {
-    "schema_version: '1'\nid: workflow\ntitle: Workflow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n  start:\n    kind: start\n    label: ''\n    description: ''\n  task:\n    kind: agent_task\n    label: Task\n    description: ''\n    config:\n      kind: agent_task\n      prompt: Do work\nedges:\n- from: start\n  to: task\n  label: ''\n  condition: ''\n  weight: 0\n- from: task\n  to: done\n  label: ''\n  condition: ''\n  weight: 0\n"
+    "schema_version: '1'\nid: workflow\ntitle: Workflow\ndescription: ''\ngoal: ''\nnodes:\n  done:\n    kind: exit\n    label: ''\n    description: ''\n    config:\n      kind: exit\n  start:\n    kind: start\n    label: ''\n    description: ''\n    config:\n      kind: start\n  task:\n    kind: agent_task\n    label: Task\n    description: ''\n    config:\n      kind: agent_task\n      prompt: Do work\nedges:\n- from: start\n  to: task\n  label: ''\n  condition: ''\n  weight: 0\n- from: task\n  to: done\n  label: ''\n  condition: ''\n  weight: 0\n"
 }
 
 fn numeric_flow_source() -> &'static str {
@@ -1659,7 +1681,7 @@ fn mission_stdin_uses_structured_json_and_run_request_rejects_task_flags() {
                 "--conversation",
                 "amber-anchor",
                 "--flow",
-                "ops/test.yaml",
+                "ops/test",
                 "--summary",
                 "Work",
                 flag,

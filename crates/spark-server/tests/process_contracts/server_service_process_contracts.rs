@@ -9,8 +9,8 @@ use std::process::{Command, Output};
 #[test]
 fn service_install_status_remove_process_uses_systemd_unit_contract() {
     let harness = ServiceHarness::new();
-    let flow_count = spark_assets::flows::starter_flow_names()
-        .expect("packaged starter flow names")
+    let flow_count = spark_assets::flows::starter_flow_assets()
+        .expect("packaged starter flow assets")
         .len();
 
     let install = harness
@@ -42,7 +42,7 @@ fn service_install_status_remove_process_uses_systemd_unit_contract() {
         )
     );
 
-    assert_eq!(count_yaml_files(&harness.flows_dir), flow_count);
+    assert_eq!(count_flow_files(&harness.flows_dir), flow_count);
     assert!(harness
         .data_dir
         .join("config")
@@ -285,16 +285,16 @@ fn invocation(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_string()).collect()
 }
 
-fn count_yaml_files(root: &Path) -> usize {
+fn count_flow_files(root: &Path) -> usize {
     fs::read_dir(root)
         .expect("read flow dir")
         .map(|entry| entry.expect("entry").path())
         .map(|path| {
             if path.is_dir() {
-                count_yaml_files(&path)
+                count_flow_files(&path)
             } else if matches!(
                 path.extension().and_then(|value| value.to_str()),
-                Some("yaml" | "yml")
+                Some("md")
             ) {
                 1
             } else {

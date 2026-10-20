@@ -5,6 +5,7 @@ use attractor_api::{
     list_logical_flow_names, preview_named_flow_source, read_named_flow_source,
     resolve_logical_flow_path, AttractorApiService, SaveFlowRequest,
 };
+use attractor_dsl::{parse_flow_definition, write_flow_dir};
 use serde_json::json;
 use spark_common::settings::SparkSettings;
 
@@ -36,23 +37,23 @@ edges:
 fn list_and_get_flows_use_normalized_attractor_payloads() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let nested = settings.flows_dir.join("examples");
-    fs::create_dir_all(&nested).expect("flows dir");
-    fs::write(nested.join("simple-linear.yaml"), VALID_FLOW).expect("write flow");
-    fs::write(settings.flows_dir.join("root.yaml"), VALID_FLOW).expect("write root");
+    write_flow(&settings.flows_dir.join("examples/simple-linear"));
+    write_flow(&settings.flows_dir.join("root"));
+    // Retired YAML files are not flows.
+    fs::write(settings.flows_dir.join("legacy.yaml"), VALID_FLOW).expect("write yaml");
     let service = AttractorApiService::new(settings);
 
     let list = service.list_flows();
     assert_eq!(list.status_code, 200);
-    assert_eq!(
-        list.body,
-        json!(["examples/simple-linear.yaml", "root.yaml"])
-    );
+    assert_eq!(list.body, json!(["examples/simple-linear", "root"]));
 
-    let get = service.get_flow("examples/simple-linear.yaml");
+    let get = service.get_flow("examples/simple-linear");
     assert_eq!(get.status_code, 200);
-    assert_eq!(get.body["name"], json!("examples/simple-linear.yaml"));
-    assert_eq!(get.body["content"], json!(VALID_FLOW));
+    assert_eq!(get.body["name"], json!("examples/simple-linear"));
+    assert_eq!(
+        parse_flow_definition(get.body["content"].as_str().expect("content")).expect("flow"),
+        parse_flow_definition(VALID_FLOW).expect("flow")
+    );
 }
 
 #[test]
@@ -60,11 +61,11 @@ fn get_and_delete_missing_flow_match_error_contract() {
     let temp = tempfile::tempdir().expect("tempdir");
     let service = AttractorApiService::new(settings(temp.path()));
 
-    let get = service.get_flow("missing.yaml");
+    let get = service.get_flow("missing");
     assert_eq!(get.status_code, 404);
     assert_eq!(get.body, json!({"detail": "Flow not found."}));
 
-    let delete = service.delete_flow("missing.yaml");
+    let delete = service.delete_flow("missing");
     assert_eq!(delete.status_code, 404);
     assert_eq!(delete.body, json!({"detail": "Flow not found."}));
 }
@@ -88,7 +89,11 @@ fn flow_name_safety_errors_are_exposed_through_api_responses() {
     );
     assert_eq!(
         service.get_flow("nested/").body,
-        json!({"detail": "Flow name must reference a file."})
+        json!({"detail": "Flow name must not end with '/'."})
+    );
+    assert_eq!(
+        service.get_flow("nested/flow.yaml").body,
+        json!({"detail": "Flow names name a flow directory; drop the file extension."})
     );
 }
 
@@ -96,23 +101,22 @@ fn flow_name_safety_errors_are_exposed_through_api_responses() {
 fn public_flow_source_helpers_match_route_normalization_and_preview_contracts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    fs::create_dir_all(settings.flows_dir.join("nested")).expect("flows dir");
-    fs::write(settings.flows_dir.join("nested/helper.yaml"), VALID_FLOW).expect("flow");
+    write_flow(&settings.flows_dir.join("nested/helper"));
 
     assert_eq!(
         list_logical_flow_names(&settings.flows_dir).expect("names"),
-        vec!["nested/helper.yaml"]
+        vec!["nested/helper"]
     );
     assert_eq!(
-        resolve_logical_flow_path(&settings.flows_dir, "nested/helper")
-            .expect("path")
-            .file_name()
-            .and_then(|value| value.to_str()),
-        Some("helper.yaml")
+        resolve_logical_flow_path(&settings.flows_dir, "nested/helper").expect("path"),
+        settings.flows_dir.join("nested/helper")
     );
     let source = read_named_flow_source(&settings.flows_dir, "nested/helper").expect("source");
-    assert_eq!(source.name, "nested/helper.yaml");
-    assert_eq!(source.content, VALID_FLOW);
+    assert_eq!(source.name, "nested/helper");
+    assert_eq!(
+        parse_flow_definition(&source.content).expect("flow"),
+        source.flow
+    );
 
     let preview = preview_named_flow_source(&settings.flows_dir, &source.name, &source.content);
     assert_eq!(preview.status_code, 200);
@@ -130,7 +134,7 @@ fn save_parse_error_reports_flow_definition_diagnostics() {
     let service = AttractorApiService::new(settings(temp.path()));
 
     let response = service.save_flow(SaveFlowRequest {
-        name: "bad.yaml".to_string(),
+        name: "bad".to_string(),
         content: "nodes: [\n".to_string(),
     });
 
@@ -149,7 +153,7 @@ fn save_validation_error_reports_diagnostics_without_writing() {
     let service = AttractorApiService::new(settings.clone());
 
     let response = service.save_flow(SaveFlowRequest {
-        name: "broken.yaml".to_string(),
+        name: "broken".to_string(),
         content: r#"schema_version: "1"
 id: broken
 nodes:
@@ -174,11 +178,11 @@ edges:
         response.body["detail"]["errors"][0]["edge"],
         json!(["start", "missing"])
     );
-    assert!(!settings.flows_dir.join("broken.yaml").exists());
+    assert!(!settings.flows_dir.join("broken").exists());
 }
 
 #[test]
-fn save_canonicalizes_nested_flow_as_yaml() {
+fn save_splits_nested_flow_into_a_directory() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let service = AttractorApiService::new(settings.clone());
@@ -190,38 +194,53 @@ fn save_canonicalizes_nested_flow_as_yaml() {
     assert_eq!(created.status_code, 200);
     assert_eq!(
         created.body,
-        json!({"status": "saved", "name": "nested/new-flow.yaml"})
+        json!({"status": "saved", "name": "nested/new-flow"})
     );
-    let flow_path = settings.flows_dir.join("nested/new-flow.yaml");
-    assert!(flow_path.exists());
-    assert!(fs::read_to_string(&flow_path)
-        .expect("saved flow")
-        .contains("schema_version: '1'"));
+    let flow_dir = settings.flows_dir.join("nested/new-flow");
+    let mut files = fs::read_dir(&flow_dir)
+        .expect("flow dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("name")
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, ["done.md", "flow.md", "start.md", "task.md"]);
+    assert!(fs::read_to_string(flow_dir.join("flow.md"))
+        .expect("flow.md")
+        .starts_with("---\ntype: Flow\n"));
 
-    let equivalent = service.save_flow(SaveFlowRequest {
-        name: "nested/new-flow.yaml".to_string(),
-        content: VALID_FLOW.to_string(),
-    });
-    assert_eq!(equivalent.status_code, 200);
-    assert_eq!(
-        equivalent.body,
-        json!({"status": "saved", "name": "nested/new-flow.yaml"})
-    );
+    // A folder of flows, or a path inside a flow, is not a flow directory.
+    for name in ["nested", "nested/new-flow/inner"] {
+        let refused = service.save_flow(SaveFlowRequest {
+            name: name.to_string(),
+            content: VALID_FLOW.to_string(),
+        });
+        assert_eq!(refused.status_code, 409, "{name}: {}", refused.body);
+    }
+    assert!(!settings.flows_dir.join("nested/flow.md").exists());
+    assert!(!flow_dir.join("inner").exists());
 }
 
 #[test]
-fn delete_flow_removes_existing_file() {
+fn delete_flow_removes_its_directory() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    fs::create_dir_all(&settings.flows_dir).expect("flows dir");
-    fs::write(settings.flows_dir.join("delete-me.yaml"), VALID_FLOW).expect("write flow");
+    write_flow(&settings.flows_dir.join("delete-me"));
     let service = AttractorApiService::new(settings.clone());
 
-    let response = service.delete_flow("delete-me.yaml");
+    let response = service.delete_flow("delete-me");
 
     assert_eq!(response.status_code, 200);
     assert_eq!(response.body, json!({"status": "deleted"}));
-    assert!(!settings.flows_dir.join("delete-me.yaml").exists());
+    assert!(!settings.flows_dir.join("delete-me").exists());
+}
+
+fn write_flow(dir: &Path) {
+    write_flow_dir(dir, &parse_flow_definition(VALID_FLOW).expect("valid flow")).expect("write");
 }
 
 fn settings(root: &Path) -> SparkSettings {

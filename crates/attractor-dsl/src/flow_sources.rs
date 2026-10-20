@@ -4,6 +4,8 @@ use attractor_core::{FlowDefinition, FlowDefinitionError, FlowDiagnostic};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::flow_files::{read_flow_dir, resolve_flow_roles, FLOW_FILE};
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("{detail}")]
 pub struct FlowSourceError {
@@ -64,7 +66,7 @@ pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
     if raw_name.ends_with('/') {
         return Err(FlowSourceError::new(
             400,
-            "Flow name must reference a file.",
+            "Flow name must not end with '/'.",
         ));
     }
     if raw_name.starts_with('/') {
@@ -85,31 +87,12 @@ pub fn normalize_flow_name(flow_name: &str) -> Result<String, FlowSourceError> {
         return Err(path_safety_error());
     }
 
-    let Some(leaf_name) = parts.last_mut() else {
+    let leaf_name = parts.last().map(String::as_str).unwrap_or_default();
+    if leaf_name.ends_with(".yaml") || leaf_name.ends_with(".yml") || leaf_name.ends_with(".md") {
         return Err(FlowSourceError::new(
             400,
-            "Flow name must reference a file.",
+            "Flow names name a flow directory; drop the file extension.",
         ));
-    };
-    if leaf_name.is_empty() {
-        return Err(FlowSourceError::new(
-            400,
-            "Flow name must reference a file.",
-        ));
-    }
-    if Path::new(leaf_name).extension().is_some() {
-        let extension = Path::new(leaf_name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        if !matches!(extension, "yaml" | "yml") {
-            return Err(FlowSourceError::new(
-                400,
-                "Flow name must end with .yaml or .yml.",
-            ));
-        }
-    } else {
-        leaf_name.push_str(".yaml");
     }
 
     Ok(parts.join("/"))
@@ -151,24 +134,91 @@ pub fn flow_name_from_path(
     Ok(parts.join("/"))
 }
 
+/// Reads a named flow directory in its authored form, as one YAML document.
 pub fn load_flow_content(
     flows_dir: impl AsRef<Path>,
-    flow_source: &str,
+    flow_name: &str,
 ) -> Result<String, FlowSourceError> {
-    let flow_path = resolve_flow_path(flows_dir, flow_source)?;
-    if !flow_path.exists() {
-        let leaf = flow_path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| flow_source.to_string());
-        return Err(FlowSourceError::new(404, format!("Flow not found: {leaf}")));
-    }
-    std::fs::read_to_string(&flow_path).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!("Unable to read flow file {}: {source}", flow_path.display()),
-        )
+    flow_yaml(&read_named_flow(flows_dir, flow_name)?)
+}
+
+/// Reads a named flow directory in the resolved form runs execute: roles
+/// merged in, as one YAML document.
+pub fn load_resolved_flow_content(
+    flows_dir: impl AsRef<Path>,
+    roles_dir: &Path,
+    flow_name: &str,
+) -> Result<String, FlowSourceError> {
+    flow_yaml(&resolve_flow_roles(
+        &read_named_flow(flows_dir, flow_name)?,
+        roles_dir,
+    )?)
+}
+
+fn read_named_flow(
+    flows_dir: impl AsRef<Path>,
+    flow_name: &str,
+) -> Result<FlowDefinition, FlowSourceError> {
+    let flow_path = resolve_flow_path(flows_dir, flow_name)?;
+    read_flow_dir(&flow_path).map_err(|error| {
+        if error.status_code() == 404 {
+            FlowSourceError::new(404, format!("Flow not found: {}", flow_name.trim()))
+        } else {
+            error
+        }
     })
+}
+
+/// Resolves a subflow's `flow_ref` against `base_dir`: the directory that
+/// contains the parent flow's directory. Preview and runtime share this.
+pub fn resolve_flow_ref(base_dir: &Path, flow_ref: &str) -> PathBuf {
+    let flow_ref = flow_ref.trim().replace('\\', "/");
+    let flow_ref = Path::new(&flow_ref);
+    if flow_ref.is_absolute() {
+        flow_ref.to_path_buf()
+    } else {
+        base_dir.join(flow_ref)
+    }
+}
+
+/// Names of every flow directory (one containing `flow.md`) under `flows_dir`.
+pub fn list_flow_names(flows_dir: impl AsRef<Path>) -> Result<Vec<String>, FlowSourceError> {
+    fn collect(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            let hidden = path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'));
+            if hidden || !path.is_dir() {
+                continue;
+            }
+            if path.join(FLOW_FILE).is_file() {
+                paths.push(path);
+            } else {
+                collect(&path, paths)?;
+            }
+        }
+        Ok(())
+    }
+    let flows_dir = ensure_flows_dir(flows_dir)?;
+    let mut paths = Vec::new();
+    collect(&flows_dir, &mut paths).map_err(|source| list_error(&flows_dir, source))?;
+    let mut names = paths
+        .into_iter()
+        .map(|path| flow_name_from_path(&flows_dir, path))
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    Ok(names)
+}
+
+fn list_error(flows_dir: &Path, source: std::io::Error) -> FlowSourceError {
+    FlowSourceError::new(
+        500,
+        format!(
+            "Unable to list flows directory {}: {source}",
+            flows_dir.display()
+        ),
+    )
 }
 
 pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
@@ -214,22 +264,19 @@ pub fn read_named_flow_source(
 ) -> Result<NamedFlowSource, FlowSourceError> {
     let flows_dir = flows_dir.as_ref();
     let path = resolve_flow_path(flows_dir, flow_name)?;
-    if !path.exists() {
-        return Err(FlowSourceError::new(404, "Flow not found."));
-    }
-    let content = std::fs::read_to_string(&path).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!("Unable to read flow file {}: {source}", path.display()),
-        )
-    })?;
-    let flow = parse_flow_definition(&content)?;
+    let flow = read_flow_dir(&path)?;
     let name = flow_name_from_path(flows_dir, &path)?;
     Ok(NamedFlowSource {
         name,
         path,
-        content,
+        content: flow_yaml(&flow)?,
         flow,
+    })
+}
+
+pub fn flow_yaml(flow: &FlowDefinition) -> Result<String, FlowSourceError> {
+    serde_yaml::to_string(flow).map_err(|source| {
+        FlowSourceError::new(500, format!("Unable to serialize flow YAML: {source}"))
     })
 }
 
@@ -259,10 +306,15 @@ fn path_safety_error() -> FlowSourceError {
 }
 
 fn flow_definition_error(error: FlowDefinitionError) -> FlowSourceError {
-    let detail = error.to_string();
-    FlowSourceError {
-        status_code: 422,
-        detail,
-        diagnostics: error.diagnostics,
+    error.into()
+}
+
+impl From<FlowDefinitionError> for FlowSourceError {
+    fn from(error: FlowDefinitionError) -> Self {
+        Self {
+            status_code: 422,
+            detail: error.to_string(),
+            diagnostics: error.diagnostics,
+        }
     }
 }

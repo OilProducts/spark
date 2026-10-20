@@ -81,7 +81,7 @@ pub struct FlowDefaults {
 }
 
 impl FlowDefaults {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.fidelity.is_none()
             && self.max_retries.is_none()
             && self.llm_provider.is_none()
@@ -117,6 +117,10 @@ pub struct FlowNode {
     pub label: String,
     #[serde(default)]
     pub description: String,
+    /// Role file (`roles/<name>.md`) whose persona and execution defaults the
+    /// loader merges into this `agent_task` node. Only the authored form sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<NodeConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -379,6 +383,35 @@ impl FlowDefinition {
         normalized.title = normalized.title.trim().to_string();
         normalized.description = normalized.description.trim().to_string();
         normalized.goal = normalized.goal.trim().to_string();
+        // Canonical forms, so a flow survives the directory format unchanged:
+        // every node has its kind's config, prompts are trimmed (the runtime
+        // trims them anyway) and commands end with a newline.
+        for node in normalized.nodes.values_mut() {
+            if node.config.is_none() {
+                node.config = default_node_config(&node.kind);
+            }
+            match node.config.as_mut() {
+                Some(NodeConfig::AgentTask { prompt } | NodeConfig::HumanGate { prompt, .. }) => {
+                    *prompt = prompt.trim().to_string();
+                }
+                Some(NodeConfig::Exit {
+                    result_summary_prompt,
+                    ..
+                }) => {
+                    *result_summary_prompt = result_summary_prompt
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|prompt| !prompt.is_empty())
+                        .map(str::to_string);
+                }
+                Some(NodeConfig::Tool { command, .. })
+                    if !command.is_empty() && !command.ends_with('\n') =>
+                {
+                    command.push('\n');
+                }
+                _ => {}
+            }
+        }
         normalized.edges.sort_by(|left, right| {
             left.from
                 .cmp(&right.from)
@@ -544,6 +577,21 @@ impl FlowDefinition {
         }
 
         for (node_id, node) in &self.nodes {
+            if let Some(role) = node.role.as_deref() {
+                if node.kind != NodeKind::AgentTask {
+                    diagnostics.push(node_diagnostic(
+                        "role",
+                        format!("role '{role}' is only allowed on agent_task nodes"),
+                        node_id,
+                    ));
+                } else if !valid_id(role) {
+                    diagnostics.push(node_diagnostic(
+                        "role",
+                        format!("invalid role name '{role}'"),
+                        node_id,
+                    ));
+                }
+            }
             for key in node.context.keys() {
                 if let Err(error) = validate_context_key(key) {
                     diagnostics.push(node_diagnostic("context_key", format!("{error}"), node_id));
@@ -712,6 +760,39 @@ impl Default for FlowDefinition {
             extensions: BTreeMap::new(),
         }
     }
+}
+
+/// The config a node of `kind` has when it sets none. A subflow has no
+/// default: it needs a `flow_ref`.
+fn default_node_config(kind: &NodeKind) -> Option<NodeConfig> {
+    Some(match kind {
+        NodeKind::Start => NodeConfig::Start {},
+        NodeKind::Exit => NodeConfig::Exit {
+            result_summary: false,
+            result_summary_prompt: None,
+        },
+        NodeKind::AgentTask => NodeConfig::AgentTask {
+            prompt: String::new(),
+        },
+        NodeKind::HumanGate => NodeConfig::HumanGate {
+            prompt: String::new(),
+            decisions: Vec::new(),
+        },
+        NodeKind::Conditional => NodeConfig::Conditional {},
+        NodeKind::Parallel => NodeConfig::Parallel {
+            join_policy: None,
+            max_parallel: None,
+            join_k: None,
+            join_quorum: None,
+        },
+        NodeKind::FanIn => NodeConfig::FanIn {},
+        NodeKind::Tool => NodeConfig::Tool {
+            command: String::new(),
+            env_map: BTreeMap::new(),
+            output_map: BTreeMap::new(),
+        },
+        NodeKind::Subflow => return None,
+    })
 }
 
 pub fn flow_definition_schema_value() -> Value {
@@ -991,7 +1072,8 @@ fn valid_flow_ref(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('/')
         && !value.split('/').any(|part| part.is_empty() || part == "..")
-        && (value.ends_with(".yaml") || value.ends_with(".yml"))
+        // A flow_ref names a flow directory; YAML flow files are retired.
+        && !(value.ends_with(".yaml") || value.ends_with(".yml"))
 }
 
 fn condition_is_parseable(value: &str) -> bool {

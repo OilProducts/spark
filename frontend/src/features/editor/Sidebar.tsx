@@ -139,7 +139,7 @@ export function applyNodePropertyChangeToData(
             : {}
         nextData.config = { ...existingConfig, kind: value }
         if (value === 'subflow' && typeof nextData.flow_ref !== 'string') {
-            nextData.flow_ref = typeof existingConfig.flow_ref === 'string' ? existingConfig.flow_ref : 'child.yaml'
+            nextData.flow_ref = typeof existingConfig.flow_ref === 'string' ? existingConfig.flow_ref : 'child'
         }
     }
     if (key === 'join_policy') {

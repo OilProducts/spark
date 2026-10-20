@@ -4,6 +4,8 @@ mod execution_lock_contracts;
 mod execution_placement_contracts;
 #[path = "contracts/flow_crud_contracts.rs"]
 mod flow_crud_contracts;
+#[path = "contracts/flow_directory_contracts.rs"]
+mod flow_directory_contracts;
 #[path = "contracts/llm_profiles_contracts.rs"]
 mod llm_profiles_contracts;
 #[path = "contracts/pipeline_control_contracts.rs"]
