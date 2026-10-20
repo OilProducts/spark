@@ -1,9 +1,10 @@
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use attractor_core::{
-    validate_context_updates_against_contract, ContextMap, ContextWriteContract, FailureKind,
-    Outcome, OutcomeStatus,
+    attr_i64, attr_string, validate_context_updates_against_contract, ContextMap,
+    ContextWriteContract, DotGraph, FailureKind, Outcome, OutcomeStatus,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -48,8 +49,10 @@ pub enum StructuredTextOutcome {
 
 pub fn build_status_envelope_prompt_appendix(
     write_contract: Option<&ContextWriteContract>,
+    graph: &DotGraph,
+    node_id: &str,
 ) -> String {
-    [
+    let mut sections = vec![[
         "Structured response contract:".to_string(),
         "- Return ONLY a JSON object.".to_string(),
         "- Required top-level key: \"outcome\" with one of \"success\", \"fail\", \"partial_success\", or \"retry\".".to_string(),
@@ -62,7 +65,56 @@ pub fn build_status_envelope_prompt_appendix(
         build_status_envelope_context_updates_contract_text(write_contract),
         "- If no routing or context updates are needed, prefer: {\"outcome\":\"success\"}".to_string(),
     ]
-    .join("\n")
+    .join("\n")];
+    sections.extend(build_status_envelope_routes_text(graph, node_id));
+    sections.join("\n")
+}
+
+/// Lists the node's outgoing edges in the order routing checks them:
+/// conditional edges, then labeled unconditional edges, then the default.
+fn build_status_envelope_routes_text(graph: &DotGraph, node_id: &str) -> Option<String> {
+    let mut edges = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.source == node_id)
+        .map(|edge| {
+            (
+                attr_string(&edge.attrs, "condition").trim().to_string(),
+                attr_string(&edge.attrs, "label").trim().to_string(),
+                attr_i64(&edge.attrs, "weight", 0),
+                edge.target.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if edges.is_empty() {
+        return None;
+    }
+    // Stable sort keeps labeled unconditional edges in declaration order: routing takes the first match.
+    edges.sort_by_key(|(condition, label, weight, target)| {
+        match (condition.is_empty(), label.is_empty()) {
+            (false, _) => (0, Reverse(*weight), *target),
+            (true, false) => (1, Reverse(0), ""),
+            (true, true) => (2, Reverse(*weight), *target),
+        }
+    });
+    let mut lines = vec!["Routes from this node, checked in this order:".to_string()];
+    for (condition, label, _, target) in edges {
+        let target_label = graph
+            .nodes
+            .get(target)
+            .map(|node| attr_string(&node.attrs, "label"))
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| target.to_string());
+        let selector = if !condition.is_empty() {
+            format!("When the condition `{condition}` holds")
+        } else if !label.is_empty() {
+            format!("With \"preferred_label\": {}", json!(label))
+        } else {
+            "Default".to_string()
+        };
+        lines.push(format!("- {selector}: go to {}.", json!(target_label)));
+    }
+    Some(lines.join("\n"))
 }
 
 pub fn build_status_envelope_context_updates_contract_text(
