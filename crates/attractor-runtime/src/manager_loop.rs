@@ -376,12 +376,7 @@ fn autostart_child_pipeline(
     } else {
         resolve_child_workdir_path(context, &runtime.run_workdir, &authored_child_workdir)
     };
-    let child_flow_path = resolve_child_flow_path(
-        &child_flow_ref,
-        &child_workdir_path,
-        context,
-        !authored_child_workdir.is_empty(),
-    );
+    let child_flow_path = resolve_child_flow_path(&child_flow_ref, &child_workdir_path, context);
     if !child_flow_path.join(attractor_dsl::FLOW_FILE).is_file() {
         return Ok(Some(fail_outcome(format!(
             "Child flow not found: {}",
@@ -1475,18 +1470,15 @@ fn git_common_dir(dir: &Path) -> Option<PathBuf> {
     fs::canonicalize(&text).ok()
 }
 
+/// Flow refs resolve against the directory containing the parent flow, as in
+/// preview; the child's execution workdir never changes the base.
 fn resolve_child_flow_path(
     child_flow_ref: &str,
     child_workdir_path: &Path,
     context: &ContextMap,
-    child_workdir_is_authored: bool,
 ) -> PathBuf {
-    let base_dir = if child_workdir_is_authored {
-        child_workdir_path.to_path_buf()
-    } else {
-        context_path(context, "internal.flow_source_dir")
-            .unwrap_or_else(|| child_workdir_path.to_path_buf())
-    };
+    let base_dir = context_path(context, "internal.flow_source_dir")
+        .unwrap_or_else(|| child_workdir_path.to_path_buf());
     attractor_dsl::resolve_flow_ref(&base_dir, child_flow_ref)
 }
 

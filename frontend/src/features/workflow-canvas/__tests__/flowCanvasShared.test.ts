@@ -781,6 +781,40 @@ describe('flowCanvasShared', () => {
         })
     })
 
+    it('keeps role a node field so editing one role-bearing node leaves the others unchanged', () => {
+        const flow = {
+            schema_version: '1',
+            id: 'roles',
+            title: 'Roles',
+            nodes: {
+                start: { kind: 'start', label: 'Start', config: { kind: 'start' } },
+                first: { kind: 'agent_task', label: 'First', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review A.' } },
+                second: { kind: 'agent_task', label: 'Second', role: 'reviewer', config: { kind: 'agent_task', prompt: 'Review B.' } },
+                done: { kind: 'exit', label: 'Done', config: { kind: 'exit' } },
+            },
+            edges: [
+                { from: 'start', to: 'first' },
+                { from: 'first', to: 'second' },
+                { from: 'second', to: 'done' },
+            ],
+        }
+        const hydrated = buildHydratedFlowGraph('roles', { status: 'ok', flow, graph: flowDefinitionToPreviewGraph(flow) }, {
+            llm_model: '',
+            llm_provider: '',
+            reasoning_effort: '',
+        })
+        const edited = (hydrated?.nodes ?? []).map((node) => (
+            node.id === 'first' ? { ...node, data: { ...node.data, prompt: 'Review A twice.' } } : node
+        ))
+        const saved = loadYaml(generateFlowYaml('roles', edited, hydrated?.edges ?? [], hydrated?.flowMetadata ?? {}, {
+            flow: hydrated?.flow,
+        })) as LooseRecord
+
+        expect(saved.nodes.second).toEqual(flow.nodes.second)
+        expect(saved.edges).toEqual(flow.edges)
+        expect(saved.nodes.first).toEqual({ ...flow.nodes.first, config: { kind: 'agent_task', prompt: 'Review A twice.' } })
+    })
+
     it('does not materialize implicit node or graph defaults when saving after apply-to-nodes style edits', () => {
         const sourceYaml = `
             schema_version: "1"

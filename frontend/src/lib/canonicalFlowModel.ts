@@ -96,6 +96,7 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'extensions',
     'label',
     'description',
+    'role',
     'prompt',
     'options',
     'tool.command',
@@ -113,7 +114,29 @@ const NODE_EXTENSION_CORE_KEYS = new Set([
     'thinking_budget_tokens',
     'reasoning_mode',
     'reasoning_summary',
-
+    // Flattened runtime/manager/contracts/parallel fields, serialized back into their typed sections.
+    'allow_partial',
+    'auto_status',
+    'goal_gate',
+    'error_policy',
+    'fidelity',
+    'thread_id',
+    'class',
+    'timeout',
+    'retry_target',
+    'fallback_retry_target',
+    'spark.reads_context',
+    'spark.writes_context',
+    'manager.poll_interval',
+    'manager.max_cycles',
+    'manager.stop_condition',
+    'manager.actions',
+    'manager.steer_cooldown',
+    'stack.child_autostart',
+    'join_policy',
+    'max_parallel',
+    'join_k',
+    'join_quorum',
 ])
 const EDGE_EXTENSION_CORE_KEYS = new Set(['label', 'condition', 'weight', 'transition', 'extensions'])
 const VALID_NODE_KINDS = new Set([
@@ -604,6 +627,8 @@ function extensionAttrs(attrs: CanonicalAttrMap, coreKeys: Set<string>): Canonic
     return Object.fromEntries(
         Object.entries(attrs).filter(([key, value]) => (
             !coreKeys.has(key)
+            // Editor form fields default to '' when unset; they are not extensions.
+            && value !== ''
             && !DEPRECATED_DOT_METADATA_KEYS.has(key)
             && !DEPRECATED_DOT_NODE_KEYS.has(key)
             && isCanonicalAttrValue(value)
@@ -727,6 +752,7 @@ function nodeFromCanonicalAttrs(
         kind,
         label: readStringAttr(attrs, 'label') || String(baseNode?.label ?? nodeId),
         description: readStringAttr(attrs, 'description') || baseNode?.description,
+        role: 'role' in attrs ? readStringAttr(attrs, 'role') || undefined : baseNode?.role,
         config: nodeConfigFromAttrs(kind, attrs, asRecord(baseNode?.config)),
         context: asRecord(attrs.context) ?? asRecord(baseNode?.context) ?? undefined,
         contracts: contractsFromAttrs(attrs, asRecord(baseNode?.contracts)),

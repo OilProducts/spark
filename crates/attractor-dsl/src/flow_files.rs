@@ -120,9 +120,7 @@ pub fn read_flow_dir(dir: &Path) -> Result<FlowDefinition, FlowSourceError> {
     for entry in fs::read_dir(dir).map_err(|error| read_error(dir, error))? {
         let entry = entry.map_err(|error| read_error(dir, error))?;
         let name = entry.file_name().to_string_lossy().to_string();
-        // Hidden files (editor swap files, in-flight atomic writes) are not
-        // part of the flow.
-        if name.starts_with('.') || RESERVED_FILES.contains(&name.as_str()) {
+        if RESERVED_FILES.contains(&name.as_str()) {
             continue;
         }
         if !name.ends_with(".md") || entry.path().is_dir() {
@@ -208,6 +206,11 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
         .write()
         .unwrap_or_else(|error| error.into_inner());
     fs::create_dir_all(dir).map_err(|error| write_error(dir, error))?;
+    let temp_dir = dir.parent().unwrap_or(dir);
+    let dir_name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
     let mut written = Vec::new();
     for (name, text) in &files {
         let path = dir.join(name);
@@ -218,7 +221,9 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
         if unchanged {
             continue;
         }
-        let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+        // The temp file sits beside the flow directory, never inside it, so
+        // readers see no extra entries.
+        let temp = temp_dir.join(format!(".{dir_name}.{name}.{}.tmp", std::process::id()));
         fs::write(&temp, text).map_err(|error| write_error(&temp, error))?;
         fs::rename(&temp, &path).map_err(|error| write_error(&path, error))?;
         written.push(name.clone());
@@ -227,7 +232,6 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
         let entry = entry.map_err(|error| read_error(dir, error))?;
         let name = entry.file_name().to_string_lossy().to_string();
         if name.ends_with(".md")
-            && !name.starts_with('.')
             && !files.contains_key(&name)
             && !RESERVED_FILES.contains(&name.as_str())
             && entry.path().is_file()
@@ -521,14 +525,11 @@ fn split_frontmatter(text: &str) -> Result<(&str, &str), String> {
 /// A tool body is exactly one fenced code block; its contents are the command.
 fn parse_command_block(body: &str) -> Result<String, String> {
     const MESSAGE: &str = "a tool body must be exactly one fenced code block holding the command";
-    if body.is_empty() {
-        return Ok(String::new());
-    }
     let lines = body
         .lines()
         .map(|line| line.trim_end_matches('\r'))
         .collect::<Vec<_>>();
-    let opening = lines[0];
+    let opening = lines.first().copied().unwrap_or_default();
     let fence_char = opening.chars().next().filter(|ch| matches!(ch, '`' | '~'));
     let Some(fence_char) = fence_char else {
         return Err(MESSAGE.to_string());

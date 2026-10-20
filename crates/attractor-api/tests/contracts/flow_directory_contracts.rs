@@ -109,10 +109,9 @@ fn loader_rejects_stray_body_text_unknown_files_and_bad_tool_bodies() {
     let start = fs::read_to_string(dir.join("start.md")).expect("start");
     let check = fs::read_to_string(dir.join("check.md")).expect("check");
 
-    // OKF-reserved files and hidden files are ignored.
+    // Only the OKF-reserved files are ignored.
     fs::write(dir.join("index.md"), "# Index\n").expect("index");
     fs::write(dir.join("log.md"), "# Log\n").expect("log");
-    fs::write(dir.join(".start.md.swp"), "swap").expect("swap");
     assert_eq!(read_flow_dir(&dir).expect("load"), flow());
 
     fs::write(dir.join("start.md"), format!("{start}\nignored prose\n")).expect("start");
@@ -127,6 +126,7 @@ fn loader_rejects_stray_body_text_unknown_files_and_bad_tool_bodies() {
 
     let body_start = check.find("````sh").expect("fence");
     for bad_body in [
+        "",
         "echo hi\n",
         "```sh\necho a\n```\n\n```sh\necho b\n```\n",
         "```sh\necho a\n```\ntrailing\n",
@@ -145,11 +145,15 @@ fn loader_rejects_stray_body_text_unknown_files_and_bad_tool_bodies() {
     }
     fs::write(dir.join("check.md"), &check).expect("check");
 
+    fs::write(dir.join(".start.md.swp"), "swap").expect("swap");
+    fs::create_dir(dir.join(".git")).expect("hidden dir");
     fs::write(dir.join("notes.txt"), "notes").expect("notes");
     fs::write(dir.join("old.yaml"), FLOW).expect("yaml");
     let error = read_flow_dir(&dir).expect_err("unknown files");
     assert!(
-        error.detail().contains("notes.txt, old.yaml"),
+        error
+            .detail()
+            .contains(".git, .start.md.swp, notes.txt, old.yaml"),
         "{}",
         error.detail()
     );
@@ -289,6 +293,14 @@ fn editor_save_rewrites_only_changed_files_and_deletes_removed_nodes() {
     assert!(!dir.join("check.md").exists());
     assert_eq!(read_flow_dir(&dir).expect("load"), removed.normalize());
     assert!(!files(&dir).keys().any(|name| name.starts_with('.')));
+    // Temp files live beside the flow directory and are renamed away.
+    assert!(fs::read_dir(dir.parent().expect("parent"))
+        .expect("parent entries")
+        .all(|entry| !entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
 }
 
 #[test]
@@ -336,6 +348,68 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
         stale
     })
     .is_err());
+}
+
+#[test]
+fn authored_child_workdir_does_not_change_the_flow_ref_base() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let child = parse_flow_definition(
+        "id: child\ntitle: Child\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
+    )
+    .expect("child");
+    write_flow_dir(&settings.flows_dir.join("team/workers/child"), &child).expect("child");
+    let parent = parse_flow_definition(
+        "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n    manager: {max_cycles: 1, child_autostart: true, child_workdir: worktree}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
+    )
+    .expect("parent");
+    write_flow_dir(&settings.flows_dir.join("team/parent"), &parent).expect("parent");
+    let project = temp.path().join("project");
+    fs::create_dir_all(project.join("worktree")).expect("worktree");
+
+    let preview = preview_with_flows_dir(
+        PreviewRequest {
+            flow_content: flow_yaml(&parent).expect("yaml"),
+            flow_name: Some("team/parent".to_string()),
+            expand_children: true,
+        },
+        &settings.flows_dir,
+    );
+    assert_eq!(
+        preview.body["graph"]["child_previews"]["run"]["flow_name"],
+        json!("team/workers/child"),
+        "{}",
+        preview.body
+    );
+
+    let service = AttractorApiService::new(settings.clone());
+    let started = service.start_pipeline(attractor_api::PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("parent-run".to_string()),
+        flow_name: Some("team/parent".to_string()),
+        working_directory: project.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    assert_eq!(started.body["status"], "started", "{}", started.body);
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let parent_record = store
+        .read_run_bundle("parent-run")
+        .expect("read")
+        .expect("run")
+        .record
+        .expect("record");
+    assert_eq!(parent_record.status, "completed", "{parent_record:?}");
+    let child_record = store
+        .list_run_records()
+        .expect("runs")
+        .into_iter()
+        .find(|record| record.parent_run_id.as_deref() == Some("parent-run"))
+        .expect("child run");
+    assert_eq!(child_record.flow_name, "Child");
+    assert_eq!(
+        child_record.working_directory,
+        project.join("worktree").to_string_lossy()
+    );
 }
 
 fn settings(root: &Path) -> SparkSettings {

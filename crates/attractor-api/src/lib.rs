@@ -1554,7 +1554,8 @@ impl AttractorApiService {
         let wait_for_terminal = request.wait.unwrap_or(false);
         let flow_name = trimmed_option(request.flow_name.as_deref());
         let mut flow_content = trimmed_option(request.flow_content.as_deref());
-        let mut flow_source_dir = None;
+        // Preview resolves an unnamed flow's refs against the flows root too.
+        let mut flow_source_dir = Some(self.settings.flows_dir.clone());
         if flow_content.is_none() {
             let Some(flow_name) = flow_name.as_deref() else {
                 return validation_error_response("Either flow_content or flow_name is required.");

@@ -416,8 +416,9 @@ fn child_inherits_lock_without_releasing_parent_and_direct_retry_queues() {
     fs::create_dir_all(&settings.config_dir).unwrap();
     let project = temp.path().join("repo");
     init_git_repo(&project);
+    // An unnamed (inline) parent resolves flow_ref against the flows root.
     write_flow(
-        &project.join("child"),
+        &settings.flows_dir.join("child"),
         &tool_flow(
             "child",
             &format!(

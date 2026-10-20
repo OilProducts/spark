@@ -105,8 +105,8 @@ The body depends on the kind:
 - `tool`: exactly one fenced code block holding the command.
 - Every other kind: empty. The loader rejects text it would otherwise ignore.
 
-`index.md` and `log.md` are OKF-reserved and ignored, as are hidden files. Any
-other file in the directory is an error.
+`index.md` and `log.md` are OKF-reserved and ignored. Any other file or
+directory, hidden ones included, is an error.
 
 ## Roles
 

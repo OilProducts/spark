@@ -241,7 +241,8 @@ function buildHydratedEdge(
         weight: typeof edge.attrs.weight === 'number' || typeof edge.attrs.weight === 'string' ? edge.attrs.weight : '',
         fidelity: typeof edge.attrs.fidelity === 'string' ? edge.attrs.fidelity : '',
         thread_id: typeof edge.attrs.thread_id === 'string' ? edge.attrs.thread_id : '',
-        loop_restart: edge.attrs.loop_restart === true || edge.attrs.loop_restart === 'true',
+        // Unset stays unset so saving does not add a default extension.
+        ...(edge.attrs.loop_restart === true || edge.attrs.loop_restart === 'true' ? { loop_restart: true } : {}),
     }
     const nextEdge: Edge = {
         id: options?.id ?? `e-${edge.source}-${edge.target}-${index}`,

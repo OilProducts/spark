@@ -791,7 +791,8 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
     let project = temp.path().join("project");
     let worktree = project.join("worktree");
     fs::create_dir_all(&worktree).expect("create worktree");
-    write_child_flow(&worktree.join("child"), CHILD_FLOW_SOURCE);
+    // flow_ref resolves against the parent flow's directory, not child_workdir.
+    write_child_flow(&project.join("child"), CHILD_FLOW_SOURCE);
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let mut parent = RunRecord::new("parent-run", project.to_string_lossy());
     parent.flow_name = "Parent".to_string();
