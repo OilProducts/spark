@@ -6,7 +6,8 @@ description: Demonstrate a parent-child flow by running a bundled implementation
 goal: Run a bundled child implementation worker and summarize whether the change attempt succeeded.
 defaults:
   llm_provider: codex
-  llm_model: gpt-6-astra
+  llm_model: gpt-6.1-sol
+  reasoning_effort: xhigh
 nodes:
   done:
     kind: exit
@@ -15,7 +16,7 @@ nodes:
       kind: exit
       result_summary: true
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -28,7 +29,7 @@ nodes:
       kind: subflow
       flow_ref: implementation-worker.yaml
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -46,7 +47,7 @@ nodes:
     config:
       kind: start
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -59,8 +60,8 @@ nodes:
       kind: agent_task
       prompt: Summarize why the child workflow failed, what it attempted, and what a human should inspect next.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -91,8 +92,8 @@ nodes:
       kind: agent_task
       prompt: Summarize what the child workflow accomplished, what changed, and what evidence supports the result.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false

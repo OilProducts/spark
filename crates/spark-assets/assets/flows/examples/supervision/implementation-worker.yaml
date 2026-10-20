@@ -22,7 +22,8 @@ inputs:
 defaults:
   fidelity: summary:high
   llm_provider: codex
-  llm_model: gpt-6-astra
+  llm_model: gpt-6.1-sol
+  reasoning_effort: xhigh
 nodes:
   done:
     kind: exit
@@ -31,7 +32,7 @@ nodes:
       kind: exit
       result_summary: true
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -46,8 +47,8 @@ nodes:
         off for review. When present, honor context.request.summary, context.request.target_paths, and context.request.acceptance_criteria.
         If the carryover context includes review feedback or required changes, address them directly in this pass.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -71,8 +72,8 @@ nodes:
         ONLY a JSON status envelope. Return outcome success only when the change is ready. Otherwise return outcome fail with
         failure_reason and context_updates for context.review.summary, context.review.required_changes, and context.review.blockers.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -94,7 +95,7 @@ nodes:
     config:
       kind: start
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false

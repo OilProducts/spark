@@ -5,7 +5,8 @@ description: Draft a change, route it through explicit human approval, and loop 
 goal: Prepare a proposed change, pause for human review, and either ship it or iterate on fixes.
 defaults:
   llm_provider: codex
-  llm_model: gpt-6-astra
+  llm_model: gpt-6.1-sol
+  reasoning_effort: xhigh
 nodes:
   exit:
     kind: exit
@@ -14,7 +15,7 @@ nodes:
       kind: exit
       result_summary: true
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -27,8 +28,8 @@ nodes:
       kind: agent_task
       prompt: Inspect the repository, prepare the proposed change for the stated goal, and summarize what is ready for review.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -41,7 +42,7 @@ nodes:
       kind: human_gate
       prompt: Review the proposed change. Approve it to move forward, or request fixes before shipping.
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -58,8 +59,8 @@ nodes:
       - human.gate.label
       - human.gate.note
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -72,8 +73,8 @@ nodes:
       kind: agent_task
       prompt: Finalize the approved change and summarize what is ready to land.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -85,7 +86,7 @@ nodes:
     config:
       kind: start
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false

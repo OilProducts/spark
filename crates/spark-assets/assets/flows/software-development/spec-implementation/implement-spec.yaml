@@ -46,55 +46,69 @@ inputs:
   required: false
 defaults:
   llm_provider: codex
-  llm_model: gpt-6-astra
-  reasoning_effort: high
+  llm_model: gpt-6.1-sol
+  reasoning_effort: xhigh
 nodes:
   audit_milestone:
     kind: agent_task
     label: Audit Milestone
     config:
       kind: agent_task
-      prompt: 'Read context.milestone.id, context.milestone.title, context.milestone.objective, context.milestone.requirement_ids,
-        context.milestone.decision_ids, .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/milestones.json,
-        .spark/spec-implementation/current/spec/architecture.md, .spark/spec-implementation/current/spec/contract-decisions.json,
-        .spark/spec-implementation/current/spec/source.md, and .spark/spec-implementation/current/milestones/<context milestone
-        id>/result.json if it exists. Also inspect context.stack.child.status, context.stack.child.outcome, context.stack.child.outcome_reason_code,
-        and context.stack.child.outcome_reason_message. Treat context.milestone.* plus milestone-local child artifacts as
-        the authoritative identity for the milestone under audit. If shared runtime binding files under .spark/spec-implementation/current/current-milestone.json
-        or state.json.current_milestone_id drifted during the child run, judge those files as shared runtime bookkeeping rather
-        than as the authoritative child control plane after dispatch. Treat .spark/spec-implementation/current/spec/source.md
-        as the source of product behavior and external contract, .spark/spec-implementation/current/spec/architecture.md as
-        the binding implementation contract, and .spark/spec-implementation/current/spec/contract-decisions.json as the approved
-        machine-readable resolution set for any material interpretation, naming, ownership, or validation decision. Judge
-        the milestone against its requirement_ids and decision_ids. If the milestone is satisfactorily implemented, treat
-        milestones.json as the authoritative milestone queue ledger: update milestones.json and requirements.json to mark
-        the covered milestone and requirements done, clear .spark/spec-implementation/current/state.json.current_milestone_id,
-        remove or clear .spark/spec-implementation/current/current-milestone.json, and context_updates include context.milestone.id,
-        context.milestone.title, context.milestone.objective, context.milestone.requirement_ids, context.milestone.decision_ids,
-        context.milestone.acceptance_criteria, context.milestone.target_paths, and context.milestone.attempts set to JSON
-        null so no completed milestone remains the live binding. Return outcome success only when the milestone''s touched
-        surfaces are honestly deliverable for their scope, including truthful validation/bootstrap expectations, coherent
-        exports, docs, manifests, ignore rules, and conformance to the bound contract decisions, with no reliance on test-only
-        bootstrap hacks or weaker internal-only validation paths as the primary way the touched work is used. Do not accept
-        a milestone if it skipped the strongest deterministic repo-wide gate that was available, if claimed public surfaces
-        were validated only through internal or bypass paths, if a bound decision remains unmet, or if remaining decision-bound
-        implementation work was downgraded into metadata-only sync. If the milestone is mostly complete but bounded remaining
-        work still belongs inside this same milestone, leave the milestone current and append one or more pending items directly
-        to .spark/spec-implementation/current/milestones/<context milestone id>/state.json before returning. Preserve every
-        existing item''s id, status, attempts, and notes; do not delete, renumber, replace, or reopen completed items. Give
-        each genuinely new item the next unused milestone item id, the full existing item schema, status=pending, attempts=0,
-        and notes that identify the audit gap. Do not duplicate an equivalent pending item. Keep current_item_id null and
-        no item in_progress at this audit handoff. Return outcome partial_success with preferred_label Extend only after the
-        durable ledger contains bounded pending work that directly covers the audit finding so the milestone worker can continue.
-        If the milestone decomposition is
-        wrong or the remaining deliverability work should be replanned as bounded milestone-level follow-up, write .spark/spec-implementation/current/rewrite-milestones.json
-        with replacement milestones and return outcome fail with preferred_label Rewrite. If the effort is blocked, update
-        ledgers accordingly and return outcome fail with preferred_label Blocked. Do not silently choose between spec and
-        architecture when a material conflict is missing from .spark/spec-implementation/current/spec/contract-decisions.json.
-        Keep the decision tied to milestone completion and truthful deliverability, not optimism.'
+      prompt: >-
+        Read context.milestone.id, context.milestone.title, context.milestone.objective,
+        context.milestone.requirement_ids, context.milestone.decision_ids,
+        .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/milestones.json,
+        .spark/spec-implementation/current/spec/architecture.md,
+        .spark/spec-implementation/current/spec/contract-decisions.json,
+        .spark/spec-implementation/current/spec/source.md, and .spark/spec-implementation/current/milestones/<context
+        milestone id>/result.json if it exists. Also inspect context.stack.child.status, context.stack.child.outcome,
+        context.stack.child.outcome_reason_code, and context.stack.child.outcome_reason_message. Treat
+        context.milestone.* plus milestone-local child artifacts as the authoritative identity for the milestone under
+        audit. If shared runtime binding files under .spark/spec-implementation/current/current-milestone.json or
+        state.json.current_milestone_id drifted during the child run, judge those files as shared runtime bookkeeping
+        rather than as the authoritative child control plane after dispatch. Treat
+        .spark/spec-implementation/current/spec/source.md as the source of product behavior and external contract,
+        .spark/spec-implementation/current/spec/architecture.md as the binding implementation contract, and
+        .spark/spec-implementation/current/spec/contract-decisions.json as the approved machine-readable resolution set
+        for any material interpretation, naming, ownership, or validation decision. Judge the milestone against its
+        requirement_ids and decision_ids. If the milestone is satisfactorily implemented, treat milestones.json as the
+        authoritative milestone queue ledger: update milestones.json and requirements.json to mark the covered milestone
+        and requirements done, clear .spark/spec-implementation/current/state.json.current_milestone_id, remove or clear
+        .spark/spec-implementation/current/current-milestone.json, and context_updates include context.milestone.id,
+        context.milestone.title, context.milestone.objective, context.milestone.requirement_ids,
+        context.milestone.decision_ids, context.milestone.acceptance_criteria, context.milestone.target_paths, and
+        context.milestone.attempts set to JSON null so no completed milestone remains the live binding. Return outcome
+        success only when the milestone's touched surfaces are honestly deliverable for their scope, including truthful
+        validation/bootstrap expectations, coherent exports, docs, manifests, ignore rules, and conformance to the bound
+        contract decisions, with no reliance on test-only bootstrap hacks or weaker internal-only validation paths as
+        the primary way the touched work is used. Do not accept a milestone if it skipped the strongest deterministic
+        repo-wide gate that was available, if claimed public surfaces were validated only through internal or bypass
+        paths, if a bound decision remains unmet, or if remaining decision-bound implementation work was downgraded into
+        metadata-only sync. If the milestone is mostly complete but bounded remaining work still belongs inside this
+        same milestone, leave the milestone current and append one or more pending items directly to
+        .spark/spec-implementation/current/milestones/<context milestone id>/state.json before returning. Preserve every
+        existing item's id, status, attempts, and notes; do not delete, renumber, replace, or reopen completed items.
+        Give each genuinely new item the next unused milestone item id, the full existing item schema, status=pending,
+        attempts=0, and notes that identify the audit gap. Do not duplicate an equivalent pending item. Keep
+        current_item_id null and no item in_progress at this audit handoff. Return outcome partial_success with
+        preferred_label Extend only after the durable ledger contains bounded pending work that directly covers the
+        audit finding so the milestone worker can continue. If the milestone decomposition is wrong or the remaining
+        deliverability work should be replanned as bounded milestone-level follow-up, write
+        .spark/spec-implementation/current/rewrite-milestones.json with replacement milestones and return outcome fail
+        with preferred_label Rewrite. Do not silently choose between spec and architecture when a material conflict is
+        missing from .spark/spec-implementation/current/spec/contract-decisions.json; instead choose the most defensible
+        interpretation consistent with the spec, record it as a new decision in
+        .spark/spec-implementation/current/spec/contract-decisions.json using the existing decision schema, and proceed
+        on that basis, routing any resulting work through Extend or Rewrite. A failed or incomplete child run is a
+        reason to Extend or Rewrite, not to stop. Return outcome fail with preferred_label Blocked only when progress
+        requires something that no action within this repository and machine can supply, such as credentials, access to
+        a paid or third-party account, or physical hardware, and no workaround, substitute, or deferral can keep the
+        work moving, after updating the ledgers accordingly. Keep the decision tied to milestone completion and truthful
+        deliverability, not optimism.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: codex
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -133,8 +147,8 @@ nodes:
     retry:
       max_retries: 1
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -160,7 +174,7 @@ nodes:
         git add -A
         git commit --allow-empty -m "Accepted ${milestone:-milestone}"
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     extensions:
       tool.artifacts.stderr: commit-node.stderr.txt
       tool.artifacts.stdout: commit-node.stdout.txt
@@ -199,8 +213,9 @@ nodes:
         in the current repository and the written spec rather than idealized greenfield assumptions. Respond with ONLY a JSON
         status envelope and return outcome success only after both files are written.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: claude-code
+      llm_model: claude-opus-5-5[1m]
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -214,7 +229,7 @@ nodes:
       kind: exit
       result_summary: true
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -224,24 +239,50 @@ nodes:
     label: Evaluate Architecture
     config:
       kind: agent_task
-      prompt: Read .spark/spec-implementation/current/spec/architecture.md, .spark/spec-implementation/current/spec/contract-decisions.json,
-        .spark/spec-implementation/current/spec/source.md, and .spark/spec-implementation/current/spec/requirements.json.
-        The durable contract ledger is .spark/spec-implementation/current/spec/contract-decisions.json. Critique the proposed
-        architecture before any milestone planning begins. Confirm the architecture defines a coherent repository topology,
-        implementation boundaries, sequencing, public interface, validation strategy, and repository hygiene expectations
-        that can realistically produce a deliverable repository from the current spec and repository context. Confirm that
-        every material spec-versus-architecture resolution is explicitly captured in .spark/spec-implementation/current/spec/contract-decisions.json,
-        and that each decision links requirement_ids, spec_refs, architecture_refs, behavioral_contract, implementation_contract,
-        and validation_expectations coherently. If the architecture is ready for milestone planning, return outcome success
-        only when .spark/spec-implementation/current/spec/architecture.md and .spark/spec-implementation/current/spec/contract-decisions.json
-        are mutually consistent. If the architecture or decisions need bounded revision, write .spark/spec-implementation/current/architecture-rework.md
-        with concrete feedback and return outcome fail with preferred_label Rework. Use Rework when the architecture or decisions
-        silently narrow, rename, or reinterpret product behavior without an explicit approved decision. If the architecture
-        is fundamentally unsound, the decisions are materially inconsistent with the spec, or the inputs are too under-specified
-        to proceed truthfully, return outcome fail with preferred_label Blocked. Respond with ONLY a JSON status envelope.
+      prompt: >-
+        Read .spark/spec-implementation/current/spec/architecture.md,
+        .spark/spec-implementation/current/spec/contract-decisions.json,
+        .spark/spec-implementation/current/spec/source.md, and
+        .spark/spec-implementation/current/spec/requirements.json, plus
+        .spark/spec-implementation/current/architecture-rework.md if it exists from a previous review round. The durable
+        contract ledger is .spark/spec-implementation/current/spec/contract-decisions.json. Critique the proposed
+        architecture before any milestone planning begins, judging whether it is ready for milestone planning rather
+        than whether it is exhaustive. The architecture's job is to fix the repository topology, implementation
+        boundaries, sequencing, public interface, validation strategy, repository hygiene expectations, and every
+        material spec-versus-architecture resolution; the internal mechanics of a subsystem (state machines, concurrency
+        and lifecycle edge cases, algorithm details) are resolved during milestone work unless they change a boundary,
+        an interface, the sequencing, or spec-visible behavior. Confirm the architecture defines those elements
+        coherently enough to realistically produce a deliverable repository from the current spec and repository
+        context. Confirm that every material spec-versus-architecture resolution is explicitly captured in
+        .spark/spec-implementation/current/spec/contract-decisions.json, and that each decision links requirement_ids,
+        spec_refs, architecture_refs, behavioral_contract, implementation_contract, and validation_expectations
+        coherently. Classify each finding as blocking or deferrable. A finding is blocking only if milestone planning
+        built on the current documents would be wrong: the architecture or decisions contradict the spec or silently
+        narrow, rename, or reinterpret product behavior without an explicit approved decision; boundaries, interfaces,
+        or sequencing are missing, contradictory, or infeasible; architecture.md and contract-decisions.json disagree on
+        an architecture-level matter; or a requirement has no credible home. Every other finding is deferrable: a
+        mechanism detail, edge case, or validation refinement that a milestone can resolve within the stated boundaries.
+        If a previous architecture-rework.md exists, first check each of its items against the revision and state which
+        are resolved; do not reopen resolved items, and hold any new finding to the same blocking bar rather than
+        reviewing at a finer level of detail than the previous round. When there are deferrable findings, write them to
+        .spark/spec-implementation/current/architecture-open-items.md, each naming the affected area, requirement_ids or
+        decision ids where known, and what the milestone must settle, so milestone planning can assign them; otherwise
+        remove any stale copy of that file. If there are no blocking findings, return outcome success. If there are
+        blocking findings, write .spark/spec-implementation/current/architecture-rework.md listing only the blocking
+        findings, each with its evidence, the required correction, and how the correction can be validated, followed by
+        the status of the previous round's items, and return outcome fail with preferred_label Rework. An unsound
+        architecture or decisions that are materially inconsistent with the spec are blocking findings for Rework,
+        however extensive the correction. Ambiguity or under-specification in the spec is not a reason to stop: require
+        the revision to choose the most defensible interpretation consistent with the spec, record it as a new decision
+        in .spark/spec-implementation/current/spec/contract-decisions.json using the existing decision schema, and
+        design on that basis. Return outcome fail with preferred_label Blocked only when progress requires something
+        that no action within this repository and machine can supply, such as credentials, access to a paid or
+        third-party account, or physical hardware, and no workaround, substitute, or deferral can keep the work moving.
+        Respond with ONLY a JSON status envelope.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: codex
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -263,8 +304,9 @@ nodes:
         when deciding what is in scope. Respond with ONLY a JSON status envelope and return outcome success only after the
         requirements ledger is written.'
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: claude-code
+      llm_model: claude-opus-5-5[1m]
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -281,22 +323,32 @@ nodes:
     label: Final Conformance Audit
     config:
       kind: agent_task
-      prompt: Read .spark/spec-implementation/current/spec/source.md, .spark/spec-implementation/current/spec/requirements.json,
-        .spark/spec-implementation/current/milestones.json, .spark/spec-implementation/current/spec/architecture.md, and .spark/spec-implementation/current/spec/contract-decisions.json.
-        Treat .spark/spec-implementation/current/spec/source.md as the source of product behavior and external contract, .spark/spec-implementation/current/spec/architecture.md
-        as the binding implementation contract, and .spark/spec-implementation/current/spec/contract-decisions.json as the
-        approved resolution set. Read the current repository state only as needed to judge whether all in-scope requirements
-        are now covered. Treat unresolved contract decisions that are bound to in-scope requirements as uncovered requirement
-        work, not as cosmetic follow-up. If all in-scope requirements and their bound decisions are covered, respond with
-        ONLY a JSON status envelope with outcome success. If uncovered but implementable requirement or decision work remains,
-        append or revise milestones in .spark/spec-implementation/current/milestones.json and return outcome fail with preferred_label
-        Extend. Milestones appended here must use the milestone schema including decision_ids. If the remaining gap is blocked
-        on ambiguity, missing external input, or a fundamental unresolved issue, leave the ledgers valid and return outcome
-        fail with preferred_label Blocked. Keep this decision tied to requirement coverage only; any remaining deliverability
-        or repository-integrity cleanup that can fit inside one final cleanup/refactor milestone belongs to repository_integrity_audit.
+      prompt: >-
+        Read .spark/spec-implementation/current/spec/source.md,
+        .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/milestones.json,
+        .spark/spec-implementation/current/spec/architecture.md, and
+        .spark/spec-implementation/current/spec/contract-decisions.json. Treat
+        .spark/spec-implementation/current/spec/source.md as the source of product behavior and external contract,
+        .spark/spec-implementation/current/spec/architecture.md as the binding implementation contract, and
+        .spark/spec-implementation/current/spec/contract-decisions.json as the approved resolution set. Read the current
+        repository state only as needed to judge whether all in-scope requirements are now covered. Treat unresolved
+        contract decisions that are bound to in-scope requirements as uncovered requirement work, not as cosmetic
+        follow-up. If all in-scope requirements and their bound decisions are covered, respond with ONLY a JSON status
+        envelope with outcome success. If uncovered but implementable requirement or decision work remains, append or
+        revise milestones in .spark/spec-implementation/current/milestones.json and return outcome fail with
+        preferred_label Extend. Milestones appended here must use the milestone schema including decision_ids. Ambiguity
+        or an unresolved design issue is not a reason to stop: choose the most defensible interpretation consistent with
+        the spec, record it as a new decision in .spark/spec-implementation/current/spec/contract-decisions.json using
+        the existing decision schema, and proceed on that basis, then plan the remaining work through Extend. Return
+        outcome fail with preferred_label Blocked only when progress requires something that no action within this
+        repository and machine can supply, such as credentials, access to a paid or third-party account, or physical
+        hardware, and no workaround, substitute, or deferral can keep the work moving, leaving the ledgers valid. Keep
+        this decision tied to requirement coverage only; any remaining deliverability or repository-integrity cleanup
+        belongs to repository_integrity_audit.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: codex
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -308,27 +360,35 @@ nodes:
     label: Next Milestone
     config:
       kind: agent_task
-      prompt: 'Read .spark/spec-implementation/current/milestones.json as the authoritative milestone queue ledger. Read .spark/spec-implementation/current/state.json
-        and .spark/spec-implementation/current/current-milestone.json only to keep those binding artifacts aligned with milestones.json;
-        do not let stale binding files block progress when milestones.json truthfully shows the current milestone is already
-        completed. Before choosing the next milestone, mechanically repair stale shared runtime bindings when the intended
-        state is clear from milestones.json: if current_milestone_id or current-milestone.json points to a completed milestone,
-        clear both; if they disagree with the ready pending milestone you are about to dispatch, rewrite them to match that
-        milestone. A ready milestone is pending and all of its depends_on milestones are done. If a ready milestone exists,
-        mark it in_progress, increment its attempts, set current_milestone_id in .spark/spec-implementation/current/state.json,
-        write .spark/spec-implementation/current/current-milestone.json for that milestone, and respond with ONLY a JSON status
-        envelope with outcome success, preferred_label Work, and context_updates for context.milestone.id, context.milestone.title,
-        context.milestone.objective, context.milestone.requirement_ids, context.milestone.decision_ids, context.milestone.acceptance_criteria,
-        context.milestone.target_paths, and context.milestone.attempts. If no pending or in_progress milestones remain, clear
-        current_milestone_id, remove or clear .spark/spec-implementation/current/current-milestone.json, and return outcome
-        success with preferred_label Audit, with context_updates that set context.milestone.id, context.milestone.title, context.milestone.objective,
-        context.milestone.requirement_ids, context.milestone.decision_ids, context.milestone.acceptance_criteria, context.milestone.target_paths,
-        and context.milestone.attempts to JSON null. If milestones remain but none are ready because of blocked dependencies
-        or unresolved prerequisites after any mechanical binding repair, keep the ledgers valid and return outcome fail with
-        preferred_label Blocked.'
+      prompt: >-
+        Read .spark/spec-implementation/current/milestones.json as the authoritative milestone queue ledger. Read
+        .spark/spec-implementation/current/state.json and .spark/spec-implementation/current/current-milestone.json only
+        to keep those binding artifacts aligned with milestones.json; do not let stale binding files block progress when
+        milestones.json truthfully shows the current milestone is already completed. Before choosing the next milestone,
+        mechanically repair stale shared runtime bindings when the intended state is clear from milestones.json: if
+        current_milestone_id or current-milestone.json points to a completed milestone, clear both; if they disagree
+        with the ready pending milestone you are about to dispatch, rewrite them to match that milestone. A ready
+        milestone is pending and all of its depends_on milestones are done. If a ready milestone exists, mark it
+        in_progress, increment its attempts, set current_milestone_id in .spark/spec-implementation/current/state.json,
+        write .spark/spec-implementation/current/current-milestone.json for that milestone, and respond with ONLY a JSON
+        status envelope with outcome success, preferred_label Work, and context_updates for context.milestone.id,
+        context.milestone.title, context.milestone.objective, context.milestone.requirement_ids,
+        context.milestone.decision_ids, context.milestone.acceptance_criteria, context.milestone.target_paths, and
+        context.milestone.attempts. If no pending or in_progress milestones remain, clear current_milestone_id, remove
+        or clear .spark/spec-implementation/current/current-milestone.json, and return outcome success with
+        preferred_label Audit, with context_updates that set context.milestone.id, context.milestone.title,
+        context.milestone.objective, context.milestone.requirement_ids, context.milestone.decision_ids,
+        context.milestone.acceptance_criteria, context.milestone.target_paths, and context.milestone.attempts to JSON
+        null. If milestones remain but none are ready after any mechanical binding repair, repair the plan in
+        .spark/spec-implementation/current/milestones.json: re-scope, split, reorder, or replace the stuck pending
+        milestones so the remaining work can proceed, preserving every completed milestone and its history exactly, then
+        keep the ledgers valid and return outcome fail with preferred_label Replan so the repaired plan is revalidated.
+        Return outcome fail with preferred_label Blocked only when progress requires something that no action within
+        this repository and machine can supply, such as credentials, access to a paid or third-party account, or
+        physical hardware, and no workaround, substitute, or deferral can keep the work moving.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -349,18 +409,22 @@ nodes:
     label: Plan Cleanup Milestone
     config:
       kind: agent_task
-      prompt: Read .spark/spec-implementation/current/repository-integrity-gaps.md, .spark/spec-implementation/current/spec/source.md,
-        .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/milestones.json, .spark/spec-implementation/current/spec/architecture.md,
-        and .spark/spec-implementation/current/spec/contract-decisions.json. Append or revise at most one additional pending
-        cleanup/refactor milestone that closes the documented repository-integrity gaps. Preserve completed and in_progress
-        milestones exactly as they are. If an earlier pending cleanup/refactor milestone already exists for the same final-gap
-        work, revise it instead of appending a duplicate. The cleanup milestone must use the milestone schema including decision_ids,
-        and it may use an empty requirement_ids list plus empty decision_ids only when the work is repository-integrity-only
-        and does not add new requirement or decision coverage. Keep milestones.json valid JSON and respond with ONLY a JSON
-        status envelope. Return outcome success only after the cleanup milestone plan is updated.
+      prompt: >-
+        Read .spark/spec-implementation/current/repository-integrity-gaps.md,
+        .spark/spec-implementation/current/spec/source.md, .spark/spec-implementation/current/spec/requirements.json,
+        .spark/spec-implementation/current/milestones.json, .spark/spec-implementation/current/spec/architecture.md, and
+        .spark/spec-implementation/current/spec/contract-decisions.json. Append or revise the pending cleanup/refactor
+        milestones needed to close the documented repository-integrity gaps, using a single milestone when it can cover
+        them coherently. Preserve completed and in_progress milestones exactly as they are. If an earlier pending
+        cleanup/refactor milestone already exists for the same final-gap work, revise it instead of appending a
+        duplicate. Each cleanup milestone must use the milestone schema including decision_ids, and may use an empty
+        requirement_ids list plus empty decision_ids only when the work is repository-integrity-only and does not add
+        new requirement or decision coverage. Keep milestones.json valid JSON and respond with ONLY a JSON status
+        envelope. Return outcome success only after the cleanup milestone plan is updated.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: claude-code
+      llm_model: claude-opus-5-5[1m]
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -376,7 +440,7 @@ nodes:
         .spark/spec-implementation/current/spec/architecture.md, and .spark/spec-implementation/current/spec/contract-decisions.json.
         Treat .spark/spec-implementation/current/spec/source.md as the source of product behavior and external contract, .spark/spec-implementation/current/spec/architecture.md
         as the binding implementation contract, and .spark/spec-implementation/current/spec/contract-decisions.json as the
-        approved resolution set. Do not reread another duplicate copy of the same spec from the repository. Read files needed
+        approved resolution set. Also read .spark/spec-implementation/current/architecture-open-items.md if it exists; it lists deferrable architecture-review findings, and each item must be assigned to the milestone that will settle it, reflected in that milestone''s acceptance criteria or notes. Do not reread another duplicate copy of the same spec from the repository. Read files needed
         from the current repository. Stay within the current cwd (the repository root). Do not inspect paths outside it. Write
         .spark/spec-implementation/current/milestones.json as valid JSON with a milestones array. Each milestone must include:
         id, title, objective, requirement_ids, decision_ids, acceptance_criteria, target_paths, depends_on, status, attempts,
@@ -387,8 +451,9 @@ nodes:
         and decisions into meaningful delivery slices. Respond with ONLY a JSON status envelope and return outcome success
         only after the milestone plan is written.'
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: claude-code
+      llm_model: claude-opus-5-5[1m]
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -418,8 +483,8 @@ nodes:
     retry:
       max_retries: 1
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -438,25 +503,32 @@ nodes:
     label: Repository Integrity Audit
     config:
       kind: agent_task
-      prompt: Read .spark/spec-implementation/current/spec/source.md, .spark/spec-implementation/current/spec/requirements.json,
-        .spark/spec-implementation/current/milestones.json, .spark/spec-implementation/current/spec/architecture.md, and .spark/spec-implementation/current/spec/contract-decisions.json,
-        and the current repository state as needed. Decide whether the repository is now honestly deliverable, not merely
-        internally coherent. Check that the repository can be built, run, imported, and validated from committed metadata,
-        manifests, bootstrap files, docs, public exports, and the approved contract decisions when applicable; that tests
-        are behavioral rather than brittle source-text or path-hack checks; that tracked local, generated, cache, IDE, or
-        Spark workflow artifacts are not part of the deliverable; that docs, exports, manifests, and ignore rules stay coherent;
-        and that no obvious duplicate validators or mixed-responsibility god files remain as the final state. Success requires
-        a clear source of truth for delivered surfaces, no unjustified wrapper-only duplicate layers, essential repo metadata
-        and docs for the technologies in use, and no bound contract decision left satisfied only through weaker internal or
-        metadata-only paths. If the repository is deliverable, respond with ONLY a JSON status envelope with outcome success.
-        If a bounded final cleanup/refactor milestone can close the remaining gaps, write .spark/spec-implementation/current/repository-integrity-gaps.md
-        with the missing work. The cleanup ledger is .spark/spec-implementation/current/repository-integrity-gaps.md. Return
-        outcome fail with preferred_label Extend. If the remaining gaps exceed one additional cleanup/refactor milestone,
-        require broader redesign, or depend on missing external input, return outcome fail with preferred_label Blocked. Respond
-        with ONLY a JSON status envelope.
+      prompt: >-
+        Read .spark/spec-implementation/current/spec/source.md,
+        .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/milestones.json,
+        .spark/spec-implementation/current/spec/architecture.md, and
+        .spark/spec-implementation/current/spec/contract-decisions.json, and the current repository state as needed.
+        Decide whether the repository is now honestly deliverable, not merely internally coherent. Check that the
+        repository can be built, run, imported, and validated from committed metadata, manifests, bootstrap files, docs,
+        public exports, and the approved contract decisions when applicable; that tests are behavioral rather than
+        brittle source-text or path-hack checks; that tracked local, generated, cache, IDE, or Spark workflow artifacts
+        are not part of the deliverable; that docs, exports, manifests, and ignore rules stay coherent; and that no
+        obvious duplicate validators or mixed-responsibility god files remain as the final state. Success requires a
+        clear source of truth for delivered surfaces, no unjustified wrapper-only duplicate layers, essential repo
+        metadata and docs for the technologies in use, and no bound contract decision left satisfied only through weaker
+        internal or metadata-only paths. If the repository is deliverable, respond with ONLY a JSON status envelope with
+        outcome success. If further cleanup/refactor work can close the remaining gaps, write
+        .spark/spec-implementation/current/repository-integrity-gaps.md with the missing work. The cleanup ledger is
+        .spark/spec-implementation/current/repository-integrity-gaps.md. Return outcome fail with preferred_label
+        Extend. Large or redesign-level gaps are still Extend work: describe them in the cleanup ledger so they can be
+        planned as one or more cleanup/refactor milestones. Return outcome fail with preferred_label Blocked only when
+        progress requires something that no action within this repository and machine can supply, such as credentials,
+        access to a paid or third-party account, or physical hardware, and no workaround, substitute, or deferral can
+        keep the work moving. Respond with ONLY a JSON status envelope.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: codex
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -468,17 +540,26 @@ nodes:
     label: Revise Architecture
     config:
       kind: agent_task
-      prompt: Read .spark/spec-implementation/current/spec/architecture.md, .spark/spec-implementation/current/spec/contract-decisions.json,
-        .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/spec/source.md, and
-        .spark/spec-implementation/current/architecture-rework.md if it exists. Refine the architecture so it better partitions
-        the work, clarifies sequencing, reduces execution risk, and keeps the implementation contract aligned with the product
-        behavior in the spec. Update .spark/spec-implementation/current/spec/contract-decisions.json alongside the architecture
-        so every material resolution remains explicit, complete, and machine-readable. Preserve valid parts of the existing
-        design instead of rewriting aimlessly. Respond with ONLY a JSON status envelope and return outcome success only after
-        both files are updated.
+      prompt: >-
+        Read .spark/spec-implementation/current/spec/architecture.md,
+        .spark/spec-implementation/current/spec/contract-decisions.json,
+        .spark/spec-implementation/current/spec/requirements.json, .spark/spec-implementation/current/spec/source.md,
+        and .spark/spec-implementation/current/architecture-rework.md if it exists. Resolve each blocking finding in
+        architecture-rework.md, keeping the implementation contract aligned with the product behavior in the spec.
+        Resolve findings at the architecture level: correct the boundary, interface, sequencing, validation strategy, or
+        contract decision the finding concerns, and add mechanisms or detail wherever a finding genuinely requires them.
+        Prefer the simplest design that resolves a finding; restructuring or removing an over-specified mechanism is
+        often a better fix than layering more rules onto it. Where a finding turns on subsystem-internal detail that
+        does not change a boundary, an interface, the sequencing, or spec-visible behavior, it is acceptable to state
+        the invariant the subsystem must uphold and leave the mechanism to milestone work rather than fully specifying
+        it. Avoid changes unrelated to the findings, and preserve valid parts of the existing design instead of
+        rewriting aimlessly. Update .spark/spec-implementation/current/spec/contract-decisions.json alongside the
+        architecture so every material resolution remains explicit, complete, and machine-readable. Respond with ONLY a
+        JSON status envelope and return outcome success only after both files are updated.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: claude-code
+      llm_model: claude-opus-5-5[1m]
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -498,8 +579,9 @@ nodes:
         keep both JSON files valid, and respond with ONLY a JSON status envelope. Return outcome success only after the milestone
         plan is updated.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: claude-code
+      llm_model: claude-opus-5-5[1m]
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -515,7 +597,7 @@ nodes:
       kind: subflow
       flow_ref: implement-milestone.yaml
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -529,7 +611,7 @@ nodes:
     config:
       kind: start
     execution:
-      reasoning_effort: high
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -555,8 +637,9 @@ nodes:
         ledgers, leave the files valid and return outcome fail with preferred_label Replan so milestone planning can be regenerated.
         If the plan is coherent after any needed repairs, return outcome success. Respond with ONLY a JSON status envelope.
     execution:
-      llm_model: gpt-6-astra
-      reasoning_effort: high
+      llm_provider: codex
+      llm_model: gpt-6.1-sol
+      reasoning_effort: xhigh
     runtime:
       allow_partial: false
       auto_status: false
@@ -703,8 +786,8 @@ edges:
   extensions:
     loop_restart: false
 - from: next_milestone
-  to: blocked_exit
-  label: Blocked Partial
+  to: validate_milestone_plan
+  label: Revalidate Plan Partial
   condition: outcome=partial_success
   extensions:
     loop_restart: false
@@ -817,5 +900,18 @@ edges:
   to: plan_milestones
   label: Replan Partial
   condition: outcome=partial_success
+  extensions:
+    loop_restart: false
+- from: next_milestone
+  to: validate_milestone_plan
+  label: Replan
+  condition: outcome=fail && preferred_label=Replan
+  extensions:
+    loop_restart: false
+- from: next_milestone
+  to: blocked_exit
+  label: Blocked Partial
+  condition: outcome=partial_success && preferred_label=Blocked
+  weight: 1
   extensions:
     loop_restart: false
