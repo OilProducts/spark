@@ -1,5 +1,7 @@
 use attractor_api::{AttractorApiService, PipelineStartRequest};
-use attractor_runtime::RunStore;
+use attractor_runtime::{
+    parallel_branch_started_event, stage_started_event, CreateRunRequest, RunStore,
+};
 use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 use std::{
@@ -479,4 +481,157 @@ fn steer_rejects_when_no_agent_node_is_active() {
     let events = intervention_events(&settings, "steer-idle");
     assert_eq!(events[0]["intervention_status"], "rejected");
     assert_eq!(events[0]["intervention_reason"], "no_active_agent_node");
+}
+
+#[test]
+fn steer_counts_unsteerable_agent_nodes_when_resolving_the_target() {
+    let envs = codex_env("mixed");
+    if !in_child_process(
+        "steer_counts_unsteerable_agent_nodes_when_resolving_the_target",
+        &envs,
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    let log = log_path("SPARK_FAKE_CODEX_APP_SERVER_LOG");
+    start(
+        &service,
+        &settings,
+        "steer-mixed",
+        "codex",
+        content(
+            r#"schema_version: "1"
+id: steer_mixed
+nodes:
+  start: { kind: start }
+  work:
+    kind: agent_task
+    config: { kind: agent_task, prompt: Do the work }
+  other:
+    kind: agent_task
+    config: { kind: agent_task, prompt: Other work }
+  done: { kind: exit }
+edges:
+- { from: start, to: work }
+- { from: work, to: other }
+- { from: other, to: done }
+"#
+            .into(),
+        ),
+    );
+    wait_for_log(&log, "turn/start", 1);
+    // `other` is recorded as running with no live session: an agent whose
+    // provider cannot be steered, beside the steerable `work`.
+    let store = RunStore::for_settings(&settings);
+    let paths = store.read_run_bundle("steer-mixed").unwrap().unwrap().paths;
+    store
+        .append_event(&paths, stage_started_event("steer-mixed", 99, "other"))
+        .unwrap();
+
+    let result = steer(&service, "steer-mixed", json!({"message": "Which one?"}));
+    assert_eq!(result["status"], "rejected", "{result}");
+    assert_eq!(result["reason"], "ambiguous_target");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("steer-mixed/work") && message.contains("steer-mixed/other"),
+        "{message}"
+    );
+
+    for (node, count) in [("work", 1), ("other", 2)] {
+        wait_for_log(&log, "turn/start", count);
+        let result = steer(
+            &service,
+            "steer-mixed",
+            json!({"message": format!("Finish {node}."), "target_node_id": node}),
+        );
+        assert_eq!(result["status"], "delivered", "{result}");
+    }
+    wait_for_status(&settings, "steer-mixed", "completed");
+    let events = intervention_events(&settings, "steer-mixed");
+    assert_eq!(events[0]["intervention_status"], "rejected");
+    assert_eq!(events[0]["intervention_reason"], "ambiguous_target");
+    assert_eq!(events[1]["intervention_status"], "delivered");
+}
+
+#[test]
+fn steer_rejects_unsteerable_parallel_agent_nodes() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    let store = RunStore::for_settings(&settings);
+    let mut record = attractor_core::RunRecord::new(
+        "steer-unsupported",
+        settings.project_root.to_string_lossy(),
+    );
+    record.status = "running".to_string();
+    let paths = store
+        .create_run(CreateRunRequest {
+            record,
+            flow_source: Some(
+                r#"schema_version: "1"
+id: steer_unsupported
+nodes:
+  start: { kind: start }
+  fork:
+    kind: parallel
+    config: { kind: parallel, join_policy: wait_all }
+  left:
+    kind: agent_task
+    config: { kind: agent_task, prompt: Left work }
+  right:
+    kind: agent_task
+    config: { kind: agent_task, prompt: Right work }
+  join:
+    kind: fan_in
+    config: { kind: fan_in }
+  done: { kind: exit }
+edges:
+- { from: start, to: fork }
+- { from: fork, to: left }
+- { from: fork, to: right }
+- { from: left, to: join }
+- { from: right, to: join }
+- { from: join, to: done }
+"#
+                .into(),
+            ),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .append_event(&paths, stage_started_event("steer-unsupported", 1, "fork"))
+        .unwrap();
+    for (index, branch) in ["left", "right"].into_iter().enumerate() {
+        store
+            .append_event(
+                &paths,
+                parallel_branch_started_event("steer-unsupported", "fork", branch, index),
+            )
+            .unwrap();
+    }
+
+    let result = steer(&service, "steer-unsupported", json!({"message": "Anyone?"}));
+    assert_eq!(result["status"], "rejected", "{result}");
+    assert_eq!(result["reason"], "ambiguous_target");
+
+    let result = steer(
+        &service,
+        "steer-unsupported",
+        json!({"message": "Left, stop.", "target_node_id": "left"}),
+    );
+    assert_eq!(result["status"], "rejected", "{result}");
+    assert_eq!(result["reason"], "provider_steering_unsupported");
+    assert_eq!(result["target_run_id"], "steer-unsupported");
+    assert_eq!(result["target_node_id"], "left");
+
+    let events = intervention_events(&settings, "steer-unsupported");
+    assert_eq!(events[0]["intervention_reason"], "ambiguous_target");
+    assert_eq!(events[1]["intervention_status"], "rejected");
+    assert_eq!(
+        events[1]["intervention_reason"],
+        "provider_steering_unsupported"
+    );
+    assert_eq!(events[1]["target_node_id"], "left");
 }

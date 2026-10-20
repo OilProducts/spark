@@ -581,8 +581,8 @@ function RunVisitView({
                 ) : (
                     <p className="text-sm text-muted-foreground">No transcript was recorded for this visit.</p>
                 )}
-                {visit.kind === 'agent_task' && visit.outcome === 'running' ? (
-                    <RunSteerForm runId={visit.runId} nodeId={visit.nodeId} />
+                {visit.kind === 'agent_task' ? (
+                    <RunSteerForm runId={visit.runId} nodeId={visit.nodeId} running={visit.outcome === 'running'} />
                 ) : null}
                 {returned ? (
                     <div data-testid="run-visit-ended" className="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
@@ -616,8 +616,9 @@ function RunVisitView({
 }
 
 // Sends a message to the running agent node. Every outcome stays visible: a
-// rejection or HTTP error keeps the draft so it can be resent.
-function RunSteerForm({ runId, nodeId }: { runId: string; nodeId: string }) {
+// rejection or HTTP error keeps the draft so it can be resent, and the last
+// result outlives the visit ending, while the input does not.
+function RunSteerForm({ runId, nodeId, running }: { runId: string; nodeId: string; running: boolean }) {
     const { sendSteer } = useRunActions()
     const [draft, setDraft] = useState('')
     const [sending, setSending] = useState(false)
@@ -631,6 +632,9 @@ function RunSteerForm({ runId, nodeId }: { runId: string; nodeId: string }) {
         }
         setSending(false)
     }
+    if (!running && !result) {
+        return null
+    }
     return (
         <form
             data-testid="run-visit-steer"
@@ -640,25 +644,29 @@ function RunSteerForm({ runId, nodeId }: { runId: string; nodeId: string }) {
                 void send()
             }}
         >
-            <Textarea
-                data-testid="run-visit-steer-input"
-                aria-label="Message to the running agent"
-                placeholder="Message the running agent…"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                disabled={sending}
-                className="bg-background"
-            />
+            {running ? (
+                <Textarea
+                    data-testid="run-visit-steer-input"
+                    aria-label="Message to the running agent"
+                    placeholder="Message the running agent…"
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    disabled={sending}
+                    className="bg-background"
+                />
+            ) : null}
             <div className="flex flex-wrap items-start gap-3">
-                <Button
-                    type="submit"
-                    data-testid="run-visit-steer-send"
-                    variant="outline"
-                    size="sm"
-                    disabled={sending || draft.trim().length === 0}
-                >
-                    Send
-                </Button>
+                {running ? (
+                    <Button
+                        type="submit"
+                        data-testid="run-visit-steer-send"
+                        variant="outline"
+                        size="sm"
+                        disabled={sending || draft.trim().length === 0}
+                    >
+                        Send
+                    </Button>
+                ) : null}
                 {result ? (
                     result.delivered ? (
                         <p data-testid="run-visit-steer-delivered" role="status" className="text-sm text-muted-foreground">{result.text}</p>

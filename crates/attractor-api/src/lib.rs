@@ -2514,34 +2514,43 @@ impl AttractorApiService {
                 target_node_id: node_id,
             }
         };
-        Ok(match sessions.as_slice() {
-            [session] => runner.request_child_intervention(ChildInterventionRequest {
-                child_run_id: session.child_run_id.clone().unwrap_or_default(),
-                message: message.to_string(),
-                parent_run_id: pipeline_id.to_string(),
-                parent_node_id: String::new(),
-                root_run_id: session.root_run_id.clone().unwrap_or_default(),
-                reason: String::new(),
-                source: "human".to_string(),
-                cycle: None,
-                target_node_id: Some(session.node_id.clone()),
-            }),
-            [] => match running_agent_nodes(store, &runs)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .find(|(_, node_id)| target_node_id.as_ref().is_none_or(|id| id == node_id))
-            {
-                Some((run_id, node_id)) => rejected(
-                    &run_id,
+        // Every active agent node is a candidate, steerable or not, so an
+        // unsupported agent makes the target ambiguous rather than invisible.
+        let mut targets = running_agent_nodes(store, &runs)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|(_, node_id)| target_node_id.as_ref().is_none_or(|id| id == node_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        targets.extend(sessions.iter().map(|session| {
+            (
+                session.child_run_id.clone().unwrap_or_default(),
+                session.node_id.clone(),
+            )
+        }));
+        Ok(match targets.iter().collect::<Vec<_>>().as_slice() {
+            [] => rejected(
+                runs.first().map(String::as_str).unwrap_or(pipeline_id),
+                target_node_id,
+                "no_active_agent_node",
+                "No agent node is running in this run.".to_string(),
+            ),
+            [(run_id, node_id)] => match sessions.first() {
+                Some(session) => runner.request_child_intervention(ChildInterventionRequest {
+                    child_run_id: run_id.clone(),
+                    message: message.to_string(),
+                    parent_run_id: pipeline_id.to_string(),
+                    parent_node_id: String::new(),
+                    root_run_id: session.root_run_id.clone().unwrap_or_default(),
+                    reason: String::new(),
+                    source: "human".to_string(),
+                    cycle: None,
+                    target_node_id: Some(node_id.clone()),
+                }),
+                None => rejected(
+                    run_id,
                     Some(node_id.clone()),
                     "provider_steering_unsupported",
                     format!("Agent node {node_id} is running, but its provider cannot be steered."),
-                ),
-                None => rejected(
-                    runs.first().map(String::as_str).unwrap_or(pipeline_id),
-                    target_node_id,
-                    "no_active_agent_node",
-                    "No agent node is running in this run.".to_string(),
                 ),
             },
             many => rejected(
@@ -2551,11 +2560,7 @@ impl AttractorApiService {
                 format!(
                     "Several agent nodes are running ({}); choose one to steer.",
                     many.iter()
-                        .map(|session| format!(
-                            "{}/{}",
-                            session.child_run_id.as_deref().unwrap_or_default(),
-                            session.node_id
-                        ))
+                        .map(|(run_id, node_id)| format!("{run_id}/{node_id}"))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -3842,9 +3847,14 @@ fn running_agent_nodes(
             let Some(node_id) = event.payload.get("node_id").and_then(Value::as_str) else {
                 continue;
             };
-            match event.event_type.as_str() {
-                "StageStarted" => open.insert(node_id.to_string()),
-                "StageCompleted" | "StageFailed" | "StageRetrying" => open.remove(node_id),
+            // ponytail: a parallel branch is tracked by its start node only;
+            // later nodes inside a branch emit no stage events.
+            let branch = event.payload.get("branch").and_then(Value::as_str);
+            match (event.event_type.as_str(), branch) {
+                ("StageStarted", _) => open.insert(node_id.to_string()),
+                ("StageCompleted" | "StageFailed" | "StageRetrying", _) => open.remove(node_id),
+                ("ParallelBranchStarted", Some(branch)) => open.insert(branch.to_string()),
+                ("ParallelBranchCompleted", Some(branch)) => open.remove(branch),
                 _ => false,
             };
         }

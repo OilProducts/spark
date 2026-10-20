@@ -546,7 +546,7 @@ describe('RunVisitsCard', () => {
 describe('RunVisitsCard steering', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  const renderVisits = (visits: RunVisit[]) => render(
+  const visitsCard = (visits: RunVisit[]) => (
     <SelectingVisitsCard
       visits={visits}
       flowNodes={{}}
@@ -565,8 +565,9 @@ describe('RunVisitsCard steering', () => {
       renderContext={() => null}
       artifactEntries={[]}
       onViewArtifact={vi.fn()}
-    />,
+    />
   )
+  const renderVisits = (visits: RunVisit[]) => render(visitsCard(visits))
   const openVisit = (index: number) => fireEvent.click(screen.getAllByTestId('run-visit-row')[index])
   const steerResponse = (body: Record<string, unknown>) => vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }))
 
@@ -630,5 +631,36 @@ describe('RunVisitsCard steering', () => {
     fireEvent.click(screen.getByTestId('run-visit-steer-send'))
 
     await waitFor(() => expect(screen.getByTestId('run-visit-steer-rejected')).toHaveTextContent('Unable to send message (HTTP 404): Unknown pipeline.'))
+  })
+
+  it.each([
+    ['before', 'delivered', 'run-visit-steer-delivered'],
+    ['before', 'rejected', 'run-visit-steer-rejected'],
+    ['after', 'delivered', 'run-visit-steer-delivered'],
+    ['after', 'rejected', 'run-visit-steer-rejected'],
+  ])('keeps the result when the visit ends %s a %s response', async (when, status, testId) => {
+    let respond = (_: Response) => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve })))
+    const view = renderVisits([visit('implement', 1, 'running')])
+    openVisit(0)
+    fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Stop.' } })
+    fireEvent.click(screen.getByTestId('run-visit-steer-send'))
+    const end = () => view.rerender(visitsCard([visit('implement', 1, 'succeeded')]))
+    const reply = () => respond(new Response(JSON.stringify({
+      pipeline_id: 'run-1', target_run_id: 'run-1', run_id: 'run-1', status, delivery_mode: null,
+      reason: status === 'rejected' ? 'no_active_agent_node' : null, message: `Steer ${status}.`, target_node_id: 'implement',
+    }), { status: 200 }))
+    if (when === 'before') {
+      end()
+      reply()
+    } else {
+      reply()
+      await screen.findByTestId(testId)
+      end()
+    }
+
+    expect(await screen.findByTestId(testId)).toHaveTextContent(`Steer ${status}.`)
+    expect(screen.queryByTestId('run-visit-steer-input')).toBeNull()
+    expect(screen.queryByTestId('run-visit-steer-send')).toBeNull()
   })
 })
