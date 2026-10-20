@@ -16,6 +16,10 @@ use serde_json::{json, Value};
 pub struct TokenUsageBucket {
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
+    /// Prompt-cache writes, counted inside `input_tokens` (Anthropic bills
+    /// them above the base input rate).
+    pub cache_write_5m_tokens: u64,
+    pub cache_write_1h_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
 }
@@ -24,6 +28,8 @@ impl TokenUsageBucket {
     fn add(&mut self, other: &TokenUsageBucket) {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
+        self.cache_write_5m_tokens += other.cache_write_5m_tokens;
+        self.cache_write_1h_tokens += other.cache_write_1h_tokens;
         self.output_tokens += other.output_tokens;
         self.total_tokens += other.total_tokens;
     }
@@ -36,8 +42,9 @@ impl TokenUsageBucket {
     }
 
     /// Lenient parse across the payload dialects backends emit: normalized
-    /// `Usage` snake_case, codex camelCase, and codex `{total: {...}}`
-    /// wrappers.
+    /// `Usage` snake_case, codex camelCase, codex `{total: {...}}`
+    /// wrappers, and Anthropic's raw usage (Claude Code), whose
+    /// `input_tokens` excludes cache reads and writes.
     pub fn from_value(value: &Value) -> Option<TokenUsageBucket> {
         let payload = value
             .get("total")
@@ -51,13 +58,37 @@ impl TokenUsageBucket {
             }
             0
         };
-        let input_tokens = read(&["input_tokens", "inputTokens"]);
-        let cached_input_tokens = read(&[
-            "cached_input_tokens",
-            "cachedInputTokens",
-            "cache_read_tokens",
-        ])
-        .min(input_tokens);
+        let anthropic_dialect = payload.get("cache_read_input_tokens").is_some()
+            || payload.get("cache_creation_input_tokens").is_some();
+        let (input_tokens, cached_input_tokens, cache_write_5m_tokens, cache_write_1h_tokens) =
+            if anthropic_dialect {
+                let cache_read = read(&["cache_read_input_tokens"]);
+                let cache_write = read(&["cache_creation_input_tokens"]);
+                let split = payload.get("cache_creation");
+                let split_read = |key: &str| {
+                    split
+                        .and_then(|split| split.get(key))
+                        .and_then(value_as_u64)
+                        .unwrap_or(0)
+                };
+                let write_1h = split_read("ephemeral_1h_input_tokens").min(cache_write);
+                let write_5m = cache_write - write_1h;
+                (
+                    read(&["input_tokens"]) + cache_read + cache_write,
+                    cache_read,
+                    write_5m,
+                    write_1h,
+                )
+            } else {
+                let input_tokens = read(&["input_tokens", "inputTokens"]);
+                let cached_input_tokens = read(&[
+                    "cached_input_tokens",
+                    "cachedInputTokens",
+                    "cache_read_tokens",
+                ])
+                .min(input_tokens);
+                (input_tokens, cached_input_tokens, 0, 0)
+            };
         let output_tokens = read(&["output_tokens", "outputTokens"]);
         let reported_total = read(&["total_tokens", "totalTokens"]);
         let baseline_total = input_tokens + output_tokens;
@@ -65,6 +96,8 @@ impl TokenUsageBucket {
         let bucket = TokenUsageBucket {
             input_tokens,
             cached_input_tokens,
+            cache_write_5m_tokens,
+            cache_write_1h_tokens,
             output_tokens,
             total_tokens,
         };
@@ -75,6 +108,8 @@ impl TokenUsageBucket {
         json!({
             "input_tokens": self.input_tokens,
             "cached_input_tokens": self.cached_input_tokens,
+            "cache_write_5m_tokens": self.cache_write_5m_tokens,
+            "cache_write_1h_tokens": self.cache_write_1h_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
         })
@@ -270,7 +305,10 @@ impl TokenUsageBreakdown {
 }
 
 /// USD per million tokens: (input, cached input, output).
-/// Rates checked against the official OpenAI pricing page on 2026-07-09.
+/// OpenAI rates checked against the official OpenAI pricing page on
+/// 2026-07-09 (gpt-6 family on 2026-10-17, short-context tier); Claude
+/// rates against the Anthropic pricing page on 2026-10-17. Long-context
+/// tiers (OpenAI >272K, Haiku 5.5 >100K input) are not modeled.
 const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("codex-mini-latest", (1.50, 0.375, 6.00)),
     ("gpt-4.1", (2.00, 0.50, 8.00)),
@@ -295,9 +333,29 @@ const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("gpt-5.6-sol", (5.00, 0.50, 30.00)),
     ("gpt-5.6-terra", (2.50, 0.25, 15.00)),
     ("gpt-5.6-luna", (1.00, 0.10, 6.00)),
+    ("gpt-6-astra", (10.00, 1.00, 50.00)),
+    ("gpt-6-sol", (2.00, 0.20, 10.00)),
+    ("gpt-6.1-sol", (2.00, 0.10, 10.00)),
+    ("gpt-6-luna", (0.10, 0.01, 0.50)),
+    ("claude-fable-5-1", (10.00, 0.25, 50.00)),
+    ("claude-mythos-5-1", (10.00, 0.25, 50.00)),
+    ("claude-fable-5", (10.00, 1.00, 50.00)),
+    ("claude-opus-5-5", (4.00, 0.20, 20.00)),
+    ("claude-opus-5", (5.00, 0.50, 25.00)),
+    ("claude-sonnet-5-5", (2.00, 0.10, 10.00)),
+    ("claude-sonnet-5", (2.00, 0.20, 10.00)),
+    ("claude-haiku-5-5", (0.10, 0.01, 0.50)),
 ];
 
+/// Cache-write multipliers on the base input rate (Anthropic: 5-minute and
+/// 1-hour TTL).
+const CACHE_WRITE_5M_MULTIPLIER: f64 = 1.25;
+const CACHE_WRITE_1H_MULTIPLIER: f64 = 2.0;
+
 fn pricing_for_model(model: &str) -> Option<(f64, f64, f64)> {
+    // Claude Code reports context-window selectors like `claude-opus-5-5[1m]`;
+    // the 1M window is billed at standard rates.
+    let model = model.split_once('[').map_or(model, |(base, _)| base);
     MODEL_PRICING_CATALOG
         .iter()
         .find(|(candidate, _)| *candidate == model)
@@ -325,9 +383,15 @@ pub fn estimate_model_cost(breakdown: &TokenUsageBreakdown) -> Option<Value> {
             );
             continue;
         };
-        let uncached_input = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
+        let uncached_input = usage
+            .input_tokens
+            .saturating_sub(usage.cached_input_tokens)
+            .saturating_sub(usage.cache_write_5m_tokens)
+            .saturating_sub(usage.cache_write_1h_tokens);
         let amount = (uncached_input as f64 * input_rate
             + usage.cached_input_tokens as f64 * cached_rate
+            + usage.cache_write_5m_tokens as f64 * input_rate * CACHE_WRITE_5M_MULTIPLIER
+            + usage.cache_write_1h_tokens as f64 * input_rate * CACHE_WRITE_1H_MULTIPLIER
             + usage.output_tokens as f64 * output_rate)
             / 1_000_000.0;
         subtotal += amount;

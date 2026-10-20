@@ -286,6 +286,51 @@ fn current_generation_models_are_priced() {
     );
 }
 
+#[test]
+fn claude_code_usage_prices_cache_reads_and_writes() {
+    // claude-opus-5-5: $4.00 input / $0.20 cache read / $20.00 output per
+    // million; writes bill at 1.25x (5m) and 2x (1h) input, per the official
+    // Anthropic pricing page (checked 2026-10-17). Anthropic's input_tokens
+    // excludes cache traffic, and the `[1m]` selector suffix is unpriced.
+    let entries = vec![completed_entry(
+        1,
+        "claude_code_request_completed",
+        json!({
+            "model": "claude-opus-5-5[1m]",
+            "token_usage": {
+                "input_tokens": 10,
+                "cache_read_input_tokens": 126_971,
+                "cache_creation_input_tokens": 18_792,
+                "cache_creation": {"ephemeral_1h_input_tokens": 6_505, "ephemeral_5m_input_tokens": 12_287},
+                "output_tokens": 1_473,
+            },
+        }),
+    )];
+    let breakdown = project_run_usage(&entries, "fallback").expect("usage");
+    let bucket = breakdown
+        .by_model
+        .get("claude-opus-5-5[1m]")
+        .expect("claude bucket");
+    assert_eq!(bucket.input_tokens, 10 + 126_971 + 18_792);
+    assert_eq!(bucket.cached_input_tokens, 126_971);
+    assert_eq!(bucket.cache_write_5m_tokens, 12_287);
+    assert_eq!(bucket.cache_write_1h_tokens, 6_505);
+
+    let cost = estimate_model_cost(&breakdown).expect("cost");
+    assert_eq!(cost["status"], "estimated");
+    let expected = (10.0 * 4.00
+        + 126_971.0 * 0.20
+        + 12_287.0 * 4.00 * 1.25
+        + 6_505.0 * 4.00 * 2.0
+        + 1_473.0 * 20.00)
+        / 1_000_000.0;
+    let amount = cost["amount"].as_f64().expect("amount");
+    assert!(
+        (amount - expected).abs() < 1e-6,
+        "amount {amount} != {expected}"
+    );
+}
+
 struct UsageEmittingBackend;
 
 impl spark_agent_adapter::CodergenBackend for UsageEmittingBackend {
