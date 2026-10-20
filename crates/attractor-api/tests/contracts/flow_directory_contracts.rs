@@ -358,3 +358,146 @@ fn settings(root: &Path) -> SparkSettings {
         project_roots: Vec::new(),
     }
 }
+
+#[test]
+fn editor_launches_with_inline_content_execute_the_resolved_form() {
+    use std::io::{BufRead, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.config_dir).expect("config");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
+    let address = listener.local_addr().expect("address");
+    fs::write(
+        settings.config_dir.join("spark.toml"),
+        format!("[models]\nprovider='openai_compatible'\nmodel='config-model'\n[providers.openai_compatible]\nbase_url='http://{address}/v1'\n[agents]\nmax_turns=5\n"),
+    )
+    .expect("spark.toml");
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        Arc::new(|| {
+            attractor_runtime::RuntimeHandlerRunner::new()
+                .with_rust_llm_client(unified_llm_adapter::Client::new())
+        }),
+    );
+    let flow = r#"id: inline-review
+nodes:
+  start: {kind: start}
+  first:
+    kind: agent_task
+    role: reviewer
+    config: {kind: agent_task, prompt: Review the first part.}
+  second:
+    kind: agent_task
+    role: reviewer
+    config: {kind: agent_task, prompt: Review the second part.}
+    execution: {llm_model: node-model}
+  done: {kind: exit}
+edges:
+  - {from: start, to: first}
+  - {from: first, to: second}
+  - {from: second, to: done}
+"#;
+    // The editor sends the authored content together with the flow's name.
+    let launch = |run_id: &str| {
+        service.start_pipeline(attractor_api::PipelineStartRequest {
+            wait: Some(true),
+            run_id: Some(run_id.to_string()),
+            flow_content: Some(flow.to_string()),
+            flow_name: Some("inline-review".to_string()),
+            model: Some("launch-model".to_string()),
+            llm_provider: Some("openai_compatible".to_string()),
+            working_directory: temp.path().join("project").to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+    };
+
+    let unknown = launch("unknown-role");
+    assert_eq!(
+        unknown.body["status"], "validation_error",
+        "{}",
+        unknown.body
+    );
+    assert!(unknown.body["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("unknown role 'reviewer'")));
+
+    fs::create_dir_all(settings.roles_dir()).expect("roles");
+    fs::write(
+        settings.roles_dir().join("reviewer.md"),
+        "---\ntype: Role\nexecution:\n  llm_model: role-model\n---\n\nYou are a careful reviewer.\n",
+    )
+    .expect("role");
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut requests = Vec::new();
+        while requests.len() < 2 {
+            let mut stream = match listener.accept() {
+                Ok((stream, _)) => stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(error) => panic!("missing LLM request: {error}"),
+            };
+            stream.set_nonblocking(false).expect("blocking");
+            let mut reader = std::io::BufReader::new(stream.try_clone().expect("clone"));
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("header");
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().expect("length");
+                }
+            }
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).expect("body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            let response = json!({"id":"r","object":"chat.completion","model":body["model"],"choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}).to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).expect("respond");
+            requests.push(body);
+        }
+        requests
+    });
+
+    let started = launch("inline-roles");
+    assert_eq!(started.body["status"], "started", "{}", started.body);
+    let requests = server.join().expect("server");
+    // A role's model beats the launch override; the node's own beats the role's.
+    assert_eq!(requests[0]["model"], "role-model");
+    assert_eq!(requests[1]["model"], "node-model");
+    for (request, part) in requests.iter().zip(["first", "second"]) {
+        let body = request.to_string();
+        assert!(
+            body.contains(
+                "You are a careful reviewer.\\n\\nReview the {part} part."
+                    .replace("{part}", part)
+                    .as_str()
+            ),
+            "{body}"
+        );
+    }
+
+    let bundle = attractor_runtime::RunStore::for_settings(&settings)
+        .read_run_bundle("inline-roles")
+        .expect("read")
+        .expect("run");
+    assert_eq!(bundle.record.expect("record").status, "completed");
+    let snapshot = fs::read_to_string(bundle.paths.artifacts_dir().join("flow/flow-source.yaml"))
+        .expect("snapshot");
+    assert!(
+        snapshot.contains("You are a careful reviewer."),
+        "{snapshot}"
+    );
+    assert!(!snapshot.contains("role:"), "{snapshot}");
+}

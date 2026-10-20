@@ -13,9 +13,10 @@ use attractor_core::{
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    flow_name_from_path, inject_flow_goal, load_resolved_flow_content, parse_flow_definition,
-    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, resolve_flow_ref,
-    resolve_flow_roles, write_flow_dir, FlowSourceError, FLOW_FILE,
+    flow_name_from_path, inject_flow_goal, load_flow_content, load_resolved_flow_content,
+    parse_flow_definition, read_named_flow_source as read_typed_named_flow_source,
+    resolve_flow_path, resolve_flow_ref, resolve_flow_roles, write_flow_dir, FlowSourceError,
+    FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -1558,11 +1559,7 @@ impl AttractorApiService {
             let Some(flow_name) = flow_name.as_deref() else {
                 return validation_error_response("Either flow_content or flow_name is required.");
             };
-            match load_resolved_flow_content(
-                &self.settings.flows_dir,
-                &self.settings.roles_dir(),
-                flow_name,
-            ) {
+            match load_flow_content(&self.settings.flows_dir, flow_name) {
                 Ok(content) => flow_content = Some(content),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
@@ -1591,8 +1588,16 @@ impl AttractorApiService {
             };
         }
 
-        let flow = match parse_flow_definition(&flow_content) {
+        // Named and inline launches both carry the authored form; resolve
+        // roles once here so selection, execution and the snapshot see it.
+        let flow = match parse_flow_definition(&flow_content)
+            .and_then(|flow| resolve_flow_roles(&flow, &self.settings.roles_dir()))
+        {
             Ok(flow) => flow,
+            Err(error) => return flow_definition_validation_response(error),
+        };
+        let flow_content = match attractor_dsl::flow_yaml(&flow) {
+            Ok(content) => content,
             Err(error) => return flow_definition_validation_response(error),
         };
 

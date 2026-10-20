@@ -7,7 +7,8 @@
 //!
 //! Each `<yaml-root>/<name>.yaml` becomes `<flows-dir>/<name>/`. Flows whose
 //! directory already exists are skipped and reported. Subflow `flow_ref`s
-//! drop their extension. `--catalog` rewrites `flows."<name>.yaml"` keys.
+//! drop their extension. Each written directory is read back and must equal
+//! the converted flow. `--catalog` rewrites `flows."<name>.yaml"` keys.
 
 use std::path::{Path, PathBuf};
 
@@ -70,6 +71,15 @@ fn convert(file: &Path, target: &Path) -> Result<(), String> {
     let flow = flow.normalize();
     attractor_dsl::validate_flow_definition(&flow).map_err(|error| error.to_string())?;
     attractor_dsl::write_flow_dir(target, &flow).map_err(|error| error.detail().to_string())?;
+    // Round trip: the written directory must assemble back to the same flow.
+    let written =
+        attractor_dsl::read_flow_dir(target).map_err(|error| error.detail().to_string())?;
+    if written != flow {
+        return Err(format!(
+            "{} does not assemble back to the converted flow",
+            target.display()
+        ));
+    }
     Ok(())
 }
 
