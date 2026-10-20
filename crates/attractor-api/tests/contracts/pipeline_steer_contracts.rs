@@ -707,3 +707,196 @@ edges:
     );
     assert_eq!(events[1]["target_node_id"], "left");
 }
+
+/// Transcript segments of every execution of `node_id`.
+fn node_segments(settings: &SparkSettings, run_id: &str, node_id: &str) -> Vec<Value> {
+    let bundle = RunStore::for_settings(settings)
+        .read_run_bundle(run_id)
+        .unwrap()
+        .unwrap();
+    let mut segments = Vec::new();
+    let mut dirs = vec![bundle.paths.root.join("logs").join(node_id)];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "transcript.jsonl")
+            {
+                segments.extend(
+                    fs::read_to_string(&path)
+                        .unwrap()
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                        .filter_map(|record| record.get("segment").cloned()),
+                );
+            }
+        }
+    }
+    segments
+}
+
+/// A steer the turn ended without taking shows as undelivered on its node,
+/// not as a delivered user message.
+#[track_caller]
+fn assert_steer_recorded_undelivered(settings: &SparkSettings, run_id: &str, text: &str) {
+    let segments = node_segments(settings, run_id, "work");
+    let mentions = |segment: &&Value| {
+        segment["content"]
+            .as_str()
+            .is_some_and(|content| content.contains(text))
+    };
+    assert!(
+        segments.iter().filter(mentions).any(|segment| {
+            segment["status"] == "failed"
+                && segment["content"]
+                    .as_str()
+                    .is_some_and(|content| content.contains("not delivered"))
+        }),
+        "{segments:#?}"
+    );
+    assert!(
+        !segments
+            .iter()
+            .filter(mentions)
+            .any(|segment| segment["kind"] == "user_message"),
+        "{segments:#?}"
+    );
+    assert!(!node_log_contains(
+        settings,
+        run_id,
+        "work",
+        "\"steering_injected\""
+    ));
+}
+
+#[test]
+fn steer_left_queued_when_a_codex_turn_ends_is_recorded_undelivered() {
+    let mut envs = codex_env("codex-undelivered");
+    envs[1].1 = "steer-race".into();
+    if !in_child_process(
+        "steer_left_queued_when_a_codex_turn_ends_is_recorded_undelivered",
+        &envs,
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    let log = log_path("SPARK_FAKE_CODEX_APP_SERVER_LOG");
+    start(
+        &service,
+        &settings,
+        "steer-codex-late",
+        "codex",
+        content(agent_flow("steer_codex_late")),
+    );
+    wait_for_log(&log, "turn/start", 1);
+
+    // The fake ends the turn instead of taking the steer.
+    let result = steer(
+        &service,
+        "steer-codex-late",
+        json!({"message": "Too late for this turn."}),
+    );
+    assert_eq!(result["status"], "delivered", "{result}");
+    wait_for_status(&settings, "steer-codex-late", "completed");
+    assert_steer_recorded_undelivered(&settings, "steer-codex-late", "Too late for this turn.");
+}
+
+#[test]
+fn steer_left_queued_when_a_claude_code_turn_ends_is_recorded_undelivered() {
+    let log = std::env::temp_dir().join(format!(
+        "spark-steer-{}-claude-undelivered.log",
+        std::process::id()
+    ));
+    let envs = [
+        (
+            "SPARK_CLAUDE_CODE_BIN",
+            fake_bin("spark-agent-fake-claude-code"),
+        ),
+        ("SPARK_FAKE_CLAUDE_CODE_MODE", "steer-exit".to_string()),
+        ("SPARK_FAKE_CLAUDE_CODE_LOG", log.to_string_lossy().into()),
+    ];
+    if !in_child_process(
+        "steer_left_queued_when_a_claude_code_turn_ends_is_recorded_undelivered",
+        &envs,
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    start(
+        &service,
+        &settings,
+        "steer-claude-late",
+        "claude-code",
+        content(agent_flow("steer_claude_late").replace("Do the work", "Start the work")),
+    );
+    wait_for_log(&log_path("SPARK_FAKE_CLAUDE_CODE_LOG"), "USER_CONTENT=", 1);
+
+    // The fake reads the steer, then exits without taking it in.
+    let result = steer(
+        &service,
+        "steer-claude-late",
+        json!({"message": "Too late for this turn."}),
+    );
+    assert_eq!(result["status"], "delivered", "{result}");
+    wait_for_status(&settings, "steer-claude-late", "completed");
+    assert_steer_recorded_undelivered(&settings, "steer-claude-late", "Too late for this turn.");
+}
+
+#[test]
+fn steer_rejects_claude_code_without_stdin_control() {
+    let temp = tempfile::tempdir().unwrap();
+    let release = temp.path().join("release");
+    let log = temp.path().join("claude.log");
+    let envs = [
+        (
+            "SPARK_CLAUDE_CODE_BIN",
+            fake_bin("spark-agent-fake-claude-code"),
+        ),
+        ("SPARK_FAKE_CLAUDE_CODE_MODE", "legacy".to_string()),
+        ("SPARK_FAKE_CLAUDE_CODE_LOG", log.to_string_lossy().into()),
+        (
+            "SPARK_FAKE_CLAUDE_CODE_RELEASE",
+            release.to_string_lossy().into(),
+        ),
+    ];
+    if !in_child_process("steer_rejects_claude_code_without_stdin_control", &envs) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    start(
+        &service,
+        &settings,
+        "steer-claude-legacy",
+        "claude-code",
+        content(agent_flow("steer_claude_legacy")),
+    );
+    // The CLI advertised no interrupt_receipt_v1, so Spark closed its input.
+    wait_for_log(&log_path("SPARK_FAKE_CLAUDE_CODE_LOG"), "STDIN_CLOSED", 1);
+
+    let result = steer(
+        &service,
+        "steer-claude-legacy",
+        json!({"message": "Can you hear me?"}),
+    );
+    assert_eq!(result["status"], "rejected", "{result}");
+    assert_eq!(result["reason"], "provider_steering_unsupported");
+    assert_eq!(result["target_node_id"], "work");
+    let events = intervention_events(&settings, "steer-claude-legacy");
+    assert_eq!(events[0]["intervention_status"], "rejected");
+    assert_eq!(
+        events[0]["intervention_reason"],
+        "provider_steering_unsupported"
+    );
+
+    fs::write(log_path("SPARK_FAKE_CLAUDE_CODE_RELEASE"), "").unwrap();
+    wait_for_status(&settings, "steer-claude-legacy", "completed");
+}

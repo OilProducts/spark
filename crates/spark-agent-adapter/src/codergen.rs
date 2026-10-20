@@ -317,6 +317,7 @@ impl CodergenSessionInterventionBroker {
             .active
             .values()
             .chain(state.unkeyed_active.values())
+            .filter(|entry| entry.session.steering.accepting())
             .map(|entry| entry.session.clone())
             .collect()
     }

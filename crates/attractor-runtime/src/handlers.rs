@@ -97,6 +97,7 @@ fn materialize_execution_suffix(
                 | "request_user_input_requested"
                 | "context_compaction_completed"
                 | "agent_event_completed"
+                | "steering_undelivered"
         ) {
             continue;
         }
@@ -123,7 +124,7 @@ fn materialize_execution_suffix(
         let segment = serde_json::from_value(json!({
             "id": id, "turn_id": "response", "order": revision as i64 - 2,
             "kind": segment_kind, "role": "assistant",
-            "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
+            "status": if matches!(kind, "tool_call_failed" | "steering_undelivered") { "failed" } else { "complete" },
             "timestamp": stored.committed_at, "updated_at": stored.committed_at,
             "completed_at": stored.committed_at,
             "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),

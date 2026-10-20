@@ -192,6 +192,13 @@ impl SessionSteeringHandle {
             .accepting = false;
     }
 
+    pub fn accepting(&self) -> bool {
+        self.state
+            .lock()
+            .expect("session steering queue lock")
+            .accepting
+    }
+
     /// Stops accepting steering and returns what was queued but never
     /// delivered, so the caller can carry it into the next turn.
     pub fn close_and_drain(&self) -> Vec<SteeringTurn> {
