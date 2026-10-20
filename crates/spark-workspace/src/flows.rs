@@ -169,9 +169,11 @@ impl WorkspaceFlowService {
             .map_err(|error| flow_source_error(error, Some(flow_name)))?;
         let name = attractor_dsl::flow_name_from_path(&self.settings.flows_dir, &path)
             .map_err(|error| flow_source_error(error, Some(flow_name)))?;
-        let preview = match attractor_dsl::read_flow_dir(&path)
-            .and_then(|flow| attractor_dsl::flow_yaml(&flow))
-        {
+        // Referenced roles must resolve; the preview keeps the authored form.
+        let preview = match attractor_dsl::read_flow_dir(&path).and_then(|flow| {
+            attractor_dsl::resolve_flow_roles(&flow, &self.settings.roles_dir())?;
+            attractor_dsl::flow_yaml(&flow)
+        }) {
             Ok(content) => {
                 attractor_api::preview_named_flow_source(&self.settings.flows_dir, &name, &content)
             }

@@ -1883,16 +1883,14 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     };
 
     let flow_path = expand_user_path(&options.file, env);
+    let roles_dir =
+        match spark_common::settings::resolve_settings_with_env(&Default::default(), env) {
+            Ok(settings) => settings.roles_dir(),
+            Err(error) => return json_error(error.to_string(), EXIT_GENERAL_FAILURE),
+        };
     // A flow directory validates as the loader assembles it.
     let loaded = if flow_path.is_dir() {
-        attractor_dsl::read_flow_dir(&flow_path).map_err(|error| {
-            let error = FlowDefinitionError {
-                count: error.diagnostics().len().max(1),
-                detail: error.detail().to_string(),
-                diagnostics: error.diagnostics().to_vec(),
-            };
-            (error, "validation_error")
-        })
+        attractor_dsl::read_flow_dir(&flow_path).map_err(flow_source_validation_error)
     } else {
         let raw_content = match std::fs::read_to_string(&flow_path) {
             Ok(content) => content,
@@ -1918,6 +1916,12 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
                     .map_err(|error| (error, "validation_error"))
             })
     };
+    // Referenced roles must resolve; the preview keeps the authored form.
+    let loaded = loaded.and_then(|flow| {
+        attractor_dsl::resolve_flow_roles(&flow, &roles_dir)
+            .map(|_| flow)
+            .map_err(flow_source_validation_error)
+    });
     let mut response = match loaded {
         Ok(flow) => object_from_value(flow_definition_preview_payload(&flow)),
         Err((error, status)) => flow_definition_error_payload(&error, status),
@@ -1936,6 +1940,17 @@ fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> Co
     } else {
         success_json(&payload)
     }
+}
+
+fn flow_source_validation_error(
+    error: attractor_dsl::FlowSourceError,
+) -> (FlowDefinitionError, &'static str) {
+    let error = FlowDefinitionError {
+        count: error.diagnostics().len().max(1),
+        detail: error.detail().to_string(),
+        diagnostics: error.diagnostics().to_vec(),
+    };
+    (error, "validation_error")
 }
 
 fn flow_definition_error_payload(error: &FlowDefinitionError, status: &str) -> Map<String, Value> {

@@ -70,6 +70,50 @@ fn process_flow_validate_file_observes_stdout_json() {
 }
 
 #[test]
+fn process_flow_validate_dir_resolves_referenced_roles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let flow_dir = temp.path().join("reviewed");
+    let flow =
+        valid_flow_source().replace("    label: Task\n", "    label: Task\n    role: persona\n");
+    attractor_dsl::write_flow_dir(
+        &flow_dir,
+        &attractor_dsl::parse_flow_definition(&flow).expect("flow"),
+    )
+    .expect("write flow");
+    let validate = || -> Value {
+        let output = Command::new(spark_bin())
+            .args(["flow", "validate", "--file"])
+            .arg(&flow_dir)
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home)
+            .output()
+            .expect("run spark");
+        assert_eq!(output.status.code(), Some(0));
+        serde_json::from_slice(&output.stdout).expect("stdout is validation JSON")
+    };
+
+    let missing = validate();
+    assert_eq!(missing["status"], "validation_error");
+    assert_eq!(missing["diagnostics"][0]["rule_id"], "role");
+    assert_eq!(missing["diagnostics"][0]["node_id"], "task");
+
+    fs::create_dir_all(home.join("roles")).expect("roles");
+    fs::write(home.join("roles/persona.md"), "no frontmatter\n").expect("role");
+    let malformed = validate();
+    assert_eq!(malformed["status"], "validation_error");
+    assert_eq!(malformed["diagnostics"][0]["rule_id"], "role");
+
+    fs::write(
+        home.join("roles/persona.md"),
+        "---\ntype: Role\n---\nPersona.\n",
+    )
+    .expect("role");
+    assert_eq!(validate()["status"], "ok");
+}
+
+#[test]
 fn process_source_checkout_default_target_guard_remains_exit_one() {
     let output = Command::new(spark_bin())
         .args(["flow", "list"])

@@ -179,6 +179,34 @@ fn validation_endpoint_surfaces_flow_definition_errors_and_path_safety_errors() 
     );
 }
 
+#[test]
+fn validation_endpoint_rejects_missing_and_malformed_roles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(
+        &settings,
+        "reviewed",
+        "schema_version: '1'\nid: reviewed\nnodes:\n  start:\n    kind: start\n  review:\n    kind: agent_task\n    role: reviewer\n    prompt: Review.\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: done\n",
+    );
+    let service = WorkspaceFlowService::new(settings.clone());
+
+    let missing = service.validate_flow("reviewed").expect("payload");
+    assert_eq!(missing["status"], "validation_error");
+    assert_eq!(missing["diagnostics"][0]["rule_id"], "role");
+    assert_eq!(missing["diagnostics"][0]["node_id"], "review");
+
+    fs::create_dir_all(settings.roles_dir()).expect("roles");
+    let role = settings.roles_dir().join("reviewer.md");
+    fs::write(&role, "---\ntype: Flow\n---\nPersona.\n").expect("role");
+    let malformed = service.validate_flow("reviewed").expect("payload");
+    assert_eq!(malformed["status"], "validation_error");
+    assert_eq!(malformed["diagnostics"][0]["rule_id"], "role");
+
+    fs::write(&role, "---\ntype: Role\n---\nPersona.\n").expect("role");
+    let valid = service.validate_flow("reviewed").expect("payload");
+    assert_eq!(valid["status"], "ok", "{valid}");
+}
+
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
     attractor_dsl::write_flow_dir(
         &settings.flows_dir.join(name),

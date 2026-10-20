@@ -3455,8 +3455,8 @@ fn child_preview_map(
             .and_then(|name| resolve_flow_path(flows_dir, name).ok())
             .and_then(|path| path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| flows_dir.to_path_buf());
-        let Ok(child_name) =
-            flow_name_from_path(flows_dir, resolve_flow_ref(&parent_dir, flow_ref))
+        let Some(Ok(child_name)) = resolve_flow_ref(&parent_dir, flow_ref)
+            .map(|path| flow_name_from_path(flows_dir, path))
         else {
             continue;
         };

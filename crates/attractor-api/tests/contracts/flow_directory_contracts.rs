@@ -8,7 +8,7 @@ use attractor_dsl::{
     flow_yaml, parse_flow_definition, read_flow_dir, resolve_flow_ref, resolve_flow_roles,
     write_flow_dir, FlowDefinition,
 };
-use serde_json::json;
+use serde_json::{json, Value};
 use spark_common::settings::SparkSettings;
 
 const FLOW: &str = r#"schema_version: "1"
@@ -322,7 +322,7 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
     // containing the parent's directory; preview uses the same resolver.
     assert_eq!(
         resolve_flow_ref(&flows_dir.join("team"), "workers/child"),
-        flows_dir.join("team/workers/child")
+        Some(flows_dir.join("team/workers/child"))
     );
     let preview = preview_with_flows_dir(
         PreviewRequest {
@@ -348,6 +348,66 @@ fn flow_refs_resolve_against_the_directory_containing_the_parent_flow() {
         stale
     })
     .is_err());
+}
+
+#[test]
+fn backslash_and_traversal_flow_refs_are_rejected_by_validation_preview_and_resolver() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let flows_dir = temp.path().join("flows");
+    let child = parse_flow_definition(
+        "id: child\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
+    )
+    .expect("child");
+    write_flow_dir(&flows_dir.join("team/workers/child"), &child).expect("child");
+    write_flow_dir(&flows_dir.join("outside"), &child).expect("outside");
+    let parent_with = |flow_ref: &str| {
+        let mut parent = parse_flow_definition(
+            "id: parent\nnodes:\n  start: {kind: start}\n  run:\n    kind: subflow\n    config: {kind: subflow, flow_ref: workers/child}\n  done: {kind: exit}\nedges:\n  - {from: start, to: run}\n  - {from: run, to: done}\n",
+        )
+        .expect("parent");
+        parent.nodes.get_mut("run").expect("run").config = Some(NodeConfig::Subflow {
+            flow_ref: flow_ref.to_string(),
+            input_map: BTreeMap::new(),
+        });
+        parent
+    };
+    let child_preview = |parent: &FlowDefinition| {
+        preview_with_flows_dir(
+            PreviewRequest {
+                flow_content: flow_yaml(parent).expect("yaml"),
+                flow_name: Some("team/parent".to_string()),
+                expand_children: true,
+            },
+            &flows_dir,
+        )
+        .body["graph"]["child_previews"]["run"]["flow_name"]
+            .clone()
+    };
+
+    // A backslash-separated relative ref is the same ref everywhere.
+    let parent = parent_with("workers\\child");
+    attractor_dsl::validate_flow_definition(&parent).expect("backslash ref is valid");
+    assert_eq!(
+        resolve_flow_ref(&flows_dir.join("team"), "workers\\child"),
+        Some(flows_dir.join("team/workers/child"))
+    );
+    assert_eq!(child_preview(&parent), json!("team/workers/child"));
+
+    for flow_ref in [
+        "..\\outside",
+        "\\absolute\\path",
+        "../outside",
+        "workers/../../outside",
+    ] {
+        let parent = parent_with(flow_ref);
+        let error = attractor_dsl::validate_flow_definition(&parent).expect_err(flow_ref);
+        assert!(
+            error.diagnostics.iter().any(|d| d.rule_id == "subflow_ref"),
+            "{flow_ref}: {error}"
+        );
+        assert_eq!(resolve_flow_ref(&flows_dir.join("team"), flow_ref), None);
+        assert_eq!(child_preview(&parent), Value::Null, "{flow_ref}");
+    }
 }
 
 #[test]

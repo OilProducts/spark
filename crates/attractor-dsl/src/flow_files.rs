@@ -12,9 +12,9 @@ use std::path::Path;
 use std::sync::RwLock;
 
 use attractor_core::{
-    ExecutionConfig, FlowDefaults, FlowDefinition, FlowEdge, FlowInput, FlowMetadata, FlowNode,
-    ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig,
-    UiConfig,
+    ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
+    FlowInput, FlowMetadata, FlowNode, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind,
+    NodeRuntimeConfig, RetryConfig, UiConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -257,8 +257,13 @@ pub fn resolve_flow_roles(
         };
         let (persona, execution) = match read_role(roles_dir, &role) {
             Ok(role) => role,
-            Err(error) => {
-                errors.push(format!("node '{node_id}': {error}"));
+            Err(message) => {
+                errors.push(FlowDiagnostic {
+                    rule_id: "role".to_string(),
+                    message: format!("node '{node_id}': {message}"),
+                    node_id: Some(node_id.clone()),
+                    edge: None,
+                });
                 continue;
             }
         };
@@ -268,7 +273,16 @@ pub fn resolve_flow_roles(
         node.execution = merge_execution(node.execution.take(), execution);
     }
     if !errors.is_empty() {
-        return Err(FlowSourceError::new(422, errors.join("; ")));
+        return Err(FlowDefinitionError {
+            count: errors.len(),
+            detail: errors
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
+            diagnostics: errors,
+        }
+        .into());
     }
     Ok(resolved.normalize())
 }

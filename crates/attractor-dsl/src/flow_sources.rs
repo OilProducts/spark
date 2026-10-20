@@ -1,6 +1,6 @@
 use std::path::{Component, Path, PathBuf};
 
-use attractor_core::{FlowDefinition, FlowDefinitionError, FlowDiagnostic};
+use attractor_core::{normalize_flow_ref, FlowDefinition, FlowDefinitionError, FlowDiagnostic};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -170,15 +170,10 @@ fn read_named_flow(
 }
 
 /// Resolves a subflow's `flow_ref` against `base_dir`: the directory that
-/// contains the parent flow's directory. Preview and runtime share this.
-pub fn resolve_flow_ref(base_dir: &Path, flow_ref: &str) -> PathBuf {
-    let flow_ref = flow_ref.trim().replace('\\', "/");
-    let flow_ref = Path::new(&flow_ref);
-    if flow_ref.is_absolute() {
-        flow_ref.to_path_buf()
-    } else {
-        base_dir.join(flow_ref)
-    }
+/// contains the parent flow's directory. Preview and runtime share this;
+/// None for a ref that is absolute or climbs out of `base_dir`.
+pub fn resolve_flow_ref(base_dir: &Path, flow_ref: &str) -> Option<PathBuf> {
+    normalize_flow_ref(flow_ref).map(|flow_ref| base_dir.join(flow_ref))
 }
 
 /// Names of every flow directory (one containing `flow.md`) under `flows_dir`.

@@ -1067,13 +1067,22 @@ fn valid_id(value: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
-fn valid_flow_ref(value: &str) -> bool {
-    let value = value.trim();
-    !value.is_empty()
+/// A flow_ref with backslash separators turned into `/`, or None when it is not a
+/// relative path that stays below its base directory. Validation, preview
+/// and runtime all go through this.
+pub fn normalize_flow_ref(value: &str) -> Option<String> {
+    let value = value.trim().replace('\\', "/");
+    let safe = !value.is_empty()
         && !value.starts_with('/')
-        && !value.split('/').any(|part| part.is_empty() || part == "..")
+        && !value.split('/').any(|part| part.is_empty() || part == "..");
+    safe.then_some(value)
+}
+
+fn valid_flow_ref(value: &str) -> bool {
+    normalize_flow_ref(value).is_some_and(|value| {
         // A flow_ref names a flow directory; YAML flow files are retired.
-        && !(value.ends_with(".yaml") || value.ends_with(".yml"))
+        !(value.ends_with(".yaml") || value.ends_with(".yml"))
+    })
 }
 
 fn condition_is_parseable(value: &str) -> bool {
