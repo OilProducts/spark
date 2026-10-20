@@ -257,6 +257,7 @@ fn run_flow_domain(
 
     match command {
         "format" => run_flow_format_command(args, env),
+        "promote" | "accept" => run_flow_trust_command(command, args, env),
         "validate" if has_option(&args[2..], "--file") => run_flow_validate_file_command(args, env),
         "list" | "describe" | "get" | "validate" => match build_request_plan(args, env, stdin) {
             Ok(plan) => execute_request_plan(&plan),
@@ -1351,9 +1352,11 @@ fn parse_clap_command_path(args: &[String]) -> Result<CommandPath, CommandOutput
             _ => Err(usage_error("Unknown command")),
         },
         "flow" => match domain_matches.subcommand_name() {
-            Some("list" | "describe" | "get" | "validate" | "format") => Ok(CommandPath {
-                domain: CommandDomain::Flow,
-            }),
+            Some("list" | "describe" | "get" | "validate" | "format" | "promote" | "accept") => {
+                Ok(CommandPath {
+                    domain: CommandDomain::Flow,
+                })
+            }
             _ => Err(usage_error("Unknown command")),
         },
         "mission" => match domain_matches.subcommand_name() {
@@ -1424,7 +1427,9 @@ fn spark_command_tree() -> Command {
                 .subcommand(clap_command_leaf("describe"))
                 .subcommand(clap_command_leaf("get"))
                 .subcommand(clap_command_leaf("validate"))
-                .subcommand(clap_command_leaf("format")),
+                .subcommand(clap_command_leaf("format"))
+                .subcommand(clap_command_leaf("promote"))
+                .subcommand(clap_command_leaf("accept")),
         )
         .subcommand(
             Command::new("settings")
@@ -1874,6 +1879,53 @@ fn run_flow_format_command(args: &[String], env: &impl Environment) -> CommandOu
     } else {
         CommandOutput::stdout(0, formatted)
     }
+}
+
+/// `spark flow promote <candidate>` and `spark flow accept <live file>`:
+/// local approval-log commands for the human at this machine.
+fn run_flow_trust_command(command: &str, args: &[String], env: &impl Environment) -> CommandOutput {
+    let options = match parse_options(&args[2..], &[], &["--text"], PositionalMode::Exact(1)) {
+        Ok(options) => options,
+        Err(message) => return usage_error(message),
+    };
+    let settings = match local_settings(env) {
+        Ok(settings) => settings,
+        Err(error) => return json_error(error, EXIT_GENERAL_FAILURE),
+    };
+    let path = expand_user_path(&options.positionals[0], env);
+    let trust = attractor_dsl::TrustStore::for_settings(&settings);
+    let by = spark_storage::settings::human_actor(&settings.config_dir);
+    let result = if command == "promote" {
+        attractor_dsl::promote(&trust, &settings.data_dir.join("candidates"), &path, &by)
+    } else {
+        attractor_dsl::accept(&trust, &path, &by)
+    };
+    match result {
+        Ok(entries) if options.bool("--text") => CommandOutput::stdout(
+            0,
+            entries
+                .iter()
+                .map(|entry| format!("{} {} {}\n", entry.event, entry.path, entry.sha256))
+                .collect::<String>(),
+        ),
+        Ok(entries) => success_json(&json!({"ok": true, "approvals": entries})),
+        Err(error) => json_error(error.detail(), EXIT_GENERAL_FAILURE),
+    }
+}
+
+/// Settings for commands that act on `$SPARK_HOME` directly, honoring the
+/// runtime paths in spark.toml.
+fn local_settings(env: &impl Environment) -> Result<spark_common::settings::SparkSettings, String> {
+    use spark_common::settings::{resolve_settings_with_env, resolve_settings_with_persisted};
+    let bootstrap =
+        resolve_settings_with_env(&Default::default(), env).map_err(|error| error.to_string())?;
+    let core = bootstrap.config_dir.join("spark.toml");
+    let runtime = spark_storage::settings::read_settings_document(&core)
+        .and_then(|document| document.section(&core, "runtime"))
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    resolve_settings_with_persisted(&Default::default(), env, &runtime)
+        .map_err(|error| error.to_string())
 }
 
 fn run_flow_validate_file_command(args: &[String], env: &impl Environment) -> CommandOutput {

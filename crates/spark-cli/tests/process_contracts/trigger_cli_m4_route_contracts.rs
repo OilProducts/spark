@@ -323,6 +323,7 @@ fn write_flow(settings: &SparkSettings, name: &str) {
     )
     .expect("valid flow");
     attractor_dsl::write_flow_dir(&settings.flows_dir.join(name), &flow).expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn settings(root: &Path) -> SparkSettings {

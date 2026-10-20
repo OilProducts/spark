@@ -273,6 +273,17 @@ fn backup_migration_source(path: &Path, suffix: &str, bytes: &[u8]) -> Result<()
 
 pub fn validate_core_sections(path: &Path, values: &toml::Table) -> Result<()> {
     validate_core_version(path, values)?;
+    if let Some(human_id) = values.get(HUMAN_ID_KEY) {
+        if !human_id
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && !id.contains(char::is_whitespace))
+        {
+            return Err(invalid(
+                path,
+                "human_id must be a non-empty string without whitespace.",
+            ));
+        }
+    }
     let document = SettingsDocument {
         values: values.clone(),
         revision: String::new(),
@@ -333,6 +344,43 @@ pub fn update_desktop_settings(
         Some(toml::Value::try_from(value).map_err(|_| invalid(path, "Invalid Desktop settings."))?),
         |values| validate_core_sections(path, values),
     )
+}
+
+const HUMAN_ID_KEY: &str = "human_id";
+
+/// The local human as an OKF actor, `human:<id>`: spark.toml's top-level
+/// `human_id`, else the OS username of this process.
+pub fn human_actor(config_dir: &Path) -> String {
+    let core = config_dir.join("spark.toml");
+    let configured = read_settings_document(&core).ok().and_then(|document| {
+        document
+            .values
+            .get(HUMAN_ID_KEY)
+            .and_then(toml::Value::as_str)
+            .map(str::to_string)
+    });
+    let id = configured
+        .or_else(os_username)
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    format!("human:{}", id.trim())
+}
+
+/// The account this process runs as, from the OS rather than `USER`/`USERNAME`,
+/// which any caller can set.
+fn os_username() -> Option<String> {
+    let command = if cfg!(windows) { "whoami" } else { "id" };
+    let mut command = std::process::Command::new(command);
+    if !cfg!(windows) {
+        command.arg("-un");
+    }
+    let output = command
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let name = String::from_utf8(output.stdout).ok()?;
+    // Windows `whoami` prints DOMAIN\user.
+    Some(name.trim().rsplit('\\').next()?.to_string())
 }
 
 /// Validate the core version at every entry point, including non-Desktop reads/writes.

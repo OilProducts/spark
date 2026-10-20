@@ -1408,7 +1408,7 @@ async fn live_route_replays_run_journals_and_runs_overview() {
     let service = AttractorApiService::new(settings.clone());
     let started = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-live-http".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
         launch_context: Some(
@@ -1595,7 +1595,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     let started = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-live-selected".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -2457,6 +2457,7 @@ fn write_flow(settings: &SparkSettings, name: &str) {
         &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> String {
@@ -2591,7 +2592,7 @@ async fn live_route_streams_detached_run_progress_mid_flight() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_content": "schema_version: '1'\nid: slow_live\ntitle: Slow Live\nnodes:\n  start:\n    kind: start\n  a:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  b:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: a\n  - from: a\n    to: b\n  - from: b\n    to: done\n",
+            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: slow_live\ntitle: Slow Live\nnodes:\n  start:\n    kind: start\n  a:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  b:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: a\n  - from: a\n    to: b\n  - from: b\n    to: done\n"),
             "working_directory": project_path_text,
             "run_id": "run-mid-flight",
             "model": "compat-model"
@@ -2660,7 +2661,7 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_content": "schema_version: '1'\nid: gate_live\ntitle: Gate Live\nnodes:\n  start:\n    kind: start\n  review:\n    kind: human_gate\n    config:\n      kind: human_gate\n      prompt: Ship it?\n  approved:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: ship\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: approved\n    label: Approve\n  - from: approved\n    to: done\n",
+            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: gate_live\ntitle: Gate Live\nnodes:\n  start:\n    kind: start\n  review:\n    kind: human_gate\n    config:\n      kind: human_gate\n      prompt: Ship it?\n  approved:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: ship\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: approved\n    label: Approve\n  - from: approved\n    to: done\n"),
             "working_directory": project_path_text,
             "run_id": "run-gate-live",
             "model": "compat-model"
@@ -2996,7 +2997,7 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_content": "schema_version: '1'\nid: mid_node\ntitle: Mid Node\nnodes:\n  start:\n    kind: start\n  work:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: stream\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: work\n  - from: work\n    to: done\n",
+            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: mid_node\ntitle: Mid Node\nnodes:\n  start:\n    kind: start\n  work:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: stream\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: work\n  - from: work\n    to: done\n"),
             "working_directory": project_path_text,
             "run_id": "run-mid-node",
             "model": "compat-model"

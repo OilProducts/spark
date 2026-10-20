@@ -17,7 +17,7 @@ fn start_pipeline_from_flow_content_persists_run_and_returns_launch_metadata() {
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-api-start".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
         llm_provider: Some("codex".to_string()),
@@ -145,7 +145,8 @@ models = ["launch-model"]
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-api-launch-context".to_string()),
-        flow_content: Some(
+        flow_name: Some(crate::install_flow(
+            &settings,
             r#"schema_version: "1"
 id: api_launch_context
 title: API Launch Context
@@ -163,7 +164,7 @@ edges:
     to: done
 "#
             .to_string(),
-        ),
+        )),
         working_directory: project_path.to_string_lossy().to_string(),
         launch_context: Some(
             [
@@ -230,7 +231,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     let first = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-duplicate".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -239,7 +240,7 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     let duplicate = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-duplicate".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -255,27 +256,29 @@ fn start_pipeline_reports_validation_errors_without_creating_duplicate_or_invali
     });
     assert_eq!(
         missing_content.body,
-        json!({"status": "validation_error", "error": "Either flow_content or flow_name is required."})
+        json!({"status": "validation_error", "error": "flow_name is required."})
     );
 
+    // Broken files on disk fail the launch with the loader's error.
+    let broken = settings.flows_dir.join("tests/unparseable");
+    fs::create_dir_all(&broken).expect("broken flow dir");
+    fs::write(broken.join("flow.md"), "---\nnodes: [\n---\n").expect("flow.md");
     let parse_error = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-parse-error".to_string()),
-        flow_content: Some("nodes: [".to_string()),
+        flow_name: Some("tests/unparseable".to_string()),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
-    assert_eq!(parse_error.body["status"], json!("validation_error"));
-    assert!(parse_error.body["errors"].as_array().expect("errors").len() == 1);
-    assert_eq!(
-        parse_error.body["errors"][0]["rule_id"],
-        json!("parse_error")
-    );
+    assert_eq!(parse_error.body["status"], json!("failed"));
+    assert!(parse_error.body["error"]
+        .as_str()
+        .is_some_and(|error| error.starts_with("flow.md:")));
 
-    let validation_error = service.start_pipeline(PipelineStartRequest {
-        wait: Some(true),
-        run_id: Some("run-validation-error".to_string()),
-        flow_content: Some(
+    let invalid = settings.flows_dir.join("tests/broken");
+    attractor_dsl::write_flow_dir(
+        &invalid,
+        &attractor_core::FlowDefinition::from_yaml_str(
             r#"schema_version: "1"
 id: broken
 nodes:
@@ -286,9 +289,16 @@ nodes:
 edges:
   - from: start
     to: missing
-"#
-            .to_string(),
-        ),
+"#,
+        )
+        .expect("yaml"),
+    )
+    .expect("write");
+    crate::approve_flow(&settings, &invalid);
+    let validation_error = service.start_pipeline(PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("run-validation-error".to_string()),
+        flow_name: Some("tests/broken".to_string()),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -305,7 +315,7 @@ edges:
     let launch_context_error = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-bad-context".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         launch_context: Some(
             [("internal.bad".to_string(), json!(true))]
@@ -331,7 +341,7 @@ fn mounted_start_route_accepts_current_json_payload() {
     let project_path = temp.path().join("Project Route");
     let body = json!({
         "run_id": "run-mounted-start",
-        "flow_content": simple_flow(),
+        "flow_name": crate::install_flow(&settings, simple_flow()),
         "working_directory": project_path,
         "model": "compat-model"
     })
@@ -422,7 +432,7 @@ fn detached_start_returns_immediately_with_a_running_record() {
 
     let response = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-detached".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
         ..PipelineStartRequest::default()
@@ -440,8 +450,7 @@ fn detached_start_returns_immediately_with_a_running_record() {
         .expect("read run")
         .expect("run exists");
     let record = bundle.record.expect("record");
-    // Content launches take the flow title as their display identity.
-    assert_eq!(record.flow_name, "API Lifecycle");
+    assert_eq!(record.flow_name, "tests/api-lifecycle");
     assert!(bundle
         .raw_events
         .iter()
@@ -486,6 +495,7 @@ fn retry_route_executes_the_prepared_run() {
             manifest: None,
             flow_source: Some(simple_flow()),
             flow_definition_json: Some(flow.to_canonical_json_string()),
+            flow_files: None,
         })
         .expect("seed failed run");
 
@@ -550,11 +560,14 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
             wait: Some(true),
             run_id: Some(id.into()),
             working_directory: project.into(),
-            flow_content: Some(format!(
-                "{flow}{}",
-                authored
-                    .map(|model| format!("defaults:\n  llm_model: {model}\n"))
-                    .unwrap_or_default()
+            flow_name: Some(crate::install_flow(
+                &settings,
+                format!(
+                    "{flow}{}",
+                    authored
+                        .map(|model| format!("defaults:\n  llm_model: {model}\n"))
+                        .unwrap_or_default()
+                ),
             )),
             model: explicit.map(Into::into),
             launch_context: context.map(|model| {
@@ -597,7 +610,7 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("workspace".into()),
-        flow_content: Some(flow.into()),
+        flow_name: Some(crate::install_flow(&settings, flow)),
         working_directory: project.into(),
         ..Default::default()
     });
@@ -609,7 +622,7 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("profile".into()),
-        flow_content: Some(flow.into()),
+        flow_name: Some(crate::install_flow(&settings, flow)),
         working_directory: project.into(),
         ..Default::default()
     });
@@ -632,7 +645,7 @@ fn launch_defaults_follow_precedence_and_capture_profiles_without_mutating_histo
     assert_eq!(previous.record.unwrap().model, "project-model");
     let invalid = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
-        flow_content: Some(flow.into()),
+        flow_name: Some(crate::install_flow(&settings, flow)),
         working_directory: project.into(),
         ..Default::default()
     });
@@ -724,7 +737,7 @@ fn workflow_executes_with_captured_connection(profile: bool) {
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("captured-workflow".into()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: temp.path().join("project").to_string_lossy().into_owned(),
         ..Default::default()
     });
@@ -748,7 +761,7 @@ fn retry_retains_captured_execution_profile_after_configuration_changes() {
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("captured-execution".into()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: temp.path().join("project").to_string_lossy().into_owned(),
         ..Default::default()
     });

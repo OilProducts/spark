@@ -128,7 +128,7 @@ fn run_fix_loop_flow(gate_command: &str, run_id: &str) -> (serde_json::Value, Sp
     let response = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some(run_id.to_string()),
-        flow_content: Some(fix_loop_flow(gate_command)),
+        flow_name: Some(crate::install_flow(&settings, fix_loop_flow(gate_command))),
         working_directory: project.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });

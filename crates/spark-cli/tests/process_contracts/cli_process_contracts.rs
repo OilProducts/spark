@@ -567,3 +567,88 @@ fn installed_cli_reads_persisted_target_and_preserves_explicit_target_precedence
         String::from_utf8_lossy(&rejected.stderr).contains("Refusing to use default API target")
     );
 }
+
+#[test]
+fn process_flow_accept_and_promote_act_on_spark_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let flow_dir = home.join("flows/team/work");
+    attractor_dsl::write_flow_dir(
+        &flow_dir,
+        &attractor_dsl::parse_flow_definition(
+            "id: work\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
+        )
+        .expect("flow"),
+    )
+    .expect("write flow");
+    fs::create_dir_all(home.join("config")).expect("config");
+    fs::write(
+        home.join("config/spark.toml"),
+        "human_id = \"cli-tester\"\n",
+    )
+    .expect("toml");
+    let spark = |args: &[&str]| {
+        Command::new(spark_bin())
+            .args(args)
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home)
+            .output()
+            .expect("run spark")
+    };
+    let log = || {
+        spark_common::approvals::read_approvals(&home.join("config/approvals.jsonl"))
+            .expect("approval log")
+    };
+
+    let accepted = spark(&["flow", "accept", "flows/team/work/flow.md"]);
+    assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+    let entries = log();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].event, "human_save");
+    assert_eq!(entries[0].path, "flows/team/work/flow.md");
+    assert_eq!(entries[0].by, "human:cli-tester");
+
+    let candidate = home.join("candidates/flows/team/work/done.md");
+    fs::create_dir_all(candidate.parent().expect("parent")).expect("candidates");
+    fs::write(
+        &candidate,
+        "---\ntype: exit\ntitle: Finished\ngenerated: {by: codex/gpt-5, at: '2026-10-20T12:00:00+00:00'}\nstatus: draft\n---\n",
+    )
+    .expect("candidate");
+    let promoted = spark(&["flow", "promote", "flows/team/work/done.md"]);
+    assert_eq!(promoted.status.code(), Some(0), "{promoted:?}");
+    assert!(!candidate.exists());
+    let entries = log();
+    assert_eq!(entries.last().expect("entry").event, "promoted");
+    assert_eq!(
+        entries.last().expect("entry").path,
+        "flows/team/work/done.md"
+    );
+
+    let refused = spark(&["flow", "promote", "flows/team/work/done.md"]);
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+
+    // Without human_id the actor is the OS account, whatever USER/USERNAME
+    // say or whether they are set at all.
+    fs::write(home.join("config/spark.toml"), "").expect("toml");
+    let os_user = Command::new("id").arg("-un").output().expect("id");
+    let os_user = String::from_utf8(os_user.stdout).expect("utf8");
+    let expected = format!("human:{}", os_user.trim());
+    for fabricated in [true, false] {
+        let mut command = Command::new(spark_bin());
+        command
+            .args(["flow", "accept", "flows/team/work/flow.md"])
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home);
+        if fabricated {
+            command
+                .env("USER", "fabricated-review-user")
+                .env("USERNAME", "fabricated-review-user");
+        }
+        let accepted = command.output().expect("run spark");
+        assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+        assert_eq!(log().last().expect("entry").by, expected);
+    }
+}

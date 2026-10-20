@@ -120,6 +120,7 @@ fn manufacture_orphaned_waiting_run(
         &flow,
         Some(GATE_FLOW.to_string()),
         None,
+        None,
         &launch_context,
         &runtime_context,
     )
@@ -213,6 +214,7 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
         &root_flow,
         Some(TREE_ROOT_FLOW.to_string()),
         None,
+        None,
         &attractor_core::LaunchContext::empty(),
         &root_context,
     )
@@ -259,6 +261,7 @@ fn startup_recovery_resumes_a_linked_orphaned_child_in_place() {
         &child,
         &child_flow,
         Some(TREE_CHILD_FLOW.to_string()),
+        None,
         None,
         &attractor_core::LaunchContext::empty(),
         &child_context,
@@ -372,6 +375,7 @@ fn recovery_pause_with_checkpoint_lag_consumes_the_durable_response() {
         &flow,
         Some(PAUSED_RECOVERY_FLOW.to_string()),
         None,
+        None,
         &attractor_core::LaunchContext::empty(),
         &attractor_core::ContextMap::default(),
     )
@@ -440,6 +444,7 @@ fn recovery_rejects_incomplete_malformed_and_contract_invalid_durable_responses(
         &record,
         &flow,
         Some(PAUSED_RECOVERY_FLOW.to_string()),
+        None,
         None,
         &attractor_core::LaunchContext::empty(),
         &attractor_core::ContextMap::default(),
@@ -551,6 +556,7 @@ fn recovery_pause_survives_two_startups_without_retry_authorization() {
         &record,
         &flow,
         Some(PAUSED_RECOVERY_FLOW.to_string()),
+        None,
         None,
         &attractor_core::LaunchContext::empty(),
         &attractor_core::ContextMap::default(),
@@ -768,6 +774,7 @@ fn startup_recovery_marks_orphaned_running_runs_failed() {
             &flow,
             Some(GATE_FLOW.to_string()),
             None,
+            None,
             &launch_context,
             &runtime_context,
         )
@@ -843,6 +850,7 @@ fn ambiguous_child_invocations_leave_parent_terminal_and_never_resume_it() {
             &record,
             &flow,
             Some(GATE_FLOW.to_string()),
+            None,
             None,
             &attractor_core::LaunchContext::empty(),
             &attractor_core::ContextMap::default(),
@@ -955,6 +963,7 @@ fn seed_failed_retry_tree(settings: &SparkSettings) -> RunStore {
                 manifest: None,
                 flow_source: Some(source.into()),
                 flow_definition_json: None,
+                flow_files: None,
             })
             .unwrap();
         store.write_node_artifacts(&paths, node, u64::from(node == "branch"), 0, &NodeArtifacts {
@@ -1494,6 +1503,7 @@ fn direct_child_retry_rejects_ambiguous_ancestor_invocations_without_mutation() 
                     manifest: None,
                     flow_source: store.read_graph_source(&source.paths).unwrap(),
                     flow_definition_json: None,
+                    flow_files: None,
                 })
                 .unwrap();
             let ids = ["retry-root", "retry-child", "retry-leaf", "duplicate"];

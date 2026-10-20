@@ -457,6 +457,7 @@ fn run_service_with_updates(
         &attractor_dsl::parse_flow_definition(TITLED_FLOW).expect("valid flow"),
     )
     .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join("ops/titled"));
     let (sender, receiver) = mpsc::channel();
     let sender = std::sync::Mutex::new(sender);
     let observed = settings.clone();
@@ -585,6 +586,7 @@ fn runs_stay_untitled_when_utility_is_off_or_fails_and_child_runs_get_no_call() 
             manifest: None,
             flow_source: Some(TITLED_FLOW.into()),
             flow_definition_json: None,
+            flow_files: None,
         })
         .unwrap();
     let (service, _updates) = run_service_with_updates(settings.clone());

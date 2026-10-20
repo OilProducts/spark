@@ -79,9 +79,9 @@ export function useStartPipeline() {
         return { runId, queued }
     }
 
-    const startFromFlowContent = async (
+    // Runs start from the installed flow on disk, by name.
+    const startFlow = async (
         form: RunInitiationFormState,
-        flowContent: string,
         options: { onGitPolicyWarning?: (warning: string | null) => void } = {},
     ): Promise<StartPipelineResult> => {
         const projectWasRegistered = Boolean(useStore.getState().projectRegistry[form.projectPath])
@@ -91,10 +91,7 @@ export function useStartPipeline() {
             return { status: 'cancelled' }
         }
         const resolvedWorkingDirectory = form.workingDirectory.trim() || form.projectPath
-        const payload = buildPipelineStartPayload(
-            { ...form, workingDirectory: resolvedWorkingDirectory },
-            flowContent,
-        )
+        const payload = buildPipelineStartPayload({ ...form, workingDirectory: resolvedWorkingDirectory })
         const runData = await fetchPipelineStartValidated(payload)
         return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
     }
@@ -120,5 +117,5 @@ export function useStartPipeline() {
         return { status: 'launched', ...finalizeLaunch(runData, form.projectPath, projectWasRegistered) }
     }
 
-    return { startFromFlowContent, continueFromRun, logUnexpectedLaunchError }
+    return { startFlow, continueFromRun, logUnexpectedLaunchError }
 }

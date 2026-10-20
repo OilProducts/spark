@@ -283,6 +283,7 @@ dependencies = [
  "serde_yaml",
  "spark-common",
  "thiserror 1.0.69",
+ "time",
 ]
 
 [[package]]
@@ -4044,7 +4045,6 @@ dependencies = [
  "attractor-dsl",
  "include_dir",
  "serde_json",
- "sha2",
  "spark-common",
  "tempfile",
 ]
@@ -4074,8 +4074,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "time",
  "tracing",
  "tracing-subscriber",
  "url",

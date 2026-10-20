@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,6 +45,9 @@ impl std::fmt::Debug for RunStore {
     }
 }
 
+/// The run manifest beside `flow-source.yaml`: every file the run used.
+pub const FLOW_FILES_MANIFEST: &str = "files.json";
+
 #[derive(Debug, Clone, Default)]
 pub struct CreateRunRequest {
     pub record: RunRecord,
@@ -51,6 +55,9 @@ pub struct CreateRunRequest {
     pub manifest: Option<RunManifest>,
     pub flow_source: Option<String>,
     pub flow_definition_json: Option<String>,
+    /// `$SPARK_HOME`-relative path -> SHA-256 of every file the run's flow
+    /// was assembled from, written as `artifacts/flow/files.json`.
+    pub flow_files: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -298,6 +305,17 @@ impl RunStore {
                 RuntimeStorageError::io("create flow artifacts", &flow_dir, source)
             })?;
             write_text_atomic(flow_dir.join("flow-definition.json"), definition_json)?;
+        }
+        if let Some(files) = request.flow_files.as_ref() {
+            let flow_dir = paths.artifacts_dir().join("flow");
+            fs::create_dir_all(&flow_dir).map_err(|source| {
+                RuntimeStorageError::io("create flow artifacts", &flow_dir, source)
+            })?;
+            write_json_atomic(
+                flow_dir.join(FLOW_FILES_MANIFEST),
+                files,
+                JsonWriteOptions::default(),
+            )?;
         }
 
         append_event(&paths, lifecycle_event(&record.run_id, "INITIALIZE"))?;

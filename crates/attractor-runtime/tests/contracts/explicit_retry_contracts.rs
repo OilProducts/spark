@@ -43,6 +43,7 @@ fn seed(store: &RunStore) {
             manifest: None,
             flow_source: Some(FLOW.into()),
             flow_definition_json: None,
+            flow_files: None,
         })
         .unwrap();
     store.write_node_artifacts(&paths, "task", 1, 1, &NodeArtifacts {
@@ -232,6 +233,7 @@ fn continue_starts_a_new_run_without_retry_authority_or_execution_bases() {
             flow: FlowDefinition::from_yaml_str(FLOW).unwrap().normalize(),
             flow_source: Some(FLOW.into()),
             flow_definition_json: None,
+            flow_files: None,
             flow_name: None,
             working_directory: None,
             model: None,

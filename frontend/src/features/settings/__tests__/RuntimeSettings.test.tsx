@@ -42,5 +42,5 @@ it('lists installed flows that seeding keeps as local edits', async () => {
     }
     vi.mocked(fetchRuntimeSettings).mockResolvedValue(view)
     render(<DialogProvider><RuntimeSettingsEditor /></DialogProvider>)
-    expect(await screen.findByText(/software-development\/implement-change\.yaml, examples\/simple-linear\.yaml/)).toHaveTextContent('Delete a flow\'s file to reinstall the bundled version')
+    expect(await screen.findByText(/software-development\/implement-change\.yaml, examples\/simple-linear\.yaml/)).toHaveTextContent('Delete a flow\'s directory to reinstall the bundled version')
 })

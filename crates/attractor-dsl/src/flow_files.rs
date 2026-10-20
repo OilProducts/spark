@@ -8,13 +8,14 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 use attractor_core::{
-    ExecutionConfig, FlowDefaults, FlowDefinition, FlowDefinitionError, FlowDiagnostic, FlowEdge,
-    FlowInput, FlowMetadata, FlowNode, ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind,
-    NodeRuntimeConfig, RetryConfig, UiConfig,
+    deserialize_verified, Attribution, ExecutionConfig, FlowDefaults, FlowDefinition,
+    FlowDefinitionError, FlowDiagnostic, FlowEdge, FlowInput, FlowMetadata, FlowNode,
+    ManagerLoopConfig, NodeConfig, NodeContracts, NodeKind, NodeRuntimeConfig, RetryConfig,
+    TrustStatus, UiConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +39,16 @@ struct FlowFile {
     title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generated: Option<Attribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_verified"
+    )]
+    verified: Vec<Attribution>,
+    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
+    status: TrustStatus,
     #[serde(default = "default_schema_version")]
     schema_version: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -58,6 +69,16 @@ struct NodeFile {
     title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generated: Option<Attribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_verified"
+    )]
+    verified: Vec<Attribution>,
+    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
+    status: TrustStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     role: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -104,11 +125,21 @@ struct RoleFile {
     file_type: String,
     #[serde(default)]
     execution: Option<ExecutionConfig>,
+    #[serde(default)]
+    generated: Option<Attribution>,
+    #[serde(default, deserialize_with = "deserialize_verified")]
+    verified: Vec<Attribution>,
 }
 
 /// Loads a flow directory in its authored form (roles unresolved), validated
 /// and normalized.
 pub fn read_flow_dir(dir: &Path) -> Result<FlowDefinition, FlowSourceError> {
+    assemble_flow_files(&read_flow_dir_texts(dir)?)
+}
+
+/// The `flow.md` and node files of a flow directory (file name -> text), read
+/// as one consistent snapshot: never a mix of files before and after a save.
+pub fn read_flow_dir_texts(dir: &Path) -> Result<BTreeMap<String, String>, FlowSourceError> {
     let _guard = FLOW_DIR_LOCK
         .read()
         .unwrap_or_else(|error| error.into_inner());
@@ -141,7 +172,7 @@ pub fn read_flow_dir(dir: &Path) -> Result<FlowDefinition, FlowSourceError> {
             ),
         ));
     }
-    assemble_flow_files(&files)
+    Ok(files)
 }
 
 /// Assembles `flow.md` and node files (file name -> text) into a validated,
@@ -201,32 +232,72 @@ pub fn render_flow_files(
 /// changed (untouched files stay byte-identical), each atomically, and
 /// deleting the files of removed nodes. Returns the written file names.
 pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, FlowSourceError> {
-    let files = render_flow_files(flow)?;
+    write_flow_files(dir, flow, None, |_| Ok(()))
+}
+
+/// An editor save: like [`write_flow_dir`], but incoming `generated` and
+/// `verified` are ignored. Every file keeps both from disk, so the comparison
+/// ignores them, and each changed file gets `generated: <generated>`.
+/// `record` gets each changed file's path and final text before anything is
+/// written; when it fails, nothing is written, so a retry still sees the change.
+pub fn save_flow_dir(
+    dir: &Path,
+    flow: &FlowDefinition,
+    generated: &Attribution,
+    record: impl FnOnce(&[(PathBuf, String)]) -> Result<(), FlowSourceError>,
+) -> Result<Vec<String>, FlowSourceError> {
+    write_flow_files(dir, flow, Some(generated), record)
+}
+
+fn write_flow_files(
+    dir: &Path,
+    flow: &FlowDefinition,
+    generated: Option<&Attribution>,
+    record: impl FnOnce(&[(PathBuf, String)]) -> Result<(), FlowSourceError>,
+) -> Result<Vec<String>, FlowSourceError> {
+    let mut flow = flow.normalize();
     let _guard = FLOW_DIR_LOCK
         .write()
         .unwrap_or_else(|error| error.into_inner());
+    if generated.is_some() {
+        keep_disk_trust(dir, &mut flow);
+    }
+    let mut files = render_flow_files(&flow)?;
+    let changed = files
+        .iter()
+        .filter(|(name, text)| {
+            fs::read_to_string(dir.join(name))
+                .ok()
+                .and_then(|existing| rerender_file(name, &existing).ok())
+                .is_none_or(|existing| existing != **text)
+        })
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    if let Some(generated) = generated {
+        for name in &changed {
+            *trust_fields_mut(&mut flow, name).0 = Some(generated.clone());
+        }
+        files = render_flow_files(&flow)?;
+    }
+    record(
+        &changed
+            .iter()
+            .map(|name| (dir.join(name), files[name].clone()))
+            .collect::<Vec<_>>(),
+    )?;
     fs::create_dir_all(dir).map_err(|error| write_error(dir, error))?;
     let temp_dir = dir.parent().unwrap_or(dir);
     let dir_name = dir
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
-    let mut written = Vec::new();
-    for (name, text) in &files {
+    for name in &changed {
         let path = dir.join(name);
-        let unchanged = fs::read_to_string(&path)
-            .ok()
-            .and_then(|existing| rerender_file(name, &existing).ok())
-            .is_some_and(|existing| existing == *text);
-        if unchanged {
-            continue;
-        }
         // The temp file sits beside the flow directory, never inside it, so
         // readers see no extra entries.
         let temp = temp_dir.join(format!(".{dir_name}.{name}.{}.tmp", std::process::id()));
-        fs::write(&temp, text).map_err(|error| write_error(&temp, error))?;
+        fs::write(&temp, &files[name]).map_err(|error| write_error(&temp, error))?;
         fs::rename(&temp, &path).map_err(|error| write_error(&path, error))?;
-        written.push(name.clone());
     }
     for entry in fs::read_dir(dir).map_err(|error| read_error(dir, error))? {
         let entry = entry.map_err(|error| read_error(dir, error))?;
@@ -239,7 +310,48 @@ pub fn write_flow_dir(dir: &Path, flow: &FlowDefinition) -> Result<Vec<String>, 
             fs::remove_file(entry.path()).map_err(|error| write_error(&entry.path(), error))?;
         }
     }
-    Ok(written)
+    Ok(changed)
+}
+
+/// Replaces each file's `generated`/`verified` with what that file has on
+/// disk (none for a new or unreadable file).
+fn keep_disk_trust(dir: &Path, flow: &mut FlowDefinition) {
+    let names = std::iter::once(FLOW_FILE.to_string())
+        .chain(flow.nodes.keys().map(|node_id| format!("{node_id}.md")))
+        .collect::<Vec<_>>();
+    for name in names {
+        let (generated, verified) = fs::read_to_string(dir.join(&name))
+            .ok()
+            .and_then(|text| {
+                if name == FLOW_FILE {
+                    parse_flow_file(&text)
+                        .ok()
+                        .map(|flow| (flow.generated, flow.verified))
+                } else {
+                    parse_node_file(name.trim_end_matches(".md"), &text)
+                        .ok()
+                        .map(|(node, _)| (node.generated, node.verified))
+                }
+            })
+            .unwrap_or_default();
+        let fields = trust_fields_mut(flow, &name);
+        *fields.0 = generated;
+        *fields.1 = verified;
+    }
+}
+
+fn trust_fields_mut<'a>(
+    flow: &'a mut FlowDefinition,
+    file_name: &str,
+) -> (&'a mut Option<Attribution>, &'a mut Vec<Attribution>) {
+    let node = file_name
+        .strip_suffix(".md")
+        .filter(|_| file_name != FLOW_FILE)
+        .and_then(|node_id| flow.nodes.get_mut(node_id));
+    match node {
+        Some(node) => (&mut node.generated, &mut node.verified),
+        None => (&mut flow.generated, &mut flow.verified),
+    }
 }
 
 /// Resolves roles into the executable form: each role's persona is
@@ -249,13 +361,26 @@ pub fn resolve_flow_roles(
     flow: &FlowDefinition,
     roles_dir: &Path,
 ) -> Result<FlowDefinition, FlowSourceError> {
+    resolve_flow_roles_with(flow, |name| {
+        let path = roles_dir.join(format!("{name}.md"));
+        fs::read_to_string(&path)
+            .map_err(|_| format!("unknown role '{name}' (no {})", path.display()))
+    })
+}
+
+/// [`resolve_flow_roles`] with role file texts supplied by `role_text`.
+pub(crate) fn resolve_flow_roles_with(
+    flow: &FlowDefinition,
+    role_text: impl Fn(&str) -> Result<String, String>,
+) -> Result<FlowDefinition, FlowSourceError> {
     let mut resolved = flow.clone();
     let mut errors = Vec::new();
     for (node_id, node) in resolved.nodes.iter_mut() {
         let Some(role) = node.role.take() else {
             continue;
         };
-        let (persona, execution) = match read_role(roles_dir, &role) {
+        let (persona, execution) = match role_text(&role).and_then(|text| parse_role(&role, &text))
+        {
             Ok(role) => role,
             Err(message) => {
                 errors.push(FlowDiagnostic {
@@ -297,18 +422,42 @@ pub fn resolve_flow_roles(
     Ok(resolved.normalize())
 }
 
-fn read_role(roles_dir: &Path, name: &str) -> Result<(String, Option<ExecutionConfig>), String> {
-    let path = roles_dir.join(format!("{name}.md"));
-    let text = fs::read_to_string(&path)
-        .map_err(|_| format!("unknown role '{name}' (no {})", path.display()))?;
+/// Parses a role file into its persona and execution defaults.
+pub(crate) fn parse_role(
+    name: &str,
+    text: &str,
+) -> Result<(String, Option<ExecutionConfig>), String> {
     let (frontmatter, body) =
-        split_frontmatter(&text).map_err(|error| format!("{name}.md: {error}"))?;
+        split_frontmatter(text).map_err(|error| format!("{name}.md: {error}"))?;
     let role: RoleFile = serde_yaml::from_str(frontmatter)
         .map_err(|error| format!("role file {name}.md: {error}"))?;
     if role.file_type != "Role" {
         return Err(format!("role file {name}.md must declare type: Role"));
     }
+    if let Some(problem) = role
+        .generated
+        .iter()
+        .chain(&role.verified)
+        .find_map(Attribution::problem)
+    {
+        return Err(format!("role file {name}.md: {problem}"));
+    }
     Ok((body.trim().to_string(), role.execution))
+}
+
+/// The trust fields every flow, node and role file may carry, read from its
+/// frontmatter alone.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct FileTrust {
+    #[serde(default)]
+    pub generated: Option<Attribution>,
+    #[serde(default)]
+    pub status: TrustStatus,
+}
+
+pub(crate) fn file_trust(text: &str) -> Result<FileTrust, String> {
+    let (frontmatter, _) = split_frontmatter(text)?;
+    serde_yaml::from_str(frontmatter).map_err(|error| error.to_string())
 }
 
 fn merge_execution(
@@ -361,6 +510,9 @@ fn parse_flow_file(text: &str) -> Result<FlowDefinition, FlowSourceError> {
         edges: Vec::new(),
         metadata: file.metadata,
         extensions: file.extensions,
+        generated: file.generated,
+        verified: file.verified,
+        status: file.status,
     })
 }
 
@@ -370,6 +522,9 @@ fn render_flow_file(flow: &FlowDefinition) -> Result<String, FlowSourceError> {
         id: flow.id.clone(),
         title: flow.title.clone(),
         description: flow.description.clone(),
+        generated: flow.generated.clone(),
+        verified: flow.verified.clone(),
+        status: flow.status,
         schema_version: flow.schema_version.clone(),
         inputs: flow.inputs.clone(),
         defaults: flow.defaults.clone(),
@@ -441,6 +596,9 @@ fn parse_node_file(
         label: file.title,
         description: file.description,
         role: file.role,
+        generated: file.generated,
+        verified: file.verified,
+        status: file.status,
         config: Some(config),
         context: file.context,
         runtime: file.runtime,
@@ -480,6 +638,9 @@ fn render_node_file(node: &FlowNode, mut edges: Vec<FlowEdge>) -> Result<String,
         title: node.label.clone(),
         description: node.description.clone(),
         role: node.role.clone(),
+        generated: node.generated.clone(),
+        verified: node.verified.clone(),
+        status: node.status,
         config,
         context: node.context.clone(),
         runtime: node.runtime.clone(),
@@ -530,7 +691,7 @@ fn render_file(
 }
 
 /// Splits `---` YAML frontmatter from the markdown body.
-fn split_frontmatter(text: &str) -> Result<(&str, &str), String> {
+pub(crate) fn split_frontmatter(text: &str) -> Result<(&str, &str), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let rest = text
         .strip_prefix("---\n")

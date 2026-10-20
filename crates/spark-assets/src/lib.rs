@@ -193,27 +193,24 @@ pub mod flows {
             .collect()
     }
 
-    /// The manifest recording the packaged version last installed for each file.
-    pub const PACKAGED_FLOW_HASHES: &str = ".packaged-flow-hashes.json";
-
     /// Installed flows that seeding keeps as local edits: some file differs
-    /// from the bundled copy and from the version Spark last installed, so
-    /// newer bundled versions never reach it.
-    pub fn locally_edited_flows(flows_dir: &std::path::Path) -> Vec<String> {
-        use sha2::{Digest, Sha256};
-        let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
-        let manifest: BTreeMap<String, String> =
-            std::fs::read(flows_dir.join(PACKAGED_FLOW_HASHES))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or_default();
+    /// from the bundled copy and from the version Spark last installed (its
+    /// latest `installed` entry in the approval log), so newer bundled
+    /// versions never reach it.
+    pub fn locally_edited_flows(
+        flows_dir: &std::path::Path,
+        approvals_log: &std::path::Path,
+    ) -> Vec<String> {
+        use spark_common::approvals::{installed_hashes, read_approvals, sha256_hex};
+        let installed =
+            installed_hashes(&read_approvals(approvals_log).unwrap_or_default(), "flows/");
         let mut edited = starter_flow_assets()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|asset| {
-                let installed = hash(&std::fs::read(flows_dir.join(&asset.name)).ok()?);
-                (installed != hash(asset.content.as_bytes())
-                    && manifest.get(&asset.name) != Some(&installed))
+                let current = sha256_hex(&std::fs::read(flows_dir.join(&asset.name)).ok()?);
+                (current != sha256_hex(asset.content.as_bytes())
+                    && installed.get(&asset.name) != Some(&current))
                 .then(|| {
                     asset
                         .name
@@ -258,9 +255,6 @@ pub mod flows {
 
 /// Bundled role files (`roles/<name>.md`): `(file name, Markdown text)`, sorted.
 pub mod roles {
-    /// The manifest recording the packaged version last installed for each role.
-    pub const PACKAGED_ROLE_HASHES: &str = ".packaged-role-hashes.json";
-
     pub fn assets() -> Vec<(String, String)> {
         super::markdown_assets(&super::ROLES)
     }

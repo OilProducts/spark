@@ -306,38 +306,53 @@ fn init_respects_skip_and_force_counts() {
     attractor_dsl::read_flow_dir(&implement_change).expect("seeded flow directory loads");
     let roles_dir = data_dir.join("roles");
     let role = fs::read_to_string(roles_dir.join("adversarial-reviewer.md")).expect("seeded role");
-    let role_manifest: BTreeMap<String, String> = serde_json::from_slice(
-        &fs::read(roles_dir.join(".packaged-role-hashes.json")).expect("role manifest"),
-    )
-    .expect("role manifest json");
+    // The approval log records each installed file; it replaced the manifests.
+    let log = data_dir.join("config/approvals.jsonl");
+    let installed = |path: &str| -> Vec<String> {
+        spark_common::approvals::read_approvals(&log)
+            .expect("approval log")
+            .into_iter()
+            .filter(|entry| entry.event == "installed" && entry.path == path)
+            .inspect(|entry| assert!(entry.by.starts_with("spark/"), "{entry:?}"))
+            .map(|entry| entry.sha256)
+            .collect()
+    };
     assert_eq!(
-        role_manifest["adversarial-reviewer.md"],
-        format!("{:x}", Sha256::digest(role.as_bytes()))
+        installed("roles/adversarial-reviewer.md"),
+        vec![format!("{:x}", Sha256::digest(role.as_bytes()))]
     );
+    assert!(!flows_dir.join(".packaged-flow-hashes.json").exists());
+    assert!(!roles_dir.join(".packaged-role-hashes.json").exists());
+    // Seeded flows pass the launch gate as installed.
+    let trust = attractor_dsl::TrustStore {
+        flows_dir: flows_dir.clone(),
+        roles_dir: roles_dir.clone(),
+        log_path: log.clone(),
+    };
+    attractor_dsl::load_approved_flow(&trust, &implement_change).expect("seeded flow is approved");
 
     let edited_flow = flows_dir.join("examples/simple-linear/plan.md");
     fs::write(&edited_flow, "edited: true\n").expect("user edit");
 
     // Simulate an installed packaged version becoming stale while keeping a
-    // separate local edit. The hash manifest is the durable baseline that
-    // makes those two cases distinguishable on the next ordinary init.
+    // separate local edit. The latest `installed` entry is the durable
+    // baseline that makes those two cases distinguishable on the next init.
     let refresh_name = "examples/human-review-loop/flow.md";
     let refresh_flow = flows_dir.join(refresh_name);
     let old_packaged = b"schema_version: old-packaged\n";
     fs::write(&refresh_flow, old_packaged).expect("old packaged flow");
-    let manifest_path = flows_dir.join(".packaged-flow-hashes.json");
-    let mut manifest: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&manifest_path).expect("packaged hash manifest"))
-            .expect("hash manifest json");
-    manifest.insert(
-        refresh_name.to_string(),
-        format!("{:x}", Sha256::digest(old_packaged)),
-    );
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    spark_common::approvals::append_approvals(
+        &log,
+        &spark_common::approvals::approval_entries(
+            "installed",
+            "spark/0.0.0",
+            [(
+                format!("flows/{refresh_name}"),
+                format!("{:x}", Sha256::digest(old_packaged)),
+            )],
+        ),
     )
-    .expect("updated manifest");
+    .expect("older install");
 
     // A node deleted in the editor stays deleted; a deleted flow is restored.
     let deleted_node = flows_dir.join("examples/simple-linear/summarize.md");
@@ -368,10 +383,15 @@ fn init_respects_skip_and_force_counts() {
         fs::read_to_string(&edited_flow).expect("edited flow"),
         "edited: true\n"
     );
-    assert_ne!(
-        fs::read(&refresh_flow).expect("refreshed flow"),
-        old_packaged
+    let refreshed = fs::read(&refresh_flow).expect("refreshed flow");
+    assert_ne!(refreshed, old_packaged);
+    assert_eq!(
+        installed(&format!("flows/{refresh_name}")).last(),
+        Some(&format!("{:x}", Sha256::digest(&refreshed)))
     );
+    // The kept local edit is not approved, so launches refuse it.
+    let edited_entries = installed("flows/examples/simple-linear/plan.md");
+    assert!(!edited_entries.contains(&format!("{:x}", Sha256::digest(b"edited: true\n"))));
 
     let forced = run_with_args_and_env(
         [
@@ -390,9 +410,11 @@ fn init_respects_skip_and_force_counts() {
         .stdout
         .ends_with(&format!("created=1 updated={} skipped=0\n", flow_count - 1)));
     assert!(deleted_node.is_file());
-    assert_ne!(
-        fs::read_to_string(&edited_flow).expect("forced flow"),
-        "edited: true\n"
+    let forced_flow = fs::read(&edited_flow).expect("forced flow");
+    assert_ne!(forced_flow, b"edited: true\n");
+    assert_eq!(
+        installed("flows/examples/simple-linear/plan.md").last(),
+        Some(&format!("{:x}", Sha256::digest(&forced_flow)))
     );
 }
 

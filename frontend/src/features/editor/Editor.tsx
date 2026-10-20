@@ -15,7 +15,7 @@ import type { Connection, Edge, EdgeChange, Node, NodeChange, OnSelectionChangeP
 import '@xyflow/react/dist/style.css';
 
 import { useStore, type FlowDefinitionMetadata } from '@/store';
-import { LaunchPanel, loadCatalogFlowContent } from '@/features/launch';
+import { LaunchPanel } from '@/features/launch';
 import { defaultProjectChoice, launchWorkingDirectory } from '@/features/projects/model/projectChoices';
 import { markProjectUsed } from '@/features/projects/hooks/usePersistProjectState';
 import { Well } from '@/components/app/well';
@@ -30,6 +30,7 @@ import { recordFlowLoadDebug, summarizeDiagnosticsForFlowLoadDebug } from '@/lib
 import {
     primeFlowSaveBaseline,
     saveFlowContent,
+    waitForFlowSaves,
 } from '@/lib/flowPersistence';
 import { CANVAS_INTERACTION_BUDGET_MS } from '@/lib/performanceBudgets';
 import { useFlowSaveScheduler } from '@/lib/useFlowSaveScheduler';
@@ -333,7 +334,7 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
         });
     }, [setNodes, setSelectedEdgeId, setSelectedNodeId]);
 
-    const { flushPendingSave, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
+    const { flushPendingSave, saveNow, scheduleSave } = useFlowSaveScheduler<FlowGraphSnapshot>({
         flowName,
         debounceMs: 250,
         buildContent: (snapshot, currentFlowName) => generateFlowYaml(
@@ -1576,7 +1577,15 @@ export function Editor({ isActive = true }: { isActive?: boolean }) {
                         <LaunchPanel
                             target={{
                                 flowName,
-                                loadFlowContent: () => loadCatalogFlowContent(flowName),
+                                // Runs launch the saved flow by name: persist the current
+                                // content first (a no-op when already saved, a retry after
+                                // a failed autosave), after any earlier save settles.
+                                prepareLaunch: async () => {
+                                    await waitForFlowSaves();
+                                    if (!(await saveNow({ nodes, edges }))) {
+                                        throw new Error('Saving the flow failed; fix the save error before running.');
+                                    }
+                                },
                                 previewSource: { kind: 'flow', flowName },
                             }}
                             key={runProjectPath}

@@ -1,6 +1,22 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "Attribution": {
+      "description": "Who produced or verified a file (OKF §5.2): `by` is an OKF §7 actor (`human:<id>`, `<producer>/<version>` or `process:<id>`), `at` an ISO 8601 timestamp with an explicit offset.",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "by": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "by"
+      ],
+      "type": "object"
+    },
     "ExecutionConfig": {
       "properties": {
         "llm_model": {
@@ -239,6 +255,17 @@
           "additionalProperties": true,
           "type": "object"
         },
+        "generated": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Attribution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OKF §5.2 trust fields. Saves keep them; the approval log, not these fields, decides what may run."
+        },
         "kind": {
           "$ref": "#/definitions/NodeKind"
         },
@@ -283,6 +310,9 @@
             }
           ]
         },
+        "status": {
+          "$ref": "#/definitions/TrustStatus"
+        },
         "ui": {
           "anyOf": [
             {
@@ -290,6 +320,19 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "verified": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Attribution"
+            },
+            {
+              "items": {
+                "$ref": "#/definitions/Attribution"
+              },
+              "type": "array"
             }
           ]
         }
@@ -722,6 +765,14 @@
       },
       "type": "object"
     },
+    "TrustStatus": {
+      "enum": [
+        "draft",
+        "stable",
+        "deprecated"
+      ],
+      "type": "string"
+    },
     "UiConfig": {
       "properties": {
         "x": {
@@ -760,6 +811,17 @@
       "additionalProperties": true,
       "type": "object"
     },
+    "generated": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Attribution"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "OKF §5.2 trust fields. Saves keep them; the approval log, not these fields, decides what may run."
+    },
     "goal": {
       "default": "",
       "type": "string"
@@ -788,9 +850,25 @@
       "default": "1",
       "type": "string"
     },
+    "status": {
+      "$ref": "#/definitions/TrustStatus"
+    },
     "title": {
       "default": "",
       "type": "string"
+    },
+    "verified": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Attribution"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/Attribution"
+          },
+          "type": "array"
+        }
+      ]
     }
   },
   "required": [

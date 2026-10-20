@@ -134,14 +134,6 @@ pub fn flow_name_from_path(
     Ok(parts.join("/"))
 }
 
-/// Reads a named flow directory in its authored form, as one YAML document.
-pub fn load_flow_content(
-    flows_dir: impl AsRef<Path>,
-    flow_name: &str,
-) -> Result<String, FlowSourceError> {
-    flow_yaml(&read_named_flow(flows_dir, flow_name)?)
-}
-
 /// Reads a named flow directory in the resolved form runs execute: roles
 /// merged in, as one YAML document.
 pub fn load_resolved_flow_content(
@@ -222,6 +214,32 @@ pub fn parse_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceE
     Ok(flow.normalize())
 }
 
+/// Parses editor content with every incoming `generated`/`verified` removed
+/// first, so malformed attribution is ignored rather than rejected; the
+/// save keeps the disk values and stamps its own.
+pub fn parse_editor_flow_definition(source: &str) -> Result<FlowDefinition, FlowSourceError> {
+    let Ok(mut value) = serde_yaml::from_str::<serde_yaml::Value>(source) else {
+        return parse_flow_definition(source);
+    };
+    let strip = |value: &mut serde_yaml::Value| {
+        if let Some(map) = value.as_mapping_mut() {
+            map.remove("generated");
+            map.remove("verified");
+        }
+    };
+    strip(&mut value);
+    if let Some(nodes) = value
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.as_mapping_mut())
+    {
+        nodes.values_mut().for_each(strip);
+    }
+    match serde_yaml::to_string(&value) {
+        Ok(stripped) => parse_flow_definition(&stripped),
+        Err(_) => parse_flow_definition(source),
+    }
+}
+
 pub fn validate_flow_definition(flow: &FlowDefinition) -> Result<(), FlowDefinitionError> {
     flow.validate()?;
     let diagnostics: Vec<_> = crate::validate_graph(&flow.to_runtime_dot_graph())
@@ -281,17 +299,6 @@ pub fn canonicalize_flow_yaml(source: &str) -> Result<String, FlowSourceError> {
         FlowSourceError::new(
             500,
             format!("Unable to serialize canonical flow YAML: {source}"),
-        )
-    })
-}
-
-pub fn inject_flow_goal(flow_content: &str, goal: &str) -> Result<String, FlowSourceError> {
-    let mut flow = parse_flow_definition(flow_content)?;
-    flow.goal = goal.trim().to_string();
-    serde_yaml::to_string(&flow.normalize()).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!("Unable to serialize flow with launch goal: {source}"),
         )
     })
 }

@@ -390,19 +390,38 @@ fn autostart_child_pipeline(
         ))));
     }
 
-    // Children execute the resolved form, like root launches.
-    let roles_dir = context_path(context, "internal.roles_dir").unwrap_or_default();
-    let child_flow = match attractor_dsl::read_flow_dir(&child_flow_path)
-        .and_then(|flow| attractor_dsl::resolve_flow_roles(&flow, &roles_dir))
-    {
-        Ok(flow) => flow,
-        Err(error) => {
-            return Ok(Some(fail_outcome(format!(
-                "Child flow is invalid: {}",
-                error.detail()
-            ))));
-        }
+    // Children execute the resolved form and pass the same gate as root launches.
+    let (Some(flows_dir), Some(roles_dir), Some(log_path)) = (
+        context_path(context, "internal.flows_dir"),
+        context_path(context, "internal.roles_dir"),
+        context_path(context, "internal.approvals_log"),
+    ) else {
+        return Ok(Some(fail_outcome(
+            "Child flow refused: this run records no approval log to check the child's files against"
+                .to_string(),
+        )));
     };
+    let trust = attractor_dsl::TrustStore {
+        flows_dir,
+        roles_dir,
+        log_path,
+    };
+    let (child_flow, child_flow_files) =
+        match attractor_dsl::load_approved_flow(&trust, &child_flow_path) {
+            Ok(approved) => (approved.flow, approved.files),
+            Err(error) if error.status_code() == 403 => {
+                return Ok(Some(fail_outcome(format!(
+                    "Child flow refused: {}",
+                    error.detail()
+                ))));
+            }
+            Err(error) => {
+                return Ok(Some(fail_outcome(format!(
+                    "Child flow is invalid: {}",
+                    error.detail()
+                ))));
+            }
+        };
     let child_source = match attractor_dsl::flow_yaml(&child_flow) {
         Ok(source) => source,
         Err(error) => return Ok(Some(fail_outcome(error.detail().to_string()))),
@@ -468,7 +487,13 @@ fn autostart_child_pipeline(
     let child_result = if let Some(launcher) = runner.child_run_launcher() {
         launcher(request)
     } else {
-        match launch_default_child_run(runner.clone(), runtime, request, child_source) {
+        match launch_default_child_run(
+            runner.clone(),
+            runtime,
+            request,
+            child_source,
+            child_flow_files,
+        ) {
             Ok(result) => result,
             Err(reason) => ChildRunResult {
                 run_id: child_run_id.clone(),
@@ -684,6 +709,7 @@ fn launch_default_child_run(
     runtime: &HandlerRuntime,
     request: ChildRunRequest,
     child_source: String,
+    child_flow_files: BTreeMap<String, String>,
 ) -> std::result::Result<ChildRunResult, String> {
     let Some(parent_paths) = runtime.run_paths.as_ref() else {
         return Err("parent run paths are unavailable".to_string());
@@ -819,6 +845,7 @@ fn launch_default_child_run(
             start: ExecutionStart::FromCheckpoint {
                 start_node,
                 checkpoint,
+                flow_files: Some(child_flow_files),
             },
         })
         .map(pipeline_result_to_child_result)

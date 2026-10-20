@@ -100,7 +100,7 @@ pub use routing::{
 };
 pub use store::{
     CreateRunRequest, NodeExecution, RunArtifactFile, RunBundle, RunEventObserver, RunMeta,
-    RunStore,
+    RunStore, FLOW_FILES_MANIFEST,
 };
 pub use terminal::{
     check_goal_gates, invalid_workflow_outcome_reason, is_goal_gate_node,

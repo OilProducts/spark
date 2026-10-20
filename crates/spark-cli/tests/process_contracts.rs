@@ -2,5 +2,9 @@
 mod cli_process_contracts;
 #[path = "process_contracts/cli_shell_contracts.rs"]
 mod cli_shell_contracts;
+#[path = "process_contracts/flow_install.rs"]
+mod flow_install;
 #[path = "process_contracts/trigger_cli_m4_route_contracts.rs"]
 mod trigger_cli_m4_route_contracts;
+#[allow(unused_imports)]
+pub(crate) use flow_install::{approve_flow, install_flow};

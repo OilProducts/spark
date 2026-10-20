@@ -35,6 +35,111 @@ pub struct FlowDefinition {
     pub metadata: FlowMetadata,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+    /// OKF §5.2 trust fields. Saves keep them; the approval log, not these
+    /// fields, decides what may run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<Attribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_verified"
+    )]
+    #[schemars(schema_with = "verified_schema")]
+    pub verified: Vec<Attribution>,
+    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
+    pub status: TrustStatus,
+}
+
+/// Who produced or verified a file (OKF §5.2): `by` is an OKF §7 actor
+/// (`human:<id>`, `<producer>/<version>` or `process:<id>`), `at` an ISO 8601
+/// timestamp with an explicit offset.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Attribution {
+    pub by: String,
+    pub at: String,
+}
+
+impl Attribution {
+    /// Why this attribution is malformed, if it is.
+    pub fn problem(&self) -> Option<String> {
+        if !valid_actor(&self.by) {
+            return Some(format!(
+                "actor '{}' must be human:<id>, <producer>/<version> or process:<id>",
+                self.by
+            ));
+        }
+        if !valid_offset_timestamp(&self.at) {
+            return Some(format!(
+                "timestamp '{}' must be ISO 8601 with an explicit offset",
+                self.at
+            ));
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustStatus {
+    Draft,
+    #[default]
+    Stable,
+    Deprecated,
+}
+
+impl TrustStatus {
+    pub fn is_stable(&self) -> bool {
+        matches!(self, Self::Stable)
+    }
+}
+
+/// `verified` accepts a bare mapping as a one-element list (OKF §5.2).
+pub fn deserialize_verified<'de, D>(deserializer: D) -> Result<Vec<Attribution>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Attribution),
+        Many(Vec<Attribution>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(one) => vec![one],
+        OneOrMany::Many(many) => many,
+    })
+}
+
+fn verified_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    let one = generator.subschema_for::<Attribution>();
+    let many = generator.subschema_for::<Vec<Attribution>>();
+    schemars::schema::SchemaObject {
+        subschemas: Some(Box::new(schemars::schema::SubschemaValidation {
+            any_of: Some(vec![one, many]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+    .into()
+}
+
+fn valid_actor(actor: &str) -> bool {
+    let non_blank = |value: &str| !value.is_empty() && !value.contains(char::is_whitespace);
+    if let Some(id) = actor
+        .strip_prefix("human:")
+        .or_else(|| actor.strip_prefix("process:"))
+    {
+        return non_blank(id);
+    }
+    actor
+        .split_once('/')
+        .is_some_and(|(producer, version)| non_blank(producer) && non_blank(version))
+}
+
+/// RFC 3339 (the ISO 8601 profile that requires an offset), with real
+/// calendar, clock and offset values.
+fn valid_offset_timestamp(value: &str) -> bool {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -139,6 +244,19 @@ pub struct FlowNode {
     pub ui: Option<UiConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+    /// OKF §5.2 trust fields. Saves keep them; the approval log, not these
+    /// fields, decides what may run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<Attribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_verified"
+    )]
+    #[schemars(schema_with = "verified_schema")]
+    pub verified: Vec<Attribution>,
+    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
+    pub status: TrustStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -534,6 +652,26 @@ impl FlowDefinition {
         if self.id.trim().is_empty() {
             diagnostics.push(diagnostic("flow_id", "flow id must be non-empty"));
         }
+        for (node_id, generated, verified) in
+            std::iter::once((None, &self.generated, &self.verified)).chain(
+                self.nodes
+                    .iter()
+                    .map(|(id, node)| (Some(id), &node.generated, &node.verified)),
+            )
+        {
+            for problem in generated
+                .iter()
+                .chain(verified)
+                .filter_map(Attribution::problem)
+            {
+                diagnostics.push(FlowDiagnostic {
+                    rule_id: "trust_fields".into(),
+                    message: problem,
+                    node_id: node_id.cloned(),
+                    edge: None,
+                });
+            }
+        }
 
         for node_id in self.nodes.keys() {
             if !valid_id(node_id) {
@@ -758,6 +896,9 @@ impl Default for FlowDefinition {
             edges: Vec::new(),
             metadata: BTreeMap::new(),
             extensions: BTreeMap::new(),
+            generated: None,
+            verified: Vec::new(),
+            status: TrustStatus::default(),
         }
     }
 }

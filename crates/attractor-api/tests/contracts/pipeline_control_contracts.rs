@@ -267,7 +267,7 @@ fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     let started = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-steer".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -331,7 +331,7 @@ fn reset_clears_only_runs_directory() {
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-reset".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });

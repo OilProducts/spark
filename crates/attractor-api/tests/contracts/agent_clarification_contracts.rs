@@ -114,7 +114,8 @@ while True:
         working_directory: settings.project_root.to_string_lossy().into(),
         llm_provider: Some("codex".into()),
         model: Some("test-model".into()),
-        flow_content: Some(
+        flow_name: Some(crate::install_flow(
+            &settings,
             r#"schema_version: "1"
 id: clarify
 nodes:
@@ -134,9 +135,8 @@ edges:
   to: work
 - from: work
   to: done
-"#
-            .into(),
-        ),
+"#,
+        )),
         ..Default::default()
     };
     let start = service.start_pipeline(start_request.clone());

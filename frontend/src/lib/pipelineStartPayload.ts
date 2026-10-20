@@ -12,7 +12,6 @@ export interface RunInitiationFormState {
 }
 
 export interface PipelineStartPayload {
-    flow_content: string
     working_directory: string
     model: string | null
     llm_provider?: string | null
@@ -21,7 +20,7 @@ export interface PipelineStartPayload {
     execution_profile_id?: string | null
     project_default_execution_profile_id?: string | null
     launch_context?: Record<string, unknown> | null
-    flow_name: string | null
+    flow_name: string
 }
 
 export type PipelineContinueFlowSourceMode = 'snapshot' | 'flow_name'
@@ -88,14 +87,12 @@ export const resolveExecutionWorkingDirectory = (form: Pick<RunInitiationFormSta
 
 export function buildPipelineStartPayload(
     form: RunInitiationFormState,
-    flowContent: string,
 ): PipelineStartPayload {
     const workingDirectory = resolveExecutionWorkingDirectory(form)
     const payload: PipelineStartPayload = {
-        flow_content: flowContent,
         working_directory: workingDirectory,
         model: form.model,
-        flow_name: form.flowSource || null,
+        flow_name: form.flowSource,
     }
     if (form.launchContext && Object.keys(form.launchContext).length > 0) {
         payload.launch_context = form.launchContext

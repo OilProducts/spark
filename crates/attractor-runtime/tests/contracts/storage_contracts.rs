@@ -69,6 +69,7 @@ fn create_run_writes_current_run_root_layout_and_initial_events() {
             flow_definition_json: Some(
                 "{\"schema_version\":\"1\",\"id\":\"create\"}\n".to_string(),
             ),
+            flow_files: None,
         })
         .expect("create run");
 
