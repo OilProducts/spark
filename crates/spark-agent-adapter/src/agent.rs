@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use spark_common::events::TurnStreamEvent;
 
 use crate::history::HistoryTurn;
+use crate::session::SessionSteeringHandle;
 
 /// Metadata key for system instructions pinned to every turn of a
 /// conversation. Backends pass them as system instructions, never as prompt
@@ -111,6 +112,20 @@ pub trait AgentTurnBackend: Send + Sync {
     ) -> Result<AgentTurnOutput, AgentError> {
         let _ = event_sink;
         self.run_turn(request)
+    }
+
+    /// Runs a turn that delivers what is queued on `steering` into the
+    /// running turn and stops when `steering` is interrupted. Each delivery
+    /// emits a `steering_injected` event carrying the steering metadata as
+    /// `details`. A backend without steering leaves the queue undelivered.
+    fn run_steerable_turn(
+        &self,
+        request: AgentTurnRequest,
+        steering: SessionSteeringHandle,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let _ = steering;
+        self.run_turn_with_event_sink(request, event_sink)
     }
 
     fn answer_request_user_input(

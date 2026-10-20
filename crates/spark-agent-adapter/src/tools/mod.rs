@@ -10,7 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Map, Value};
 use unified_llm_adapter::tools::{validate_parameter_schema, validate_tool_name};
 use unified_llm_adapter::{
-    AdapterError, AdapterErrorKind, Message, Tool, ToolCall, ToolInvocation, ToolResult,
+    AbortSignal, AdapterError, AdapterErrorKind, Message, Tool, ToolCall, ToolInvocation,
+    ToolResult,
 };
 
 use crate::config::SessionConfig;
@@ -395,6 +396,8 @@ pub struct ToolDispatchContext {
     pub subagent_runtime: Option<SubAgentToolRuntime>,
     pub truncation_hook: Option<ToolTruncationHook>,
     pub event_hook: Option<ToolEventHook>,
+    /// Once aborted, calls not yet started return an error instead of running.
+    pub abort_signal: Option<AbortSignal>,
 }
 
 impl Default for ToolDispatchContext {
@@ -409,6 +412,7 @@ impl Default for ToolDispatchContext {
             subagent_runtime: None,
             truncation_hook: None,
             event_hook: None,
+            abort_signal: None,
         }
     }
 }
@@ -584,6 +588,15 @@ fn dispatch_one(
 ) -> ToolResult {
     let tool_call_id = tool_call.id.clone();
     let tool_name = tool_call.name.clone();
+    // ponytail: a parallel call that starts its command just as the session
+    // aborts escapes the kill; check per command if that window matters.
+    if context
+        .abort_signal
+        .as_ref()
+        .is_some_and(AbortSignal::aborted)
+    {
+        return ToolResult::error(tool_call_id, Value::String("Stopped.".to_string()));
+    }
     if let Some(event_hook) = context.event_hook.as_ref() {
         event_hook(ToolDispatchEvent::tool_call_start(&tool_call));
     }

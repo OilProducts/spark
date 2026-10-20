@@ -106,8 +106,10 @@ describe('buildProjectsHomeViewModel', () => {
     expect(viewModel.latestFlowLaunchId).toBe('launch-1')
     expect(viewModel.activeFlowRunRequestsById.get('request-1')?.run_id).toBe('run-7')
     expect(viewModel.activeFlowLaunchesById.get('launch-1')?.status).toBe('launched')
-    expect(viewModel.isChatInputDisabled).toBe(true)
-    expect(viewModel.chatSendButtonLabel).toBe('Thinking...')
+    // A running turn keeps the composer open: sends are steered into it.
+    expect(viewModel.hasActiveAssistantTurn).toBe(true)
+    expect(viewModel.isChatInputDisabled).toBe(false)
+    expect(viewModel.chatSendButtonLabel).toBe('Send')
     expect(viewModel.hasRenderableConversationHistory).toBe(true)
     expect(viewModel.activeConversationHistory.at(-1)).toMatchObject({
       role: 'assistant',

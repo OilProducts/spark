@@ -19,7 +19,7 @@ use tokio::time::{sleep, Duration};
 use tower::ServiceExt;
 use unified_llm_adapter::{
     stream_events, ActiveLlmProfile, AdapterError, Client, FinishReason, Message, ProviderAdapter,
-    Request as LlmRequest, Response, StreamEvent, StreamEvents, Usage,
+    Request as LlmRequest, Response, StreamEvent, StreamEventType, StreamEvents, ToolCall, Usage,
 };
 
 #[tokio::test]
@@ -1669,5 +1669,963 @@ async fn startup_settles_chat_turns_a_previous_process_left_in_flight() {
             .get_snapshot("left-commentary-only", Some(project))
             .unwrap()["revision"],
         noted_revision
+    );
+}
+
+/// Each first turn waits until it is steered (or released, or interrupted),
+/// then answers; later turns answer at once.
+struct SteeringBackend {
+    requests: Arc<Mutex<Vec<AgentTurnRequest>>>,
+    deliver: bool,
+    release: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AgentTurnBackend for SteeringBackend {
+    fn run_turn(&self, request: AgentTurnRequest) -> Result<AgentTurnOutput, AgentError> {
+        self.run_steerable_turn(request, Default::default(), None)
+    }
+
+    fn run_steerable_turn(
+        &self,
+        request: AgentTurnRequest,
+        steering: spark_agent_adapter::SessionSteeringHandle,
+        event_sink: Option<spark_agent_adapter::AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let index = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request);
+            requests.len()
+        };
+        let mut events = Vec::new();
+        let started = std::time::Instant::now();
+        while index == 1 && started.elapsed() < std::time::Duration::from_secs(5) {
+            if steering.interrupt_requested() {
+                return Err(AgentError {
+                    message: "Stopped.".into(),
+                    retryable: false,
+                    raw: None,
+                });
+            }
+            if self.deliver {
+                let queued = steering.drain_queued();
+                if !queued.is_empty() {
+                    for turn in queued {
+                        let mut event = content_completed(
+                            TurnStreamChannel::Assistant,
+                            &turn.text(),
+                            "app-steer",
+                            "steer",
+                        );
+                        event.kind = TurnStreamEventKind::Other("steering_injected".into());
+                        event.channel = None;
+                        event.phase = None;
+                        event.details = Some(json!(turn.metadata));
+                        events.push(event);
+                    }
+                    break;
+                }
+            } else if self.release.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let answer = format!("Answer {index}.");
+        events.push(content_completed(
+            TurnStreamChannel::Assistant,
+            &answer,
+            "app-steer",
+            &format!("answer-{index}"),
+        ));
+        if let Some(sink) = event_sink {
+            for event in &events {
+                sink(event.clone());
+            }
+        }
+        Ok(AgentTurnOutput {
+            events,
+            final_assistant_text: Some(answer),
+            ..AgentTurnOutput::default()
+        })
+    }
+}
+
+pub(crate) fn steering_app(
+    settings: &SparkSettings,
+    deliver: bool,
+) -> (
+    axum::Router,
+    Arc<Mutex<Vec<AgentTurnRequest>>>,
+    Arc<std::sync::atomic::AtomicBool>,
+) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let backend = SteeringBackend {
+        requests: Arc::clone(&requests),
+        deliver,
+        release: Arc::clone(&release),
+    };
+    (
+        build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend)),
+        requests,
+        release,
+    )
+}
+
+async fn send_message(app: &axum::Router, conversation_id: &str, message: &str) -> Value {
+    let response = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(json!({"project_path": "/projects/steer", "message": message, "provider": "codex"})),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    response.1
+}
+
+fn assistant_turns_settled(snapshot: &Value, count: usize) -> bool {
+    let turns = snapshot["turns"].as_array().unwrap();
+    turns
+        .iter()
+        .filter(|turn| turn["role"] == "assistant")
+        .count()
+        == count
+        && turns
+            .iter()
+            .all(|turn| turn["status"] == "complete" || turn["status"] == "failed")
+}
+
+#[tokio::test]
+async fn message_sent_during_a_turn_is_steered_into_it_and_persisted_in_place() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let (app, requests, _) = steering_app(&settings, true);
+
+    send_message(&app, "steer-chat", "Start the work").await;
+    let steered = send_message(&app, "steer-chat", "Use tabs.").await;
+    assert_eq!(
+        steered["turns"].as_array().unwrap().len(),
+        2,
+        "a steered message adds no turn"
+    );
+
+    // Read back from disk by a fresh service, as after a reload.
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "steer-chat", "/projects/steer", |s| {
+            assistant_turns_settled(s, 1)
+        })
+        .await;
+    let assistant = &snapshot["turns"][1];
+    assert_eq!(assistant["status"], "complete");
+    assert_eq!(assistant["content"], "Answer 1.");
+    let segments = snapshot["segments"].as_array().unwrap();
+    let steered = segments
+        .iter()
+        .find(|segment| segment["kind"] == "user_message")
+        .expect("steered message segment");
+    assert_eq!(steered["role"], "user");
+    assert_eq!(steered["content"], "Use tabs.");
+    assert_eq!(steered["turn_id"], assistant["id"]);
+    let answer = segments
+        .iter()
+        .find(|segment| segment["kind"] == "assistant_message")
+        .expect("answer segment");
+    assert!(steered["order"].as_i64() < answer["order"].as_i64());
+    assert_eq!(requests.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn message_the_turn_never_took_in_starts_the_next_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let (app, requests, release) = steering_app(&settings, false);
+
+    send_message(&app, "steer-late", "Start the work").await;
+    send_message(&app, "steer-late", "Then add tests.").await;
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "steer-late", "/projects/steer", |s| {
+            assistant_turns_settled(s, 2)
+        })
+        .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    let users = turns
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(users, ["Start the work", "Then add tests."]);
+    assert_eq!(turns[3]["content"], "Answer 2.");
+    let prompts = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.prompt.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, ["Start the work", "Then add tests."]);
+}
+
+#[tokio::test]
+async fn interrupt_stops_a_running_codex_or_native_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let (app, _, _) = steering_app(&settings, true);
+
+    send_message(&app, "stop-running", "Start the work").await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/stop-running/interrupt",
+        Some(json!({"project_path": "/projects/steer"})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "stop-running", "/projects/steer", |s| {
+            assistant_turns_settled(s, 1)
+        })
+        .await;
+    assert_stopped(&snapshot, "Stopped.");
+}
+
+/// A stop settles the turn as a finished answer, as Claude Code's does.
+fn assert_stopped(snapshot: &Value, content: &str) {
+    let assistant = &snapshot["turns"][1];
+    assert_eq!(assistant["status"], "complete", "{snapshot}");
+    assert_eq!(assistant["content"], content, "{snapshot}");
+    assert!(assistant.get("error").is_none(), "{snapshot}");
+}
+
+/// Streams half an answer, then trickles empty deltas until stopped. With
+/// `earlier_reply`, a first request reasons, replies and calls a tool first.
+struct StoppableAdapter {
+    pulled: Arc<std::sync::atomic::AtomicUsize>,
+    earlier_reply: std::sync::atomic::AtomicBool,
+}
+
+impl ProviderAdapter for StoppableAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, _request: LlmRequest) -> Result<Response, AdapterError> {
+        unreachable!("the session streams")
+    }
+
+    fn stream(&self, _request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        if self
+            .earlier_reply
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(stream_events(
+                [
+                    StreamEvent::reasoning_delta("Thinking it over."),
+                    StreamEvent::text_delta("A finished reply."),
+                    StreamEvent {
+                        tool_call: Some(ToolCall::new("call-1", "missing_tool", json!({}))),
+                        ..StreamEvent::new(StreamEventType::ToolCallEnd)
+                    },
+                    StreamEvent::finish(FinishReason::ToolCalls, None),
+                ]
+                .into_iter()
+                .map(Ok),
+            ));
+        }
+        let pulled = Arc::clone(&self.pulled);
+        Ok(stream_events((0..500).map(move |index| {
+            if pulled.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(match index {
+                0 => StreamEvent::text_delta("Half an answer."),
+                499 => StreamEvent::finish(FinishReason::Stop, None),
+                _ => StreamEvent::text_delta(""),
+            })
+        })))
+    }
+}
+
+#[tokio::test]
+async fn stopped_native_turn_settles_with_its_partial_answer() {
+    stop_native_turn(false).await;
+    // Neither the reasoning nor the earlier reply joins the partial answer.
+    stop_native_turn(true).await;
+}
+
+async fn stop_native_turn(earlier_reply: bool) {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let pulled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(StoppableAdapter {
+        pulled: Arc::clone(&pulled),
+        earlier_reply: earlier_reply.into(),
+    });
+    let app = build_app_with_rust_llm_client(
+        settings.clone(),
+        Client::from_adapters(vec![adapter], Some("OPENAI")).unwrap(),
+    );
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/native-stop/turns",
+        Some(
+            json!({"project_path": "/projects/steer", "message": "Start the work",
+            "provider": "openai", "model": "gpt-native-test"}),
+        ),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+    // The half answer was taken once the next delta is pulled.
+    while pulled.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/native-stop/interrupt",
+        Some(json!({"project_path": "/projects/steer"})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "native-stop", "/projects/steer", |s| {
+            assistant_turns_settled(s, 1)
+        })
+        .await;
+    assert_stopped(&snapshot, "Half an answer.");
+    assert!(pulled.load(std::sync::atomic::Ordering::SeqCst) < 400);
+}
+
+/// An app whose Codex chat turns run the fake app-server in `mode`; returns
+/// it with its settings, a project path and the fake's log.
+fn fake_codex_app(root: &Path, mode: &str) -> (axum::Router, SparkSettings, String, PathBuf) {
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let log = root.join("codex.log");
+    std::env::set_var(
+        "SPARK_CODEX_APP_SERVER_BIN",
+        binaries.join("spark-agent-fake-codex-app-server"),
+    );
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", mode);
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log);
+    let mut settings = settings(root);
+    settings.agents.native.codex_runtime_root =
+        Some(root.join("codex-runtime").to_string_lossy().into());
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    (
+        spark_http::build_app(settings.clone()),
+        settings,
+        project.to_string_lossy().to_string(),
+        log,
+    )
+}
+
+async fn send_codex_message(
+    app: &axum::Router,
+    conversation_id: &str,
+    project: &str,
+    message: &str,
+) {
+    let response = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(
+            json!({"project_path": project, "message": message, "provider": "codex",
+            "model": "gpt-codex-test"}),
+        ),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+}
+
+#[tokio::test]
+async fn stopped_codex_turn_settles_with_its_partial_answer() {
+    if !in_child_process("stopped_codex_turn_settles_with_its_partial_answer") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_codex_app(temp.path(), "steer-partial");
+
+    send_codex_message(&app, "codex-stop", &project, "Start the work").await;
+    wait_for_log(&log, "turn/start").await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/codex-stop/interrupt",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-stop", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    assert_stopped(&snapshot, "Half an answer.");
+    // The settled answer updates the streamed segment.
+    let replies = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == "assistant_message")
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 1, "{snapshot}");
+    assert_eq!(replies[0]["content"], "Half an answer.", "{snapshot}");
+    wait_for_log(&log, "turn/interrupt").await;
+}
+
+#[tokio::test]
+async fn codex_steer_accepted_before_a_failed_steer_is_persisted_once() {
+    if !in_child_process("codex_steer_accepted_before_a_failed_steer_is_persisted_once") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    // The fake accepts the first turn/steer and exits on the second.
+    let (app, settings, project, log) = fake_codex_app(temp.path(), "steer-exit");
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR", temp.path());
+
+    send_codex_message(&app, "codex-steer-exit", &project, "Start the work").await;
+    wait_for_log(&log, "turn/start").await;
+    // Both wait on the gated turn/start, so one drain steers them in a row.
+    send_codex_message(&app, "codex-steer-exit", &project, "Use tabs.").await;
+    send_codex_message(&app, "codex-steer-exit", &project, "Use spaces.").await;
+    std::fs::write(temp.path().join("start"), "").unwrap();
+
+    // The unaccepted message starts the next turn, which is then stopped.
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-steer-exit", &project, |s| {
+        s["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| turn["role"] == "user" && turn["content"] == "Use spaces.")
+    })
+    .await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/codex-steer-exit/interrupt",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    wait_for_conversation_snapshot(&settings, "codex-steer-exit", &project, |s| {
+        assistant_turns_settled(s, 2)
+    })
+    .await;
+
+    let snapshot = WorkspaceConversationService::new(settings.clone())
+        .get_snapshot("codex-steer-exit", Some(&project))
+        .unwrap();
+    let steered = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == "user_message")
+        .map(|segment| segment["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(steered, ["Use tabs."], "{snapshot}");
+    let turns = snapshot["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|turn| turn["role"] == "user")
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(turns, ["Start the work", "Use spaces."], "{snapshot}");
+}
+
+#[tokio::test]
+async fn codex_output_before_the_steer_response_stays_ahead_of_the_steered_message() {
+    if !in_child_process(
+        "codex_output_before_the_steer_response_stays_ahead_of_the_steered_message",
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_codex_app(temp.path(), "steer-early-output");
+
+    send_codex_message(&app, "codex-order", &project, "Start the work").await;
+    wait_for_log(&log, "turn/start").await;
+    send_codex_message(&app, "codex-order", &project, "Use tabs.").await;
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-order", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    let mut segments = snapshot["segments"].as_array().unwrap().clone();
+    segments.sort_by_key(|segment| segment["order"].as_i64());
+    let contents = segments
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment["kind"].as_str(),
+                Some("assistant_message" | "user_message")
+            )
+        })
+        .map(|segment| segment["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        ["Reading the file.", "Use tabs.", "Steered"],
+        "{snapshot}"
+    );
+}
+
+#[tokio::test]
+async fn codex_chat_turn_takes_a_steered_message_through_the_default_backend() {
+    // Runs in a child process: it points the default backend at the fake
+    // app-server through the environment.
+    const CHILD: &str = "SPARK_STEERED_CODEX_CHAT_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "workspace_conversation_turn_route_contracts::codex_chat_turn_takes_a_steered_message_through_the_default_backend",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let mut settings = settings(temp.path());
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let log = temp.path().join("codex.log");
+    std::env::set_var(
+        "SPARK_CODEX_APP_SERVER_BIN",
+        binaries.join("spark-agent-fake-codex-app-server"),
+    );
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_MODE", "steerable");
+    std::env::set_var("SPARK_FAKE_CODEX_APP_SERVER_LOG", &log);
+    settings.agents.native.codex_runtime_root =
+        Some(temp.path().join("codex-runtime").to_string_lossy().into());
+    let app = spark_http::build_app(settings.clone());
+    let project = temp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let project = project.to_string_lossy().to_string();
+    let send = |message: &'static str| {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/conversations/codex-steer/turns",
+            Some(
+                json!({"project_path": project, "message": message, "provider": "codex", "model": "gpt-codex-test"}),
+            ),
+        )
+    };
+
+    let started = send("Start the work").await;
+    assert_eq!(started.0, StatusCode::OK, "{}", started.1);
+    for _ in 0..500 {
+        if std::fs::read_to_string(&log).is_ok_and(|log| log.contains("turn/start")) {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let steered = send("Use tabs.").await;
+    assert_eq!(steered.0, StatusCode::OK, "{}", steered.1);
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "codex-steer", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    assert_eq!(snapshot["turns"][1]["content"], "Steered");
+    assert!(snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|segment| segment["kind"] == "user_message" && segment["content"] == "Use tabs."));
+    assert!(std::fs::read_to_string(&log).unwrap().contains("Use tabs."));
+}
+
+/// Reruns `test` in a child process, where it may point the default backend
+/// at a fake CLI through the environment. True in the child.
+fn in_child_process(test: &str) -> bool {
+    const CHILD: &str = "SPARK_CHAT_ROUTE_CHILD_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("workspace_conversation_turn_route_contracts::{test}"),
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
+/// An app whose Claude Code chat turns run the fake CLI in `mode`; returns
+/// it with its settings, a project path and the fake's log.
+fn fake_claude_code_app(root: &Path, mode: &str) -> (axum::Router, SparkSettings, String, PathBuf) {
+    let binaries = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_owned();
+    let log = root.join("claude.log");
+    std::env::set_var(
+        "SPARK_CLAUDE_CODE_BIN",
+        binaries.join("spark-agent-fake-claude-code"),
+    );
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_MODE", mode);
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_LOG", &log);
+    let settings = settings(root);
+    let project = root.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    (
+        spark_http::build_app(settings.clone()),
+        settings,
+        project.to_string_lossy().to_string(),
+        log,
+    )
+}
+
+async fn send_claude_code_message(
+    app: &axum::Router,
+    conversation_id: &str,
+    project: &str,
+    message: &str,
+) {
+    let response = request_json(
+        app.clone(),
+        "POST",
+        &format!("/workspace/api/conversations/{conversation_id}/turns"),
+        Some(json!({"project_path": project, "message": message, "provider": "claude-code"})),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+}
+
+async fn wait_for_log(log: &Path, needle: &str) {
+    for _ in 0..500 {
+        if std::fs::read_to_string(log).is_ok_and(|text| text.contains(needle)) {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("{needle} never logged");
+}
+
+#[tokio::test]
+async fn claude_code_stop_before_control_starts_is_sent_once_it_does() {
+    if !in_child_process("claude_code_stop_before_control_starts_is_sent_once_it_does") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_claude_code_app(temp.path(), "interrupt-aborted");
+    let gate = temp.path().join("init-gate");
+    std::env::set_var("SPARK_FAKE_CLAUDE_CODE_GATE", &gate);
+
+    send_claude_code_message(&app, "claude-stop", &project, "Start the work").await;
+    wait_for_log(&log, "USER_CONTENT=").await;
+    let response = request_json(
+        app.clone(),
+        "POST",
+        "/workspace/api/conversations/claude-stop/interrupt",
+        Some(json!({"project_path": project})),
+    )
+    .await;
+    assert_eq!(response.1, json!({"interrupted": true}));
+    // Only now does the CLI report system/init and accept control requests.
+    std::fs::write(&gate, "").unwrap();
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "claude-stop", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    assert_eq!(snapshot["turns"][1]["status"], "complete", "{snapshot}");
+    assert_eq!(snapshot["turns"][1]["content"], "Shortened turn.");
+}
+
+#[tokio::test]
+async fn claude_code_stop_with_queued_steering_runs_it_once_and_stops_the_follow_up() {
+    if !in_child_process(
+        "claude_code_stop_with_queued_steering_runs_it_once_and_stops_the_follow_up",
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_claude_code_app(temp.path(), "interrupt-queued");
+    let stop = || {
+        request_json(
+            app.clone(),
+            "POST",
+            "/workspace/api/conversations/claude-queued/interrupt",
+            Some(json!({"project_path": project})),
+        )
+    };
+
+    send_claude_code_message(&app, "claude-queued", &project, "Start the work").await;
+    wait_for_log(&log, "USER_CONTENT=").await;
+    send_claude_code_message(&app, "claude-queued", &project, "Then add tests.").await;
+    wait_for_log(&log, "STEER_CONTENT=").await;
+    assert_eq!(stop().await.1, json!({"interrupted": true}));
+    wait_for_log(&log, "FOLLOW_UP_RUNNING").await;
+    assert_eq!(stop().await.1, json!({"interrupted": true}));
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "claude-queued", &project, |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    assert_eq!(turns.len(), 2, "{snapshot}");
+    assert_eq!(turns[1]["status"], "complete", "{snapshot}");
+    assert_eq!(turns[1]["content"], "Following up.");
+    let steered = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| segment["kind"] == "user_message")
+        .collect::<Vec<_>>();
+    assert_eq!(steered.len(), 1, "{snapshot}");
+    assert_eq!(steered[0]["content"], "Then add tests.");
+    let log = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(log.matches("USER_CONTENT=").count(), 1, "{log}");
+    assert_eq!(log.matches("STEER_CONTENT=").count(), 1, "{log}");
+}
+
+#[tokio::test]
+async fn claude_code_message_never_replayed_before_exit_starts_the_next_turn() {
+    if !in_child_process("claude_code_message_never_replayed_before_exit_starts_the_next_turn") {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let (app, settings, project, log) = fake_claude_code_app(temp.path(), "steer-exit");
+
+    send_claude_code_message(&app, "claude-exit", &project, "Start the work").await;
+    wait_for_log(&log, "USER_CONTENT=").await;
+    send_claude_code_message(&app, "claude-exit", &project, "Then add tests.").await;
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "claude-exit", &project, |s| {
+        assistant_turns_settled(s, 2)
+    })
+    .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    let contents = turns
+        .iter()
+        .map(|turn| turn["content"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        contents,
+        [
+            "Start the work",
+            "First reply.",
+            "Then add tests.",
+            "All set."
+        ]
+    );
+    assert!(
+        !snapshot["segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|segment| segment["kind"] == "user_message"),
+        "the message was never delivered into the first turn"
+    );
+    let prompts = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with("USER_CONTENT="))
+        .count();
+    assert_eq!(prompts, 2);
+}
+
+/// Each call before `gated` waits until `released` passes its index, so
+/// messages can be steered into the running native session between calls;
+/// every call answers with the next reply.
+struct GatedAdapter {
+    calls: Arc<Mutex<Vec<LlmRequest>>>,
+    released: Arc<std::sync::atomic::AtomicUsize>,
+    gated: usize,
+    replies: &'static [&'static str],
+}
+
+impl ProviderAdapter for GatedAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, request: LlmRequest) -> Result<Response, AdapterError> {
+        let index = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(request.clone());
+            calls.len() - 1
+        };
+        while index < self.gated && self.released.load(std::sync::atomic::Ordering::SeqCst) <= index
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Ok(Response {
+            model: request.model.clone(),
+            provider: "openai".to_string(),
+            message: Message::assistant(self.replies[index]),
+            finish_reason: FinishReason::Stop,
+            ..Response::default()
+        })
+    }
+
+    fn stream(&self, request: LlmRequest) -> Result<StreamEvents, AdapterError> {
+        self.complete(request).map(|response| {
+            stream_events(
+                vec![
+                    Ok(StreamEvent::text_delta(response.text())),
+                    Ok(StreamEvent::finish(response.finish_reason, None)),
+                ]
+                .into_iter(),
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn native_turn_after_reload_sees_the_message_steered_into_the_earlier_turn() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let native_app = || {
+        let adapter: Arc<dyn ProviderAdapter> = Arc::new(GatedAdapter {
+            calls: Arc::clone(&calls),
+            released: Arc::clone(&released),
+            gated: 2,
+            replies: &[
+                "Starting with the parser.",
+                "Switched the parser to tabs.",
+                "Added parser tests for tabs.",
+                "Answer 2.",
+            ],
+        });
+        build_app_with_rust_llm_client(
+            settings.clone(),
+            Client::from_adapters(vec![adapter], Some("OPENAI")).unwrap(),
+        )
+    };
+    let send = |app: axum::Router, message: &'static str| {
+        request_json(
+            app,
+            "POST",
+            "/workspace/api/conversations/native-steer/turns",
+            Some(
+                json!({"project_path": "/projects/steer", "message": message,
+                "provider": "openai", "model": "gpt-native-test"}),
+            ),
+        )
+    };
+
+    let app = native_app();
+    assert_eq!(send(app.clone(), "Start the work").await.0, StatusCode::OK);
+    for (index, steering) in ["Use tabs.", "Also add tests."].into_iter().enumerate() {
+        while calls.lock().unwrap().len() <= index {
+            sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(send(app.clone(), steering).await.0, StatusCode::OK);
+        released.store(index + 1, std::sync::atomic::Ordering::SeqCst);
+    }
+    wait_for_conversation_snapshot(&settings, "native-steer", "/projects/steer", |s| {
+        assistant_turns_settled(s, 1)
+    })
+    .await;
+
+    // A new service reads the conversation back from disk, as after a reload.
+    assert_eq!(send(native_app(), "Next.").await.0, StatusCode::OK);
+    let snapshot =
+        wait_for_conversation_snapshot(&settings, "native-steer", "/projects/steer", |s| {
+            assistant_turns_settled(s, 2)
+        })
+        .await;
+    assert_eq!(
+        snapshot["turns"][1]["content"],
+        "Added parser tests for tabs."
+    );
+    assert_eq!(snapshot["turns"][3]["content"], "Answer 2.");
+    let mut first_turn = snapshot["segments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|segment| {
+            segment["turn_id"] == snapshot["turns"][1]["id"]
+                && matches!(
+                    segment["kind"].as_str(),
+                    Some("assistant_message" | "user_message")
+                )
+        })
+        .collect::<Vec<_>>();
+    first_turn.sort_by_key(|segment| segment["order"].as_i64());
+    assert_eq!(
+        first_turn
+            .iter()
+            .map(|segment| segment["content"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "Starting with the parser.",
+            "Use tabs.",
+            "Switched the parser to tabs.",
+            "Also add tests.",
+            "Added parser tests for tabs.",
+        ],
+        "each steered message sits where the session took it in"
+    );
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 4);
+    let conversation = calls[3]
+        .messages
+        .iter()
+        .skip(1)
+        .map(|message| (format!("{:?}", message.role), message.text()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        conversation,
+        [
+            ("User".to_string(), "Start the work".to_string()),
+            (
+                "Assistant".to_string(),
+                "Starting with the parser.".to_string()
+            ),
+            ("User".to_string(), "Use tabs.".to_string()),
+            (
+                "Assistant".to_string(),
+                "Switched the parser to tabs.".to_string()
+            ),
+            ("User".to_string(), "Also add tests.".to_string()),
+            (
+                "Assistant".to_string(),
+                "Added parser tests for tabs.".to_string()
+            ),
+            ("User".to_string(), "Next.".to_string()),
+        ],
+        "earlier replies of the steered turn stay in order, the last only once"
     );
 }

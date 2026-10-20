@@ -49,6 +49,8 @@ type UseConversationComposerArgs = {
     attachments: ComposerAttachment[]
     isUploadBlocking: boolean
     isChatInputDisabled: boolean
+    /** Settings stay fixed while a turn runs; messages are steered into it. */
+    isTurnRunning: boolean
     ensureConversationId: () => string | null
     getCurrentConversationId: (projectPath: string) => string | null
     getCurrentConversationRevision: (conversationId: string) => number
@@ -70,6 +72,7 @@ export function useConversationComposer({
     attachments,
     isUploadBlocking,
     isChatInputDisabled,
+    isTurnRunning,
     ensureConversationId,
     getCurrentConversationId,
     getCurrentConversationRevision,
@@ -101,7 +104,7 @@ export function useConversationComposer({
     }
 
     const onSwitchChatMode = async (chatMode: ConversationChatMode) => {
-        if (!activeProjectPath || isChatInputDisabled) {
+        if (!activeProjectPath || isChatInputDisabled || isTurnRunning) {
             return
         }
         const conversationId = ensureConversationId()
@@ -127,6 +130,10 @@ export function useConversationComposer({
 
         setPanelError(null)
         if (parsedCommand?.kind === 'switch_mode' && sending.length === 0) {
+            if (isTurnRunning) {
+                setPanelError('Switch modes after the running turn finishes.')
+                return
+            }
             setChatDraft('')
             await switchChatMode(conversationId, parsedCommand.chatMode)
             return

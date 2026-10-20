@@ -13,7 +13,7 @@ use spark_storage::{ConversationRepository, StorageError};
 use tower::ServiceExt;
 
 use super::workspace_conversation_turn_route_contracts::{
-    request_json, settings, wait_for_conversation_snapshot, ScriptedAgentTurnBackend,
+    request_json, settings, steering_app, wait_for_conversation_snapshot, ScriptedAgentTurnBackend,
 };
 
 const PROJECT: &str = "/projects/attachments";
@@ -755,4 +755,166 @@ async fn referenced_uploads_survive_deletion_and_cleanup_racing_a_send() {
     let (pruned_ids, deleted_draft) = blocked.join().expect("thread");
     assert_eq!(pruned_ids, vec![draft["id"].as_str().unwrap().to_string()]);
     assert!(!deleted_draft);
+}
+
+#[tokio::test]
+async fn steered_message_and_its_attachment_are_history_for_a_fresh_session_after_reload() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let (app, _, _) = steering_app(&settings, true);
+    let (_, image) = upload(&app, "chat-steer", "shot.png", PNG.to_vec()).await;
+    let (status, _) = send(
+        &app,
+        "chat-steer",
+        json!({"project_path": PROJECT, "message": "Start", "provider": "codex"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = send(
+        &app,
+        "chat-steer",
+        json!({"project_path": PROJECT, "message": "See this.", "provider": "codex",
+            "attachment_ids": [image["id"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_for_answers(&settings, "chat-steer", 1).await;
+
+    // A new service reads the transcript from disk and sends the full history,
+    // as for a fresh provider session.
+    let backend = answers(1);
+    let requests = backend.requests();
+    let app = build_app_with_agent_turn_backend(settings.clone(), Arc::new(backend));
+    let (status, _) = send(
+        &app,
+        "chat-steer",
+        json!({"project_path": PROJECT, "message": "Next.", "provider": "codex"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    wait_for_answers(&settings, "chat-steer", 2).await;
+
+    let history = requests.lock().expect("requests")[0].history.clone();
+    let summary = history
+        .iter()
+        .map(|turn| match turn {
+            HistoryTurn::User(user) => (
+                "user",
+                user.text(),
+                user.attachments
+                    .iter()
+                    .map(|attachment| attachment.id.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            HistoryTurn::Assistant(assistant) => ("assistant", assistant.text(), vec![]),
+            _ => ("other", String::new(), vec![]),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            ("user", "Start".to_string(), vec![]),
+            (
+                "user",
+                "See this.".to_string(),
+                vec![image["id"].as_str().unwrap().to_string()]
+            ),
+            ("assistant", "Answer 1.".to_string(), vec![]),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn attachment_of_a_queued_steered_message_cannot_be_deleted() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let (app, requests, release) = steering_app(&settings, false);
+    let (_, image) = upload(&app, "chat-queued", "shot.png", PNG.to_vec()).await;
+    let start = json!({"project_path": PROJECT, "message": "Start", "provider": "codex"});
+    assert_eq!(send(&app, "chat-queued", start).await.0, StatusCode::OK);
+    let (status, body) = send(
+        &app,
+        "chat-queued",
+        json!({"project_path": PROJECT, "message": "See this.", "provider": "codex",
+            "attachment_ids": [image["id"]]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let url = attachment_url("chat-queued", image["id"].as_str().unwrap());
+    let (status, _, _) = request_raw(app.clone(), "DELETE", &url, Vec::new()).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+    wait_for_answers(&settings, "chat-queued", 2).await;
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests[1].prompt, "See this.");
+    assert_eq!(
+        requests[1].metadata[AGENT_ATTACHMENTS_METADATA_KEY][0]["id"],
+        image["id"]
+    );
+}
+
+#[tokio::test]
+async fn steered_message_that_cannot_start_fails_visibly_and_later_ones_still_run() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let (app, requests, release) = steering_app(&settings, false);
+    let (_, image) = upload(&app, "chat-left", "shot.png", PNG.to_vec()).await;
+    for body in [
+        json!({"project_path": PROJECT, "message": "Start", "provider": "codex"}),
+        json!({"project_path": PROJECT, "message": "See this.", "provider": "codex",
+            "attachment_ids": [image["id"]]}),
+        json!({"project_path": PROJECT, "message": "Then add tests.", "provider": "codex"}),
+    ] {
+        let (status, body) = send(&app, "chat-left", body).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    // The upload's bytes go missing while the message waits.
+    std::fs::remove_file(content_path(&settings, "chat-left", &image)).expect("remove bytes");
+    release.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let snapshot = wait_for_conversation_snapshot(&settings, "chat-left", PROJECT, |snapshot| {
+        let turns = snapshot["turns"].as_array().expect("turns");
+        turns.len() == 6
+            && turns
+                .iter()
+                .all(|turn| turn["status"] == "complete" || turn["status"] == "failed")
+    })
+    .await;
+    let turns = snapshot["turns"].as_array().unwrap();
+    let summary = turns
+        .iter()
+        .map(|turn| {
+            (
+                turn["role"].as_str().unwrap(),
+                turn["content"].as_str().unwrap(),
+                turn["status"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            ("user", "Start", "complete"),
+            ("assistant", "Answer 1.", "complete"),
+            ("user", "See this.", "failed"),
+            ("assistant", "", "failed"),
+            ("user", "Then add tests.", "complete"),
+            ("assistant", "Answer 2.", "complete"),
+        ]
+    );
+    let error = turns[3]["error"].as_str().unwrap();
+    assert!(error.contains(image["id"].as_str().unwrap()), "{error}");
+    assert!(
+        error.contains("is not available in this conversation"),
+        "{error}"
+    );
+    let prompts = requests
+        .lock()
+        .expect("requests")
+        .iter()
+        .map(|request| request.prompt.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(prompts, ["Start", "Then add tests."]);
 }

@@ -9,8 +9,11 @@ fn main() {
     let mode =
         env::var("SPARK_FAKE_CODEX_APP_SERVER_MODE").unwrap_or_else(|_| "default".to_string());
     let log_path = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_LOG").map(PathBuf::from);
-    if mode == "steerable" {
-        run_steerable(log_path);
+    if matches!(
+        mode.as_str(),
+        "steerable" | "steer-race" | "steer-early-output" | "steer-partial" | "steer-exit"
+    ) {
+        run_steerable(log_path, &mode);
     } else {
         run_default(
             log_path,
@@ -256,7 +259,15 @@ fn emit_gated_turn(stdout: &mut impl Write) {
     );
 }
 
-fn run_steerable(log_path: Option<PathBuf>) {
+/// `steer-race`: the turn completes before the first turn/steer, which is
+/// rejected. `steer-early-output`: output arrives before the turn/steer
+/// response. `steer-partial`: the turn streams half an answer, then waits.
+/// `steer-exit`: accepts the first turn/steer, then exits on the next; with
+/// SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR set, turn/start answers only once its
+/// `start` file exists.
+fn run_steerable(log_path: Option<PathBuf>, mode: &str) {
+    let race = mode == "steer-race";
+    let mut steers = 0;
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
 
@@ -275,11 +286,60 @@ fn run_steerable(log_path: Option<PathBuf>) {
                 &mut stdout,
                 json!({"id": request_id, "result": {"thread": {"id": "thread-steer"}}}),
             ),
-            "turn/start" => write_json(
-                &mut stdout,
-                json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),
-            ),
+            "turn/start" => {
+                if let Some(gate_dir) = env::var_os("SPARK_FAKE_CODEX_APP_SERVER_GATE_DIR")
+                    .filter(|_| mode == "steer-exit")
+                {
+                    while !PathBuf::from(&gate_dir).join("start").exists() {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+                write_json(
+                    &mut stdout,
+                    json!({"id": request_id, "result": {"turn": {"id": "turn-steer", "status": "inProgress", "items": []}}}),
+                );
+                if mode == "steer-partial" {
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/agentMessage/delta", "params": {"threadId": "thread-steer", "turnId": "turn-steer", "itemId": "msg-half", "delta": "Half an answer."}}),
+                    );
+                }
+            }
+            "turn/interrupt" => {
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+                write_json(
+                    &mut stdout,
+                    json!({"method": "turn/completed", "params": {"threadId": "thread-steer", "turn": {"id": "turn-steer", "status": "interrupted"}}}),
+                );
+            }
+            "turn/steer" if mode == "steer-exit" => {
+                steers += 1;
+                if steers > 1 {
+                    std::process::exit(1);
+                }
+                write_json(&mut stdout, json!({"id": request_id, "result": {}}));
+            }
+            "turn/steer" if race => {
+                emit_turn_completion(
+                    &mut stdout,
+                    "thread-steer",
+                    "turn-steer",
+                    "msg-done",
+                    "Done",
+                    false,
+                );
+                write_json(
+                    &mut stdout,
+                    json!({"id": request_id, "error": {"code": -32600, "message": "no active turn to steer"}}),
+                );
+            }
             "turn/steer" => {
+                if mode == "steer-early-output" {
+                    write_json(
+                        &mut stdout,
+                        json!({"method": "item/completed", "params": {"threadId": "thread-steer", "turnId": "turn-steer", "item": {"type": "AgentMessage", "id": "msg-early", "content": [{"type": "Text", "text": "Reading the file."}], "phase": "commentary"}}}),
+                    );
+                }
                 write_json(&mut stdout, json!({"id": request_id, "result": {}}));
                 emit_turn_completion(
                     &mut stdout,

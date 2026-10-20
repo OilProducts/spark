@@ -12,6 +12,37 @@ use time::OffsetDateTime;
 use unified_llm_adapter::{StreamEvent, StreamEventType, Usage};
 use uuid::Uuid;
 
+/// The latest visible assistant text in `events` and its block's source,
+/// including a block cut off mid-delta. A turn the user stopped settles with it.
+pub fn latest_assistant_text(events: &[TurnStreamEvent]) -> Option<(TurnStreamSource, String)> {
+    let latest = events.iter().rev().find(|event| {
+        event.channel == Some(TurnStreamChannel::Assistant)
+            && matches!(
+                event.kind,
+                TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted
+            )
+    })?;
+    let text = if latest.kind == TurnStreamEventKind::ContentCompleted {
+        latest.content_delta.clone().unwrap_or_default()
+    } else {
+        // Without item ids, the block starts after the previous completed reply.
+        let mut deltas = events
+            .iter()
+            .rev()
+            .filter(|event| {
+                event.channel == Some(TurnStreamChannel::Assistant)
+                    && event.source.item_id == latest.source.item_id
+            })
+            .take_while(|event| event.kind != TurnStreamEventKind::ContentCompleted)
+            .filter(|event| event.kind == TurnStreamEventKind::ContentDelta)
+            .filter_map(|event| event.content_delta.as_deref())
+            .collect::<Vec<_>>();
+        deltas.reverse();
+        deltas.concat()
+    };
+    Some((latest.source.clone(), text))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventKind {
     SessionStart,
@@ -94,7 +125,7 @@ impl EventKind {
             Self::Other(value) if value == "request_user_input_requested" => {
                 TurnStreamEventKind::RequestUserInputRequested
             }
-            Self::SessionStart | Self::SessionEnd | Self::Warning => {
+            Self::SessionStart | Self::SessionEnd | Self::Warning | Self::SteeringInjected => {
                 TurnStreamEventKind::Other(self.as_str().to_string())
             }
             Self::ProcessingEnd => TurnStreamEventKind::TurnCompleted,
@@ -252,6 +283,7 @@ impl SessionEvent {
         };
         let message = content_delta.clone().or_else(|| match self.kind {
             EventKind::Error | EventKind::Warning => session_error_message(&self.data),
+            EventKind::SteeringInjected => data_string(&self.data, &["content"]),
             _ => data_string(&self.data, &["message"]),
         });
 
@@ -279,7 +311,8 @@ impl SessionEvent {
                 EventKind::SessionStart
                 | EventKind::SessionEnd
                 | EventKind::ProcessingEnd
-                | EventKind::Warning => Some(Value::Object(
+                | EventKind::Warning
+                | EventKind::SteeringInjected => Some(Value::Object(
                     self.data.clone().into_iter().collect::<Map<_, _>>(),
                 )),
                 _ => None,

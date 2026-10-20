@@ -55,6 +55,7 @@ fn main() {
         }
     }
 
+    let mut prompt = Value::Null;
     // Control-protocol mode: with stream-json input the caller drives via
     // control requests (model discovery) instead of a prompt turn, and keeps
     // stdin open, so answer line by line instead of reading to EOF.
@@ -74,6 +75,7 @@ fn main() {
                     assert_eq!(message["message"]["role"], "user");
                     assert_user_content(&message["message"]["content"]);
                     append_log(&format!("USER_CONTENT={}", message["message"]["content"]));
+                    prompt = message["message"]["content"].clone();
                     break;
                 }
                 if message["type"] == "control_request"
@@ -131,6 +133,12 @@ fn main() {
         out.flush().unwrap();
     };
 
+    // Holds system/init back until the gate file exists.
+    if let Ok(gate) = env::var("SPARK_FAKE_CLAUDE_CODE_GATE") {
+        while !std::path::Path::new(&gate).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     emit(
         &mut out,
         serde_json::json!({
@@ -250,6 +258,111 @@ fn main() {
             );
             std::process::exit(1);
         }
+    }
+
+    // steer: a message written mid-turn is taken in before the final reply.
+    // steer-late: it arrives during the final reply, so it runs as a
+    // follow-up turn after the first result, as the installed CLI does.
+    if mode == "steer" || mode == "steer-late" {
+        assert!(args.iter().any(|arg| arg == "--replay-user-messages"));
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+        );
+        let steer = read_control();
+        assert_eq!(steer["type"], "user");
+        assert_user_content(&steer["message"]["content"]);
+        append_log(&format!("STEER_CONTENT={}", steer["message"]["content"]));
+        let echo = json!({"type": "user", "session_id": session_id, "uuid": steer["uuid"], "isReplay": true, "message": steer["message"]});
+        if mode == "steer-late" {
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "success", "is_error": false, "result": "First reply.", "session_id": session_id, "terminal_reason": "completed"}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "system", "subtype": "init", "session_id": session_id, "model": model, "capabilities": ["interrupt_receipt_v1"]}),
+            );
+        }
+        emit(&mut out, echo);
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "Steered reply.", "session_id": session_id, "terminal_reason": "completed"}),
+        );
+        let mut remaining = String::new();
+        std::io::stdin().read_to_string(&mut remaining).unwrap();
+        assert!(remaining.is_empty(), "stdin closes after the last result");
+        return;
+    }
+
+    // interrupt-queued: Stop lands while steering is still queued, as the
+    // installed CLI does: the receipt lists it, the interrupted turn ends,
+    // the CLI replays it as a follow-up turn, and a second Stop ends that.
+    if mode == "interrupt-queued" {
+        emit(
+            &mut out,
+            json!({"type": "stream_event", "session_id": session_id,
+            "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Working."}}}),
+        );
+        let steer = read_control();
+        assert_eq!(steer["type"], "user");
+        append_log(&format!("STEER_CONTENT={}", steer["message"]["content"]));
+        for (index, reply) in ["Working.", "Following up."].into_iter().enumerate() {
+            if index == 1 {
+                emit(
+                    &mut out,
+                    json!({"type": "system", "subtype": "init", "session_id": session_id, "model": model, "capabilities": ["interrupt_receipt_v1"]}),
+                );
+                emit(
+                    &mut out,
+                    json!({"type": "user", "session_id": session_id, "uuid": steer["uuid"], "isReplay": true, "message": steer["message"]}),
+                );
+                emit(
+                    &mut out,
+                    json!({"type": "stream_event", "session_id": session_id, "event": {"type": "message_start"}}),
+                );
+                emit(
+                    &mut out,
+                    json!({"type": "stream_event", "session_id": session_id,
+                    "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": reply}}}),
+                );
+                append_log("FOLLOW_UP_RUNNING");
+            }
+            let interrupt = read_control();
+            assert_eq!(interrupt["request"], json!({"subtype": "interrupt"}));
+            let queued = if index == 0 {
+                vec![steer["uuid"].clone()]
+            } else {
+                vec![]
+            };
+            emit(
+                &mut out,
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": interrupt["request_id"], "response": {"still_queued": queued}}}),
+            );
+            emit(
+                &mut out,
+                json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                "terminal_reason": "aborted_tools", "session_id": session_id,
+                "errors": ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"]}),
+            );
+        }
+        std::process::exit(1);
+    }
+
+    // steer-exit: the first turn exits after its result without echoing the
+    // message written mid-turn; later turns answer as usual.
+    if mode == "steer-exit" && prompt.to_string().contains("Start the work") {
+        emit(
+            &mut out,
+            json!({"type": "assistant", "session_id": session_id, "message": {"role": "assistant", "content": [{"type": "text", "text": "Working."}]}}),
+        );
+        let steer = read_control();
+        assert_eq!(steer["type"], "user");
+        emit(
+            &mut out,
+            json!({"type": "result", "subtype": "success", "is_error": false, "result": "First reply.", "session_id": session_id, "terminal_reason": "completed"}),
+        );
+        std::process::exit(0);
     }
 
     if mode == "interrupt-aborted" || mode == "interrupt-error" {

@@ -115,10 +115,11 @@ export function buildProjectsHomeViewModel({
         activeProjectGitMetadata: activeProjectPath
             ? projectGitMetadata[activeProjectPath] || EMPTY_PROJECT_GIT_METADATA
             : EMPTY_PROJECT_GIT_METADATA,
-        chatSendButtonLabel: isConversationTurnStarting ? 'Sending...' : hasActiveAssistantTurn ? 'Thinking...' : 'Send',
+        chatSendButtonLabel: isConversationTurnStarting ? 'Sending...' : 'Send',
         hasActiveAssistantTurn,
         hasRenderableConversationHistory,
-        isChatInputDisabled: isConversationTurnStarting || hasActiveAssistantTurn,
+        // A message sent while a turn runs is steered into it.
+        isChatInputDisabled: isConversationTurnStarting,
         latestFlowLaunchId: getLatestArtifactId(activeFlowLaunches),
         latestFlowRunRequestId: getLatestArtifactId(activeFlowRunRequests),
     }

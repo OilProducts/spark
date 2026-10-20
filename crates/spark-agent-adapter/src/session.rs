@@ -91,6 +91,12 @@ impl LlmClientHandle {
 struct SessionSteeringState {
     queue: VecDeque<SteeringTurn>,
     accepting: bool,
+    /// Interrupt aborts it: the attached session's request abort signal, so
+    /// a model request in flight stops too.
+    abort: AbortSignal,
+    /// The attached session's abort handle, which also kills the commands its
+    /// tools are running.
+    session: Option<SessionAbortHandle>,
 }
 
 impl Default for SessionSteeringState {
@@ -98,6 +104,8 @@ impl Default for SessionSteeringState {
         Self {
             queue: VecDeque::new(),
             accepting: true,
+            abort: AbortSignal::new(),
+            session: None,
         }
     }
 }
@@ -159,6 +167,15 @@ impl SessionSteeringHandle {
             .collect()
     }
 
+    /// Puts back, ahead of anything queued since, messages a drain took but
+    /// could not deliver.
+    pub(crate) fn requeue_front(&self, turns: impl IntoIterator<Item = SteeringTurn>) {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        let newer = std::mem::take(&mut state.queue);
+        state.queue.extend(turns);
+        state.queue.extend(newer);
+    }
+
     fn drain_and_close_if_empty(&self) -> Vec<SteeringTurn> {
         let mut state = self.state.lock().expect("session steering queue lock");
         if state.queue.is_empty() {
@@ -173,6 +190,33 @@ impl SessionSteeringHandle {
             .lock()
             .expect("session steering queue lock")
             .accepting = false;
+    }
+
+    /// Stops accepting steering and returns what was queued but never
+    /// delivered, so the caller can carry it into the next turn.
+    pub fn close_and_drain(&self) -> Vec<SteeringTurn> {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        state.accepting = false;
+        state.queue.drain(..).collect()
+    }
+
+    /// Asks the running turn to stop. Returns whether a turn was still
+    /// accepting input to stop.
+    pub fn interrupt(&self) -> bool {
+        let state = self.state.lock().expect("session steering queue lock");
+        state.abort.abort("Stopped.");
+        if let Some(session) = state.session.as_ref() {
+            session.abort_with_reason("Stopped.");
+        }
+        state.accepting
+    }
+
+    pub fn interrupt_requested(&self) -> bool {
+        self.state
+            .lock()
+            .expect("session steering queue lock")
+            .abort
+            .aborted()
     }
 }
 
@@ -623,6 +667,14 @@ impl Session {
     }
 
     pub fn attach_steering_handle(&mut self, handle: SessionSteeringHandle) {
+        {
+            let mut state = handle.state.lock().expect("session steering queue lock");
+            if state.abort.aborted() {
+                self.abort_controller.abort("Stopped.");
+            }
+            state.abort = self.abort_signal();
+            state.session = Some(self.abort_handle());
+        }
         self.external_steering = Some(handle);
     }
 
@@ -1193,6 +1245,7 @@ impl Session {
                     && !has_subagent_calls,
                 host_controls: ToolHostControls::new(Some(steering_hook), Some(follow_up_hook)),
                 subagent_runtime: Some(subagent_runtime.clone()),
+                abort_signal: Some(self.abort_signal()),
                 event_hook: Some(Arc::new(move |event| {
                     captured_events
                         .lock()

@@ -5,6 +5,7 @@ use std::process::{Child, ChildStdin};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::agent::AgentRequestUserInputAnswerRequest;
+use crate::history::SteeringTurn;
 
 type Key = (String, String);
 type Registry = Mutex<BTreeMap<Key, Weak<Mutex<Control>>>>;
@@ -22,6 +23,9 @@ pub(super) struct Control {
     seen: BTreeSet<String>,
     interrupt: Option<String>,
     interrupted: bool,
+    /// Steering written to stdin and not yet echoed back, in send order,
+    /// with its message uuid.
+    steering: Vec<(String, SteeringTurn)>,
     pub logs: Vec<AgentRawLogLine>,
 }
 
@@ -40,6 +44,7 @@ impl Control {
             seen: BTreeSet::new(),
             interrupt: None,
             interrupted: false,
+            steering: Vec::new(),
             logs: Vec::new(),
         }));
         let mut entries = registry().lock().unwrap();
@@ -61,6 +66,49 @@ impl Control {
                 message["terminal_reason"].as_str(),
                 Some("aborted_streaming" | "aborted_tools")
             )
+    }
+
+    pub fn accepts_input(&mut self) -> bool {
+        self.enabled && self.stdin.is_some() && matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Writes one steering message as a stream-json user message; on failure
+    /// hands it back undelivered.
+    pub fn steer(&mut self, turn: SteeringTurn) -> Result<(), SteeringTurn> {
+        let attachments = crate::attachments::request_attachments(&turn.metadata);
+        let Ok((_, content)) = user_message_content(&turn.text(), &attachments, &[]) else {
+            return Err(turn);
+        };
+        let id = Uuid::new_v4().to_string();
+        if !self.send(
+            json!({"type": "user", "uuid": id, "message": {"role": "user", "content": content}}),
+        ) {
+            return Err(turn);
+        }
+        self.steering.push((id, turn));
+        Ok(())
+    }
+
+    /// Steering written but never echoed back, in send order. The CLI did
+    /// not take it in, so the caller carries it into the next turn.
+    pub fn take_unacknowledged(&mut self) -> Vec<SteeringTurn> {
+        self.steering.drain(..).map(|(_, turn)| turn).collect()
+    }
+
+    /// Sends one interrupt request; true when one is sent or already stands.
+    /// False until `system/init` enables control.
+    pub fn interrupt(&mut self) -> bool {
+        if !self.enabled || !matches!(self.child.try_wait(), Ok(None)) {
+            return false;
+        }
+        if self.interrupt.is_some() || self.interrupted {
+            return true;
+        }
+        let id = Uuid::new_v4().to_string();
+        self.interrupt = Some(id.clone());
+        self.send(
+            json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
+        )
     }
 
     pub fn close(&mut self) {
@@ -103,6 +151,23 @@ impl Control {
     }
 
     pub fn ingest(&mut self, message: &Value) -> Option<TurnStreamEvent> {
+        if message["type"] == "user" && message["isReplay"] == true {
+            let uuid = message["uuid"].as_str()?;
+            let index = self.steering.iter().position(|(id, _)| id == uuid)?;
+            let (_, turn) = self.steering.remove(index);
+            let text = turn.text();
+            return Some(stream_event(
+                TurnStreamEventKind::Other("steering_injected".into()),
+                message["session_id"].as_str(),
+                "user_replay",
+                |event| {
+                    event.message = Some(text);
+                    event.details = (!turn.metadata.is_empty()).then(|| json!(turn.metadata));
+                    event.phase = Some("intervention".into());
+                    event.status = Some("delivered".into());
+                },
+            ));
+        }
         if message["type"] == "system" && message["subtype"] == "init" {
             if self.initialized {
                 self.degrade("duplicate system/init");
@@ -121,7 +186,13 @@ impl Control {
             return None;
         }
         if message["type"] == "result" {
-            self.close();
+            if self.steering.is_empty() {
+                self.close();
+            } else {
+                // The CLI runs the written steering as a follow-up turn.
+                self.initialized = false;
+                self.interrupted = false;
+            }
             return None;
         }
         let kind = message["type"].as_str().unwrap_or_default();
@@ -211,12 +282,20 @@ impl Control {
             }
             "control_response" => {
                 let response = &message["response"];
+                // still_queued lists steering the CLI holds for the follow-up
+                // turn it runs after the interrupted one; each must be ours.
                 if self.interrupt.as_deref() != response["request_id"].as_str()
                     || self.interrupt.is_none()
                     || response["subtype"] != "success"
                     || !response["response"]["still_queued"]
                         .as_array()
-                        .is_some_and(|ids| ids.is_empty())
+                        .is_some_and(|ids| {
+                            ids.iter().all(|id| {
+                                self.steering
+                                    .iter()
+                                    .any(|(uuid, _)| id.as_str() == Some(uuid))
+                            })
+                        })
                 {
                     self.degrade("unexpected or malformed interrupt receipt");
                 } else {
@@ -253,21 +332,7 @@ fn find(project_path: &str, conversation_id: &str) -> Option<Arc<Mutex<Control>>
 }
 
 pub(super) fn interrupt(project_path: &str, conversation_id: &str) -> bool {
-    let Some(control) = find(project_path, conversation_id) else {
-        return false;
-    };
-    let mut control = control.lock().unwrap();
-    if !control.enabled || !matches!(control.child.try_wait(), Ok(None)) {
-        return false;
-    }
-    if control.interrupt.is_some() {
-        return true;
-    }
-    let id = Uuid::new_v4().to_string();
-    control.interrupt = Some(id.clone());
-    control.send(
-        json!({"type": "control_request", "request_id": id, "request": {"subtype": "interrupt"}}),
-    )
+    find(project_path, conversation_id).is_some_and(|control| control.lock().unwrap().interrupt())
 }
 
 pub(super) fn answer(request: AgentRequestUserInputAnswerRequest) -> AgentTurnOutput {

@@ -34,6 +34,9 @@ pub const CODEX_APP_SERVER_BACKEND: &str = "codex_app_server";
 /// server launch or an OAuth token refresh sits in front of the first reply.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const TURN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Queued behind the notifications that arrived before a `turn/steer`
+/// response, so the delivery lands in the order the app-server produced it.
+const STEERING_INJECTED_METHOD: &str = "spark/steeringInjected";
 const CODEX_RUNTIME_ROOT_ENV: &str = "ATTRACTOR_CODEX_RUNTIME_ROOT";
 const CODEX_SEED_DIR_ENV: &str = "ATTRACTOR_CODEX_SEED_DIR";
 static CODEX_SPARK_HOME: OnceLock<PathBuf> = OnceLock::new();
@@ -824,68 +827,113 @@ impl CodexAppServerClient {
         let mut state = CodexAppServerTurnState::default();
         let mut events = Vec::new();
         let mut last_activity = Instant::now();
-        loop {
-            if let Some(handle) = steering.as_ref() {
-                self.drain_steering(handle, thread_id, expected_turn_id, &mut events)?;
-            }
-            if !self.workflow_questions.is_empty() {
-                last_activity = Instant::now();
-                let mut index = 0;
-                while index < self.workflow_questions.len() {
-                    let answers = (self.workflow_questions[index].1)()
-                        .map_err(CodexAppServerError::runtime)?;
-                    if let Some(answers) = answers {
-                        let (id, _poll) = self.workflow_questions.remove(index);
-                        self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
-                    } else {
-                        index += 1;
+        let mut interrupt_sent = false;
+        let mut steering_rejected = false;
+        // A later failure must not drop steering the turn already accepted.
+        let streamed = (|| -> Result<(), CodexAppServerError> {
+            loop {
+                if let Some(handle) = steering.as_ref() {
+                    if !steering_rejected {
+                        steering_rejected =
+                            self.drain_steering(handle, thread_id, expected_turn_id)?;
+                    }
+                    if !interrupt_sent && handle.interrupt_requested() {
+                        interrupt_sent = true;
+                        let response = self.send_request(
+                            "turn/interrupt",
+                            Some(json!({"threadId": thread_id, "turnId": expected_turn_id})),
+                        )?;
+                        if response.get("error").is_some() {
+                            return Err(rpc_error(
+                                "codex app-server turn/interrupt failed",
+                                &response,
+                            ));
+                        }
                     }
                 }
-            }
-            if last_activity.elapsed() >= TURN_IDLE_TIMEOUT {
-                return Err(CodexAppServerError::runtime(
-                    "codex app-server turn timed out waiting for activity",
-                ));
-            }
-            let Some(message) = self.next_message(Duration::from_millis(100))? else {
-                if self.child.try_wait().ok().flatten().is_some() {
+                if !self.workflow_questions.is_empty() {
+                    last_activity = Instant::now();
+                    let mut index = 0;
+                    while index < self.workflow_questions.len() {
+                        let answers = (self.workflow_questions[index].1)()
+                            .map_err(CodexAppServerError::runtime)?;
+                        if let Some(answers) = answers {
+                            let (id, _poll) = self.workflow_questions.remove(index);
+                            self.send_json(&json!({"jsonrpc": "2.0", "id": id, "result": request_user_input_response_payload(&answers)}))?;
+                        } else {
+                            index += 1;
+                        }
+                    }
+                }
+                if last_activity.elapsed() >= TURN_IDLE_TIMEOUT {
                     return Err(CodexAppServerError::runtime(
-                        "codex app-server exited before turn completion",
+                        "codex app-server turn timed out waiting for activity",
                     ));
                 }
-                continue;
-            };
-            last_activity = Instant::now();
-            let extracted_turn_id = extract_turn_id(&message);
-            if extracted_turn_id
-                .as_deref()
-                .is_some_and(|turn_id| turn_id != expected_turn_id)
-            {
-                continue;
-            }
-            let mut normalized = process_codex_app_server_message(&message, &mut state);
-            for event in &mut normalized {
-                if event.source.app_thread_id.is_none() {
-                    event.source.app_thread_id = Some(thread_id.to_string());
+                let Some(message) = self.next_message(Duration::from_millis(100))? else {
+                    if self.child.try_wait().ok().flatten().is_some() {
+                        return Err(CodexAppServerError::runtime(
+                            "codex app-server exited before turn completion",
+                        ));
+                    }
+                    continue;
+                };
+                last_activity = Instant::now();
+                if let Some(event) = steering_injected_event(&message, thread_id, expected_turn_id)
+                {
+                    if let Some(sink) = event_sink.as_ref() {
+                        sink(event.clone());
+                    }
+                    events.push(event);
+                    continue;
                 }
-                if event.source.app_turn_id.is_none() {
-                    event.source.app_turn_id = Some(expected_turn_id.to_string());
+                let extracted_turn_id = extract_turn_id(&message);
+                if extracted_turn_id
+                    .as_deref()
+                    .is_some_and(|turn_id| turn_id != expected_turn_id)
+                {
+                    continue;
+                }
+                let mut normalized = process_codex_app_server_message(&message, &mut state);
+                for event in &mut normalized {
+                    if event.source.app_thread_id.is_none() {
+                        event.source.app_thread_id = Some(thread_id.to_string());
+                    }
+                    if event.source.app_turn_id.is_none() {
+                        event.source.app_turn_id = Some(expected_turn_id.to_string());
+                    }
+                }
+                let completed = normalized
+                    .iter()
+                    .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
+                    && extracted_turn_id.as_deref() == Some(expected_turn_id);
+                if let Some(sink) = event_sink.as_ref() {
+                    for event in &normalized {
+                        sink(event.clone());
+                    }
+                }
+                events.extend(normalized);
+                self.answer_pending_request_user_input()?;
+                if completed {
+                    return Ok(());
                 }
             }
-            let completed = normalized
-                .iter()
-                .any(|event| event.kind == TurnStreamEventKind::TurnCompleted)
-                && extracted_turn_id.as_deref() == Some(expected_turn_id);
-            if let Some(sink) = event_sink.as_ref() {
-                for event in &normalized {
-                    sink(event.clone());
+        })();
+        // Deliveries the turn accepted just before it completed or failed.
+        for message in std::mem::take(&mut self.pending_messages) {
+            match steering_injected_event(&message, thread_id, expected_turn_id) {
+                Some(event) => {
+                    if let Some(sink) = event_sink.as_ref() {
+                        sink(event.clone());
+                    }
+                    events.push(event);
                 }
+                None => self.pending_messages.push_back(message),
             }
-            events.extend(normalized);
-            self.answer_pending_request_user_input()?;
-            if completed {
-                break;
-            }
+        }
+        streamed?;
+        if interrupt_sent && state.turn_status.as_deref() == Some("interrupted") {
+            return Err(CodexAppServerError::runtime("Stopped."));
         }
         if state
             .turn_status
@@ -916,38 +964,47 @@ impl CodexAppServerClient {
         handle: &SessionSteeringHandle,
         thread_id: &str,
         turn_id: &str,
-        events: &mut Vec<TurnStreamEvent>,
-    ) -> Result<(), CodexAppServerError> {
-        for steering_turn in handle.drain_queued() {
+    ) -> Result<bool, CodexAppServerError> {
+        let mut queued = handle.drain_queued().into_iter();
+        while let Some(steering_turn) = queued.next() {
             let text = steering_turn.text();
-            if text.trim().is_empty() {
+            let attachments = crate::attachments::request_attachments(&steering_turn.metadata);
+            if text.trim().is_empty() && attachments.is_empty() {
                 continue;
             }
-            self.steer_turn(thread_id, turn_id, &text)?;
-            events.push(TurnStreamEvent {
-                kind: TurnStreamEventKind::Other("steering_injected".to_string()),
-                channel: None,
-                source: TurnStreamSource {
-                    backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
-                    app_thread_id: Some(thread_id.to_string()),
-                    app_turn_id: Some(turn_id.to_string()),
-                    raw_kind: Some("turn_steer".to_string()),
-                    ..TurnStreamSource::default()
-                },
-                content_delta: Some(text.clone()),
-                message: Some(text),
-                tool_call: None,
-                request_user_input: None,
-                token_usage: None,
-                error: None,
-                error_code: None,
-                details: (!steering_turn.metadata.is_empty())
-                    .then(|| json!(steering_turn.metadata)),
-                phase: Some("intervention".to_string()),
-                status: Some("delivered".to_string()),
-            });
+            // Same input shape as turn/start: file references in the text,
+            // native images as localImage items.
+            let prompt =
+                crate::attachments::prompt_with_attachment_references(&text, &attachments, &[]);
+            let mut input = Vec::new();
+            if !prompt.is_empty() {
+                input.push(json!({"type": "text", "text": prompt}));
+            }
+            input.extend(
+                attachments
+                    .iter()
+                    .filter(|attachment| attachment.is_native_image())
+                    .map(|attachment| json!({"type": "localImage", "path": attachment.path})),
+            );
+            // The turn can end before it takes the message: put it and the
+            // rest back, in order, for the caller's next turn.
+            let response = self.send_request(
+                "turn/steer",
+                Some(json!({"threadId": thread_id, "expectedTurnId": turn_id, "input": input})),
+            );
+            if !response
+                .as_ref()
+                .is_ok_and(|response| response.get("error").is_none())
+            {
+                handle.requeue_front(std::iter::once(steering_turn).chain(queued));
+                return response.map(|_| true);
+            }
+            self.pending_messages.push_back(json!({
+                "method": STEERING_INJECTED_METHOD,
+                "params": {"text": text, "metadata": steering_turn.metadata},
+            }));
         }
-        Ok(())
+        Ok(false)
     }
 
     fn wait_for_response(
@@ -1514,6 +1571,43 @@ pub fn parse_jsonrpc_line(line: &str) -> Option<Value> {
     serde_json::from_str::<Value>(line)
         .ok()
         .filter(Value::is_object)
+}
+
+/// The transcript event for a steering delivery queued by `drain_steering`.
+fn steering_injected_event(
+    message: &Value,
+    thread_id: &str,
+    turn_id: &str,
+) -> Option<TurnStreamEvent> {
+    if message.get("method").and_then(Value::as_str) != Some(STEERING_INJECTED_METHOD) {
+        return None;
+    }
+    let text = message["params"]["text"].as_str().unwrap_or_default();
+    let metadata = &message["params"]["metadata"];
+    Some(TurnStreamEvent {
+        kind: TurnStreamEventKind::Other("steering_injected".to_string()),
+        channel: None,
+        source: TurnStreamSource {
+            backend: Some(CODEX_APP_SERVER_BACKEND.to_string()),
+            app_thread_id: Some(thread_id.to_string()),
+            app_turn_id: Some(turn_id.to_string()),
+            raw_kind: Some("turn_steer".to_string()),
+            ..TurnStreamSource::default()
+        },
+        content_delta: Some(text.to_string()),
+        message: Some(text.to_string()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: metadata
+            .as_object()
+            .is_some_and(|metadata| !metadata.is_empty())
+            .then(|| metadata.clone()),
+        phase: Some("intervention".to_string()),
+        status: Some("delivered".to_string()),
+    })
 }
 
 pub fn process_codex_app_server_message(

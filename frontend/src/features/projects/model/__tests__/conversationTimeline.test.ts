@@ -1,5 +1,6 @@
 import { getConversationTimelineEntries, hydrateConversationRecordFromSnapshot } from '@/features/projects/model/projectsHomeState'
 import type { ConversationSnapshotResponse } from '@/lib/workspaceClient'
+import { parseConversationSnapshotResponse } from '@/lib/api/conversationsApi'
 
 const baseSnapshot: ConversationSnapshotResponse = {
   schema_version: 5,
@@ -92,6 +93,42 @@ describe('conversation timeline normalization', () => {
     expect(timeline[2]).toMatchObject({
       kind: 'final_separator',
       label: 'Worked for 10s',
+    })
+  })
+
+  it('shows a message steered into a running turn as a user message where it was delivered', () => {
+    const [tool, answer] = baseSnapshot.segments
+    const snapshot = parseConversationSnapshotResponse({
+      ...baseSnapshot,
+      segments: [
+        tool,
+        {
+          id: 'segment-user-message-turn-steer',
+          turn_id: 'turn-assistant',
+          order: 2,
+          kind: 'user_message',
+          role: 'user',
+          status: 'complete',
+          timestamp: '2026-03-10T10:00:12Z',
+          updated_at: '2026-03-10T10:00:12Z',
+          content: 'Also cover the edge case.',
+          attachments: [{ id: 'att-1', filename: 'shot.png', media_type: 'image/png', size_bytes: 3 }],
+        },
+        { ...answer, order: 3 },
+      ],
+    })
+    const timeline = buildTimeline(snapshot!)
+
+    expect(timeline.map((entry) => [entry.kind, entry.role])).toEqual([
+      ['message', 'user'],
+      ['tool_call', 'system'],
+      ['message', 'user'],
+      ['final_separator', 'system'],
+      ['message', 'assistant'],
+    ])
+    expect(timeline[2]).toMatchObject({
+      content: 'Also cover the edge case.',
+      attachments: [{ id: 'att-1', filename: 'shot.png' }],
     })
   })
 

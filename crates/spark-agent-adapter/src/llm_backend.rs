@@ -1034,9 +1034,18 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         request: AgentTurnRequest,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
+        self.run_steerable_turn(request, SessionSteeringHandle::new(), event_sink)
+    }
+
+    fn run_steerable_turn(
+        &self,
+        request: AgentTurnRequest,
+        steering: SessionSteeringHandle,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
         if is_codex_request_provider(request.provider.as_deref(), request.llm_profile.as_deref()) {
             return CodexAppServerBackend::new()
-                .run_agent_turn_with_event_sink(request, event_sink)
+                .run_agent_turn_with_steering_and_sink(request, Some(steering), event_sink)
                 .map_err(codex_app_server_agent_error);
         }
         if request
@@ -1045,7 +1054,7 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             .is_some_and(is_claude_code_provider_selector)
         {
             return ClaudeCodeBackend::new()
-                .run_agent_turn_with_event_sink(request, event_sink)
+                .run_steerable_turn(request, Some(steering), event_sink)
                 .map_err(claude_code_agent_error);
         }
         if !crate::attachments::request_attachments(&request.metadata).is_empty() {
@@ -1061,6 +1070,7 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         let prompt = request.prompt.clone();
         let mut session =
             build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        session.attach_steering_handle(steering);
         if let Some(event_sink) = event_sink {
             // Mirror the codex live+batch shape: stream each session event to
             // the sink as it is emitted, while the drained queue still feeds

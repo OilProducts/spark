@@ -54,6 +54,7 @@ interface ProjectConversationSurfaceProps {
     isUploadBlocking?: boolean
     chatSendButtonLabel: string
     isChatInputDisabled: boolean
+    isTurnRunning?: boolean
     isChatSendDisabled: boolean
     panelError: string | null
     conversationBodyRef: RefObject<HTMLDivElement | null>
@@ -104,6 +105,7 @@ export function ProjectConversationSurface({
     isUploadBlocking = false,
     chatSendButtonLabel,
     isChatInputDisabled,
+    isTurnRunning = false,
     isChatSendDisabled,
     panelError,
     conversationBodyRef,
@@ -117,11 +119,12 @@ export function ProjectConversationSurface({
     modelSettingsSource,
     onUseModelDefaults,
 }: ProjectConversationSurfaceProps) {
-    const controlsDisabled = !activeProjectPath || isChatInputDisabled
+    // Model settings are fixed while a turn runs; the composer is not.
+    const controlsDisabled = !activeProjectPath || isChatInputDisabled || isTurnRunning
     const hasProject = Boolean(activeProjectPath && activeProjectLabel)
     const fileInputRef = useRef<HTMLInputElement>(null)
     const [isDraggingFiles, setIsDraggingFiles] = useState(false)
-    const canAttach = Boolean(onAddAttachments) && !controlsDisabled
+    const canAttach = Boolean(onAddAttachments) && Boolean(activeProjectPath) && !isChatInputDisabled
     const hasMessage = chatDraft.trim().length > 0 || attachments.length > 0
     // Clipboard files are attached; any plain text alongside them still
     // pastes into the message box through the default paste.
@@ -191,7 +194,7 @@ export function ProjectConversationSurface({
                             size="sm"
                             value={activeChatMode}
                             // Same guard as the /plan command: no switching mid-turn or before the model list is ready.
-                            disabled={!activeProjectPath || isChatSendDisabled || !onChatModeChange}
+                            disabled={!activeProjectPath || isChatSendDisabled || isTurnRunning || !onChatModeChange}
                             onChange={(event) => onChatModeChange?.(event.target.value === 'plan' ? 'plan' : 'chat')}
                             className="rounded-lg"
                         >

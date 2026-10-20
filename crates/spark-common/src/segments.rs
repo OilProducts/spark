@@ -146,7 +146,7 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::ContentDelta
             if event.channel == Some(TurnStreamChannel::Assistant) =>
         {
-            let segment_id = assistant_segment_id(assistant_turn_id, event);
+            let segment_id = turn_assistant_segment_id(snapshot, assistant_turn_id, event);
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -203,7 +203,7 @@ pub fn materialize_segment_for_event(
         TurnStreamEventKind::ContentCompleted
             if event.channel == Some(TurnStreamChannel::Assistant) =>
         {
-            let segment_id = assistant_segment_id(assistant_turn_id, event);
+            let segment_id = turn_assistant_segment_id(snapshot, assistant_turn_id, event);
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -469,6 +469,43 @@ pub fn materialize_segment_for_event(
             upsert_segment(snapshot, segment.clone());
             Some(segment)
         }
+        // A user message delivered into the running turn, placed where the
+        // provider took it in.
+        TurnStreamEventKind::Other(kind) if kind == "steering_injected" => {
+            let details = event.details.as_ref();
+            let key = details
+                .and_then(|details| details.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    provider_sequence.map(|sequence| format!("{assistant_turn_id}-seq{sequence}"))
+                })?;
+            let segment_id = format!("segment-user-message-{key}");
+            if let Some(existing) = find_segment(snapshot, &segment_id) {
+                return Some(existing.clone());
+            }
+            let mut segment = segment_shell(
+                &segment_id,
+                assistant_turn_id,
+                next_turn_segment_order(snapshot, assistant_turn_id),
+                "user_message",
+                "user",
+                "complete",
+                now,
+                build_segment_source(event, None),
+            );
+            set_string_value(
+                &mut segment,
+                "content",
+                event.message.as_deref().unwrap_or(""),
+            );
+            set_string_value(&mut segment, "completed_at", now);
+            if let Some(attachments) = details.and_then(|details| details.get("attachments")) {
+                set_value(&mut segment, "attachments", attachments.clone());
+            }
+            upsert_segment(snapshot, segment.clone());
+            Some(segment)
+        }
         TurnStreamEventKind::Other(kind) if is_agent_event_kind(kind) => {
             let segment_id = agent_event_segment_id(assistant_turn_id, event, provider_sequence);
             let (category, status) = match kind.as_str() {
@@ -497,7 +534,7 @@ pub fn materialize_segment_for_event(
             Some(segment)
         }
         TurnStreamEventKind::Error => {
-            let segment_id = assistant_segment_id(assistant_turn_id, event);
+            let segment_id = turn_assistant_segment_id(snapshot, assistant_turn_id, event);
             let mut segment = find_segment(snapshot, &segment_id)
                 .cloned()
                 .unwrap_or_else(|| {
@@ -781,6 +818,23 @@ pub fn reasoning_segment_id(turn_id: &str, event: &TurnStreamEvent) -> String {
         .unwrap_or_else(|| "reasoning".to_string());
     let summary_index = event.source.summary_index.unwrap_or(0);
     format!("segment-reasoning-{app_turn_id}-{item_id}-{summary_index}")
+}
+
+/// Text without provider item ids shares one segment per turn; text after a
+/// steered message starts a new one, so the transcript keeps the order.
+fn turn_assistant_segment_id(snapshot: &Value, turn_id: &str, event: &TurnStreamEvent) -> String {
+    let segment_id = assistant_segment_id(turn_id, event);
+    let steered = snapshot
+        .get("segments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|segment| segment["turn_id"] == turn_id && segment["kind"] == "user_message")
+        .count();
+    if steered == 0 || segment_id != format!("segment-assistant-{turn_id}") {
+        return segment_id;
+    }
+    format!("{segment_id}-after-{steered}")
 }
 
 pub fn assistant_segment_id(turn_id: &str, event: &TurnStreamEvent) -> String {

@@ -22,6 +22,7 @@ use crate::agent::{
     AgentRawLogLine, AgentThreadResumeFailure, AgentTurnEventSink, AgentTurnOutput,
     AgentTurnRequest,
 };
+use crate::session::SessionSteeringHandle;
 
 pub mod auth;
 mod control;
@@ -87,13 +88,33 @@ impl ClaudeCodeBackend {
 
     pub fn run_agent_turn_with_event_sink(
         &self,
+        request: AgentTurnRequest,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, ClaudeCodeError> {
+        self.run_steerable_turn(request, None, event_sink)
+    }
+
+    /// Writes what is queued on `steering` to the turn's stdin as user
+    /// messages. Claude Code 2.1.296 applies such a message at its next model
+    /// request in the running turn; one that arrives during the final reply
+    /// runs as a follow-up in the same process after `result`, and interrupt
+    /// does not cancel it. The turn therefore stays open until every written
+    /// message is echoed back (`--replay-user-messages`, same `uuid`).
+    pub fn run_steerable_turn(
+        &self,
         mut request: AgentTurnRequest,
+        steering: Option<SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
         let resumed_session_id =
             metadata_string(&request.metadata, "spark.runtime.claude_code.session_id")
                 .or_else(|| metadata_string(&request.metadata, "claude_code.session_id"));
-        match self.run_once(&request, event_sink.clone(), resumed_session_id.as_deref()) {
+        match self.run_once(
+            &request,
+            steering.as_ref(),
+            event_sink.clone(),
+            resumed_session_id.as_deref(),
+        ) {
             Ok(output) => Ok(output),
             Err(error)
                 if resumed_session_id.is_some()
@@ -103,7 +124,7 @@ impl ClaudeCodeBackend {
                     .metadata
                     .remove("spark.runtime.claude_code.session_id");
                 request.metadata.remove("claude_code.session_id");
-                let mut output = self.run_once(&request, event_sink, None)?;
+                let mut output = self.run_once(&request, steering.as_ref(), event_sink, None)?;
                 let discarded_session_id = resumed_session_id.unwrap();
                 output.thread_resume_failure = Some(AgentThreadResumeFailure {
                     message: format!(
@@ -121,6 +142,7 @@ impl ClaudeCodeBackend {
     fn run_once(
         &self,
         request: &AgentTurnRequest,
+        steering: Option<&SessionSteeringHandle>,
         event_sink: Option<AgentTurnEventSink>,
         resume_session_id: Option<&str>,
     ) -> Result<AgentTurnOutput, ClaudeCodeError> {
@@ -144,6 +166,7 @@ impl ClaudeCodeBackend {
             .arg("--permission-prompt-tool")
             .arg("stdio")
             .arg("--include-partial-messages")
+            .arg("--replay-user-messages")
             .arg("--verbose")
             .arg("--permission-mode")
             .arg(
@@ -192,7 +215,16 @@ impl ClaudeCodeBackend {
             .env("BASH_MAX_TIMEOUT_MS", "3600000");
 
         // Attachments are read before spawning so a missing file fails cleanly.
-        let (prompt_text, content) = user_message_content(request, resume_session_id.is_none())?;
+        let earlier = if resume_session_id.is_none() {
+            crate::attachments::history_attachments(&request.history)
+        } else {
+            Vec::new()
+        };
+        let (prompt_text, content) = user_message_content(
+            &request.prompt,
+            &crate::attachments::request_attachments(&request.metadata),
+            &earlier,
+        )?;
         let mut child = command
             .spawn()
             .map_err(|error| launch_error(&executable, error))?;
@@ -246,7 +278,23 @@ impl ClaudeCodeBackend {
         });
         let started = std::time::Instant::now();
         let mut initialized = false;
+        let mut interrupt_sent = false;
         loop {
+            if let Some(steering) = steering {
+                let mut control = control.lock().unwrap();
+                // A Stop that came before system/init enabled control is sent now.
+                if !interrupt_sent && steering.interrupt_requested() {
+                    interrupt_sent = control.interrupt();
+                }
+                if control.accepts_input() {
+                    for turn in steering.drain_queued() {
+                        if let Err(turn) = control.steer(turn) {
+                            // Undelivered; the caller carries it into the next turn.
+                            steering.queue_steering_with_metadata(turn.content, turn.metadata);
+                        }
+                    }
+                }
+            }
             let line = match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(line) => line,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -285,29 +333,10 @@ impl ClaudeCodeBackend {
                     message["subtype"] = json!("success");
                     // Promote the latest visible text to the final answer using
                     // its existing item id, including a block cut off mid-delta.
-                    let latest = events.iter().rev().find(|event| {
-                        event.channel == Some(TurnStreamChannel::Assistant)
-                            && matches!(
-                                event.kind,
-                                TurnStreamEventKind::ContentDelta
-                                    | TurnStreamEventKind::ContentCompleted
-                            )
-                    });
-                    let text = latest
-                        .map(|latest| {
-                            turn.last_text_item_id = latest.source.item_id.clone();
-                            if latest.kind == TurnStreamEventKind::ContentCompleted {
-                                latest.content_delta.clone().unwrap_or_default()
-                            } else {
-                                events
-                                    .iter()
-                                    .filter(|event| {
-                                        event.kind == TurnStreamEventKind::ContentDelta
-                                            && event.source.item_id == latest.source.item_id
-                                    })
-                                    .filter_map(|event| event.content_delta.as_deref())
-                                    .collect::<String>()
-                            }
+                    let text = crate::events::latest_assistant_text(&events)
+                        .map(|(source, text)| {
+                            turn.last_text_item_id = source.item_id;
+                            text
                         })
                         .unwrap_or_default();
                     message["result"] = json!(non_empty(&text).unwrap_or("Stopped."));
@@ -330,6 +359,9 @@ impl ClaudeCodeBackend {
 
         let mut control = control.lock().unwrap();
         control.close();
+        if let Some(steering) = steering {
+            steering.requeue_front(control.take_unacknowledged());
+        }
         raw_log_lines.append(&mut control.logs);
         let status = control.child.wait().map_err(|error| {
             ClaudeCodeError::runtime(format!("claude code wait failed: {error}"))
@@ -550,22 +582,13 @@ fn log_model_discovery_error(error: ClaudeCodeError) -> ClaudeCodeError {
 /// not native images travel as local references in the text, as do earlier
 /// attachments when the session starts fresh.
 fn user_message_content(
-    request: &AgentTurnRequest,
-    fresh_session: bool,
+    prompt: &str,
+    attachments: &[crate::attachments::AgentAttachment],
+    earlier: &[crate::attachments::AgentAttachment],
 ) -> Result<(String, Value), ClaudeCodeError> {
     use base64::Engine as _;
 
-    let attachments = crate::attachments::request_attachments(&request.metadata);
-    let earlier = if fresh_session {
-        crate::attachments::history_attachments(&request.history)
-    } else {
-        Vec::new()
-    };
-    let text = crate::attachments::prompt_with_attachment_references(
-        &request.prompt,
-        &attachments,
-        &earlier,
-    );
+    let text = crate::attachments::prompt_with_attachment_references(prompt, attachments, earlier);
     let images = attachments
         .iter()
         .filter(|attachment| attachment.is_native_image())
