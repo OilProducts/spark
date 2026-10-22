@@ -679,11 +679,10 @@ fn native_agent_node_keeps_its_answer_at_the_tool_round_limit() {
     });
     let mut backend = RustLlmCodergenBackend::new(client);
 
-    // The final answer comes in the last request the round limit permits:
-    // (a) immediately, and (b) right after the last permitted tool round.
-    // The limit counts tool rounds and is checked before each request, so a
-    // limit of one permits no request after a tool round and (b) needs two.
-    for (prompt, max_rounds, requests) in [("Answer now", 1, 2), ("Use a tool", 2, 3)] {
+    // With a limit of one tool round the node still answers (a) immediately,
+    // and (b) right after that round, when the answer is asked for under the
+    // schema directly.
+    for (prompt, max_rounds, requests) in [("Answer now", 1, 2), ("Use a tool", 1, 2)] {
         let mut request = envelope_request(prompt, CodergenRuntimeMode::agent());
         request.metadata.insert(
             "spark.execution.settings".to_string(),
@@ -732,4 +731,21 @@ fn native_agent_node_keeps_its_answer_when_the_schema_request_only_calls_a_tool(
         assert_eq!(schema_of(sent.last().unwrap()), Some(envelope_schema()));
         assert_eq!(response_text(&output.response), "All done.", "{prompt}");
     }
+
+    // Once the last permitted tool round is over, the schema request's tool
+    // call is not run: the turn ends with that single request.
+    let mut request = envelope_request("Use a tool", CodergenRuntimeMode::agent());
+    request.metadata.insert(
+        "spark.execution.settings".to_string(),
+        json!({"configuration": {"agents": {"max_tool_rounds_per_input": 1}}}),
+    );
+    let before = adapter.requests().len();
+    let output = backend.run(request).expect("node output");
+    let sent = adapter.requests().split_off(before);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(schema_of(&sent[1]), Some(envelope_schema()));
+    assert!(!output.events.iter().any(|event| {
+        event.payload.get("category") == Some(&json!("tool_execution"))
+            && event.payload["tool_event"]["id"] == json!("schema-glob")
+    }));
 }

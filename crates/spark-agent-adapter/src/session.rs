@@ -596,6 +596,9 @@ impl Session {
             let mut structured = false;
             let mut unconstrained = None;
             let mut reasking = false;
+            // Set when the last permitted tool round is over and the final
+            // answer is asked for once under the schema, without more tools.
+            let mut finalizing = false;
             loop {
                 // Asking a final answer again under the schema is not another
                 // round, so a round limit never discards that answer.
@@ -604,6 +607,16 @@ impl Session {
                         self.close_for_abort();
                         return Ok(());
                     }
+                } else if !structured
+                    && self.interaction.final_answer_schema.is_some()
+                    && self.config.max_tool_rounds_per_input > 0
+                    && round_count >= self.config.max_tool_rounds_per_input
+                    && !(self.config.max_turns > 0
+                        && self.history.len() >= self.config.max_turns as usize)
+                    && !self.abort_requested()
+                {
+                    structured = true;
+                    finalizing = true;
                 } else if self.limit_reached_before_model_request(round_count) {
                     self.history.extend(unconstrained.take());
                     return Ok(());
@@ -655,6 +668,13 @@ impl Session {
                 }
                 if self.abort_requested() {
                     self.close_for_abort();
+                    return Ok(());
+                }
+                if finalizing && !assistant_turn.tool_calls.is_empty() {
+                    // No tool runs past the round limit, so this response is
+                    // dropped and the turn ends without an answer.
+                    self.history.pop();
+                    self.mark_turn_limit(Some(round_count), Some(self.history.len()));
                     return Ok(());
                 }
 
