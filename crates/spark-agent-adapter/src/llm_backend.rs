@@ -105,13 +105,15 @@ impl CodergenBackend for RustLlmCodergenBackend {
 }
 
 impl RustLlmCodergenBackend {
-    /// Lets run steering reach this node's Claude or Codex turn as a live
-    /// message, keyed like the turn itself.
+    /// Lets run steering reach this node's agent turn as a live message,
+    /// keyed like the turn itself.
     fn register_live_turn(
         &self,
         request: &CodergenBackendRequest,
         agent_request: &AgentTurnRequest,
         provider: &str,
+        model: Option<String>,
+        steering: SessionSteeringHandle,
     ) -> Option<crate::codergen::ActiveCodergenSessionGuard> {
         self.intervention_broker.as_ref().map(|broker| {
             broker.register(ActiveCodergenSession {
@@ -119,12 +121,12 @@ impl RustLlmCodergenBackend {
                 child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
                 root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
                 provider: provider.to_string(),
-                model: request.model.clone(),
+                model,
                 llm_profile: request.llm_profile.clone(),
                 reasoning_effort: request.reasoning_effort.clone(),
                 project_path: request.project_path.clone(),
                 metadata: request.metadata.clone(),
-                steering: SessionSteeringHandle::new(),
+                steering,
                 live_turn: Some((
                     agent_request.project_path.clone(),
                     agent_request.conversation_id.clone(),
@@ -177,7 +179,13 @@ impl RustLlmCodergenBackend {
                     ));
                 }
             }) as AgentTurnEventSink);
-        let _active_session = self.register_live_turn(&request, &agent_request, "codex");
+        let _active_session = self.register_live_turn(
+            &request,
+            &agent_request,
+            "codex",
+            request.model.clone(),
+            SessionSteeringHandle::new(),
+        );
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let result = CodexAppServerBackend::new().run_agent_turn_with_capture_observer(
             agent_request,
@@ -305,7 +313,13 @@ impl RustLlmCodergenBackend {
                 ));
             }) as AgentTurnEventSink
         });
-        let _active_session = self.register_live_turn(&request, &agent_request, "claude-code");
+        let _active_session = self.register_live_turn(
+            &request,
+            &agent_request,
+            "claude-code",
+            request.model.clone(),
+            SessionSteeringHandle::new(),
+        );
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let result = ClaudeCodeBackend::new().run_codergen_turn(
             agent_request,
@@ -439,10 +453,21 @@ impl RustLlmCodergenBackend {
         .map_err(codergen_adapter_error)?;
         crate::initial_context::capture_if_configured(&request.metadata, &request.prompt)
             .map_err(|source| CodergenError::Artifact(source.to_string()))?;
-        let response = self
-            .client
-            .complete(llm_request.request)
-            .map_err(codergen_adapter_error)?;
+        let mut llm_request = llm_request;
+        let agent_request = codergen_agent_turn_request(&request);
+        let controller = unified_llm_adapter::AbortController::new();
+        llm_request.request.abort_signal = Some(controller.signal());
+        let key = (
+            agent_request.project_path.as_str(),
+            agent_request.conversation_id.as_str(),
+        );
+        let _turn = NativeTurn::register(key, None, move || controller.abort("Stopped."));
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
+        let result = self.client.complete(llm_request.request);
+        if let Some(output) = stop.finish() {
+            return Ok(output);
+        }
+        let response = result.map_err(codergen_adapter_error)?;
 
         Ok(CodergenBackendOutput {
             response: CodergenBackendResponse::Text(response.text()),
@@ -494,8 +519,8 @@ impl RustLlmCodergenBackend {
     ) -> Result<CodergenBackendOutput, CodergenError> {
         let agent_request = codergen_agent_turn_request(&request);
         let prompt = agent_request.prompt.clone();
-        let mut session =
-            build_agent_session(&self.client, agent_request).map_err(codergen_adapter_error)?;
+        let mut session = build_agent_session(&self.client, agent_request.clone())
+            .map_err(codergen_adapter_error)?;
         if let Some(sink) = event_sink {
             // Live prefix contract: emit the same per-event mapping the
             // post-run drain produces, in the same order — including events
@@ -516,26 +541,26 @@ impl RustLlmCodergenBackend {
             session.set_event_observer(observer);
         }
         let initial_history_len = session.history.len();
-        let _active_session = self.intervention_broker.as_ref().map(|broker| {
-            broker.register(ActiveCodergenSession {
-                node_id: request.node_id.clone(),
-                child_run_id: metadata_string(&request.metadata, "spark.runtime.run_id"),
-                root_run_id: metadata_string(&request.metadata, "spark.runtime.root_run_id"),
-                provider: request.provider.clone(),
-                model: request
-                    .model
-                    .clone()
-                    .or_else(|| non_empty(&session.provider_profile.model).map(str::to_string)),
-                llm_profile: request.llm_profile.clone(),
-                reasoning_effort: request.reasoning_effort.clone(),
-                project_path: request.project_path.clone(),
-                metadata: request.metadata.clone(),
-                steering: session.steering_handle(),
-                live_turn: None,
-            })
-        });
+        let _turn = NativeTurn::register_session(
+            (&agent_request.project_path, &agent_request.conversation_id),
+            &mut session,
+        );
+        let _active_session = self.register_live_turn(
+            &request,
+            &agent_request,
+            &request.provider,
+            request
+                .model
+                .clone()
+                .or_else(|| non_empty(&session.provider_profile.model).map(str::to_string)),
+            session.steering_handle(),
+        );
+        let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
         let process_error = session.process_input(&self.client, prompt).err();
         session.close();
+        if let Some(output) = stop.finish() {
+            return Ok(output);
+        }
         if let Some(error) = process_error
             .as_ref()
             .filter(|error| error.error_code.as_deref() == Some("initial_context_artifact"))
@@ -555,8 +580,8 @@ impl RustLlmCodergenBackend {
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Interrupts a node's agent turn when its run is canceled or its `timeout`
-/// elapses. Claude and Codex both stop through their turn interrupt, so one
-/// watcher serves either backend.
+/// elapses. Claude, Codex and native turns all stop through their turn
+/// interrupt, so one watcher serves every backend.
 struct NodeStop {
     reason: std::sync::Arc<std::sync::Mutex<Option<Outcome>>>,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1203,15 +1228,19 @@ impl RustLlmAgentTurnBackend {
     fn interrupt(project_path: &str, conversation_id: &str) -> bool {
         ClaudeCodeBackend::new().interrupt(project_path, conversation_id)
             || CodexAppServerBackend::new().interrupt(project_path, conversation_id)
+            || NativeTurn::find(project_path, conversation_id).is_some_and(|turn| turn.stop())
     }
 
+    /// A native turn runs in this process, so it ends the way it is
+    /// interrupted: its request is aborted and its commands killed.
     fn terminate(project_path: &str, conversation_id: &str) -> bool {
         ClaudeCodeBackend::new().terminate(project_path, conversation_id)
             || CodexAppServerBackend::new().terminate(project_path, conversation_id)
+            || NativeTurn::find(project_path, conversation_id).is_some_and(|turn| turn.stop())
     }
 
-    /// The one path that sends a message into a live Claude or Codex turn,
-    /// for chat and run steering alike.
+    /// The one path that sends a message into a live agent turn, for chat
+    /// and run steering alike.
     pub(crate) fn send_live_message(
         project_path: &str,
         conversation_id: &str,
@@ -1225,7 +1254,129 @@ impl RustLlmAgentTurnBackend {
                 message_id,
                 message,
             )
+            || NativeTurn::find(project_path, conversation_id).is_some_and(|turn| {
+                turn.steering
+                    .as_ref()
+                    .is_some_and(|steering| steering.queue_live_message(message_id, message))
+            })
     }
+}
+
+type NativeTurnKey = (String, String);
+
+/// A native turn running in this process, reachable by
+/// `(project_path, conversation_id)` like a Claude or Codex turn.
+struct NativeTurn {
+    steering: Option<SessionSteeringHandle>,
+    abort: Box<dyn Fn() + Send + Sync>,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl NativeTurn {
+    fn registry() -> &'static std::sync::Mutex<
+        std::collections::HashMap<NativeTurnKey, std::sync::Weak<NativeTurn>>,
+    > {
+        static TURNS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<NativeTurnKey, std::sync::Weak<NativeTurn>>>,
+        > = std::sync::OnceLock::new();
+        TURNS.get_or_init(Default::default)
+    }
+
+    /// Registered while the returned handle lives.
+    fn register(
+        (project_path, conversation_id): (&str, &str),
+        steering: Option<SessionSteeringHandle>,
+        abort: impl Fn() + Send + Sync + 'static,
+    ) -> std::sync::Arc<Self> {
+        let turn = std::sync::Arc::new(Self {
+            steering,
+            abort: Box::new(abort),
+            stopped: Default::default(),
+        });
+        let mut turns = Self::registry().lock().unwrap();
+        turns.retain(|_, turn| turn.strong_count() > 0);
+        turns.insert(
+            (project_path.to_string(), conversation_id.to_string()),
+            std::sync::Arc::downgrade(&turn),
+        );
+        turn
+    }
+
+    fn register_session(key: (&str, &str), session: &mut Session) -> std::sync::Arc<Self> {
+        let abort = session.abort_handle();
+        Self::register(key, Some(session.steering_handle()), move || {
+            abort.abort_with_reason("Stopped.")
+        })
+    }
+
+    fn find(project_path: &str, conversation_id: &str) -> Option<std::sync::Arc<Self>> {
+        Self::registry()
+            .lock()
+            .unwrap()
+            .get(&(project_path.to_string(), conversation_id.to_string()))
+            .and_then(std::sync::Weak::upgrade)
+    }
+
+    fn stop(&self) -> bool {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        (self.abort)();
+        true
+    }
+}
+
+/// A stopped chat turn completes with its latest answer text, or
+/// "Stopped.", instead of failing on the abort.
+fn settle_stopped_turn(output: &mut AgentTurnOutput, event_sink: Option<&AgentTurnEventSink>) {
+    output
+        .events
+        .retain(|event| event.kind != TurnStreamEventKind::Error);
+    output.thread_resume_failure = None;
+    let (source, text) = crate::events::latest_assistant_text(&output.events).unwrap_or_default();
+    let text = non_empty(&text).unwrap_or("Stopped.").to_string();
+    let source = TurnStreamSource {
+        backend: Some("agent_session".to_string()),
+        ..source
+    };
+    let answer = TurnStreamEvent {
+        kind: TurnStreamEventKind::ContentCompleted,
+        channel: Some(spark_common::events::TurnStreamChannel::Assistant),
+        source: TurnStreamSource {
+            raw_kind: Some("turn_interrupted".to_string()),
+            ..source.clone()
+        },
+        content_delta: Some(text.clone()),
+        message: Some(text.clone()),
+        tool_call: None,
+        request_user_input: None,
+        token_usage: None,
+        error: None,
+        error_code: None,
+        details: None,
+        phase: Some("final_answer".to_string()),
+        status: None,
+    };
+    let completed = TurnStreamEvent {
+        kind: TurnStreamEventKind::TurnCompleted,
+        channel: None,
+        content_delta: None,
+        message: None,
+        phase: None,
+        status: Some("interrupted".to_string()),
+        source: TurnStreamSource {
+            raw_kind: Some("turn_interrupted".to_string()),
+            item_id: None,
+            ..source
+        },
+        ..answer.clone()
+    };
+    for event in [answer, completed] {
+        if let Some(sink) = event_sink {
+            sink(event.clone());
+        }
+        output.events.push(event);
+    }
+    output.final_assistant_text = Some(text);
 }
 
 impl AgentTurnBackend for RustLlmAgentTurnBackend {
@@ -1277,35 +1428,17 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             });
         }
         let prompt = request.prompt.clone();
-        let mut session =
-            build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
-        if let Some(event_sink) = event_sink {
-            // Mirror the codex live+batch shape: stream each session event to
-            // the sink as it is emitted, while the drained queue still feeds
-            // the durable output batch afterwards.
-            let observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync> =
-                std::sync::Arc::new(move |event: &SessionEvent| {
-                    if let Some(turn_event) = event.to_turn_stream_event() {
-                        event_sink(turn_event);
-                    }
-                });
-            // Session construction already queued lifecycle events
-            // (session_start); replay them so the sink sees the full turn.
-            for event in session.event_queue.iter() {
-                observer(event);
-            }
-            session.set_event_observer(observer);
-        }
-        let initial_history_len = session.history.len();
-        if let Err(error) = session.process_input(&self.client, prompt) {
-            let output = agent_output_from_session(&mut session, initial_history_len);
-            if agent_turn_output_has_failure(&output) {
-                return Ok(output);
-            }
-            return Err(agent_adapter_error(error));
-        }
-
-        Ok(agent_output_from_session(&mut session, initial_history_len))
+        let (project_path, conversation_id) = (
+            request.project_path.clone(),
+            request.conversation_id.clone(),
+        );
+        let session = build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        self.run_native_turn(
+            (&project_path, &conversation_id),
+            session,
+            prompt,
+            event_sink,
+        )
     }
 
     fn answer_request_user_input(
@@ -1371,8 +1504,8 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         let mut session = build_agent_session_for_source(
             &self.client,
             AgentTurnRequest {
-                conversation_id,
-                project_path,
+                conversation_id: conversation_id.clone(),
+                project_path: project_path.clone(),
                 prompt: String::new(),
                 history,
                 provider,
@@ -1385,17 +1518,65 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             "request_user_input_answer",
         )
         .map_err(agent_adapter_error)?;
-        let initial_history_len = session.history.len();
         session.mark_awaiting_input(continuation.pending_question);
-        if let Err(error) = session.process_input(&self.client, continuation.answer_content) {
-            let output = agent_output_from_session(&mut session, initial_history_len);
+        self.run_native_turn(
+            (&project_path, &conversation_id),
+            session,
+            continuation.answer_content,
+            None,
+        )
+    }
+}
+
+impl RustLlmAgentTurnBackend {
+    /// Runs one native turn, registered so it can be steered and stopped.
+    fn run_native_turn(
+        &self,
+        key: (&str, &str),
+        mut session: Session,
+        input: String,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let turn = NativeTurn::register_session(key, &mut session);
+        if let Some(event_sink) = event_sink.clone() {
+            // Mirror the codex live+batch shape: stream each session event to
+            // the sink as it is emitted, while the drained queue still feeds
+            // the durable output batch afterwards.
+            let stopped = turn.stopped.clone();
+            let observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync> =
+                std::sync::Arc::new(move |event: &SessionEvent| {
+                    // A stopped turn's abort is not a failure.
+                    if event.kind == EventKind::Error
+                        && stopped.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        return;
+                    }
+                    if let Some(turn_event) = event.to_turn_stream_event() {
+                        event_sink(turn_event);
+                    }
+                });
+            // Session construction already queued lifecycle events
+            // (session_start); replay them so the sink sees the full turn.
+            for event in session.event_queue.iter() {
+                observer(event);
+            }
+            session.set_event_observer(observer);
+        }
+        let initial_history_len = session.history.len();
+        let result = session.process_input(&self.client, input);
+        session.finish_steering();
+        let mut output = agent_output_from_session(&mut session, initial_history_len);
+        if session.abort_signaled && turn.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            settle_stopped_turn(&mut output, event_sink.as_ref());
+            return Ok(output);
+        }
+        if let Err(error) = result {
             if agent_turn_output_has_failure(&output) {
                 return Ok(output);
             }
             return Err(agent_adapter_error(error));
         }
-
-        Ok(agent_output_from_session(&mut session, initial_history_len))
+        Ok(output)
     }
 }
 

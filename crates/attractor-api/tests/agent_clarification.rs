@@ -2,6 +2,9 @@
 
 #[path = "contracts/agent_clarification_contracts.rs"]
 mod agent_clarification_contracts;
+#[path = "contracts/fake_compatible_server.rs"]
+#[allow(dead_code)]
+mod fake_compatible_server;
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]

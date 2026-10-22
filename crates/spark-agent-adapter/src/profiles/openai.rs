@@ -90,6 +90,7 @@ pub fn create_openai_compatible_profile(
     };
     profile.capabilities.insert("reasoning".to_string(), false);
     profile.supports_reasoning = false;
+    profile.supports_streaming = true;
     profile.set_tool_registry(build_openai_compatible_tool_registry());
     profile
 }

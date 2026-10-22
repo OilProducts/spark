@@ -211,7 +211,7 @@ pub struct ActiveCodergenSession {
     pub project_path: Option<PathBuf>,
     pub metadata: BTreeMap<String, Value>,
     pub steering: SessionSteeringHandle,
-    /// `(project_path, conversation_id)` of a Claude or Codex turn, which
+    /// `(project_path, conversation_id)` of the node's agent turn, which
     /// takes steering as a live message instead of through `steering`.
     pub live_turn: Option<(String, String)>,
 }
@@ -323,7 +323,8 @@ impl CodergenSessionInterventionBroker {
         }
     }
 
-    /// Sessions currently accepting steering, keyed by run or not.
+    /// Sessions of running nodes, keyed by run or not. One that has stopped
+    /// taking messages rejects a steer itself.
     pub fn active_sessions(&self) -> Vec<ActiveCodergenSession> {
         let state = self
             .inner
@@ -333,7 +334,6 @@ impl CodergenSessionInterventionBroker {
             .active
             .values()
             .chain(state.unkeyed_active.values())
-            .filter(|entry| entry.session.steering.accepting())
             .map(|entry| entry.session.clone())
             .collect()
     }
@@ -453,10 +453,10 @@ impl CodergenSessionInterventionBroker {
         };
 
         if let Some((project_path, conversation_id)) = active.live_turn.as_ref() {
-            let provider = if active.provider == "claude-code" {
-                "Claude Code"
-            } else {
-                "Codex app-server"
+            let provider = match active.provider.as_str() {
+                "claude-code" => "Claude Code",
+                "codex" => "Codex app-server",
+                _ => "agent",
             };
             if !crate::llm_backend::RustLlmAgentTurnBackend::send_live_message(
                 project_path,

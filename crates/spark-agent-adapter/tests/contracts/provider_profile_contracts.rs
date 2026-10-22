@@ -377,3 +377,13 @@ fn catalog_provider_check_applies_to_api_providers_not_harnesses() {
         Err("The model belongs to a different provider.".into())
     );
 }
+
+#[test]
+fn openai_compatible_profiles_stream_by_default() {
+    for selector in ["openai_compatible", "openrouter", "litellm"] {
+        assert!(
+            create_openai_compatible_profile(selector, "local-model").supports("streaming"),
+            "{selector}"
+        );
+    }
+}

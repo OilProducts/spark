@@ -364,6 +364,7 @@ fn registered_shell_tool(tool: Tool, provider_default_timeout_ms: u64) -> Regist
             timeout_ms: Some(timeout_ms),
             working_dir,
             env_vars: BTreeMap::new(),
+            abort_signal: execution.abort_signal.clone(),
         };
         match execution
             .execution_environment

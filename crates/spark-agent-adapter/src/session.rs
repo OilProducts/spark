@@ -91,6 +91,9 @@ impl LlmClientHandle {
 struct SessionSteeringState {
     queue: VecDeque<SteeringTurn>,
     accepting: bool,
+    /// Live messages accepted but not yet reported delivered, as
+    /// `(message_id, text)`.
+    unreported: Vec<(String, String)>,
 }
 
 impl Default for SessionSteeringState {
@@ -98,6 +101,7 @@ impl Default for SessionSteeringState {
         Self {
             queue: VecDeque::new(),
             accepting: true,
+            unreported: Vec::new(),
         }
     }
 }
@@ -148,6 +152,40 @@ impl SessionSteeringHandle {
             .queue
             .push_back(SteeringTurn::with_metadata(content, metadata));
         true
+    }
+
+    /// Queues a user message sent into the running turn. The session reports
+    /// it as `user_message_delivered` with its next event, and as
+    /// `user_message_not_delivered` if it ends before reading it.
+    pub fn queue_live_message(&self, message_id: &str, message: &str) -> bool {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        if !state.accepting {
+            return false;
+        }
+        state.queue.push_back(SteeringTurn::with_metadata(
+            message,
+            BTreeMap::from([("item_id".to_string(), json!(message_id))]),
+        ));
+        state
+            .unreported
+            .push((message_id.to_string(), message.to_string()));
+        true
+    }
+
+    fn take_unreported(&self) -> Vec<(String, String)> {
+        std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .expect("session steering queue lock")
+                .unreported,
+        )
+    }
+
+    fn close_and_drain(&self) -> Vec<SteeringTurn> {
+        let mut state = self.state.lock().expect("session steering queue lock");
+        state.accepting = false;
+        state.queue.drain(..).collect()
     }
 
     pub fn drain_queued(&self) -> Vec<SteeringTurn> {
@@ -262,12 +300,15 @@ pub struct Session {
 #[derive(Debug, Clone)]
 struct SessionCleanupState {
     completed: Arc<AtomicBool>,
+    /// Running subagents, aborted with the session.
+    subagents: Arc<Mutex<Vec<SessionAbortHandle>>>,
 }
 
 impl Default for SessionCleanupState {
     fn default() -> Self {
         Self {
             completed: Arc::new(AtomicBool::new(false)),
+            subagents: Arc::default(),
         }
     }
 }
@@ -295,13 +336,34 @@ pub struct SessionAbortHandle {
 
 impl SessionAbortHandle {
     pub fn abort(&self) {
-        self.signal.abort("session is aborted");
-        self.cleanup_state.cleanup(&self.execution_environment);
+        self.abort_with_reason("session is aborted");
     }
 
+    /// Each call kills the commands the session's tools are running, so a
+    /// repeated abort also stops one started after the first.
+    /// Subagents are aborted too, so a parent waiting on one is released.
     pub fn abort_with_reason(&self, reason: impl Into<String>) {
-        self.signal.abort(reason.into());
-        self.cleanup_state.cleanup(&self.execution_environment);
+        let reason = reason.into();
+        self.signal.abort(reason.clone());
+        let _ = self.execution_environment.cleanup();
+        let subagents = self.cleanup_state.subagents.lock().unwrap().clone();
+        for subagent in subagents {
+            subagent.abort_with_reason(reason.clone());
+        }
+    }
+
+    /// Ties a subagent to this session's abort, aborting it at once if the
+    /// session has already been aborted.
+    pub(crate) fn adopt_subagent(&self, subagent: SessionAbortHandle) {
+        let mut subagents = self.cleanup_state.subagents.lock().unwrap();
+        if self.signal.aborted() {
+            subagent.abort_with_reason(
+                self.signal
+                    .reason()
+                    .unwrap_or_else(|| "session is aborted".into()),
+            );
+        }
+        subagents.push(subagent);
     }
 
     pub fn aborted(&self) -> bool {
@@ -494,7 +556,12 @@ impl Session {
         Ok(())
     }
 
-    pub fn emit_event(&mut self, mut event: SessionEvent) {
+    pub fn emit_event(&mut self, event: SessionEvent) {
+        self.report_delivered_messages();
+        self.push_event(event);
+    }
+
+    fn push_event(&mut self, mut event: SessionEvent) {
         if event.session_id.is_none() {
             event.session_id = Some(self.id);
         }
@@ -509,6 +576,52 @@ impl Session {
         observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync>,
     ) {
         self.event_observer = SessionEventObserver(Some(observer));
+    }
+
+    /// Live messages are shown delivered in event order, ahead of the event
+    /// that follows their acceptance.
+    fn report_delivered_messages(&mut self) {
+        let Some(steering) = self.external_steering.as_ref() else {
+            return;
+        };
+        for (message_id, message) in steering.take_unreported() {
+            let event = SessionEvent::new(
+                EventKind::Other("user_message_delivered".to_string()),
+                self.id,
+                BTreeMap::from([
+                    ("item_id".to_string(), json!(message_id)),
+                    ("message".to_string(), json!(message)),
+                    ("status".to_string(), json!("delivered")),
+                ]),
+            );
+            self.push_event(event);
+        }
+    }
+
+    /// Stops taking live messages; those the turn never read are reported
+    /// not delivered.
+    pub fn finish_steering(&mut self) {
+        let Some(steering) = self.external_steering.clone() else {
+            return;
+        };
+        let unread = steering.close_and_drain();
+        self.report_delivered_messages();
+        for turn in unread {
+            if let Some(message_id) = turn.metadata.get("item_id").and_then(Value::as_str) {
+                let event = SessionEvent::new(
+                    EventKind::Other("user_message_not_delivered".to_string()),
+                    self.id,
+                    BTreeMap::from([
+                        ("item_id".to_string(), json!(message_id)),
+                        (
+                            "message".to_string(),
+                            json!("Not sent: the turn ended before the agent read it."),
+                        ),
+                    ]),
+                );
+                self.push_event(event);
+            }
+        }
     }
 
     fn current_system_prompt(&self) -> String {
@@ -753,9 +866,7 @@ impl Session {
     }
 
     fn close_with_reason(&mut self, reason: &'static str, error: Option<Value>) {
-        if let Some(external_steering) = self.external_steering.as_ref() {
-            external_steering.close();
-        }
+        self.finish_steering();
         if self.state == SessionState::Closed {
             return;
         }
@@ -1200,6 +1311,7 @@ impl Session {
                     && !has_subagent_calls,
                 host_controls: ToolHostControls::new(Some(steering_hook), Some(follow_up_hook)),
                 subagent_runtime: Some(subagent_runtime.clone()),
+                abort_signal: Some(self.abort_signal()),
                 event_hook: Some(Arc::new(move |event| {
                     captured_events
                         .lock()

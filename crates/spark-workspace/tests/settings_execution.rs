@@ -311,8 +311,9 @@ fn active_turn_uses_captured_connection(profile: bool) {
         }
         let mut request = vec![0; length];
         reader.read_exact(&mut request).unwrap();
-        let response = json!({"id": "captured", "object": "chat.completion", "model": "captured-model", "choices": [{"index": 0, "message": {"role": "assistant", "content": "captured endpoint"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}).to_string();
-        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+        // Compatible chat streams.
+        let chunk = json!({"id": "captured", "object": "chat.completion.chunk", "model": "captured-model", "choices": [{"index": 0, "delta": {"content": "captured endpoint"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}});
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {chunk}\n\ndata: [DONE]\n\n").unwrap();
         serde_json::from_slice::<Value>(&request).unwrap()
     });
     let completed = service

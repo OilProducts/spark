@@ -912,3 +912,135 @@ fn human_steer_reaches_a_running_codex_node() {
         }
     }
 }
+
+/// A native-provider node takes steering as a live message recorded in its
+/// transcript, and stops on cancel and `timeout` like Claude and Codex.
+#[test]
+fn native_node_steer_cancel_and_timeout() {
+    use crate::fake_compatible_server::{configure, serve};
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let provider = "openai_compatible";
+    let (root, journal) = (temp.path().to_path_buf(), settings.clone());
+    let base_url = serve(move |body, sse| {
+        let text = body.to_string();
+        let Some(id) = ["steer", "cancel", "timeout"]
+            .map(|kind| format!("{provider}-{kind}"))
+            .into_iter()
+            .find(|id| text.contains(&root.join(id).to_string_lossy().into_owned()))
+        else {
+            return;
+        };
+        let project = root.join(&id);
+        if text.contains("Use the docs.") {
+            fs::write(project.join("steered"), "Use the docs.").unwrap();
+            sse.text("Done.");
+            return sse.finish();
+        }
+        fs::write(project.join("started"), "").unwrap();
+        sse.text("Working on it.");
+        if text.contains("LONG work") {
+            return sse.hold();
+        }
+        // Answers once the steer is in, so the turn reads it next round.
+        wait(|| {
+            attractor_runtime::RunStore::for_settings(&journal)
+                .read_run_bundle(&id)
+                .unwrap()
+                .unwrap()
+                .raw_events
+                .iter()
+                .any(|event| event.event_type == "HumanInterventionRequested")
+        });
+        sse.finish();
+    });
+    configure(&settings.config_dir, &base_url);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+
+    // Steering needs an agent session; a plain native node is text-only.
+    let id = format!("{provider}-steer");
+    let project = temp.path().join(&id);
+    fs::create_dir_all(&project).unwrap();
+    let start = service.start_pipeline(PipelineStartRequest {
+        run_id: Some(id.clone()),
+        working_directory: project.to_string_lossy().into(),
+        llm_provider: Some(provider.into()),
+        model: Some("test-model".into()),
+        flow_name: Some(crate::install_flow(
+            &settings,
+            format!(
+                r#"schema_version: "1"
+id: native_steer
+nodes:
+  start: {{ kind: start }}
+  work:
+    kind: agent_task
+    contracts: {{ runtime_mode: agent }}
+    config: {{ kind: agent_task, prompt: STEER work }}
+  done: {{ kind: exit }}
+edges:
+- {{ from: start, to: work }}
+- {{ from: work, to: done }}
+"#
+            ),
+        )),
+        ..Default::default()
+    });
+    assert_eq!(start.status_code, 200, "{}", start.body);
+    wait(|| project.join("started").exists());
+    let path = format!("/attractor/pipelines/{id}/steer");
+    let steer = service.dispatch("POST", &path, r#"{"message":"Use the docs."}"#);
+    assert_eq!(steer.body["status"], "delivered", "{}", steer.body);
+    assert_eq!(steer.body["delivery_mode"], "live_turn");
+    wait(|| run_status(&settings, &id) == "completed");
+    assert_eq!(
+        fs::read_to_string(project.join("steered")).unwrap(),
+        "Use the docs."
+    );
+    let mut transcripts = vec![attractor_runtime::RunStore::for_settings(&settings)
+        .read_run_bundle(&id)
+        .unwrap()
+        .unwrap()
+        .paths
+        .root
+        .join("logs/work")];
+    let mut sent = Vec::new();
+    while let Some(dir) = transcripts.pop() {
+        for path in fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+        {
+            if path.is_dir() {
+                transcripts.push(path);
+            } else if path.ends_with("transcript.jsonl") {
+                sent.extend(
+                    fs::read_to_string(&path)
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str::<Value>(line).unwrap()["segment"].clone())
+                        .filter(|segment| segment["kind"] == "user_message"),
+                );
+            }
+        }
+    }
+    assert!(!sent.is_empty(), "no steer in the node transcript");
+    assert!(
+        sent.iter()
+            .all(|segment| segment["content"] == "Use the docs." && segment["status"] == "complete"),
+        "{sent:?}"
+    );
+
+    // Each stop lands well inside the grace period a hung turn would wait out.
+    let started = Instant::now();
+    assert_cancel_and_timeout(&service, &settings, temp.path(), provider);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}

@@ -12,6 +12,38 @@ use time::OffsetDateTime;
 use unified_llm_adapter::{StreamEvent, StreamEventType, Usage};
 use uuid::Uuid;
 
+/// The latest visible assistant text in `events` and its block's source,
+/// including a block cut off mid-delta; reasoning never counts. A turn the
+/// user stopped settles with it.
+pub fn latest_assistant_text(events: &[TurnStreamEvent]) -> Option<(TurnStreamSource, String)> {
+    let latest = events.iter().rev().find(|event| {
+        event.channel == Some(TurnStreamChannel::Assistant)
+            && matches!(
+                event.kind,
+                TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted
+            )
+    })?;
+    let text = if latest.kind == TurnStreamEventKind::ContentCompleted {
+        latest.content_delta.clone().unwrap_or_default()
+    } else {
+        // Without item ids, the block starts after the previous completed reply.
+        let mut deltas = events
+            .iter()
+            .rev()
+            .filter(|event| {
+                event.channel == Some(TurnStreamChannel::Assistant)
+                    && event.source.item_id == latest.source.item_id
+            })
+            .take_while(|event| event.kind != TurnStreamEventKind::ContentCompleted)
+            .filter(|event| event.kind == TurnStreamEventKind::ContentDelta)
+            .filter_map(|event| event.content_delta.as_deref())
+            .collect::<Vec<_>>();
+        deltas.reverse();
+        deltas.concat()
+    };
+    Some((latest.source.clone(), text))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventKind {
     SessionStart,
@@ -93,6 +125,11 @@ impl EventKind {
             Self::ModelUsageUpdate => TurnStreamEventKind::TokenUsageUpdated,
             Self::Other(value) if value == "request_user_input_requested" => {
                 TurnStreamEventKind::RequestUserInputRequested
+            }
+            Self::Other(value)
+                if value == "user_message_delivered" || value == "user_message_not_delivered" =>
+            {
+                TurnStreamEventKind::Other(value.clone())
             }
             Self::SessionStart | Self::SessionEnd | Self::Warning => {
                 TurnStreamEventKind::Other(self.as_str().to_string())

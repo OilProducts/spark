@@ -309,6 +309,7 @@ struct SubAgentToolRuntimeState {
     parent_environment: ExecutionEnvironment,
     parent_config: SessionConfig,
     parent_client_handle: LlmClientHandle,
+    parent_abort: SessionAbortHandle,
     client: Client,
     active_subagents: BTreeMap<String, SubAgentHandle>,
     active_subagent_workers: BTreeMap<String, SubAgentWorker>,
@@ -322,6 +323,7 @@ impl SubAgentToolRuntime {
                 parent_environment: parent_session.execution_environment.clone(),
                 parent_config: parent_session.config.clone(),
                 parent_client_handle: parent_session.llm_client.clone(),
+                parent_abort: parent_session.abort_handle(),
                 client,
                 active_subagents: std::mem::take(&mut parent_session.active_subagents),
                 active_subagent_workers: std::mem::take(
@@ -405,6 +407,9 @@ impl SubAgentToolRuntime {
             Ok(worker) => worker,
             Err(error) => return tool_error(format!("Failed to spawn child agent: {error}")),
         };
+        state
+            .parent_abort
+            .adopt_subagent(worker.abort_handle.clone());
         handle.status = SubAgentStatus::Running;
         let payload = subagent_handle_payload(&handle);
         let agent_id = handle.id.to_string();

@@ -466,3 +466,40 @@ impl ExecutionEnvironmentBackend for RecordingEnvironment {
         "1.0".to_string()
     }
 }
+
+/// The command watches its abort signal itself, so an abort whose cleanup
+/// ran before the command registered still kills it.
+#[test]
+fn an_aborted_command_is_killed_without_waiting_for_cleanup() {
+    let tempdir = tempdir().expect("tempdir");
+    let environment = ExecutionEnvironment::local(tempdir.path());
+    let abort = unified_llm_adapter::AbortSignal::new();
+    let marker = tempdir.path().join("started");
+    thread::spawn({
+        let abort = abort.clone();
+        move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            abort.abort("Stopped.");
+        }
+    });
+
+    let started = Instant::now();
+    let result = environment
+        .exec_command(
+            "touch started && sleep 30",
+            CommandOptions {
+                timeout_ms: Some(60_000),
+                abort_signal: Some(abort),
+                ..CommandOptions::default()
+            },
+        )
+        .expect("exec command");
+
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(tempdir.path().join("started").exists());
+    assert!(result.stderr.ends_with("Stopped."), "{result:?}");
+    assert!(!result.timed_out);
+}

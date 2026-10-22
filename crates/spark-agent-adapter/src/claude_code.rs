@@ -464,7 +464,9 @@ impl ClaudeCodeBackend {
                 if control.interrupted_result(&message) {
                     message["is_error"] = json!(false);
                     message["subtype"] = json!("success");
-                    let (item_id, text) = latest_assistant_text(&turn.events);
+                    let (source, text) =
+                        crate::events::latest_assistant_text(&turn.events).unwrap_or_default();
+                    let item_id = source.item_id;
                     if item_id.is_some() {
                         turn.state.last_text_item_id = item_id;
                     }
@@ -588,33 +590,6 @@ fn reap(
         drop(control);
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// The item id and text of the latest assistant text, including a block cut
-/// off mid-delta; a stopped turn promotes it to its final answer.
-pub(crate) fn latest_assistant_text(events: &[TurnStreamEvent]) -> (Option<String>, String) {
-    let Some(latest) = events.iter().rev().find(|event| {
-        event.channel == Some(TurnStreamChannel::Assistant)
-            && matches!(
-                event.kind,
-                TurnStreamEventKind::ContentDelta | TurnStreamEventKind::ContentCompleted
-            )
-    }) else {
-        return (None, String::new());
-    };
-    let text = if latest.kind == TurnStreamEventKind::ContentCompleted {
-        latest.content_delta.clone().unwrap_or_default()
-    } else {
-        events
-            .iter()
-            .filter(|event| {
-                event.kind == TurnStreamEventKind::ContentDelta
-                    && event.source.item_id == latest.source.item_id
-            })
-            .filter_map(|event| event.content_delta.as_deref())
-            .collect()
-    };
-    (latest.source.item_id.clone(), text)
 }
 
 /// Everything one turn has gathered, across its results and processes.

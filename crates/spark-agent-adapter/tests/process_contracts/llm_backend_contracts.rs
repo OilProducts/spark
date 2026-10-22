@@ -694,6 +694,10 @@ fn codergen_backend_agent_mode_delivers_child_intervention_to_active_session() {
                 ("caller".to_string(), json!("intervention-test")),
                 ("spark.runtime.run_id".to_string(), json!("child-1")),
                 ("spark.runtime.root_run_id".to_string(), json!("root-1")),
+                (
+                    "spark.runtime.conversation_id".to_string(),
+                    json!("intervention-delivered"),
+                ),
             ]),
         })
         .expect("agent codergen output");
@@ -702,7 +706,8 @@ fn codergen_backend_agent_mode_delivers_child_intervention_to_active_session() {
     let results = intervention_results.lock().expect("intervention results");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].status, "delivered");
-    assert_eq!(results[0].delivery_mode, "rust_boundary_codergen_turn");
+    assert_eq!(results[0].delivery_mode, "live_turn");
+    assert_eq!(results[0].message, "Sent to the running agent turn.");
     assert_eq!(results[0].reason, "scope check");
     assert_eq!(results[0].target_node_id.as_deref(), Some("agent_task"));
     drop(results);
@@ -715,34 +720,54 @@ fn codergen_backend_agent_mode_delivers_child_intervention_to_active_session() {
     );
     drop(requests);
 
+    // The live message is shown delivered once, before the model reads it.
+    let kinds = output
+        .events
+        .iter()
+        .filter(|event| event.event_type == "rust_agent_session_event")
+        .map(|event| event.payload["kind"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    let delivered = kinds
+        .iter()
+        .position(|kind| *kind == "user_message_delivered")
+        .expect("delivered event");
+    let injected = kinds
+        .iter()
+        .position(|kind| *kind == "steering_injected")
+        .expect("steering event");
+    assert!(delivered < injected, "{kinds:?}");
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == "user_message_delivered")
+            .count(),
+        1
+    );
+    let delivered_event = output
+        .events
+        .iter()
+        .find(|event| event.payload["kind"] == json!("user_message_delivered"))
+        .unwrap();
+    let turn_event = &delivered_event.payload["turn_stream_event"];
+    assert_eq!(
+        turn_event["message"],
+        json!("Please keep the current change bounded.")
+    );
+    assert_eq!(turn_event["status"], json!("delivered"));
+    let message_id = turn_event["source"]["item_id"]
+        .as_str()
+        .expect("message id");
     let steering_event = output
         .events
         .iter()
-        .find(|event| {
-            event.event_type == "rust_agent_session_event"
-                && event.payload["kind"] == json!("steering_injected")
-        })
-        .expect("steering session event");
+        .find(|event| event.payload["kind"] == json!("steering_injected"))
+        .unwrap();
     let data = &steering_event.payload["session_event"]["data"];
     assert_eq!(
         data["content"],
         json!("Please keep the current change bounded.")
     );
-    assert_eq!(
-        data["message"],
-        json!("Please keep the current change bounded.")
-    );
-    assert_eq!(data["child_run_id"], json!("child-1"));
-    assert_eq!(data["parent_run_id"], json!("parent-1"));
-    assert_eq!(data["parent_node_id"], json!("manager"));
-    assert_eq!(data["root_run_id"], json!("root-1"));
-    assert_eq!(data["target_node_id"], json!("agent_task"));
-    assert_eq!(data["reason"], json!("scope check"));
-    assert_eq!(data["source"], json!("manager_loop"));
-    assert_eq!(data["cycle"], json!(3));
-    assert_eq!(data["provider"], json!("OpenAI"));
-    assert_eq!(data["model"], json!("gpt-steer"));
-    assert_eq!(data["metadata"]["caller"], json!("intervention-test"));
+    assert_eq!(data["item_id"], json!(message_id));
 
     let inactive = broker.request_child_intervention(CodergenChildInterventionRequest {
         child_run_id: "child-1".to_string(),
@@ -798,6 +823,10 @@ fn codergen_backend_agent_mode_rejects_stale_child_run_intervention() {
             metadata: BTreeMap::from([
                 ("spark.runtime.run_id".to_string(), json!("child-1")),
                 ("spark.runtime.root_run_id".to_string(), json!("root-1")),
+                (
+                    "spark.runtime.conversation_id".to_string(),
+                    json!("intervention-stale"),
+                ),
             ]),
         })
         .expect("agent codergen output");
@@ -853,6 +882,10 @@ fn codergen_backend_agent_mode_rejects_target_mismatch_intervention() {
             metadata: BTreeMap::from([
                 ("spark.runtime.run_id".to_string(), json!("child-1")),
                 ("spark.runtime.root_run_id".to_string(), json!("root-1")),
+                (
+                    "spark.runtime.conversation_id".to_string(),
+                    json!("intervention-mismatch"),
+                ),
             ]),
         })
         .expect("agent codergen output");
@@ -2839,16 +2872,18 @@ impl ProviderAdapter for ToolFailureThenAnswerAdapter {
 
     fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
         self.complete(request).map(|response| {
-            stream_events(
-                vec![
-                    Ok(StreamEvent::text_delta(response.text())),
-                    Ok(StreamEvent::finish(
-                        response.finish_reason,
-                        Some(response.usage),
-                    )),
-                ]
-                .into_iter(),
-            )
+            let mut events = vec![Ok(StreamEvent::text_delta(response.text()))];
+            events.extend(response.tool_calls.iter().map(|tool_call| {
+                Ok(StreamEvent {
+                    tool_call: Some(tool_call.clone()),
+                    ..StreamEvent::new(StreamEventType::ToolCallEnd)
+                })
+            }));
+            events.push(Ok(StreamEvent::finish(
+                response.finish_reason,
+                Some(response.usage),
+            )));
+            stream_events(events.into_iter())
         })
     }
 }
@@ -3456,4 +3491,429 @@ fn utility_cli_call_runs_outside_the_project_and_surfaces_timeouts_and_failures(
         spark_agent_adapter::run_utility_call(&client, &call(&silent, Duration::from_secs(5)))
             .expect_err("empty output");
     assert!(error.contains("no text"), "{error}");
+}
+
+type StreamScript = dyn Fn(usize, &Request) -> Result<Vec<StreamEvent>, AdapterError> + Send + Sync;
+
+/// An `openai` model whose streamed responses come from `script`, by call index.
+struct ScriptedStreamAdapter {
+    calls: Arc<Mutex<Vec<Request>>>,
+    script: Box<StreamScript>,
+}
+
+impl ProviderAdapter for ScriptedStreamAdapter {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(&self, _request: Request) -> Result<Response, AdapterError> {
+        unreachable!("native agent sessions stream")
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        let index = {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push(request.clone());
+            calls.len() - 1
+        };
+        (self.script)(index, &request).map(|events| stream_events(events.into_iter().map(Ok)))
+    }
+}
+
+fn scripted_client(
+    script: impl Fn(usize, &Request) -> Result<Vec<StreamEvent>, AdapterError> + Send + Sync + 'static,
+) -> (Client, Arc<Mutex<Vec<Request>>>) {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(ScriptedStreamAdapter {
+        calls: calls.clone(),
+        script: Box::new(script),
+    });
+    (
+        Client::from_adapters(vec![adapter], None).expect("client"),
+        calls,
+    )
+}
+
+fn reply(text: &str, tool_calls: Vec<ToolCall>) -> Vec<StreamEvent> {
+    let finish = if tool_calls.is_empty() {
+        FinishReason::Stop
+    } else {
+        FinishReason::ToolCalls
+    };
+    let mut events = vec![StreamEvent::text_delta(text)];
+    events.extend(tool_calls.into_iter().map(|tool_call| StreamEvent {
+        tool_call: Some(tool_call),
+        ..StreamEvent::new(StreamEventType::ToolCallEnd)
+    }));
+    events.push(StreamEvent::finish(finish, None));
+    events
+}
+
+/// Blocks like a slow model until the request is aborted.
+fn until_aborted(request: &Request) -> Result<Vec<StreamEvent>, AdapterError> {
+    let signal = request.abort_signal.clone().expect("abort signal");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !signal.aborted() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(unified_llm_adapter::abort_error("request", signal.reason()))
+}
+
+fn native_chat_request(conversation_id: &str, project_path: &str) -> AgentTurnRequest {
+    AgentTurnRequest {
+        conversation_id: conversation_id.to_string(),
+        project_path: project_path.to_string(),
+        prompt: "Do the work".to_string(),
+        history: Vec::new(),
+        provider: Some("openai".to_string()),
+        model: Some("gpt-live".to_string()),
+        llm_profile: None,
+        reasoning_effort: None,
+        chat_mode: Some("agent".to_string()),
+        metadata: BTreeMap::new(),
+    }
+}
+
+fn live_backend() -> RustLlmAgentTurnBackend {
+    RustLlmAgentTurnBackend::new(Client::new())
+}
+
+type Streamed = Arc<Mutex<Vec<spark_common::events::TurnStreamEvent>>>;
+
+fn streaming_sink() -> (Streamed, spark_agent_adapter::AgentTurnEventSink) {
+    let streamed: Streamed = Arc::default();
+    let sink = streamed.clone();
+    (
+        streamed,
+        Arc::new(move |event| sink.lock().unwrap().push(event)),
+    )
+}
+
+fn other_events<'a>(
+    events: &'a [spark_common::events::TurnStreamEvent],
+    kind: &str,
+) -> Vec<&'a spark_common::events::TurnStreamEvent> {
+    events
+        .iter()
+        .filter(|event| event.kind == TurnStreamEventKind::Other(kind.to_string()))
+        .collect()
+}
+
+#[test]
+fn chat_message_sent_mid_turn_is_delivered_once_and_read_at_the_next_round() {
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().to_string_lossy().into_owned();
+    let path = project_path.clone();
+    let (client, calls) = scripted_client(move |index, _| {
+        Ok(if index == 0 {
+            assert!(live_backend().send_message(
+                &path,
+                "live-chat",
+                "message-1",
+                "Also update the docs."
+            ));
+            reply("Working.", Vec::new())
+        } else {
+            reply("Done.", Vec::new())
+        })
+    });
+    let (streamed, sink) = streaming_sink();
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .run_turn_with_event_sink(native_chat_request("live-chat", &project_path), Some(sink))
+        .expect("turn output");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Done."));
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[1].messages.last(),
+        Some(&Message::user("Also update the docs."))
+    );
+    for events in [&output.events, &*streamed.lock().unwrap()] {
+        let delivered = other_events(events, "user_message_delivered");
+        assert_eq!(delivered.len(), 1, "{events:?}");
+        assert_eq!(delivered[0].source.item_id.as_deref(), Some("message-1"));
+        assert_eq!(
+            delivered[0].message.as_deref(),
+            Some("Also update the docs.")
+        );
+        assert_eq!(delivered[0].status.as_deref(), Some("delivered"));
+        let position = |predicate: &dyn Fn(&spark_common::events::TurnStreamEvent) -> bool| {
+            events.iter().position(|event| predicate(event)).unwrap()
+        };
+        let delivered_at = position(&|event| {
+            event.kind == TurnStreamEventKind::Other("user_message_delivered".into())
+        });
+        let answer_at = position(&|event| {
+            event.kind == TurnStreamEventKind::ContentCompleted
+                && event.content_delta.as_deref() == Some("Done.")
+        });
+        assert!(delivered_at < answer_at);
+        assert!(other_events(events, "user_message_not_delivered").is_empty());
+    }
+    // The turn has ended, so a later message is not taken.
+    assert!(!live_backend().send_message(&project_path, "live-chat", "message-2", "Late."));
+}
+
+#[test]
+fn chat_stop_reports_an_unread_message_not_delivered_and_completes_stopped() {
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().to_string_lossy().into_owned();
+    let path = project_path.clone();
+    let (client, calls) = scripted_client(move |_, request| {
+        assert!(live_backend().send_message(&path, "stop-chat", "message-1", "Never read."));
+        assert!(live_backend().interrupt_turn(&path, "stop-chat"));
+        until_aborted(request)
+    });
+    let (streamed, sink) = streaming_sink();
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .run_turn_with_event_sink(native_chat_request("stop-chat", &project_path), Some(sink))
+        .expect("a stopped turn completes");
+
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Stopped."));
+    assert!(output.thread_resume_failure.is_none());
+    for events in [&output.events, &*streamed.lock().unwrap()] {
+        assert!(!events
+            .iter()
+            .any(|event| event.kind == TurnStreamEventKind::Error));
+        let delivered = other_events(events, "user_message_delivered");
+        let not_delivered = other_events(events, "user_message_not_delivered");
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(not_delivered.len(), 1);
+        assert_eq!(
+            not_delivered[0].source.item_id.as_deref(),
+            Some("message-1")
+        );
+        assert_eq!(
+            not_delivered[0].message.as_deref(),
+            Some("Not sent: the turn ended before the agent read it.")
+        );
+    }
+}
+
+#[test]
+fn chat_stop_kills_a_running_shell_command_and_keeps_the_latest_answer() {
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().to_string_lossy().into_owned();
+    let (client, calls) = scripted_client(|_, _| {
+        Ok(reply(
+            "Running the slow check.",
+            vec![ToolCall::new(
+                "call-sleep",
+                "shell",
+                json!({"command": "touch started && sleep 30", "timeout_ms": 60000}),
+            )],
+        ))
+    });
+    let (_, sink) = streaming_sink();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread::spawn({
+        let project_path = project_path.clone();
+        move || {
+            let output = RustLlmAgentTurnBackend::new(client).run_turn_with_event_sink(
+                native_chat_request("stop-shell", &project_path),
+                Some(sink),
+            );
+            sender.send(output).unwrap();
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !project.path().join("started").exists() {
+        assert!(Instant::now() < deadline, "the command never started");
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(live_backend().interrupt_turn(&project_path, "stop-shell"));
+
+    let output = receiver
+        .recv_timeout(Duration::from_secs(3))
+        .expect("the command is killed")
+        .expect("a stopped turn completes");
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("Running the slow check.")
+    );
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error));
+}
+
+fn native_node_request(node_id: &str, timeout_seconds: Option<f64>) -> CodergenBackendRequest {
+    CodergenBackendRequest {
+        node_id: node_id.to_string(),
+        prompt: "Do the work".to_string(),
+        timeout_seconds,
+        provider: "openai".to_string(),
+        model: Some("gpt-live".to_string()),
+        runtime_mode: CodergenRuntimeMode::agent(),
+        metadata: BTreeMap::from([
+            (
+                "spark.runtime.run_id".to_string(),
+                json!(format!("run-{node_id}")),
+            ),
+            ("spark.runtime.root_run_id".to_string(), json!("root-1")),
+        ]),
+        ..CodergenBackendRequest::default()
+    }
+}
+
+fn failure_reason(output: spark_agent_adapter::CodergenBackendOutput) -> String {
+    match output.response {
+        spark_agent_adapter::CodergenBackendResponse::Outcome(outcome) => outcome.failure_reason,
+        other => panic!("a stopped node fails: {other:?}"),
+    }
+}
+
+#[test]
+fn native_node_timeout_and_run_cancel_stop_the_turn_within_the_grace_period() {
+    let (client, _) = scripted_client(|_, request| until_aborted(request));
+    let mut backend = RustLlmCodergenBackend::new(client.clone());
+    let started = Instant::now();
+    let output = backend
+        .run(native_node_request("timed", Some(0.5)))
+        .expect("timed-out node output");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        failure_reason(output),
+        "Agent node timed out after 0.5 seconds"
+    );
+
+    let mut backend = RustLlmCodergenBackend::new(client);
+    let canceled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    backend.set_cancel_check(Arc::new({
+        let canceled = canceled.clone();
+        move || canceled.load(std::sync::atomic::Ordering::SeqCst)
+    }));
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        canceled.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let started = Instant::now();
+    let output = backend
+        .run(native_node_request("canceled", None))
+        .expect("canceled node output");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        failure_reason(output),
+        "Run canceled while the node was running"
+    );
+}
+
+#[test]
+fn steering_a_native_node_after_it_stops_taking_messages_is_rejected_as_not_live() {
+    let (client, _) = scripted_client(|_, _| Ok(reply("Done.", Vec::new())));
+    let broker = CodergenSessionInterventionBroker::default();
+    let mut backend = RustLlmCodergenBackend::with_intervention_broker(client, broker.clone());
+    let late = Arc::new(Mutex::new(None));
+    let sink: spark_agent_adapter::CodergenEventSink = Arc::new({
+        let late = late.clone();
+        move |event| {
+            // The turn has finished reading messages but its node still runs.
+            if event.payload["kind"] == json!("processing_end") {
+                *late.lock().unwrap() = Some(broker.request_child_intervention(
+                    intervention_request("run-late", "root-1", Some("late")),
+                ));
+            }
+        }
+    });
+
+    let output = backend
+        .run_with_event_sink(native_node_request("late", None), Some(sink))
+        .expect("node output");
+
+    assert_eq!(output.response_text(), "Done.");
+    let late = late.lock().unwrap().clone().expect("late steer attempted");
+    assert_eq!(late.status, "rejected");
+    assert_eq!(late.reason, "no_live_session");
+    assert_eq!(late.delivery_mode, "live_turn");
+}
+
+/// Answering a clarification resumes the native turn as a live turn: a
+/// message sent while it runs is read, and Stop aborts its blocked request.
+#[test]
+fn a_native_turn_resumed_by_a_clarification_answer_takes_steers_and_stops() {
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().to_string_lossy().into_owned();
+    let path = project_path.clone();
+    let (client, calls) = scripted_client(move |index, request| {
+        if index == 0 {
+            assert!(live_backend().send_message(
+                &path,
+                "answer-chat",
+                "message-1",
+                "Keep it short."
+            ));
+            return Ok(reply("Using the inline card.", Vec::new()));
+        }
+        assert_eq!(
+            request.messages.last(),
+            Some(&Message::user("Keep it short."))
+        );
+        assert!(live_backend().interrupt_turn(&path, "answer-chat"));
+        until_aborted(request)
+    });
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "answer-chat".to_string(),
+            project_path: project_path.clone(),
+            request_id: "request-1".to_string(),
+            assistant_turn_id: "assistant-turn-1".to_string(),
+            answers: BTreeMap::from([("path_choice".to_string(), "Inline card".to_string())]),
+            request_user_input: Some(json!({
+                "request_id": "request-1",
+                "status": "answered",
+                "questions": [{
+                    "id": "path_choice",
+                    "header": "Path",
+                    "question": "Which path should I take?",
+                    "question_type": "FREEFORM",
+                    "options": [],
+                    "allow_other": false,
+                    "is_secret": false
+                }]
+            })),
+            history: vec![
+                HistoryTurn::User(UserTurn::new("Do the work")),
+                HistoryTurn::Assistant(AssistantTurn::new("Which path should I take?")),
+            ],
+            provider: Some("openai".to_string()),
+            model: Some("gpt-live".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("a stopped turn completes");
+
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("Using the inline card.")
+    );
+    assert!(output.thread_resume_failure.is_none());
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error));
+    let delivered = other_events(&output.events, "user_message_delivered");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].source.item_id.as_deref(), Some("message-1"));
+    assert_eq!(
+        output.events.last().map(|event| &event.kind),
+        Some(&TurnStreamEventKind::TurnCompleted)
+    );
+    assert!(!live_backend().interrupt_turn(&project_path, "answer-chat"));
 }

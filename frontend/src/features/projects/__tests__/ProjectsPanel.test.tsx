@@ -626,7 +626,7 @@ describe('ProjectsPanel', () => {
     })
   })
 
-  it.each(['codex', 'claude-code'])('keeps Send enabled during an active %s turn, shows the queued message, and wires Stop', async (provider) => {
+  it.each(['codex', 'claude-code', 'openai', 'openai_compatible'])('keeps Send enabled during an active %s turn, shows the queued message, and wires Stop', async (provider) => {
     const user = userEvent.setup()
     const sendRequests: string[] = []
     const activeSnapshot = (queued: object[]) => ({

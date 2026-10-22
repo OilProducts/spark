@@ -970,7 +970,9 @@ impl CodexAppServerClient {
             if completed && stopping && state.turn_status.as_deref() == Some("interrupted") {
                 state.turn_error = None;
                 state.last_error = None;
-                let (item_id, text) = crate::claude_code::latest_assistant_text(&events);
+                let (source, text) =
+                    crate::events::latest_assistant_text(&events).unwrap_or_default();
+                let item_id = source.item_id;
                 let text = non_empty(&text).unwrap_or("Stopped.").to_string();
                 state.final_agent_message = Some(text.clone());
                 let index = normalized
