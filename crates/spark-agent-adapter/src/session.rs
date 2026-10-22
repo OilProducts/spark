@@ -591,24 +591,21 @@ impl Session {
             self.drain_steering_queue();
 
             let mut round_count = 0;
-            // Set once a final answer is asked again under the answer schema,
-            // with the answer it replaces until a new final answer is recorded.
+            // Set when the final answer is asked for under the answer schema:
+            // once the last permitted tool round is over, or again after an
+            // unconstrained answer, which then stays last in history until a
+            // usable schema answer replaces it.
             let mut structured = false;
-            let mut unconstrained = None;
             let mut reasking = false;
-            // Set when the last permitted tool round is over and the final
-            // answer is asked for once under the schema, without more tools.
-            let mut finalizing = false;
             loop {
                 // Asking a final answer again under the schema is not another
                 // round, so a round limit never discards that answer.
-                if reasking {
+                if structured {
                     if self.abort_requested() {
                         self.close_for_abort();
                         return Ok(());
                     }
-                } else if !structured
-                    && self.interaction.final_answer_schema.is_some()
+                } else if self.interaction.final_answer_schema.is_some()
                     && self.config.max_tool_rounds_per_input > 0
                     && round_count >= self.config.max_tool_rounds_per_input
                     && !(self.config.max_turns > 0
@@ -616,12 +613,9 @@ impl Session {
                     && !self.abort_requested()
                 {
                     structured = true;
-                    finalizing = true;
                 } else if self.limit_reached_before_model_request(round_count) {
-                    self.history.extend(unconstrained.take());
                     return Ok(());
                 }
-                reasking = false;
 
                 let mut request = self.build_request(system_prompt.clone());
                 if structured {
@@ -636,20 +630,21 @@ impl Session {
                                 },
                             );
                 }
+                if reasking {
+                    // The answer is asked for again, not continued.
+                    request.messages.pop();
+                }
                 self.check_context_usage(&request);
                 let request_context = ModelRequestContext::from_request(&request);
                 let model_output = match self.model_response(client, request) {
                     Ok(model_output) => model_output,
-                    Err(error)
-                        if error.kind != AdapterErrorKind::Abort && unconstrained.is_some() =>
-                    {
+                    Err(error) if error.kind != AdapterErrorKind::Abort && reasking => {
                         // A provider that cannot constrain this request keeps
                         // the answer it gave; contract repair takes it from there.
                         self.emit_kind(
                             EventKind::Warning,
                             warning_event_payload(&error, Some(&request_context)),
                         );
-                        self.history.extend(unconstrained.take());
                         break;
                     }
                     Err(error) => {
@@ -658,19 +653,43 @@ impl Session {
                     }
                 };
                 let stream_error = model_output.stream_error.clone();
-                let assistant_turn = self.record_model_response(model_output, structured);
-                if assistant_turn.tool_calls.is_empty() {
-                    unconstrained = None;
+                if let Some(error) = stream_error.as_ref().filter(|_| reasking) {
+                    self.emit_kind(
+                        EventKind::Warning,
+                        warning_event_payload(error, Some(&request_context)),
+                    );
+                    break;
                 }
+                let assistant_turn = self.record_model_response(model_output, structured);
                 if let Some(error) = stream_error {
                     self.mark_model_request_error(&error, Some(&request_context));
                     return Err(error);
+                }
+                if reasking {
+                    // Only a usable schema answer replaces the one it re-asks;
+                    // otherwise that answer is kept for contract repair.
+                    let usable = assistant_turn.tool_calls.is_empty()
+                        && !assistant_turn.content.text().trim().is_empty();
+                    self.history
+                        .remove(self.history.len() - if usable { 2 } else { 1 });
+                    if !usable {
+                        self.emit_kind(
+                            EventKind::Warning,
+                            BTreeMap::from([(
+                                "message".to_string(),
+                                json!("schema-constrained answer was empty or called tools; kept the unconstrained answer"),
+                            )]),
+                        );
+                    }
                 }
                 if self.abort_requested() {
                     self.close_for_abort();
                     return Ok(());
                 }
-                if finalizing && !assistant_turn.tool_calls.is_empty() {
+                if reasking {
+                    break;
+                }
+                if structured && !assistant_turn.tool_calls.is_empty() {
                     // No tool runs past the round limit, so this response is
                     // dropped and the turn ends without an answer.
                     self.history.pop();
@@ -685,7 +704,6 @@ impl Session {
                     }
                     if !structured && self.interaction.final_answer_schema.is_some() {
                         // The answer is asked for again, constrained to the schema.
-                        unconstrained = self.history.pop();
                         structured = true;
                         reasking = true;
                         continue;

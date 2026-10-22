@@ -18,6 +18,8 @@ use unified_llm_adapter::{
 
 /// A reply the provider rejects the request with.
 const REJECT: &str = "<reject>";
+/// A reply whose stream fails after some text.
+const STREAM_ERROR: &str = "<stream-error>";
 
 type Reply = Box<dyn Fn(&Request) -> (String, Vec<ToolCall>) + Send + Sync>;
 
@@ -78,6 +80,18 @@ impl ProviderAdapter for Scripted {
             return Err(AdapterError::new(
                 unified_llm_adapter::AdapterErrorKind::InvalidRequest,
                 "response format unsupported with tools",
+            ));
+        }
+        if text == STREAM_ERROR {
+            return Ok(stream_events(
+                vec![
+                    Ok(StreamEvent::text_delta("{\"outcome\"")),
+                    Err(AdapterError::new(
+                        unified_llm_adapter::AdapterErrorKind::Stream,
+                        "connection reset",
+                    )),
+                ]
+                .into_iter(),
             ));
         }
         let mut events = Vec::new();
@@ -516,6 +530,33 @@ fn native_agent_node_keeps_its_answer_when_the_provider_cannot_constrain_it() {
     assert_eq!(adapter.requests().len(), 2);
     // Contract repair takes the unconstrained answer from here.
     assert_eq!(response_text(&output.response), "All done.");
+}
+
+#[test]
+fn native_agent_node_keeps_its_answer_when_the_schema_request_yields_none() {
+    // The schema request (a) answers with empty text, or (b) its stream
+    // fails after some text.
+    for failure in ["", STREAM_ERROR] {
+        let (client, adapter) = Scripted::client(move |request| {
+            if request.response_format.is_some() {
+                text(failure)
+            } else {
+                text("All done.")
+            }
+        });
+        let mut backend = RustLlmCodergenBackend::new(client);
+
+        let output = backend
+            .run(envelope_request("Do it", CodergenRuntimeMode::agent()))
+            .expect("node output");
+
+        let requests = adapter.requests();
+        assert_eq!(requests.len(), 2, "{failure:?}");
+        // The answer is asked for again, not continued.
+        assert_eq!(requests[1].messages, requests[0].messages);
+        assert_eq!(schema_of(&requests[1]), Some(envelope_schema()));
+        assert_eq!(response_text(&output.response), "All done.", "{failure:?}");
+    }
 }
 
 #[test]
