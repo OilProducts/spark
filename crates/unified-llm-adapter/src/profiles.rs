@@ -20,6 +20,7 @@ const SUPPORTED_PROFILE_KEYS: &[&str] = &[
     "models",
     "provider",
     "reasoning_efforts",
+    "vision",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -61,6 +62,9 @@ pub struct LlmProfile {
     pub api_key_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// The profile's models take image input.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
 }
 
 impl LlmProfile {
@@ -351,6 +355,12 @@ fn parse_profile(
         label: optional_text(raw.get("label"))?,
         api_key_env: optional_text(raw.get("api_key_env"))?,
         default_model,
+        vision: match raw.get("vision") {
+            None => false,
+            Some(value) => value.as_bool().ok_or_else(|| {
+                LlmProfileConfigurationError::new("LLM profile vision must be true or false.")
+            })?,
+        },
     })
 }
 
@@ -361,7 +371,7 @@ fn reject_unknown_profile_keys(
     for key in raw.keys() {
         if !SUPPORTED_PROFILE_KEYS.contains(&key.as_str()) {
             return Err(LlmProfileConfigurationError::new(format!(
-                "LLM profile '{profile_id}' has unsupported key '{key}'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts."
+                "LLM profile '{profile_id}' has unsupported key '{key}'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts, vision."
             )));
         }
     }

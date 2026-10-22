@@ -51,6 +51,7 @@ pub struct LlmProfileRoute {
     pub id: String,
     pub provider: String,
     pub default_model: Option<String>,
+    pub vision: bool,
 }
 
 impl LlmProfileRoute {
@@ -222,6 +223,7 @@ impl Client {
             profile_id.as_ref(),
             active_profile.provider,
             active_profile.default_model,
+            false,
             Ok(adapter),
         )?;
         Ok(self)
@@ -411,6 +413,7 @@ impl Client {
                 &profile.id,
                 profile.provider.clone(),
                 profile.default_model.clone(),
+                profile.vision,
                 adapter,
             )?;
         }
@@ -422,6 +425,7 @@ impl Client {
         profile_id: &str,
         provider: String,
         default_model: Option<String>,
+        vision: bool,
         adapter: Result<Arc<dyn ProviderAdapter>, AdapterError>,
     ) -> Result<(), AdapterError> {
         let profile_id = profile_id.trim();
@@ -456,6 +460,7 @@ impl Client {
                     id: profile_id.to_string(),
                     provider,
                     default_model,
+                    vision,
                 },
                 adapter,
             },

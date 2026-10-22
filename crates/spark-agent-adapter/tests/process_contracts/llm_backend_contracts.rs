@@ -1151,10 +1151,6 @@ fn codergen_backend_agent_mode_uses_model_usage_update_when_final_text_is_empty(
     assert_eq!(usage.input_tokens, 5);
     assert_eq!(usage.total_tokens, 5);
     assert_eq!(usage.cache_write_tokens, Some(6));
-    assert_eq!(
-        usage.raw.as_ref().expect("raw usage")["cache_write_tokens"],
-        json!(6)
-    );
     assert_eq!(calls.lock().expect("calls").len(), 1);
 }
 
@@ -1362,21 +1358,17 @@ fn agent_turn_backend_builds_session_and_preserves_metadata_and_output_contract(
                 "cachedInputTokens": 3,
                 "outputTokens": 4,
                 "totalTokens": 7
-            }
-        })
-    );
-    assert!(token_usage.get("total_tokens").is_none());
-    assert_eq!(
-        output.token_usage_breakdown.as_ref(),
-        Some(&json!({
-            "total": {
+            },
+            "last": {
                 "inputTokens": 3,
                 "cachedInputTokens": 3,
                 "outputTokens": 4,
                 "totalTokens": 7
             }
-        }))
+        })
     );
+    assert!(token_usage.get("total_tokens").is_none());
+    assert_eq!(output.token_usage_breakdown.as_ref(), Some(&token_usage));
     assert!(output.raw_log_lines.is_empty());
     assert!(output.thread_resume_failure.is_none());
     assert_eq!(
@@ -1864,9 +1856,10 @@ fn agent_turn_backend_does_not_reuse_prior_history_as_current_final_text_after_s
         .any(|event| event.kind == TurnStreamEventKind::Error));
     assert_eq!(
         output.token_usage,
-        Some(
-            json!({"total": {"inputTokens": 1, "cachedInputTokens": 0, "outputTokens": 1, "totalTokens": 2}})
-        )
+        Some(json!({
+            "total": {"inputTokens": 1, "cachedInputTokens": 0, "outputTokens": 1, "totalTokens": 2},
+            "last": {"inputTokens": 1, "cachedInputTokens": 0, "outputTokens": 1, "totalTokens": 2},
+        }))
     );
 }
 
@@ -3916,4 +3909,209 @@ fn a_native_turn_resumed_by_a_clarification_answer_takes_steers_and_stops() {
         Some(&TurnStreamEventKind::TurnCompleted)
     );
     assert!(!live_backend().interrupt_turn(&project_path, "answer-chat"));
+}
+
+fn with_usage(
+    mut events: Vec<StreamEvent>,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Vec<StreamEvent> {
+    events.last_mut().expect("finish").usage = Some(Usage {
+        input_tokens,
+        output_tokens,
+        ..Usage::default()
+    });
+    events
+}
+
+/// A tool round then an answer: 100 then 200 input tokens, 10 output each.
+fn two_request_client() -> (Client, Arc<Mutex<Vec<Request>>>) {
+    scripted_client(|index, _| {
+        Ok(if index == 0 {
+            with_usage(
+                reply(
+                    "Checking.",
+                    vec![ToolCall::new("call-1", "shell", json!({"command": "true"}))],
+                ),
+                100,
+                10,
+            )
+        } else {
+            with_usage(reply("Done.", Vec::new()), 200, 10)
+        })
+    })
+}
+
+#[test]
+fn native_chat_usage_sums_every_request_and_reports_the_context_the_last_one_filled() {
+    let project = tempfile::tempdir().unwrap();
+    let (client, calls) = two_request_client();
+    let mut request = native_chat_request("usage-chat", &project.path().to_string_lossy());
+    request.model = Some("gpt-5.5".to_string());
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .run_turn(request)
+        .expect("turn output");
+
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    let usage = output.token_usage.expect("usage");
+    assert_eq!(usage["total"]["inputTokens"], json!(300));
+    assert_eq!(usage["total"]["outputTokens"], json!(20));
+    assert_eq!(usage["total"]["totalTokens"], json!(320));
+    assert_eq!(usage["last"]["inputTokens"], json!(200));
+    assert_eq!(
+        usage["context"],
+        json!({"window_tokens": 1_050_000, "used_tokens": 200})
+    );
+}
+
+#[test]
+fn native_node_usage_sums_every_request_live_and_on_completion() {
+    let (client, _) = two_request_client();
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&streamed);
+    let output = RustLlmCodergenBackend::new(client)
+        .run_with_event_sink(
+            native_node_request("usage-node", None),
+            Some(Arc::new(move |event| {
+                sink_events.lock().unwrap().push(event);
+            })),
+        )
+        .expect("node output");
+
+    let usage = output.usage.expect("usage");
+    assert_eq!((usage.input_tokens, usage.output_tokens), (300, 20));
+    let completed = output.events.last().expect("completion");
+    assert_eq!(completed.payload["token_usage"]["input_tokens"], json!(300));
+    // Live, each usage event carries the node's running total at the top
+    // level, where run usage reads it.
+    let live = streamed
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event.payload["kind"] == json!("model_usage_update"))
+        .map(|event| event.payload["token_usage"]["total"]["inputTokens"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(live, vec![json!(100), json!(300)]);
+}
+
+#[test]
+fn native_attachments_are_file_references_with_image_parts_only_for_vision_models() {
+    let project = tempfile::tempdir().unwrap();
+    let image_path = project.path().join("shot.png");
+    fs::write(&image_path, b"png-bytes").unwrap();
+    let notes_path = project.path().join("notes.txt");
+    fs::write(&notes_path, b"notes").unwrap();
+    let attachments = json!([
+        {"id": "a1", "filename": "shot.png", "media_type": "image/png", "size_bytes": 9,
+            "path": image_path.to_string_lossy()},
+        {"id": "a2", "filename": "notes.txt", "media_type": "text/plain", "size_bytes": 5,
+            "path": notes_path.to_string_lossy()},
+    ]);
+    for (model, vision) in [("gpt-5.5", true), ("gpt-live", false)] {
+        let (client, calls) = scripted_client(|_, _| Ok(reply("Seen.", Vec::new())));
+        let mut request = native_chat_request("attach-chat", &project.path().to_string_lossy());
+        request.model = Some(model.to_string());
+        request.metadata.insert(
+            spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+            attachments.clone(),
+        );
+
+        let output = RustLlmAgentTurnBackend::new(client)
+            .run_turn(request)
+            .expect("an attachment turn runs");
+
+        assert_eq!(output.final_assistant_text.as_deref(), Some("Seen."));
+        let calls = calls.lock().unwrap();
+        let message = calls[0].messages.last().expect("user message");
+        assert_eq!(message.role, MessageRole::User);
+        let text = message.text();
+        assert!(text.starts_with("Do the work\n\nAttached files"), "{text}");
+        for path in [&image_path, &notes_path] {
+            assert!(text.contains(&*path.to_string_lossy()), "{text}");
+        }
+        let images = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Image { image } => Some(image.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if vision {
+            assert_eq!(images.len(), 1, "{model}");
+            assert_eq!(images[0].data.as_deref(), Some(&b"png-bytes"[..]));
+            assert_eq!(images[0].media_type.as_deref(), Some("image/png"));
+        } else {
+            assert!(images.is_empty(), "{model}");
+        }
+    }
+}
+
+#[test]
+fn a_native_message_sent_mid_turn_with_attachments_reaches_the_agent_as_references() {
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().to_string_lossy().into_owned();
+    let attachment: spark_agent_adapter::AgentAttachment = serde_json::from_value(json!({
+        "id": "a1", "filename": "log.txt", "media_type": "text/plain", "size_bytes": 3,
+        "path": "/tmp/log.txt"}))
+    .unwrap();
+    let message = spark_agent_adapter::attachments::message_with_attachment_references(
+        "See the log.",
+        &[attachment],
+    );
+    let path = project_path.clone();
+    let sent = message.clone();
+    let (client, calls) = scripted_client(move |index, _| {
+        if index == 0 {
+            assert!(live_backend().send_message(&path, "attach-live", "message-1", &sent));
+        }
+        Ok(reply("Done.", Vec::new()))
+    });
+
+    RustLlmAgentTurnBackend::new(client)
+        .run_turn(native_chat_request("attach-live", &project_path))
+        .expect("turn output");
+
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    let read = calls[1].messages.last().unwrap().text();
+    assert!(read.starts_with("See the log.\n\nAttached files"), "{read}");
+    assert!(
+        read.contains("- log.txt (text/plain, 3 bytes): /tmp/log.txt"),
+        "{read}"
+    );
+}
+
+#[test]
+fn a_retried_native_request_shows_a_retry_notice() {
+    let project = tempfile::tempdir().unwrap();
+    let (client, calls) = scripted_client(|index, _| {
+        if index == 0 {
+            let mut error = AdapterError::new(AdapterErrorKind::Server, "overloaded");
+            error.retryable = true;
+            error.retry_after = Some(0.0);
+            return Err(error);
+        }
+        Ok(reply("Done.", Vec::new()))
+    });
+    let (streamed, sink) = streaming_sink();
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .run_turn_with_event_sink(
+            native_chat_request("retry-chat", &project.path().to_string_lossy()),
+            Some(sink),
+        )
+        .expect("a retried turn completes");
+
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Done."));
+    for events in [&output.events, &*streamed.lock().unwrap()] {
+        let notices = other_events(events, "warning");
+        assert_eq!(notices.len(), 1, "{events:?}");
+        assert_eq!(
+            notices[0].message.as_deref(),
+            Some("overloaded; retrying in 0s (attempt 1 of 2)")
+        );
+    }
 }

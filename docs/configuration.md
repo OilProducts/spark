@@ -108,8 +108,9 @@ keeps drafts after validation errors or conflicts. Profile pickers refresh after
 settings notifications.
 
 An LLM update's `value` is the complete list of profiles, each with `id`,
-`provider`, `base_url`, `models`, and optional `label`, `api_key_env`, and
-`default_model`. Currently the dedicated profile format supports
+`provider`, `base_url`, `models`, and optional `label`, `api_key_env`,
+`default_model`, and `vision` (`true` when the models take image input, so
+image attachments reach them as images as well as file references). Currently the dedicated profile format supports
 `openai_compatible`. Endpoints must use HTTP(S) without embedded credentials,
 queries or fragments; credentials use environment-variable references.
 
