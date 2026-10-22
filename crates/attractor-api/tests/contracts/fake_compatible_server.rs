@@ -21,6 +21,14 @@ impl Sse {
         );
     }
 
+    pub fn tool_call(&mut self, id: &str, name: &str, arguments: Value) {
+        let _ = self.send(
+            json!({"id": "fake", "object": "chat.completion.chunk", "model": "test-model",
+            "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": id, "type": "function",
+            "function": {"name": name, "arguments": arguments.to_string()}}]}, "finish_reason": null}]}),
+        );
+    }
+
     pub fn finish(&mut self) {
         let _ = self.send(
             json!({"id": "fake", "object": "chat.completion.chunk", "model": "test-model",

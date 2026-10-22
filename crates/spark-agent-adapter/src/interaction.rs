@@ -122,10 +122,3 @@ pub(crate) fn plan(arguments: &Value) -> Result<String, String> {
         .map(str::to_string)
         .ok_or_else(|| PLAN_MISSING.to_string())
 }
-
-/// A final answer that is already the JSON the schema asks for.
-pub(crate) fn conforms(text: &str, schema: &Value) -> bool {
-    serde_json::from_str::<Value>(text.trim()).is_ok_and(|value| {
-        jsonschema::validator_for(schema).is_ok_and(|validator| validator.is_valid(&value))
-    })
-}

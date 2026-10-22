@@ -1044,3 +1044,113 @@ edges:
         started.elapsed()
     );
 }
+
+/// A native node's question waits on the run's human gate past the node's
+/// `timeout`, continues once answered, and still stops on cancel.
+#[test]
+fn native_node_clarification_outlasts_its_timeout_and_stops_on_cancel() {
+    use crate::fake_compatible_server::{configure, serve};
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    fs::create_dir_all(&settings.project_root).unwrap();
+    let base_url = serve(|body, sse| {
+        if body.to_string().contains("Answer: Developers") {
+            sse.text("Writing for developers.");
+        } else {
+            sse.tool_call(
+                "ask-1",
+                "request_user_input",
+                json!({"questions": [{"header": "Audience", "question": "Which audience?",
+                    "options": [{"label": "Developers"}, {"label": "Managers"}]}]}),
+            );
+        }
+        sse.finish();
+    });
+    configure(&settings.config_dir, &base_url);
+    let service = AttractorApiService::new_with_runtime_handler_runner_factory(
+        settings.clone(),
+        attractor_api::rust_llm_runtime_handler_runner_factory(unified_llm_adapter::Client::new()),
+    );
+    let question = |id: &str| {
+        wait(|| {
+            assert_ne!(
+                run_status(&settings, id),
+                "failed",
+                "{:?}",
+                stage_failures(&settings, id)
+            );
+            service.list_pipeline_questions(id).body["questions"]
+                .as_array()
+                .is_some_and(|q| q.len() == 1)
+        });
+        service.list_pipeline_questions(id).body["questions"][0].clone()
+    };
+    // A one-agent-node run whose questions would time out with the node.
+    let start = |id: &str| {
+        let project = temp.path().join(id);
+        fs::create_dir_all(&project).unwrap();
+        let start = service.start_pipeline(PipelineStartRequest {
+            run_id: Some(id.into()),
+            working_directory: project.to_string_lossy().into(),
+            llm_provider: Some("openai_compatible".into()),
+            model: Some("test-model".into()),
+            flow_name: Some(crate::install_flow(
+                &settings,
+                &format!(
+                    r#"schema_version: "1"
+id: {id}
+nodes:
+  start: {{ kind: start }}
+  work:
+    kind: agent_task
+    runtime: {{ timeout: 1s, max_retries: 0 }}
+    contracts: {{ runtime_mode: agent }}
+    config: {{ kind: agent_task, prompt: ASK about the audience }}
+  done: {{ kind: exit }}
+edges:
+- {{ from: start, to: work }}
+- {{ from: work, to: done }}
+"#
+                ),
+            )),
+            ..Default::default()
+        });
+        assert_eq!(start.status_code, 200, "{}", start.body);
+    };
+
+    start("native-ask");
+    let asked = question("native-ask");
+    assert_eq!(asked["origin"], "agent_clarification");
+    thread::sleep(Duration::from_millis(2500));
+    assert_eq!(run_status(&settings, "native-ask"), "waiting");
+    let path = format!(
+        "/attractor/pipelines/native-ask/questions/{}/answer",
+        asked["question_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        service
+            .dispatch("POST", &path, r#"{"selected_value":"Developers"}"#)
+            .status_code,
+        200
+    );
+    wait(|| {
+        let status = run_status(&settings, "native-ask");
+        assert_ne!(
+            status,
+            "failed",
+            "{:?}",
+            stage_failures(&settings, "native-ask")
+        );
+        status == "completed"
+    });
+
+    start("native-ask-cancel");
+    question("native-ask-cancel");
+    let path = "/attractor/pipelines/native-ask-cancel/cancel";
+    assert_eq!(service.dispatch("POST", path, "{}").status_code, 200);
+    wait(|| run_status(&settings, "native-ask-cancel") == "canceled");
+    assert_eq!(
+        stage_failures(&settings, "native-ask-cancel"),
+        Vec::<String>::new()
+    );
+}

@@ -651,15 +651,7 @@ impl Session {
                         round_count += 1;
                         continue;
                     }
-                    if !structured
-                        && self
-                            .interaction
-                            .final_answer_schema
-                            .as_ref()
-                            .is_some_and(|schema| {
-                                !crate::interaction::conforms(&assistant_turn.text(), schema)
-                            })
-                    {
+                    if !structured && self.interaction.final_answer_schema.is_some() {
                         // The answer is asked for again, constrained to the schema.
                         unconstrained = self.history.pop();
                         structured = true;

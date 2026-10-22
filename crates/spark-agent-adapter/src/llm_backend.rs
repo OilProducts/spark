@@ -214,7 +214,7 @@ impl RustLlmCodergenBackend {
             agent_request,
             turn_event_sink,
             capture_sink,
-            self.clarification_handler.clone(),
+            stop.pausing(self.clarification_handler.clone()),
         );
         if let Some(output) = stop.finish() {
             return Ok(output);
@@ -347,7 +347,7 @@ impl RustLlmCodergenBackend {
         let result = ClaudeCodeBackend::new().run_codergen_turn(
             agent_request,
             turn_event_sink,
-            self.clarification_handler.clone(),
+            stop.pausing(self.clarification_handler.clone()),
         );
         if let Some(output) = stop.finish() {
             return Ok(output);
@@ -561,9 +561,8 @@ impl RustLlmCodergenBackend {
         let mut session = build_agent_session(&self.client, agent_request.clone())
             .map_err(codergen_adapter_error)?;
         session.interaction.final_answer_schema = status_envelope_schema(&request);
-        if let Some(handler) = self.clarification_handler.clone() {
+        if self.clarification_handler.is_some() {
             prompt.push_str("\n\nInspect available evidence before asking for clarification. Use request_user_input for unresolved questions about the user’s intent that affect the outcome, then continue the same task after the answer.");
-            session.interaction.questions = Some(handler);
         }
         if let Some(sink) = event_sink {
             // Live prefix contract: emit the same per-event mapping the
@@ -600,6 +599,7 @@ impl RustLlmCodergenBackend {
             session.steering_handle(),
         );
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
+        session.interaction.questions = stop.pausing(self.clarification_handler.clone());
         let process_error = session.process_input(&self.client, prompt).err();
         session.close();
         if let Some(output) = stop.finish() {
@@ -626,6 +626,7 @@ const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// interrupt, so one watcher serves every backend.
 struct NodeStop {
     reason: std::sync::Arc<std::sync::Mutex<Option<Outcome>>>,
+    waits: std::sync::Arc<std::sync::Mutex<HumanWaits>>,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     watcher: Option<std::thread::JoinHandle<()>>,
 }
@@ -638,6 +639,7 @@ impl NodeStop {
     ) -> Result<Self, CodergenError> {
         let reason = std::sync::Arc::new(std::sync::Mutex::new(None));
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waits = std::sync::Arc::default();
         let timeout = request.timeout_seconds;
         let deadline = timeout
             .map(|seconds| {
@@ -655,6 +657,7 @@ impl NodeStop {
         if cancel_check.is_none() && deadline.is_none() {
             return Ok(Self {
                 reason,
+                waits,
                 done,
                 watcher: None,
             });
@@ -664,7 +667,7 @@ impl NodeStop {
             agent_request.conversation_id.clone(),
         );
         let watcher = std::thread::spawn({
-            let (reason, done) = (reason.clone(), done.clone());
+            let (reason, waits, done) = (reason.clone(), waits.clone(), done.clone());
             move || {
                 let mut stopped_at = None;
                 while !done.load(std::sync::atomic::Ordering::SeqCst) {
@@ -679,7 +682,14 @@ impl NodeStop {
                                 failure_kind: Some(FailureKind::Runtime),
                                 ..Outcome::new(OutcomeStatus::Fail)
                             });
-                        } else if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                        } else if deadline.is_some_and(|at| {
+                            // Time spent waiting on a human answer does not count.
+                            let waits = waits.lock().unwrap();
+                            waits.open == 0
+                                && at
+                                    .checked_add(waits.total)
+                                    .is_some_and(|at| std::time::Instant::now() >= at)
+                        }) {
                             *slot = Some(Outcome {
                                 status: OutcomeStatus::Fail,
                                 failure_reason: format!(
@@ -710,8 +720,31 @@ impl NodeStop {
         });
         Ok(Self {
             reason,
+            waits,
             done,
             watcher: Some(watcher),
+        })
+    }
+
+    /// The node's clarification handler, with its timeout paused while a
+    /// question waits for its answer: a human gate never times out.
+    fn pausing(
+        &self,
+        handler: Option<crate::codergen::ClarificationHandler>,
+    ) -> Option<crate::codergen::ClarificationHandler> {
+        let waits = self.waits.clone();
+        handler.map(|handler| {
+            std::sync::Arc::new(move |params| {
+                let mut poll = handler(params)?;
+                let mut wait = Some(HumanWait::open(waits.clone()));
+                Ok(Box::new(move || {
+                    let answer = poll();
+                    if !matches!(answer, Ok(None)) {
+                        drop(wait.take());
+                    }
+                    answer
+                }) as crate::codergen::ClarificationPoll)
+            }) as crate::codergen::ClarificationHandler
         })
     }
 
@@ -728,6 +761,41 @@ impl NodeStop {
             usage: None,
             resume_metadata: BTreeMap::new(),
         })
+    }
+}
+
+/// A node's open human waits and the time it has spent in them.
+#[derive(Default)]
+struct HumanWaits {
+    open: usize,
+    since: Option<std::time::Instant>,
+    total: std::time::Duration,
+}
+
+/// One question waiting for its answer, closed when answered or dropped.
+struct HumanWait(std::sync::Arc<std::sync::Mutex<HumanWaits>>);
+
+impl HumanWait {
+    fn open(waits: std::sync::Arc<std::sync::Mutex<HumanWaits>>) -> Self {
+        let mut state = waits.lock().unwrap();
+        if state.open == 0 {
+            state.since = Some(std::time::Instant::now());
+        }
+        state.open += 1;
+        drop(state);
+        Self(waits)
+    }
+}
+
+impl Drop for HumanWait {
+    fn drop(&mut self) {
+        let mut state = self.0.lock().unwrap();
+        state.open -= 1;
+        if state.open == 0 {
+            if let Some(since) = state.since.take() {
+                state.total += since.elapsed();
+            }
+        }
     }
 }
 

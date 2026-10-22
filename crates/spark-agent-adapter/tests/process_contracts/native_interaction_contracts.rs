@@ -468,6 +468,34 @@ fn native_agent_node_asks_for_the_envelope_on_its_final_answer_and_repairs_in_se
     assert!(texts.contains(&r#"{"outcome":"bogus"}"#.to_string()));
     assert_eq!(texts.last().unwrap(), "Repair your envelope");
     assert!(tool_results(&repair_request).contains_key("glob-1"));
+    // The repair's conforming answer is still asked for under the schema.
+    assert_eq!(schema_of(&repair_request), Some(envelope_schema()));
+}
+
+#[test]
+fn native_agent_node_asks_for_the_envelope_even_when_its_answer_already_conforms() {
+    let (client, adapter) = Scripted::client(|request| {
+        if tool_results(request).contains_key("glob-1") {
+            text(r#"{"outcome":"success"}"#)
+        } else {
+            (
+                String::new(),
+                vec![call("glob-1", "glob", json!({"pattern": "*.none"}))],
+            )
+        }
+    });
+    let mut backend = RustLlmCodergenBackend::new(client);
+
+    let output = backend
+        .run(envelope_request("Do it", CodergenRuntimeMode::agent()))
+        .expect("node output");
+
+    let requests = adapter.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(schema_of(&requests[1]), None);
+    assert_eq!(schema_of(&requests[2]), Some(envelope_schema()));
+    assert!(tool_names(&requests[2]).contains(&"glob".to_string()));
+    assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
 }
 
 #[test]
