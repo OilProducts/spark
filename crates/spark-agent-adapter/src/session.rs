@@ -596,7 +596,14 @@ impl Session {
             let mut structured = false;
             let mut unconstrained = None;
             loop {
-                if self.limit_reached_before_model_request(round_count) {
+                // Asking a final answer again under the schema is not another
+                // round, so a round limit never discards that answer.
+                if unconstrained.is_some() {
+                    if self.abort_requested() {
+                        self.close_for_abort();
+                        return Ok(());
+                    }
+                } else if self.limit_reached_before_model_request(round_count) {
                     return Ok(());
                 }
 
@@ -655,7 +662,6 @@ impl Session {
                         // The answer is asked for again, constrained to the schema.
                         unconstrained = self.history.pop();
                         structured = true;
-                        round_count += 1;
                         continue;
                     }
                     break;

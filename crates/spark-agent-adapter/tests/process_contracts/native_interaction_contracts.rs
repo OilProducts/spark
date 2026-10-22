@@ -662,3 +662,37 @@ fn native_subagent_work_nests_under_the_spawn_call() {
             .collect::<Vec<_>>(),
     );
 }
+
+#[test]
+fn native_agent_node_keeps_its_answer_at_the_tool_round_limit() {
+    let (client, adapter) = Scripted::client(|request| {
+        if request.response_format.is_some() {
+            text(r#"{"outcome":"success"}"#)
+        } else if first_user_text(request) == "Answer now" || !tool_results(request).is_empty() {
+            text("All done.")
+        } else {
+            (
+                String::new(),
+                vec![call("glob-1", "glob", json!({"pattern": "*.none"}))],
+            )
+        }
+    });
+    let mut backend = RustLlmCodergenBackend::new(client);
+
+    // The final answer comes in the last request the round limit permits:
+    // (a) immediately, and (b) right after the last permitted tool round.
+    // A limit of one permits no request after a tool round, so (b) needs two.
+    for (prompt, max_rounds, requests) in [("Answer now", 1, 2), ("Use a tool", 2, 3)] {
+        let mut request = envelope_request(prompt, CodergenRuntimeMode::agent());
+        request.metadata.insert(
+            "spark.execution.settings".to_string(),
+            json!({"configuration": {"agents": {"max_tool_rounds_per_input": max_rounds}}}),
+        );
+        let before = adapter.requests().len();
+        let output = backend.run(request).expect("node output");
+        let sent = adapter.requests().split_off(before);
+        assert_eq!(sent.len(), requests, "{prompt}");
+        assert_eq!(schema_of(sent.last().unwrap()), Some(envelope_schema()));
+        assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
+    }
+}
