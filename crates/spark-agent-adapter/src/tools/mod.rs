@@ -203,6 +203,7 @@ pub struct ToolExecution {
     pub capabilities: BTreeMap<String, bool>,
     pub host_controls: ToolHostControls,
     pub subagent_runtime: Option<SubAgentToolRuntime>,
+    pub abort_signal: Option<AbortSignal>,
 }
 
 #[derive(Clone, Default)]
@@ -588,9 +589,6 @@ fn dispatch_one(
 ) -> ToolResult {
     let tool_call_id = tool_call.id.clone();
     let tool_name = tool_call.name.clone();
-    // ponytail: a parallel call that starts its command just as the session
-    // aborts escapes that abort's kill; a repeated abort, as node stop sends,
-    // still kills it.
     if context
         .abort_signal
         .as_ref()
@@ -642,6 +640,7 @@ fn dispatch_one(
         capabilities: context.capabilities.clone(),
         host_controls: context.host_controls.clone(),
         subagent_runtime: context.subagent_runtime.clone(),
+        abort_signal: context.abort_signal.clone(),
     };
     let executor = registered.executor.clone();
     let execution = catch_unwind(AssertUnwindSafe(|| (executor)(invocation)));

@@ -1432,48 +1432,13 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             request.project_path.clone(),
             request.conversation_id.clone(),
         );
-        let mut session =
-            build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
-        let turn = NativeTurn::register_session((&project_path, &conversation_id), &mut session);
-        if let Some(event_sink) = event_sink.clone() {
-            // Mirror the codex live+batch shape: stream each session event to
-            // the sink as it is emitted, while the drained queue still feeds
-            // the durable output batch afterwards.
-            let stopped = turn.stopped.clone();
-            let observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync> =
-                std::sync::Arc::new(move |event: &SessionEvent| {
-                    // A stopped turn's abort is not a failure.
-                    if event.kind == EventKind::Error
-                        && stopped.load(std::sync::atomic::Ordering::SeqCst)
-                    {
-                        return;
-                    }
-                    if let Some(turn_event) = event.to_turn_stream_event() {
-                        event_sink(turn_event);
-                    }
-                });
-            // Session construction already queued lifecycle events
-            // (session_start); replay them so the sink sees the full turn.
-            for event in session.event_queue.iter() {
-                observer(event);
-            }
-            session.set_event_observer(observer);
-        }
-        let initial_history_len = session.history.len();
-        let result = session.process_input(&self.client, prompt);
-        session.finish_steering();
-        let mut output = agent_output_from_session(&mut session, initial_history_len);
-        if session.abort_signaled && turn.stopped.load(std::sync::atomic::Ordering::SeqCst) {
-            settle_stopped_turn(&mut output, event_sink.as_ref());
-            return Ok(output);
-        }
-        if let Err(error) = result {
-            if agent_turn_output_has_failure(&output) {
-                return Ok(output);
-            }
-            return Err(agent_adapter_error(error));
-        }
-        Ok(output)
+        let session = build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        self.run_native_turn(
+            (&project_path, &conversation_id),
+            session,
+            prompt,
+            event_sink,
+        )
     }
 
     fn answer_request_user_input(
@@ -1539,8 +1504,8 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         let mut session = build_agent_session_for_source(
             &self.client,
             AgentTurnRequest {
-                conversation_id,
-                project_path,
+                conversation_id: conversation_id.clone(),
+                project_path: project_path.clone(),
                 prompt: String::new(),
                 history,
                 provider,
@@ -1553,17 +1518,65 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
             "request_user_input_answer",
         )
         .map_err(agent_adapter_error)?;
-        let initial_history_len = session.history.len();
         session.mark_awaiting_input(continuation.pending_question);
-        if let Err(error) = session.process_input(&self.client, continuation.answer_content) {
-            let output = agent_output_from_session(&mut session, initial_history_len);
+        self.run_native_turn(
+            (&project_path, &conversation_id),
+            session,
+            continuation.answer_content,
+            None,
+        )
+    }
+}
+
+impl RustLlmAgentTurnBackend {
+    /// Runs one native turn, registered so it can be steered and stopped.
+    fn run_native_turn(
+        &self,
+        key: (&str, &str),
+        mut session: Session,
+        input: String,
+        event_sink: Option<AgentTurnEventSink>,
+    ) -> Result<AgentTurnOutput, AgentError> {
+        let turn = NativeTurn::register_session(key, &mut session);
+        if let Some(event_sink) = event_sink.clone() {
+            // Mirror the codex live+batch shape: stream each session event to
+            // the sink as it is emitted, while the drained queue still feeds
+            // the durable output batch afterwards.
+            let stopped = turn.stopped.clone();
+            let observer: std::sync::Arc<dyn Fn(&SessionEvent) + Send + Sync> =
+                std::sync::Arc::new(move |event: &SessionEvent| {
+                    // A stopped turn's abort is not a failure.
+                    if event.kind == EventKind::Error
+                        && stopped.load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        return;
+                    }
+                    if let Some(turn_event) = event.to_turn_stream_event() {
+                        event_sink(turn_event);
+                    }
+                });
+            // Session construction already queued lifecycle events
+            // (session_start); replay them so the sink sees the full turn.
+            for event in session.event_queue.iter() {
+                observer(event);
+            }
+            session.set_event_observer(observer);
+        }
+        let initial_history_len = session.history.len();
+        let result = session.process_input(&self.client, input);
+        session.finish_steering();
+        let mut output = agent_output_from_session(&mut session, initial_history_len);
+        if session.abort_signaled && turn.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            settle_stopped_turn(&mut output, event_sink.as_ref());
+            return Ok(output);
+        }
+        if let Err(error) = result {
             if agent_turn_output_has_failure(&output) {
                 return Ok(output);
             }
             return Err(agent_adapter_error(error));
         }
-
-        Ok(agent_output_from_session(&mut session, initial_history_len))
+        Ok(output)
     }
 }
 

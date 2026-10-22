@@ -89,6 +89,8 @@ pub struct CommandOptions {
     pub timeout_ms: Option<u64>,
     pub working_dir: Option<PathBuf>,
     pub env_vars: BTreeMap<String, String>,
+    /// Once aborted, the command is not started, or is killed if running.
+    pub abort_signal: Option<unified_llm_adapter::AbortSignal>,
 }
 
 #[derive(Debug, Error)]

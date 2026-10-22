@@ -2523,3 +2523,36 @@ fn tool_calls_not_started_before_an_abort_return_stopped_without_running() {
     assert_eq!(results[0].content, json!("Stopped."));
     assert!(events.lock().unwrap().is_empty());
 }
+
+/// A Stop that lands after dispatch begins but before the command's process
+/// is registered finds nothing to kill; the command must still not run.
+#[test]
+fn a_stop_between_dispatch_and_process_start_keeps_the_command_from_running() {
+    let project = tempdir().expect("project");
+    let environment = ExecutionEnvironment::local(project.path());
+    let abort = unified_llm_adapter::AbortSignal::new();
+    let started = std::time::Instant::now();
+
+    let results = create_openai_profile("gpt-5.2").registry().dispatch_many(
+        [ToolCall::new(
+            "call-shell",
+            "shell",
+            json!({"command": "touch started && sleep 30", "timeout_ms": 60000}),
+        )],
+        ToolDispatchContext {
+            execution_environment: environment.clone(),
+            abort_signal: Some(abort.clone()),
+            // Runs between the dispatch's own abort check and the command.
+            event_hook: Some(Arc::new(move |_| {
+                // One chat Stop: SessionAbortHandle::abort_with_reason.
+                abort.abort("Stopped.");
+                let _ = environment.cleanup();
+            })),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(results[0].is_error, "{:?}", results[0]);
+    assert!(!project.path().join("started").exists());
+}

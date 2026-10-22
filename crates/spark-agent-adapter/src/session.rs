@@ -340,7 +340,6 @@ impl SessionAbortHandle {
     /// repeated abort also stops one started after the first.
     pub fn abort_with_reason(&self, reason: impl Into<String>) {
         self.signal.abort(reason.into());
-        self.cleanup_state.completed.store(true, Ordering::SeqCst);
         let _ = self.execution_environment.cleanup();
     }
 

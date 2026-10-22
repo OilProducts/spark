@@ -1689,7 +1689,8 @@ fn process_input_command_abort_runs_cleanup_closes_and_skips_queued_followups() 
     let (mut session, result) = worker.join().expect("session worker joins");
 
     result.expect("command abort closes the session without surfacing a tool error");
-    assert_eq!(command_state.cleanup_calls(), 1);
+    // The abort cleans up, and so does the close it leads to.
+    assert_eq!(command_state.cleanup_calls(), 2);
     assert_eq!(session.state, SessionState::Closed);
     assert!(session.abort_signaled);
     assert_eq!(turn_names(&session.history), ["UserTurn", "AssistantTurn"]);

@@ -3839,3 +3839,81 @@ fn steering_a_native_node_after_it_stops_taking_messages_is_rejected_as_not_live
     assert_eq!(late.reason, "no_live_session");
     assert_eq!(late.delivery_mode, "live_turn");
 }
+
+/// Answering a clarification resumes the native turn as a live turn: a
+/// message sent while it runs is read, and Stop aborts its blocked request.
+#[test]
+fn a_native_turn_resumed_by_a_clarification_answer_takes_steers_and_stops() {
+    let project = tempfile::tempdir().unwrap();
+    let project_path = project.path().to_string_lossy().into_owned();
+    let path = project_path.clone();
+    let (client, calls) = scripted_client(move |index, request| {
+        if index == 0 {
+            assert!(live_backend().send_message(
+                &path,
+                "answer-chat",
+                "message-1",
+                "Keep it short."
+            ));
+            return Ok(reply("Using the inline card.", Vec::new()));
+        }
+        assert_eq!(
+            request.messages.last(),
+            Some(&Message::user("Keep it short."))
+        );
+        assert!(live_backend().interrupt_turn(&path, "answer-chat"));
+        until_aborted(request)
+    });
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .answer_request_user_input(AgentRequestUserInputAnswerRequest {
+            conversation_id: "answer-chat".to_string(),
+            project_path: project_path.clone(),
+            request_id: "request-1".to_string(),
+            assistant_turn_id: "assistant-turn-1".to_string(),
+            answers: BTreeMap::from([("path_choice".to_string(), "Inline card".to_string())]),
+            request_user_input: Some(json!({
+                "request_id": "request-1",
+                "status": "answered",
+                "questions": [{
+                    "id": "path_choice",
+                    "header": "Path",
+                    "question": "Which path should I take?",
+                    "question_type": "FREEFORM",
+                    "options": [],
+                    "allow_other": false,
+                    "is_secret": false
+                }]
+            })),
+            history: vec![
+                HistoryTurn::User(UserTurn::new("Do the work")),
+                HistoryTurn::Assistant(AssistantTurn::new("Which path should I take?")),
+            ],
+            provider: Some("openai".to_string()),
+            model: Some("gpt-live".to_string()),
+            llm_profile: None,
+            reasoning_effort: None,
+            chat_mode: Some("agent".to_string()),
+            metadata: BTreeMap::new(),
+        })
+        .expect("a stopped turn completes");
+
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    assert_eq!(
+        output.final_assistant_text.as_deref(),
+        Some("Using the inline card.")
+    );
+    assert!(output.thread_resume_failure.is_none());
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error));
+    let delivered = other_events(&output.events, "user_message_delivered");
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].source.item_id.as_deref(), Some("message-1"));
+    assert_eq!(
+        output.events.last().map(|event| &event.kind),
+        Some(&TurnStreamEventKind::TurnCompleted)
+    );
+    assert!(!live_backend().interrupt_turn(&project_path, "answer-chat"));
+}

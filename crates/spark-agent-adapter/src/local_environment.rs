@@ -423,6 +423,15 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
             .envs(environment);
         configure_process_group(&mut command_builder);
 
+        let aborted = || {
+            options
+                .abort_signal
+                .as_ref()
+                .is_some_and(unified_llm_adapter::AbortSignal::aborted)
+        };
+        if aborted() {
+            return Err(EnvironmentError::Other("Stopped.".to_string()));
+        }
         let start = Instant::now();
         let mut child = command_builder
             .spawn()
@@ -434,6 +443,7 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
         let stderr_handle = child.stderr.take().map(read_pipe);
         let deadline = start + Duration::from_millis(timeout_ms);
         let mut timed_out = false;
+        let mut stopped = false;
         let mut exit_status = loop {
             if let Some(status) = child
                 .try_wait()
@@ -443,6 +453,13 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
             }
             if Instant::now() >= deadline {
                 timed_out = true;
+                self.terminate_process_group(process_group_id, Some(&mut child));
+                break child.try_wait().ok().flatten();
+            }
+            // Checked after registration, so an abort whose cleanup ran
+            // before this command registered still kills it.
+            if aborted() {
+                stopped = true;
                 self.terminate_process_group(process_group_id, Some(&mut child));
                 break child.try_wait().ok().flatten();
             }
@@ -458,6 +475,9 @@ impl ExecutionEnvironmentBackend for LocalExecutionEnvironment {
         let mut stderr = join_pipe(stderr_handle)?;
         if timed_out {
             stderr = append_timeout_message(stderr, &timeout_message(timeout_ms));
+        }
+        if stopped {
+            stderr = append_timeout_message(stderr, "Stopped.");
         }
         let duration_ms = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
         let exit_code = if timed_out {
