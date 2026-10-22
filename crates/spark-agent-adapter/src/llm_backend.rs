@@ -1929,7 +1929,7 @@ fn build_agent_session_for_source(
     }
     profile.provider_options = llm_request.request.provider_options.clone();
     if llm_request.vision {
-        profile.capabilities.insert("vision".to_string(), true);
+        profile.apply_profile_vision(unified_llm_adapter::get_model_info(&profile.model).as_ref());
     }
     let mut config: SessionConfig = llm_request
         .request

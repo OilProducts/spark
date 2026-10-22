@@ -4115,3 +4115,110 @@ fn a_retried_native_request_shows_a_retry_notice() {
         );
     }
 }
+
+/// An OpenAI-compatible endpoint that answers one streamed request with
+/// "Seen." and hands back the request body.
+fn one_shot_compatible_server() -> (String, std::sync::mpsc::Receiver<Value>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        sender.send(serde_json::from_slice(&body).unwrap()).unwrap();
+        let chunk = |delta: Value, finish: Value| {
+            json!({"id": "fake", "object": "chat.completion.chunk", "model": "local-vl",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]})
+        };
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n\
+             data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chunk(json!({"content": "Seen."}), Value::Null),
+            chunk(json!({}), json!("stop")),
+        )
+        .unwrap();
+    });
+    (base_url, receiver)
+}
+
+#[test]
+fn a_profiles_vision_applies_only_to_models_the_catalog_does_not_know() {
+    let project = tempfile::tempdir().unwrap();
+    let image_path = project.path().join("shot.png");
+    fs::write(&image_path, b"png-bytes").unwrap();
+    let attachments = json!([{"id": "a1", "filename": "shot.png", "media_type": "image/png",
+        "size_bytes": 9, "path": image_path.to_string_lossy()}]);
+
+    // A catalogued non-vision model: the catalog wins over the profile.
+    let catalog = unified_llm_adapter::ModelCatalog::from_json(
+        r#"[{"id": "team-text", "provider": "litellm", "display_name": "Team Text",
+            "context_window": null, "supports_tools": true, "supports_vision": false}]"#,
+    )
+    .unwrap();
+    let mut profile = spark_agent_adapter::create_provider_profile("litellm", "team-text");
+    profile.apply_profile_vision(catalog.get_model_info("team-text").as_ref());
+    assert!(!profile.supports("vision"));
+    let input = spark_agent_adapter::attachments::native_turn_input(
+        "Look",
+        &spark_agent_adapter::attachments::request_attachments(&BTreeMap::from([(
+            spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+            attachments.clone(),
+        )])),
+        profile.supports("vision"),
+    );
+    assert!(
+        matches!(input, spark_agent_adapter::history::TurnContent::Text(_)),
+        "{input:?}"
+    );
+
+    // A self-hosted model the catalog does not know: the profile declares it.
+    let (base_url, bodies) = one_shot_compatible_server();
+    let config = tempfile::tempdir().unwrap();
+    fs::write(
+        config.path().join("llm-profiles.toml"),
+        format!(
+            "[profiles.seeing]\nprovider = 'openai_compatible'\nbase_url = '{base_url}'\n\
+             models = ['local-vl']\nvision = true\n"
+        ),
+    )
+    .unwrap();
+    let client = Client::from_env_map_and_profiles(&BTreeMap::new(), config.path(), None).unwrap();
+    let mut request = native_chat_request("vision-profile", &project.path().to_string_lossy());
+    request.provider = None;
+    request.model = Some("local-vl".to_string());
+    request.llm_profile = Some("seeing".to_string());
+    request.metadata.insert(
+        spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
+        attachments,
+    );
+
+    let output = RustLlmAgentTurnBackend::new(client)
+        .run_turn(request)
+        .expect("turn output");
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Seen."));
+    let body = bodies.recv_timeout(Duration::from_secs(5)).unwrap();
+    let user = body["messages"].as_array().unwrap().last().unwrap().clone();
+    let images = user["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| part["type"] == "image_url")
+        .count();
+    assert_eq!(images, 1, "{user}");
+}

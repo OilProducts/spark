@@ -3,12 +3,12 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use spark_agent_adapter::RustLlmAgentTurnBackend;
 use spark_workspace::{ConversationTurnRequest, WorkspaceConversationService};
 use unified_llm_adapter::{
     stream_events, AdapterError, Client, FinishReason, Message, ProviderAdapter, Request, Response,
-    StreamEvent, StreamEvents,
+    StreamEvent, StreamEventType, StreamEvents, ToolCall, Usage,
 };
 
 use super::conversation_event_normalization_contracts::settings;
@@ -180,4 +180,45 @@ fn stop_completes_a_native_turn_and_shows_its_unread_message_not_sent() {
         messages[0]["error"],
         "Not sent: the turn ended before the agent read it."
     );
+}
+
+#[test]
+fn a_native_turns_persisted_usage_sums_every_model_request() {
+    // A tool round then an answer: 100 then 200 input tokens, 10 output each.
+    let (_temp, service, calls) = native_chat(|_, index, _| {
+        let (mut events, input_tokens) = if index == 0 {
+            let call = ToolCall::new("call-1", "shell", json!({"command": "true"}));
+            (
+                vec![
+                    StreamEvent {
+                        tool_call: Some(call),
+                        ..StreamEvent::new(StreamEventType::ToolCallEnd)
+                    },
+                    StreamEvent::finish(FinishReason::ToolCalls, None),
+                ],
+                100,
+            )
+        } else {
+            (answer("Done."), 200)
+        };
+        events.last_mut().unwrap().usage = Some(Usage {
+            input_tokens,
+            output_tokens: 10,
+            ..Usage::default()
+        });
+        Ok(events)
+    });
+    let service = service.get().unwrap();
+    let mut request = turn("Do the work");
+    request.model = Some("gpt-5.5".to_string());
+
+    service.execute_turn("native-usage", request).unwrap();
+
+    assert_eq!(calls.lock().unwrap().len(), 2);
+    let snapshot = service.get_snapshot("native-usage", Some(PROJECT)).unwrap();
+    let usage = &assistant_turn(&snapshot)["token_usage"];
+    assert_eq!(usage["total"]["inputTokens"], json!(300), "{usage}");
+    assert_eq!(usage["total"]["outputTokens"], json!(20), "{usage}");
+    assert_eq!(usage["last"]["inputTokens"], json!(200), "{usage}");
+    assert_eq!(usage["context"]["used_tokens"], json!(200), "{usage}");
 }
