@@ -681,7 +681,8 @@ fn native_agent_node_keeps_its_answer_at_the_tool_round_limit() {
 
     // The final answer comes in the last request the round limit permits:
     // (a) immediately, and (b) right after the last permitted tool round.
-    // A limit of one permits no request after a tool round, so (b) needs two.
+    // The limit counts tool rounds and is checked before each request, so a
+    // limit of one permits no request after a tool round and (b) needs two.
     for (prompt, max_rounds, requests) in [("Answer now", 1, 2), ("Use a tool", 2, 3)] {
         let mut request = envelope_request(prompt, CodergenRuntimeMode::agent());
         request.metadata.insert(
@@ -694,5 +695,41 @@ fn native_agent_node_keeps_its_answer_at_the_tool_round_limit() {
         assert_eq!(sent.len(), requests, "{prompt}");
         assert_eq!(schema_of(sent.last().unwrap()), Some(envelope_schema()));
         assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
+    }
+}
+
+#[test]
+fn native_agent_node_keeps_its_answer_when_the_schema_request_only_calls_a_tool() {
+    let (client, adapter) = Scripted::client(|request| {
+        if request.response_format.is_some() {
+            (
+                String::new(),
+                vec![call("schema-glob", "glob", json!({"pattern": "*.none"}))],
+            )
+        } else if first_user_text(request) == "Answer now" || !tool_results(request).is_empty() {
+            text("All done.")
+        } else {
+            (
+                String::new(),
+                vec![call("glob-1", "glob", json!({"pattern": "*.none"}))],
+            )
+        }
+    });
+    let mut backend = RustLlmCodergenBackend::new(client);
+
+    // The schema request spends the last permitted tool round on a tool call,
+    // so the round limit ends the turn before any envelope is recorded.
+    for (prompt, max_rounds, requests) in [("Answer now", 1, 2), ("Use a tool", 2, 3)] {
+        let mut request = envelope_request(prompt, CodergenRuntimeMode::agent());
+        request.metadata.insert(
+            "spark.execution.settings".to_string(),
+            json!({"configuration": {"agents": {"max_tool_rounds_per_input": max_rounds}}}),
+        );
+        let before = adapter.requests().len();
+        let output = backend.run(request).expect("node output");
+        let sent = adapter.requests().split_off(before);
+        assert_eq!(sent.len(), requests, "{prompt}");
+        assert_eq!(schema_of(sent.last().unwrap()), Some(envelope_schema()));
+        assert_eq!(response_text(&output.response), "All done.", "{prompt}");
     }
 }

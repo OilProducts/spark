@@ -592,20 +592,23 @@ impl Session {
 
             let mut round_count = 0;
             // Set once a final answer is asked again under the answer schema,
-            // with the answer it replaces.
+            // with the answer it replaces until a new final answer is recorded.
             let mut structured = false;
             let mut unconstrained = None;
+            let mut reasking = false;
             loop {
                 // Asking a final answer again under the schema is not another
                 // round, so a round limit never discards that answer.
-                if unconstrained.is_some() {
+                if reasking {
                     if self.abort_requested() {
                         self.close_for_abort();
                         return Ok(());
                     }
                 } else if self.limit_reached_before_model_request(round_count) {
+                    self.history.extend(unconstrained.take());
                     return Ok(());
                 }
+                reasking = false;
 
                 let mut request = self.build_request(system_prompt.clone());
                 if structured {
@@ -643,7 +646,9 @@ impl Session {
                 };
                 let stream_error = model_output.stream_error.clone();
                 let assistant_turn = self.record_model_response(model_output, structured);
-                unconstrained = None;
+                if assistant_turn.tool_calls.is_empty() {
+                    unconstrained = None;
+                }
                 if let Some(error) = stream_error {
                     self.mark_model_request_error(&error, Some(&request_context));
                     return Err(error);
@@ -662,6 +667,7 @@ impl Session {
                         // The answer is asked for again, constrained to the schema.
                         unconstrained = self.history.pop();
                         structured = true;
+                        reasking = true;
                         continue;
                     }
                     break;
