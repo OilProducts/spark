@@ -300,12 +300,15 @@ pub struct Session {
 #[derive(Debug, Clone)]
 struct SessionCleanupState {
     completed: Arc<AtomicBool>,
+    /// Running subagents, aborted with the session.
+    subagents: Arc<Mutex<Vec<SessionAbortHandle>>>,
 }
 
 impl Default for SessionCleanupState {
     fn default() -> Self {
         Self {
             completed: Arc::new(AtomicBool::new(false)),
+            subagents: Arc::default(),
         }
     }
 }
@@ -338,9 +341,29 @@ impl SessionAbortHandle {
 
     /// Each call kills the commands the session's tools are running, so a
     /// repeated abort also stops one started after the first.
+    /// Subagents are aborted too, so a parent waiting on one is released.
     pub fn abort_with_reason(&self, reason: impl Into<String>) {
-        self.signal.abort(reason.into());
+        let reason = reason.into();
+        self.signal.abort(reason.clone());
         let _ = self.execution_environment.cleanup();
+        let subagents = self.cleanup_state.subagents.lock().unwrap().clone();
+        for subagent in subagents {
+            subagent.abort_with_reason(reason.clone());
+        }
+    }
+
+    /// Ties a subagent to this session's abort, aborting it at once if the
+    /// session has already been aborted.
+    pub(crate) fn adopt_subagent(&self, subagent: SessionAbortHandle) {
+        let mut subagents = self.cleanup_state.subagents.lock().unwrap();
+        if self.signal.aborted() {
+            subagent.abort_with_reason(
+                self.signal
+                    .reason()
+                    .unwrap_or_else(|| "session is aborted".into()),
+            );
+        }
+        subagents.push(subagent);
     }
 
     pub fn aborted(&self) -> bool {

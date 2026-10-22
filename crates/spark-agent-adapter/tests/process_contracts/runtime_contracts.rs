@@ -3544,6 +3544,90 @@ fn chat_stop_aborts_a_streamed_request_and_settles_with_its_partial_answer() {
     }
 }
 
+/// Sends every model request non-streamed, as a provider without streaming
+/// does, over the wrapped adapter's real HTTP transport.
+struct NonStreamedAdapter(NativeProviderAdapter);
+
+impl ProviderAdapter for NonStreamedAdapter {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        self.0.complete(request)
+    }
+
+    fn stream(&self, request: Request) -> Result<StreamEvents, AdapterError> {
+        let response = self.0.complete(request)?;
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!("unexpected completed response {}", response.id),
+        ))
+    }
+}
+
+/// Stop aborts a chat turn's non-streamed request while its response body is
+/// still being read; with no answer yet, the turn completes as "Stopped.".
+#[test]
+fn chat_stop_aborts_a_non_streamed_request_and_settles_stopped() {
+    use spark_agent_adapter::{AgentTurnBackend, AgentTurnRequest, RustLlmAgentTurnBackend};
+    let server = AbortableNativeStreamServer::new(b"{\"id\":".to_vec());
+    let adapter: Arc<dyn ProviderAdapter> =
+        Arc::new(NonStreamedAdapter(NativeProviderAdapter::openai(
+            NativeRequestConfig {
+                api_key: Some("stream-key".to_string()),
+                base_url: Some(server.base_url.clone()),
+                timeout: AdapterTimeout::new(1.0, 30.0, 30.0),
+                ..NativeRequestConfig::default()
+            },
+            Arc::new(NativeHttpTransport::new()),
+        )));
+    let backend = RustLlmAgentTurnBackend::new(
+        Client::from_adapters([adapter], Some("openai")).expect("client"),
+    );
+    let project = tempfile::tempdir().expect("project");
+    let project_path = project.path().to_string_lossy().into_owned();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn({
+        let (backend, project_path) = (backend.clone(), project_path.clone());
+        move || {
+            sender
+                .send(backend.run_turn(AgentTurnRequest {
+                    conversation_id: "stop-non-streamed".to_string(),
+                    project_path,
+                    prompt: "Question".to_string(),
+                    history: Vec::new(),
+                    provider: Some("openai".to_string()),
+                    model: Some("gpt-5.2".to_string()),
+                    llm_profile: None,
+                    reasoning_effort: None,
+                    chat_mode: Some("agent".to_string()),
+                    metadata: BTreeMap::new(),
+                }))
+                .unwrap();
+        }
+    });
+
+    server.wait_for_first_chunk();
+    thread::sleep(Duration::from_millis(100));
+    assert!(backend.interrupt_turn(&project_path, "stop-non-streamed"));
+    let output = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("stopped turn returns promptly")
+        .expect("a stopped turn completes");
+    server.wait_for_client_close();
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Stopped."));
+    assert!(!output
+        .events
+        .iter()
+        .any(|event| event.kind == TurnStreamEventKind::Error));
+    assert_eq!(
+        output.events.last().map(|event| &event.kind),
+        Some(&TurnStreamEventKind::TurnCompleted)
+    );
+}
+
 /// A text-only node's request is not streamed; its `timeout` aborts it after
 /// sending, while the response body is still being read.
 #[test]

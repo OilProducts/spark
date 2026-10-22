@@ -2556,3 +2556,101 @@ fn a_stop_between_dispatch_and_process_start_keeps_the_command_from_running() {
     assert!(results[0].is_error, "{:?}", results[0]);
     assert!(!project.path().join("started").exists());
 }
+
+/// The parent spawns a child and waits on it; the child's model request runs
+/// until its abort signal fires.
+struct SlowChildAdapter {
+    started: Mutex<mpsc::Sender<&'static str>>,
+}
+
+impl ProviderAdapter for SlowChildAdapter {
+    fn name(&self) -> &str {
+        "fake-provider"
+    }
+
+    fn complete(&self, request: Request) -> Result<Response, AdapterError> {
+        if has_message_text(&request, "Slow child task") {
+            let _ = self.started.lock().unwrap().send("child request");
+            let signal = request.abort_signal.clone().expect("child abort signal");
+            let started = std::time::Instant::now();
+            while started.elapsed() < Duration::from_secs(30) {
+                if signal.aborted() {
+                    return Err(AdapterError::new(AdapterErrorKind::Abort, "aborted"));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            return Ok(assistant_text_response("child-done", "child done"));
+        }
+        match last_tool_result_id(&request).as_deref() {
+            None => Ok(tool_call_response(
+                "parent-spawn",
+                ToolCall::new(
+                    "spawn-slow",
+                    "spawn_agent",
+                    json!({"task": "Slow child task"}),
+                ),
+            )),
+            Some("spawn-slow") => {
+                let _ = self.started.lock().unwrap().send("parent wait");
+                Ok(tool_call_response(
+                    "parent-wait",
+                    ToolCall::new(
+                        "wait-slow",
+                        "wait",
+                        json!({"agent_id": latest_agent_id(&request)}),
+                    ),
+                ))
+            }
+            _ => Ok(assistant_text_response("parent-done", "parent done")),
+        }
+    }
+
+    fn stream(&self, _request: Request) -> Result<StreamEvents, AdapterError> {
+        Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            "streaming is disabled",
+        ))
+    }
+}
+
+/// Stop reaches a parent blocked in `wait`: aborting the session aborts its
+/// child's in-flight request, so the wait and the turn end promptly.
+#[test]
+fn stopping_a_session_waiting_on_a_subagent_aborts_the_child_request() {
+    let (started_sender, started) = mpsc::channel();
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(SlowChildAdapter {
+        started: Mutex::new(started_sender),
+    });
+    let client = Client::from_adapters(vec![adapter], Some("fake-provider")).expect("client");
+    let workspace = tempdir().expect("workspace");
+    let mut session = Session::new(
+        subagent_enabled_profile(),
+        ExecutionEnvironment::local(workspace.path()),
+        SessionConfig {
+            max_subagent_depth: 1,
+            ..SessionConfig::default()
+        },
+    );
+    let abort = session.abort_handle();
+    let (done_sender, done) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = session.process_input(&client, "parent task");
+        done_sender.send(session.state).unwrap();
+    });
+
+    let mut seen = [
+        started.recv_timeout(Duration::from_secs(5)).expect("first"),
+        started
+            .recv_timeout(Duration::from_secs(5))
+            .expect("second"),
+    ];
+    seen.sort();
+    assert_eq!(seen, ["child request", "parent wait"]);
+    std::thread::sleep(Duration::from_millis(100));
+    abort.abort_with_reason("Stopped.");
+
+    let state = done
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the stopped turn ends without waiting for the child request");
+    assert_eq!(state, SessionState::Closed);
+}
