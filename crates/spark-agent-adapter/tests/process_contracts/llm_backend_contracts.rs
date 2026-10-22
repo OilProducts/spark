@@ -4163,62 +4163,51 @@ fn a_profiles_vision_applies_only_to_models_the_catalog_does_not_know() {
     fs::write(&image_path, b"png-bytes").unwrap();
     let attachments = json!([{"id": "a1", "filename": "shot.png", "media_type": "image/png",
         "size_bytes": 9, "path": image_path.to_string_lossy()}]);
-
-    // A catalogued non-vision model: the catalog wins over the profile.
+    // The bundled catalog has no non-vision model, so this thread's catalog
+    // declares one; `local-vl` stays unknown to it.
     let catalog = unified_llm_adapter::ModelCatalog::from_json(
-        r#"[{"id": "team-text", "provider": "litellm", "display_name": "Team Text",
+        r#"[{"id": "team-text", "provider": "openai_compatible", "display_name": "Team Text",
             "context_window": null, "supports_tools": true, "supports_vision": false}]"#,
     )
     .unwrap();
-    let mut profile = spark_agent_adapter::create_provider_profile("litellm", "team-text");
-    profile.apply_profile_vision(catalog.get_model_info("team-text").as_ref());
-    assert!(!profile.supports("vision"));
-    let input = spark_agent_adapter::attachments::native_turn_input(
-        "Look",
-        &spark_agent_adapter::attachments::request_attachments(&BTreeMap::from([(
+    let image_parts = |model: &str| {
+        let (base_url, bodies) = one_shot_compatible_server();
+        let config = tempfile::tempdir().unwrap();
+        fs::write(
+            config.path().join("llm-profiles.toml"),
+            format!(
+                "[profiles.seeing]\nprovider = 'openai_compatible'\nbase_url = '{base_url}'\n\
+                 models = ['local-vl', 'team-text']\nvision = true\n"
+            ),
+        )
+        .unwrap();
+        let client =
+            Client::from_env_map_and_profiles(&BTreeMap::new(), config.path(), None).unwrap();
+        let mut request = native_chat_request("vision-profile", &project.path().to_string_lossy());
+        request.provider = None;
+        request.model = Some(model.to_string());
+        request.llm_profile = Some("seeing".to_string());
+        request.metadata.insert(
             spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
             attachments.clone(),
-        )])),
-        profile.supports("vision"),
-    );
-    assert!(
-        matches!(input, spark_agent_adapter::history::TurnContent::Text(_)),
-        "{input:?}"
-    );
-
-    // A self-hosted model the catalog does not know: the profile declares it.
-    let (base_url, bodies) = one_shot_compatible_server();
-    let config = tempfile::tempdir().unwrap();
-    fs::write(
-        config.path().join("llm-profiles.toml"),
-        format!(
-            "[profiles.seeing]\nprovider = 'openai_compatible'\nbase_url = '{base_url}'\n\
-             models = ['local-vl']\nvision = true\n"
-        ),
-    )
-    .unwrap();
-    let client = Client::from_env_map_and_profiles(&BTreeMap::new(), config.path(), None).unwrap();
-    let mut request = native_chat_request("vision-profile", &project.path().to_string_lossy());
-    request.provider = None;
-    request.model = Some("local-vl".to_string());
-    request.llm_profile = Some("seeing".to_string());
-    request.metadata.insert(
-        spark_agent_adapter::AGENT_ATTACHMENTS_METADATA_KEY.to_string(),
-        attachments,
-    );
-
-    let output = RustLlmAgentTurnBackend::new(client)
-        .run_turn(request)
+        );
+        let output = unified_llm_adapter::with_thread_catalog(catalog.clone(), || {
+            RustLlmAgentTurnBackend::new(client).run_turn(request)
+        })
         .expect("turn output");
+        assert_eq!(output.final_assistant_text.as_deref(), Some("Seen."));
+        let body = bodies.recv_timeout(Duration::from_secs(5)).unwrap();
+        let user = body["messages"].as_array().unwrap().last().unwrap().clone();
+        user["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|part| part["type"] == "image_url")
+            .count()
+    };
 
-    assert_eq!(output.final_assistant_text.as_deref(), Some("Seen."));
-    let body = bodies.recv_timeout(Duration::from_secs(5)).unwrap();
-    let user = body["messages"].as_array().unwrap().last().unwrap().clone();
-    let images = user["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|part| part["type"] == "image_url")
-        .count();
-    assert_eq!(images, 1, "{user}");
+    // A catalogued non-vision model: the catalog wins over the profile.
+    assert_eq!(image_parts("team-text"), 0);
+    // A self-hosted model the catalog does not know: the profile declares it.
+    assert_eq!(image_parts("local-vl"), 1);
 }

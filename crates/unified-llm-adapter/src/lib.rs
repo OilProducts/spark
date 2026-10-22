@@ -29,7 +29,9 @@ pub mod timeouts;
 pub mod tools;
 pub mod usage;
 
-pub use catalog::{get_latest_model, get_model_info, list_models, ModelCatalog, ModelInfo};
+pub use catalog::{
+    get_latest_model, get_model_info, list_models, with_thread_catalog, ModelCatalog, ModelInfo,
+};
 pub use client::{Client, LlmProfileRoute, ProviderAdapter};
 pub use defaults::{default_client, get_default_client, set_default_client};
 pub use env::{ProviderConfig, ProviderEnvironment};
