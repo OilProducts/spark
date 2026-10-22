@@ -123,6 +123,9 @@ impl EventKind {
             }
             Self::ToolCallEnd => TurnStreamEventKind::ToolCallCompleted,
             Self::ModelUsageUpdate => TurnStreamEventKind::TokenUsageUpdated,
+            Self::Other(value) if value == "plan_completed" => {
+                TurnStreamEventKind::ContentCompleted
+            }
             Self::Other(value) if value == "request_user_input_requested" => {
                 TurnStreamEventKind::RequestUserInputRequested
             }
@@ -274,9 +277,13 @@ impl SessionEvent {
             EventKind::AssistantReasoningStart
             | EventKind::AssistantReasoningDelta
             | EventKind::AssistantReasoningEnd => Some(TurnStreamChannel::Reasoning),
+            EventKind::Other(ref kind) if kind == "plan_completed" => Some(TurnStreamChannel::Plan),
             _ => None,
         };
         let content_delta = match self.kind {
+            EventKind::Other(ref kind) if kind == "plan_completed" => {
+                data_string(&self.data, &["text"])
+            }
             EventKind::AssistantTextDelta | EventKind::AssistantReasoningDelta => {
                 data_string(&self.data, &["delta"])
             }

@@ -16,6 +16,18 @@ use crate::tools::{Tool, ToolChoice, ToolChoiceKind};
 
 use super::types::{NativeCompleteResponse, NativeStreamChunkResponse, NativeStreamResponse};
 
+/// A `json_schema` response format as OpenAI's APIs name it: the schema may
+/// come bare or wrapped as `{name, schema}`.
+pub(crate) fn openai_json_schema_format(json_schema: &Value, strict: bool) -> Value {
+    let (name, schema) = match (json_schema.get("name"), json_schema.get("schema")) {
+        (Some(Value::String(name)), Some(schema)) if schema.is_object() => {
+            (name.clone(), schema.clone())
+        }
+        _ => ("response".to_string(), json_schema.clone()),
+    };
+    json!({"type": "json_schema", "name": name, "schema": schema, "strict": strict})
+}
+
 pub(super) fn stream_raw_payload(payloads: &[Value]) -> Option<Value> {
     match payloads.len() {
         0 => None,

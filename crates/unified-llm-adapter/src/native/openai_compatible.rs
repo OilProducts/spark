@@ -874,14 +874,16 @@ fn chat_response_format(response_format: &ResponseFormat) -> Value {
     match response_format {
         ResponseFormat::Text => json!({"type": "text"}),
         ResponseFormat::JsonObject => json!({"type": "json_object"}),
+        // Chat Completions nests the named schema under `json_schema`.
         ResponseFormat::JsonSchema {
             json_schema,
             strict,
-        } => json!({
-            "type": "json_schema",
-            "json_schema": json_schema,
-            "strict": strict,
-        }),
+        } => {
+            let format = super::common::openai_json_schema_format(json_schema, *strict);
+            json!({"type": "json_schema", "json_schema": {
+                "name": format["name"], "schema": format["schema"], "strict": strict,
+            }})
+        }
     }
 }
 

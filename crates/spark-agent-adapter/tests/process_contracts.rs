@@ -8,6 +8,8 @@ mod installed_provider_contracts;
 mod llm_backend_contracts;
 #[path = "process_contracts/local_environment_contracts.rs"]
 mod local_environment_contracts;
+#[path = "process_contracts/native_interaction_contracts.rs"]
+mod native_interaction_contracts;
 #[path = "process_contracts/runtime_contracts.rs"]
 mod runtime_contracts;
 #[path = "process_contracts/test_support.rs"]

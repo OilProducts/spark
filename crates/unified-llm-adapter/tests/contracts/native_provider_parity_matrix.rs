@@ -563,7 +563,7 @@ impl NativeProvider {
                     json!({"effort": "high", "summary": "auto"})
                 );
                 assert_eq!(
-                    captured.body["response_format"]["type"],
+                    captured.body["text"]["format"]["type"],
                     json!("json_schema")
                 );
                 assert_eq!(
@@ -643,7 +643,7 @@ impl NativeProvider {
                 assert!(captured.body["generationConfig"]
                     .as_object()
                     .unwrap()
-                    .contains_key("responseSchema"));
+                    .contains_key("responseJsonSchema"));
                 assert_eq!(
                     captured.body["contents"][0]["parts"],
                     json!([

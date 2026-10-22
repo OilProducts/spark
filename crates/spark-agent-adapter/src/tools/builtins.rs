@@ -178,7 +178,9 @@ fn registered_subagent_tools() -> Vec<RegisteredTool> {
                         )));
                     };
                     let output = match name.as_str() {
-                        "spawn_agent" => runtime.spawn_agent(&execution.arguments),
+                        "spawn_agent" => {
+                            runtime.spawn_agent(&execution.arguments, &execution.tool_call_id)
+                        }
                         "send_input" => runtime.send_input(&execution.arguments),
                         "wait" => runtime.wait(&execution.arguments),
                         "close_agent" => runtime.close_agent(&execution.arguments),

@@ -9,7 +9,7 @@ use crate::generation::{
 use crate::request::{Response, ResponseFormat, ToolCall};
 use crate::retry::RetryPolicy;
 
-pub(crate) const STRUCTURED_OUTPUT_TOOL_NAME: &str = "structured_output";
+pub const STRUCTURED_OUTPUT_TOOL_NAME: &str = "structured_output";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenerateObjectResult {
@@ -328,6 +328,12 @@ fn structured_output_tool_value(
     };
     let value = parse_structured_output(&raw_text, schema, Some(response))?;
     Ok(Some((value, raw_text)))
+}
+
+/// The answer a response gave under a `json_schema` response format: the
+/// structured-output tool call some providers answer through, or its text.
+pub fn structured_response_text(response: &Response) -> String {
+    structured_output_tool_raw_text(response).unwrap_or_else(|| response.text())
 }
 
 fn structured_output_tool_raw_text(response: &Response) -> Option<String> {
