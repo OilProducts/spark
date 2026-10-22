@@ -289,12 +289,16 @@ pub fn validate_profile_candidate(
     for name in attractor_api::list_logical_flow_names(&settings.flows_dir).map_err(|_| {
         WorkspaceError::Validation("Cannot enumerate flows to check profile references.".into())
     })? {
-        let source =
-            attractor_dsl::load_flow_content(&settings.flows_dir, &name).map_err(|_| {
-                WorkspaceError::Validation(format!(
-                    "Cannot read flow {name} to check profile references."
-                ))
-            })?;
+        let source = attractor_dsl::load_resolved_flow_content(
+            &settings.flows_dir,
+            &settings.roles_dir(),
+            &name,
+        )
+        .map_err(|_| {
+            WorkspaceError::Validation(format!(
+                "Cannot read flow {name} to check profile references."
+            ))
+        })?;
         let mut flow = attractor_dsl::parse_flow_definition(&source).map_err(|_| {
             WorkspaceError::Validation(format!(
                 "Invalid flow {name}; repair it before deleting profiles."

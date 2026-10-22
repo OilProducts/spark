@@ -70,6 +70,50 @@ fn process_flow_validate_file_observes_stdout_json() {
 }
 
 #[test]
+fn process_flow_validate_dir_resolves_referenced_roles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let flow_dir = temp.path().join("reviewed");
+    let flow =
+        valid_flow_source().replace("    label: Task\n", "    label: Task\n    role: persona\n");
+    attractor_dsl::write_flow_dir(
+        &flow_dir,
+        &attractor_dsl::parse_flow_definition(&flow).expect("flow"),
+    )
+    .expect("write flow");
+    let validate = || -> Value {
+        let output = Command::new(spark_bin())
+            .args(["flow", "validate", "--file"])
+            .arg(&flow_dir)
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home)
+            .output()
+            .expect("run spark");
+        assert_eq!(output.status.code(), Some(0));
+        serde_json::from_slice(&output.stdout).expect("stdout is validation JSON")
+    };
+
+    let missing = validate();
+    assert_eq!(missing["status"], "validation_error");
+    assert_eq!(missing["diagnostics"][0]["rule_id"], "role");
+    assert_eq!(missing["diagnostics"][0]["node_id"], "task");
+
+    fs::create_dir_all(home.join("roles")).expect("roles");
+    fs::write(home.join("roles/persona.md"), "no frontmatter\n").expect("role");
+    let malformed = validate();
+    assert_eq!(malformed["status"], "validation_error");
+    assert_eq!(malformed["diagnostics"][0]["rule_id"], "role");
+
+    fs::write(
+        home.join("roles/persona.md"),
+        "---\ntype: Role\n---\nPersona.\n",
+    )
+    .expect("role");
+    assert_eq!(validate()["status"], "ok");
+}
+
+#[test]
 fn process_source_checkout_default_target_guard_remains_exit_one() {
     let output = Command::new(spark_bin())
         .args(["flow", "list"])
@@ -90,7 +134,7 @@ fn process_source_checkout_default_target_guard_remains_exit_one() {
 fn process_flow_list_text_executes_http_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"name":"examples/simple.yaml","title":"Simple Flow","description":"Small starter."}]"#,
+        r#"[{"name":"examples/simple","title":"Simple Flow","description":"Small starter."}]"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -102,7 +146,7 @@ fn process_flow_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "examples/simple.yaml: Simple Flow\n  Small starter.\n"
+        "examples/simple: Simple Flow\n  Small starter.\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     assert_eq!(
@@ -124,7 +168,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
             "flow",
             "get",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--base-url",
             base_url.as_str(),
         ])
@@ -137,7 +181,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
     let payload: Value = serde_json::from_slice(&output.stdout).expect("stdout json");
     assert_eq!(
         payload["name"],
-        "software-development/implement-change-request.yaml"
+        "software-development/implement-change-request"
     );
     assert_eq!(payload["content"], flow_yaml);
     assert_eq!(
@@ -145,7 +189,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
             .recv_timeout(Duration::from_secs(2))
             .expect("request")
             .path,
-        "/workspace/api/flows/software-development%2Fimplement-change-request.yaml/raw?surface=agent"
+        "/workspace/api/flows/software-development%2Fimplement-change-request/raw?surface=agent"
     );
 }
 
@@ -153,7 +197,7 @@ fn process_flow_get_wraps_raw_response_as_json() {
 fn process_http_404_maps_to_stderr_json_and_exit_three() {
     let (base_url, _requests) = serve_once(HttpResponse::json(
         404,
-        r#"{"detail":"Unknown flow: missing.yaml"}"#,
+        r#"{"detail":"Unknown flow: missing"}"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -161,7 +205,7 @@ fn process_http_404_maps_to_stderr_json_and_exit_three() {
             "flow",
             "describe",
             "--flow",
-            "missing.yaml",
+            "missing",
             "--base-url",
             base_url.as_str(),
         ])
@@ -173,7 +217,7 @@ fn process_http_404_maps_to_stderr_json_and_exit_three() {
     assert_eq!(String::from_utf8(output.stdout).expect("stdout utf8"), "");
     assert_eq!(
         String::from_utf8(output.stderr).expect("stderr utf8"),
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n"
+        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
     );
 }
 
@@ -189,7 +233,7 @@ fn process_http_nested_detail_error_maps_to_stderr_json() {
             "flow",
             "describe",
             "--flow",
-            "invalid.yaml",
+            "invalid",
             "--base-url",
             base_url.as_str(),
         ])
@@ -219,7 +263,7 @@ fn process_convo_run_request_posts_json_payload() {
             "--conversation",
             "amber-otter",
             "--flow",
-            "software-development/implement-change-request.yaml",
+            "software-development/implement-change-request",
             "--summary",
             "Process request",
             "--goal",
@@ -246,7 +290,7 @@ fn process_convo_run_request_posts_json_payload() {
     assert_eq!(
         serde_json::from_str::<Value>(&request.body).expect("request json"),
         serde_json::json!({
-            "flow_name": "software-development/implement-change-request.yaml",
+            "flow_name": "software-development/implement-change-request",
             "goal": "Ship it.",
             "summary": "Process request"
         })
@@ -290,7 +334,7 @@ fn process_trigger_stdin_payload_errors_before_server_dispatch() {
 fn process_trigger_list_text_executes_http_and_renders_rows() {
     let (base_url, requests) = serve_once(HttpResponse::json(
         200,
-        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run.yaml"},"state":{}}]"#,
+        r#"[{"id":"trigger-123","name":"Nightly","enabled":true,"protected":false,"source_type":"webhook","action":{"flow_name":"ops/run"},"state":{}}]"#,
     ));
 
     let output = Command::new(spark_bin())
@@ -302,7 +346,7 @@ fn process_trigger_list_text_executes_http_and_renders_rows() {
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(
         String::from_utf8(output.stdout).expect("stdout utf8"),
-        "trigger-123: Nightly [webhook] -> ops/run.yaml\n  enabled=True protected=False\n"
+        "trigger-123: Nightly [webhook] -> ops/run\n  enabled=True protected=False\n"
     );
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     let request = requests
@@ -522,4 +566,89 @@ fn installed_cli_reads_persisted_target_and_preserves_explicit_target_precedence
     assert!(
         String::from_utf8_lossy(&rejected.stderr).contains("Refusing to use default API target")
     );
+}
+
+#[test]
+fn process_flow_accept_and_promote_act_on_spark_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("spark-home");
+    let flow_dir = home.join("flows/team/work");
+    attractor_dsl::write_flow_dir(
+        &flow_dir,
+        &attractor_dsl::parse_flow_definition(
+            "id: work\nnodes:\n  start: {kind: start}\n  done: {kind: exit}\nedges:\n  - {from: start, to: done}\n",
+        )
+        .expect("flow"),
+    )
+    .expect("write flow");
+    fs::create_dir_all(home.join("config")).expect("config");
+    fs::write(
+        home.join("config/spark.toml"),
+        "human_id = \"cli-tester\"\n",
+    )
+    .expect("toml");
+    let spark = |args: &[&str]| {
+        Command::new(spark_bin())
+            .args(args)
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home)
+            .output()
+            .expect("run spark")
+    };
+    let log = || {
+        spark_common::approvals::read_approvals(&home.join("config/approvals.jsonl"))
+            .expect("approval log")
+    };
+
+    let accepted = spark(&["flow", "accept", "flows/team/work/flow.md"]);
+    assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+    let entries = log();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].event, "human_save");
+    assert_eq!(entries[0].path, "flows/team/work/flow.md");
+    assert_eq!(entries[0].by, "human:cli-tester");
+
+    let candidate = home.join("candidates/flows/team/work/done.md");
+    fs::create_dir_all(candidate.parent().expect("parent")).expect("candidates");
+    fs::write(
+        &candidate,
+        "---\ntype: exit\ntitle: Finished\ngenerated: {by: codex/gpt-5, at: '2026-10-20T12:00:00+00:00'}\nstatus: draft\n---\n",
+    )
+    .expect("candidate");
+    let promoted = spark(&["flow", "promote", "flows/team/work/done.md"]);
+    assert_eq!(promoted.status.code(), Some(0), "{promoted:?}");
+    assert!(!candidate.exists());
+    let entries = log();
+    assert_eq!(entries.last().expect("entry").event, "promoted");
+    assert_eq!(
+        entries.last().expect("entry").path,
+        "flows/team/work/done.md"
+    );
+
+    let refused = spark(&["flow", "promote", "flows/team/work/done.md"]);
+    assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+
+    // Without human_id the actor is the OS account, whatever USER/USERNAME
+    // say or whether they are set at all.
+    fs::write(home.join("config/spark.toml"), "").expect("toml");
+    let os_user = Command::new("id").arg("-un").output().expect("id");
+    let os_user = String::from_utf8(os_user.stdout).expect("utf8");
+    let expected = format!("human:{}", os_user.trim());
+    for fabricated in [true, false] {
+        let mut command = Command::new(spark_bin());
+        command
+            .args(["flow", "accept", "flows/team/work/flow.md"])
+            .env_clear()
+            .env("HOME", temp.path())
+            .env("SPARK_HOME", &home);
+        if fabricated {
+            command
+                .env("USER", "fabricated-review-user")
+                .env("USERNAME", "fabricated-review-user");
+        }
+        let accepted = command.output().expect("run spark");
+        assert_eq!(accepted.status.code(), Some(0), "{accepted:?}");
+        assert_eq!(log().last().expect("entry").by, expected);
+    }
 }

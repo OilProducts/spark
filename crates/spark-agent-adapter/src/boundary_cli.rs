@@ -44,7 +44,6 @@ fn run_inner() -> Result<Value, Value> {
     match operation.as_str() {
         "agent-turn" => run_agent_turn(payload),
         "codergen" => run_codergen(payload),
-        "codergen-steer" => steer_codergen_turn(payload),
         other => Err(error_payload(
             "unsupported_operation",
             format!("unsupported Rust boundary operation: {other}"),
@@ -75,42 +74,6 @@ fn run_codergen(mut payload: Value) -> Result<Value, Value> {
         .run(request)
         .map_err(|error| error_payload("codergen_failed", error.to_string(), false))?;
     Ok(json!({ "output": output }))
-}
-
-fn steer_codergen_turn(payload: Value) -> Result<Value, Value> {
-    let turn_id = payload
-        .get("turn_id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if turn_id.is_empty() {
-        return Err(error_payload(
-            "missing_turn_id",
-            "codergen steering requires turn_id",
-            false,
-        ));
-    }
-    let message = payload
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim();
-    if message.is_empty() {
-        return Err(error_payload(
-            "missing_message",
-            "codergen steering requires message",
-            false,
-        ));
-    }
-    Ok(json!({
-        "output": {
-            "status": "rejected",
-            "delivery_mode": "rust_boundary",
-            "reason": "backend_steering_unsupported",
-            "message": "The serialized Rust boundary does not have an active codergen turn transport for steering.",
-            "turn_id": turn_id,
-        }
-    }))
 }
 
 fn capture_configuration(payload: &mut Value) -> Result<(), Value> {

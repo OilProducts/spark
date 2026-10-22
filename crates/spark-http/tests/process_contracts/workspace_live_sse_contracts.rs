@@ -1117,13 +1117,9 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
     let project = project_path.to_string_lossy().to_string();
     let conversation_id = "conversation-mid-turn";
     seed_conversation(&settings, &project_path, conversation_id);
-    write_flow(&settings, "ops/live.yaml");
-    spark_storage::set_flow_launch_policy(
-        &settings.config_dir,
-        "ops/live.yaml",
-        "agent_requestable",
-    )
-    .expect("launch policy");
+    write_flow(&settings, "ops/live");
+    spark_storage::set_flow_launch_policy(&settings.config_dir, "ops/live", "agent_requestable")
+        .expect("launch policy");
 
     let mut commentary = content_completed(
         TurnStreamChannel::Assistant,
@@ -1260,7 +1256,7 @@ async fn live_turn_updates_survive_mid_turn_reads_flow_launches_and_title_commit
         app.clone(),
         "POST",
         &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
-        Some(json!({"flow_name": "ops/live.yaml", "summary": "Run it."})),
+        Some(json!({"flow_name": "ops/live", "summary": "Run it."})),
     )
     .await;
     assert_eq!(launched.status(), StatusCode::OK);
@@ -1345,7 +1341,7 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
     let project = project_path.to_string_lossy().to_string();
     let conversation_id = "conversation-background";
     seed_conversation(&settings, &project_path, conversation_id);
-    write_flow(&settings, "ops/live.yaml");
+    write_flow(&settings, "ops/live");
     let app = build_app(settings.clone());
     let handle = json_body(
         request(
@@ -1380,7 +1376,7 @@ async fn thread_list_feed_receives_a_background_chats_launch() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/live.yaml",
+            "flow_name": "ops/live",
             "summary": "Launch from a background chat",
             "conversation_handle": handle,
         })),
@@ -1412,7 +1408,7 @@ async fn live_route_replays_run_journals_and_runs_overview() {
     let service = AttractorApiService::new(settings.clone());
     let started = service.start_pipeline(PipelineStartRequest {
         run_id: Some("run-live-http".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         model: Some("compat-model".to_string()),
         launch_context: Some(
@@ -1545,7 +1541,7 @@ async fn live_route_replays_manager_loop_child_journals_with_source_local_cursor
 async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/live.yaml");
+    write_flow(&settings, "ops/live");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let app = build_app(settings.clone());
@@ -1572,7 +1568,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
         "POST",
         "/workspace/api/runs/launch",
         Some(json!({
-            "flow_name": "ops/live.yaml",
+            "flow_name": "ops/live",
             "summary": "Launch from open SSE overview",
             "project_path": project_path,
             "model": "compat-model",
@@ -1599,7 +1595,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
     let started = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-live-selected".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -1644,7 +1640,7 @@ async fn live_route_streams_workspace_run_launches_and_selected_run_updates() {
 async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let app = build_app(settings);
@@ -1685,7 +1681,7 @@ async fn live_route_fans_out_route_owned_trigger_upsert_and_delete() {
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run.yaml",
+                "flow_name": "ops/run",
                 "project_path": project_path,
                 "static_context": {"origin": "compat"}
             },
@@ -1818,7 +1814,7 @@ async fn live_route_streams_mission_upserts_through_turn_delivery() {
 async fn live_route_streams_source_activation_trigger_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
@@ -1847,7 +1843,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
             "name": "Due schedule",
             "source_type": "schedule",
             "action": {
-                "flow_name": "ops/run.yaml",
+                "flow_name": "ops/run",
                 "project_path": project_path_text,
                 "static_context": {"origin": "sse"}
             },
@@ -1886,7 +1882,7 @@ async fn live_route_streams_source_activation_trigger_upserts() {
 async fn live_route_streams_webhook_trigger_and_run_upserts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/webhook-live.yaml");
+    write_flow(&settings, "ops/webhook-live");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
@@ -1927,7 +1923,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
             "name": "Webhook live",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/webhook-live.yaml",
+                "flow_name": "ops/webhook-live",
                 "project_path": project_path_text,
                 "static_context": {"origin": "live-webhook"}
             },
@@ -1988,7 +1984,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
     assert_eq!(run_upsert["payload"]["run"]["run_id"], run_id);
     assert_eq!(
         run_upsert["payload"]["run"]["flow_name"],
-        "ops/webhook-live.yaml"
+        "ops/webhook-live"
     );
 }
 
@@ -1996,7 +1992,7 @@ async fn live_route_streams_webhook_trigger_and_run_upserts() {
 async fn live_route_streams_workflow_log_tail_and_new_milestones() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/workflow-log.yaml");
+    write_flow(&settings, "ops/workflow-log");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let project_path_text = project_path.to_string_lossy().to_string();
@@ -2005,7 +2001,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
     // initial tail for include_workflow_log subscribers.
     let store = RunStore::for_settings(&settings);
     let mut seeded = RunRecord::new("run-log-seeded", "/spark-contract-fixture/project");
-    seeded.flow_name = "ops/seeded.yaml".to_string();
+    seeded.flow_name = "ops/seeded".to_string();
     seeded.started_at = "2026-01-01T00:00:00Z".to_string();
     store
         .create_run(CreateRunRequest {
@@ -2033,7 +2029,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
     assert_eq!(tail_entry["resource"]["kind"], "workflow_log");
     assert_eq!(tail_entry["payload"]["kind"], "run_started");
     assert_eq!(tail_entry["payload"]["run_id"], "run-log-seeded");
-    assert_eq!(tail_entry["payload"]["flow_name"], "ops/seeded.yaml");
+    assert_eq!(tail_entry["payload"]["flow_name"], "ops/seeded");
     assert_eq!(tail_entry["cursor"]["kind"], "workflow_log_seq");
 
     // A stream without the flag never sees workflow log envelopes: its first
@@ -2061,7 +2057,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
             "name": "Workflow log live",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/workflow-log.yaml",
+                "flow_name": "ops/workflow-log",
                 "project_path": project_path_text,
                 "static_context": {"origin": "workflow-log"}
             },
@@ -2097,7 +2093,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
     let live_entry = sse_data_json(&next_sse_chunk(&mut workflow_stream).await);
     assert_eq!(live_entry["type"], "workflow_log.entry");
     assert_eq!(live_entry["payload"]["kind"], "run_started");
-    assert_eq!(live_entry["payload"]["flow_name"], "ops/workflow-log.yaml");
+    assert_eq!(live_entry["payload"]["flow_name"], "ops/workflow-log");
     assert_ne!(live_entry["payload"]["run_id"], "run-log-seeded");
 
     // The plain stream's next frame is run detail traffic, not workflow log.
@@ -2109,7 +2105,7 @@ async fn live_route_streams_workflow_log_tail_and_new_milestones() {
 async fn dropping_app_cancels_trigger_source_loop() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     let app = build_app(settings.clone());
     drop(app);
 
@@ -2122,7 +2118,7 @@ async fn dropping_app_cancels_trigger_source_loop() {
             enabled: true,
             source_type: "schedule".to_string(),
             action: json!({
-                "flow_name": "ops/run.yaml",
+                "flow_name": "ops/run",
                 "project_path": project_path,
                 "static_context": {"origin": "drop-test"}
             })
@@ -2456,9 +2452,12 @@ fn seed_conversation(settings: &SparkSettings, project_path: &Path, conversation
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(path, simple_flow()).expect("flow");
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
+    )
+    .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn simple_flow() -> String {
@@ -2469,7 +2468,7 @@ fn seed_parent_child_run_journals(settings: &SparkSettings, project_path: &Path)
     let project_path = project_path.to_string_lossy().to_string();
     let store = RunStore::for_settings(settings);
     let mut parent = RunRecord::new("run-live-parent", project_path.clone());
-    parent.flow_name = "parent-live.yaml".to_string();
+    parent.flow_name = "parent-live".to_string();
     parent.model = "compat-model".to_string();
     parent.started_at = "2026-01-01T00:00:00Z".to_string();
     let parent_paths = store
@@ -2495,13 +2494,13 @@ fn seed_parent_child_run_journals(settings: &SparkSettings, project_path: &Path)
         .insert("root_run_id".to_string(), json!("run-live-parent"));
     child_started
         .payload
-        .insert("child_flow_name".to_string(), json!("child-live.yaml"));
+        .insert("child_flow_name".to_string(), json!("child-live"));
     store
         .append_event(&parent_paths, child_started)
         .expect("parent child-started event");
 
     let mut child = RunRecord::new("run-live-child", project_path);
-    child.flow_name = "child-live.yaml".to_string();
+    child.flow_name = "child-live".to_string();
     child.model = "compat-model".to_string();
     child.started_at = "2026-01-01T00:00:05Z".to_string();
     child.parent_run_id = Some("run-live-parent".to_string());
@@ -2593,7 +2592,7 @@ async fn live_route_streams_detached_run_progress_mid_flight() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_content": "schema_version: '1'\nid: slow_live\ntitle: Slow Live\nnodes:\n  start:\n    kind: start\n  a:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  b:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: a\n  - from: a\n    to: b\n  - from: b\n    to: done\n",
+            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: slow_live\ntitle: Slow Live\nnodes:\n  start:\n    kind: start\n  a:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  b:\n    kind: tool\n    config:\n      kind: tool\n      command: sleep 1\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: a\n  - from: a\n    to: b\n  - from: b\n    to: done\n"),
             "working_directory": project_path_text,
             "run_id": "run-mid-flight",
             "model": "compat-model"
@@ -2662,7 +2661,7 @@ async fn live_route_streams_gate_lifecycle_from_waiting_to_answered() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_content": "schema_version: '1'\nid: gate_live\ntitle: Gate Live\nnodes:\n  start:\n    kind: start\n  review:\n    kind: human_gate\n    config:\n      kind: human_gate\n      prompt: Ship it?\n  approved:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: ship\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: approved\n    label: Approve\n  - from: approved\n    to: done\n",
+            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: gate_live\ntitle: Gate Live\nnodes:\n  start:\n    kind: start\n  review:\n    kind: human_gate\n    config:\n      kind: human_gate\n      prompt: Ship it?\n  approved:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: ship\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: approved\n    label: Approve\n  - from: approved\n    to: done\n"),
             "working_directory": project_path_text,
             "run_id": "run-gate-live",
             "model": "compat-model"
@@ -2999,7 +2998,7 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
         "POST",
         "/attractor/pipelines",
         Some(json!({
-            "flow_content": "schema_version: '1'\nid: mid_node\ntitle: Mid Node\nnodes:\n  start:\n    kind: start\n  work:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: stream\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: work\n  - from: work\n    to: done\n",
+            "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: mid_node\ntitle: Mid Node\nnodes:\n  start:\n    kind: start\n  work:\n    kind: agent_task\n    config:\n      kind: agent_task\n      prompt: stream\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: work\n  - from: work\n    to: done\n"),
             "working_directory": project_path_text,
             "run_id": "run-mid-node",
             "model": "compat-model"
@@ -3069,7 +3068,7 @@ async fn live_route_streams_codergen_segments_while_the_node_executes() {
 async fn settings_only_stream_receives_flow_policy_and_conversation_resource_changes() {
     let temp = tempfile::tempdir().unwrap();
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/settings.yaml");
+    write_flow(&settings, "ops/settings");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).unwrap();
     seed_conversation(&settings, &project_path, "settings-live");
@@ -3078,7 +3077,7 @@ async fn settings_only_stream_receives_flow_policy_and_conversation_resource_cha
         request(
             app.clone(),
             "GET",
-            "/workspace/api/flows/ops/settings.yaml",
+            "/workspace/api/flows/ops/settings",
             None,
         )
         .await,
@@ -3108,7 +3107,7 @@ async fn settings_only_stream_receives_flow_policy_and_conversation_resource_cha
     assert_eq!(next_sse_chunk(&mut stream).await, ": keepalive\n\n");
     for (path, payload, section) in [
         (
-            "/workspace/api/flows/ops/settings.yaml/launch-policy",
+            "/workspace/api/flows/ops/settings/launch-policy",
             json!({"expected_revision":flow["revision"], "launch_policy":"trigger_only"}),
             "flow_policy",
         ),

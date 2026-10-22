@@ -75,6 +75,9 @@ pub struct ContinueRunRequest {
     pub flow_source: Option<String>,
     #[serde(default)]
     pub flow_definition_json: Option<String>,
+    /// The new run's manifest (`artifacts/flow/files.json`).
+    #[serde(default)]
+    pub flow_files: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
@@ -321,6 +324,7 @@ impl RuntimeControls {
             }),
             flow_source: request.flow_source,
             flow_definition_json: request.flow_definition_json,
+            flow_files: request.flow_files,
         })?;
         self.store.append_event(
             &paths,

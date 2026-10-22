@@ -1109,6 +1109,30 @@ describe('RunsPanel', () => {
       if (url.endsWith('/attractor/pipelines') && method === 'POST') {
         return jsonResponse({ status: 'started', pipeline_id: 'run-rerun-new' })
       }
+      if (url.endsWith('/attractor/preview') && method === 'POST') {
+        // The installed flow dropped context.legacy, added a required input and changed a default.
+        return jsonResponse({
+          status: 'ok',
+          flow: {
+            inputs: [
+              { key: 'context.topic', label: 'Topic', type: 'string', required: true },
+              { key: 'context.audience', label: 'Audience', type: 'string', required: true },
+            ],
+          },
+          graph: {
+            metadata: { reasoning_effort: 'high' },
+            nodes: [
+              { id: 'start', label: 'Start', shape: 'Mdiamond' },
+              { id: 'done', label: 'Done', shape: 'Msquare' },
+            ],
+            edges: [
+              { from: 'start', to: 'done', label: null, condition: null, weight: null, fidelity: null, thread_id: null, loop_restart: false },
+            ],
+          },
+          diagnostics: [],
+          errors: [],
+        })
+      }
       if (method !== 'GET') {
         throw new Error(`Unhandled request: ${method} ${url}`)
       }
@@ -1140,6 +1164,19 @@ describe('RunsPanel', () => {
       if (url.endsWith('/attractor/runs')) {
         return jsonResponse({ runs: [selectedRun] })
       }
+      if (url.includes('/workspace/api/flows/')) {
+        return jsonResponse({
+          name: selectedRun.flow_name,
+          title: selectedRun.flow_name,
+          description: '',
+          launch_policy: null,
+          effective_launch_policy: 'disabled',
+          execution_lock: null,
+        })
+      }
+      if (url.includes('/attractor/api/flows/')) {
+        return jsonResponse({ name: selectedRun.flow_name, content: 'schema_version: "1"\nid: rerun_flow\n' })
+      }
       if (url.includes(`/attractor/pipelines/${runId}/artifacts/artifacts/flow/flow-source.yaml`)) {
         return new Response('schema_version: "1"\nid: rerun_flow\n', {
           status: 200,
@@ -1161,11 +1198,16 @@ describe('RunsPanel', () => {
       if (url.includes(`/attractor/pipelines/${runId}/graph-preview`)) {
         return jsonResponse({
           status: 'ok',
+          // The historical snapshot: different inputs and execution defaults from the installed flow.
           flow: {
-            inputs: [{ key: 'context.topic', label: 'Topic', type: 'string', required: true }],
+            inputs: [
+              { key: 'context.topic', label: 'Topic', type: 'string', required: true },
+              { key: 'context.legacy', label: 'Legacy', type: 'string', required: true },
+            ],
           },
           graph: {
             graph_attrs: {},
+            metadata: { reasoning_effort: 'low' },
             nodes: [
               { id: 'start', label: 'Start', shape: 'Mdiamond' },
               { id: 'task', label: 'Task', shape: 'box' },
@@ -1191,14 +1233,14 @@ describe('RunsPanel', () => {
     return fetchMock
   }
 
-  it('re-runs a flow with the recorded launch inputs prefilled', async () => {
+  it('re-runs the installed flow with the recorded launch inputs prefilled', async () => {
     const selectedRun = makeRun({
       run_id: 'run-to-rerun',
       flow_name: 'selected.dot',
       status: 'completed',
       project_path: '/tmp/project-one',
       working_directory: '/tmp/project-one/worktree',
-      launch_context: { 'context.topic': 'original topic' },
+      launch_context: { 'context.topic': 'original topic', 'context.legacy': 'old value' },
     })
     const fetchMock = installRerunFetchMock(selectedRun)
 
@@ -1224,10 +1266,14 @@ describe('RunsPanel', () => {
     expect(dialog).toBeVisible()
     expect(screen.queryByTestId('launch-panel-info-notice')).not.toBeInTheDocument()
 
-    // The recorded launch inputs prefill the form.
+    // The installed flow's inputs drive the form; recorded values seed the inputs it still declares.
     const topicInput = await screen.findByTestId('execution-launch-input-context.topic')
     await waitFor(() => expect(topicInput).toHaveValue('original topic'))
+    const audienceInput = screen.getByTestId('execution-launch-input-context.audience')
+    expect(audienceInput).toHaveValue('')
+    expect(screen.queryByTestId('execution-launch-input-context.legacy')).not.toBeInTheDocument()
     expect(screen.getByTestId('launch-panel-working-directory-input')).toHaveValue('/tmp/project-one/worktree')
+    await user.type(audienceInput, 'operators')
 
     const startButton = screen.getByTestId('launch-panel-start-button')
     await waitFor(() => expect(startButton).toBeEnabled())
@@ -1241,14 +1287,15 @@ describe('RunsPanel', () => {
       return url.endsWith('/attractor/pipelines') && init?.method === 'POST'
     })
     expect(startCall).toBeDefined()
-    // The launch reproduces the exact flow snapshot that ran, not the current
-    // catalog flow.
-    expect(JSON.parse(String(startCall?.[1]?.body))).toMatchObject({
-      flow_content: 'schema_version: "1"\nid: rerun_flow\n',
+    // The launch runs the installed flow by name; runs start only from live files.
+    const startBody = JSON.parse(String(startCall?.[1]?.body))
+    expect(startBody).not.toHaveProperty('flow_content')
+    expect(startBody).toMatchObject({
       flow_name: 'selected.dot',
       working_directory: '/tmp/project-one/worktree',
-      launch_context: { 'context.topic': 'original topic' },
+      reasoning_effort: 'high',
     })
+    expect(startBody.launch_context).toEqual({ 'context.topic': 'original topic', 'context.audience': 'operators' })
     expect(selectSelectedRunId(useStore.getState())).toBe('run-rerun-new')
     expect(useStore.getState().viewMode).toBe('runs')
   })

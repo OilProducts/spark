@@ -388,9 +388,10 @@ fn main() {
         if mode == "mid-turn-stop" {
             let interrupt = read_control();
             assert_eq!(interrupt["request"], json!({"subtype": "interrupt"}));
+            // 2.1.296 names the message it still holds for a follow-up turn.
             emit(
                 &mut out,
-                json!({"type": "control_response", "response": {"subtype": "success", "request_id": interrupt["request_id"], "response": {"still_queued": []}}}),
+                json!({"type": "control_response", "response": {"subtype": "success", "request_id": interrupt["request_id"], "response": {"still_queued": [uuid]}}}),
             );
             emit(
                 &mut out,

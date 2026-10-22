@@ -1209,9 +1209,13 @@ async fn settings(
             spark_workspace::settings::project_model_settings_view(&settings, &path)
         }
         (None, None) => workspace_settings(&settings).map(|mut view| {
-            view["runtime"]["locally_edited_flows"] = serde_json::json!(
-                spark_assets::flows::locally_edited_flows(&settings.flows_dir)
-            );
+            view["runtime"]["locally_edited_flows"] =
+                serde_json::json!(spark_assets::flows::locally_edited_flows(
+                    &settings.flows_dir,
+                    &settings
+                        .config_dir
+                        .join(spark_common::approvals::APPROVALS_FILE),
+                ));
             view
         }),
     }

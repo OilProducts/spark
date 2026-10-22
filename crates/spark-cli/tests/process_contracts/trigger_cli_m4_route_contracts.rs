@@ -18,7 +18,7 @@ fn spark_bin() -> &'static str {
 async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     let project_dir = temp.path().join("project");
     fs::create_dir_all(&project_dir).expect("project dir");
     let server = spawn_server(settings.clone()).await;
@@ -30,7 +30,7 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
             "name": "Compat webhook",
             "source_type": "webhook",
             "action": {
-                "flow_name": "ops/run.yaml",
+                "flow_name": "ops/run",
                 "project_path": project_dir,
                 "static_context": {"origin": "compat"}
             },
@@ -158,7 +158,7 @@ async fn trigger_cli_exercises_real_m4_routes_and_storage_effects() {
 async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     write_trigger_definition(
         &settings.config_dir,
         &protected_definition("trigger-protected"),
@@ -219,7 +219,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
         json!({
             "name": "Unknown flow",
             "source_type": "webhook",
-            "action": {"flow_name": "missing.yaml"},
+            "action": {"flow_name": "missing"},
             "source": {}
         })
         .to_string(),
@@ -239,7 +239,7 @@ async fn trigger_cli_real_routes_preserve_protected_and_validation_errors() {
     assert_eq!(unknown_flow.status.code(), Some(3));
     assert_eq!(
         stderr(&unknown_flow),
-        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing.yaml\"}\n"
+        "{\"ok\": false, \"status_code\": 404, \"error\": \"Unknown flow: missing\"}\n"
     );
     assert!(
         read_trigger_definition(&settings.config_dir, "trigger-protected")
@@ -303,7 +303,7 @@ fn protected_definition(id: &str) -> TriggerDefinition {
         action: TriggerAction {
             mission_id: None,
             mode: "static".to_string(),
-            flow_name: "ops/run.yaml".to_string(),
+            flow_name: "ops/run".to_string(),
             project_path: Some("/tmp/project".to_string()),
             static_context: Map::from_iter([("origin".to_string(), json!("compat"))]),
             execution_profile_id: None,
@@ -318,13 +318,12 @@ fn protected_definition(id: &str) -> TriggerDefinition {
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(
-        path,
+    let flow = attractor_dsl::parse_flow_definition(
         "schema_version: '1'\nid: trigger-flow\ntitle: Trigger Flow\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     )
-    .expect("flow");
+    .expect("valid flow");
+    attractor_dsl::write_flow_dir(&settings.flows_dir.join(name), &flow).expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn settings(root: &Path) -> SparkSettings {
@@ -557,13 +556,9 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
     assert_eq!(sent["id"], id);
 
     // The mission's agent launches directly from its conversation.
-    write_flow(&settings, "work/parse.yaml");
-    spark_storage::set_flow_launch_policy(
-        &settings.config_dir,
-        "work/parse.yaml",
-        "agent_requestable",
-    )
-    .unwrap();
+    write_flow(&settings, "work/parse");
+    spark_storage::set_flow_launch_policy(&settings.config_dir, "work/parse", "agent_requestable")
+        .unwrap();
     let snapshot: Value = client
         .get(format!(
             "{}/workspace/api/conversations/{id}",
@@ -585,7 +580,7 @@ async fn mission_cli_and_ui_http_share_revisions_and_durable_records() {
             "--conversation",
             handle,
             "--flow",
-            "work/parse.yaml",
+            "work/parse",
             "--summary",
             "Parse it",
             "--base-url",

@@ -15,6 +15,7 @@ static FRONTEND_DIST: Dir<'_> = include_dir!("$SPARK_FRONTEND_DIST_DIR");
 static STARTER_FLOWS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/flows");
 static GUIDES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/guides");
 static PLAYBOOKS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/playbooks");
+static ROLES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/roles");
 static ROOT_ASSETS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../assets");
 static MODEL_CATALOG_JSON: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -116,24 +117,6 @@ fn packaged_file(dir: &'static Dir<'static>, logical_path: &str) -> Option<Resou
     ))
 }
 
-fn collect_files_with_extension(
-    dir: &'static Dir<'static>,
-    extension: &str,
-    output: &mut Vec<String>,
-) {
-    for entry in dir.entries() {
-        match entry {
-            DirEntry::Dir(child) => collect_files_with_extension(child, extension, output),
-            DirEntry::File(file)
-                if file.path().extension().and_then(|value| value.to_str()) == Some(extension) =>
-            {
-                output.push(file.path().to_string_lossy().replace('\\', "/"));
-            }
-            DirEntry::File(_) => {}
-        }
-    }
-}
-
 fn collect_file_names(dir: &'static Dir<'static>, output: &mut Vec<String>) {
     for entry in dir.entries() {
         match entry {
@@ -145,15 +128,20 @@ fn collect_file_names(dir: &'static Dir<'static>, output: &mut Vec<String>) {
     }
 }
 
-/// Authored flow resource boundary.
+/// Authored flow resource boundary: each flow is a directory holding
+/// `flow.md` and one markdown file per node.
 pub mod flows {
-    use super::{
-        collect_files_with_extension, packaged_file, validate_relative_path, ResourceFile,
-        ResourcePathError, STARTER_FLOWS,
-    };
+    use std::collections::BTreeMap;
+
+    use include_dir::{Dir, DirEntry};
+
+    use super::{validate_relative_path, STARTER_FLOWS};
+
+    const FLOW_FILE: &str = "flow.md";
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct StarterFlowAsset {
+        /// File path relative to the flows directory, e.g. `examples/simple-linear/flow.md`.
         pub name: String,
         pub content: String,
     }
@@ -165,75 +153,110 @@ pub mod flows {
         InvalidUtf8,
     }
 
+    /// Names of the bundled flow directories, sorted.
     pub fn starter_flow_names() -> Result<Vec<String>, FlowResourceError> {
+        fn collect(dir: &'static Dir<'static>, names: &mut Vec<String>) {
+            for child in dir.dirs() {
+                if child.get_file(child.path().join(FLOW_FILE)).is_some() {
+                    names.push(child.path().to_string_lossy().replace('\\', "/"));
+                } else {
+                    collect(child, names);
+                }
+            }
+        }
         let mut names = Vec::new();
-        collect_files_with_extension(&STARTER_FLOWS, "yaml", &mut names);
-        collect_files_with_extension(&STARTER_FLOWS, "yml", &mut names);
+        collect(&STARTER_FLOWS, &mut names);
         names.sort();
         if names.is_empty() {
             return Err(FlowResourceError::Missing);
         }
-        for name in &names {
-            validate_flow_name(name).map_err(|_| FlowResourceError::InvalidName)?;
-        }
         Ok(names)
     }
 
-    pub fn load_starter_flow(name: &str) -> Result<ResourceFile, FlowResourceError> {
-        validate_flow_name(name).map_err(|_| FlowResourceError::InvalidName)?;
-        packaged_file(&STARTER_FLOWS, name).ok_or(FlowResourceError::Missing)
+    /// The files of one bundled flow directory: file name -> text.
+    pub fn starter_flow_files(name: &str) -> Result<BTreeMap<String, String>, FlowResourceError> {
+        validate_relative_path(name).map_err(|_| FlowResourceError::InvalidName)?;
+        let dir = STARTER_FLOWS
+            .get_dir(name)
+            .filter(|dir| dir.get_file(dir.path().join(FLOW_FILE)).is_some())
+            .ok_or(FlowResourceError::Missing)?;
+        dir.files()
+            .map(|file| {
+                let file_name = file
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or(FlowResourceError::InvalidName)?;
+                let text = file.contents_utf8().ok_or(FlowResourceError::InvalidUtf8)?;
+                Ok((file_name.to_string(), text.to_string()))
+            })
+            .collect()
     }
 
-    /// The manifest recording the packaged version last installed for each flow.
-    pub const PACKAGED_FLOW_HASHES: &str = ".packaged-flow-hashes.json";
-
-    /// Installed flows that seeding keeps as local edits: they differ from the
-    /// bundled copy and from the version Spark last installed, so newer bundled
-    /// versions never reach them.
-    pub fn locally_edited_flows(flows_dir: &std::path::Path) -> Vec<String> {
-        use sha2::{Digest, Sha256};
-        let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
-        let manifest: std::collections::BTreeMap<String, String> =
-            std::fs::read(flows_dir.join(PACKAGED_FLOW_HASHES))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .unwrap_or_default();
-        starter_flow_assets()
+    /// Installed flows that seeding keeps as local edits: some file differs
+    /// from the bundled copy and from the version Spark last installed (its
+    /// latest `installed` entry in the approval log), so newer bundled
+    /// versions never reach it.
+    pub fn locally_edited_flows(
+        flows_dir: &std::path::Path,
+        approvals_log: &std::path::Path,
+    ) -> Vec<String> {
+        use spark_common::approvals::{installed_hashes, read_approvals, sha256_hex};
+        let installed =
+            installed_hashes(&read_approvals(approvals_log).unwrap_or_default(), "flows/");
+        let mut edited = starter_flow_assets()
             .unwrap_or_default()
             .into_iter()
             .filter_map(|asset| {
-                let installed = hash(&std::fs::read(flows_dir.join(&asset.name)).ok()?);
-                (installed != hash(asset.content.as_bytes())
-                    && manifest.get(&asset.name) != Some(&installed))
-                .then_some(asset.name)
+                let current = sha256_hex(&std::fs::read(flows_dir.join(&asset.name)).ok()?);
+                (current != sha256_hex(asset.content.as_bytes())
+                    && installed.get(&asset.name) != Some(&current))
+                .then(|| {
+                    asset
+                        .name
+                        .rsplit_once('/')
+                        .map_or(asset.name.clone(), |(flow, _)| flow.to_string())
+                })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        edited.dedup();
+        edited
     }
 
+    /// Every bundled flow file, for seeding.
     pub fn starter_flow_assets() -> Result<Vec<StarterFlowAsset>, FlowResourceError> {
-        starter_flow_names()?
-            .into_iter()
-            .map(|name| {
-                let resource = load_starter_flow(&name)?;
-                let content = resource
-                    .text()
-                    .map_err(|_| FlowResourceError::InvalidUtf8)?
-                    .to_string();
-                Ok(StarterFlowAsset { name, content })
-            })
-            .collect()
-    }
-
-    fn validate_flow_name(name: &str) -> Result<(), ResourcePathError> {
-        validate_relative_path(name)?;
-        if std::path::Path::new(name)
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_none_or(|extension| !matches!(extension, "yaml" | "yml"))
-        {
-            return Err(ResourcePathError::UnsafePath);
+        fn collect(
+            dir: &'static Dir<'static>,
+            assets: &mut Vec<StarterFlowAsset>,
+        ) -> Result<(), FlowResourceError> {
+            for entry in dir.entries() {
+                match entry {
+                    DirEntry::Dir(child) => collect(child, assets)?,
+                    DirEntry::File(file) => assets.push(StarterFlowAsset {
+                        name: file.path().to_string_lossy().replace('\\', "/"),
+                        content: file
+                            .contents_utf8()
+                            .ok_or(FlowResourceError::InvalidUtf8)?
+                            .to_string(),
+                    }),
+                }
+            }
+            Ok(())
         }
-        Ok(())
+        let mut assets = Vec::new();
+        collect(&STARTER_FLOWS, &mut assets)?;
+        assets.sort_by(|left, right| left.name.cmp(&right.name));
+        if assets.is_empty() {
+            return Err(FlowResourceError::Missing);
+        }
+        Ok(assets)
+    }
+}
+
+/// Bundled role files (`roles/<name>.md`): `(file name, Markdown text)`, sorted.
+pub mod roles {
+    pub fn assets() -> Vec<(String, String)> {
+        super::markdown_assets(&super::ROLES)
     }
 }
 
@@ -385,18 +408,22 @@ pub mod guides {
 /// Bundled mission playbooks: `(file name, Markdown text)`, sorted by name.
 pub mod playbooks {
     pub fn assets() -> Vec<(String, String)> {
-        let mut assets: Vec<(String, String)> = super::PLAYBOOKS
-            .files()
-            .filter_map(|file| {
-                Some((
-                    file.path().to_str()?.to_string(),
-                    file.contents_utf8()?.to_string(),
-                ))
-            })
-            .collect();
-        assets.sort();
-        assets
+        super::markdown_assets(&super::PLAYBOOKS)
     }
+}
+
+fn markdown_assets(dir: &'static Dir<'static>) -> Vec<(String, String)> {
+    let mut assets: Vec<(String, String)> = dir
+        .files()
+        .filter_map(|file| {
+            Some((
+                file.path().to_str()?.to_string(),
+                file.contents_utf8()?.to_string(),
+            ))
+        })
+        .collect();
+    assets.sort();
+    assets
 }
 
 /// Icon resource boundary.

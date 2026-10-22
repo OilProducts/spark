@@ -23,6 +23,8 @@ fn main() {
         "../../frontend/public/assets/spark-app-icon.png",
         "assets/flows",
         "assets/guides",
+        "assets/playbooks",
+        "assets/roles",
         "assets/unified_llm/data/models.json",
         "../../assets",
     ] {

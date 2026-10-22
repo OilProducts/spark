@@ -220,6 +220,10 @@ pub fn run_metadata_event_with_graph_paths(
         "flow_definition_path".to_string(),
         path_value_if_exists(flow_definition_path),
     );
+    event.payload.insert(
+        "flow_files_path".to_string(),
+        path_value_if_exists(flow_dir.join(crate::store::FLOW_FILES_MANIFEST)),
+    );
     event
 }
 
@@ -833,6 +837,49 @@ pub fn parallel_branch_completed_event(
             ("branch", json!(branch.into())),
             ("index", json!(index)),
             ("success", json!(success)),
+        ],
+    )
+}
+
+/// A node a parallel branch starts; branch nodes emit no stage events.
+pub fn parallel_branch_node_started_event(
+    run_id: impl Into<String>,
+    node_id: impl Into<String>,
+    branch: impl Into<String>,
+    index: usize,
+    branch_node_id: impl Into<String>,
+) -> RawRuntimeEvent {
+    let node_id = node_id.into();
+    event_with_payload(
+        run_id,
+        "ParallelBranchNodeStarted",
+        [
+            ("node_id", json!(node_id)),
+            ("branch", json!(branch.into())),
+            ("index", json!(index)),
+            ("branch_node_id", json!(branch_node_id.into())),
+        ],
+    )
+}
+
+pub fn parallel_branch_node_completed_event(
+    run_id: impl Into<String>,
+    node_id: impl Into<String>,
+    branch: impl Into<String>,
+    index: usize,
+    branch_node_id: impl Into<String>,
+    outcome: impl Into<String>,
+) -> RawRuntimeEvent {
+    let node_id = node_id.into();
+    event_with_payload(
+        run_id,
+        "ParallelBranchNodeCompleted",
+        [
+            ("node_id", json!(node_id)),
+            ("branch", json!(branch.into())),
+            ("index", json!(index)),
+            ("branch_node_id", json!(branch_node_id.into())),
+            ("outcome", json!(outcome.into())),
         ],
     )
 }

@@ -110,17 +110,9 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
     fs::create_dir_all(&flows_dir).expect("flows dir");
     fs::create_dir_all(&project_dir).expect("project dir");
     fs::write(ui_dir.join("index.html"), "<!doctype html>\n").expect("ui index");
-    fs::write(
-        flows_dir.join("root.yaml"),
-        nested_flow("root", "branch", "child.yaml"),
-    )
-    .expect("root flow");
-    fs::write(
-        flows_dir.join("child.yaml"),
-        nested_flow("child", "branch", "leaf.yaml"),
-    )
-    .expect("child flow");
-    fs::write(flows_dir.join("leaf.yaml"), gate_flow()).expect("leaf flow");
+    write_flow(&flows_dir, "root", &nested_flow("root", "branch", "child"));
+    write_flow(&flows_dir, "child", &nested_flow("child", "branch", "leaf"));
+    write_flow(&flows_dir, "leaf", gate_flow());
 
     let mut server = RunningServer::start(temp.path(), &ui_dir);
     let launch = http_json(
@@ -129,7 +121,7 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
         "/attractor/pipelines",
         &json!({
             "run_id": "process-tree-root",
-            "flow_name": "root.yaml",
+            "flow_name": "root",
             "working_directory": project_dir,
         }),
     );
@@ -184,6 +176,23 @@ fn serve_binary_recovers_a_recursive_run_tree_after_process_kill() {
         records.len() == 3 && records.iter().all(|record| record["status"] == "completed")
     });
     assert_eq!(lineage_ids(&completed), before_ids);
+}
+
+/// Writes an approved flow into the server's flows dir (`<root>/flows`,
+/// approved in `<root>/spark-home/config/approvals.jsonl`).
+fn write_flow(flows_dir: &Path, name: &str, yaml: &str) {
+    attractor_dsl::write_flow_dir(
+        &flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(yaml).expect("valid flow"),
+    )
+    .expect("write flow");
+    let home = flows_dir.parent().expect("root").join("spark-home");
+    let trust = attractor_dsl::TrustStore {
+        flows_dir: flows_dir.to_path_buf(),
+        roles_dir: home.join("roles"),
+        log_path: home.join("config/approvals.jsonl"),
+    };
+    attractor_dsl::accept(&trust, &flows_dir.join(name), "human:test").expect("approve flow");
 }
 
 fn nested_flow(id: &str, node: &str, child: &str) -> String {

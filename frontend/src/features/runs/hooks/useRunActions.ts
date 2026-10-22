@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 
-import { ApiHttpError, fetchPipelineCancelValidated, fetchPipelineRetryValidated } from '@/lib/attractorClient'
+import { ApiHttpError, fetchPipelineCancelValidated, fetchPipelineRetryValidated, fetchPipelineSteerValidated } from '@/lib/attractorClient'
 import { useDialogController } from '@/components/app/dialog-controller'
 import { useStore } from '@/store'
 
@@ -9,6 +9,31 @@ const logUnexpectedRunError = (error: unknown) => {
         return
     }
     console.error(error)
+}
+
+export type SteerResult = { delivered: boolean; text: string }
+
+// Steers a running agent node of the viewed run. Rejections and errors come
+// back as results so the caller can show them.
+async function sendSteer(runId: string, nodeId: string, message: string): Promise<SteerResult> {
+    try {
+        const response = await fetchPipelineSteerValidated(runId, {
+            message,
+            target_run_id: runId,
+            target_node_id: nodeId,
+        })
+        const delivered = response.status === 'delivered'
+        const text = response.message ?? response.error ?? response.status
+        return { delivered, text: delivered || !response.reason ? text : `${text} (${response.reason})` }
+    } catch (err) {
+        logUnexpectedRunError(err)
+        return {
+            delivered: false,
+            text: err instanceof ApiHttpError
+                ? `Unable to send message (HTTP ${err.status})${err.detail ? `: ${err.detail}` : ''}.`
+                : 'Unable to send message.',
+        }
+    }
 }
 
 export function useRunActions() {
@@ -70,5 +95,6 @@ export function useRunActions() {
     return {
         requestCancel,
         requestRetry,
+        sendSteer,
     }
 }

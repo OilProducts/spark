@@ -55,7 +55,21 @@ export function resetFlowSaveBaselines(): void {
     lastSaveRequest = null
 }
 
-export async function saveFlowContent(name: string, content: string): Promise<boolean> {
+const inFlightSaves = new Set<Promise<boolean>>()
+
+/** Waits for every save in flight to settle. */
+export async function waitForFlowSaves(): Promise<void> {
+    await Promise.all([...inFlightSaves])
+}
+
+export function saveFlowContent(name: string, content: string): Promise<boolean> {
+    const save = persistFlowContent(name, content)
+    inFlightSaves.add(save)
+    void save.finally(() => inFlightSaves.delete(save))
+    return save
+}
+
+async function persistFlowContent(name: string, content: string): Promise<boolean> {
     const scopeKey = getSaveScopeKey(name)
     const existingBaseline = persistedBaselineByScope.get(scopeKey)
     if (existingBaseline === content) {

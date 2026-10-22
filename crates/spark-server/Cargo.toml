@@ -28,4 +28,5 @@ tracing = "0.1"
 unified-llm-adapter = { path = "../unified-llm-adapter" }
 
 [dev-dependencies]
+attractor-dsl = { path = "../attractor-dsl" }
 tempfile = "3.10"

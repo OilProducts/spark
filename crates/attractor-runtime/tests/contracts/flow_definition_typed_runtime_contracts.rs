@@ -185,6 +185,7 @@ fn parallel_handler_uses_typed_parallel_config_without_extension_duplicate() {
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .expect("create run");
 
@@ -370,7 +371,7 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
     let node = FlowNode {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
-            flow_ref: "typed-child.yaml".to_string(),
+            flow_ref: "typed-child".to_string(),
             input_map: BTreeMap::new(),
         }),
         manager: Some(ManagerLoopConfig {
@@ -378,10 +379,7 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
             ..ManagerLoopConfig::default()
         }),
         context: [
-            (
-                "stack.child_flow_ref".to_string(),
-                json!("legacy-child.yaml"),
-            ),
+            ("stack.child_flow_ref".to_string(), json!("legacy-child")),
             ("stack.child_autostart".to_string(), json!(true)),
         ]
         .into_iter()
@@ -399,7 +397,7 @@ fn node_context_core_keys_do_not_override_typed_handler_attrs() {
 
     assert_eq!(
         attr_text(&attrs, "stack.child_flow_ref").as_deref(),
-        Some("typed-child.yaml")
+        Some("typed-child")
     );
     assert_eq!(attr_bool(&attrs, "stack.child_autostart", true), false);
     assert!(!attrs.contains_key("manager.actions"));
@@ -421,7 +419,7 @@ fn extension_only_subflow_child_ref_does_not_start_child_pipeline() {
                     child_autostart: Some(true),
                     ..ManagerLoopConfig::default()
                 }),
-                extensions: [("stack.child_flow_ref".to_string(), json!("child.yaml"))]
+                extensions: [("stack.child_flow_ref".to_string(), json!("child"))]
                     .into_iter()
                     .collect(),
                 ..FlowNode::default()
@@ -432,8 +430,8 @@ fn extension_only_subflow_child_ref_does_not_start_child_pipeline() {
         ..FlowDefinition::default()
     };
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(
-        temp.path().join("child.yaml"),
+    write_child_flow(
+        &temp.path().join("child"),
         r#"
 schema_version: "1"
 id: child
@@ -451,8 +449,7 @@ edges:
   - from: start
     to: done
 "#,
-    )
-    .expect("write child flow");
+    );
     let launched = Arc::new(AtomicBool::new(false));
     let observed = Arc::clone(&launched);
     let mut runner = RuntimeHandlerRunner::new();
@@ -523,7 +520,7 @@ edges:
   - from: check
     to: done
 "#;
-    fs::write(temp.path().join("child.yaml"), child_source).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), child_source);
 
     let parent_flow = FlowDefinition {
         schema_version: "1".to_string(),
@@ -534,7 +531,7 @@ edges:
             FlowNode {
                 kind: NodeKind::Subflow,
                 config: Some(NodeConfig::Subflow {
-                    flow_ref: "child.yaml".to_string(),
+                    flow_ref: "child".to_string(),
                     input_map: [
                         (
                             "context.child_ticket".to_string(),
@@ -572,6 +569,7 @@ edges:
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .expect("create parent run");
     let child_handler_observed_map = Arc::new(AtomicBool::new(false));
@@ -613,6 +611,21 @@ edges:
                     json!(temp.path().to_string_lossy().to_string()),
                 ),
                 (
+                    "internal.flows_dir".to_string(),
+                    json!(temp.path().to_string_lossy().to_string()),
+                ),
+                (
+                    "internal.roles_dir".to_string(),
+                    under(&json!(temp.path().to_string_lossy().to_string()), "roles"),
+                ),
+                (
+                    "internal.approvals_log".to_string(),
+                    under(
+                        &json!(temp.path().to_string_lossy().to_string()),
+                        "approvals.jsonl",
+                    ),
+                ),
+                (
                     "internal.run_workdir".to_string(),
                     json!(temp.path().to_string_lossy().to_string()),
                 ),
@@ -637,6 +650,31 @@ edges:
 
     assert_eq!(outcome.status, OutcomeStatus::Success);
     assert!(child_handler_observed_map.load(Ordering::SeqCst));
+}
+
+/// Writes an approved child flow: `dir`'s parent is the flows root, with
+/// the approval log beside the flows in it.
+fn write_child_flow(dir: &std::path::Path, source: &str) {
+    attractor_dsl::write_flow_dir(
+        dir,
+        &attractor_dsl::parse_flow_definition(source).expect("valid flow"),
+    )
+    .expect("write flow");
+    let root = dir.parent().expect("flows root");
+    let trust = attractor_dsl::TrustStore {
+        flows_dir: root.to_path_buf(),
+        roles_dir: root.join("roles"),
+        log_path: root.join("approvals.jsonl"),
+    };
+    attractor_dsl::accept(&trust, dir, "human:test").expect("approve child flow");
+}
+
+/// A path under a context directory value, for the trust context keys.
+fn under(dir: &serde_json::Value, leaf: &str) -> serde_json::Value {
+    json!(std::path::Path::new(dir.as_str().expect("directory"))
+        .join(leaf)
+        .to_string_lossy()
+        .to_string())
 }
 
 const CHILD_FLOW_SOURCE: &str = r#"
@@ -681,7 +719,7 @@ fn dynamic_workdir_subflow_node(child_workdir_from: &str) -> FlowNode {
     FlowNode {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
-            flow_ref: "child.yaml".to_string(),
+            flow_ref: "child".to_string(),
             input_map: BTreeMap::new(),
         }),
         manager: Some(ManagerLoopConfig {
@@ -728,6 +766,24 @@ fn execute_dynamic_workdir_subflow(
             "internal.flow_source_dir".to_string(),
             json!(flow_source_dir.to_string_lossy().to_string()),
         ),
+        (
+            "internal.flows_dir".to_string(),
+            json!(flow_source_dir.to_string_lossy().to_string()),
+        ),
+        (
+            "internal.roles_dir".to_string(),
+            under(
+                &json!(flow_source_dir.to_string_lossy().to_string()),
+                "roles",
+            ),
+        ),
+        (
+            "internal.approvals_log".to_string(),
+            under(
+                &json!(flow_source_dir.to_string_lossy().to_string()),
+                "approvals.jsonl",
+            ),
+        ),
     ]);
     context.extend(context_entries);
     let outcome = runner
@@ -760,7 +816,7 @@ fn execute_dynamic_workdir_subflow(
 #[test]
 fn subflow_child_workdir_from_launches_child_in_context_directory() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
     let workspace = temp.path().join("workspaces/run-123");
     fs::create_dir_all(&workspace).expect("create workspace dir");
 
@@ -787,7 +843,8 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
     let project = temp.path().join("project");
     let worktree = project.join("worktree");
     fs::create_dir_all(&worktree).expect("create worktree");
-    fs::write(worktree.join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    // flow_ref resolves against the parent flow's directory, not child_workdir.
+    write_child_flow(&project.join("child"), CHILD_FLOW_SOURCE);
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let mut parent = RunRecord::new("parent-run", project.to_string_lossy());
     parent.flow_name = "Parent".to_string();
@@ -800,7 +857,7 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
     let node = FlowNode {
         kind: NodeKind::Subflow,
         config: Some(NodeConfig::Subflow {
-            flow_ref: "child.yaml".to_string(),
+            flow_ref: "child".to_string(),
             input_map: BTreeMap::new(),
         }),
         manager: Some(ManagerLoopConfig {
@@ -830,6 +887,15 @@ fn default_child_launch_inherits_parent_project_and_keeps_worktree() {
                 ("internal.root_run_id".to_string(), json!("parent-run")),
                 ("internal.run_workdir".to_string(), json!(project)),
                 ("internal.flow_source_dir".to_string(), json!(project)),
+                ("internal.flows_dir".to_string(), json!(project)),
+                (
+                    "internal.roles_dir".to_string(),
+                    under(&json!(project), "roles"),
+                ),
+                (
+                    "internal.approvals_log".to_string(),
+                    under(&json!(project), "approvals.jsonl"),
+                ),
             ]),
             prompt: String::new(),
             node: node.clone(),
@@ -869,7 +935,7 @@ fn subflow_child_workdir_from_accepts_linked_worktree_of_same_repository() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("create repo dir");
-    fs::write(repo.join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&repo.join("child"), CHILD_FLOW_SOURCE);
     git_in(&repo, &["init"]);
     git_in(&repo, &["add", "--all"]);
     git_in(&repo, &["commit", "-m", "initial"]);
@@ -908,7 +974,7 @@ fn subflow_child_workdir_from_rejects_directory_outside_launch_repository() {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo = temp.path().join("repo");
     fs::create_dir_all(&repo).expect("create repo dir");
-    fs::write(repo.join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&repo.join("child"), CHILD_FLOW_SOURCE);
     git_in(&repo, &["init"]);
     let elsewhere = temp.path().join("elsewhere");
     fs::create_dir_all(&elsewhere).expect("create outside dir");
@@ -936,7 +1002,7 @@ fn subflow_child_workdir_from_rejects_directory_outside_launch_repository() {
 #[test]
 fn subflow_child_workdir_from_without_context_value_fails_before_launch() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
 
     let (outcome, observed) = execute_dynamic_workdir_subflow(
         dynamic_workdir_subflow_node("context.workspace.path"),
@@ -959,7 +1025,7 @@ fn subflow_child_workdir_from_without_context_value_fails_before_launch() {
 #[test]
 fn subflow_declaring_both_child_workdir_sources_fails() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
     let mut node = dynamic_workdir_subflow_node("context.workspace.path");
     if let Some(manager) = node.manager.as_mut() {
         manager.child_workdir = Some(".".to_string());
@@ -1249,7 +1315,7 @@ fn reentry_parent_flow() -> FlowDefinition {
             FlowNode {
                 kind: NodeKind::Subflow,
                 config: Some(NodeConfig::Subflow {
-                    flow_ref: "child.yaml".to_string(),
+                    flow_ref: "child".to_string(),
                     input_map: Default::default(),
                 }),
                 manager: Some(ManagerLoopConfig {
@@ -1273,6 +1339,21 @@ fn reentry_context(temp: &std::path::Path, run_id: &str) -> ContextMap {
         (
             "internal.flow_source_dir".to_string(),
             json!(temp.to_string_lossy().to_string()),
+        ),
+        (
+            "internal.flows_dir".to_string(),
+            json!(temp.to_string_lossy().to_string()),
+        ),
+        (
+            "internal.roles_dir".to_string(),
+            under(&json!(temp.to_string_lossy().to_string()), "roles"),
+        ),
+        (
+            "internal.approvals_log".to_string(),
+            under(
+                &json!(temp.to_string_lossy().to_string()),
+                "approvals.jsonl",
+            ),
         ),
         (
             "internal.run_workdir".to_string(),
@@ -1342,6 +1423,7 @@ fn create_parent_run(
             manifest: None,
             flow_source: None,
             flow_definition_json: None,
+            flow_files: None,
         })
         .expect("create parent run")
 }
@@ -1352,7 +1434,7 @@ fn create_parent_run(
 #[test]
 fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let paths = create_parent_run(&store, "parent-run", temp.path());
@@ -1428,7 +1510,7 @@ fn manager_reentry_after_acknowledged_completion_launches_fresh_child() {
 #[test]
 fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let paths = create_parent_run(&store, "parent-run", temp.path());
@@ -1483,7 +1565,7 @@ fn manager_reentry_with_unacknowledged_completed_child_adopts_it() {
 #[test]
 fn manager_reentry_with_foreign_completed_child_launches_fresh_child() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("child.yaml"), CHILD_FLOW_SOURCE).expect("write child flow");
+    write_child_flow(&temp.path().join("child"), CHILD_FLOW_SOURCE);
     let flow = reentry_parent_flow();
     let store = RunStore::for_runs_dir(temp.path().join("runs"));
     let source_paths = create_parent_run(&store, "source-run", temp.path());

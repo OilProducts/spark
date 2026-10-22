@@ -26,7 +26,7 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    agent_requestable(&settings, "ops/review.yaml");
+    agent_requestable(&settings, "ops/review");
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -38,7 +38,7 @@ fn by_handle_run_request_launches_immediately_with_an_inline_launch() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".to_string(),
+                flow_name: "ops/review".to_string(),
                 summary: "Run the review flow.".to_string(),
                 goal: Some("Ship the reviewed change.".to_string()),
                 launch_context: Some(json!({"context.request.id": "REQ-1"})),
@@ -78,7 +78,7 @@ fn by_handle_run_request_refuses_flows_agents_may_not_launch() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/private.yaml", simple_flow());
+    write_flow(&settings, "ops/private", simple_flow());
     seed_conversation(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -90,7 +90,7 @@ fn by_handle_run_request_refuses_flows_agents_may_not_launch() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/private.yaml".to_string(),
+                flow_name: "ops/private".to_string(),
                 summary: "Not allowed.".to_string(),
                 execution_profile_id: Some("native".to_string()),
                 ..FlowRunRequestCreateByHandleRequest::default()
@@ -109,7 +109,7 @@ fn by_handle_run_request_attaches_to_in_flight_assistant_turn() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    agent_requestable(&settings, "ops/review.yaml");
+    agent_requestable(&settings, "ops/review");
     seed_conversation_with_assistant_status(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -122,7 +122,7 @@ fn by_handle_run_request_attaches_to_in_flight_assistant_turn() {
         .create_flow_run_request_by_handle(
             "amber-anchor",
             FlowRunRequestCreateByHandleRequest {
-                flow_name: "ops/review.yaml".to_string(),
+                flow_name: "ops/review".to_string(),
                 summary: "Run the review flow.".to_string(),
                 execution_profile_id: Some("native".to_string()),
                 ..FlowRunRequestCreateByHandleRequest::default()
@@ -150,7 +150,7 @@ fn legacy_pending_flow_run_requests_can_still_be_rejected_or_launched() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.yaml", simple_flow());
+    write_flow(&settings, "ops/review", simple_flow());
     seed_conversation_with_requests(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -217,7 +217,7 @@ fn pending_request(
         "id": id,
         "created_at": "2026-01-01T00:00:01Z",
         "updated_at": "2026-01-01T00:00:01Z",
-        "flow_name": "ops/review.yaml",
+        "flow_name": "ops/review",
         "summary": "Requested before launches were direct.",
         "project_path": project_path,
         "conversation_id": conversation_id,
@@ -356,7 +356,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
     fs::create_dir_all(&project_path).expect("project dir");
     write_flow(
         &settings,
-        "software-development/implement-change.yaml",
+        "software-development/implement-change",
         simple_flow(),
     );
     seed_proposed_plan(
@@ -414,10 +414,7 @@ fn proposed_plan_review_writes_change_request_and_launch_artifact() {
         "# Reviewable Proposed Plan\n\n1. Add the artifact.\n"
     );
     let launch = &approved["flow_launches"][0];
-    assert_eq!(
-        launch["flow_name"],
-        "software-development/implement-change.yaml"
-    );
+    assert_eq!(launch["flow_name"], "software-development/implement-change");
     assert_eq!(launch["status"], "launched");
     assert_eq!(launch["run_id"], plan["run_id"]);
 }
@@ -594,9 +591,12 @@ fn request_by_id<'a>(snapshot: &'a Value, request_id: &str) -> &'a Value {
 }
 
 pub(super) fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow dir");
-    fs::write(path, content).expect("flow");
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
+    )
+    .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 pub(super) fn write_native_execution_profile(settings: &SparkSettings) {
@@ -872,7 +872,7 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project dir");
     write_native_execution_profile(&settings);
-    write_flow(&settings, "ops/review.yaml", simple_flow());
+    write_flow(&settings, "ops/review", simple_flow());
     seed_conversation_with_requests(
         &settings,
         project_path.to_str().expect("utf-8"),
@@ -895,7 +895,7 @@ fn pending_attention_aggregates_gates_requests_and_plan_reviews() {
     let store = attractor_runtime::RunStore::for_settings(&settings);
     let mut waiting =
         attractor_core::RunRecord::new("run-attention-gate", project_path.to_string_lossy());
-    waiting.flow_name = "software-development/run-retrospective.yaml".to_string();
+    waiting.flow_name = "software-development/run-retrospective".to_string();
     waiting.status = "waiting".to_string();
     let mut completed =
         attractor_core::RunRecord::new("run-attention-done", project_path.to_string_lossy());

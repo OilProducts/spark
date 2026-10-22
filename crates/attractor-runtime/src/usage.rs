@@ -300,7 +300,10 @@ impl TokenUsageBreakdown {
 
 /// USD per million tokens: (input, cached input, output), for backends that
 /// report no cost of their own.
-/// Rates checked against the official OpenAI pricing page on 2026-07-09.
+/// OpenAI rates checked against the official OpenAI pricing page on
+/// 2026-07-09 (gpt-6 family on 2026-10-17, short-context tier); Claude
+/// rates against the Anthropic pricing page on 2026-10-17. Long-context
+/// tiers (OpenAI >272K, Haiku 5.5 >100K input) are not modeled.
 const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("codex-mini-latest", (1.50, 0.375, 6.00)),
     ("gpt-4.1", (2.00, 0.50, 8.00)),
@@ -325,6 +328,18 @@ const MODEL_PRICING_CATALOG: &[(&str, (f64, f64, f64))] = &[
     ("gpt-5.6-sol", (5.00, 0.50, 30.00)),
     ("gpt-5.6-terra", (2.50, 0.25, 15.00)),
     ("gpt-5.6-luna", (1.00, 0.10, 6.00)),
+    ("gpt-6-astra", (10.00, 1.00, 50.00)),
+    ("gpt-6-sol", (2.00, 0.20, 10.00)),
+    ("gpt-6.1-sol", (2.00, 0.10, 10.00)),
+    ("gpt-6-luna", (0.10, 0.01, 0.50)),
+    ("claude-fable-5-1", (10.00, 0.25, 50.00)),
+    ("claude-mythos-5-1", (10.00, 0.25, 50.00)),
+    ("claude-fable-5", (10.00, 1.00, 50.00)),
+    ("claude-opus-5-5", (4.00, 0.20, 20.00)),
+    ("claude-opus-5", (5.00, 0.50, 25.00)),
+    ("claude-sonnet-5-5", (2.00, 0.10, 10.00)),
+    ("claude-sonnet-5", (2.00, 0.20, 10.00)),
+    ("claude-haiku-5-5", (0.10, 0.01, 0.50)),
 ];
 
 fn pricing_for_model(model: &str) -> Option<(f64, f64, f64)> {

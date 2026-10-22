@@ -3,6 +3,7 @@ import {
   resetFlowSaveBaselines,
   retryLastSaveContent,
   saveFlowContent,
+  waitForFlowSaves,
 } from '@/lib/flowPersistence'
 import { resolveSaveRemediation } from '@/lib/saveRemediation'
 import { useStore } from '@/store'
@@ -70,6 +71,19 @@ describe('Editor save state behavior', () => {
       message: 'Resolve highlighted validation errors, then save again.',
       allowRetry: false,
     })
+  })
+
+  it('waits for in-flight saves to settle', async () => {
+    let respond!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve })))
+    void saveFlowContent('demo', 'schema_version: "1"\nid: demo\n')
+    let settled = false
+    const waited = waitForFlowSaves().then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    respond(new Response(JSON.stringify({ detail: 'disk full' }), { status: 500, headers: { 'Content-Type': 'application/json' } }))
+    await waited
+    expect(settled).toBe(true)
   })
 
   it('supports retrying a transient network failure', async () => {

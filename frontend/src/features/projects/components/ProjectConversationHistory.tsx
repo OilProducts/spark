@@ -250,7 +250,7 @@ const PlanRow = memo(function PlanRow({
         ? getProposedPlanStatusPresentation(proposedPlan.status)
         : null
     const launchRunId = proposedPlan?.run_id ?? planLaunch?.run_id ?? null
-    const launchFlowName = planLaunch?.flow_name || 'software-development/implement-change.yaml'
+    const launchFlowName = planLaunch?.flow_name || 'software-development/implement-change'
 
     return (
         <li className="flex min-w-0 justify-start">

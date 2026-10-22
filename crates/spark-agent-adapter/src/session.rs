@@ -174,6 +174,13 @@ impl SessionSteeringHandle {
             .expect("session steering queue lock")
             .accepting = false;
     }
+
+    pub fn accepting(&self) -> bool {
+        self.state
+            .lock()
+            .expect("session steering queue lock")
+            .accepting
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

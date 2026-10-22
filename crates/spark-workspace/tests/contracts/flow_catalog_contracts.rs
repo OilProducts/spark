@@ -14,12 +14,12 @@ fn human_list_preserves_metadata_fallbacks_and_nested_names() {
     let settings = settings(temp.path());
     write_flow(
         &settings,
-        "rich.yaml",
+        "rich",
         "schema_version: '1'\nid: rich\ntitle: Workspace Title\ndescription: Workspace description\ngoal: Graph goal\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     );
     write_flow(
         &settings,
-        "ops/review/nested.yaml",
+        "ops/review/nested",
         "schema_version: '1'\nid: nested\ntitle: Nested Flow\ndescription: Nested flow description\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     );
 
@@ -28,10 +28,10 @@ fn human_list_preserves_metadata_fallbacks_and_nested_names() {
         .expect("list");
 
     assert_eq!(flows.len(), 2);
-    assert_eq!(flows[0].name, "ops/review/nested.yaml");
+    assert_eq!(flows[0].name, "ops/review/nested");
     assert_eq!(flows[0].title, "Nested Flow");
     assert_eq!(flows[0].description, "Nested flow description");
-    assert_eq!(flows[1].name, "rich.yaml");
+    assert_eq!(flows[1].name, "rich");
     assert_eq!(flows[1].title, "Workspace Title");
     assert_eq!(flows[1].description, "Workspace description");
     assert_eq!(flows[1].graph_label, "Workspace Title");
@@ -44,22 +44,21 @@ fn agent_surface_filters_non_requestable_flows_and_hides_detail() {
     let settings = settings(temp.path());
     write_flow(
         &settings,
-        "requestable.yaml",
+        "requestable",
         "schema_version: '1'\nid: requestable\ntitle: Requestable\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     );
     write_flow(
         &settings,
-        "trigger-only.yaml",
+        "trigger-only",
         "schema_version: '1'\nid: trigger-only\ntitle: Trigger Only\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
     );
     set_flow_launch_policy(
         &settings.config_dir,
-        "requestable.yaml",
+        "requestable",
         LAUNCH_POLICY_AGENT_REQUESTABLE,
     )
     .expect("policy");
-    set_flow_launch_policy(&settings.config_dir, "trigger-only.yaml", "trigger_only")
-        .expect("policy");
+    set_flow_launch_policy(&settings.config_dir, "trigger-only", "trigger_only").expect("policy");
     let service = WorkspaceFlowService::new(settings);
 
     let flows = service.list_flows(Some("agent")).expect("list");
@@ -68,31 +67,31 @@ fn agent_surface_filters_non_requestable_flows_and_hides_detail() {
             .iter()
             .map(|flow| flow.name.as_str())
             .collect::<Vec<_>>(),
-        ["requestable.yaml"]
+        ["requestable"]
     );
     let hidden = service
-        .describe_flow("trigger-only.yaml", Some("agent"))
+        .describe_flow("trigger-only", Some("agent"))
         .expect_err("hidden");
     assert_eq!(hidden.status_code(), 404);
-    assert_eq!(hidden.detail(), "Unknown flow: trigger-only.yaml");
+    assert_eq!(hidden.detail(), "Unknown flow: trigger-only");
 }
 
 #[test]
 fn describe_raw_validate_and_launch_policy_update_use_catalog_and_yaml_sources() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    let flow_content = "schema_version: '1'\nid: inspectable\ntitle: Inspectable Graph\ngoal: Inspect graph behavior\nnodes:\n  start:\n    kind: start\n  human_review:\n    kind: human_gate\n    label: Human Review\n    config:\n      kind: human_gate\n      prompt: Review this flow\n  manager:\n    kind: subflow\n    label: Manager\n    config:\n      kind: subflow\n      flow_ref: ops/review/child.yaml\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: human_review\n  - from: human_review\n    to: manager\n  - from: manager\n    to: done\n";
-    write_flow(&settings, "ops/review/inspectable.yaml", flow_content);
+    let flow_content = "schema_version: '1'\nid: inspectable\ntitle: Inspectable Graph\ngoal: Inspect graph behavior\nnodes:\n  start:\n    kind: start\n  human_review:\n    kind: human_gate\n    label: Human Review\n    config:\n      kind: human_gate\n      prompt: Review this flow\n  manager:\n    kind: subflow\n    label: Manager\n    config:\n      kind: subflow\n      flow_ref: ops/review/child\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: human_review\n  - from: human_review\n    to: manager\n  - from: manager\n    to: done\n";
+    write_flow(&settings, "ops/review/inspectable", flow_content);
     set_flow_launch_policy(
         &settings.config_dir,
-        "ops/review/inspectable.yaml",
+        "ops/review/inspectable",
         LAUNCH_POLICY_AGENT_REQUESTABLE,
     )
     .expect("policy");
     let service = WorkspaceFlowService::new(settings.clone());
 
     let description = service
-        .describe_flow("ops/review/inspectable.yaml", Some("agent"))
+        .describe_flow("ops/review/inspectable", Some("agent"))
         .expect("describe");
     assert_eq!(description.summary.title, "Inspectable Graph");
     assert_eq!(description.node_count, 4);
@@ -101,24 +100,28 @@ fn describe_raw_validate_and_launch_policy_update_use_catalog_and_yaml_sources()
     assert!(description.features.has_manager_loop);
 
     let raw = service
-        .raw_flow("ops/review/inspectable.yaml", Some("agent"))
+        .raw_flow("ops/review/inspectable", Some("agent"))
         .expect("raw");
-    assert_eq!(raw.name, "ops/review/inspectable.yaml");
-    assert_eq!(raw.content, flow_content);
+    assert_eq!(raw.name, "ops/review/inspectable");
+    assert_eq!(
+        attractor_dsl::parse_flow_definition(&raw.content).expect("raw flow"),
+        attractor_dsl::read_flow_dir(&settings.flows_dir.join("ops/review/inspectable"))
+            .expect("stored flow")
+    );
 
     let validation = service
-        .validate_flow("ops/review/inspectable.yaml")
+        .validate_flow("ops/review/inspectable")
         .expect("validate");
-    assert_eq!(validation["name"], "ops/review/inspectable.yaml");
+    assert_eq!(validation["name"], "ops/review/inspectable");
     assert_eq!(validation["status"], "ok");
     assert_eq!(validation["diagnostics"], json!([]));
 
     let response = service
         .update_launch_policy(
-            "ops/review/inspectable.yaml",
+            "ops/review/inspectable",
             WorkspaceFlowLaunchPolicyUpdate {
                 expected_revision: service
-                    .describe_flow("ops/review/inspectable.yaml", None)
+                    .describe_flow("ops/review/inspectable", None)
                     .unwrap()
                     .revision,
                 launch_policy: "trigger_only".to_string(),
@@ -130,14 +133,14 @@ fn describe_raw_validate_and_launch_policy_update_use_catalog_and_yaml_sources()
             },
         )
         .expect("policy update");
-    assert_eq!(response.name, "ops/review/inspectable.yaml");
+    assert_eq!(response.name, "ops/review/inspectable");
     assert_eq!(response.launch_policy.as_deref(), Some("trigger_only"));
     assert_eq!(
         response.execution_lock.as_ref().expect("lock").scope,
         "project"
     );
     assert_eq!(
-        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable.yaml")
+        read_flow_launch_policy(&settings.config_dir, "ops/review/inspectable")
             .expect("stored")
             .launch_policy
             .as_deref(),
@@ -149,17 +152,15 @@ fn describe_raw_validate_and_launch_policy_update_use_catalog_and_yaml_sources()
 fn validation_endpoint_surfaces_flow_definition_errors_and_path_safety_errors() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(
-        &settings,
-        "broken.yaml",
-        "schema_version: '1'\nid: broken\nnodes: {\n",
-    );
+    let broken = settings.flows_dir.join("broken");
+    fs::create_dir_all(&broken).expect("broken flow dir");
+    fs::write(broken.join("flow.md"), "---\ntype: Flow\n---\n").expect("broken flow");
     let service = WorkspaceFlowService::new(settings);
 
-    let validation = service.validate_flow("broken.yaml").expect("parse payload");
-    assert_eq!(validation["name"], "broken.yaml");
+    let validation = service.validate_flow("broken").expect("parse payload");
+    assert_eq!(validation["name"], "broken");
     assert_eq!(validation["status"], "validation_error");
-    assert_eq!(validation["diagnostics"][0]["rule_id"], "parse_error");
+    assert_eq!(validation["diagnostics"][0]["rule_id"], "flow_definition");
 
     let invalid_surface = service.list_flows(Some("invalid")).expect_err("surface");
     assert_eq!(invalid_surface.status_code(), 400);
@@ -169,7 +170,7 @@ fn validation_endpoint_surfaces_flow_definition_errors_and_path_safety_errors() 
     );
 
     let escaped = service
-        .raw_flow("../escape.yaml", Some("human"))
+        .raw_flow("../escape", Some("human"))
         .expect_err("escape");
     assert_eq!(escaped.status_code(), 400);
     assert_eq!(
@@ -178,10 +179,41 @@ fn validation_endpoint_surfaces_flow_definition_errors_and_path_safety_errors() 
     );
 }
 
+#[test]
+fn validation_endpoint_rejects_missing_and_malformed_roles() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(
+        &settings,
+        "reviewed",
+        "schema_version: '1'\nid: reviewed\nnodes:\n  start:\n    kind: start\n  review:\n    kind: agent_task\n    role: reviewer\n    prompt: Review.\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: review\n  - from: review\n    to: done\n",
+    );
+    let service = WorkspaceFlowService::new(settings.clone());
+
+    let missing = service.validate_flow("reviewed").expect("payload");
+    assert_eq!(missing["status"], "validation_error");
+    assert_eq!(missing["diagnostics"][0]["rule_id"], "role");
+    assert_eq!(missing["diagnostics"][0]["node_id"], "review");
+
+    fs::create_dir_all(settings.roles_dir()).expect("roles");
+    let role = settings.roles_dir().join("reviewer.md");
+    fs::write(&role, "---\ntype: Flow\n---\nPersona.\n").expect("role");
+    let malformed = service.validate_flow("reviewed").expect("payload");
+    assert_eq!(malformed["status"], "validation_error");
+    assert_eq!(malformed["diagnostics"][0]["rule_id"], "role");
+
+    fs::write(&role, "---\ntype: Role\n---\nPersona.\n").expect("role");
+    let valid = service.validate_flow("reviewed").expect("payload");
+    assert_eq!(valid["status"], "ok", "{valid}");
+}
+
 fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(path, content).expect("flow");
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
+    )
+    .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn settings(root: &Path) -> SparkSettings {

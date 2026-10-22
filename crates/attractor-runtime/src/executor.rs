@@ -71,6 +71,8 @@ pub enum ExecutionStart {
     FromCheckpoint {
         start_node: String,
         checkpoint: CheckpointState,
+        /// The run manifest (`artifacts/flow/files.json`) of the new run.
+        flow_files: Option<BTreeMap<String, String>>,
     },
 }
 
@@ -272,6 +274,7 @@ where
                     }),
                     flow_source,
                     flow_definition_json,
+                    flow_files: None,
                 })?;
                 (paths, false)
             }
@@ -374,6 +377,7 @@ where
             ExecutionStart::FromCheckpoint {
                 start_node,
                 checkpoint,
+                flow_files,
             } => {
                 if !flow.nodes.contains_key(&start_node) {
                     return Err(RuntimeStorageError::InvalidRuntimeGraph {
@@ -405,6 +409,7 @@ where
                     }),
                     flow_source,
                     flow_definition_json,
+                    flow_files,
                 })?;
                 (paths, false)
             }
@@ -1059,6 +1064,7 @@ pub fn prepare_fresh_run(
     flow: &FlowDefinition,
     flow_source: Option<String>,
     flow_definition_json: Option<String>,
+    flow_files: Option<BTreeMap<String, String>>,
     launch_context: &LaunchContext,
     runtime_context: &ContextMap,
 ) -> Result<crate::paths::RunRootPaths> {
@@ -1078,6 +1084,7 @@ pub fn prepare_fresh_run(
         manifest: Some(manifest),
         flow_source,
         flow_definition_json,
+        flow_files,
     })
 }
 

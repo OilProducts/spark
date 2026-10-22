@@ -6,26 +6,26 @@ use spark_assets::{flows, frontend, guides, icons, models, resources, ResourceSo
 use spark_common::settings::SparkSettings;
 
 const STARTER_FLOW_NAMES: &[&str] = &[
-    "examples/human-review-loop.yaml",
-    "examples/implement-review-loop.yaml",
-    "examples/parallel-review.yaml",
-    "examples/simple-linear.yaml",
-    "examples/supervision/implementation-worker.yaml",
-    "examples/supervision/supervised-implementation.yaml",
-    "math-research/explore-conjecture.yaml",
-    "math-research/formalize-result.yaml",
-    "math-research/prove-refute.yaml",
-    "software-development/audit-codebase.yaml",
-    "software-development/design-change.yaml",
-    "software-development/implement-change.yaml",
-    "software-development/investigate-bug.yaml",
-    "software-development/merge-change.yaml",
-    "software-development/review-change.yaml",
-    "software-development/run-retrospective.yaml",
-    "software-development/spec-implementation/implement-milestone.yaml",
-    "software-development/spec-implementation/implement-spec.yaml",
-    "software-development/workers/implement-task.yaml",
-    "software-development/workers/resolve-merge-conflicts.yaml",
+    "examples/human-review-loop",
+    "examples/implement-review-loop",
+    "examples/parallel-review",
+    "examples/simple-linear",
+    "examples/supervision/implementation-worker",
+    "examples/supervision/supervised-implementation",
+    "math-research/explore-conjecture",
+    "math-research/formalize-result",
+    "math-research/prove-refute",
+    "software-development/audit-codebase",
+    "software-development/design-change",
+    "software-development/implement-change",
+    "software-development/investigate-bug",
+    "software-development/merge-change",
+    "software-development/review-change",
+    "software-development/run-retrospective",
+    "software-development/spec-implementation/implement-milestone",
+    "software-development/spec-implementation/implement-spec",
+    "software-development/workers/implement-task",
+    "software-development/workers/resolve-merge-conflicts",
 ];
 
 #[test]
@@ -132,11 +132,11 @@ fn frontend_asset_lookup_rejects_unsafe_paths_and_symlink_escapes() {
 }
 
 #[test]
-fn starter_flow_inventory_is_packaged_sorted_and_utf8() {
+fn starter_flow_inventory_is_packaged_sorted_and_assembles() {
     let names = flows::starter_flow_names()
         .expect("starter flow names")
         .into_iter()
-        .filter(|name| name != "math-research/research-program.yaml")
+        .filter(|name| name != "math-research/research-program")
         .collect::<Vec<_>>();
     assert_eq!(
         names,
@@ -146,56 +146,85 @@ fn starter_flow_inventory_is_packaged_sorted_and_utf8() {
             .collect::<Vec<_>>()
     );
 
-    let assets = flows::starter_flow_assets()
-        .expect("starter flow assets")
-        .into_iter()
-        .filter(|asset| asset.name != "math-research/research-program.yaml")
-        .collect::<Vec<_>>();
-    assert_eq!(assets.len(), STARTER_FLOW_NAMES.len());
-    for asset in assets {
-        assert!(asset.name.ends_with(".yaml"));
-        assert!(asset.content.contains("schema_version:"), "{}", asset.name);
-        let flow = attractor_dsl::parse_flow_definition(&asset.content).unwrap_or_else(|error| {
-            panic!("{} does not satisfy the flow schema: {error}", asset.name)
-        });
+    for name in &names {
+        let files = flows::starter_flow_files(name).expect("flow files");
+        assert!(files.keys().all(|file| file.ends_with(".md")), "{name}");
+        let flow = bundled_flow(name);
         let software_metadata = flow.metadata.get("software_development");
-        if asset.name.starts_with("software-development/workers/")
-            || asset
-                .name
-                .contains("/spec-implementation/implement-milestone")
+        if name.starts_with("software-development/workers/")
+            || name.contains("/spec-implementation/implement-milestone")
         {
             assert_ne!(
                 software_metadata
                     .and_then(|value| value.get("launcher"))
                     .and_then(serde_json::Value::as_bool),
                 Some(true),
-                "{} must not be requestable",
-                asset.name
+                "{name} must not be requestable"
             );
         }
     }
-
-    for unsafe_name in [
-        "../bad.yaml",
-        "/tmp/bad.yaml",
-        "examples",
-        "examples/bad.txt",
-    ] {
+    // Every bundled file belongs to a flow directory.
+    for asset in flows::starter_flow_assets().expect("starter flow assets") {
+        let (flow, _) = asset.name.rsplit_once('/').expect("nested file");
         assert!(
-            flows::load_starter_flow(unsafe_name).is_err(),
+            flow == "math-research/research-program" || STARTER_FLOW_NAMES.contains(&flow),
+            "{}",
+            asset.name
+        );
+    }
+
+    for unsafe_name in ["../bad", "/tmp/bad", "examples", "examples/bad.txt"] {
+        assert!(
+            flows::starter_flow_files(unsafe_name).is_err(),
             "{unsafe_name}"
         );
     }
 }
 
 #[test]
+fn bundled_flows_round_trip_through_the_directory_writer() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let roles_dir = temp.path().join("roles");
+    fs::create_dir_all(&roles_dir).expect("roles dir");
+    for (name, text) in spark_assets::roles::assets() {
+        fs::write(roles_dir.join(name), text).expect("role");
+    }
+    for name in flows::starter_flow_names().expect("names") {
+        let flow = bundled_flow(&name);
+        // Bundled files are exactly what the shared writer renders.
+        assert_eq!(
+            attractor_dsl::render_flow_files(&flow).expect("render"),
+            flows::starter_flow_files(&name).expect("files"),
+            "{name}"
+        );
+        // Converting the single-document YAML form and loading it again is lossless.
+        let yaml = attractor_dsl::flow_yaml(&flow).expect("yaml");
+        let converted = temp.path().join("flows").join(&name);
+        attractor_dsl::write_flow_dir(
+            &converted,
+            &attractor_dsl::parse_flow_definition(&yaml).expect("parse"),
+        )
+        .expect("write");
+        assert_eq!(
+            attractor_dsl::read_flow_dir(&converted).expect("load"),
+            flow,
+            "{name}"
+        );
+        attractor_dsl::resolve_flow_roles(&flow, &roles_dir)
+            .unwrap_or_else(|error| panic!("{name}: {}", error.detail()));
+    }
+}
+
+/// A bundled flow in its authored form, assembled like the loader does.
+fn bundled_flow(name: &str) -> attractor_dsl::FlowDefinition {
+    let files = flows::starter_flow_files(name).expect("bundled flow files");
+    attractor_dsl::assemble_flow_files(&files)
+        .unwrap_or_else(|error| panic!("{name} does not assemble: {}", error.detail()))
+}
+
+#[test]
 fn implement_milestone_reviews_before_expensive_validation_and_blocks_invalid_state() {
-    let asset = flows::load_starter_flow(
-        "software-development/spec-implementation/implement-milestone.yaml",
-    )
-    .expect("implement milestone flow");
-    let flow = attractor_dsl::parse_flow_definition(asset.text().expect("utf-8 flow"))
-        .expect("valid implement milestone flow");
+    let flow = bundled_flow("software-development/spec-implementation/implement-milestone");
     for (from, to, condition) in [
         (
             "validate_active_item_state",
@@ -234,14 +263,12 @@ fn implement_milestone_reviews_before_expensive_validation_and_blocks_invalid_st
 #[test]
 fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() {
     for name in [
-        "software-development/audit-codebase.yaml",
-        "software-development/design-change.yaml",
-        "software-development/investigate-bug.yaml",
-        "software-development/run-retrospective.yaml",
+        "software-development/audit-codebase",
+        "software-development/design-change",
+        "software-development/investigate-bug",
+        "software-development/run-retrospective",
     ] {
-        let asset = flows::load_starter_flow(name).expect("analysis flow");
-        let flow = attractor_dsl::parse_flow_definition(asset.text().expect("utf-8 flow"))
-            .expect("valid analysis flow");
+        let flow = bundled_flow(name);
         assert!(
             !flow.nodes.values().any(|node| {
                 let kind = serde_json::to_value(&node.kind).unwrap();
@@ -250,10 +277,7 @@ fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() 
             "{name} must end with its result"
         );
     }
-    let asset = flows::load_starter_flow("software-development/investigate-bug.yaml")
-        .expect("investigate bug flow");
-    let flow = attractor_dsl::parse_flow_definition(asset.text().expect("utf-8 flow"))
-        .expect("valid investigate bug flow");
+    let flow = bundled_flow("software-development/investigate-bug");
     for (from, to, condition) in [
         ("propose_plan", "verify_plan", "outcome=success"),
         ("verify_plan", "done", "outcome=success"),
@@ -268,8 +292,7 @@ fn analysis_flows_end_with_their_result_and_investigate_bug_verifies_its_plan() 
 
 #[test]
 fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
-    let asset = flows::load_starter_flow("software-development/merge-change.yaml").unwrap();
-    let flow = attractor_dsl::parse_flow_definition(asset.text().unwrap()).unwrap();
+    let flow = bundled_flow("software-development/merge-change");
     let routes = flow
         .edges
         .iter()
@@ -388,10 +411,7 @@ fn merge_change_skips_validation_only_for_successful_conflict_free_merges() {
 
 #[test]
 fn research_program_separates_correctness_from_substantive_progress() {
-    let asset = flows::load_starter_flow("math-research/research-program.yaml")
-        .expect("load research program");
-    let flow = attractor_dsl::parse_flow_definition(asset.text().expect("flow text"))
-        .expect("parse research program");
+    let flow = bundled_flow("math-research/research-program");
     let prompt = |node_id: &str| {
         serde_json::to_value(&flow.nodes[node_id].config).expect("serialize node config")["prompt"]
             .as_str()
@@ -419,13 +439,11 @@ fn research_program_separates_correctness_from_substantive_progress() {
 #[test]
 fn math_commit_tools_propagate_git_commit_failures() {
     for flow_name in [
-        "math-research/explore-conjecture.yaml",
-        "math-research/formalize-result.yaml",
-        "math-research/prove-refute.yaml",
+        "math-research/explore-conjecture",
+        "math-research/formalize-result",
+        "math-research/prove-refute",
     ] {
-        let asset = flows::load_starter_flow(flow_name).expect("load flow");
-        let flow = attractor_dsl::parse_flow_definition(asset.text().expect("flow text"))
-            .expect("parse flow");
+        let flow = bundled_flow(flow_name);
         let commands = flow
             .nodes
             .values()
@@ -472,10 +490,7 @@ fn math_commit_tools_propagate_git_commit_failures() {
 }
 
 fn prepare_change_workspace(repo: &Path, run: &str, artifact: &str) -> std::process::Output {
-    let asset = flows::load_starter_flow("software-development/implement-change.yaml")
-        .expect("implement change flow");
-    let flow =
-        attractor_dsl::parse_flow_definition(asset.text().expect("flow text")).expect("valid flow");
+    let flow = bundled_flow("software-development/implement-change");
     let normalize = serde_json::to_value(&flow.nodes["normalize_task"]).unwrap();
     assert!(normalize["contracts"]["writes_context"]
         .as_array()
@@ -664,7 +679,7 @@ fn guide_model_icon_and_provider_template_resources_are_available() {
         .expect("flow authoring")
         .text()
         .expect("guide utf-8")
-        .contains("FlowDefinition YAML"));
+        .contains("type: Flow"));
     assert!(guides::spark_operations_guide()
         .expect("operations")
         .text()
@@ -757,10 +772,12 @@ fn settings(root: &Path) -> SparkSettings {
 
 #[test]
 fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
-    use sha2::{Digest, Sha256};
-    let hash = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    use spark_common::approvals::{
+        append_approvals, approval_entries, sha256_hex as hash, EVENT_HUMAN_SAVE, EVENT_INSTALLED,
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let dir = temp.path();
+    let log = dir.join("config/approvals.jsonl");
     let assets = flows::starter_flow_assets().expect("bundled flows");
     let [same, stale, edited, unknown, ..] = &assets[..] else {
         panic!("at least four bundled flows")
@@ -773,22 +790,39 @@ fn locally_edited_flows_lists_only_edits_that_seeding_keeps() {
     write(&same.name, same.content.as_bytes());
     write(&stale.name, b"older packaged version\n");
     write(&edited.name, b"edited: true\n");
-    write(&unknown.name, b"installed before the manifest existed\n");
-    let manifest = serde_json::json!({
-        same.name.clone(): hash(b"anything"),
-        stale.name.clone(): hash(b"older packaged version\n"),
-        edited.name.clone(): hash(edited.content.as_bytes()),
-    });
-    fs::write(
-        dir.join(flows::PACKAGED_FLOW_HASHES),
-        serde_json::to_vec(&manifest).unwrap(),
+    write(&unknown.name, b"installed before the log existed\n");
+    let installed = |name: &String, bytes: &[u8]| (format!("flows/{name}"), hash(bytes));
+    append_approvals(
+        &log,
+        &approval_entries(
+            EVENT_INSTALLED,
+            "spark/test",
+            [
+                installed(&same.name, b"anything"),
+                installed(&stale.name, b"older packaged version\n"),
+                installed(&edited.name, edited.content.as_bytes()),
+            ],
+        ),
+    )
+    .unwrap();
+    // Only `installed` entries mark what seeding put there.
+    append_approvals(
+        &log,
+        &approval_entries(
+            EVENT_HUMAN_SAVE,
+            "human:test",
+            [installed(&edited.name, b"edited: true\n")],
+        ),
     )
     .unwrap();
 
     // Matching the bundled copy, or the last installed version (updated on the
-    // next start), is not an edit; missing files are reinstalled.
+    // next start), is not an edit; missing files are reinstalled. Edits are
+    // reported per flow directory.
+    let flow_of = |name: &str| name.rsplit_once('/').unwrap().0.to_string();
+    assert_eq!(flow_of(&edited.name), flow_of(&unknown.name));
     assert_eq!(
-        flows::locally_edited_flows(dir),
-        vec![edited.name.clone(), unknown.name.clone()]
+        flows::locally_edited_flows(dir, &log),
+        vec![flow_of(&edited.name)]
     );
 }

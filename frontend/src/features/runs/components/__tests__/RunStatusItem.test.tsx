@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState, type ComponentProps } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RunTranscriptSegment } from '@/lib/api/attractorApi'
 import type { PipelineResultResponse } from '@/lib/attractorClient'
@@ -540,5 +540,127 @@ describe('RunVisitsCard', () => {
     fireEvent.click(screen.getByTestId('run-visit-row'))
     fireEvent.click(screen.getByTestId('run-visit-item-context'))
     expect(screen.getByTestId('run-context-search-input')).toHaveValue('objective')
+  })
+})
+
+describe('RunVisitsCard steering', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  const visitsCard = (visits: RunVisit[]) => (
+    <SelectingVisitsCard
+      visits={visits}
+      flowNodes={{}}
+      segments={[]}
+      prompts={[]}
+      journal={[]}
+      now={0}
+      isNarrowViewport={false}
+      isLive={true}
+      transcriptError={null}
+      timelineError={null}
+      onOpenRun={vi.fn()}
+      statusRow={{ label: 'Running' }}
+      contextKeyCount={0}
+      renderStatus={() => null}
+      renderContext={() => null}
+      artifactEntries={[]}
+      onViewArtifact={vi.fn()}
+    />
+  )
+  const renderVisits = (visits: RunVisit[]) => render(visitsCard(visits))
+  const openVisit = (index: number) => fireEvent.click(screen.getAllByTestId('run-visit-row')[index])
+  const steerResponse = (body: Record<string, unknown>) => vi.fn(async () => new Response(JSON.stringify(body), { status: 200 }))
+
+  it('offers a message input only on a running agent node', () => {
+    renderVisits([
+      visit('implement', 1, 'running'),
+      visit('check', 2, 'running', { kind: 'tool' }),
+      visit('plan', 0, 'succeeded'),
+    ])
+    openVisit(0)
+    expect(screen.getByTestId('run-visit-steer-input')).toBeVisible()
+    openVisit(1)
+    expect(screen.queryByTestId('run-visit-steer-input')).toBeNull()
+    openVisit(2)
+    expect(screen.queryByTestId('run-visit-steer-input')).toBeNull()
+  })
+
+  it('posts the message to the node and shows the delivery', async () => {
+    const fetchMock = steerResponse({
+      pipeline_id: 'run-1', target_run_id: 'run-1', run_id: 'run-1', status: 'delivered', delivery_mode: 'active_turn',
+      reason: null, message: 'Intervention delivered to active Claude Code turn.', target_node_id: 'implement',
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderVisits([visit('implement', 1, 'running')])
+    openVisit(0)
+    fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Use the existing helper.' } })
+    fireEvent.click(screen.getByTestId('run-visit-steer-send'))
+
+    expect(await screen.findByTestId('run-visit-steer-delivered')).toHaveTextContent('Intervention delivered to active Claude Code turn.')
+    expect(fetchMock).toHaveBeenCalledWith('/attractor/pipelines/run-1/steer', expect.objectContaining({ method: 'POST' }))
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1]
+    expect(JSON.parse(init.body as string)).toEqual({
+      message: 'Use the existing helper.', target_run_id: 'run-1', target_node_id: 'implement',
+    })
+    expect(screen.getByTestId('run-visit-steer-input')).toHaveValue('')
+    expect(screen.queryByTestId('run-visit-steer-rejected')).toBeNull()
+  })
+
+  it('shows a rejection with its reason and keeps the draft', async () => {
+    const message = 'Several agent nodes are running (run-a/node-x, run-b/node-y); choose one to steer.'
+    vi.stubGlobal('fetch', steerResponse({
+      pipeline_id: 'run-1', target_run_id: 'run-1', run_id: 'run-1', status: 'rejected', delivery_mode: null,
+      reason: 'ambiguous_target', message, target_node_id: null,
+    }))
+    renderVisits([visit('implement', 1, 'running')])
+    openVisit(0)
+    fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Stop.' } })
+    fireEvent.click(screen.getByTestId('run-visit-steer-send'))
+
+    const rejected = await screen.findByTestId('run-visit-steer-rejected')
+    expect(rejected).toHaveTextContent(`${message} (ambiguous_target)`)
+    expect(rejected).toHaveAttribute('role', 'alert')
+    expect(screen.getByTestId('run-visit-steer-input')).toHaveValue('Stop.')
+  })
+
+  it('shows an HTTP error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: 'Unknown pipeline' }), { status: 404 })))
+    renderVisits([visit('implement', 1, 'running')])
+    openVisit(0)
+    fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Stop.' } })
+    fireEvent.click(screen.getByTestId('run-visit-steer-send'))
+
+    await waitFor(() => expect(screen.getByTestId('run-visit-steer-rejected')).toHaveTextContent('Unable to send message (HTTP 404): Unknown pipeline.'))
+  })
+
+  it.each([
+    ['before', 'delivered', 'run-visit-steer-delivered'],
+    ['before', 'rejected', 'run-visit-steer-rejected'],
+    ['after', 'delivered', 'run-visit-steer-delivered'],
+    ['after', 'rejected', 'run-visit-steer-rejected'],
+  ])('keeps the result when the visit ends %s a %s response', async (when, status, testId) => {
+    let respond = (_: Response) => {}
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { respond = resolve })))
+    const view = renderVisits([visit('implement', 1, 'running')])
+    openVisit(0)
+    fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Stop.' } })
+    fireEvent.click(screen.getByTestId('run-visit-steer-send'))
+    const end = () => view.rerender(visitsCard([visit('implement', 1, 'succeeded')]))
+    const reply = () => respond(new Response(JSON.stringify({
+      pipeline_id: 'run-1', target_run_id: 'run-1', run_id: 'run-1', status, delivery_mode: null,
+      reason: status === 'rejected' ? 'no_active_agent_node' : null, message: `Steer ${status}.`, target_node_id: 'implement',
+    }), { status: 200 }))
+    if (when === 'before') {
+      end()
+      reply()
+    } else {
+      reply()
+      await screen.findByTestId(testId)
+      end()
+    }
+
+    expect(await screen.findByTestId(testId)).toHaveTextContent(`Steer ${status}.`)
+    expect(screen.queryByTestId('run-visit-steer-input')).toBeNull()
+    expect(screen.queryByTestId('run-visit-steer-send')).toBeNull()
   })
 })

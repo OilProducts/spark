@@ -505,7 +505,14 @@ fn inherited_flow_profile_checks_node_models_and_explicit_selection_precedence()
     other["default_model"] = json!("m2");
     let first = save(&settings, "llm_profiles", "absent", json!([team, other])).unwrap();
     let revision = first["llm_profiles"]["revision"].as_str().unwrap();
-    let flow_path = settings.flows_dir.join("inherited.yaml");
+    let flow_path = settings.flows_dir.join("inherited");
+    let write_flow = |source: &str| {
+        attractor_dsl::write_flow_dir(
+            &flow_path,
+            &attractor_dsl::parse_flow_definition(source).expect("valid flow"),
+        )
+        .expect("write flow");
+    };
     let source = r#"schema_version: "1"
 id: inherited
 defaults:
@@ -529,7 +536,7 @@ edges:
   - from: work
     to: exit
 "#;
-    std::fs::write(&flow_path, source).unwrap();
+    write_flow(source);
     let path = settings.config_dir.join("llm-profiles.toml");
     let before = std::fs::read(&path).unwrap();
     let mut candidate = json!([team, other]);
@@ -544,7 +551,7 @@ edges:
     assert!(
         error
             .to_string()
-            .contains("flow inherited.yaml.nodes.work.execution.llm_profile"),
+            .contains("flow inherited.nodes.work.execution.llm_profile"),
         "{error}"
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
@@ -552,24 +559,20 @@ edges:
     assert!(
         error
             .to_string()
-            .contains("flow inherited.yaml.nodes.work.execution.llm_profile"),
+            .contains("flow inherited.nodes.work.execution.llm_profile"),
         "{error}"
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
 
     // Explicit node profile wins over the flow profile; its model wins over m1.
-    std::fs::write(
-        &flow_path,
-        source.replace("llm_model: m2", "llm_model: m2\n      llm_profile: other"),
-    )
-    .unwrap();
+    write_flow(&source.replace("llm_model: m2", "llm_model: m2\n      llm_profile: other"));
     validate_workspace_settings_update(&settings, &request()).unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let saved = update_workspace_settings(&settings, request()).unwrap();
     assert_eq!(saved["llm_profiles"]["stored"][1]["models"], json!(["m1"]));
 
     // Endpoint, label and supported model-list edits remain valid with inheritance.
-    std::fs::write(&flow_path, source).unwrap();
+    write_flow(source);
     candidate[0]["models"] = json!(["m1", "m2", "m3"]);
     candidate[0]["label"] = json!("Renamed team");
     candidate[0]["base_url"] = json!("http://localhost:9998/v1");

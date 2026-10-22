@@ -104,7 +104,6 @@ const renderLaunchPanel = (overrides?: Partial<LaunchPanelProps>) => {
   const props: LaunchPanelProps = {
     target: {
       flowName: TEST_FLOW,
-      loadFlowContent: async () => TEST_FLOW_CONTENT,
       previewSource: { kind: 'flow', flowName: TEST_FLOW },
     },
     projectPath: TEST_PROJECT,
@@ -152,7 +151,13 @@ useStore.getState().setRunsSelectedRunId(null);
       inputs: [{ key: 'context.topic', label: 'Topic', type: 'string', required: true }],
     })
     const user = userEvent.setup()
-    const { onLaunched } = renderLaunchPanel()
+    // The editor flushes its pending save before the launch reads the flow by name.
+    const prepareLaunch = vi.fn(async () => {
+      expect(startedPipelinePayload(fetchMock)).toBeNull()
+    })
+    const { onLaunched } = renderLaunchPanel({
+      target: { flowName: TEST_FLOW, prepareLaunch, previewSource: { kind: 'flow', flowName: TEST_FLOW } },
+    })
 
     const topicInput = await screen.findByTestId('execution-launch-input-context.topic')
     await user.type(topicInput, 'quarterly report')
@@ -162,9 +167,10 @@ useStore.getState().setRunsSelectedRunId(null);
     await user.click(startButton)
 
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('run-123', false))
+    expect(prepareLaunch).toHaveBeenCalledOnce()
     const payload = startedPipelinePayload(fetchMock)
+    expect(payload).not.toHaveProperty('flow_content')
     expect(payload).toMatchObject({
-      flow_content: TEST_FLOW_CONTENT,
       flow_name: TEST_FLOW,
       working_directory: TEST_PROJECT,
       launch_context: { 'context.topic': 'quarterly report' },

@@ -308,9 +308,15 @@ impl Control {
                 } else if self.interrupt.is_some()
                     && self.interrupt.as_deref() == response["request_id"].as_str()
                     && response["subtype"] == "success"
+                    // still_queued names messages the CLI holds for a follow-up
+                    // turn; each must be one we sent and is not yet delivered.
                     && response["response"]["still_queued"]
                         .as_array()
-                        .is_some_and(|ids| ids.is_empty())
+                        .is_some_and(|ids| {
+                            ids.iter().all(|id| {
+                                id.as_str().is_some_and(|id| self.undelivered.contains_key(id))
+                            })
+                        })
                 {
                     self.interrupt.take();
                     self.interrupted = true;

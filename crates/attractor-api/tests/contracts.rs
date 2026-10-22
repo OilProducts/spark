@@ -4,6 +4,8 @@ mod execution_lock_contracts;
 mod execution_placement_contracts;
 #[path = "contracts/flow_crud_contracts.rs"]
 mod flow_crud_contracts;
+#[path = "contracts/flow_directory_contracts.rs"]
+mod flow_directory_contracts;
 #[path = "contracts/llm_profiles_contracts.rs"]
 mod llm_profiles_contracts;
 #[path = "contracts/pipeline_control_contracts.rs"]
@@ -12,13 +14,22 @@ mod pipeline_control_contracts;
 mod pipeline_inspection_contracts;
 #[path = "contracts/pipeline_lifecycle_contracts.rs"]
 mod pipeline_lifecycle_contracts;
+#[path = "contracts/pipeline_steer_contracts.rs"]
+mod pipeline_steer_contracts;
 #[path = "contracts/preview_route_contracts.rs"]
 mod preview_route_contracts;
 #[path = "contracts/run_recovery_contracts.rs"]
 mod run_recovery_contracts;
 #[path = "contracts/status_route_contracts.rs"]
 mod status_route_contracts;
+#[path = "contracts/trust_contracts.rs"]
+mod trust_contracts;
 #[path = "contracts/validation_loop_contracts.rs"]
 mod validation_loop_contracts;
 #[path = "contracts/worktree_lifecycle_contracts.rs"]
 mod worktree_lifecycle_contracts;
+
+#[path = "contracts/flow_install.rs"]
+mod flow_install;
+#[allow(unused_imports)]
+pub(crate) use flow_install::{approve_flow, install_flow};

@@ -23,23 +23,23 @@ Packaged example flows live under [crates/spark-assets/assets/flows/examples](..
 
 ```bash
 mkdir -p ~/.spark-dev/flows
-cp crates/spark-assets/assets/flows/examples/simple-linear.yaml ~/.spark-dev/flows/my-first-flow.yaml
+cp -r crates/spark-assets/assets/flows/examples/simple-linear ~/.spark-dev/flows/my-first-flow
 ```
 
 Validate direct flow edits:
 
 ```bash
-cargo run -p spark-cli --bin spark -- flow validate --file ~/.spark-dev/flows/my-first-flow.yaml --text
+cargo run -p spark-cli --bin spark -- flow validate --file ~/.spark-dev/flows/my-first-flow --text
 ```
 
 Launch a saved flow through the development server:
 
 ```bash
-SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- run launch --flow my-first-flow.yaml --project .
+SPARK_API_BASE_URL=http://127.0.0.1:8010 cargo run -p spark-cli --bin spark -- run launch --flow my-first-flow --project .
 ```
 
 ## References
 
 - Flow definition reference: [crates/spark-assets/assets/guides/flow-definition-authoring.md](../crates/spark-assets/assets/guides/flow-definition-authoring.md)
 - Operations guide: [crates/spark-assets/assets/guides/spark-operations.md](../crates/spark-assets/assets/guides/spark-operations.md)
-- Change flow: [crates/spark-assets/assets/flows/software-development/implement-change.yaml](../crates/spark-assets/assets/flows/software-development/implement-change.yaml)
+- Change flow: [crates/spark-assets/assets/flows/software-development/implement-change](../crates/spark-assets/assets/flows/software-development/implement-change)

@@ -11,7 +11,6 @@ path = "src/lib.rs"
 [dependencies]
 include_dir = "0.7"
 serde_json = "1.0"
-sha2 = "0.10"
 spark-common = { path = "../spark-common" }
 
 [dev-dependencies]

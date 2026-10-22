@@ -1,6 +1,22 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
+    "Attribution": {
+      "description": "Who produced or verified a file (OKF §5.2): `by` is an OKF §7 actor (`human:<id>`, `<producer>/<version>` or `process:<id>`), `at` an ISO 8601 timestamp with an explicit offset.",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "by": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "by"
+      ],
+      "type": "object"
+    },
     "ExecutionConfig": {
       "properties": {
         "llm_model": {
@@ -24,6 +40,32 @@
         "reasoning_effort": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "reasoning_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking_budget_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
             "null"
           ]
         }
@@ -71,6 +113,32 @@
         "reasoning_effort": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "reasoning_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoning_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thinking_budget_tokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
             "null"
           ]
         }
@@ -187,6 +255,17 @@
           "additionalProperties": true,
           "type": "object"
         },
+        "generated": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Attribution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "OKF §5.2 trust fields. Saves keep them; the approval log, not these fields, decides what may run."
+        },
         "kind": {
           "$ref": "#/definitions/NodeKind"
         },
@@ -214,6 +293,13 @@
             }
           ]
         },
+        "role": {
+          "description": "Role file (`roles/<name>.md`) whose persona and execution defaults the loader merges into this `agent_task` node. Only the authored form sets it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "runtime": {
           "anyOf": [
             {
@@ -224,6 +310,9 @@
             }
           ]
         },
+        "status": {
+          "$ref": "#/definitions/TrustStatus"
+        },
         "ui": {
           "anyOf": [
             {
@@ -231,6 +320,19 @@
             },
             {
               "type": "null"
+            }
+          ]
+        },
+        "verified": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Attribution"
+            },
+            {
+              "items": {
+                "$ref": "#/definitions/Attribution"
+              },
+              "type": "array"
             }
           ]
         }
@@ -605,6 +707,23 @@
         "goal_gate": {
           "type": "boolean"
         },
+        "max_entries": {
+          "description": "Maximum number of times routing may enter this node within one run. Exceeding it fails the run instead of looping (failure-edge convergence guard). Absent means the engine default.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "recovery_policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RecoveryPolicy"
+            }
+          ],
+          "description": "Behavior when this node was started but not checkpointed before a restart."
+        },
         "retry_target": {
           "type": [
             "string",
@@ -627,6 +746,13 @@
       },
       "type": "object"
     },
+    "RecoveryPolicy": {
+      "enum": [
+        "rerun",
+        "pause"
+      ],
+      "type": "string"
+    },
     "RetryConfig": {
       "properties": {
         "max_retries": {
@@ -645,6 +771,14 @@
         }
       },
       "type": "object"
+    },
+    "TrustStatus": {
+      "enum": [
+        "draft",
+        "stable",
+        "deprecated"
+      ],
+      "type": "string"
     },
     "UiConfig": {
       "properties": {
@@ -684,6 +818,17 @@
       "additionalProperties": true,
       "type": "object"
     },
+    "generated": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Attribution"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "OKF §5.2 trust fields. Saves keep them; the approval log, not these fields, decides what may run."
+    },
     "goal": {
       "default": "",
       "type": "string"
@@ -712,9 +857,25 @@
       "default": "1",
       "type": "string"
     },
+    "status": {
+      "$ref": "#/definitions/TrustStatus"
+    },
     "title": {
       "default": "",
       "type": "string"
+    },
+    "verified": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Attribution"
+        },
+        {
+          "items": {
+            "$ref": "#/definitions/Attribution"
+          },
+          "type": "array"
+        }
+      ]
     }
   },
   "required": [

@@ -15,8 +15,13 @@ use spark_server::{
     build_serve_configuration_from_args, resolve_server_settings_with_executable_path,
 };
 
-fn starter_flow_names() -> Vec<String> {
-    spark_assets::flows::starter_flow_names().expect("packaged starter flow names")
+/// Every packaged flow file (`<flow>/<file>.md`); seeding counts files.
+fn starter_flow_files() -> Vec<String> {
+    spark_assets::flows::starter_flow_assets()
+        .expect("packaged starter flow assets")
+        .into_iter()
+        .map(|asset| asset.name)
+        .collect()
 }
 
 const TOP_LEVEL_HELP: &str = concat!(
@@ -104,7 +109,7 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
         .expect("run installed spark-server");
 
     let data_dir = home.join(".spark");
-    let flow_count = starter_flow_names().len();
+    let flow_count = starter_flow_files().len();
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(String::from_utf8(output.stderr).expect("stderr utf8"), "");
     assert_eq!(
@@ -116,7 +121,9 @@ fn cargo_installed_server_process_init_uses_default_home_without_source_checkout
         )
     );
     assert!(data_dir.join("config/flow-catalog.toml").is_file());
-    assert!(data_dir.join("flows/examples/simple-linear.yaml").is_file());
+    assert!(data_dir
+        .join("flows/examples/simple-linear/flow.md")
+        .is_file());
 }
 
 #[test]
@@ -159,7 +166,7 @@ fn init_creates_runtime_layout_flows_and_catalog() {
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let data_dir = root.join("spark-home");
     let flows_dir = root.join("flows");
-    let flow_names = starter_flow_names();
+    let flow_names = starter_flow_files();
 
     let output = run_with_args_and_env(
         [
@@ -203,9 +210,9 @@ fn init_creates_runtime_layout_flows_and_catalog() {
             .count(),
         11
     );
-    assert!(catalog.contains("[flows.\"math-research/explore-conjecture.yaml\".execution_lock]"));
+    assert!(catalog.contains("[flows.\"math-research/explore-conjecture\".execution_lock]"));
     assert!(catalog.contains("key = \"math-research\""));
-    assert!(catalog.contains("[flows.\"software-development/merge-change.yaml\".execution_lock]"));
+    assert!(catalog.contains("[flows.\"software-development/merge-change\".execution_lock]"));
     assert!(catalog.contains("key = \"software-development-integration\""));
     assert!(!catalog.contains("software-development/workers/"));
 }
@@ -279,7 +286,7 @@ fn init_respects_skip_and_force_counts() {
     let flows_dir = temp.path().join("flows");
     let data_dir_text = data_dir.to_str().expect("utf-8 data dir");
     let flows_dir_text = flows_dir.to_str().expect("utf-8 flows dir");
-    let flow_count = starter_flow_names().len();
+    let flow_count = starter_flow_files().len();
 
     let first = run_with_args_and_env(
         [
@@ -293,29 +300,66 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(first.exit_code, 0);
-    let edited_flow = flows_dir.join("examples/simple-linear.yaml");
+    // Seeding installs flow directories and bundled roles.
+    let implement_change = flows_dir.join("software-development/implement-change");
+    assert!(implement_change.join("flow.md").is_file());
+    attractor_dsl::read_flow_dir(&implement_change).expect("seeded flow directory loads");
+    let roles_dir = data_dir.join("roles");
+    let role = fs::read_to_string(roles_dir.join("adversarial-reviewer.md")).expect("seeded role");
+    // The approval log records each installed file; it replaced the manifests.
+    let log = data_dir.join("config/approvals.jsonl");
+    let installed = |path: &str| -> Vec<String> {
+        spark_common::approvals::read_approvals(&log)
+            .expect("approval log")
+            .into_iter()
+            .filter(|entry| entry.event == "installed" && entry.path == path)
+            .inspect(|entry| assert!(entry.by.starts_with("spark/"), "{entry:?}"))
+            .map(|entry| entry.sha256)
+            .collect()
+    };
+    assert_eq!(
+        installed("roles/adversarial-reviewer.md"),
+        vec![format!("{:x}", Sha256::digest(role.as_bytes()))]
+    );
+    assert!(!flows_dir.join(".packaged-flow-hashes.json").exists());
+    assert!(!roles_dir.join(".packaged-role-hashes.json").exists());
+    // Seeded flows pass the launch gate as installed.
+    let trust = attractor_dsl::TrustStore {
+        flows_dir: flows_dir.clone(),
+        roles_dir: roles_dir.clone(),
+        log_path: log.clone(),
+    };
+    attractor_dsl::load_approved_flow(&trust, &implement_change).expect("seeded flow is approved");
+
+    let edited_flow = flows_dir.join("examples/simple-linear/plan.md");
     fs::write(&edited_flow, "edited: true\n").expect("user edit");
 
     // Simulate an installed packaged version becoming stale while keeping a
-    // separate local edit. The hash manifest is the durable baseline that
-    // makes those two cases distinguishable on the next ordinary init.
-    let refresh_name = "examples/human-review-loop.yaml";
+    // separate local edit. The latest `installed` entry is the durable
+    // baseline that makes those two cases distinguishable on the next init.
+    let refresh_name = "examples/human-review-loop/flow.md";
     let refresh_flow = flows_dir.join(refresh_name);
     let old_packaged = b"schema_version: old-packaged\n";
     fs::write(&refresh_flow, old_packaged).expect("old packaged flow");
-    let manifest_path = flows_dir.join(".packaged-flow-hashes.json");
-    let mut manifest: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(&manifest_path).expect("packaged hash manifest"))
-            .expect("hash manifest json");
-    manifest.insert(
-        refresh_name.to_string(),
-        format!("{:x}", Sha256::digest(old_packaged)),
-    );
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&manifest).expect("manifest json"),
+    spark_common::approvals::append_approvals(
+        &log,
+        &spark_common::approvals::approval_entries(
+            "installed",
+            "spark/0.0.0",
+            [(
+                format!("flows/{refresh_name}"),
+                format!("{:x}", Sha256::digest(old_packaged)),
+            )],
+        ),
     )
-    .expect("updated manifest");
+    .expect("older install");
+
+    // A node deleted in the editor stays deleted; a deleted flow is restored.
+    let deleted_node = flows_dir.join("examples/simple-linear/summarize.md");
+    fs::remove_file(&deleted_node).expect("delete node");
+    let deleted_flow = flows_dir.join("examples/parallel-review");
+    let deleted_flow_files = fs::read_dir(&deleted_flow).expect("flow dir").count();
+    fs::remove_dir_all(&deleted_flow).expect("delete flow");
 
     let second = run_with_args_and_env(
         [
@@ -329,17 +373,25 @@ fn init_respects_skip_and_force_counts() {
         &env,
     );
     assert_eq!(second.exit_code, 0);
-    assert!(second
-        .stdout
-        .ends_with(&format!("created=0 updated=1 skipped={}\n", flow_count - 1)));
+    assert!(second.stdout.ends_with(&format!(
+        "created={deleted_flow_files} updated=1 skipped={}\n",
+        flow_count - 1 - deleted_flow_files
+    )));
+    assert!(!deleted_node.exists());
+    assert!(deleted_flow.join("flow.md").is_file());
     assert_eq!(
         fs::read_to_string(&edited_flow).expect("edited flow"),
         "edited: true\n"
     );
-    assert_ne!(
-        fs::read(&refresh_flow).expect("refreshed flow"),
-        old_packaged
+    let refreshed = fs::read(&refresh_flow).expect("refreshed flow");
+    assert_ne!(refreshed, old_packaged);
+    assert_eq!(
+        installed(&format!("flows/{refresh_name}")).last(),
+        Some(&format!("{:x}", Sha256::digest(&refreshed)))
     );
+    // The kept local edit is not approved, so launches refuse it.
+    let edited_entries = installed("flows/examples/simple-linear/plan.md");
+    assert!(!edited_entries.contains(&format!("{:x}", Sha256::digest(b"edited: true\n"))));
 
     let forced = run_with_args_and_env(
         [
@@ -356,10 +408,13 @@ fn init_respects_skip_and_force_counts() {
     assert_eq!(forced.exit_code, 0);
     assert!(forced
         .stdout
-        .ends_with(&format!("created=0 updated={flow_count} skipped=0\n")));
-    assert_ne!(
-        fs::read_to_string(&edited_flow).expect("forced flow"),
-        "edited: true\n"
+        .ends_with(&format!("created=1 updated={} skipped=0\n", flow_count - 1)));
+    assert!(deleted_node.is_file());
+    let forced_flow = fs::read(&edited_flow).expect("forced flow");
+    assert_ne!(forced_flow, b"edited: true\n");
+    assert_eq!(
+        installed("flows/examples/simple-linear/plan.md").last(),
+        Some(&format!("{:x}", Sha256::digest(&forced_flow)))
     );
 }
 
@@ -885,7 +940,7 @@ fn collect_flow_files(root: &Path, current: &Path, files: &mut Vec<String>) {
             collect_flow_files(root, &path, files);
         } else if matches!(
             path.extension().and_then(|value| value.to_str()),
-            Some("yaml" | "yml")
+            Some("md")
         ) {
             files.push(
                 path.strip_prefix(root)

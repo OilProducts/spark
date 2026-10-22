@@ -122,7 +122,8 @@ while True:
         working_directory: settings.project_root.to_string_lossy().into(),
         llm_provider: Some("codex".into()),
         model: Some("test-model".into()),
-        flow_content: Some(
+        flow_name: Some(crate::install_flow(
+            &settings,
             r#"schema_version: "1"
 id: clarify
 nodes:
@@ -142,9 +143,8 @@ edges:
   to: work
 - from: work
   to: done
-"#
-            .into(),
-        ),
+"#,
+        )),
         ..Default::default()
     };
     let start = service.start_pipeline(start_request.clone());
@@ -577,6 +577,7 @@ fn assert_pid_gone(project: &Path, file: &str) {
 /// Starts a one-agent-node run in its own project directory.
 fn start_node(
     service: &AttractorApiService,
+    settings: &SparkSettings,
     temp: &Path,
     id: &str,
     provider: &str,
@@ -590,8 +591,10 @@ fn start_node(
         working_directory: project.to_string_lossy().into(),
         llm_provider: Some(provider.into()),
         model: Some("test-model".into()),
-        flow_content: Some(format!(
-            r#"schema_version: "1"
+        flow_name: Some(crate::install_flow(
+            settings,
+            format!(
+                r#"schema_version: "1"
 id: {id}
 nodes:
   start:
@@ -610,6 +613,7 @@ edges:
 - from: work
   to: done
 "#
+            ),
         )),
         ..Default::default()
     });
@@ -648,7 +652,7 @@ fn assert_cancel_and_timeout(
     provider: &str,
 ) {
     let id = format!("{provider}-cancel");
-    let project = start_node(service, temp, &id, provider, "LONG work", "");
+    let project = start_node(service, settings, temp, &id, provider, "LONG work", "");
     wait(|| project.join("started").exists());
     let path = format!("/attractor/pipelines/{id}/cancel");
     assert_eq!(service.dispatch("POST", &path, "{}").status_code, 200);
@@ -658,6 +662,7 @@ fn assert_cancel_and_timeout(
     let id = format!("{provider}-timeout");
     start_node(
         service,
+        settings,
         temp,
         &id,
         provider,
@@ -689,6 +694,7 @@ fn claude_code_node_questions_cancel_and_timeout() {
 
     start_node(
         &service,
+        &settings,
         temp.path(),
         "claude-ask",
         "claude-code",
@@ -825,7 +831,7 @@ fn assert_steer_delivered(
     provider: &str,
 ) {
     let id = format!("{provider}-steer");
-    let project = start_node(service, temp, &id, provider, "STEER work", "");
+    let project = start_node(service, settings, temp, &id, provider, "STEER work", "");
     wait(|| project.join("started").exists());
     let path = format!("/attractor/pipelines/{id}/steer");
     let steer = service.dispatch("POST", &path, r#"{"message":"Use the docs."}"#);
@@ -853,7 +859,7 @@ fn assert_steer_delivered(
 
     let late = service.dispatch("POST", &path, r#"{"message":"Too late."}"#);
     assert_eq!(late.body["status"], "rejected", "{}", late.body);
-    assert_eq!(late.body["reason"], "no_active_child_run");
+    assert_eq!(late.body["reason"], "no_active_agent_node");
     assert!(journaled("rejected"));
 }
 

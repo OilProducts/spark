@@ -323,6 +323,21 @@ impl CodergenSessionInterventionBroker {
         }
     }
 
+    /// Sessions currently accepting steering, keyed by run or not.
+    pub fn active_sessions(&self) -> Vec<ActiveCodergenSession> {
+        let state = self
+            .inner
+            .lock()
+            .expect("codergen intervention broker lock");
+        state
+            .active
+            .values()
+            .chain(state.unkeyed_active.values())
+            .filter(|entry| entry.session.steering.accepting())
+            .map(|entry| entry.session.clone())
+            .collect()
+    }
+
     pub fn request_child_intervention(
         &self,
         request: CodergenChildInterventionRequest,
@@ -796,7 +811,11 @@ impl CodergenHandler {
         if response_contract == STATUS_ENVELOPE_RESPONSE_CONTRACT {
             prompt = format!(
                 "{prompt}\n\n{}",
-                build_status_envelope_prompt_appendix(Some(&write_contract))
+                build_status_envelope_prompt_appendix(
+                    Some(&write_contract),
+                    &request.graph,
+                    &request.node_id,
+                )
             );
         }
         prompt = compose_prompt(&prompt, &request.context, &read_contract.declared_keys);

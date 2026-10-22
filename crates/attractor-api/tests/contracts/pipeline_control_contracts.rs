@@ -267,7 +267,7 @@ fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     let started = service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-steer".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -300,7 +300,7 @@ fn cancel_terminal_run_is_ignored_and_steer_records_rejected_intervention() {
     assert_eq!(steer.body["pipeline_id"], json!("run-steer"));
     assert_eq!(steer.body["target_run_id"], json!("child-run"));
     assert_eq!(steer.body["status"], json!("rejected"));
-    assert_eq!(steer.body["reason"], json!("no_active_child_run"));
+    assert_eq!(steer.body["reason"], json!("no_active_agent_node"));
 
     let bundle = RunStore::for_settings(&settings)
         .read_run_bundle("run-steer")
@@ -321,14 +321,17 @@ fn reset_clears_only_runs_directory() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
     let flow_dir = settings.flows_dir.clone();
-    fs::create_dir_all(&flow_dir).expect("flows");
-    fs::write(flow_dir.join("kept.yaml"), simple_flow()).expect("flow");
+    attractor_dsl::write_flow_dir(
+        &flow_dir.join("kept"),
+        &attractor_dsl::parse_flow_definition(&simple_flow()).expect("valid flow"),
+    )
+    .expect("write flow");
     let project_path = temp.path().join("Project Reset");
     let service = AttractorApiService::new(settings.clone());
     service.start_pipeline(PipelineStartRequest {
         wait: Some(true),
         run_id: Some("run-reset".to_string()),
-        flow_content: Some(simple_flow()),
+        flow_name: Some(crate::install_flow(&settings, simple_flow())),
         working_directory: project_path.to_string_lossy().to_string(),
         ..PipelineStartRequest::default()
     });
@@ -344,7 +347,7 @@ fn reset_clears_only_runs_directory() {
         .read_run_bundle("run-reset")
         .expect("read")
         .is_none());
-    assert!(flow_dir.join("kept.yaml").is_file());
+    assert!(flow_dir.join("kept/flow.md").is_file());
 }
 
 fn failed_record(run_id: &str, project_path: &Path) -> RunRecord {

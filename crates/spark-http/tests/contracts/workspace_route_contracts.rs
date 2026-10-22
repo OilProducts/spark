@@ -487,15 +487,9 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    let flow = settings.flows_dir.join("ops/review.yaml");
-    fs::create_dir_all(flow.parent().unwrap()).unwrap();
-    fs::write(&flow, "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n").unwrap();
-    spark_storage::set_flow_launch_policy(
-        &settings.config_dir,
-        "ops/review.yaml",
-        "agent_requestable",
-    )
-    .unwrap();
+    write_flow(&settings, "ops/review", "schema_version: '1'\nid: review\ntitle: Review\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n");
+    spark_storage::set_flow_launch_policy(&settings.config_dir, "ops/review", "agent_requestable")
+        .unwrap();
     let project = root.join("bound-project");
     fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy().into_owned();
@@ -561,7 +555,7 @@ async fn a_chat_without_a_project_belongs_to_home_and_so_do_its_missions_and_run
         app.clone(),
         "POST",
         &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
-        Some(json!({"flow_name": "ops/review.yaml", "summary": "Run from Home."})),
+        Some(json!({"flow_name": "ops/review", "summary": "Run from Home."})),
     )
     .await;
     assert_eq!(run.0, StatusCode::OK, "{}", run.1);
@@ -713,7 +707,7 @@ impl spark_agent_adapter::AgentTurnBackend for ScriptedMissionAgent {
             .sum::<usize>();
         drop(prompts);
         let reply = if request.prompt == "Begin work on this mission." {
-            for (flow, summary) in [("work/ok.yaml", "Build it"), ("work/ok.yaml", "Test it")] {
+            for (flow, summary) in [("work/ok", "Build it"), ("work/ok", "Test it")] {
                 let launched = self.call(
                     "POST",
                     &format!("/workspace/api/conversations/by-handle/{handle}/flow-run-requests"),
@@ -786,18 +780,13 @@ async fn a_mission_agent_launches_runs_hears_their_events_and_closes_the_mission
     let settings = settings(temp.path());
     let project = temp.path().join("missions-project");
     fs::create_dir_all(&project).unwrap();
-    fs::create_dir_all(settings.flows_dir.join("work")).unwrap();
-    fs::write(
-        settings.flows_dir.join("work/ok.yaml"),
+    write_flow(
+        &settings,
+        "work/ok",
         "schema_version: \"1\"\nid: ok\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
-    )
-    .unwrap();
-    spark_storage::set_flow_launch_policy(
-        &settings.config_dir,
-        "work/ok.yaml",
-        "agent_requestable",
-    )
-    .unwrap();
+    );
+    spark_storage::set_flow_launch_policy(&settings.config_dir, "work/ok", "agent_requestable")
+        .unwrap();
     let agent = std::sync::Arc::new(ScriptedMissionAgent {
         app: std::sync::OnceLock::new(),
         runtime: tokio::runtime::Handle::current(),
@@ -1645,7 +1634,7 @@ async fn referenced_synthesized_native_profile_cannot_be_removed_and_project_sti
     assert!(!path.exists());
     let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
         "run_id":"native-after-rejected-save", "working_directory":project, "wait":true,
-        "flow_content":"schema_version: '1'\nid: native\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n"
+        "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: native\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n")
     }))).await;
     assert_eq!(launched.0, StatusCode::OK, "{launched:?}");
     let bundle = attractor_runtime::RunStore::for_settings(&settings)
@@ -1710,7 +1699,7 @@ async fn file_edited_model_defaults_have_scoped_errors_and_workflow_rejects_befo
                 .is_empty());
             let launched = request_json(app, "POST", "/attractor/pipelines", Some(json!({
                 "run_id":"invalid-defaults", "working_directory":project, "wait":true,
-                "flow_content":"schema_version: '1'\nid: invalid\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n"
+                "flow_name": crate::install_flow(&settings, "schema_version: '1'\nid: invalid\nnodes:\n  start: {kind: start}\n  end: {kind: exit}\nedges:\n  - {from: start, to: end}\n")
             }))).await;
             assert_eq!(
                 launched.1["status"], "validation_error",
@@ -2160,4 +2149,13 @@ async fn reasoning_controls_round_trip_and_validate_at_settings_scopes() {
             );
         }
     }
+}
+
+fn write_flow(settings: &SparkSettings, name: &str, content: &str) {
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(content).expect("valid flow"),
+    )
+    .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }

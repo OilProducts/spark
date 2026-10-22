@@ -33,7 +33,8 @@ use crate::context::{
 use crate::error::Result;
 use crate::events::{
     append_event, interview_completed_event, interview_started_event,
-    parallel_branch_completed_event, parallel_branch_started_event, parallel_completed_event,
+    parallel_branch_completed_event, parallel_branch_node_completed_event,
+    parallel_branch_node_started_event, parallel_branch_started_event, parallel_completed_event,
     parallel_started_event,
 };
 use crate::executor::{
@@ -1923,8 +1924,11 @@ impl RuntimeHandlerRunner {
                                     .map_err(|error| {
                                         RuntimeNodeError::runtime(error.to_string())
                                     })?;
-                                    let payload =
-                                        self.execute_branch_from(&branch_runtime, &branch_id)?;
+                                    let payload = self.execute_branch_from(
+                                        &branch_runtime,
+                                        &branch_id,
+                                        branch_index,
+                                    )?;
                                     let success = branch_succeeded(&payload);
                                     self.emit(
                                         &branch_runtime,
@@ -1998,6 +2002,7 @@ impl RuntimeHandlerRunner {
         &self,
         runtime: &HandlerRuntime,
         start_node: &str,
+        branch_index: usize,
     ) -> std::result::Result<Value, RuntimeNodeError> {
         let fan_in_nodes = fan_in_nodes(&runtime.flow);
         let mut values = crate::flow_runtime::flow_context_seed(&runtime.flow);
@@ -2082,10 +2087,29 @@ impl RuntimeHandlerRunner {
                 fallback_profile: runtime.fallback_profile.clone(),
                 fallback_reasoning_effort: runtime.fallback_reasoning_effort.clone(),
             };
+            let emit_node_event = |event| {
+                self.emit(runtime, event)
+                    .map_err(|error| RuntimeNodeError::runtime(error.to_string()))
+            };
+            emit_node_event(parallel_branch_node_started_event(
+                &runtime.run_id,
+                &runtime.node_id,
+                start_node,
+                branch_index,
+                &current_node,
+            ))?;
             let raw_outcome = match self.execute_request(request) {
                 Ok(outcome) => outcome,
                 Err(error) => handler_error_outcome(error),
             };
+            emit_node_event(parallel_branch_node_completed_event(
+                &runtime.run_id,
+                &runtime.node_id,
+                start_node,
+                branch_index,
+                &current_node,
+                raw_outcome.status.to_string(),
+            ))?;
             let outcome = crate::context::apply_outcome_context_updates(
                 &current_node,
                 &node_attrs,

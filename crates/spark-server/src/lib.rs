@@ -390,18 +390,75 @@ pub fn initialize_runtime_with_options(
         .into_iter()
         .map(|asset| (asset.name, asset.content))
         .collect();
+    // Flows and roles: the approval log records what seeding installed.
+    let log = settings
+        .config_dir
+        .join(spark_common::approvals::APPROVALS_FILE);
+    let entries = spark_common::approvals::read_approvals(&log)
+        .map_err(|error| format!("Unable to read approval log {}: {error}", log.display()))?;
+    let mut installed = Vec::new();
     let result = seed_packaged_files(
         &settings.flows_dir,
         flows,
-        spark_assets::flows::PACKAGED_FLOW_HASHES,
+        &spark_common::approvals::installed_hashes(&entries, "flows/"),
         options.force,
     )?;
-    seed_packaged_files(
-        &settings.data_dir.join("playbooks"),
+    installed.extend(
+        result
+            .1
+            .into_iter()
+            .map(|(name, hash)| (format!("flows/{name}"), hash)),
+    );
+    let roles = seed_packaged_files(
+        &settings.roles_dir(),
+        spark_assets::roles::assets(),
+        &spark_common::approvals::installed_hashes(&entries, "roles/"),
+        options.force,
+    )?;
+    installed.extend(
+        roles
+            .1
+            .into_iter()
+            .map(|(name, hash)| (format!("roles/{name}"), hash)),
+    );
+    spark_common::approvals::append_approvals(
+        &log,
+        &spark_common::approvals::approval_entries(
+            spark_common::approvals::EVENT_INSTALLED,
+            &spark_common::approvals::installer_actor(),
+            installed,
+        ),
+    )
+    .map_err(|error| format!("Unable to write approval log {}: {error}", log.display()))?;
+    // The log replaced these manifests.
+    for (dir, manifest) in [
+        (&settings.flows_dir, ".packaged-flow-hashes.json"),
+        (&settings.roles_dir(), ".packaged-role-hashes.json"),
+    ] {
+        let _ = fs::remove_file(dir.join(manifest));
+    }
+    let result = result.0;
+    // Playbooks keep their own manifest.
+    let playbooks_dir = settings.data_dir.join("playbooks");
+    let manifest_path = playbooks_dir.join(".packaged-playbook-hashes.json");
+    let mut hashes = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| {
+            serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text).ok()
+        })
+        .unwrap_or_default();
+    let (_, installed) = seed_packaged_files(
+        &playbooks_dir,
         spark_assets::playbooks::assets(),
-        ".packaged-playbook-hashes.json",
+        &hashes,
         options.force,
     )?;
+    hashes.extend(installed);
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&hashes).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Unable to write packaged hash manifest: {e}"))?;
     spark_storage::seed_default_flow_catalog(&settings.config_dir)
         .map_err(|error| error.to_string())?;
     Ok((settings, result))
@@ -864,36 +921,36 @@ fn run_serve_process(
     })
 }
 
-/// Writes packaged `(relative name, content)` files into `flows_dir`: creates
+/// Writes packaged `(relative name, content)` files into `dir`: creates
 /// missing ones, updates unmodified installed copies, and keeps local edits.
+/// `installed` maps each name to the hash Spark last installed there. Returns
+/// the seeding result and the `(name, hash)` pairs now installed: files it
+/// wrote, and files already byte-identical to the packaged version.
 fn seed_packaged_files(
-    flows_dir: &Path,
+    dir: &Path,
     assets: Vec<(String, String)>,
-    hash_manifest: &str,
+    installed: &std::collections::BTreeMap<String, String>,
     force: bool,
-) -> std::result::Result<SeedStarterFlowsResult, String> {
-    fs::create_dir_all(flows_dir).map_err(|source| {
-        format!(
-            "Unable to create directory {}: {source}",
-            flows_dir.display()
-        )
-    })?;
+) -> std::result::Result<(SeedStarterFlowsResult, Vec<(String, String)>), String> {
+    fs::create_dir_all(dir)
+        .map_err(|source| format!("Unable to create directory {}: {source}", dir.display()))?;
 
     use sha2::{Digest, Sha256};
-    let manifest_path = flows_dir.join(hash_manifest);
-    let prior_hashes = fs::read_to_string(&manifest_path)
-        .ok()
-        .and_then(|text| {
-            serde_json::from_str::<std::collections::BTreeMap<String, String>>(&text).ok()
-        })
-        .unwrap_or_default();
-    let mut next_hashes = std::collections::BTreeMap::new();
+    let mut now_installed = Vec::new();
     let mut created = Vec::new();
     let mut updated = Vec::new();
     let mut skipped = Vec::new();
+    // Flow directories present before seeding. A packaged node file missing
+    // from one of them was deleted locally, so it stays deleted.
+    let present_flow_dirs = assets
+        .iter()
+        .filter_map(|(name, _)| name.strip_suffix("flow.md"))
+        .filter(|flow_dir| dir.join(flow_dir).join("flow.md").is_file())
+        .map(|flow_dir| dir.join(flow_dir))
+        .collect::<std::collections::BTreeSet<_>>();
 
     for (relative_name, content) in assets {
-        let target_path = flows_dir.join(&relative_name);
+        let target_path = dir.join(&relative_name);
         if let Some(parent) = target_path.parent() {
             fs::create_dir_all(parent).map_err(|source| {
                 format!(
@@ -905,6 +962,16 @@ fn seed_packaged_files(
 
         let packaged_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
         let existed = target_path.exists();
+        if !existed
+            && !force
+            && installed.contains_key(&relative_name)
+            && target_path
+                .parent()
+                .is_some_and(|parent| present_flow_dirs.contains(parent))
+        {
+            skipped.push(relative_name);
+            continue;
+        }
         if existed && !force {
             let current_hash = fs::read(&target_path)
                 .map(|content| format!("{:x}", Sha256::digest(content)))
@@ -914,33 +981,23 @@ fn seed_packaged_files(
                         target_path.display()
                     )
                 })?;
-            match prior_hashes.get(&relative_name) {
-                Some(old_hash) if current_hash == *old_hash && packaged_hash != *old_hash => {}
-                // Already the packaged version: record it, so a manifest left behind
-                // by an earlier write converges instead of reading as a local edit.
-                Some(_) if current_hash == packaged_hash => {
-                    next_hashes.insert(relative_name.clone(), packaged_hash);
-                    skipped.push(relative_name);
-                    continue;
+            if current_hash == packaged_hash {
+                // Already the packaged version: record it, so a missing record
+                // converges instead of reading as a local edit.
+                if installed.get(&relative_name) != Some(&packaged_hash) {
+                    now_installed.push((relative_name.clone(), packaged_hash));
                 }
-                Some(old_hash) => {
-                    tracing::warn!(
-                        file = %relative_name,
-                        "keeping a locally edited packaged file; the bundled version differs"
-                    );
-                    next_hashes.insert(relative_name.clone(), old_hash.clone());
-                    skipped.push(relative_name);
-                    continue;
-                }
-                None => {
-                    // Existing installs predate the manifest. Seed a baseline only
-                    // when the file is byte-for-byte the packaged version.
-                    if current_hash == packaged_hash {
-                        next_hashes.insert(relative_name.clone(), packaged_hash);
-                    }
-                    skipped.push(relative_name);
-                    continue;
-                }
+                skipped.push(relative_name);
+                continue;
+            }
+            if installed.get(&relative_name) != Some(&current_hash) {
+                // Edited locally, or present before Spark recorded installs.
+                tracing::warn!(
+                    file = %relative_name,
+                    "keeping a locally edited packaged file; the bundled version differs"
+                );
+                skipped.push(relative_name);
+                continue;
             }
         }
 
@@ -955,26 +1012,18 @@ fn seed_packaged_files(
         } else {
             created.push(relative_name.clone());
         }
-        next_hashes.insert(relative_name, packaged_hash);
+        now_installed.push((relative_name, packaged_hash));
     }
 
-    // Retain hashes for preserved local files, so a later force refresh can
-    // establish the new packaged baseline without losing inventory entries.
-    for (name, hash) in prior_hashes {
-        next_hashes.entry(name).or_insert(hash);
-    }
-    fs::write(
-        &manifest_path,
-        serde_json::to_vec_pretty(&next_hashes).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("Unable to write packaged hash manifest: {e}"))?;
-
-    Ok(SeedStarterFlowsResult {
-        flows_dir: flows_dir.to_path_buf(),
-        created,
-        updated,
-        skipped,
-    })
+    Ok((
+        SeedStarterFlowsResult {
+            flows_dir: dir.to_path_buf(),
+            created,
+            updated,
+            skipped,
+        },
+        now_installed,
+    ))
 }
 
 fn enforce_runtime_home_guard(

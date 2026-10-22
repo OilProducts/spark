@@ -13,9 +13,9 @@ use attractor_core::{
 };
 pub use attractor_dsl::NamedFlowSource;
 use attractor_dsl::{
-    canonicalize_flow_yaml, ensure_flows_dir, flow_name_from_path, inject_flow_goal,
-    load_flow_content, parse_flow_definition,
-    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, FlowSourceError,
+    flow_name_from_path, load_approved_flow, parse_flow_definition,
+    read_named_flow_source as read_typed_named_flow_source, resolve_flow_path, resolve_flow_ref,
+    resolve_flow_roles, save_flow_dir, FlowSourceError, TrustStore, FLOW_FILE,
 };
 pub use attractor_runtime::RunEventObserver;
 use attractor_runtime::{
@@ -26,6 +26,10 @@ use attractor_runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use spark_agent_adapter::{
+    CodergenChildInterventionRequest, CodergenChildInterventionResult,
+    CodergenSessionInterventionBroker,
+};
 use spark_common::settings::SparkSettings;
 
 pub type RuntimeHandlerRunnerFactory = Arc<dyn Fn() -> RuntimeHandlerRunner + Send + Sync>;
@@ -336,8 +340,6 @@ pub struct ContinuePipelineRequest {
 pub struct PipelineStartRequest {
     #[serde(default)]
     pub run_id: Option<String>,
-    #[serde(default)]
-    pub flow_content: Option<String>,
     #[serde(default = "default_working_directory")]
     pub working_directory: String,
     #[serde(default)]
@@ -389,7 +391,6 @@ impl Default for PipelineStartRequest {
     fn default() -> Self {
         Self {
             run_id: None,
-            flow_content: None,
             working_directory: default_working_directory(),
             model: None,
             llm_provider: None,
@@ -441,6 +442,8 @@ pub struct ResolvedContinueFlow {
     pub flow_source: Option<String>,
     #[serde(default)]
     pub flow_definition_json: Option<String>,
+    #[serde(default)]
+    pub flow_files: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default)]
     pub flow_name: Option<String>,
 }
@@ -496,6 +499,7 @@ impl RuntimeControlService {
             flow: resolved_flow.flow,
             flow_source: resolved_flow.flow_source,
             flow_definition_json: resolved_flow.flow_definition_json,
+            flow_files: resolved_flow.flow_files,
             working_directory: request.working_directory,
             model: request.model,
             llm_provider: request.llm_provider,
@@ -1477,25 +1481,16 @@ impl AttractorApiService {
         }
     }
 
+    /// The flow directory assembled into one YAML document, in its authored
+    /// form (roles referenced, not merged).
     pub fn get_flow(&self, name: &str) -> RuntimeRouteResponse {
-        let flow_path = match resolve_flow_path(&self.settings.flows_dir, name) {
-            Ok(path) => path,
-            Err(error) => return flow_source_error_response(error),
-        };
-        if !flow_path.exists() {
-            return RuntimeRouteResponse::json(404, json!({"detail": "Flow not found."}));
+        match read_typed_named_flow_source(&self.settings.flows_dir, name) {
+            Ok(source) => RuntimeRouteResponse::json(
+                200,
+                json!({"name": source.name, "content": source.content}),
+            ),
+            Err(error) => flow_source_error_response(error),
         }
-        let content = match fs::read_to_string(&flow_path) {
-            Ok(content) => content,
-            Err(error) => {
-                return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
-            }
-        };
-        let name = match flow_name_from_path(&self.settings.flows_dir, &flow_path) {
-            Ok(name) => name,
-            Err(error) => return flow_source_error_response(error),
-        };
-        RuntimeRouteResponse::json(200, json!({"name": name, "content": content}))
     }
 
     pub fn save_flow(&self, req: SaveFlowRequest) -> RuntimeRouteResponse {
@@ -1506,17 +1501,22 @@ impl AttractorApiService {
                     return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
                 }
             };
-        let flow = match attractor_dsl::parse_flow_definition(&req.content) {
+        let flow = match attractor_dsl::parse_editor_flow_definition(&req.content) {
             Ok(flow) => flow,
+            Err(error) => return flow_save_definition_error_response(error),
+        };
+        // Validate the resolved form, so role-provided profiles are checked too.
+        let resolved = match resolve_flow_roles(&flow, &self.settings.roles_dir()) {
+            Ok(resolved) => resolved,
             Err(error) => return flow_save_definition_error_response(error),
         };
         if let Err(error) = spark_storage::settings::validate_profile_references(
             &self.settings.config_dir,
-            &json!(flow),
+            &json!(resolved),
         ) {
             return RuntimeRouteResponse::json(400, json!({"detail": error.to_string()}));
         }
-        save_flow_request(&self.settings.flows_dir, req)
+        save_flow_request(&self.settings, req.name, &flow)
     }
 
     pub fn delete_flow(&self, name: &str) -> RuntimeRouteResponse {
@@ -1524,10 +1524,10 @@ impl AttractorApiService {
             Ok(path) => path,
             Err(error) => return flow_source_error_response(error),
         };
-        if !flow_path.exists() {
+        if !flow_path.join(FLOW_FILE).is_file() {
             return RuntimeRouteResponse::json(404, json!({"detail": "Flow not found."}));
         }
-        match fs::remove_file(&flow_path) {
+        match fs::remove_dir_all(&flow_path) {
             Ok(()) => RuntimeRouteResponse::json(200, json!({"status": "deleted"})),
             Err(error) => RuntimeRouteResponse::json(500, json!({"detail": error.to_string()})),
         }
@@ -1557,44 +1557,44 @@ impl AttractorApiService {
     pub fn start_pipeline(&self, request: PipelineStartRequest) -> RuntimeRouteResponse {
         let store = self.observed_store();
         let wait_for_terminal = request.wait.unwrap_or(false);
-        let flow_name = trimmed_option(request.flow_name.as_deref());
-        let mut flow_content = trimmed_option(request.flow_content.as_deref());
-        let mut flow_source_dir = None;
-        if flow_content.is_none() {
-            let Some(flow_name) = flow_name.as_deref() else {
-                return validation_error_response("Either flow_content or flow_name is required.");
-            };
-            match load_flow_content(&self.settings.flows_dir, flow_name) {
-                Ok(content) => flow_content = Some(content),
-                Err(error) => {
-                    return RuntimeRouteResponse::json(
-                        200,
-                        json!({
-                            "status": if error.status_code() == 400 { "validation_error" } else { "failed" },
-                            "error": error.detail(),
-                        }),
-                    );
-                }
+        // Runs start only from the live files on disk, through the trust gate.
+        let Some(flow_name) = trimmed_option(request.flow_name.as_deref()) else {
+            return validation_error_response("flow_name is required.");
+        };
+        let trust = TrustStore::for_settings(&self.settings);
+        let loaded = resolve_flow_path(&self.settings.flows_dir, &flow_name).and_then(|path| {
+            if path.join(FLOW_FILE).is_file() {
+                load_approved_flow(&trust, &path).map(|approved| (path, approved))
+            } else {
+                Err(FlowSourceError::new(
+                    404,
+                    format!("Flow not found: {flow_name}"),
+                ))
             }
-        }
-        if let Some(flow_name) = flow_name.as_deref() {
-            if let Ok(flow_path) = resolve_flow_path(&self.settings.flows_dir, flow_name) {
-                if flow_path.exists() {
-                    flow_source_dir = flow_path.parent().map(Path::to_path_buf);
-                }
+        });
+        let (flow_path, approved) = match loaded {
+            Ok(loaded) => loaded,
+            Err(error) if error.diagnostics().is_empty() => {
+                return RuntimeRouteResponse::json(
+                    200,
+                    json!({
+                        "status": if error.status_code() == 400 { "validation_error" } else { "failed" },
+                        "error": error.detail(),
+                    }),
+                );
             }
-        }
-
-        let mut flow_content = flow_content.unwrap_or_default();
+            Err(error) => return flow_definition_validation_response(error),
+        };
+        let flow_source_dir = flow_path.parent().map(Path::to_path_buf);
+        let flow_files = approved.files;
+        // The manifest hashes the files as read; the goal is injected after.
+        let mut flow = approved.flow;
         if let Some(goal) = trimmed_option(request.goal.as_deref()) {
-            flow_content = match inject_flow_goal(&flow_content, &goal) {
-                Ok(content) => content,
-                Err(error) => return flow_definition_validation_response(error),
-            };
+            flow.goal = goal;
         }
-
-        let flow = match parse_flow_definition(&flow_content) {
-            Ok(flow) => flow,
+        let flow = flow.normalize();
+        let flow_content = match attractor_dsl::flow_yaml(&flow) {
+            Ok(content) => content,
             Err(error) => return flow_definition_validation_response(error),
         };
 
@@ -1739,19 +1739,7 @@ impl AttractorApiService {
         let execution_metadata = attractor_execution::build_launch_metadata(&execution_selection);
 
         let mut record = RunRecord::new(&run_id, &working_directory);
-        // Content launches have no catalog flow name; the flow's title (or
-        // id) is the run's real identity everywhere it shows.
-        record.flow_name = flow_name
-            .clone()
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| {
-                let title = flow.title.trim();
-                if title.is_empty() {
-                    flow.id.trim().to_string()
-                } else {
-                    title.to_string()
-                }
-            });
+        record.flow_name = flow_name;
         record.working_directory = working_directory.clone();
         record.project_path = working_directory.clone();
         record.model = display_model.clone();
@@ -1829,6 +1817,14 @@ impl AttractorApiService {
                 json!(flow_source_dir.to_string_lossy().to_string()),
             );
         }
+        // Subflow children pass the same trust gate, against the same files.
+        for (key, path) in [
+            ("internal.flows_dir", &trust.flows_dir),
+            ("internal.roles_dir", &trust.roles_dir),
+            ("internal.approvals_log", &trust.log_path),
+        ] {
+            runtime_context.insert(key.to_string(), json!(path.to_string_lossy().to_string()));
+        }
 
         if let Err(error) = fs::create_dir_all(&working_directory) {
             return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
@@ -1843,6 +1839,7 @@ impl AttractorApiService {
             &flow,
             Some(flow_content.clone()),
             Some(flow_definition_json),
+            Some(flow_files),
             &launch_context,
             &runtime_context,
         ) {
@@ -2277,12 +2274,23 @@ impl AttractorApiService {
         }
         let source_record = source.record.as_ref();
         let mode = request.flow_source_mode.trim().to_lowercase();
-        let (flow_name, flow_content) = if mode == "snapshot" {
+        let (flow_name, flow_content, flow_files) = if mode == "snapshot" {
             let flow_name = source_record
                 .map(|record| record.flow_name.clone())
                 .unwrap_or_default();
+            // Snapshot mode reuses the stored resolved source, so it keeps the
+            // source run's manifest and is not gated.
+            let flow_files = fs::read(
+                source
+                    .paths
+                    .artifacts_dir()
+                    .join("flow")
+                    .join(attractor_runtime::FLOW_FILES_MANIFEST),
+            )
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
             match store.read_graph_source(&source.paths) {
-                Ok(Some(source)) => (flow_name, source),
+                Ok(Some(source)) => (flow_name, source, flow_files),
                 Ok(None) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2300,8 +2308,15 @@ impl AttractorApiService {
                     json!({"status": "validation_error", "error": "flow_name is required when flow_source_mode is flow_name."}),
                 );
             };
-            match load_flow_content(&self.settings.flows_dir, &flow_name) {
-                Ok(content) => (flow_name, content),
+            let trust = TrustStore::for_settings(&self.settings);
+            let loaded = resolve_flow_path(&self.settings.flows_dir, &flow_name)
+                .and_then(|path| load_approved_flow(&trust, &path))
+                .and_then(|approved| {
+                    attractor_dsl::flow_yaml(&approved.flow)
+                        .map(|content| (content, approved.files))
+                });
+            match loaded {
+                Ok((content, files)) => (flow_name, content, Some(files)),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2329,6 +2344,7 @@ impl AttractorApiService {
                 flow: flow.clone(),
                 flow_source: Some(flow_content.clone()),
                 flow_definition_json: Some(flow.to_canonical_json_string()),
+                flow_files,
                 flow_name: Some(flow_name),
             },
         );
@@ -2439,81 +2455,22 @@ impl AttractorApiService {
                 return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}))
             }
         };
-        let (target_run_id, target_node_id) = intervention_target(&bundle, &request);
-        let target = if target_run_id == pipeline_id {
-            bundle.record.clone()
-        } else {
-            store
-                .read_run_bundle(&target_run_id)
-                .ok()
-                .flatten()
-                .and_then(|bundle| bundle.record)
+        let result = match self.steer_active_agent(&store, pipeline_id, &request, message) {
+            Ok(result) => result,
+            Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
         };
-        let rejected = |reason: &str, message: &str| {
-            json!({
-                "run_id": target_run_id,
-                "status": "rejected",
-                "delivery_mode": "none",
-                "reason": reason,
-                "message": message,
-                "target_node_id": target_node_id,
-            })
-        };
-        let result = match target {
-            None => rejected(
-                "no_active_child_run",
-                "No active child run is available for intervention.",
-            ),
-            // ponytail: a container node's session lives in its worker, which
-            // has no channel for live messages yet.
-            Some(record) if record.execution_mode != "native" => rejected(
-                "container_execution_unsupported",
-                "Steering cannot reach an agent running in a container execution profile.",
-            ),
-            Some(record) => {
-                let delivery = spark_agent_adapter::CodergenSessionInterventionBroker::shared()
-                    .request_child_intervention(
-                        spark_agent_adapter::CodergenChildInterventionRequest {
-                            child_run_id: target_run_id.clone(),
-                            message: message.to_string(),
-                            parent_run_id: pipeline_id.to_string(),
-                            parent_node_id: String::new(),
-                            root_run_id: record
-                                .root_run_id
-                                .clone()
-                                .unwrap_or_else(|| target_run_id.clone()),
-                            reason: "human".to_string(),
-                            source: "human".to_string(),
-                            cycle: None,
-                            target_node_id: target_node_id.clone(),
-                            provider: None,
-                            model: None,
-                            llm_profile: None,
-                            reasoning_effort: None,
-                        },
-                    );
-                // A matching Claude or Codex node reports why its turn refused.
-                if delivery.status == "delivered" || delivery.delivery_mode == "live_turn" {
-                    json!(delivery)
-                } else {
-                    rejected(
-                        "no_active_child_run",
-                        "No running agent session is available for intervention.",
-                    )
-                }
-            }
-        };
-        let field = |key: &str| result[key].as_str().unwrap_or_default().to_string();
+        let target_run_id = result.run_id.clone();
+        let result = json!(result);
         if let Err(error) = store.append_event(
             &bundle.paths,
             human_intervention_requested_event(
                 pipeline_id,
                 &target_run_id,
-                target_node_id.clone(),
+                result["target_node_id"].as_str().map(str::to_string),
                 message,
-                &field("status"),
-                &field("delivery_mode"),
-                &field("reason"),
+                result["status"].as_str().unwrap_or_default(),
+                result["delivery_mode"].as_str().unwrap_or_default(),
+                result["reason"].as_str().unwrap_or_default(),
                 result.clone(),
             ),
         ) {
@@ -2530,6 +2487,122 @@ impl AttractorApiService {
             );
         }
         RuntimeRouteResponse::json(200, Value::Object(payload))
+    }
+
+    /// Delivers `message` to the one live agent session of the target: the
+    /// named run, else this run and its descendant runs, narrowed by node.
+    /// Uses the shared intervention broker, as manager-loop steering does.
+    fn steer_active_agent(
+        &self,
+        store: &RunStore,
+        pipeline_id: &str,
+        request: &PipelineSteerRequest,
+        message: &str,
+    ) -> std::result::Result<CodergenChildInterventionResult, String> {
+        let target_node_id = trimmed_option(request.target_node_id.as_deref());
+        let runs = match trimmed_option(request.target_run_id.as_deref()) {
+            Some(run_id) => vec![run_id],
+            None => run_tree(store, pipeline_id).map_err(|error| error.to_string())?,
+        };
+        let broker = CodergenSessionInterventionBroker::shared();
+        let sessions = broker
+            .active_sessions()
+            .into_iter()
+            .filter(|session| {
+                session
+                    .child_run_id
+                    .as_ref()
+                    .is_some_and(|run_id| runs.contains(run_id))
+                    && target_node_id
+                        .as_ref()
+                        .is_none_or(|node_id| &session.node_id == node_id)
+            })
+            .collect::<Vec<_>>();
+        let rejected = |run_id: &str, node_id: Option<String>, reason: &str, message: String| {
+            CodergenChildInterventionResult {
+                run_id: run_id.to_string(),
+                status: "rejected".to_string(),
+                delivery_mode: "none".to_string(),
+                reason: reason.to_string(),
+                message,
+                target_node_id: node_id,
+            }
+        };
+        // Every active agent node is a candidate, steerable or not, so an
+        // unsupported agent makes the target ambiguous rather than invisible.
+        let mut targets = running_agent_nodes(store, &runs)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|(_, node_id)| target_node_id.as_ref().is_none_or(|id| id == node_id))
+            .collect::<std::collections::BTreeSet<_>>();
+        targets.extend(sessions.iter().map(|session| {
+            (
+                session.child_run_id.clone().unwrap_or_default(),
+                session.node_id.clone(),
+            )
+        }));
+        Ok(match targets.iter().collect::<Vec<_>>().as_slice() {
+            [] => rejected(
+                runs.first().map(String::as_str).unwrap_or(pipeline_id),
+                target_node_id,
+                "no_active_agent_node",
+                "No agent node is running in this run.".to_string(),
+            ),
+            [(run_id, node_id)] => match sessions.first() {
+                Some(session) => {
+                    broker.request_child_intervention(CodergenChildInterventionRequest {
+                        child_run_id: run_id.clone(),
+                        message: message.to_string(),
+                        parent_run_id: pipeline_id.to_string(),
+                        parent_node_id: String::new(),
+                        root_run_id: session.root_run_id.clone().unwrap_or_default(),
+                        reason: String::new(),
+                        source: "human".to_string(),
+                        cycle: None,
+                        target_node_id: Some(node_id.clone()),
+                        provider: None,
+                        model: None,
+                        llm_profile: None,
+                        reasoning_effort: None,
+                    })
+                }
+                // ponytail: a container node's session lives in its worker, which
+                // has no channel for live messages yet.
+                None if store
+                    .read_run_bundle(run_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|bundle| bundle.record)
+                    .is_some_and(|record| record.execution_mode != "native") =>
+                {
+                    rejected(
+                        run_id,
+                        Some(node_id.clone()),
+                        "container_execution_unsupported",
+                        "Steering cannot reach an agent running in a container execution profile."
+                            .to_string(),
+                    )
+                }
+                None => rejected(
+                    run_id,
+                    Some(node_id.clone()),
+                    "provider_steering_unsupported",
+                    format!("Agent node {node_id} is running, but its provider cannot be steered."),
+                ),
+            },
+            many => rejected(
+                pipeline_id,
+                target_node_id,
+                "ambiguous_target",
+                format!(
+                    "Several agent nodes are running ({}); choose one to steer.",
+                    many.iter()
+                        .map(|(run_id, node_id)| format!("{run_id}/{node_id}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ),
+        })
     }
 
     pub fn patch_pipeline_metadata(
@@ -2813,7 +2886,7 @@ pub fn preview_with_config(
 pub fn list_logical_flow_names(
     flows_dir: impl AsRef<Path>,
 ) -> Result<Vec<String>, FlowSourceError> {
-    list_flow_names(flows_dir.as_ref())
+    attractor_dsl::list_flow_names(flows_dir)
 }
 
 pub fn resolve_logical_flow_path(
@@ -2828,6 +2901,11 @@ pub fn read_named_flow_source(
     flow_name: &str,
 ) -> Result<NamedFlowSource, FlowSourceError> {
     read_typed_named_flow_source(flows_dir, flow_name)
+}
+
+/// A preview response reporting a flow that failed to load.
+pub fn flow_source_error_preview(error: &FlowSourceError) -> PreviewRouteResponse {
+    PreviewRouteResponse::json(200, flow_definition_validation_payload(error))
 }
 
 pub fn preview_named_flow_source(
@@ -3045,62 +3123,47 @@ fn dispatch_pipeline_route(
     }
 }
 
-fn list_flow_names(flows_dir: &Path) -> Result<Vec<String>, FlowSourceError> {
-    let flows_dir = ensure_flows_dir(flows_dir)?;
-    let mut paths = Vec::new();
-    collect_yaml_paths(&flows_dir, &mut paths).map_err(|source| {
-        FlowSourceError::new(
-            500,
-            format!(
-                "Unable to list flows directory {}: {source}",
-                flows_dir.display()
-            ),
-        )
-    })?;
-    let mut names = paths
-        .into_iter()
-        .map(|path| flow_name_from_path(&flows_dir, path))
-        .collect::<Result<Vec<_>, _>>()?;
-    names.sort();
-    Ok(names)
-}
-
-fn collect_yaml_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_yaml_paths(&path, paths)?;
-        } else if matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("yaml" | "yml")
-        ) {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn save_flow_request(flows_dir: &Path, req: SaveFlowRequest) -> RuntimeRouteResponse {
-    let canonical_content = match canonicalize_flow_yaml(&req.content) {
-        Ok(content) => content,
-        Err(error) => return flow_save_definition_error_response(error),
-    };
-
-    let flow_path = match resolve_flow_path(flows_dir, &req.name) {
+/// Writes the changed files of a flow, stamped `generated` by the local
+/// human, and logs `human_save` for each.
+fn save_flow_request(
+    settings: &SparkSettings,
+    name: String,
+    flow: &FlowDefinition,
+) -> RuntimeRouteResponse {
+    let flows_dir = settings.flows_dir.as_path();
+    let flow_path = match resolve_flow_path(flows_dir, &name) {
         Ok(path) => path,
         Err(error) => return flow_source_error_response(error),
     };
-    if let Some(parent) = flow_path.parent() {
-        if let Err(error) = fs::create_dir_all(parent) {
-            return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
-        }
+    // A flow directory holds only its own files: never turn a folder of
+    // flows into a flow, or nest a flow inside another.
+    let folder_of_flows = !flow_path.join(FLOW_FILE).is_file()
+        && fs::read_dir(&flow_path).is_ok_and(|mut entries| entries.next().is_some());
+    let inside_flow = flow_path
+        .ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != flows_dir)
+        .any(|dir| dir.join(FLOW_FILE).is_file());
+    if folder_of_flows || inside_flow {
+        return RuntimeRouteResponse::json(
+            409,
+            json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
+        );
     }
-    if let Err(error) = fs::write(&flow_path, canonical_content) {
-        return RuntimeRouteResponse::json(500, json!({"detail": error.to_string()}));
+    let by = spark_storage::settings::human_actor(&settings.config_dir);
+    let generated = attractor_core::Attribution {
+        by: by.clone(),
+        at: spark_common::approvals::timestamp_now(),
+    };
+    // Approvals are logged before the files are written: a failed log leaves
+    // the old files, so a retry of the same content still saves and logs it.
+    let trust = TrustStore::for_settings(settings);
+    if let Err(error) = save_flow_dir(&flow_path, flow, &generated, |files| {
+        trust
+            .record(spark_common::approvals::EVENT_HUMAN_SAVE, &by, files)
+            .map(|_| ())
+    }) {
+        return flow_source_error_response(error);
     }
     let name = match flow_name_from_path(flows_dir, &flow_path) {
         Ok(name) => name,
@@ -3424,7 +3487,15 @@ fn child_preview_map(
         let Some(NodeConfig::Subflow { flow_ref, .. }) = node.config.as_ref() else {
             continue;
         };
-        let child_name = resolve_child_flow_name(parent_flow_name, flow_ref);
+        let parent_dir = parent_flow_name
+            .and_then(|name| resolve_flow_path(flows_dir, name).ok())
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| flows_dir.to_path_buf());
+        let Some(Ok(child_name)) = resolve_flow_ref(&parent_dir, flow_ref)
+            .map(|path| flow_name_from_path(flows_dir, path))
+        else {
+            continue;
+        };
         let Ok(source) = read_typed_named_flow_source(flows_dir, &child_name) else {
             continue;
         };
@@ -3441,24 +3512,6 @@ fn child_preview_map(
         );
     }
     Value::Object(previews)
-}
-
-fn resolve_child_flow_name(parent_flow_name: Option<&str>, flow_ref: &str) -> String {
-    let flow_ref = flow_ref.trim().replace('\\', "/");
-    if flow_ref.contains('/') {
-        return flow_ref;
-    }
-    let Some(parent_flow_name) = parent_flow_name else {
-        return flow_ref;
-    };
-    let parent = Path::new(parent_flow_name);
-    match parent.parent() {
-        Some(parent_dir) if !parent_dir.as_os_str().is_empty() => parent_dir
-            .join(flow_ref)
-            .to_string_lossy()
-            .replace('\\', "/"),
-        _ => flow_ref,
-    }
 }
 
 fn flow_preview_graph_payload(flow: &FlowDefinition) -> Value {
@@ -3531,9 +3584,11 @@ fn graph_artifact_paths(paths: &attractor_runtime::RunRootPaths) -> Value {
     let flow_dir = paths.artifacts_dir().join("flow");
     let source_path = flow_dir.join("flow-source.yaml");
     let definition_path = flow_dir.join("flow-definition.json");
+    let files_path = flow_dir.join(attractor_runtime::FLOW_FILES_MANIFEST);
     json!({
         "flow_source_path": source_path.exists().then(|| source_path.to_string_lossy().to_string()),
         "flow_definition_path": definition_path.exists().then(|| definition_path.to_string_lossy().to_string()),
+        "flow_files_path": files_path.exists().then(|| files_path.to_string_lossy().to_string()),
     })
 }
 
@@ -3754,13 +3809,6 @@ fn normalize_after_sequence(value: Option<i64>) -> Result<Option<u64>, String> {
     }
 }
 
-fn context_path(context: &ContextMap, key: &str) -> Option<String> {
-    context
-        .get(key)
-        .and_then(value_to_string)
-        .filter(|value| !value.is_empty())
-}
-
 fn value_to_string(value: &Value) -> Option<String> {
     match value {
         Value::Null => None,
@@ -3771,27 +3819,71 @@ fn value_to_string(value: &Value) -> Option<String> {
     }
 }
 
-fn intervention_target(
-    bundle: &RunBundle,
-    request: &PipelineSteerRequest,
-) -> (String, Option<String>) {
-    if let Some(target_run_id) = trimmed_option(request.target_run_id.as_deref()) {
-        return (
-            target_run_id,
-            trimmed_option(request.target_node_id.as_deref()),
+/// `run_id` followed by every run it launched, transitively.
+fn run_tree(store: &RunStore, run_id: &str) -> attractor_runtime::Result<Vec<String>> {
+    let mut runs = vec![run_id.to_string()];
+    let mut index = 0;
+    while index < runs.len() {
+        for child in store.list_child_run_bundles(&runs[index])? {
+            if !runs.contains(&child.paths.run_id) {
+                runs.push(child.paths.run_id);
+            }
+        }
+        index += 1;
+    }
+    Ok(runs)
+}
+
+/// `(run, node)` for each agent node a running run in `runs` has started
+/// and not yet finished, per its stage events.
+fn running_agent_nodes(
+    store: &RunStore,
+    runs: &[String],
+) -> attractor_runtime::Result<Vec<(String, String)>> {
+    let mut active = Vec::new();
+    for run_id in runs {
+        let Some(bundle) = store.read_run_bundle(run_id)? else {
+            continue;
+        };
+        if bundle
+            .record
+            .as_ref()
+            .is_none_or(|record| record.status != "running")
+        {
+            continue;
+        }
+        let Some(flow) = store
+            .read_graph_source(&bundle.paths)?
+            .and_then(|source| parse_flow_definition(&source).ok())
+        else {
+            continue;
+        };
+        let mut open = std::collections::BTreeSet::new();
+        for event in &bundle.raw_events {
+            let Some(node_id) = event.payload.get("node_id").and_then(Value::as_str) else {
+                continue;
+            };
+            // Nodes inside a parallel branch report as branch nodes.
+            let branch_node = event.payload.get("branch_node_id").and_then(Value::as_str);
+            match (event.event_type.as_str(), branch_node) {
+                ("StageStarted", _) => open.insert(node_id.to_string()),
+                ("StageCompleted" | "StageFailed" | "StageRetrying", _) => open.remove(node_id),
+                ("ParallelBranchNodeStarted", Some(node_id)) => open.insert(node_id.to_string()),
+                ("ParallelBranchNodeCompleted", Some(node_id)) => open.remove(node_id),
+                _ => false,
+            };
+        }
+        active.extend(
+            open.into_iter()
+                .filter(|node_id| {
+                    flow.nodes
+                        .get(node_id)
+                        .is_some_and(|node| node.kind == attractor_core::NodeKind::AgentTask)
+                })
+                .map(|node_id| (run_id.clone(), node_id)),
         );
     }
-    let context = bundle
-        .checkpoint
-        .as_ref()
-        .map(|checkpoint| &checkpoint.context);
-    let target_run_id = context
-        .and_then(|context| context_path(context, "context.stack.child.run_id"))
-        .unwrap_or_else(|| bundle.paths.run_id.clone());
-    let target_node_id = trimmed_option(request.target_node_id.as_deref()).or_else(|| {
-        context.and_then(|context| context_path(context, "context.stack.child.active_stage"))
-    });
-    (target_run_id, target_node_id)
+    Ok(active)
 }
 
 fn query_i64(query: &str, key: &str) -> Option<i64> {

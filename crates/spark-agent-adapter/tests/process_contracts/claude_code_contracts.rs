@@ -1232,6 +1232,9 @@ fn claude_code_reports_a_mid_turn_message_the_stopped_turn_never_used() {
         .collect::<Vec<_>>();
     assert_eq!(not_delivered.len(), 1);
     assert_eq!(not_delivered[0].source.item_id.as_deref(), Some("note-1"));
+    // The receipt listing the queued message still counts as the interrupt.
+    assert_eq!(output.final_assistant_text.as_deref(), Some("Working."));
+    assert!(output.events.iter().all(|event| event.error.is_none()));
 }
 
 #[test]

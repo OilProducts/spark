@@ -40,12 +40,21 @@ fn first_launch_seeds_packaged_flows_into_desktop_runtime() {
 
     assert_eq!(
         bootstrap.seeded_flows.created,
-        spark_assets::flows::starter_flow_names().expect("packaged starter flow names")
+        spark_assets::flows::starter_flow_assets()
+            .expect("packaged starter flow files")
+            .into_iter()
+            .map(|asset| asset.name)
+            .collect::<Vec<_>>()
     );
     assert!(bootstrap
         .settings
         .flows_dir
-        .join("software-development/implement-change.yaml")
+        .join("software-development/implement-change/flow.md")
+        .is_file());
+    assert!(bootstrap
+        .settings
+        .roles_dir()
+        .join("adversarial-reviewer.md")
         .is_file());
     assert!(bootstrap
         .settings

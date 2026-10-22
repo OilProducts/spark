@@ -35,6 +35,111 @@ pub struct FlowDefinition {
     pub metadata: FlowMetadata,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+    /// OKF §5.2 trust fields. Saves keep them; the approval log, not these
+    /// fields, decides what may run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<Attribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_verified"
+    )]
+    #[schemars(schema_with = "verified_schema")]
+    pub verified: Vec<Attribution>,
+    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
+    pub status: TrustStatus,
+}
+
+/// Who produced or verified a file (OKF §5.2): `by` is an OKF §7 actor
+/// (`human:<id>`, `<producer>/<version>` or `process:<id>`), `at` an ISO 8601
+/// timestamp with an explicit offset.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Attribution {
+    pub by: String,
+    pub at: String,
+}
+
+impl Attribution {
+    /// Why this attribution is malformed, if it is.
+    pub fn problem(&self) -> Option<String> {
+        if !valid_actor(&self.by) {
+            return Some(format!(
+                "actor '{}' must be human:<id>, <producer>/<version> or process:<id>",
+                self.by
+            ));
+        }
+        if !valid_offset_timestamp(&self.at) {
+            return Some(format!(
+                "timestamp '{}' must be ISO 8601 with an explicit offset",
+                self.at
+            ));
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TrustStatus {
+    Draft,
+    #[default]
+    Stable,
+    Deprecated,
+}
+
+impl TrustStatus {
+    pub fn is_stable(&self) -> bool {
+        matches!(self, Self::Stable)
+    }
+}
+
+/// `verified` accepts a bare mapping as a one-element list (OKF §5.2).
+pub fn deserialize_verified<'de, D>(deserializer: D) -> Result<Vec<Attribution>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Attribution),
+        Many(Vec<Attribution>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(one) => vec![one],
+        OneOrMany::Many(many) => many,
+    })
+}
+
+fn verified_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    let one = generator.subschema_for::<Attribution>();
+    let many = generator.subschema_for::<Vec<Attribution>>();
+    schemars::schema::SchemaObject {
+        subschemas: Some(Box::new(schemars::schema::SubschemaValidation {
+            any_of: Some(vec![one, many]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+    .into()
+}
+
+fn valid_actor(actor: &str) -> bool {
+    let non_blank = |value: &str| !value.is_empty() && !value.contains(char::is_whitespace);
+    if let Some(id) = actor
+        .strip_prefix("human:")
+        .or_else(|| actor.strip_prefix("process:"))
+    {
+        return non_blank(id);
+    }
+    actor
+        .split_once('/')
+        .is_some_and(|(producer, version)| non_blank(producer) && non_blank(version))
+}
+
+/// RFC 3339 (the ISO 8601 profile that requires an offset), with real
+/// calendar, clock and offset values.
+fn valid_offset_timestamp(value: &str) -> bool {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).is_ok()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -81,7 +186,7 @@ pub struct FlowDefaults {
 }
 
 impl FlowDefaults {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.fidelity.is_none()
             && self.max_retries.is_none()
             && self.llm_provider.is_none()
@@ -117,6 +222,10 @@ pub struct FlowNode {
     pub label: String,
     #[serde(default)]
     pub description: String,
+    /// Role file (`roles/<name>.md`) whose persona and execution defaults the
+    /// loader merges into this `agent_task` node. Only the authored form sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<NodeConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -135,6 +244,19 @@ pub struct FlowNode {
     pub ui: Option<UiConfig>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extensions: BTreeMap<String, Value>,
+    /// OKF §5.2 trust fields. Saves keep them; the approval log, not these
+    /// fields, decides what may run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated: Option<Attribution>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_verified"
+    )]
+    #[schemars(schema_with = "verified_schema")]
+    pub verified: Vec<Attribution>,
+    #[serde(default, skip_serializing_if = "TrustStatus::is_stable")]
+    pub status: TrustStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -411,6 +533,35 @@ impl FlowDefinition {
         normalized.title = normalized.title.trim().to_string();
         normalized.description = normalized.description.trim().to_string();
         normalized.goal = normalized.goal.trim().to_string();
+        // Canonical forms, so a flow survives the directory format unchanged:
+        // every node has its kind's config, prompts are trimmed (the runtime
+        // trims them anyway) and commands end with a newline.
+        for node in normalized.nodes.values_mut() {
+            if node.config.is_none() {
+                node.config = default_node_config(&node.kind);
+            }
+            match node.config.as_mut() {
+                Some(NodeConfig::AgentTask { prompt } | NodeConfig::HumanGate { prompt, .. }) => {
+                    *prompt = prompt.trim().to_string();
+                }
+                Some(NodeConfig::Exit {
+                    result_summary_prompt,
+                    ..
+                }) => {
+                    *result_summary_prompt = result_summary_prompt
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|prompt| !prompt.is_empty())
+                        .map(str::to_string);
+                }
+                Some(NodeConfig::Tool { command, .. })
+                    if !command.is_empty() && !command.ends_with('\n') =>
+                {
+                    command.push('\n');
+                }
+                _ => {}
+            }
+        }
         normalized.edges.sort_by(|left, right| {
             left.from
                 .cmp(&right.from)
@@ -533,6 +684,26 @@ impl FlowDefinition {
         if self.id.trim().is_empty() {
             diagnostics.push(diagnostic("flow_id", "flow id must be non-empty"));
         }
+        for (node_id, generated, verified) in
+            std::iter::once((None, &self.generated, &self.verified)).chain(
+                self.nodes
+                    .iter()
+                    .map(|(id, node)| (Some(id), &node.generated, &node.verified)),
+            )
+        {
+            for problem in generated
+                .iter()
+                .chain(verified)
+                .filter_map(Attribution::problem)
+            {
+                diagnostics.push(FlowDiagnostic {
+                    rule_id: "trust_fields".into(),
+                    message: problem,
+                    node_id: node_id.cloned(),
+                    edge: None,
+                });
+            }
+        }
 
         for node_id in self.nodes.keys() {
             if !valid_id(node_id) {
@@ -582,6 +753,21 @@ impl FlowDefinition {
                 .map(NodeRuntimeConfig::timeout_seconds)
             {
                 diagnostics.push(node_diagnostic("node_timeout", message, node_id));
+            }
+            if let Some(role) = node.role.as_deref() {
+                if node.kind != NodeKind::AgentTask {
+                    diagnostics.push(node_diagnostic(
+                        "role",
+                        format!("role '{role}' is only allowed on agent_task nodes"),
+                        node_id,
+                    ));
+                } else if !valid_id(role) {
+                    diagnostics.push(node_diagnostic(
+                        "role",
+                        format!("invalid role name '{role}'"),
+                        node_id,
+                    ));
+                }
             }
             for key in node.context.keys() {
                 if let Err(error) = validate_context_key(key) {
@@ -749,8 +935,44 @@ impl Default for FlowDefinition {
             edges: Vec::new(),
             metadata: BTreeMap::new(),
             extensions: BTreeMap::new(),
+            generated: None,
+            verified: Vec::new(),
+            status: TrustStatus::default(),
         }
     }
+}
+
+/// The config a node of `kind` has when it sets none. A subflow has no
+/// default: it needs a `flow_ref`.
+fn default_node_config(kind: &NodeKind) -> Option<NodeConfig> {
+    Some(match kind {
+        NodeKind::Start => NodeConfig::Start {},
+        NodeKind::Exit => NodeConfig::Exit {
+            result_summary: false,
+            result_summary_prompt: None,
+        },
+        NodeKind::AgentTask => NodeConfig::AgentTask {
+            prompt: String::new(),
+        },
+        NodeKind::HumanGate => NodeConfig::HumanGate {
+            prompt: String::new(),
+            decisions: Vec::new(),
+        },
+        NodeKind::Conditional => NodeConfig::Conditional {},
+        NodeKind::Parallel => NodeConfig::Parallel {
+            join_policy: None,
+            max_parallel: None,
+            join_k: None,
+            join_quorum: None,
+        },
+        NodeKind::FanIn => NodeConfig::FanIn {},
+        NodeKind::Tool => NodeConfig::Tool {
+            command: String::new(),
+            env_map: BTreeMap::new(),
+            output_map: BTreeMap::new(),
+        },
+        NodeKind::Subflow => return None,
+    })
 }
 
 pub fn flow_definition_schema_value() -> Value {
@@ -1025,12 +1247,22 @@ fn valid_id(value: &str) -> bool {
         && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
-fn valid_flow_ref(value: &str) -> bool {
-    let value = value.trim();
-    !value.is_empty()
+/// A flow_ref with backslash separators turned into `/`, or None when it is not a
+/// relative path that stays below its base directory. Validation, preview
+/// and runtime all go through this.
+pub fn normalize_flow_ref(value: &str) -> Option<String> {
+    let value = value.trim().replace('\\', "/");
+    let safe = !value.is_empty()
         && !value.starts_with('/')
-        && !value.split('/').any(|part| part.is_empty() || part == "..")
-        && (value.ends_with(".yaml") || value.ends_with(".yml"))
+        && !value.split('/').any(|part| part.is_empty() || part == "..");
+    safe.then_some(value)
+}
+
+fn valid_flow_ref(value: &str) -> bool {
+    normalize_flow_ref(value).is_some_and(|value| {
+        // A flow_ref names a flow directory; YAML flow files are retired.
+        !(value.ends_with(".yaml") || value.ends_with(".yml"))
+    })
 }
 
 fn condition_is_parseable(value: &str) -> bool {

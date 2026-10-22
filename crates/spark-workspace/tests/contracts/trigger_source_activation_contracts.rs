@@ -18,7 +18,7 @@ async fn workspace_source_activation_records_missing_flow_failures_without_launc
             enabled: true,
             source_type: "schedule".to_string(),
             action: Map::from_iter([
-                ("flow_name".to_string(), json!("ops/missing.yaml")),
+                ("flow_name".to_string(), json!("ops/missing")),
                 (
                     "project_path".to_string(),
                     json!(temp.path().join("project")),
@@ -40,14 +40,14 @@ async fn workspace_source_activation_records_missing_flow_failures_without_launc
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].trigger_id, created.id);
     assert_eq!(outcomes[0].status, "failed");
-    assert_eq!(outcomes[0].message, "Unknown flow: ops/missing.yaml");
+    assert_eq!(outcomes[0].message, "Unknown flow: ops/missing");
     assert!(outcomes[0].run_id.is_none());
     let state = spark_storage::load_trigger_state(&settings.data_dir, &created.id)
         .expect("load trigger state");
     assert_eq!(state.last_result.as_deref(), Some("failed"));
     assert_eq!(
         state.last_error.as_deref(),
-        Some("Unknown flow: ops/missing.yaml")
+        Some("Unknown flow: ops/missing")
     );
     assert_eq!(state.recent_history.len(), 1);
 }
@@ -58,7 +58,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
     // Canonicalize: dispatched run records hold canonical paths (macOS /var -> /private/var).
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let created = TriggerService::new(settings.clone())
@@ -67,7 +67,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
             enabled: true,
             source_type: "schedule".to_string(),
             action: Map::from_iter([
-                ("flow_name".to_string(), json!("ops/run.yaml")),
+                ("flow_name".to_string(), json!("ops/run")),
                 ("project_path".to_string(), json!(project_path)),
                 ("static_context".to_string(), json!({"origin": "workspace"})),
             ]),
@@ -86,7 +86,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].status, "success");
     let run_id = outcomes[0].run_id.as_deref().expect("trigger run id");
-    assert_eq!(outcomes[0].trigger.action.flow_name, "ops/run.yaml");
+    assert_eq!(outcomes[0].trigger.action.flow_name, "ops/run");
     assert_eq!(
         outcomes[0].trigger.action.static_context,
         Map::from_iter([("origin".to_string(), json!("workspace"))])
@@ -103,7 +103,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
         .expect("read trigger run")
         .expect("trigger run");
     let record = run.record.expect("run record");
-    assert_eq!(record.flow_name, "ops/run.yaml");
+    assert_eq!(record.flow_name, "ops/run");
     assert_eq!(record.project_path, project_path.to_string_lossy());
     let context = run.checkpoint.expect("checkpoint").context;
     assert_eq!(
@@ -128,7 +128,7 @@ async fn workspace_source_activation_accepts_existing_flow_and_preserves_action_
 fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/webhook.yaml");
+    write_flow(&settings, "ops/webhook");
     let project_path = temp.path().join("project");
     fs::create_dir_all(&project_path).expect("project");
     let service = WorkspaceTriggerService::new(settings.clone());
@@ -138,7 +138,7 @@ fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
             enabled: true,
             source_type: "webhook".to_string(),
             action: Map::from_iter([
-                ("flow_name".to_string(), json!("ops/webhook.yaml")),
+                ("flow_name".to_string(), json!("ops/webhook")),
                 ("project_path".to_string(), json!(project_path)),
                 ("static_context".to_string(), json!({"origin": "webhook"})),
             ]),
@@ -215,8 +215,8 @@ fn workspace_webhook_dispatch_records_success_and_duplicate_request_runs() {
 fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_state_only() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());
-    write_flow(&settings, "ops/no-project.yaml");
-    write_flow(&settings, "ops/invalid.yaml");
+    write_flow(&settings, "ops/no-project");
+    write_flow(&settings, "ops/invalid");
     let service = WorkspaceTriggerService::new(settings.clone());
     let no_project = service
         .create_trigger(TriggerCreateRequest {
@@ -224,7 +224,7 @@ fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_sta
             enabled: true,
             source_type: "webhook".to_string(),
             action: Map::from_iter([
-                ("flow_name".to_string(), json!("ops/no-project.yaml")),
+                ("flow_name".to_string(), json!("ops/no-project")),
                 ("static_context".to_string(), json!({"origin": "fallback"})),
             ]),
             source: Map::new(),
@@ -257,11 +257,11 @@ fn workspace_webhook_without_project_uses_spark_home_and_launch_failures_are_sta
             name: "Invalid flow".to_string(),
             enabled: true,
             source_type: "webhook".to_string(),
-            action: Map::from_iter([("flow_name".to_string(), json!("ops/invalid.yaml"))]),
+            action: Map::from_iter([("flow_name".to_string(), json!("ops/invalid"))]),
             source: Map::new(),
         })
         .expect("create invalid webhook");
-    write_invalid_flow(&settings, "ops/invalid.yaml");
+    write_invalid_flow(&settings, "ops/invalid");
     let failing_key = failing.source["webhook_key"]
         .as_str()
         .expect("webhook key")
@@ -293,7 +293,7 @@ fn flow_event_trigger_keeps_static_context_nested() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path().canonicalize().expect("canonical tempdir");
     let settings = settings(&root);
-    write_flow(&settings, "ops/run.yaml");
+    write_flow(&settings, "ops/run");
     let project_path = root.join("project");
     fs::create_dir_all(&project_path).expect("project");
     let trigger = flow_event_definition(
@@ -308,7 +308,7 @@ fn flow_event_trigger_keeps_static_context_nested() {
 
     let outcomes = WorkspaceTriggerService::new(settings.clone())
         .emit_flow_event(Map::from_iter([
-            ("flow_name".to_string(), json!("ops/run.yaml")),
+            ("flow_name".to_string(), json!("ops/run")),
             ("project_path".to_string(), json!(project_path)),
             ("status".to_string(), json!("completed")),
         ]))
@@ -327,13 +327,15 @@ fn flow_event_trigger_keeps_static_context_nested() {
 }
 
 fn write_flow(settings: &SparkSettings, name: &str) {
-    let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(
-        path,
-        "schema_version: '1'\nid: workspace-trigger\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
+    attractor_dsl::write_flow_dir(
+        &settings.flows_dir.join(name),
+        &attractor_dsl::parse_flow_definition(
+            "schema_version: '1'\nid: workspace-trigger\nnodes:\n  start:\n    kind: start\n  done:\n    kind: exit\nedges:\n  - from: start\n    to: done\n",
+        )
+        .expect("valid flow"),
     )
-    .expect("flow");
+    .expect("write flow");
+    crate::approve_flow(&settings, &settings.flows_dir.join(name));
 }
 
 fn flow_event_definition(
@@ -351,13 +353,13 @@ fn flow_event_definition(
         action: spark_storage::TriggerAction {
             mission_id: None,
             mode: "static".to_string(),
-            flow_name: "ops/run.yaml".to_string(),
+            flow_name: "ops/run".to_string(),
             project_path: Some(project_path.to_string_lossy().into_owned()),
             static_context,
             execution_profile_id: None,
         },
         source: Map::from_iter([
-            ("flow_name".to_string(), json!("ops/run.yaml")),
+            ("flow_name".to_string(), json!("ops/run")),
             ("statuses".to_string(), json!(["completed"])),
         ]),
         created_at: "2026-06-24T08:00:00Z".to_string(),
@@ -367,8 +369,12 @@ fn flow_event_definition(
 
 fn write_invalid_flow(settings: &SparkSettings, name: &str) {
     let path = settings.flows_dir.join(name);
-    fs::create_dir_all(path.parent().expect("flow parent")).expect("flow parent");
-    fs::write(path, "schema_version: '1'\nid: broken\nnodes: [").expect("invalid flow");
+    fs::create_dir_all(&path).expect("flow dir");
+    fs::write(
+        path.join("flow.md"),
+        "---\ntype: Flow\nid: broken\nnodes: [\n---\n",
+    )
+    .expect("invalid flow");
 }
 
 fn webhook_request(
