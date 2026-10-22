@@ -490,6 +490,9 @@ where
     }
     if stream {
         body.insert("stream".to_string(), json!(true));
+        // Servers such as vLLM report streamed usage only when asked.
+        body.entry("stream_options")
+            .or_insert_with(|| json!({"include_usage": true}));
     }
 
     Ok(PreparedCompatibleRequest {

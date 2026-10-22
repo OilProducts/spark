@@ -29,6 +29,9 @@ mod validation_loop_contracts;
 #[path = "contracts/worktree_lifecycle_contracts.rs"]
 mod worktree_lifecycle_contracts;
 
+#[path = "contracts/fake_compatible_server.rs"]
+#[allow(dead_code)]
+mod fake_compatible_server;
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
 #[allow(unused_imports)]

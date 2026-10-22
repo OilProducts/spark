@@ -517,6 +517,59 @@ fn compatible_stream_translates_text_tool_call_usage_and_done_lifecycle() {
     assert_eq!(response.raw.as_ref().unwrap()["usage"]["total_tokens"], 9);
 }
 
+/// Servers such as vLLM send streamed usage only when asked, in a last
+/// chunk without choices.
+#[test]
+fn compatible_stream_asks_for_usage_and_reads_the_trailing_usage_chunk() {
+    let payload = [
+        sse(json!({"id": "chatcmpl_usage", "model": "local-model",
+            "choices": [{"index": 0, "delta": {"content": "Hi"}}]})),
+        sse(json!({"id": "chatcmpl_usage", "model": "local-model",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})),
+        sse(
+            json!({"id": "chatcmpl_usage", "model": "local-model", "choices": [],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 2, "total_tokens": 9}}),
+        ),
+        "data: [DONE]\n\n".to_string(),
+    ]
+    .join("");
+    let transport = Arc::new(RecordingTransport::new_with_streams(
+        std::iter::empty(),
+        [Ok(NativeStreamResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: vec![Ok(Value::String(payload))],
+        })],
+    ));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(OpenAICompatibleAdapter::openai_compatible(
+        OpenAICompatibleRequestConfig::new("stream-key"),
+        transport.clone(),
+    ));
+    let client = Client::from_adapters([adapter], Some("openai_compatible")).unwrap();
+
+    let events = client
+        .stream(Request {
+            model: "local-model".to_string(),
+            messages: vec![Message::user("hello")],
+            ..Request::default()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let response = StreamAccumulator::from_events(events).response;
+
+    let captured = transport.only_request();
+    assert_eq!(captured.body["stream"], json!(true));
+    assert_eq!(
+        captured.body["stream_options"],
+        json!({"include_usage": true})
+    );
+    assert_eq!(response.text(), "Hi");
+    assert_eq!(response.usage.input_tokens, 7);
+    assert_eq!(response.usage.output_tokens, 2);
+    assert_eq!(response.usage.total_tokens, 9);
+}
+
 #[test]
 fn compatible_stream_surfaces_provider_error_payloads_as_error_events() {
     let payload = sse(json!({

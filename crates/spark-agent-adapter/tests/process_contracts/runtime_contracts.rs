@@ -3466,3 +3466,113 @@ impl ExecutionEnvironmentBackend for CleanupCountingBackend {
         "test".to_string()
     }
 }
+
+fn native_openai_client(base_url: &str) -> Client {
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(NativeProviderAdapter::openai(
+        NativeRequestConfig {
+            api_key: Some("stream-key".to_string()),
+            base_url: Some(base_url.to_string()),
+            timeout: AdapterTimeout::new(1.0, 30.0, 30.0),
+            ..NativeRequestConfig::default()
+        },
+        Arc::new(NativeHttpTransport::new()),
+    ));
+    Client::from_adapters([adapter], Some("openai")).expect("client")
+}
+
+/// Stop aborts a chat turn's streamed request; the turn completes with the
+/// answer streamed so far instead of failing.
+#[test]
+fn chat_stop_aborts_a_streamed_request_and_settles_with_its_partial_answer() {
+    use spark_agent_adapter::{AgentTurnBackend, AgentTurnRequest, RustLlmAgentTurnBackend};
+    let server = AbortableNativeStreamServer::new(openai_stream_delta_chunk("partial"));
+    let backend = RustLlmAgentTurnBackend::new(native_openai_client(&server.base_url));
+    let project = tempfile::tempdir().expect("project");
+    let project_path = project.path().to_string_lossy().into_owned();
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn({
+        let (backend, project_path, streamed) =
+            (backend.clone(), project_path.clone(), streamed.clone());
+        move || {
+            let output = backend.run_turn_with_event_sink(
+                AgentTurnRequest {
+                    conversation_id: "stop-streamed".to_string(),
+                    project_path,
+                    prompt: "Question".to_string(),
+                    history: Vec::new(),
+                    provider: Some("openai".to_string()),
+                    model: Some("gpt-5.2".to_string()),
+                    llm_profile: None,
+                    reasoning_effort: None,
+                    chat_mode: Some("agent".to_string()),
+                    metadata: BTreeMap::new(),
+                },
+                Some(Arc::new(move |event| streamed.lock().unwrap().push(event))),
+            );
+            sender.send(output).unwrap();
+        }
+    });
+
+    server.wait_for_first_chunk();
+    thread::sleep(Duration::from_millis(100));
+    assert!(backend.interrupt_turn(&project_path, "stop-streamed"));
+    let output = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("stopped turn returns promptly")
+        .expect("a stopped turn completes");
+    server.wait_for_client_close();
+
+    assert_eq!(output.final_assistant_text.as_deref(), Some("partial"));
+    for events in [&output.events, &*streamed.lock().unwrap()] {
+        assert!(!events
+            .iter()
+            .any(|event| event.kind == TurnStreamEventKind::Error));
+        let answer = events
+            .iter()
+            .rev()
+            .find(|event| event.kind == TurnStreamEventKind::ContentCompleted)
+            .expect("settled answer");
+        assert_eq!(answer.channel, Some(TurnStreamChannel::Assistant));
+        assert_eq!(answer.content_delta.as_deref(), Some("partial"));
+        assert_eq!(answer.phase.as_deref(), Some("final_answer"));
+        assert_eq!(
+            events.last().map(|event| &event.kind),
+            Some(&TurnStreamEventKind::TurnCompleted)
+        );
+    }
+}
+
+/// A text-only node's request is not streamed; its `timeout` aborts it after
+/// sending, while the response body is still being read.
+#[test]
+fn text_only_node_timeout_aborts_a_non_streamed_request_in_flight() {
+    use spark_agent_adapter::{CodergenBackend, CodergenBackendRequest, RustLlmCodergenBackend};
+    let server = AbortableNativeStreamServer::new(b"{\"id\":".to_vec());
+    let mut backend = RustLlmCodergenBackend::new(native_openai_client(&server.base_url));
+    let started = Instant::now();
+    let output = backend
+        .run(CodergenBackendRequest {
+            node_id: "text".to_string(),
+            prompt: "Summarize".to_string(),
+            timeout_seconds: Some(0.5),
+            provider: "openai".to_string(),
+            model: Some("gpt-5.2".to_string()),
+            ..CodergenBackendRequest::default()
+        })
+        .expect("stopped node output");
+    server.wait_for_client_close();
+
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let spark_agent_adapter::CodergenBackendResponse::Outcome(outcome) = output.response else {
+        panic!("a timed-out node fails");
+    };
+    assert_eq!(
+        outcome.failure_reason,
+        "Agent node timed out after 0.5 seconds"
+    );
+}

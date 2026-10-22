@@ -2486,3 +2486,40 @@ impl ExecutionEnvironmentBackend for RecordingShellEnvironment {
         "test".to_string()
     }
 }
+
+#[test]
+fn tool_calls_not_started_before_an_abort_return_stopped_without_running() {
+    let ran = Arc::new(AtomicBool::new(false));
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredTool::new::<Value, _>(
+        definition("work", "Work", json!({"type": "object"})),
+        {
+            let ran = ran.clone();
+            move |_| {
+                ran.store(true, Ordering::SeqCst);
+                Ok(json!("done"))
+            }
+        },
+    ));
+    let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
+    let abort = unified_llm_adapter::AbortSignal::new();
+    abort.abort("Stopped.");
+
+    let results = registry.dispatch_many(
+        [ToolCall::new("call-work", "work", json!({}))],
+        ToolDispatchContext {
+            abort_signal: Some(abort),
+            event_hook: Some(Arc::new({
+                let events = events.clone();
+                move |event| events.lock().unwrap().push(event)
+            })),
+            ..ToolDispatchContext::default()
+        },
+    );
+
+    assert!(!ran.load(Ordering::SeqCst));
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_error);
+    assert_eq!(results[0].content, json!("Stopped."));
+    assert!(events.lock().unwrap().is_empty());
+}

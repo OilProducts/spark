@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::error::Error as _;
 use std::time::{Duration, Instant};
 
-use reqwest::blocking::{Client as BlockingReqwestClient, Response as BlockingReqwestResponse};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::{Client as AsyncReqwestClient, Method, Response as AsyncReqwestResponse};
 use serde_json::{json, Value};
@@ -64,18 +63,33 @@ fn execute_complete_request(
         )
     })?;
     let client = build_client(request.timeout, &request.provider)?;
+    let runtime = build_stream_runtime(&request.provider)?;
     let headers = header_map(&request)?;
     let body = request_body(&request)?;
-
-    let response = client
-        .request(method, &request.url)
-        .headers(headers)
-        .timeout(seconds_duration(request.timeout.request))
-        .body(body)
-        .send()
-        .map_err(|error| transport_error(&request, error))?;
-
-    complete_response(&request.provider, response)
+    let exchange = async {
+        let response = client
+            .request(method, &request.url)
+            .headers(headers)
+            .timeout(seconds_duration(request.timeout.request))
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| transport_error(&request, error))?;
+        async_complete_response(&request.provider, response).await
+    };
+    // The abort signal is honoured until the whole response body is read.
+    runtime.block_on(async {
+        match request.abort_signal.clone() {
+            Some(signal) => {
+                let wait_for_abort = signal.clone();
+                tokio::select! {
+                    result = exchange => result,
+                    _ = wait_for_abort.cancelled() => Err(abort_error("request", signal.reason())),
+                }
+            }
+            None => exchange.await,
+        }
+    })
 }
 
 fn execute_stream_request(
@@ -163,8 +177,8 @@ fn request_body(request: &NativeCompleteRequest) -> Result<Vec<u8>, AdapterError
 fn build_client(
     timeout: AdapterTimeout,
     provider: &str,
-) -> Result<BlockingReqwestClient, AdapterError> {
-    BlockingReqwestClient::builder()
+) -> Result<AsyncReqwestClient, AdapterError> {
+    AsyncReqwestClient::builder()
         .connect_timeout(seconds_duration(timeout.connect))
         .build()
         .map_err(|error| {
@@ -229,56 +243,6 @@ fn header_map(request: &NativeCompleteRequest) -> Result<HeaderMap, AdapterError
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     }
     Ok(headers)
-}
-
-fn complete_response(
-    provider: &str,
-    response: BlockingReqwestResponse,
-) -> Result<NativeCompleteResponse, AdapterError> {
-    let status = response.status().as_u16();
-    let headers = response_headers(response.headers());
-    let body_bytes = response.bytes().map_err(|error| {
-        let mut adapter_error = AdapterError::provider(
-            AdapterErrorKind::Network,
-            format!("Unable to read provider response body: {error}"),
-            Some(provider.to_string()),
-        );
-        adapter_error.status_code = Some(status);
-        adapter_error.retry_after = retry_after_from_headers(&headers);
-        adapter_error.raw = Some(json!({
-            "status": status,
-            "headers": headers.clone(),
-        }));
-        adapter_error
-    })?;
-    match serde_json::from_slice::<Value>(&body_bytes) {
-        Ok(body) => Ok(NativeCompleteResponse {
-            status,
-            headers,
-            body,
-        }),
-        Err(_) if !(200..=299).contains(&status) => Ok(NativeCompleteResponse {
-            status,
-            headers,
-            body: Value::String(String::from_utf8_lossy(&body_bytes).into_owned()),
-        }),
-        Err(error) => {
-            let body = String::from_utf8_lossy(&body_bytes).into_owned();
-            let mut adapter_error = AdapterError::provider(
-                AdapterErrorKind::Provider,
-                format!("Provider '{provider}' returned malformed JSON: {error}"),
-                Some(provider.to_string()),
-            );
-            adapter_error.status_code = Some(status);
-            adapter_error.retry_after = retry_after_from_headers(&headers);
-            adapter_error.raw = Some(json!({
-                "status": status,
-                "headers": headers,
-                "body": body,
-            }));
-            Err(adapter_error)
-        }
-    }
 }
 
 async fn async_complete_response(

@@ -2,6 +2,8 @@
 mod conversation_event_normalization_contracts;
 #[path = "contracts/flow_install.rs"]
 mod flow_install;
+#[path = "process_contracts/native_live_turn_contracts.rs"]
+mod native_live_turn_contracts;
 #[path = "process_contracts/test_support.rs"]
 mod test_support;
 #[path = "process_contracts/utility_contracts.rs"]
