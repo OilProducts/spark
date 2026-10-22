@@ -179,6 +179,36 @@ fn node_log_contains(settings: &SparkSettings, run_id: &str, node_id: &str, text
     false
 }
 
+/// The latest transcript segment for the message `text` sent into `node_id`'s turn.
+fn sent_message(settings: &SparkSettings, run_id: &str, node_id: &str, text: &str) -> Value {
+    let bundle = RunStore::for_settings(settings)
+        .read_run_bundle(run_id)
+        .unwrap()
+        .unwrap();
+    let mut latest = Value::Null;
+    let mut dirs = vec![bundle.paths.root.join("logs").join(node_id)];
+    while let Some(dir) = dirs.pop() {
+        for path in fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+        {
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.ends_with("transcript.jsonl") {
+                for record in fs::read_to_string(&path).unwrap().lines() {
+                    let segment = &serde_json::from_str::<Value>(record).unwrap()["segment"];
+                    if segment["kind"] == "user_message" && segment["content"] == text {
+                        latest = segment.clone();
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
 fn content(settings: &SparkSettings, flow: String) -> PipelineStartRequest {
     PipelineStartRequest {
         flow_name: Some(crate::install_flow(settings, flow)),
@@ -249,6 +279,8 @@ fn steer_delivers_to_active_codex_agent_node() {
         "work",
         "Also update the docs."
     ));
+    let sent = sent_message(&settings, "steer-codex", "work", "Also update the docs.");
+    assert_eq!(sent["status"], "complete", "{sent}");
 }
 
 #[test]
@@ -303,6 +335,73 @@ fn steer_delivers_to_active_claude_code_agent_node() {
         "work",
         "Also update the docs."
     ));
+    let sent = sent_message(&settings, "steer-claude", "work", "Also update the docs.");
+    assert_eq!(sent["status"], "complete", "{sent}");
+}
+
+/// A steer the Claude Code turn never read stays in the node's transcript,
+/// marked not sent.
+#[test]
+fn steer_a_claude_code_turn_never_reads_shows_as_not_sent() {
+    let log = std::env::temp_dir().join(format!(
+        "spark-steer-{}-claude-unread.log",
+        std::process::id()
+    ));
+    let envs = [
+        (
+            "SPARK_CLAUDE_CODE_BIN",
+            fake_bin("spark-agent-fake-claude-code"),
+        ),
+        ("SPARK_FAKE_CLAUDE_CODE_MODE", "mid-turn-stop".to_string()),
+        ("SPARK_FAKE_CLAUDE_CODE_LOG", log.to_string_lossy().into()),
+    ];
+    if !in_child_process(
+        "steer_a_claude_code_turn_never_reads_shows_as_not_sent",
+        &envs,
+    ) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let settings = settings(temp.path());
+    let service = service(&settings);
+    let log = log_path("SPARK_FAKE_CLAUDE_CODE_LOG");
+    start(
+        &service,
+        &settings,
+        "steer-claude-unread",
+        "claude-code",
+        content(&settings, agent_flow("steer_claude_unread")),
+    );
+    wait_for_log(&log, "USER_CONTENT=", 1);
+
+    let result = steer(
+        &service,
+        "steer-claude-unread",
+        json!({"message": "Too late for this turn."}),
+    );
+    assert_eq!(result["status"], "delivered", "{result}");
+    assert_eq!(result["message"], "Sent to the running Claude Code turn.");
+    wait_for_log(&log, "MID_TURN=", 1);
+    // Canceling interrupts the turn before Claude reads the message.
+    let cancel = service.dispatch(
+        "POST",
+        "/attractor/pipelines/steer-claude-unread/cancel",
+        "{}",
+    );
+    assert_eq!(cancel.status_code, 200, "{}", cancel.body);
+    wait_for_status(&settings, "steer-claude-unread", "canceled");
+
+    let unread = sent_message(
+        &settings,
+        "steer-claude-unread",
+        "work",
+        "Too late for this turn.",
+    );
+    assert_eq!(unread["status"], "failed", "{unread}");
+    assert_eq!(
+        unread["error"],
+        "Not sent: the turn ended before the agent read it."
+    );
 }
 
 #[test]

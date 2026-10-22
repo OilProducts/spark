@@ -476,7 +476,7 @@ impl CodergenSessionInterventionBroker {
                 status: "delivered".to_string(),
                 delivery_mode: "live_turn".to_string(),
                 reason: request.reason,
-                message: format!("Intervention delivered to the running {provider} turn."),
+                message: format!("Sent to the running {provider} turn."),
                 target_node_id: request.target_node_id,
             };
         }
@@ -497,7 +497,7 @@ impl CodergenSessionInterventionBroker {
             status: "delivered".to_string(),
             delivery_mode: "rust_boundary_codergen_turn".to_string(),
             reason: request.reason,
-            message: "Intervention delivered to active Rust codergen session.".to_string(),
+            message: "Sent to the running agent session.".to_string(),
             target_node_id: request.target_node_id,
         }
     }

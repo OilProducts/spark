@@ -47,6 +47,22 @@ export function buildRunTranscriptRow(segment: RunTranscriptSegment): RunTranscr
             },
         }
     }
+    // A message sent into the running turn: sent, or not sent if the turn
+    // ended before the agent read it.
+    if (segment.kind === 'user_message') {
+        return {
+            kind: 'message',
+            segment,
+            entry: {
+                id: segment.id,
+                role: 'user',
+                content: segment.content,
+                timestamp: segment.timestamp,
+                status: segment.status === 'failed' ? 'failed' : 'delivered',
+                error: segment.error ?? null,
+            },
+        }
+    }
     if (segment.kind === 'reasoning') {
         return {
             kind: 'thinking',

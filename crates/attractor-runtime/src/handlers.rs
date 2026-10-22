@@ -56,7 +56,21 @@ pub const HANDLER_MANAGER_LOOP: &str = "stack.manager_loop";
 fn materialize_execution_suffix(
     activity: &spark_storage::ActivityRepository,
 ) -> spark_storage::Result<()> {
-    let mut revision = activity.read_transcript_records()?.len() as u64 + 1;
+    let records = activity.read_transcript_records()?;
+    let mut revision = records.len() as u64 + 1;
+    // Messages sent into the turn, so one it never read is marked failed
+    // where it was sent, as chat shows it.
+    let mut user_messages = records
+        .into_iter()
+        .filter_map(|record| match record {
+            spark_storage::TranscriptRecord::SegmentUpsert { segment, .. }
+                if segment.kind == "user_message" =>
+            {
+                Some((segment.id.clone(), segment))
+            }
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
     for stored in activity.uncommitted_event_suffix()? {
         if stored.event.get("type").and_then(Value::as_str) == Some("prompt_resolved") {
             let prompt = stored
@@ -97,6 +111,8 @@ fn materialize_execution_suffix(
                 | "request_user_input_requested"
                 | "context_compaction_completed"
                 | "warning"
+                | "user_message_delivered"
+                | "user_message_not_delivered"
         ) {
             continue;
         }
@@ -109,36 +125,60 @@ fn materialize_execution_suffix(
             "request_user_input_requested" => "request_user_input",
             "context_compaction_completed" => "context_compaction",
             "warning" => "agent_event",
+            "user_message_delivered" | "user_message_not_delivered" => "user_message",
             _ => match channel {
                 "reasoning" => "reasoning",
                 "plan" => "plan",
                 _ => "assistant_message",
             },
         };
-        let id = unit
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("event-{}", stored.sequence));
-        let mut segment = json!({
-            "id": id, "turn_id": "response", "order": revision as i64 - 2,
-            "kind": segment_kind, "role": "assistant",
-            "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
-            "timestamp": stored.committed_at, "updated_at": stored.committed_at,
-            "completed_at": stored.committed_at,
-            "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),
-            "tool_call": unit.get("tool_call"), "request_user_input": unit.get("request_user_input"),
-            "source": unit.get("source"),
-        });
-        if kind == "warning" {
-            segment["category"] = json!("warning");
-        }
-        let segment = serde_json::from_value(segment).map_err(|source| {
-            spark_storage::StorageError::JsonWrite {
-                path: activity.transcript_path(),
-                source,
+        let id = if segment_kind == "user_message" {
+            format!(
+                "segment-user-message-{}",
+                unit["source"]["item_id"].as_str().unwrap_or_default()
+            )
+        } else {
+            unit.get("id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("event-{}", stored.sequence))
+        };
+        let segment = if kind == "user_message_not_delivered" {
+            let Some(mut segment) = user_messages.get(&id).cloned() else {
+                continue;
+            };
+            segment.status = "failed".to_string();
+            segment.error = unit
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            segment.updated_at = stored.committed_at.clone();
+            segment
+        } else {
+            let mut segment = json!({
+                "id": id, "turn_id": "response", "order": revision as i64 - 2,
+                "kind": segment_kind,
+                "role": if segment_kind == "user_message" { "user" } else { "assistant" },
+                "status": if kind == "tool_call_failed" { "failed" } else { "complete" },
+                "timestamp": stored.committed_at, "updated_at": stored.committed_at,
+                "completed_at": stored.committed_at,
+                "content": unit.get("message").or_else(|| unit.get("content")).and_then(Value::as_str).unwrap_or_default(),
+                "tool_call": unit.get("tool_call"), "request_user_input": unit.get("request_user_input"),
+                "source": unit.get("source"),
+            });
+            if kind == "warning" {
+                segment["category"] = json!("warning");
             }
-        })?;
+            serde_json::from_value(segment).map_err(|source| {
+                spark_storage::StorageError::JsonWrite {
+                    path: activity.transcript_path(),
+                    source,
+                }
+            })?
+        };
+        if segment_kind == "user_message" {
+            user_messages.insert(id, segment.clone());
+        }
         activity.append_transcript(&spark_storage::TranscriptRecord::SegmentUpsert {
             revision,
             committed_at: stored.committed_at,

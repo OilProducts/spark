@@ -77,6 +77,25 @@ describe('buildRunTranscriptRow', () => {
     expect(screen.getByTestId('run-event-row-s-compaction')).toHaveTextContent('Context compacted (21.6k \u2192 1.9k tokens).')
     expect(screen.getByTestId('run-event-row-s-warning')).toHaveTextContent('Rate limited until 15:00 UTC')
   })
+
+  it('shows a steer as the user\'s message, and one the agent never read as not sent', () => {
+    const rows = [
+      segment({ id: 'segment-user-message-1', kind: 'user_message', role: 'user', content: 'Use the docs.' }),
+      segment({
+        id: 'segment-user-message-2',
+        kind: 'user_message',
+        role: 'user',
+        status: 'failed',
+        content: 'Too late.',
+        error: 'Not sent: the turn ended before the agent read it.',
+      }),
+    ].map((entry) => buildRunTranscriptRow(entry)!)
+    render(<RunTranscript rows={rows} showThinking={false} />)
+    const sent = screen.getByText('Use the docs.').closest('li')!
+    expect(sent).toHaveTextContent('Sent into the running turn')
+    const unread = screen.getByText('Too late.').closest('li')!
+    expect(unread).toHaveTextContent('Not sent: the turn ended before the agent read it.')
+  })
 })
 
 describe('RunTranscript subagent nesting', () => {

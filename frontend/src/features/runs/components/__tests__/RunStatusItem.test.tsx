@@ -588,7 +588,7 @@ describe('RunVisitsCard steering', () => {
   it('posts the message to the node and shows the delivery', async () => {
     const fetchMock = steerResponse({
       pipeline_id: 'run-1', target_run_id: 'run-1', run_id: 'run-1', status: 'delivered', delivery_mode: 'active_turn',
-      reason: null, message: 'Intervention delivered to active Claude Code turn.', target_node_id: 'implement',
+      reason: null, message: 'Sent to the running Claude Code turn.', target_node_id: 'implement',
     })
     vi.stubGlobal('fetch', fetchMock)
     renderVisits([visit('implement', 1, 'running')])
@@ -596,7 +596,7 @@ describe('RunVisitsCard steering', () => {
     fireEvent.change(screen.getByTestId('run-visit-steer-input'), { target: { value: 'Use the existing helper.' } })
     fireEvent.click(screen.getByTestId('run-visit-steer-send'))
 
-    expect(await screen.findByTestId('run-visit-steer-delivered')).toHaveTextContent('Intervention delivered to active Claude Code turn.')
+    expect(await screen.findByTestId('run-visit-steer-delivered')).toHaveTextContent('Sent to the running Claude Code turn.')
     expect(fetchMock).toHaveBeenCalledWith('/attractor/pipelines/run-1/steer', expect.objectContaining({ method: 'POST' }))
     const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1]
     expect(JSON.parse(init.body as string)).toEqual({

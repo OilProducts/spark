@@ -648,7 +648,8 @@ nodes:
     );
 }
 
-/// Streams an agent warning and a finished compaction, as adapters report them.
+/// Streams an agent warning, a finished compaction and messages sent into
+/// the turn, as adapters report them.
 struct StatusEventsBackend;
 
 impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
@@ -672,6 +673,10 @@ impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
             json!({"kind": "session_start", "message": "session started"}),
             json!({"kind": "tool_call_completed", "tool_call": {"id": "toolu_sub_grep", "kind": "dynamic_tool",
                 "title": "Grep", "file_paths": [], "parent_call_id": "toolu_agent"}}),
+            json!({"kind": "user_message_delivered", "message": "Use the docs.", "source": {"item_id": "steer-1"}}),
+            json!({"kind": "user_message_delivered", "message": "Too late.", "source": {"item_id": "steer-2"}}),
+            json!({"kind": "user_message_not_delivered", "message": "Not sent: the turn ended before the agent read it.",
+                "source": {"item_id": "steer-2"}}),
         ]
         .into_iter()
         .map(|event| {
@@ -694,7 +699,7 @@ impl spark_agent_adapter::CodergenBackend for StatusEventsBackend {
 }
 
 #[test]
-fn node_transcripts_keep_agent_warnings_and_compaction() {
+fn node_transcripts_keep_agent_events_and_messages_sent_into_the_turn() {
     let flow = FlowDefinition::from_yaml_str(
         r#"
 schema_version: '1'
@@ -783,6 +788,51 @@ nodes:
         })
         .unwrap();
     assert_eq!(nested["parent_call_id"], "toolu_agent");
+    // A message sent into the turn shows as the user's; one the turn never
+    // read is marked failed in place.
+    let messages = records
+        .iter()
+        .filter_map(|record| match record {
+            spark_storage::TranscriptRecord::SegmentUpsert { segment, .. }
+                if segment.kind == "user_message" =>
+            {
+                Some((segment.id.as_str(), segment))
+            }
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let read = messages["segment-user-message-steer-1"];
+    assert_eq!(
+        (
+            read.role.as_str(),
+            read.status.as_str(),
+            read.content.as_str()
+        ),
+        ("user", "complete", "Use the docs.")
+    );
+    let unread = messages["segment-user-message-steer-2"];
+    assert_eq!(
+        (unread.status.as_str(), unread.content.as_str()),
+        ("failed", "Too late.")
+    );
+    assert_eq!(
+        unread.error.as_deref(),
+        Some("Not sent: the turn ended before the agent read it.")
+    );
+    // It keeps the place it was sent.
+    let sent_order = records
+        .iter()
+        .find_map(|record| match record {
+            spark_storage::TranscriptRecord::SegmentUpsert { segment, .. }
+                if segment.id == "segment-user-message-steer-2" =>
+            {
+                Some(segment.order)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(unread.order, sent_order);
+    assert!(read.order < unread.order);
 }
 
 #[test]
