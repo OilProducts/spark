@@ -239,6 +239,13 @@ impl ProviderProfile {
         self.capabilities.get(capability).copied().unwrap_or(false)
     }
 
+    /// An llm-profiles.toml `vision = true` covers models the catalog does
+    /// not know (self-hosted); for a catalogued model, the catalog decides.
+    pub fn apply_profile_vision(&mut self, model_info: Option<&ModelInfo>) {
+        let vision = model_info.map_or(true, |info| info.supports_vision);
+        self.capabilities.insert("vision".to_string(), vision);
+    }
+
     pub(crate) fn apply_model_metadata(&mut self) {
         let Some(model_info) = get_model_info(&self.model) else {
             return;

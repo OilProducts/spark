@@ -102,16 +102,37 @@ impl ModelCatalog {
     }
 }
 
+thread_local! {
+    static THREAD_CATALOG: std::cell::RefCell<Option<ModelCatalog>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Test seam: runs `f` with `catalog` standing in for the development
+/// catalog on this thread only.
+#[doc(hidden)]
+pub fn with_thread_catalog<R>(catalog: ModelCatalog, f: impl FnOnce() -> R) -> R {
+    let previous = THREAD_CATALOG.with(|cell| cell.replace(Some(catalog)));
+    let result = f();
+    THREAD_CATALOG.with(|cell| *cell.borrow_mut() = previous);
+    result
+}
+
+fn with_catalog<R>(f: impl FnOnce(&ModelCatalog) -> R) -> R {
+    THREAD_CATALOG.with(|cell| match cell.borrow().as_ref() {
+        Some(catalog) => f(catalog),
+        None => f(ModelCatalog::development()),
+    })
+}
+
 pub fn get_model_info(model_id: &str) -> Option<ModelInfo> {
-    ModelCatalog::development().get_model_info(model_id)
+    with_catalog(|catalog| catalog.get_model_info(model_id))
 }
 
 pub fn list_models(provider: Option<&str>) -> Vec<ModelInfo> {
-    ModelCatalog::development().list_models(provider)
+    with_catalog(|catalog| catalog.list_models(provider))
 }
 
 pub fn get_latest_model(provider: &str, capability: Option<&str>) -> Option<ModelInfo> {
-    ModelCatalog::development().get_latest_model(provider, capability)
+    with_catalog(|catalog| catalog.get_latest_model(provider, capability))
 }
 
 fn model_supports(model: &ModelInfo, capability: Option<&str>) -> bool {

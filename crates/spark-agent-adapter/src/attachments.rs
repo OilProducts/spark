@@ -7,7 +7,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::history::HistoryTurn;
+use crate::history::{HistoryTurn, TurnContent};
+use unified_llm_adapter::{ContentPart, ImageData};
 
 /// Metadata key holding the current turn's `Vec<AgentAttachment>`.
 pub const AGENT_ATTACHMENTS_METADATA_KEY: &str = "spark.agent.attachments";
@@ -87,6 +88,49 @@ pub fn prompt_with_attachment_references(
         text.push_str(&reference_block(heading, entries));
     }
     text
+}
+
+/// A message with every attachment as a local file reference, for agents
+/// that take text only, such as a message delivered into a running turn.
+pub fn message_with_attachment_references(
+    message: &str,
+    attachments: &[AgentAttachment],
+) -> String {
+    if attachments.is_empty() {
+        return message.to_string();
+    }
+    let block = reference_block(ATTACHED_FILES_HEADING, attachments);
+    if message.is_empty() {
+        block
+    } else {
+        format!("{message}\n\n{block}")
+    }
+}
+
+/// A native turn's input: every attachment as a file reference, which any
+/// model can open with its tools, plus image parts for a vision model.
+pub fn native_turn_input(
+    prompt: &str,
+    attachments: &[AgentAttachment],
+    vision: bool,
+) -> TurnContent {
+    let text = message_with_attachment_references(prompt, attachments);
+    let images = attachments
+        .iter()
+        .filter(|attachment| vision && attachment.is_native_image())
+        .filter_map(|attachment| {
+            let bytes = std::fs::read(&attachment.path).ok()?;
+            Some(ContentPart::Image {
+                image: ImageData::data(bytes, Some(attachment.media_type.clone())),
+            })
+        })
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        return TurnContent::Text(text);
+    }
+    let mut parts = vec![ContentPart::text(text)];
+    parts.extend(images);
+    TurnContent::Parts(parts)
 }
 
 pub(crate) fn reference_block<'a>(

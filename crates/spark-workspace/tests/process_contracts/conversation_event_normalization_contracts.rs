@@ -4578,3 +4578,74 @@ fn assert_delivered_history(plan: bool) {
         "plan: {plan}"
     );
 }
+
+#[test]
+fn a_message_with_attachments_sent_mid_turn_is_delivered_into_the_running_turn_for_every_provider()
+{
+    for provider in ["codex", "claude-code", "openai"] {
+        let temp = tempfile::tempdir().unwrap();
+        let backend = Arc::new(LiveMessageBackend::default());
+        let service = WorkspaceConversationService::new_with_agent_turn_backend(
+            settings(temp.path()),
+            backend.clone(),
+        );
+        let project = "/projects/attach";
+        let request = |message: &str, attachment_ids: Vec<String>| ConversationTurnRequest {
+            project_path: project.to_string(),
+            message: message.to_string(),
+            provider: Some(provider.to_string()),
+            attachment_ids,
+            ..ConversationTurnRequest::default()
+        };
+        let (prepared, started) = service
+            .send_turn("attach", request("Start", Vec::new()))
+            .unwrap();
+        let running = service.clone();
+        let turn = std::thread::spawn(move || {
+            running.complete_started_turn_with_progress_payloads(prepared.unwrap(), started, |_| {})
+        });
+        let waited = std::time::Instant::now();
+        while backend.sink.lock().unwrap().is_none() {
+            assert!(waited.elapsed() < Duration::from_secs(10), "turn running");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let notes = service
+            .upload_attachment("attach", project, "notes.txt", b"notes")
+            .unwrap();
+        // As the composer sends it: the conversation keeps its provider.
+        let (prepared, snapshot) = service
+            .send_turn(
+                "attach",
+                ConversationTurnRequest {
+                    provider: None,
+                    ..request("Read this.", vec![notes.id.clone()])
+                },
+            )
+            .unwrap();
+
+        assert!(prepared.is_none(), "{provider}");
+        assert!(
+            !snapshot["turns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|turn| turn["status"] == "queued"),
+            "{provider}: {snapshot}"
+        );
+        let delivered = backend.delivered.lock().unwrap().clone();
+        assert_eq!(delivered.len(), 1, "{provider}");
+        let message = &delivered[0].1;
+        assert!(
+            message.starts_with("Read this.\n\nAttached files"),
+            "{provider}: {message}"
+        );
+        assert!(
+            message.contains("- notes.txt (text/plain, 5 bytes): /"),
+            "{provider}: {message}"
+        );
+        *backend.released.0.lock().unwrap() = true;
+        backend.released.1.notify_all();
+        turn.join().unwrap().unwrap();
+    }
+}

@@ -1007,3 +1007,77 @@ fn compatible_effort_requires_declaration_but_does_not_validate_provider_values(
         }
     }
 }
+
+#[test]
+fn compatible_stream_reads_reasoning_content_as_reasoning_never_answer_text() {
+    let chunk = |delta: Value| {
+        sse(json!({"id": "chatcmpl_think", "model": "local-model",
+            "choices": [{"index": 0, "delta": delta}]}))
+    };
+    let payload = [
+        chunk(json!({"role": "assistant", "reasoning_content": "Think "})),
+        chunk(json!({"reasoning_content": "hard."})),
+        chunk(json!({"content": "Answer."})),
+        "data: [DONE]\n\n".to_string(),
+    ]
+    .join("");
+    let stream = || {
+        Ok(NativeStreamResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body: vec![Ok(Value::String(payload.clone()))],
+        })
+    };
+    let transport = Arc::new(RecordingTransport::new_with_streams(
+        std::iter::empty(),
+        [stream(), stream()],
+    ));
+    let adapter: Arc<dyn ProviderAdapter> = Arc::new(OpenAICompatibleAdapter::openai_compatible(
+        OpenAICompatibleRequestConfig::new("stream-key"),
+        transport.clone(),
+    ));
+    let client = Client::from_adapters([adapter], Some("openai_compatible")).unwrap();
+    let request = |messages| Request {
+        model: "local-model".to_string(),
+        messages,
+        ..Request::default()
+    };
+
+    let events = client
+        .stream(request(vec![Message::user("hello")]))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let kinds = events
+        .iter()
+        .map(|event| event.r#type.clone())
+        .filter(|kind| !matches!(kind, StreamEventType::StreamStart | StreamEventType::Finish))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        [
+            StreamEventType::ReasoningStart,
+            StreamEventType::ReasoningDelta,
+            StreamEventType::ReasoningDelta,
+            StreamEventType::ReasoningEnd,
+            StreamEventType::TextStart,
+            StreamEventType::TextDelta,
+            StreamEventType::TextEnd,
+        ]
+    );
+    let response = StreamAccumulator::from_events(events).response;
+    assert_eq!(response.text(), "Answer.");
+    assert_eq!(response.reasoning().as_deref(), Some("Think hard."));
+
+    // The next request carries the answer but not the reasoning.
+    client
+        .stream(request(vec![
+            Message::user("hello"),
+            response.message.clone(),
+            Message::user("again"),
+        ]))
+        .expect("history with reasoning is accepted")
+        .for_each(drop);
+    let sent = transport.requests.lock().unwrap()[1].body["messages"][1].clone();
+    assert_eq!(sent, json!({"role": "assistant", "content": "Answer."}));
+}

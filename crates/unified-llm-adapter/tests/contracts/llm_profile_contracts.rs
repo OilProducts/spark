@@ -291,7 +291,7 @@ base_url = "http://localhost"
 models = ["one"]
 headers = { "X-Debug" = "true" }
 "#,
-        "LLM profile 'bad' has unsupported key 'headers'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts.",
+        "LLM profile 'bad' has unsupported key 'headers'; supported keys: api_key_env, base_url, default_model, label, models, provider, reasoning_efforts, vision.",
     );
     assert_profile_error(
         r#"[profiles.""]
@@ -433,4 +433,43 @@ fn compatible_profiles_declare_ordered_efforts_for_all_three_providers() {
             .to_string()
             .contains("reasoning_efforts"));
     }
+}
+
+#[test]
+fn a_profile_declares_vision_for_its_self_hosted_models() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let base_url = unused_base_url();
+    std::fs::write(
+        temp.path().join("llm-profiles.toml"),
+        format!(
+            r#"
+[profiles.seeing]
+provider = "openai_compatible"
+base_url = "{base_url}"
+models = ["local-vl"]
+vision = true
+
+[profiles.plain]
+provider = "openai_compatible"
+base_url = "{base_url}"
+models = ["local-text"]
+"#
+        ),
+    )
+    .expect("write profiles");
+    let client =
+        Client::from_env_map_and_profiles(&BTreeMap::new(), temp.path(), None).expect("client");
+
+    assert!(client.require_llm_profile("seeing").unwrap().vision);
+    assert!(!client.require_llm_profile("plain").unwrap().vision);
+    assert_profile_error(
+        r#"
+[profiles.bad]
+provider = "openai_compatible"
+base_url = "http://localhost:4000/v1"
+models = ["m"]
+vision = "yes"
+"#,
+        "LLM profile vision must be true or false.",
+    );
 }

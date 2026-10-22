@@ -656,3 +656,148 @@ fn live_usage_does_not_write_run_record_mid_stage() {
     assert_eq!(observations[0], (None, "concurrent-status".to_string()));
     assert_eq!(observations[1], (Some(10), "concurrent-status".to_string()));
 }
+
+/// An `openai` model that makes a tool round then answers: 100 then 200
+/// input tokens, 10 output each.
+struct ToolRoundModel;
+
+impl unified_llm_adapter::ProviderAdapter for ToolRoundModel {
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn complete(
+        &self,
+        _request: unified_llm_adapter::Request,
+    ) -> Result<unified_llm_adapter::Response, unified_llm_adapter::AdapterError> {
+        unreachable!("native nodes stream")
+    }
+
+    fn stream(
+        &self,
+        request: unified_llm_adapter::Request,
+    ) -> Result<unified_llm_adapter::StreamEvents, unified_llm_adapter::AdapterError> {
+        use unified_llm_adapter::{FinishReason, StreamEvent, StreamEventType, ToolCall, Usage};
+        let tool_round = !request
+            .messages
+            .iter()
+            .any(|message| message.role == unified_llm_adapter::MessageRole::Tool);
+        let (mut events, input_tokens) = if tool_round {
+            let call = ToolCall::new("call-1", "shell", json!({"command": "true"}));
+            (
+                vec![StreamEvent {
+                    tool_call: Some(call),
+                    ..StreamEvent::new(StreamEventType::ToolCallEnd)
+                }],
+                100,
+            )
+        } else {
+            (
+                vec![StreamEvent::text_delta("{\"outcome\":\"success\"}")],
+                200,
+            )
+        };
+        let reason = if tool_round {
+            FinishReason::ToolCalls
+        } else {
+            FinishReason::Stop
+        };
+        events.push(StreamEvent::finish(
+            reason,
+            Some(Usage {
+                input_tokens,
+                output_tokens: 10,
+                ..Usage::default()
+            }),
+        ));
+        Ok(unified_llm_adapter::stream_events(
+            events.into_iter().map(Ok),
+        ))
+    }
+}
+
+/// Runs a flow whose build node is a native agent session with a tool round,
+/// and returns the persisted record and the build node's activity events.
+fn run_native_tool_round_node(temp: &Path) -> (RunRecord, Vec<spark_storage::ActivityEvent>) {
+    let store = RunStore::for_runs_dir(temp.join("runs"));
+    let project_path = temp.join("project");
+    std::fs::create_dir_all(&project_path).expect("project dir");
+    let runner = RuntimeHandlerRunner::new().with_codergen_backend_factory(|| {
+        let model: Arc<dyn unified_llm_adapter::ProviderAdapter> = Arc::new(ToolRoundModel);
+        let client = unified_llm_adapter::Client::from_adapters(vec![model], None).expect("client");
+        Box::new(spark_agent_adapter::RustLlmCodergenBackend::new(client))
+    });
+    let mut flow = agent_flow();
+    let build = flow.nodes.get_mut("build").expect("build node");
+    build.execution = Some(attractor_core::ExecutionConfig {
+        llm_provider: Some("openai".to_string()),
+        llm_model: Some("gpt-5.5".to_string()),
+        ..Default::default()
+    });
+    build
+        .extensions
+        .insert("codergen.requires_tools".to_string(), json!(true));
+    let result = PipelineExecutor::new(runner)
+        .execute(ExecuteRunRequest {
+            store: store.clone(),
+            record: record("run-native-usage", &project_path),
+            flow,
+            flow_source: None,
+            flow_definition_json: None,
+            launch_context: LaunchContext::empty(),
+            runtime_context: Default::default(),
+            max_steps: None,
+            start: ExecutionStart::Fresh,
+        })
+        .expect("execute");
+    assert_eq!(result.status, "completed");
+    let paths = store
+        .run_root(&project_path.to_string_lossy(), "run-native-usage")
+        .expect("run root");
+    let build = store
+        .list_node_executions(&paths)
+        .expect("executions")
+        .into_iter()
+        .find(|execution| execution.node_id == "build")
+        .expect("build execution");
+    let events = store
+        .read_node_execution_events(&paths, "build", build.stage_index, build.attempt)
+        .expect("read events")
+        .expect("events");
+    let record = store
+        .read_run_record(&paths)
+        .expect("read record")
+        .expect("record");
+    (record, events)
+}
+
+#[test]
+fn a_native_nodes_run_record_usage_sums_every_model_request() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (record, _) = run_native_tool_round_node(temp.path());
+
+    assert_eq!(record.token_usage, Some(320));
+    let breakdown = record.token_usage_breakdown.expect("breakdown");
+    assert_eq!(breakdown["input_tokens"], 300);
+    assert_eq!(breakdown["output_tokens"], 20);
+    assert_eq!(breakdown["by_model"]["gpt-5.5"]["input_tokens"], 300);
+}
+
+#[test]
+fn a_native_nodes_live_usage_is_its_running_total_across_requests() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (_, events) = run_native_tool_round_node(temp.path());
+
+    // Live usage as the runtime projects the node's events while it runs:
+    // after each usage event, the node's running total.
+    let mut usage = RunUsageAccumulator::new("fallback");
+    let mut live = Vec::new();
+    for event in &events {
+        usage.apply_activity_events(std::slice::from_ref(event));
+        if event.event["payload"]["kind"] == json!("model_usage_update") {
+            live.push(usage.breakdown().expect("live usage").totals.input_tokens);
+        }
+    }
+    assert_eq!(live, vec![100, 300]);
+    assert_eq!(usage.breakdown().expect("usage").totals.input_tokens, 300);
+}

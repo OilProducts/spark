@@ -603,12 +603,8 @@ fn chat_message(provider: &str, message: &Message) -> Result<Value, AdapterError
                     ContentPart::ToolCall { tool_call } => {
                         tool_calls.push(chat_tool_call_payload(provider, tool_call)?);
                     }
-                    ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => {
-                        return Err(invalid_request_error(
-                            provider,
-                            "OpenAI-compatible Chat Completions request history does not support reasoning content parts",
-                        ));
-                    }
+                    // Reasoning is never sent back; servers derive it afresh.
+                    ContentPart::Thinking { .. } | ContentPart::RedactedThinking { .. } => {}
                     _ => {
                         return Err(invalid_request_error(
                             provider,
@@ -1081,6 +1077,7 @@ struct ChatStreamState {
     accumulator: StreamAccumulator,
     raw_payloads: Vec<Value>,
     started: bool,
+    active_reasoning: bool,
     active_text: Option<String>,
     active_tool_calls: BTreeMap<String, ToolCall>,
     tool_call_order: Vec<String>,
@@ -1103,6 +1100,7 @@ impl ChatStreamState {
             accumulator: StreamAccumulator::default(),
             raw_payloads: Vec::new(),
             started: false,
+            active_reasoning: false,
             active_text: None,
             active_tool_calls: BTreeMap::new(),
             tool_call_order: Vec::new(),
@@ -1205,6 +1203,11 @@ impl ChatStreamState {
                 if delta.get("role").is_some() {
                     self.ensure_started(raw.clone());
                 }
+                // Self-hosted reasoning models stream their thinking apart
+                // from the answer.
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+                    self.reasoning_delta(reasoning.to_string(), raw.clone());
+                }
                 if let Some(content) = delta.get("content").and_then(Value::as_str) {
                     self.text_delta(content.to_string(), raw.clone());
                 }
@@ -1255,11 +1258,40 @@ impl ChatStreamState {
         });
     }
 
+    fn reasoning_delta(&mut self, delta: String, raw: Option<Value>) {
+        if delta.is_empty() {
+            return;
+        }
+        self.ensure_started(raw.clone());
+        if !self.active_reasoning {
+            self.active_reasoning = true;
+            self.push(StreamEvent {
+                raw: raw.clone(),
+                ..StreamEvent::new(StreamEventType::ReasoningStart)
+            });
+        }
+        self.push(StreamEvent {
+            reasoning_delta: Some(delta),
+            raw,
+            ..StreamEvent::new(StreamEventType::ReasoningDelta)
+        });
+    }
+
+    fn reasoning_end(&mut self, raw: Option<Value>) {
+        if std::mem::take(&mut self.active_reasoning) {
+            self.push(StreamEvent {
+                raw,
+                ..StreamEvent::new(StreamEventType::ReasoningEnd)
+            });
+        }
+    }
+
     fn text_delta(&mut self, delta: String, raw: Option<Value>) {
         if delta.is_empty() {
             return;
         }
         self.ensure_started(raw.clone());
+        self.reasoning_end(raw.clone());
         if self.active_text.is_none() {
             self.active_text = Some(String::new());
             self.push(StreamEvent {
@@ -1326,6 +1358,7 @@ impl ChatStreamState {
             };
             self.active_tool_calls.insert(id.clone(), started.clone());
             self.tool_call_order.push(id.clone());
+            self.reasoning_end(raw.clone());
             self.push(StreamEvent {
                 r#type: StreamEventType::ToolCallStart,
                 tool_call: Some(started),
@@ -1395,6 +1428,7 @@ impl ChatStreamState {
 
     fn push_error(&mut self, error: AdapterError, raw: Option<Value>) {
         self.ensure_started(raw.clone());
+        self.reasoning_end(raw.clone());
         self.text_end(raw.clone());
         self.close_tool_calls(raw.clone());
         let response = self.current_response(FinishReason::Error);
@@ -1416,6 +1450,7 @@ impl ChatStreamState {
         self.finished = true;
         let raw = self.raw_payloads.last().cloned();
         self.ensure_started(raw.clone());
+        self.reasoning_end(raw.clone());
         self.text_end(raw.clone());
         self.close_tool_calls(raw.clone());
         let has_tool_calls = !self.accumulator.tool_calls.is_empty();

@@ -760,14 +760,17 @@ fn codergen_output_from_session(
     initial_history_len: usize,
     process_error: Option<AdapterError>,
 ) -> CodergenBackendOutput {
-    let (final_assistant_text, assistant_usage) =
-        codergen_final_assistant_text_and_usage(session, initial_history_len);
+    let final_assistant_text = codergen_final_assistant_text(session, initial_history_len);
     let session_events = drain_session_events(session);
-    let event_usage = session_events
-        .iter()
-        .rev()
-        .find_map(usage_from_session_event);
-    let usage = assistant_usage.or(event_usage);
+    // Every request in the node, tool rounds included.
+    let usage = (session.usage_total != Usage::default())
+        .then(|| session.usage_total.clone())
+        .or_else(|| {
+            session_events
+                .iter()
+                .rev()
+                .find_map(usage_from_session_event)
+        });
     let response = if let Some(error) = process_error.as_ref() {
         CodergenBackendResponse::Outcome(Outcome {
             status: OutcomeStatus::Fail,
@@ -860,6 +863,10 @@ fn codergen_event_from_session_event_with_metadata(
     if let Some(turn_stream_event) = event.to_turn_stream_event() {
         if let Some(tool_call) = turn_stream_event.tool_call.as_ref() {
             payload.insert("tool_event".to_string(), tool_call.clone());
+        }
+        // The node's running total, which live run usage reads.
+        if let Some(token_usage) = turn_stream_event.token_usage.as_ref() {
+            payload.insert("token_usage".to_string(), token_usage.clone());
         }
         payload.insert(
             "turn_stream_event".to_string(),
@@ -1100,10 +1107,7 @@ fn codergen_session_metadata_payload(
     ])
 }
 
-fn codergen_final_assistant_text_and_usage(
-    session: &Session,
-    initial_history_len: usize,
-) -> (Option<String>, Option<Usage>) {
+fn codergen_final_assistant_text(session: &Session, initial_history_len: usize) -> Option<String> {
     session
         .history
         .iter()
@@ -1112,15 +1116,10 @@ fn codergen_final_assistant_text_and_usage(
         .find_map(|turn| match turn {
             HistoryTurn::Assistant(assistant) => {
                 let text = assistant.text();
-                if non_empty(&text).is_some() {
-                    Some((Some(text), assistant.usage.clone()))
-                } else {
-                    None
-                }
+                non_empty(&text).is_some().then_some(text)
             }
             _ => None,
         })
-        .unwrap_or((None, None))
 }
 
 fn drain_session_events(session: &mut Session) -> Vec<SessionEvent> {
@@ -1417,26 +1416,22 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
                 .run_agent_turn_with_event_sink(request, event_sink)
                 .map_err(claude_code_agent_error);
         }
-        if !crate::attachments::request_attachments(&request.metadata).is_empty() {
-            return Err(AgentError {
-                message: format!(
-                    "Attachments need Codex or Claude Code; the {} provider cannot receive them.",
-                    request.provider.as_deref().unwrap_or("selected")
-                ),
-                retryable: false,
-                raw: None,
-            });
-        }
+        let attachments = crate::attachments::request_attachments(&request.metadata);
         let prompt = request.prompt.clone();
         let (project_path, conversation_id) = (
             request.project_path.clone(),
             request.conversation_id.clone(),
         );
         let session = build_agent_session(&self.client, request).map_err(agent_adapter_error)?;
+        let input = crate::attachments::native_turn_input(
+            &prompt,
+            &attachments,
+            session.provider_profile.supports("vision"),
+        );
         self.run_native_turn(
             (&project_path, &conversation_id),
             session,
-            prompt,
+            input,
             event_sink,
         )
     }
@@ -1534,7 +1529,7 @@ impl RustLlmAgentTurnBackend {
         &self,
         key: (&str, &str),
         mut session: Session,
-        input: String,
+        input: impl Into<crate::history::TurnContent>,
         event_sink: Option<AgentTurnEventSink>,
     ) -> Result<AgentTurnOutput, AgentError> {
         let turn = NativeTurn::register_session(key, &mut session);
@@ -1933,6 +1928,9 @@ fn build_agent_session_for_source(
         profile.request_provider = Some(request_provider);
     }
     profile.provider_options = llm_request.request.provider_options.clone();
+    if llm_request.vision {
+        profile.apply_profile_vision(unified_llm_adapter::get_model_info(&profile.model).as_ref());
+    }
     let mut config: SessionConfig = llm_request
         .request
         .metadata
@@ -2343,6 +2341,8 @@ struct BuiltLlmRequest {
     llm_profile: Option<String>,
     reasoning_effort: Option<String>,
     provider_profile_selector: String,
+    /// The selected llm-profiles.toml profile declares `vision = true`.
+    vision: bool,
 }
 
 fn build_llm_request(
@@ -2387,6 +2387,9 @@ fn build_llm_request(
         .as_ref()
         .map(|profile| profile.id.clone())
         .unwrap_or_else(|| resolved.provider.clone());
+    let vision = selected_profile
+        .as_ref()
+        .is_some_and(|profile| profile.vision);
     let selected_profile_id = selected_profile.map(|profile| profile.id);
     metadata.extend(llm_selection_metadata([
         ("provider", Some(resolved.provider.as_str())),
@@ -2407,6 +2410,7 @@ fn build_llm_request(
         llm_profile: selected_profile_id,
         reasoning_effort: selection.reasoning_effort,
         provider_profile_selector,
+        vision,
     })
 }
 

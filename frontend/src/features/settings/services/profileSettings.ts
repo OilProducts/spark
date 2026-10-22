@@ -9,6 +9,7 @@ export interface LlmProfileSettings {
     api_key_env?: string
     models: string[]
     default_model?: string
+    vision?: boolean
 }
 export interface ExecutionProfileSettings {
     id: string
@@ -40,6 +41,7 @@ export function parseLlmProfiles(value: unknown, endpoint: string): LlmProfileSe
             ...(profile.label != null ? { label: expectString(profile.label, endpoint, 'label') } : {}),
             ...(profile.api_key_env != null ? { api_key_env: expectString(profile.api_key_env, endpoint, 'api_key_env') } : {}),
             ...(profile.default_model != null ? { default_model: expectString(profile.default_model, endpoint, 'default_model') } : {}),
+            ...(profile.vision === true ? { vision: true } : {}),
         }
     })
 }

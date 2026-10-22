@@ -1278,10 +1278,14 @@ impl WorkspaceConversationService {
             }
             let user_turn_id = user_turn["id"].as_str().unwrap_or_default().to_string();
             // Only a message with nothing queued ahead joins the running
-            // turn, so queued messages keep their order.
+            // turn, so queued messages keep their order. Live paths take
+            // text, so attachments go as file references.
+            let live_message = spark_agent_adapter::attachments::message_with_attachment_references(
+                &message,
+                &attachments,
+            );
             let delivered = !queued_ahead
-                && attachments.is_empty()
-                && self.deliver_live(conversation_id, &project_path, &user_turn_id, &message);
+                && self.deliver_live(conversation_id, &project_path, &user_turn_id, &live_message);
             if !delivered {
                 user_turn["status"] = json!("queued");
                 mutations.push(turn_mutation_from_value(&user_turn)?);
@@ -5895,24 +5899,17 @@ fn delivered_message_history(
     Some(history)
 }
 
-/// Codex and Claude Code take attachments; image input is limited to the
-/// formats both accept natively. Anything else is rejected, never dropped.
+/// Codex and Claude Code take images only in the formats both accept
+/// natively; anything else is rejected, never dropped. Native providers
+/// read every attachment as a file, so they take any.
 fn validate_provider_attachments(
     provider: &str,
     attachments: &[spark_agent_adapter::AgentAttachment],
 ) -> WorkspaceResult<()> {
-    let Some(first) = attachments.first() else {
-        return Ok(());
-    };
     let provider_label = match provider.trim().to_ascii_lowercase().as_str() {
         "codex" => "Codex",
         "claude-code" | "claude_code" => "Claude Code",
-        _ => {
-            return Err(WorkspaceError::Validation(format!(
-                "Attachments need Codex or Claude Code; the {provider} provider cannot receive {}.",
-                first.filename
-            )))
-        }
+        _ => return Ok(()),
     };
     if let Some(image) = attachments.iter().find(|attachment| {
         attachment.media_type.starts_with("image/") && !attachment.is_native_image()

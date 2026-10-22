@@ -347,27 +347,12 @@ async fn attachment_limits_scope_and_provider_support_are_enforced_on_the_server
         "Codex cannot take image/bmp images (old.bmp). Use PNG, JPEG, GIF or WebP."
     );
 
-    // An unsupported provider is reported; the upload survives for a retry.
+    // Native providers take attachments too, as files their tools can read.
     let (_, image) = upload(&app, "chat-b", "shot.png", PNG.to_vec()).await;
-    let (status, body) = send(
-        &app,
-        "chat-b",
-        json!({"project_path": PROJECT, "message": "Look", "provider": "openai", "model": "gpt-5", "attachment_ids": [image["id"]]}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(
-        body["detail"],
-        "Attachments need Codex or Claude Code; the openai provider cannot receive shot.png."
-    );
-    assert!(ConversationRepository::new(&settings.data_dir)
-        .read_snapshot("chat-b", Some(PROJECT))
-        .expect("read")
-        .is_none());
     let (status, snapshot) = send(
         &app,
         "chat-b",
-        json!({"project_path": PROJECT, "message": "Look", "provider": "codex", "attachment_ids": [image["id"]]}),
+        json!({"project_path": PROJECT, "message": "Look", "provider": "openai", "model": "gpt-5", "attachment_ids": [image["id"]]}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

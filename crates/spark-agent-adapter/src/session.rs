@@ -12,7 +12,7 @@ use crate::environment::ExecutionEnvironment;
 use crate::events::{EventKind, SessionEvent};
 use unified_llm_adapter::{
     AbortController, AbortSignal, AdapterError, AdapterErrorKind, Client, Message, Request,
-    Response, StreamAccumulator, StreamEventType, ToolChoice,
+    Response, RetryPolicy, StreamAccumulator, StreamEventType, ToolChoice, Usage,
 };
 
 use crate::history::{
@@ -291,6 +291,9 @@ pub struct Session {
     pub pending_question: Option<String>,
     #[serde(default)]
     pub abort_signaled: bool,
+    /// Every model request's usage in this session, summed.
+    #[serde(default)]
+    pub usage_total: Usage,
     #[serde(default, skip)]
     abort_controller: AbortController,
     #[serde(default, skip)]
@@ -406,6 +409,7 @@ impl Session {
             system_prompt_snapshot,
             pending_question: None,
             abort_signaled: false,
+            usage_total: Usage::default(),
             abort_controller: AbortController::new(),
             cleanup_state: SessionCleanupState::default(),
         };
@@ -1036,8 +1040,7 @@ impl Session {
         if self.provider_profile.supports("streaming") {
             self.stream_response(client, request)
         } else {
-            client
-                .complete(request)
+            self.with_retries(|| client.complete(request.clone()))
                 .map(|response| ModelResponseOutput {
                     response,
                     emitted_assistant_events: false,
@@ -1055,14 +1058,13 @@ impl Session {
         let model = request.model.clone();
         let provider = request.provider.clone().unwrap_or_default();
         let abort_signal = request.abort_signal.clone();
-        let mut stream = client.stream(request)?;
+        let mut stream = self.with_retries(|| client.stream(request.clone()))?;
         let mut accumulator = StreamAccumulator::default();
         let mut response_id: Option<String> = None;
         let mut assistant_text_started = false;
         let mut assistant_reasoning_started = false;
         let mut assistant_reasoning_ended = false;
         let mut emitted_model_tool_events = false;
-        let mut pending_usage_events = Vec::new();
         let mut stream_error = None;
 
         for event in stream.by_ref() {
@@ -1146,19 +1148,8 @@ impl Session {
                     emitted_model_tool_events |=
                         self.emit_stream_session_events(&event, response_id.as_deref(), None, None);
                 }
-                StreamEventType::Finish => {
-                    pending_usage_events.extend(
-                        SessionEvent::from_stream_event(&event, self.id, response_id.as_deref())
-                            .into_iter()
-                            .filter(|event| event.kind == EventKind::ModelUsageUpdate),
-                    );
-                }
+                StreamEventType::Finish => {}
                 StreamEventType::Error => {
-                    pending_usage_events.extend(
-                        SessionEvent::from_stream_event(&event, self.id, response_id.as_deref())
-                            .into_iter()
-                            .filter(|event| event.kind == EventKind::ModelUsageUpdate),
-                    );
                     let error = event.error.clone().unwrap_or_else(|| {
                         AdapterError::new(AdapterErrorKind::Stream, "model stream error")
                     });
@@ -1218,9 +1209,6 @@ impl Session {
                 response_id.as_deref(),
             );
         }
-        for usage_event in pending_usage_events {
-            self.emit_event(usage_event);
-        }
 
         Ok(ModelResponseOutput {
             response,
@@ -1242,6 +1230,8 @@ impl Session {
                 response_id.as_deref(),
             );
         }
+
+        self.emit_usage(&response.usage);
 
         let mut assistant_turn = AssistantTurn::new(response_text);
         assistant_turn.tool_calls = response.tool_calls();
@@ -1269,6 +1259,95 @@ impl Session {
             HistoryTurn::Assistant(assistant_turn) => assistant_turn.clone(),
             _ => unreachable!("assistant turn was just pushed"),
         }
+    }
+
+    /// Retries a model request that failed before any output with a
+    /// transient error, showing each retry in the transcript.
+    fn with_retries<T>(
+        &mut self,
+        request: impl FnMut() -> Result<T, AdapterError>,
+    ) -> Result<T, AdapterError> {
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let captured = notices.clone();
+        let policy = RetryPolicy {
+            jitter: false,
+            ..RetryPolicy::default()
+        };
+        let max_retries = policy.max_retries;
+        let policy = policy.with_on_retry(move |error, attempt, delay| {
+            captured
+                .lock()
+                .expect("retry notices")
+                .push(BTreeMap::from([
+                    (
+                        "message".to_string(),
+                        json!(format!(
+                            "{}; retrying in {}s (attempt {} of {max_retries})",
+                            error.message,
+                            delay.ceil() as u64,
+                            attempt + 1
+                        )),
+                    ),
+                    ("kind".to_string(), json!("model_request_retry")),
+                    ("attempt".to_string(), json!(attempt + 1)),
+                    ("max_retries".to_string(), json!(max_retries)),
+                    ("delay_seconds".to_string(), json!(delay)),
+                ]));
+        });
+        let abort = self.abort_controller.signal.clone();
+        unified_llm_adapter::retry_with_hooks(
+            &policy,
+            request,
+            || 1.0,
+            |delay| {
+                let pending = std::mem::take(&mut *notices.lock().expect("retry notices"));
+                for notice in pending {
+                    self.emit_kind(EventKind::Warning, notice);
+                }
+                // A Stop ends the wait; the next attempt then fails as aborted.
+                let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(delay);
+                while std::time::Instant::now() < until && !abort.aborted() {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            },
+        )
+    }
+
+    /// One request's usage, reported with the session's running total and
+    /// the context the request filled, in the payload shape Codex reports.
+    fn emit_usage(&mut self, usage: &Usage) {
+        if *usage == Usage::default() {
+            return;
+        }
+        let last = usage.clone().normalized();
+        self.usage_total = self.usage_total.clone() + last.clone();
+        let shape = |usage: &Usage| {
+            crate::events::workspace_token_usage_payload_from_usage(usage)
+                .map(|payload| payload["total"].clone())
+                .unwrap_or_else(|| json!({}))
+        };
+        let mut token_usage = json!({"total": shape(&self.usage_total), "last": shape(&last)});
+        if let Some(window) = self.provider_profile.context_window_size.filter(|w| *w > 0) {
+            // Anthropic counts cached prompt tokens apart from input tokens.
+            let used = if self.provider_profile.id == "anthropic" {
+                last.input_tokens
+                    + last.cache_read_tokens.unwrap_or(0)
+                    + last.cache_write_tokens.unwrap_or(0)
+            } else {
+                last.input_tokens
+            };
+            token_usage["context"] = json!({"window_tokens": window, "used_tokens": used});
+        }
+        self.emit_kind(
+            EventKind::ModelUsageUpdate,
+            BTreeMap::from([
+                (
+                    "usage".to_string(),
+                    serde_json::to_value(&last).expect("usage is serializable"),
+                ),
+                ("token_usage".to_string(), token_usage),
+            ]),
+        );
     }
 
     fn execute_tool_calls(

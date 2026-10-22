@@ -867,6 +867,8 @@ fn process_input_builds_low_level_request_and_records_text_completion() {
     assert_eq!(text_end.data["text"], json!("Assistant reply"));
     assert_eq!(text_end.data["reasoning"], json!("Assistant thinking"));
     assert_eq!(text_end.data["response_id"], json!("resp-1"));
+    let usage = session.next_event().expect("MODEL_USAGE_UPDATE");
+    assert_eq!(usage.kind, EventKind::ModelUsageUpdate);
     let processing_end = session.next_event().expect("PROCESSING_END");
     assert_eq!(processing_end.kind, EventKind::ProcessingEnd);
     assert_eq!(processing_end.data["state"], json!("idle"));
@@ -972,18 +974,20 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ModelUsageUpdate,
             EventKind::ProcessingEnd,
             EventKind::UserInput,
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ModelUsageUpdate,
             EventKind::ProcessingEnd,
         ]
     );
     assert_eq!(events[0].data["content"], json!("Yes please"));
     assert_eq!(events[0].data["answer_to"], json!("Need more info?"));
-    assert_eq!(events[5].data["content"], json!("Queued follow-up"));
-    assert!(events[5].data.get("answer_to").is_none());
+    assert_eq!(events[6].data["content"], json!("Queued follow-up"));
+    assert!(events[6].data.get("answer_to").is_none());
 }
 
 #[test]
@@ -1097,6 +1101,7 @@ fn process_input_executes_tool_rounds_and_injects_mid_tool_steering_before_next_
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ModelUsageUpdate,
             EventKind::ProcessingEnd,
         ]
     );
@@ -1183,6 +1188,7 @@ fn context_usage_warning_includes_structured_estimate_without_mutating_history_o
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ModelUsageUpdate,
             EventKind::ProcessingEnd,
         ]
     );
@@ -1988,14 +1994,19 @@ fn process_input_context_length_error_warns_and_keeps_session_reusable() {
 
 #[test]
 fn process_input_does_not_replay_after_tool_side_effect_when_adapter_error_is_retryable() {
-    let retryable_error = AdapterError::new(AdapterErrorKind::Network, "temporary network failure");
+    let mut retryable_error =
+        AdapterError::new(AdapterErrorKind::Network, "temporary network failure");
     assert!(retryable_error.retryable);
+    retryable_error.retry_after = Some(0.0);
+    // The model request is retried; the tool never runs again.
     let adapter = Arc::new(CompleteOutcomeAdapter::new(vec![
         Ok(tool_call_response_with_call(
             "resp-tool",
             "Need a tool",
             ToolCall::new("call-1", "lookup", json!({"value": 1})),
         )),
+        Err(retryable_error.clone()),
+        Err(retryable_error.clone()),
         Err(retryable_error.clone()),
     ]));
     let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
@@ -2015,7 +2026,10 @@ fn process_input_does_not_replay_after_tool_side_effect_when_adapter_error_is_re
     assert_eq!(error, retryable_error);
     assert_eq!(session.state, SessionState::Idle);
     let calls = adapter.complete_requests();
-    assert_eq!(calls.len(), 2);
+    assert_eq!(calls.len(), 4);
+    assert!(calls[2..]
+        .iter()
+        .all(|call| call.messages == calls[1].messages));
     assert_eq!(calls[0].messages.len(), 2);
     assert_eq!(calls[0].messages[0].role, MessageRole::System);
     assert_eq!(calls[0].messages[1], Message::user("Needs a tool"));
@@ -2052,9 +2066,16 @@ fn process_input_does_not_replay_after_tool_side_effect_when_adapter_error_is_re
             .count(),
         0
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.data.get("kind") == Some(&json!("model_request_retry")))
+            .count(),
+        2
+    );
     let warning = events
         .iter()
-        .find(|event| event.kind == EventKind::Warning)
+        .find(|event| event.kind == EventKind::Warning && event.data.contains_key("error"))
         .expect("retryable warning");
     assert_eq!(warning.data["message"], json!("temporary network failure"));
     assert_eq!(warning.data["error"]["kind"], json!("network"));
@@ -2359,6 +2380,7 @@ fn process_input_emits_loop_detection_and_steers_recovery_when_enabled_by_defaul
             EventKind::AssistantTextStart,
             EventKind::AssistantTextDelta,
             EventKind::AssistantTextEnd,
+            EventKind::ModelUsageUpdate,
             EventKind::ProcessingEnd,
         ]
     );
