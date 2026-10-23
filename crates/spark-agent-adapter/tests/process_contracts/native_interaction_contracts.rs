@@ -757,8 +757,8 @@ fn native_agent_node_keeps_its_answer_when_the_schema_request_only_calls_a_tool(
     });
     let mut backend = RustLlmCodergenBackend::new(client);
 
-    // The schema request spends the last permitted tool round on a tool call,
-    // so the round limit ends the turn before any envelope is recorded.
+    // The schema request only calls a tool, which is not run, so the
+    // unconstrained answer is kept.
     for (prompt, max_rounds, requests) in [("Answer now", 1, 2), ("Use a tool", 2, 3)] {
         let mut request = envelope_request(prompt, CodergenRuntimeMode::agent());
         request.metadata.insert(
@@ -789,4 +789,58 @@ fn native_agent_node_keeps_its_answer_when_the_schema_request_only_calls_a_tool(
         event.payload.get("category") == Some(&json!("tool_execution"))
             && event.payload["tool_event"]["id"] == json!("schema-glob")
     }));
+}
+
+#[test]
+fn native_agent_node_steered_while_asked_for_the_envelope_sends_no_further_request() {
+    let project_path = std::env::temp_dir().to_string_lossy().to_string();
+    let conversation = "native-envelope-steered";
+    let (client, adapter) = Scripted::client(move |request| {
+        if request.response_format.is_some() {
+            // Steering arrives while the envelope is being asked for.
+            assert!(RustLlmAgentTurnBackend::new(Client::new()).send_message(
+                &project_path,
+                conversation,
+                "note-1",
+                "Also check the docs."
+            ));
+            text(r#"{"outcome":"success"}"#)
+        } else {
+            (
+                String::new(),
+                vec![call("glob-1", "glob", json!({"pattern": "*.none"}))],
+            )
+        }
+    });
+    let mut backend = RustLlmCodergenBackend::new(client);
+    let mut request = envelope_request("Use a tool", CodergenRuntimeMode::agent());
+    request.metadata.extend([
+        (
+            "spark.execution.settings".to_string(),
+            json!({"configuration": {"agents": {"max_tool_rounds_per_input": 1}}}),
+        ),
+        (
+            "spark.runtime.conversation_id".to_string(),
+            json!(conversation),
+        ),
+    ]);
+
+    let output = backend.run(request).expect("node output");
+
+    // The tool round, then the single envelope request; the steering is
+    // not read, so no request follows it.
+    let requests = adapter.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(schema_of(&requests[1]), Some(envelope_schema()));
+    assert_eq!(response_text(&output.response), r#"{"outcome":"success"}"#);
+    let not_delivered = output
+        .events
+        .iter()
+        .filter(|event| event.payload.get("kind") == Some(&json!("user_message_not_delivered")))
+        .collect::<Vec<_>>();
+    assert_eq!(not_delivered.len(), 1, "{:?}", output.events);
+    assert_eq!(
+        not_delivered[0].payload["session_event"]["data"]["item_id"],
+        json!("note-1")
+    );
 }

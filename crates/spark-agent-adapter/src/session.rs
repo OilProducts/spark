@@ -591,121 +591,49 @@ impl Session {
             self.drain_steering_queue();
 
             let mut round_count = 0;
-            // Set when the final answer is asked for under the answer schema:
-            // once the last permitted tool round is over, or again after an
-            // unconstrained answer, which then stays last in history until a
-            // usable schema answer replaces it.
-            let mut structured = false;
-            let mut reasking = false;
+            let mut round_limit_reached = false;
+            let mut plan_submitted = false;
             loop {
-                // Asking a final answer again under the schema is not another
-                // round, so a round limit never discards that answer.
-                if structured {
-                    if self.abort_requested() {
-                        self.close_for_abort();
-                        return Ok(());
-                    }
-                } else if self.interaction.final_answer_schema.is_some()
+                // At the round limit a schema-bound answer is still asked for
+                // once, after the loop.
+                if self.interaction.final_answer_schema.is_some()
                     && self.config.max_tool_rounds_per_input > 0
                     && round_count >= self.config.max_tool_rounds_per_input
                     && !(self.config.max_turns > 0
                         && self.history.len() >= self.config.max_turns as usize)
                     && !self.abort_requested()
                 {
-                    structured = true;
-                } else if self.limit_reached_before_model_request(round_count) {
+                    round_limit_reached = true;
+                    break;
+                }
+                if self.limit_reached_before_model_request(round_count) {
                     return Ok(());
                 }
 
-                let mut request = self.build_request(system_prompt.clone());
-                if structured {
-                    request.response_format =
-                        self.interaction
-                            .final_answer_schema
-                            .clone()
-                            .map(
-                                |json_schema| unified_llm_adapter::ResponseFormat::JsonSchema {
-                                    json_schema,
-                                    strict: false,
-                                },
-                            );
-                }
-                if reasking {
-                    // The answer is asked for again, not continued.
-                    request.messages.pop();
-                }
+                let request = self.build_request(system_prompt.clone());
                 self.check_context_usage(&request);
                 let request_context = ModelRequestContext::from_request(&request);
                 let model_output = match self.model_response(client, request) {
                     Ok(model_output) => model_output,
-                    Err(error) if error.kind != AdapterErrorKind::Abort && reasking => {
-                        // A provider that cannot constrain this request keeps
-                        // the answer it gave; contract repair takes it from there.
-                        self.emit_kind(
-                            EventKind::Warning,
-                            warning_event_payload(&error, Some(&request_context)),
-                        );
-                        break;
-                    }
                     Err(error) => {
                         self.mark_model_request_error(&error, Some(&request_context));
                         return Err(error);
                     }
                 };
                 let stream_error = model_output.stream_error.clone();
-                if let Some(error) = stream_error.as_ref().filter(|_| reasking) {
-                    self.emit_kind(
-                        EventKind::Warning,
-                        warning_event_payload(error, Some(&request_context)),
-                    );
-                    break;
-                }
-                let assistant_turn = self.record_model_response(model_output, structured);
+                let assistant_turn = self.record_model_response(model_output, false);
                 if let Some(error) = stream_error {
                     self.mark_model_request_error(&error, Some(&request_context));
                     return Err(error);
                 }
-                if reasking {
-                    // Only a usable schema answer replaces the one it re-asks;
-                    // otherwise that answer is kept for contract repair.
-                    let usable = assistant_turn.tool_calls.is_empty()
-                        && !assistant_turn.content.text().trim().is_empty();
-                    self.history
-                        .remove(self.history.len() - if usable { 2 } else { 1 });
-                    if !usable {
-                        self.emit_kind(
-                            EventKind::Warning,
-                            BTreeMap::from([(
-                                "message".to_string(),
-                                json!("schema-constrained answer was empty or called tools; kept the unconstrained answer"),
-                            )]),
-                        );
-                    }
-                }
                 if self.abort_requested() {
                     self.close_for_abort();
-                    return Ok(());
-                }
-                if reasking {
-                    break;
-                }
-                if structured && !assistant_turn.tool_calls.is_empty() {
-                    // No tool runs past the round limit, so this response is
-                    // dropped and the turn ends without an answer.
-                    self.history.pop();
-                    self.mark_turn_limit(Some(round_count), Some(self.history.len()));
                     return Ok(());
                 }
 
                 if assistant_turn.tool_calls.is_empty() {
                     if self.drain_steering_queue_before_completion() {
                         round_count += 1;
-                        continue;
-                    }
-                    if !structured && self.interaction.final_answer_schema.is_some() {
-                        // The answer is asked for again, constrained to the schema.
-                        structured = true;
-                        reasking = true;
                         continue;
                     }
                     break;
@@ -726,7 +654,7 @@ impl Session {
                     self.close_for_abort();
                     return Ok(());
                 }
-                let plan_submitted = tool_results
+                plan_submitted = tool_results
                     .iter()
                     .any(|result| !result.is_error && plan_calls.contains(&result.tool_call_id));
                 self.history.push(HistoryTurn::ToolResults(
@@ -737,6 +665,18 @@ impl Session {
                 }
                 self.drain_steering_queue();
                 self.maybe_emit_loop_detection_warning();
+            }
+
+            if !plan_submitted && self.interaction.final_answer_schema.is_some() {
+                let answered = self.ask_final_answer_under_schema(client, &system_prompt)?;
+                if self.abort_requested() {
+                    self.close_for_abort();
+                    return Ok(());
+                }
+                if round_limit_reached && !answered {
+                    self.mark_turn_limit(Some(round_count), Some(self.history.len()));
+                    return Ok(());
+                }
             }
 
             self.mark_natural_completion();
@@ -1192,6 +1132,77 @@ impl Session {
             )]),
         );
         true
+    }
+
+    /// Asks once, running no tools and reading no steering, for the final
+    /// answer under the answer schema. Only a usable answer replaces the last
+    /// unconstrained one; otherwise that answer is kept for contract repair.
+    /// Returns whether a usable answer was recorded.
+    fn ask_final_answer_under_schema(
+        &mut self,
+        client: &Client,
+        system_prompt: &str,
+    ) -> Result<bool, AdapterError> {
+        if self.abort_requested() {
+            return Ok(false);
+        }
+        let replaces_answer = matches!(
+            self.history.last(),
+            Some(HistoryTurn::Assistant(turn)) if turn.tool_calls.is_empty()
+        );
+        let mut request = self.build_request(system_prompt);
+        request.response_format = self
+            .interaction
+            .final_answer_schema
+            .clone()
+            .map(
+                |json_schema| unified_llm_adapter::ResponseFormat::JsonSchema {
+                    json_schema,
+                    strict: false,
+                },
+            );
+        if replaces_answer {
+            request.messages.pop();
+        }
+        self.check_context_usage(&request);
+        let request_context = ModelRequestContext::from_request(&request);
+        let model_output = match self.model_response(client, request) {
+            Ok(model_output) => model_output,
+            Err(error) if error.kind == AdapterErrorKind::Abort => {
+                self.mark_model_request_error(&error, Some(&request_context));
+                return Err(error);
+            }
+            Err(error) => {
+                self.emit_kind(
+                    EventKind::Warning,
+                    warning_event_payload(&error, Some(&request_context)),
+                );
+                return Ok(false);
+            }
+        };
+        if let Some(error) = model_output.stream_error.as_ref() {
+            self.emit_kind(
+                EventKind::Warning,
+                warning_event_payload(error, Some(&request_context)),
+            );
+            return Ok(false);
+        }
+        let assistant_turn = self.record_model_response(model_output, true);
+        let usable = assistant_turn.tool_calls.is_empty()
+            && !assistant_turn.content.text().trim().is_empty();
+        if !usable {
+            self.history.pop();
+            self.emit_kind(
+                EventKind::Warning,
+                BTreeMap::from([(
+                    "message".to_string(),
+                    json!("schema-constrained answer was empty or called tools; kept the unconstrained answer"),
+                )]),
+            );
+        } else if replaces_answer {
+            self.history.remove(self.history.len() - 2);
+        }
+        Ok(usable)
     }
 
     fn limit_reached_before_model_request(&mut self, round_count: u32) -> bool {
