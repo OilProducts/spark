@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::config::SessionConfig;
 use crate::environment::{EnvironmentError, ExecutionEnvironment};
+use crate::events::{EventKind, SessionEvent};
 use crate::history::HistoryTurn;
 use crate::profiles::ProviderProfile;
 use crate::session::{LlmClientHandle, Session, SessionAbortHandle, SessionState};
@@ -310,6 +311,7 @@ struct SubAgentToolRuntimeState {
     parent_config: SessionConfig,
     parent_client_handle: LlmClientHandle,
     parent_abort: SessionAbortHandle,
+    parent_events: crate::session::LiveEvents,
     client: Client,
     active_subagents: BTreeMap<String, SubAgentHandle>,
     active_subagent_workers: BTreeMap<String, SubAgentWorker>,
@@ -324,6 +326,7 @@ impl SubAgentToolRuntime {
                 parent_config: parent_session.config.clone(),
                 parent_client_handle: parent_session.llm_client.clone(),
                 parent_abort: parent_session.abort_handle(),
+                parent_events: parent_session.live_events(),
                 client,
                 active_subagents: std::mem::take(&mut parent_session.active_subagents),
                 active_subagent_workers: std::mem::take(
@@ -347,7 +350,9 @@ impl SubAgentToolRuntime {
             .clone()
     }
 
-    pub fn spawn_agent(&self, arguments: &Value) -> ToolExecutionOutput {
+    /// The child's tool calls show in the parent's events, nested under
+    /// `call_id`, the spawning call.
+    pub fn spawn_agent(&self, arguments: &Value, call_id: &str) -> ToolExecutionOutput {
         let Some(task) = required_string_argument(arguments, "task") else {
             return tool_error("Missing required argument: task");
         };
@@ -392,10 +397,26 @@ impl SubAgentToolRuntime {
             Ok(handle) => handle,
             Err(error) => return tool_error(format!("Failed to spawn child agent: {error}")),
         };
-        let worker_session = match handle.session.as_deref().cloned() {
+        let mut worker_session = match handle.session.as_deref().cloned() {
             Some(session) => session,
             None => return tool_error("Failed to spawn child agent: child session is unavailable"),
         };
+        let parent_events = state.parent_events.clone();
+        let call_id = call_id.to_string();
+        worker_session.set_event_observer(Arc::new(move |event: &SessionEvent| {
+            if matches!(
+                event.kind,
+                EventKind::ToolCallStart | EventKind::ToolCallOutputDelta | EventKind::ToolCallEnd
+            ) {
+                let mut event = event.clone();
+                // A grandchild's call keeps the parent it already nests under.
+                event
+                    .data
+                    .entry("parent_call_id".to_string())
+                    .or_insert_with(|| json!(call_id));
+                parent_events.emit(event);
+            }
+        }));
         let worker = match SubAgentWorker::start(
             worker_session,
             state.client.clone(),

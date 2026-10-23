@@ -692,11 +692,10 @@ fn openai_responses_body(request: &Request) -> Result<Value, AdapterError> {
         body.entry("reasoning".to_string())
             .or_insert_with(|| json!({}))["effort"] = json!(reasoning_effort);
     }
+    // The Responses API takes the format under `text.format`.
     if let Some(response_format) = request.response_format.as_ref() {
-        body.insert(
-            "response_format".to_string(),
-            openai_response_format(response_format),
-        );
+        body.entry("text".to_string()).or_insert_with(|| json!({}))["format"] =
+            openai_response_format(response_format);
     }
 
     let portable_body = Value::Object(body.clone());
@@ -922,11 +921,7 @@ fn openai_response_format(response_format: &ResponseFormat) -> Value {
         ResponseFormat::JsonSchema {
             json_schema,
             strict,
-        } => json!({
-            "type": "json_schema",
-            "json_schema": json_schema,
-            "strict": strict,
-        }),
+        } => openai_json_schema_format(json_schema, *strict),
     }
 }
 fn openai_responses_url(base_url: Option<&str>) -> String {

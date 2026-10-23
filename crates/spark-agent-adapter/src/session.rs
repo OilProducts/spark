@@ -257,6 +257,66 @@ impl PartialEq for SessionEventObserver {
     }
 }
 
+/// How the session answers its interaction tools. Transient wiring, like
+/// the event observer.
+#[derive(Clone, Default)]
+pub(crate) struct SessionInteraction {
+    /// Raises `request_user_input` questions and polls for their answers;
+    /// without one the tool is not offered.
+    pub(crate) questions: Option<crate::codergen::ClarificationHandler>,
+    /// A plan turn: `submit_plan` delivers the plan and ends the turn.
+    pub(crate) plan_mode: bool,
+    /// The JSON Schema a final answer is asked for through structured output.
+    pub(crate) final_answer_schema: Option<Value>,
+}
+
+impl std::fmt::Debug for SessionInteraction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionInteraction")
+            .field("questions", &self.questions.is_some())
+            .field("plan_mode", &self.plan_mode)
+            .field("final_answer_schema", &self.final_answer_schema)
+            .finish()
+    }
+}
+
+impl PartialEq for SessionInteraction {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// Events emitted from outside the session's own flow while it waits on
+/// tools and subagents. Each is observed as it happens and joins the queue,
+/// in that order, ahead of the session's next event.
+#[derive(Clone, Debug, Default)]
+struct LiveQueue(Arc<Mutex<Vec<SessionEvent>>>);
+
+impl PartialEq for LiveQueue {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct LiveEvents {
+    session_id: Uuid,
+    observer: Option<Arc<dyn Fn(&SessionEvent) + Send + Sync>>,
+    queue: LiveQueue,
+}
+
+impl LiveEvents {
+    pub(crate) fn emit(&self, mut event: SessionEvent) {
+        event.session_id.get_or_insert(self.session_id);
+        let mut pending = self.queue.0.lock().expect("live session events");
+        if let Some(observer) = &self.observer {
+            observer(&event);
+        }
+        pending.push(event);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: Uuid,
@@ -285,6 +345,10 @@ pub struct Session {
     pub(crate) active_subagent_workers: BTreeMap<String, SubAgentWorker>,
     #[serde(default, skip)]
     pub(crate) external_steering: Option<SessionSteeringHandle>,
+    #[serde(default, skip)]
+    pub(crate) interaction: SessionInteraction,
+    #[serde(default, skip)]
+    live_queue: LiveQueue,
     #[serde(default)]
     pub system_prompt_snapshot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -406,6 +470,8 @@ impl Session {
             active_subagent_workers: BTreeMap::new(),
             event_observer: SessionEventObserver::default(),
             external_steering: None,
+            interaction: SessionInteraction::default(),
+            live_queue: LiveQueue::default(),
             system_prompt_snapshot,
             pending_question: None,
             abort_signaled: false,
@@ -450,7 +516,7 @@ impl Session {
             model: self.provider_profile.model.clone(),
             messages,
             provider: provider_id(&self.provider_profile),
-            tools: self.provider_profile.tool_definitions(),
+            tools: self.tool_definitions(),
             tool_choice: Some(ToolChoice::auto()),
             reasoning_effort: self.config.reasoning_effort.clone(),
             metadata: self.execution_environment.metadata.clone(),
@@ -459,6 +525,31 @@ impl Session {
             ..Request::default()
         }
         .with_reasoning_settings()
+    }
+
+    fn tool_definitions(&self) -> Vec<unified_llm_adapter::Tool> {
+        let mut tools = self.provider_profile.tool_definitions();
+        if self.interaction.questions.is_some() {
+            tools.push(crate::interaction::request_user_input_tool());
+        }
+        if self.interaction.plan_mode {
+            tools.push(crate::interaction::submit_plan_tool());
+        }
+        tools
+    }
+
+    fn is_interaction_tool(&self, name: &str) -> bool {
+        (name == crate::interaction::REQUEST_USER_INPUT_TOOL
+            && self.interaction.questions.is_some())
+            || (name == crate::interaction::SUBMIT_PLAN_TOOL && self.interaction.plan_mode)
+    }
+
+    pub(crate) fn live_events(&self) -> LiveEvents {
+        LiveEvents {
+            session_id: self.id,
+            observer: self.event_observer.0.clone(),
+            queue: self.live_queue.clone(),
+        }
     }
 
     pub fn context_usage_estimate(&self, request: &Request) -> Option<ContextUsageEstimate> {
@@ -500,7 +591,21 @@ impl Session {
             self.drain_steering_queue();
 
             let mut round_count = 0;
+            let mut round_limit_reached = false;
+            let mut plan_submitted = false;
             loop {
+                // At the round limit a schema-bound answer is still asked for
+                // once, after the loop.
+                if self.interaction.final_answer_schema.is_some()
+                    && self.config.max_tool_rounds_per_input > 0
+                    && round_count >= self.config.max_tool_rounds_per_input
+                    && !(self.config.max_turns > 0
+                        && self.history.len() >= self.config.max_turns as usize)
+                    && !self.abort_requested()
+                {
+                    round_limit_reached = true;
+                    break;
+                }
                 if self.limit_reached_before_model_request(round_count) {
                     return Ok(());
                 }
@@ -516,7 +621,7 @@ impl Session {
                     }
                 };
                 let stream_error = model_output.stream_error.clone();
-                let assistant_turn = self.record_model_response(model_output);
+                let assistant_turn = self.record_model_response(model_output, false);
                 if let Some(error) = stream_error {
                     self.mark_model_request_error(&error, Some(&request_context));
                     return Err(error);
@@ -531,24 +636,47 @@ impl Session {
                         round_count += 1;
                         continue;
                     }
-                    if self.assistant_response_is_open_question(&assistant_turn) {
-                        self.mark_awaiting_input(assistant_turn.text());
-                        return Ok(());
-                    }
                     break;
                 }
 
                 round_count += 1;
+                let plan_calls = assistant_turn
+                    .tool_calls
+                    .iter()
+                    .filter(|call| {
+                        self.interaction.plan_mode
+                            && call.name == crate::interaction::SUBMIT_PLAN_TOOL
+                    })
+                    .map(|call| call.id.clone())
+                    .collect::<Vec<_>>();
                 let tool_results = self.execute_tool_calls(client, assistant_turn.tool_calls);
                 if self.abort_requested() {
                     self.close_for_abort();
                     return Ok(());
                 }
+                plan_submitted = tool_results
+                    .iter()
+                    .any(|result| !result.is_error && plan_calls.contains(&result.tool_call_id));
                 self.history.push(HistoryTurn::ToolResults(
                     crate::history::ToolResultsTurn::new(tool_results),
                 ));
+                if plan_submitted {
+                    break;
+                }
                 self.drain_steering_queue();
                 self.maybe_emit_loop_detection_warning();
+            }
+
+            if !plan_submitted && self.interaction.final_answer_schema.is_some() {
+                let answered = self.ask_final_answer_under_schema(client, &system_prompt)?;
+                if self.abort_requested() {
+                    self.close_for_abort();
+                    return Ok(());
+                }
+                if round_limit_reached && !answered {
+                    self.mark_turn_limit(Some(round_count), Some(self.history.len()));
+                    return Ok(());
+                }
             }
 
             self.mark_natural_completion();
@@ -569,6 +697,9 @@ impl Session {
         if event.session_id.is_none() {
             event.session_id = Some(self.id);
         }
+        let live = self.live_queue.0.clone();
+        let mut pending = live.lock().expect("live session events");
+        self.event_queue.extend(pending.drain(..));
         if let Some(observer) = &self.event_observer.0 {
             observer(&event);
         }
@@ -642,6 +773,8 @@ impl Session {
     }
 
     pub fn next_event(&mut self) -> Option<SessionEvent> {
+        let pending = std::mem::take(&mut *self.live_queue.0.lock().expect("live session events"));
+        self.event_queue.extend(pending);
         self.event_queue.pop_front()
     }
 
@@ -1001,6 +1134,77 @@ impl Session {
         true
     }
 
+    /// Asks once, running no tools and reading no steering, for the final
+    /// answer under the answer schema. Only a usable answer replaces the last
+    /// unconstrained one; otherwise that answer is kept for contract repair.
+    /// Returns whether a usable answer was recorded.
+    fn ask_final_answer_under_schema(
+        &mut self,
+        client: &Client,
+        system_prompt: &str,
+    ) -> Result<bool, AdapterError> {
+        if self.abort_requested() {
+            return Ok(false);
+        }
+        let replaces_answer = matches!(
+            self.history.last(),
+            Some(HistoryTurn::Assistant(turn)) if turn.tool_calls.is_empty()
+        );
+        let mut request = self.build_request(system_prompt);
+        request.response_format = self
+            .interaction
+            .final_answer_schema
+            .clone()
+            .map(
+                |json_schema| unified_llm_adapter::ResponseFormat::JsonSchema {
+                    json_schema,
+                    strict: false,
+                },
+            );
+        if replaces_answer {
+            request.messages.pop();
+        }
+        self.check_context_usage(&request);
+        let request_context = ModelRequestContext::from_request(&request);
+        let model_output = match self.model_response(client, request) {
+            Ok(model_output) => model_output,
+            Err(error) if error.kind == AdapterErrorKind::Abort => {
+                self.mark_model_request_error(&error, Some(&request_context));
+                return Err(error);
+            }
+            Err(error) => {
+                self.emit_kind(
+                    EventKind::Warning,
+                    warning_event_payload(&error, Some(&request_context)),
+                );
+                return Ok(false);
+            }
+        };
+        if let Some(error) = model_output.stream_error.as_ref() {
+            self.emit_kind(
+                EventKind::Warning,
+                warning_event_payload(error, Some(&request_context)),
+            );
+            return Ok(false);
+        }
+        let assistant_turn = self.record_model_response(model_output, true);
+        let usable = assistant_turn.tool_calls.is_empty()
+            && !assistant_turn.content.text().trim().is_empty();
+        if !usable {
+            self.history.pop();
+            self.emit_kind(
+                EventKind::Warning,
+                BTreeMap::from([(
+                    "message".to_string(),
+                    json!("schema-constrained answer was empty or called tools; kept the unconstrained answer"),
+                )]),
+            );
+        } else if replaces_answer {
+            self.history.remove(self.history.len() - 2);
+        }
+        Ok(usable)
+    }
+
     fn limit_reached_before_model_request(&mut self, round_count: u32) -> bool {
         if self.abort_requested() {
             self.close_for_abort();
@@ -1218,12 +1422,27 @@ impl Session {
         })
     }
 
-    fn record_model_response(&mut self, model_output: ModelResponseOutput) -> AssistantTurn {
+    /// A `structured` response that answered through the structured-output
+    /// tool call is recorded as that call's text.
+    fn record_model_response(
+        &mut self,
+        model_output: ModelResponseOutput,
+        structured: bool,
+    ) -> AssistantTurn {
         let response = model_output.response;
-        let response_text = response.text();
+        let mut tool_calls = response.tool_calls();
+        let structured_text = (structured
+            && tool_calls
+                .iter()
+                .any(|call| call.name == unified_llm_adapter::STRUCTURED_OUTPUT_TOOL_NAME))
+        .then(|| {
+            tool_calls.retain(|call| call.name != unified_llm_adapter::STRUCTURED_OUTPUT_TOOL_NAME);
+            unified_llm_adapter::structured_response_text(&response)
+        });
+        let response_text = structured_text.clone().unwrap_or_else(|| response.text());
         let response_id = non_empty_string(response.id.clone());
         let reasoning = response.reasoning();
-        if !model_output.emitted_assistant_events {
+        if !model_output.emitted_assistant_events || structured_text.is_some() {
             self.emit_assistant_text_events(
                 &response_text,
                 reasoning.as_deref(),
@@ -1234,7 +1453,7 @@ impl Session {
         self.emit_usage(&response.usage);
 
         let mut assistant_turn = AssistantTurn::new(response_text);
-        assistant_turn.tool_calls = response.tool_calls();
+        assistant_turn.tool_calls = tool_calls;
         assistant_turn.reasoning = reasoning;
         assistant_turn.usage = Some(response.usage.clone());
         assistant_turn.response_id = response_id;
@@ -1355,12 +1574,13 @@ impl Session {
         client: &Client,
         tool_calls: impl IntoIterator<Item = ToolCall>,
     ) -> Vec<unified_llm_adapter::ToolResult> {
-        let tool_calls = tool_calls.into_iter().collect::<Vec<_>>();
+        let (interaction_calls, tool_calls): (Vec<_>, Vec<_>) = tool_calls
+            .into_iter()
+            .partition(|tool_call| self.is_interaction_tool(&tool_call.name));
         let has_subagent_calls = tool_calls
             .iter()
             .any(|tool_call| is_subagent_tool_name(&tool_call.name));
-        let events = Arc::new(Mutex::new(Vec::<ToolDispatchEvent>::new()));
-        let captured_events = events.clone();
+        let live = self.live_events();
         let queued_steering = Arc::new(Mutex::new(Vec::<SteeringTurn>::new()));
         let captured_steering = queued_steering.clone();
         let queued_follow_ups = Arc::new(Mutex::new(Vec::<UserTurn>::new()));
@@ -1379,7 +1599,7 @@ impl Session {
         });
         let registry = self.provider_profile.registry();
         let subagent_runtime = SubAgentToolRuntime::from_session(self, client.clone());
-        let results = registry.dispatch_many(
+        let mut results = registry.dispatch_many(
             tool_calls,
             ToolDispatchContext {
                 execution_environment: self.execution_environment.clone(),
@@ -1391,20 +1611,22 @@ impl Session {
                 host_controls: ToolHostControls::new(Some(steering_hook), Some(follow_up_hook)),
                 subagent_runtime: Some(subagent_runtime.clone()),
                 abort_signal: Some(self.abort_signal()),
-                event_hook: Some(Arc::new(move |event| {
-                    captured_events
-                        .lock()
-                        .expect("tool dispatch events")
-                        .push(event);
+                event_hook: Some(Arc::new(move |event: ToolDispatchEvent| {
+                    let mut data = event.data;
+                    if data.get("tool_name").and_then(Value::as_str) == Some("spawn_agent") {
+                        data.insert("kind".to_string(), json!("subagent"));
+                    }
+                    live.emit(SessionEvent::new(event.kind, None, data));
                 })),
                 ..ToolDispatchContext::default()
             },
         );
         subagent_runtime.restore_into(self);
-
-        let events = events.lock().expect("tool dispatch events").clone();
-        for event in events {
-            self.emit_kind(event.kind, event.data);
+        for tool_call in interaction_calls {
+            if self.abort_requested() {
+                break;
+            }
+            results.push(self.run_interaction_tool(tool_call));
         }
         if self.abort_requested() {
             return results;
@@ -1427,10 +1649,62 @@ impl Session {
         results
     }
 
-    fn assistant_response_is_open_question(&self, assistant_turn: &AssistantTurn) -> bool {
-        let response_text = assistant_turn.text();
-        let response_text = response_text.trim_end();
-        !response_text.is_empty() && response_text.ends_with('?')
+    fn run_interaction_tool(&mut self, tool_call: ToolCall) -> unified_llm_adapter::ToolResult {
+        let arguments = crate::interaction::arguments(&tool_call);
+        let result = if tool_call.name == crate::interaction::SUBMIT_PLAN_TOOL {
+            crate::interaction::plan(&arguments).map(|plan| {
+                // The plan Claude Code and Codex report as a completed Plan item.
+                self.emit_kind(
+                    EventKind::Other("plan_completed".to_string()),
+                    BTreeMap::from([
+                        ("item_id".to_string(), json!("plan")),
+                        ("text".to_string(), json!(plan)),
+                    ]),
+                );
+                crate::interaction::PLAN_SUBMITTED.to_string()
+            })
+        } else {
+            self.ask_user(&tool_call.id, &arguments)
+        };
+        match result {
+            Ok(text) => unified_llm_adapter::ToolResult::success(tool_call.id, json!(text)),
+            Err(text) => unified_llm_adapter::ToolResult::error(tool_call.id, json!(text)),
+        }
+    }
+
+    /// Raises the questions through the session's handler and waits for
+    /// every answer. A human gate never times out; a stop ends the wait.
+    fn ask_user(&mut self, request_id: &str, arguments: &Value) -> Result<String, String> {
+        let unanswerable =
+            |reason: String| format!("{reason}. {}", crate::interaction::NO_QUESTION_HANDLER);
+        let questions =
+            crate::interaction::normalized_questions(arguments).map_err(unanswerable)?;
+        let handler = self
+            .interaction
+            .questions
+            .clone()
+            .ok_or_else(|| crate::interaction::NO_QUESTION_HANDLER.to_string())?;
+        let mut poll = handler(json!({"questions": questions, "agent_request_id": request_id}))
+            .map_err(unanswerable)?;
+        self.emit_kind(
+            EventKind::Other("request_user_input_requested".to_string()),
+            BTreeMap::from([
+                ("item_id".to_string(), json!(request_id)),
+                (
+                    "request_user_input".to_string(),
+                    json!({"request_id": request_id, "questions": questions}),
+                ),
+            ]),
+        );
+        loop {
+            if self.abort_requested() {
+                return Err("Stopped.".to_string());
+            }
+            if let Some(answers) = poll()? {
+                return Ok(crate::interaction::answer_text(&questions, &answers));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     fn emit_stream_session_events(

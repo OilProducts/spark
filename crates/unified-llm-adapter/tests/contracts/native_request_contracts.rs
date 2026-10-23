@@ -112,16 +112,18 @@ fn openai_complete_request_uses_responses_api_and_native_body_shape() {
     assert_eq!(body["metadata"], json!({"run_id": "run-1"}));
     assert_eq!(body["reasoning"], json!({"effort": "high"}));
     assert_eq!(
-        body["response_format"],
+        body["text"]["format"],
         json!({
             "type": "json_schema",
-            "json_schema": {
+            "name": "response",
+            "schema": {
                 "type": "object",
                 "properties": {"answer": {"type": "string"}},
             },
             "strict": true,
         })
     );
+    assert!(body.get("response_format").is_none());
     assert_eq!(body["parallel_tool_calls"], json!(false));
     assert_eq!(
         body["tools"],
@@ -934,7 +936,7 @@ fn gemini_complete_request_uses_generate_content_endpoint_key_and_native_parts()
             "maxOutputTokens": 512,
             "stopSequences": ["END"],
             "responseMimeType": "application/json",
-            "responseSchema": {
+            "responseJsonSchema": {
                 "type": "object",
                 "properties": {"answer": {"type": "string"}},
             },

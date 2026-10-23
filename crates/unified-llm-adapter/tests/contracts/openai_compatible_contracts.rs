@@ -121,10 +121,13 @@ fn compatible_request_uses_chat_completions_and_active_provider_options_only() {
         json!({
             "type": "json_schema",
             "json_schema": {
-                "type": "object",
-                "properties": {"answer": {"type": "string"}},
+                "name": "response",
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                },
+                "strict": true,
             },
-            "strict": true,
         })
     );
     assert_eq!(

@@ -795,7 +795,8 @@ fn gemini_generation_config_from_request(request: &Request) -> Value {
             }
             ResponseFormat::JsonSchema { json_schema, .. } => {
                 generation_config.insert("responseMimeType".to_string(), json!("application/json"));
-                generation_config.insert("responseSchema".to_string(), json_schema.clone());
+                // JSON Schema proper; `responseSchema` takes only an OpenAPI subset.
+                generation_config.insert("responseJsonSchema".to_string(), json_schema.clone());
             }
         }
     }

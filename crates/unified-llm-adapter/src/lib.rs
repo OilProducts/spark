@@ -92,7 +92,8 @@ pub use retry::{
 pub use structured::{
     generate_object, generate_object_with_policy, generate_object_with_policy_and_hooks,
     parse_structured_output, stream_object, stream_object_with_policy,
-    stream_object_with_policy_and_hooks, GenerateObjectResult, StreamObjectResult,
+    stream_object_with_policy_and_hooks, structured_response_text, GenerateObjectResult,
+    StreamObjectResult, STRUCTURED_OUTPUT_TOOL_NAME,
 };
 pub use timeouts::{
     abort_error, check_abort, timeout_error, AbortController, AbortSignal, AdapterTimeout,

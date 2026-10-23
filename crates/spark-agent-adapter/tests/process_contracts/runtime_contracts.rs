@@ -876,10 +876,10 @@ fn process_input_builds_low_level_request_and_records_text_completion() {
 }
 
 #[test]
-fn process_input_delays_follow_ups_until_natural_completion_and_preserves_history() {
+fn reply_ending_with_a_question_completes_and_runs_queued_follow_ups() {
+    // Only an explicit request_user_input waits on the user.
     let adapter = Arc::new(ScriptedAdapter::with_complete_responses(vec![
         assistant_response("resp-question", "Need more info?", None),
-        assistant_response("resp-answer", "Answered", None),
         assistant_response("resp-follow-up", "Follow-up handled", None),
     ]));
     let client_adapter: Arc<dyn ProviderAdapter> = adapter.clone();
@@ -898,24 +898,10 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
     session.follow_up("Queued follow-up");
     session
         .process_input(&client, "Initial input")
-        .expect("first input");
-
-    assert_eq!(adapter.complete_requests().len(), 1);
-    assert_eq!(session.state, SessionState::AwaitingInput);
-    assert_eq!(session.pending_question.as_deref(), Some("Need more info?"));
-    assert_eq!(session.follow_up_queue.len(), 1);
-    assert_eq!(turn_names(&session.history), ["UserTurn", "AssistantTurn"]);
-    let first_events = drain_events(&mut session);
-    assert!(!first_events
-        .iter()
-        .any(|event| event.kind == EventKind::ProcessingEnd));
-
-    session
-        .process_input(&client, "Yes please")
-        .expect("answer and queued follow-up");
+        .expect("input and queued follow-up");
 
     let calls = adapter.complete_requests();
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 2);
     assert_eq!(
         calls[0].messages,
         vec![Message::system("sys"), Message::user("Initial input")]
@@ -928,15 +914,6 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
         ]
         .concat()
     );
-    assert_eq!(
-        calls[2].messages,
-        [
-            vec![Message::system("sys")],
-            history_to_messages(&session.history[..5])
-        ]
-        .concat()
-    );
-
     assert_eq!(session.state, SessionState::Idle);
     assert!(session.pending_question.is_none());
     assert!(session.follow_up_queue.is_empty());
@@ -955,8 +932,6 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
         [
             "Initial input",
             "Need more info?",
-            "Yes please",
-            "Answered",
             "Queued follow-up",
             "Follow-up handled",
         ]
@@ -984,8 +959,6 @@ fn process_input_delays_follow_ups_until_natural_completion_and_preserves_histor
             EventKind::ProcessingEnd,
         ]
     );
-    assert_eq!(events[0].data["content"], json!("Yes please"));
-    assert_eq!(events[0].data["answer_to"], json!("Need more info?"));
     assert_eq!(events[6].data["content"], json!("Queued follow-up"));
     assert!(events[6].data.get("answer_to").is_none());
 }

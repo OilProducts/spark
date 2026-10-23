@@ -38,12 +38,18 @@ use crate::session::SessionSteeringHandle;
 const BACKEND_NAME: &str = "rust_unified_llm_adapter";
 const PROVIDER_PLACEHOLDERS: &[&str] = &["codex default (config/profile)"];
 
+/// Request metadata naming the native conversation a contract repair continues.
+const NATIVE_RESUME_METADATA_KEY: &str = "spark.runtime.native.session_id";
+
 #[derive(Clone)]
 pub struct RustLlmCodergenBackend {
     client: Client,
     clarification_handler: Option<crate::codergen::ClarificationHandler>,
     cancel_check: Option<crate::codergen::CancelCheck>,
     intervention_broker: Option<CodergenSessionInterventionBroker>,
+    /// The last native attempt's conversation, by session id, which its
+    /// contract repair continues.
+    resume: Option<(String, Vec<HistoryTurn>)>,
 }
 
 impl RustLlmCodergenBackend {
@@ -53,6 +59,7 @@ impl RustLlmCodergenBackend {
             clarification_handler: None,
             cancel_check: None,
             intervention_broker: None,
+            resume: None,
         }
     }
 
@@ -65,6 +72,7 @@ impl RustLlmCodergenBackend {
             clarification_handler: None,
             cancel_check: None,
             intervention_broker: Some(intervention_broker),
+            resume: None,
         }
     }
 }
@@ -105,6 +113,21 @@ impl CodergenBackend for RustLlmCodergenBackend {
 }
 
 impl RustLlmCodergenBackend {
+    /// The conversation a repair attempt continues: the one its request names.
+    fn resumed_history(&mut self, request: &CodergenBackendRequest) -> Vec<HistoryTurn> {
+        let id = metadata_string(&request.metadata, NATIVE_RESUME_METADATA_KEY);
+        match self.resume.take() {
+            Some((resume_id, history)) if Some(&resume_id) == id.as_ref() => history,
+            _ => Vec::new(),
+        }
+    }
+
+    fn keep_for_repair(&mut self, history: Vec<HistoryTurn>) -> BTreeMap<String, Value> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.resume = Some((id.clone(), history));
+        BTreeMap::from([(NATIVE_RESUME_METADATA_KEY.to_string(), json!(id))])
+    }
+
     /// Lets run steering reach this node's agent turn as a live message,
     /// keyed like the turn itself.
     fn register_live_turn(
@@ -191,7 +214,7 @@ impl RustLlmCodergenBackend {
             agent_request,
             turn_event_sink,
             capture_sink,
-            self.clarification_handler.clone(),
+            stop.pausing(self.clarification_handler.clone()),
         );
         if let Some(output) = stop.finish() {
             return Ok(output);
@@ -324,7 +347,7 @@ impl RustLlmCodergenBackend {
         let result = ClaudeCodeBackend::new().run_codergen_turn(
             agent_request,
             turn_event_sink,
-            self.clarification_handler.clone(),
+            stop.pausing(self.clarification_handler.clone()),
         );
         if let Some(output) = stop.finish() {
             return Ok(output);
@@ -438,9 +461,13 @@ impl RustLlmCodergenBackend {
                 ("runtime_mode", Some(request.runtime_mode.mode.as_str())),
             ],
         ));
+        let mut history = self.resumed_history(&request);
+        history.push(HistoryTurn::User(crate::history::UserTurn::new(
+            request.prompt.clone(),
+        )));
         let llm_request = build_llm_request(
             &self.client,
-            vec![Message::user(request.prompt.clone())],
+            crate::history::history_to_messages(&history),
             RequestSelection {
                 provider: normalize_request_provider_selector(&request.provider),
                 model: normalize_model_selector(request.model.as_deref()),
@@ -454,6 +481,12 @@ impl RustLlmCodergenBackend {
         crate::initial_context::capture_if_configured(&request.metadata, &request.prompt)
             .map_err(|source| CodergenError::Artifact(source.to_string()))?;
         let mut llm_request = llm_request;
+        llm_request.request.response_format = status_envelope_schema(&request).map(|json_schema| {
+            unified_llm_adapter::ResponseFormat::JsonSchema {
+                json_schema,
+                strict: false,
+            }
+        });
         let agent_request = codergen_agent_turn_request(&request);
         let controller = unified_llm_adapter::AbortController::new();
         llm_request.request.abort_signal = Some(controller.signal());
@@ -468,9 +501,14 @@ impl RustLlmCodergenBackend {
             return Ok(output);
         }
         let response = result.map_err(codergen_adapter_error)?;
+        let text = unified_llm_adapter::structured_response_text(&response);
+        history.push(HistoryTurn::Assistant(crate::history::AssistantTurn::new(
+            text.clone(),
+        )));
+        let resume_metadata = self.keep_for_repair(history);
 
         Ok(CodergenBackendOutput {
-            response: CodergenBackendResponse::Text(response.text()),
+            response: CodergenBackendResponse::Text(text),
             events: vec![CodergenEvent::new(
                 "rust_llm_adapter_request_completed",
                 BTreeMap::from([
@@ -508,7 +546,7 @@ impl RustLlmCodergenBackend {
                 ]),
             )],
             usage: Some(response.usage),
-            resume_metadata: BTreeMap::new(),
+            resume_metadata,
         })
     }
 
@@ -517,10 +555,15 @@ impl RustLlmCodergenBackend {
         request: CodergenBackendRequest,
         event_sink: Option<CodergenEventSink>,
     ) -> Result<CodergenBackendOutput, CodergenError> {
-        let agent_request = codergen_agent_turn_request(&request);
-        let prompt = agent_request.prompt.clone();
+        let mut agent_request = codergen_agent_turn_request(&request);
+        agent_request.history = self.resumed_history(&request);
+        let mut prompt = agent_request.prompt.clone();
         let mut session = build_agent_session(&self.client, agent_request.clone())
             .map_err(codergen_adapter_error)?;
+        session.interaction.final_answer_schema = status_envelope_schema(&request);
+        if self.clarification_handler.is_some() {
+            prompt.push_str("\n\nInspect available evidence before asking for clarification. Use request_user_input for unresolved questions about the user’s intent that affect the outcome, then continue the same task after the answer.");
+        }
         if let Some(sink) = event_sink {
             // Live prefix contract: emit the same per-event mapping the
             // post-run drain produces, in the same order — including events
@@ -556,6 +599,7 @@ impl RustLlmCodergenBackend {
             session.steering_handle(),
         );
         let stop = NodeStop::watch(&request, &agent_request, self.cancel_check.clone())?;
+        session.interaction.questions = stop.pausing(self.clarification_handler.clone());
         let process_error = session.process_input(&self.client, prompt).err();
         session.close();
         if let Some(output) = stop.finish() {
@@ -567,12 +611,10 @@ impl RustLlmCodergenBackend {
         {
             return Err(CodergenError::Artifact(error.message.clone()));
         }
-        Ok(codergen_output_from_session(
-            request,
-            &mut session,
-            initial_history_len,
-            process_error,
-        ))
+        let mut output =
+            codergen_output_from_session(request, &mut session, initial_history_len, process_error);
+        output.resume_metadata = self.keep_for_repair(std::mem::take(&mut session.history));
+        Ok(output)
     }
 }
 
@@ -584,6 +626,7 @@ const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 /// interrupt, so one watcher serves every backend.
 struct NodeStop {
     reason: std::sync::Arc<std::sync::Mutex<Option<Outcome>>>,
+    waits: std::sync::Arc<std::sync::Mutex<HumanWaits>>,
     done: std::sync::Arc<std::sync::atomic::AtomicBool>,
     watcher: Option<std::thread::JoinHandle<()>>,
 }
@@ -596,6 +639,7 @@ impl NodeStop {
     ) -> Result<Self, CodergenError> {
         let reason = std::sync::Arc::new(std::sync::Mutex::new(None));
         let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waits = std::sync::Arc::default();
         let timeout = request.timeout_seconds;
         let deadline = timeout
             .map(|seconds| {
@@ -613,6 +657,7 @@ impl NodeStop {
         if cancel_check.is_none() && deadline.is_none() {
             return Ok(Self {
                 reason,
+                waits,
                 done,
                 watcher: None,
             });
@@ -622,7 +667,7 @@ impl NodeStop {
             agent_request.conversation_id.clone(),
         );
         let watcher = std::thread::spawn({
-            let (reason, done) = (reason.clone(), done.clone());
+            let (reason, waits, done) = (reason.clone(), waits.clone(), done.clone());
             move || {
                 let mut stopped_at = None;
                 while !done.load(std::sync::atomic::Ordering::SeqCst) {
@@ -637,7 +682,14 @@ impl NodeStop {
                                 failure_kind: Some(FailureKind::Runtime),
                                 ..Outcome::new(OutcomeStatus::Fail)
                             });
-                        } else if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                        } else if deadline.is_some_and(|at| {
+                            // Time spent waiting on a human answer does not count.
+                            let waits = waits.lock().unwrap();
+                            waits.open == 0
+                                && at
+                                    .checked_add(waits.total)
+                                    .is_some_and(|at| std::time::Instant::now() >= at)
+                        }) {
                             *slot = Some(Outcome {
                                 status: OutcomeStatus::Fail,
                                 failure_reason: format!(
@@ -668,8 +720,31 @@ impl NodeStop {
         });
         Ok(Self {
             reason,
+            waits,
             done,
             watcher: Some(watcher),
+        })
+    }
+
+    /// The node's clarification handler, with its timeout paused while a
+    /// question waits for its answer: a human gate never times out.
+    fn pausing(
+        &self,
+        handler: Option<crate::codergen::ClarificationHandler>,
+    ) -> Option<crate::codergen::ClarificationHandler> {
+        let waits = self.waits.clone();
+        handler.map(|handler| {
+            std::sync::Arc::new(move |params| {
+                let mut poll = handler(params)?;
+                let mut wait = Some(HumanWait::open(waits.clone()));
+                Ok(Box::new(move || {
+                    let answer = poll();
+                    if !matches!(answer, Ok(None)) {
+                        drop(wait.take());
+                    }
+                    answer
+                }) as crate::codergen::ClarificationPoll)
+            }) as crate::codergen::ClarificationHandler
         })
     }
 
@@ -687,6 +762,49 @@ impl NodeStop {
             resume_metadata: BTreeMap::new(),
         })
     }
+}
+
+/// A node's open human waits and the time it has spent in them.
+#[derive(Default)]
+struct HumanWaits {
+    open: usize,
+    since: Option<std::time::Instant>,
+    total: std::time::Duration,
+}
+
+/// One question waiting for its answer, closed when answered or dropped.
+struct HumanWait(std::sync::Arc<std::sync::Mutex<HumanWaits>>);
+
+impl HumanWait {
+    fn open(waits: std::sync::Arc<std::sync::Mutex<HumanWaits>>) -> Self {
+        let mut state = waits.lock().unwrap();
+        if state.open == 0 {
+            state.since = Some(std::time::Instant::now());
+        }
+        state.open += 1;
+        drop(state);
+        Self(waits)
+    }
+}
+
+impl Drop for HumanWait {
+    fn drop(&mut self) {
+        let mut state = self.0.lock().unwrap();
+        state.open -= 1;
+        if state.open == 0 {
+            if let Some(since) = state.since.take() {
+                state.total += since.elapsed();
+            }
+        }
+    }
+}
+
+fn status_envelope_schema(request: &CodergenBackendRequest) -> Option<Value> {
+    request
+        .metadata
+        .get(crate::codergen::STATUS_ENVELOPE_SCHEMA_METADATA_KEY)
+        .filter(|schema| schema.is_object())
+        .cloned()
 }
 
 fn codergen_agent_turn_request(request: &CodergenBackendRequest) -> AgentTurnRequest {
@@ -1265,10 +1383,14 @@ type NativeTurnKey = (String, String);
 
 /// A native turn running in this process, reachable by
 /// `(project_path, conversation_id)` like a Claude or Codex turn.
+type AnswerSender = std::sync::mpsc::Sender<BTreeMap<String, String>>;
+
 struct NativeTurn {
     steering: Option<SessionSteeringHandle>,
     abort: Box<dyn Fn() + Send + Sync>,
     stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The turn's unanswered chat questions, by request id.
+    questions: std::sync::Arc<std::sync::Mutex<BTreeMap<String, AnswerSender>>>,
 }
 
 impl NativeTurn {
@@ -1291,6 +1413,7 @@ impl NativeTurn {
             steering,
             abort: Box::new(abort),
             stopped: Default::default(),
+            questions: Default::default(),
         });
         let mut turns = Self::registry().lock().unwrap();
         turns.retain(|_, turn| turn.strong_count() > 0);
@@ -1314,6 +1437,32 @@ impl NativeTurn {
             .unwrap()
             .get(&(project_path.to_string(), conversation_id.to_string()))
             .and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Chat questions wait for the answer the request-user-input route
+    /// delivers to this turn.
+    fn question_handler(&self) -> crate::codergen::ClarificationHandler {
+        let questions = self.questions.clone();
+        std::sync::Arc::new(move |params: Value| {
+            let request_id = params["agent_request_id"]
+                .as_str()
+                .ok_or("question request has no id")?
+                .to_string();
+            let (sender, answers) = std::sync::mpsc::channel();
+            questions.lock().unwrap().insert(request_id, sender);
+            Ok(Box::new(move || match answers.try_recv() {
+                Ok(answers) => Ok(Some(answers)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err("The question is no longer pending.".to_string())
+                }
+            }) as crate::codergen::ClarificationPoll)
+        })
+    }
+
+    fn answer(&self, request_id: &str, answers: &BTreeMap<String, String>) -> bool {
+        let sender = self.questions.lock().unwrap().remove(request_id);
+        sender.is_some_and(|sender| sender.send(answers.clone()).is_ok())
     }
 
     fn stop(&self) -> bool {
@@ -1452,6 +1601,25 @@ impl AgentTurnBackend for RustLlmAgentTurnBackend {
         {
             return Ok(ClaudeCodeBackend::new().answer_request_user_input(request));
         }
+        if NativeTurn::find(&request.project_path, &request.conversation_id)
+            .is_some_and(|turn| turn.answer(&request.request_id, &request.answers))
+        {
+            let mut delivered = TurnStreamEvent::new(TurnStreamEventKind::Other(
+                "request_user_input_answer_delivered".to_string(),
+            ))
+            .expect("answer delivery is a valid turn event");
+            delivered.source = TurnStreamSource {
+                backend: Some(BACKEND_NAME.to_string()),
+                item_id: Some(request.request_id.clone()),
+                raw_kind: Some("request_user_input_answer_delivered".to_string()),
+                ..TurnStreamSource::default()
+            };
+            delivered.status = Some("delivered".to_string());
+            return Ok(AgentTurnOutput {
+                events: vec![delivered],
+                ..AgentTurnOutput::default()
+            });
+        }
         let continuation = match request_user_input_answer_continuation(&request) {
             Ok(continuation) => continuation,
             Err(failure) => {
@@ -1534,6 +1702,8 @@ impl RustLlmAgentTurnBackend {
     ) -> Result<AgentTurnOutput, AgentError> {
         let turn = NativeTurn::register_session(key, &mut session);
         if let Some(event_sink) = event_sink.clone() {
+            // Only a streamed turn shows its questions to someone who can answer.
+            session.interaction.questions = Some(turn.question_handler());
             // Mirror the codex live+batch shape: stream each session event to
             // the sink as it is emitted, while the drained queue still feeds
             // the durable output batch afterwards.
@@ -1963,8 +2133,28 @@ fn build_agent_session_for_source(
     )
     .with_metadata(llm_request.request.metadata);
 
+    let plan_mode = metadata_chat_mode
+        .as_deref()
+        .is_some_and(|mode| mode.eq_ignore_ascii_case("plan"));
+    if plan_mode {
+        let mut registry = profile.registry();
+        for name in registry.names() {
+            if !crate::interaction::READ_ONLY_TOOLS.contains(&name.as_str()) {
+                registry.unregister(&name);
+            }
+        }
+        profile.set_tool_registry(registry);
+    }
     let mut session = Session::new(profile, execution_environment, config);
     session.history = history;
+    if plan_mode {
+        session.interaction.plan_mode = true;
+        session.system_prompt_snapshot = format!(
+            "{}\n\n{}",
+            session.system_prompt_snapshot,
+            crate::interaction::PLAN_INSTRUCTIONS
+        );
+    }
     if let Some(instructions) = instructions {
         session.system_prompt_snapshot = format!(
             "{}\n\n<spark_instructions>\n{instructions}\n</spark_instructions>",
