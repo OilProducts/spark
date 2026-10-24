@@ -23,7 +23,7 @@ use crate::flow_sources::{validate_flow_definition, FlowManifest, FlowRoots, Flo
 
 pub const FLOW_FILE: &str = "flow.md";
 /// OKF-reserved names the loader ignores.
-const RESERVED_FILES: [&str; 2] = ["index.md", "log.md"];
+pub const RESERVED_FILES: [&str; 2] = ["index.md", "log.md"];
 
 // ponytail: one process-wide lock keeps loads from seeing a half-applied save;
 // per-directory locks if save throughput ever matters.

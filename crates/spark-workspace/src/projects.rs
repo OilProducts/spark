@@ -1,11 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use spark_common::paths::{normalize_path, resolve_runtime_workspace_path};
-use spark_common::project::normalize_project_path;
+use spark_common::project::{normalize_project_path, run_git};
 use spark_common::settings::SparkSettings;
 use spark_storage::{DeletedProjectRecord, ProjectRecord, ProjectRecordUpdate, ProjectRegistry};
 
@@ -189,8 +188,12 @@ impl WorkspaceProjectService {
                 .map(str::to_string)
                 .unwrap_or_else(|| normalized_path.to_string_lossy().into_owned()),
             directory: normalized_path.to_string_lossy().into_owned(),
-            branch: git_output(&runtime_path, &["rev-parse", "--abbrev-ref", "HEAD"]),
-            commit: git_output(&runtime_path, &["rev-parse", "HEAD"]),
+            branch: run_git(&runtime_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+                .ok()
+                .filter(|text| !text.is_empty()),
+            commit: run_git(&runtime_path, &["rev-parse", "HEAD"])
+                .ok()
+                .filter(|text| !text.is_empty()),
         })
     }
 
@@ -384,20 +387,6 @@ fn normalize_project_directory(directory: &str) -> WorkspaceResult<PathBuf> {
         ));
     }
     normalize_path(expanded).map_err(|error| WorkspaceError::Validation(error.to_string()))
-}
-
-fn git_output(directory: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(directory)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!text.is_empty()).then_some(text)
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {

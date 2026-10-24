@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use attractor_core::{CheckpointState, ContextMap, FlowDefinition, RunManifest};
 use serde::{Deserialize, Serialize};
@@ -78,6 +79,9 @@ pub struct ContinueRunRequest {
     /// The new run's manifest (`artifacts/flow/files.json`).
     #[serde(default)]
     pub flow_files: Option<attractor_dsl::FlowManifest>,
+    /// The project the new run's flows resolve through; none keeps the source's.
+    #[serde(default)]
+    pub project_path: Option<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
@@ -265,6 +269,17 @@ impl RuntimeControls {
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| source_record.flow_name.clone());
+        let project_path = request.project_path.as_deref().and_then(non_empty_string);
+        // Children resolve by name through the new run's flow and project.
+        context.insert("internal.flow_name".to_string(), json!(flow_name.clone()));
+        if let Some(project) = project_path.as_deref() {
+            context.insert(
+                "internal.org_root".to_string(),
+                json!(spark_common::project::org_dir(Path::new(project))
+                    .to_string_lossy()
+                    .to_string()),
+            );
+        }
         let mut record = source_record.clone();
         record.run_id = new_run_id.clone();
         record.flow_name = flow_name.clone();
@@ -273,6 +288,9 @@ impl RuntimeControls {
         record.outcome_reason_code = None;
         record.outcome_reason_message = None;
         record.working_directory = working_directory.clone();
+        if let Some(project) = project_path {
+            record.project_path = project;
+        }
         if record.project_path.trim().is_empty() {
             record.project_path = working_directory.clone();
         }

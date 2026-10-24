@@ -496,6 +496,7 @@ impl RuntimeControlService {
             flow_source: resolved_flow.flow_source,
             flow_definition_json: resolved_flow.flow_definition_json,
             flow_files: resolved_flow.flow_files,
+            project_path: request.project_path,
             working_directory: request.working_directory,
             model: request.model,
             llm_provider: request.llm_provider,
@@ -1548,7 +1549,12 @@ impl AttractorApiService {
             .and_then(|()| {
                 commit_org_paths(
                     &org,
-                    &[resolved.path.clone()],
+                    &[resolved
+                        .path
+                        .strip_prefix(&org)
+                        .unwrap_or(&resolved.path)
+                        .to_string_lossy()
+                        .to_string()],
                     &format!("Delete {} in the flow editor", resolved.name),
                 )
             });
@@ -1756,7 +1762,10 @@ impl AttractorApiService {
         let mut record = RunRecord::new(&run_id, &working_directory);
         record.flow_name = flow_name.clone();
         record.working_directory = working_directory.clone();
-        record.project_path = working_directory.clone();
+        // The project the flows resolve through; a run's checkout may sit elsewhere.
+        record.project_path = trimmed_option(request.project_path.as_deref())
+            .map(|path| absolutize_path(&path))
+            .unwrap_or_else(|| working_directory.clone());
         record.model = display_model.clone();
         record.provider = selected_provider.clone();
         record.llm_provider = selected_provider.clone();
@@ -2268,7 +2277,7 @@ impl AttractorApiService {
     pub fn continue_pipeline_route(
         &self,
         pipeline_id: &str,
-        request: ContinuePipelineRequest,
+        mut request: ContinuePipelineRequest,
     ) -> RuntimeRouteResponse {
         let store = RunStore::for_settings(&self.settings);
         let source = match store.read_run_bundle(pipeline_id) {
@@ -2285,7 +2294,7 @@ impl AttractorApiService {
         }
         let source_record = source.record.as_ref();
         let mode = request.flow_source_mode.trim().to_lowercase();
-        let (flow_name, flow_content, flow_files) = if mode == "snapshot" {
+        let (flow_name, flow_content, flow_files, project_path) = if mode == "snapshot" {
             let flow_name = source_record
                 .map(|record| record.flow_name.clone())
                 .unwrap_or_default();
@@ -2301,7 +2310,7 @@ impl AttractorApiService {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
             match store.read_graph_source(&source.paths) {
-                Ok(Some(source)) => (flow_name, source, flow_files),
+                Ok(Some(source)) => (flow_name, source, flow_files, None),
                 Ok(None) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2330,7 +2339,7 @@ impl AttractorApiService {
                 },
             );
             match loaded {
-                Ok((content, files)) => (flow_name, content, Some(files)),
+                Ok((content, files)) => (flow_name, content, Some(files), project_path),
                 Err(error) => {
                     return RuntimeRouteResponse::json(
                         200,
@@ -2351,6 +2360,8 @@ impl AttractorApiService {
             Ok(flow) => flow,
             Err(error) => return flow_definition_validation_response(error),
         };
+        // Snapshot keeps the source's roots; flow_name moves to the resolved project.
+        request.project_path = project_path;
         let response = RuntimeControlService::new(self.observed_store()).continue_pipeline(
             pipeline_id,
             request,
@@ -3179,20 +3190,31 @@ fn save_flow_request(
             json!({"detail": format!("{name} is not a flow directory: it holds other flows or sits inside one.")}),
         );
     }
-    let mut written = Vec::new();
     if !flow_path.join(FLOW_FILE).is_file() {
         if let Ok(Some(bundled)) = roots.find_flow(&name) {
-            match copy_flow_files(&bundled.path, &flow_path) {
-                Ok(copied) => written.extend(copied),
-                Err(error) => return RuntimeRouteResponse::json(500, json!({"detail": error})),
+            if let Err(error) = copy_flow_files(&bundled.path, &flow_path) {
+                return RuntimeRouteResponse::json(500, json!({"detail": error}));
             }
         }
     }
-    match write_flow_dir(&flow_path, flow) {
-        Ok(changed) => written.extend(changed.into_iter().map(|file| flow_path.join(file))),
-        Err(error) => return flow_source_error_response(error),
+    if let Err(error) = write_flow_dir(&flow_path, flow) {
+        return flow_source_error_response(error);
     }
-    if let Err(error) = commit_org_paths(&org, &written, &format!("Edit {name} in the flow editor"))
+    // The whole flow directory, so a retry records what a failed commit left
+    // behind; the reserved files are not the editor's to commit.
+    let dir = flow_path
+        .strip_prefix(&org)
+        .unwrap_or(&flow_path)
+        .to_string_lossy()
+        .to_string();
+    let mut pathspecs = vec![dir.clone()];
+    pathspecs.extend(
+        attractor_dsl::RESERVED_FILES
+            .iter()
+            .map(|file| format!(":(exclude){dir}/{file}")),
+    );
+    if let Err(error) =
+        commit_org_paths(&org, &pathspecs, &format!("Edit {name} in the flow editor"))
     {
         return RuntimeRouteResponse::json(500, json!({"detail": error}));
     }
@@ -3205,50 +3227,39 @@ fn save_flow_request(
     )
 }
 
-/// Copies a flow directory's files into `target`; returns the copied paths.
-fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<Vec<PathBuf>, String> {
+/// Copies a flow directory's files into `target`.
+fn copy_flow_files(source: &Path, target: &Path) -> std::result::Result<(), String> {
     let texts =
         attractor_dsl::read_flow_dir_texts(source).map_err(|error| error.detail().to_string())?;
     fs::create_dir_all(target).map_err(|error| error.to_string())?;
-    texts
-        .into_iter()
-        .map(|(file, text)| {
-            let path = target.join(file);
-            fs::write(&path, text).map_err(|error| error.to_string())?;
-            Ok(path)
-        })
-        .collect()
+    texts.into_iter().try_for_each(|(file, text)| {
+        fs::write(target.join(file), text).map_err(|error| error.to_string())
+    })
 }
 
-/// Commits `paths` (written or deleted) in the org repo, and nothing else,
-/// under the repo's normal git identity.
+/// Commits the changes under `pathspecs` (relative to the org repo), and
+/// nothing else, under the repo's normal git identity. A failed commit
+/// leaves them unstaged, so a retry records them.
 fn commit_org_paths(
     org: &Path,
-    paths: &[PathBuf],
+    pathspecs: &[String],
     message: &str,
 ) -> std::result::Result<(), String> {
-    let paths = paths
-        .iter()
-        .map(|path| {
-            path.strip_prefix(org)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string()
-        })
-        .collect::<Vec<_>>();
     let run_git = spark_common::project::run_git;
+    let pathspecs = pathspecs.iter().map(String::as_str);
+    let with = |args: &[&'static str]| -> Vec<&str> {
+        args.iter().copied().chain(pathspecs.clone()).collect()
+    };
     // Nothing to record, e.g. deleting a copy that was never committed.
-    let mut status = vec!["status", "--porcelain", "--"];
-    status.extend(paths.iter().map(String::as_str));
-    if paths.is_empty() || run_git(org, &status)?.is_empty() {
+    if run_git(org, &with(&["status", "--porcelain", "--"]))?.is_empty() {
         return Ok(());
     }
-    let mut add = vec!["add", "-A", "--"];
-    add.extend(paths.iter().map(String::as_str));
-    run_git(org, &add)?;
+    run_git(org, &with(&["add", "-A", "--"]))?;
     let mut commit = vec!["commit", "-q", "-m", message, "--"];
-    commit.extend(paths.iter().map(String::as_str));
-    run_git(org, &commit).map(|_| ())
+    commit.extend(pathspecs.clone());
+    run_git(org, &commit).map(|_| ()).inspect_err(|_| {
+        let _ = run_git(org, &with(&["reset", "-q", "--"]));
+    })
 }
 
 fn flow_save_definition_error_response(error: FlowSourceError) -> RuntimeRouteResponse {

@@ -360,6 +360,38 @@ edges:
 }
 
 #[test]
+fn a_failed_editor_commit_is_reported_and_recorded_by_the_retry() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let project = temp.path().join("project");
+    let org = init_org(&project);
+    let service = AttractorApiService::new(settings(temp.path()));
+    fs::write(org.join("notes.md"), "draft\n").expect("notes");
+    let hook = org.join(".git/hooks/pre-commit");
+    fs::create_dir_all(hook.parent().expect("hooks")).expect("hooks dir");
+    fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("hook");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
+
+    let failed = service.save_flow(save("work", VALID_FLOW, &project));
+    assert_eq!(failed.status_code, 500, "{}", failed.body);
+    // Nothing is left staged.
+    assert_eq!(git(&org, &["diff", "--cached", "--name-only"]), "");
+
+    // Retrying the identical save records the files the failure left behind.
+    fs::remove_file(&hook).expect("unhook");
+    let retried = service.save_flow(save("work", VALID_FLOW, &project));
+    assert_eq!(retried.status_code, 200, "{}", retried.body);
+    assert_eq!(
+        last_commit(&org),
+        "Edit work in the flow editor\nflows/work/done.md\nflows/work/flow.md\nflows/work/start.md\nflows/work/task.md"
+    );
+    assert_eq!(git(&org, &["status", "--porcelain"]), "?? notes.md");
+}
+
+#[test]
 fn saving_a_bundled_flow_creates_a_project_copy_and_deleting_it_reverts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let settings = settings(temp.path());

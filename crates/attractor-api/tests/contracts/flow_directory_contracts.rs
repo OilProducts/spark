@@ -847,3 +847,126 @@ fn run_manifests_hash_each_file_by_layer_with_org_state_and_spark_version() {
     .expect("json");
     assert_eq!(recorded, manifest);
 }
+
+#[test]
+fn runs_keep_their_project_apart_from_the_checkout_and_continue_through_it() {
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    let parent = |child: &str| {
+        parse_flow_definition(&format!(
+            "id: parent\nnodes:\n  start: {{kind: start}}\n  run:\n    kind: subflow\n    config: {{kind: subflow, flow_ref: {child}}}\n    manager: {{max_cycles: 1, child_autostart: true}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: run}}\n  - {{from: run, to: done}}\n"
+        ))
+        .expect("parent")
+    };
+    let child = |title: &str| {
+        parse_flow_definition(&format!(
+            "id: child\ntitle: {title}\nnodes:\n  start: {{kind: start}}\n  done: {{kind: exit}}\nedges:\n  - {{from: start, to: done}}\n"
+        ))
+        .expect("child")
+    };
+    // Org-only flows in two projects; runs execute in a separate checkout.
+    let project_a = temp.path().join("a");
+    let project_b = temp.path().join("b");
+    let org_a = spark_common::project::org_dir(&project_a).join("flows");
+    let org_b = spark_common::project::org_dir(&project_b).join("flows");
+    write_flow_dir(&org_a.join("old/parent"), &parent("child")).expect("a parent");
+    write_flow_dir(&org_a.join("old/child"), &child("A Child")).expect("a child");
+    write_flow_dir(&org_b.join("new/parent"), &parent("child")).expect("b parent");
+    write_flow_dir(&org_b.join("new/child"), &child("B Child")).expect("b child");
+    let checkout = temp.path().join("checkout");
+    let service = AttractorApiService::new(settings.clone());
+    let store = attractor_runtime::RunStore::for_settings(&settings);
+    let path = |path: &Path| path.to_string_lossy().into_owned();
+
+    let started = service.start_pipeline(attractor_api::PipelineStartRequest {
+        wait: Some(true),
+        run_id: Some("source".to_string()),
+        flow_name: Some("old/parent".to_string()),
+        working_directory: path(&checkout),
+        project_path: Some(path(&project_a)),
+        ..Default::default()
+    });
+    assert_eq!(started.body["status"], "started", "{}", started.body);
+    let listed = service.list_runs_for_project(Some(&path(&project_a)));
+    let listed = listed.body["runs"].as_array().expect("runs");
+    assert!(
+        listed.iter().any(|run| run["run_id"] == "source"),
+        "{listed:?}"
+    );
+
+    let finished_child = |run_id: &str| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let child = store
+                .list_run_records()
+                .expect("runs")
+                .into_iter()
+                .find(|record| {
+                    record.parent_run_id.as_deref() == Some(run_id) && record.status == "completed"
+                });
+            if let Some(child) = child {
+                return child;
+            }
+            assert!(Instant::now() < deadline, "{run_id}: no completed child");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let continue_run = |flow_name: &str, project: Option<&Path>| {
+        let response = service.continue_pipeline_route(
+            "source",
+            attractor_api::ContinuePipelineRequest {
+                start_node: "run".to_string(),
+                flow_source_mode: "flow_name".to_string(),
+                flow_name: Some(flow_name.to_string()),
+                project_path: project.map(path),
+                ..Default::default()
+            },
+        );
+        assert_eq!(response.body["status"], "started", "{}", response.body);
+        response.body["run_id"]
+            .as_str()
+            .expect("run id")
+            .to_string()
+    };
+
+    // With no project in the request, the continuation uses the run's own.
+    let same = continue_run("old/parent", None);
+    assert_eq!(finished_child(&same).flow_name, "A Child");
+
+    // Another project's flow: the run and its children move to that project.
+    let moved = continue_run("new/parent", Some(&project_b));
+    let child_run = finished_child(&moved);
+    assert_eq!(child_run.flow_name, "B Child");
+    let record = store
+        .read_run_meta(&moved)
+        .expect("read")
+        .and_then(|bundle| bundle.record)
+        .expect("record");
+    assert_eq!(record.project_path, path(&project_b));
+    assert_eq!(record.working_directory, path(&checkout));
+    let context = attractor_runtime::RuntimeControls::new(store.clone())
+        .get_context(&moved)
+        .expect("context");
+    assert_eq!(context["internal.flow_name"], "new/parent");
+    assert_eq!(
+        context["internal.org_root"],
+        json!(path(&spark_common::project::org_dir(&project_b)))
+    );
+    let child_bundle = store
+        .read_run_bundle(&child_run.run_id)
+        .expect("read")
+        .expect("child bundle");
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(child_bundle.paths.artifacts_dir().join("flow/files.json")).expect("files.json"),
+    )
+    .expect("manifest");
+    assert!(
+        manifest["files"]
+            .as_object()
+            .expect("files")
+            .contains_key("org/flows/new/child/flow.md"),
+        "{manifest}"
+    );
+}
