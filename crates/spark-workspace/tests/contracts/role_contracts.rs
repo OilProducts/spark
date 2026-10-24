@@ -573,3 +573,33 @@ fn a_finishing_run_trims_the_roster_to_fifty_finished_and_keeps_in_flight_runs()
     // run-other stays in flight, so the role keeps working after the turn.
     harness.agent.release(1);
 }
+
+#[test]
+fn a_role_named_with_an_underscore_starts_talks_and_resumes() {
+    let harness = Harness::new();
+    let name = "release_manager";
+    harness.org_role(name, CHIEF_OF_STAFF_FILE);
+    let started = harness.roles.start(&harness.project, name).unwrap();
+    assert_eq!(
+        harness
+            .roles
+            .conversation_role(&harness.project, &started.conversation_id)
+            .unwrap()
+            .name,
+        name
+    );
+    harness.request(0);
+    harness.finish_turn(name);
+    harness.roles.stop(&harness.project, name).unwrap();
+    harness.message(name, "Cut the release");
+    harness.roles.start(&harness.project, name).unwrap();
+    assert_eq!(
+        harness.request(1).prompt,
+        "Message from a test: Cut the release"
+    );
+    harness.finish_turn(name);
+    for unsafe_name in ["../outside", ".hidden", "a/b"] {
+        assert!(harness.roles.start(&harness.project, unsafe_name).is_err());
+        assert!(harness.roles.get(&harness.project, unsafe_name).is_err());
+    }
+}

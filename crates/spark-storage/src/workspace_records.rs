@@ -27,8 +27,9 @@ impl RecordRepository {
             root: project_root.join("roles"),
         }
     }
+    /// Record ids are file stems: mission ids and role file names alike.
     fn checked(&self, id: &str) -> Result<(), StorageError> {
-        if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        if !crate::conversation::is_safe_segment_file_id(id) {
             return Err(StorageError::InvalidRepositoryPath {
                 path: self.root.clone(),
                 reason: "Invalid record ID".into(),
