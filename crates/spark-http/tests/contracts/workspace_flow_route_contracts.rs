@@ -536,6 +536,74 @@ async fn workspace_org_routes_refuse_symlinks_out_of_the_org_and_bundled_roots()
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn workspace_org_standing_role_titles_never_come_from_outside_the_roots() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().expect("tempdir");
+    let settings = settings(temp.path());
+    write_flow(&settings, "shared", &simple_flow("shared"));
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("outside");
+    for (file, title) in [
+        ("project.md", "Outside Project Title"),
+        ("bundled.md", "Outside Bundled Title"),
+    ] {
+        std::fs::write(
+            outside.join(file),
+            format!("---\ntype: Role\ntitle: {title}\n---\n\nOutside.\n"),
+        )
+        .expect("outside role");
+    }
+    let bundled_roles = settings.bundled_dir().join("roles");
+    std::fs::create_dir_all(&bundled_roles).expect("bundled roles");
+    symlink(
+        outside.join("bundled.md"),
+        bundled_roles.join("coordinator.md"),
+    )
+    .expect("link");
+    let project = temp.path().join("project");
+    let org = spark_common::project::ensure_org_repo(&project).expect("org");
+    let org_roles = org.join("roles");
+    std::fs::create_dir_all(&org_roles).expect("org roles");
+    symlink(outside.join("project.md"), org_roles.join("coordinator.md")).expect("link");
+
+    let app = build_app(settings);
+    let list = || {
+        let app = app.clone();
+        let uri = format!("/workspace/api/org?project_path={}", project.display());
+        async move {
+            let (status, list, _) = request_json(app, "GET", &uri, None).await;
+            assert_eq!(status, StatusCode::OK, "{list}");
+            list
+        }
+    };
+    let standing_title = |list: &Value| {
+        list["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|item| item["name"] == "coordinator")
+            .map(|item| item["standing"]["title"].clone())
+    };
+    // Project link escapes; the bundled one, next in line, escapes too.
+    let body = list().await;
+    assert!(!body.to_string().contains("Outside"), "{body}");
+    // Bundled link alone escapes.
+    std::fs::remove_file(org_roles.join("coordinator.md")).expect("unlink");
+    let body = list().await;
+    assert!(!body.to_string().contains("Outside"), "{body}");
+    // A role file inside its root still titles the standing role.
+    std::fs::write(
+        org_roles.join("coordinator.md"),
+        "---\ntype: Role\ntitle: Inside Title\n---\n\nYou coordinate.\n",
+    )
+    .expect("inside role");
+    let body = list().await;
+    assert_eq!(standing_title(&body), Some(json!("Inside Title")), "{body}");
+    assert!(!body.to_string().contains("Outside"), "{body}");
+}
+
 #[tokio::test]
 async fn workspace_org_list_writes_nothing_for_an_unseen_project() {
     let temp = tempfile::tempdir().expect("tempdir");

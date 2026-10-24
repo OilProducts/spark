@@ -193,7 +193,8 @@ impl FlowRoots {
         })
     }
 
-    /// The first role file named `name`: its manifest key and text.
+    /// The first role file named `name`: its manifest key and text. A role
+    /// file that resolves outside its root (a symlink out) is not read.
     pub fn role_text(&self, name: &str) -> Result<(String, String), String> {
         let file = format!("{name}.md");
         let unknown =
@@ -203,7 +204,11 @@ impl FlowRoots {
         }
         self.layers()
             .find_map(|(layer, root)| {
-                fs::read_to_string(root.join("roles").join(&file))
+                let real = root.join("roles").join(&file).canonicalize().ok()?;
+                if !real.starts_with(root.canonicalize().ok()?) {
+                    return None;
+                }
+                fs::read_to_string(real)
                     .ok()
                     .map(|text| (format!("{layer}/roles/{file}"), text))
             })
